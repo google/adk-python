@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import collections
 import json
 import logging
@@ -22,15 +23,20 @@ from pathlib import PurePosixPath
 import sys
 from unittest import mock
 
+from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.readonly_context import ReadonlyContext
+from google.adk.agents.sequential_agent import SequentialAgent
+from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.code_executors.base_code_executor import BaseCodeExecutor
 from google.adk.code_executors.code_execution_utils import CodeExecutionResult
 from google.adk.code_executors.unsafe_local_code_executor import UnsafeLocalCodeExecutor
 from google.adk.environment import BaseEnvironment
 from google.adk.models import llm_request as llm_request_model
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.skills import models
 from google.adk.tools import skill_toolset
 from google.adk.tools import tool_context
+from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 import pytest
 
@@ -2017,6 +2023,219 @@ async def test_execute_script_input_files_packaged(mock_skill1):
   # Verify content mappings exist in the string
   assert "'references/ref1.md': 'ref content 1'" in code_input.code
   assert "'assets/asset1.txt': 'asset content 1'" in code_input.code
+
+
+# ── generated file → artifact persistence (#5579) ──
+
+
+def test_extract_generated_files_from_stdout_strips_marker():
+  """Generated-files marker is removed from stdout and parsed."""
+  payload = [{
+      "path": "report.pdf",
+      "content_b64": base64.b64encode(b"%PDF").decode("ascii"),
+      "mime_type": "application/pdf",
+  }]
+  stdout = (
+      f"hello\n{skill_toolset._GENERATED_FILES_MARKER}{json.dumps(payload)}\n"
+  )
+  cleaned, files = skill_toolset._extract_generated_files_from_stdout(stdout)
+  assert cleaned == "hello\n"
+  assert len(files) == 1
+  assert files[0]["path"] == "report.pdf"
+
+
+@pytest.mark.asyncio
+async def test_execute_script_saves_generated_files_as_artifacts(mock_skill1):
+  """Files emitted by the skill wrapper are saved and listed in the result."""
+  payload = [{
+      "path": "output_report.pdf",
+      "content_b64": base64.b64encode(b"%PDF-1.4").decode("ascii"),
+      "mime_type": "application/pdf",
+  }]
+  stdout = (
+      f"done\n{skill_toolset._GENERATED_FILES_MARKER}{json.dumps(payload)}\n"
+  )
+  executor = _make_mock_executor(stdout=stdout)
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  ctx._invocation_context.artifact_service = mock.MagicMock()
+  ctx.save_artifact = mock.AsyncMock(return_value=0)
+
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "run.py"},
+      tool_context=ctx,
+  )
+
+  assert result["status"] == "success"
+  assert result["stdout"] == "done\n"
+  assert result["saved_artifacts"] == ["output_report.pdf"]
+  ctx.save_artifact.assert_awaited_once()
+  kwargs = ctx.save_artifact.await_args.kwargs
+  assert kwargs["filename"] == "output_report.pdf"
+  assert kwargs["artifact"].inline_data.data == b"%PDF-1.4"
+
+
+@pytest.mark.asyncio
+async def test_execute_script_shell_envelope_with_generated_files(mock_skill1):
+  """Shell JSON envelope still parses when a generated-files marker follows."""
+  envelope = json.dumps({
+      "__shell_result__": True,
+      "stdout": "shell out\n",
+      "stderr": "",
+      "returncode": 0,
+  })
+  payload = [{
+      "path": "exports/data.csv",
+      "content_b64": base64.b64encode(b"a,b\n1,2\n").decode("ascii"),
+      "mime_type": "text/csv",
+  }]
+  stdout = (
+      f"{envelope}\n"
+      f"{skill_toolset._GENERATED_FILES_MARKER}{json.dumps(payload)}\n"
+  )
+  executor = _make_mock_executor(stdout=stdout)
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  ctx._invocation_context.artifact_service = mock.MagicMock()
+  ctx.save_artifact = mock.AsyncMock(return_value=1)
+
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "setup.sh"},
+      tool_context=ctx,
+  )
+
+  assert result["status"] == "success"
+  assert result["stdout"] == "shell out\n"
+  assert result["saved_artifacts"] == ["exports/data.csv"]
+
+
+@pytest.mark.asyncio
+async def test_execute_script_skips_artifact_save_without_service(mock_skill1):
+  """Missing artifact service does not fail the tool call."""
+  payload = [{
+      "path": "out.txt",
+      "content_b64": base64.b64encode(b"x").decode("ascii"),
+      "mime_type": "text/plain",
+  }]
+  stdout = f"{skill_toolset._GENERATED_FILES_MARKER}{json.dumps(payload)}\n"
+  executor = _make_mock_executor(stdout=stdout)
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  ctx._invocation_context.artifact_service = None
+  ctx.save_artifact = mock.AsyncMock()
+
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "run.py"},
+      tool_context=ctx,
+  )
+
+  assert result["status"] == "success"
+  assert "saved_artifacts" not in result
+  ctx.save_artifact.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_script_wrapper_collects_generated_files(mock_skill1):
+  """Wrapper code walks the tempdir and emits the generated-files marker."""
+  executor = _make_mock_executor(stdout="ok\n")
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "run.py"},
+      tool_context=ctx,
+  )
+  code = executor.execute_code.call_args[0][1].code
+  assert skill_toolset._GENERATED_FILES_MARKER in code
+  assert "os.walk(td)" in code
+  assert "__pycache__" in code
+
+
+@pytest.mark.asyncio
+async def test_integration_python_generated_file_saved_as_artifact():
+  """Real executor: files written by a skill script are saved as artifacts."""
+  script = models.Script(
+      src=(
+          "from pathlib import"
+          " Path\nPath('output_report.txt').write_text('artifact body',"
+          " encoding='utf-8')\nprint('wrote report')\n"
+      )
+  )
+  skill = _make_skill_with_script("test_skill", "write_report.py", script)
+  toolset = _make_real_executor_toolset([skill])
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name="test_app", user_id="test_user"
+  )
+  artifact_service = InMemoryArtifactService()
+  invocation_context = InvocationContext(
+      invocation_id="inv_artifacts",
+      agent=SequentialAgent(name="test_agent"),
+      session=session,
+      session_service=session_service,
+      artifact_service=artifact_service,
+  )
+  ctx = ToolContext(invocation_context)
+
+  result = await tool.run_async(
+      args={
+          "skill_name": "test_skill",
+          "file_path": "write_report.py",
+      },
+      tool_context=ctx,
+  )
+
+  assert result["status"] == "success", result
+  assert result["stdout"] == "wrote report\n"
+  assert result.get("saved_artifacts") == ["output_report.txt"]
+  saved = await artifact_service.load_artifact(
+      app_name="test_app",
+      user_id="test_user",
+      session_id=session.id,
+      filename="output_report.txt",
+  )
+  assert saved is not None
+  assert saved.inline_data.data == b"artifact body"
+
+
+@pytest.mark.asyncio
+async def test_integration_python_does_not_resave_skill_resources():
+  """Real executor: packaged skill resources are not re-saved as artifacts."""
+  script = models.Script(src="print('ok')")
+  skill = _make_skill_with_script("test_skill", "noop.py", script)
+  skill.resources.get_reference.side_effect = lambda n: (
+      "ref body" if n == "notes.txt" else None
+  )
+  skill.resources.list_references.return_value = ["notes.txt"]
+  toolset = _make_real_executor_toolset([skill])
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name="test_app", user_id="test_user"
+  )
+  artifact_service = InMemoryArtifactService()
+  invocation_context = InvocationContext(
+      invocation_id="inv_no_resave",
+      agent=SequentialAgent(name="test_agent"),
+      session=session,
+      session_service=session_service,
+      artifact_service=artifact_service,
+  )
+  ctx = ToolContext(invocation_context)
+
+  result = await tool.run_async(
+      args={"skill_name": "test_skill", "file_path": "noop.py"},
+      tool_context=ctx,
+  )
+
+  assert result["status"] == "success", result
+  assert "saved_artifacts" not in result
 
 
 # ── Integration: shell non-zero exit ──
