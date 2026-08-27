@@ -1,5 +1,36 @@
 # Changelog
 
+## [1.39.1](https://github.com/google/adk-python/compare/v1.39.0...v1.39.1) (2026-08-27)
+
+
+### Bug Fixes
+
+* **a2a:** Port event action allowlist, agent card description source and resume flattening to v1 ([#6801](https://github.com/google/adk-python/issues/6801)) ([1f898a6](https://github.com/google/adk-python/commit/1f898a6f3ac6baad482e32d8c7c09e293e129c68))
+* **artifacts:** Port app-scoped file artifact storage and layout-derived payload paths to v1 ([#6795](https://github.com/google/adk-python/issues/6795)) ([0ae2bff](https://github.com/google/adk-python/commit/0ae2bffdd2628af6c8643bc4fd40c2f49f0c6bd4))
+* **artifacts:** Port artifact reference scoping and path-segment validation to v1 ([#6794](https://github.com/google/adk-python/issues/6794)) ([efc5bb8](https://github.com/google/adk-python/commit/efc5bb858ec4bb94192e37ee28d006493709cec1))
+* **cli:** check the Host header on every local API server request (v1) ([#6789](https://github.com/google/adk-python/issues/6789)) ([15bf230](https://github.com/google/adk-python/commit/15bf2308ed6eba64b9bff959ce2076509b3d57bf))
+* **cli:** Port deploy ignore-file handling to v1 ([#6793](https://github.com/google/adk-python/issues/6793)) ([8467bf0](https://github.com/google/adk-python/commit/8467bf04c204a8f1cb3bb87be42815e278d7d368))
+* close the residual gaps from the v1 backport review ([#6890](https://github.com/google/adk-python/issues/6890)) ([218061e](https://github.com/google/adk-python/commit/218061e0715929808ae123c9d3c6766fb9b8aa56))
+* **integrations:** send api registry credentials only to google api endpoints (v1) ([#6889](https://github.com/google/adk-python/issues/6889)) ([1e9e117](https://github.com/google/adk-python/commit/1e9e117303ed871a38bc70889190f476e3ddd7ac))
+* **mcp:** Port config stdio opt-in and reserved tool name checks to v1 ([#6796](https://github.com/google/adk-python/issues/6796)) ([28b32b4](https://github.com/google/adk-python/commit/28b32b476585299f8995d593ae89e55e74693db5))
+* **models:** Port Gemini context cache fingerprint scoping to v1 ([#6804](https://github.com/google/adk-python/issues/6804)) ([f2f8456](https://github.com/google/adk-python/commit/f2f8456497743e9f02a395f1cf558bf62de46207))
+* **plugins:** sanitize BigQuery analytics rows and build GCS paths per call (v1) ([#6808](https://github.com/google/adk-python/issues/6808)) ([80e56de](https://github.com/google/adk-python/commit/80e56de2db860ce9fb02f93a8dfc5acc6ad3d85d))
+* Port A2A agent card RPC target origin validation to v1 ([#6800](https://github.com/google/adk-python/issues/6800)) ([ccb4812](https://github.com/google/adk-python/commit/ccb481226bfe0bddac118828630b5308f4a6d2b0))
+* Port agent loader and file path resolution fixes to v1 ([#6788](https://github.com/google/adk-python/issues/6788)) ([8bc927f](https://github.com/google/adk-python/commit/8bc927fabb439bcb6b697d4883fed0bf69f6fd76))
+* Port agent-config code-reference and config_path validation to v1 ([#6790](https://github.com/google/adk-python/issues/6790)) ([15ae713](https://github.com/google/adk-python/commit/15ae7131cd63c05c66bed0a526722905f18c5af9))
+* Port branch-scoped auth responses and OAuth2 nonce forwarding to v1 ([#6803](https://github.com/google/adk-python/issues/6803)) ([5817d30](https://github.com/google/adk-python/commit/5817d307b52d55e1fef5ab3065594520f5f8ebc1))
+* Port code executor container and pod isolation defaults to v1 ([#6807](https://github.com/google/adk-python/issues/6807)) ([1b4da44](https://github.com/google/adk-python/commit/1b4da44e73a944a7e685d8cac7a3aaa23511628d))
+* Port credential and inline-data field exclusions in logs, reprs and spans to v1 ([#6797](https://github.com/google/adk-python/issues/6797)) ([7c2075c](https://github.com/google/adk-python/commit/7c2075c2e0c50be069fadd848b2fba0c0a0b273d))
+* Port eval identifier validation and persona template rendering to v1 ([#6806](https://github.com/google/adk-python/issues/6806)) ([0a4a5c6](https://github.com/google/adk-python/commit/0a4a5c6ce25817369327893fc7fd9c0613f1d63f))
+* Port migration unpickle allowlist and database URL redaction to v1 ([#6791](https://github.com/google/adk-python/issues/6791)) ([6deda28](https://github.com/google/adk-python/commit/6deda284793cf894c8033e6a187abbce16c38344))
+* Port session id validation, thread id scoping and Vertex RAG cleanup fixes to v1 ([#6809](https://github.com/google/adk-python/issues/6809)) ([3fec8c5](https://github.com/google/adk-python/commit/3fec8c56a7c442584af49ad2ba1a73b283ec6829))
+* Port skill resource path and skill name validation fixes to v1 ([#6805](https://github.com/google/adk-python/issues/6805)) ([1353e8d](https://github.com/google/adk-python/commit/1353e8d733fce0180b75a6c875e193d01dc8a5e4))
+* Port URL validation, client timeout and credential scoping fixes to v1 ([#6802](https://github.com/google/adk-python/issues/6802)) ([7b6547f](https://github.com/google/adk-python/commit/7b6547f10a6f4cbef0a06a62156813222049c492))
+* Route thread-pool and live-mode tool dispatch through run_async (v1) ([#6799](https://github.com/google/adk-python/issues/6799)) ([48c56c3](https://github.com/google/adk-python/commit/48c56c388911fbc806a339ae6f265932781e34fe))
+* Scope custom eval metrics per registry and resolve their function path from the eval config (v1) ([#6792](https://github.com/google/adk-python/issues/6792)) ([9886410](https://github.com/google/adk-python/commit/9886410d85ddb38d219c24e6d9e1cd1934e17634))
+* **sessions:** accept a full session resource name again on v1 ([#6888](https://github.com/google/adk-python/issues/6888)) ([ef4f1e0](https://github.com/google/adk-python/commit/ef4f1e02c23af46ee0a06d56adda8b60a2e82e63))
+* Validate user message parts and agent transfer targets (v1) ([#6798](https://github.com/google/adk-python/issues/6798)) ([d830355](https://github.com/google/adk-python/commit/d830355c49f1be5d822d29b92951f8ac42a89c35))
+
 ## [1.39.0](https://github.com/google/adk-python/compare/v1.38.0...v1.39.0) (2026-08-17)
 
 
