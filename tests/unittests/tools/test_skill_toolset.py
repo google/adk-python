@@ -29,6 +29,7 @@ from google.adk.code_executors.unsafe_local_code_executor import UnsafeLocalCode
 from google.adk.environment import BaseEnvironment
 from google.adk.models import llm_request as llm_request_model
 from google.adk.skills import models
+from google.adk.telemetry import _instrumentation
 from google.adk.tools import skill_toolset
 from google.adk.tools import tool_context
 from google.genai import types
@@ -785,11 +786,11 @@ def _make_tool_context_with_agent(agent=None, invocation_id="test_invocation"):
   return ctx
 
 
-def _make_mock_executor(stdout="", stderr=""):
+def _make_mock_executor(stdout="", stderr="", exit_code=None):
   """Creates a mock code executor that returns the given output."""
   executor = mock.create_autospec(BaseCodeExecutor, instance=True)
   executor.execute_code.return_value = CodeExecutionResult(
-      stdout=stdout, stderr=stderr
+      stdout=stdout, stderr=stderr, exit_code=exit_code
   )
   return executor
 
@@ -1713,6 +1714,29 @@ def _make_real_executor_toolset(skills, **kwargs):
   return skill_toolset.SkillToolset(skills, code_executor=executor, **kwargs)
 
 
+@pytest.fixture(name="recorded_script_telemetry")
+def _recorded_script_telemetry(monkeypatch):
+  """Collects the telemetry objects the run_skill_script tool fills in.
+
+  The exit code reaches telemetry rather than the tool result, so asserting on
+  the result alone would leave it unchecked.
+  """
+  recorded = []
+  tracker = skill_toolset._instrumentation.track_skill_script_execution
+
+  def _spy(*args, **kwargs):
+    skill_telemetry = tracker(*args, **kwargs)
+    recorded.append(skill_telemetry)
+    return skill_telemetry
+
+  monkeypatch.setattr(
+      skill_toolset._instrumentation,
+      "track_skill_script_execution",
+      _spy,
+  )
+  return recorded
+
+
 @pytest.mark.asyncio
 async def test_integration_python_stdout():
   """Real executor: Python script stdout is captured."""
@@ -1834,7 +1858,7 @@ async def test_integration_shell_stdout_and_stderr():
 
 
 @pytest.mark.asyncio
-async def test_integration_shell_stderr_only():
+async def test_integration_shell_stderr_only(recorded_script_telemetry):
   """Real executor: shell script with only stderr reports error."""
   script = models.Script(src="echo failure >&2")
   skill = _make_skill_with_script("test_skill", "err.sh", script)
@@ -1851,6 +1875,114 @@ async def test_integration_shell_stderr_only():
   assert "status" in result, f"Result missing status: {result}"
   assert result["status"] == "error"
   assert "failure" in result["stderr"]
+  assert recorded_script_telemetry[0].script_exit_code == 0
+
+
+# ── Exit codes reported by the executor ──
+#
+# A Python script runs as the executed process itself, so the status that
+# process exits with is the script's own. These go through the real executor,
+# because the point is that the two agree.
+
+
+@pytest.mark.asyncio
+async def test_integration_python_reports_exit_code_after_writing_stdout(
+    recorded_script_telemetry,
+):
+  """Output written before a crash does not make the run a success."""
+  script = models.Script(src="print('progress')\nraise ValueError('boom')")
+  skill = _make_skill_with_script("test_skill", "crash.py", script)
+  toolset = _make_real_executor_toolset([skill])
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  result = await tool.run_async(
+      args={"skill_name": "test_skill", "file_path": "crash.py"},
+      tool_context=ctx,
+  )
+
+  assert result["status"] == "error"
+  assert "progress" in result["stdout"]
+  assert "ValueError: boom" in result["stderr"]
+  assert recorded_script_telemetry[0].script_exit_code == 1
+
+
+@pytest.mark.asyncio
+async def test_integration_python_reports_a_chosen_exit_code(
+    recorded_script_telemetry,
+):
+  """The status the script picked survives to telemetry."""
+  script = models.Script(src="import sys\nsys.exit(3)")
+  skill = _make_skill_with_script("test_skill", "exit_three.py", script)
+  toolset = _make_real_executor_toolset([skill])
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  result = await tool.run_async(
+      args={"skill_name": "test_skill", "file_path": "exit_three.py"},
+      tool_context=ctx,
+  )
+
+  assert result["status"] == "error"
+  assert recorded_script_telemetry[0].script_exit_code == 3
+
+
+@pytest.mark.asyncio
+async def test_integration_python_success_reports_exit_code_zero(
+    recorded_script_telemetry,
+):
+  script = models.Script(src="print('all good')")
+  skill = _make_skill_with_script("test_skill", "ok.py", script)
+  toolset = _make_real_executor_toolset([skill])
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  result = await tool.run_async(
+      args={"skill_name": "test_skill", "file_path": "ok.py"},
+      tool_context=ctx,
+  )
+
+  assert result["status"] == "success"
+  assert result["stdout"] == "all good\n"
+  assert recorded_script_telemetry[0].script_exit_code == 0
+
+
+@pytest.mark.asyncio
+async def test_executor_exit_code_is_not_overridden_by_stderr(
+    mock_skill1, recorded_script_telemetry
+):
+  """A reported status stands even when the run wrote only to stderr."""
+  executor = _make_mock_executor(stdout="", stderr="a warning\n", exit_code=0)
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "run.py"},
+      tool_context=ctx,
+  )
+
+  assert result["status"] == "error"
+  assert recorded_script_telemetry[0].script_exit_code == 0
+
+
+@pytest.mark.asyncio
+async def test_missing_executor_exit_code_falls_back_to_stderr(
+    mock_skill1, recorded_script_telemetry
+):
+  """Executors that report no status still get an outcome inferred."""
+  executor = _make_mock_executor(stdout="", stderr="fatal error\n")
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "run.py"},
+      tool_context=ctx,
+  )
+
+  assert result["status"] == "error"
+  assert recorded_script_telemetry[0].script_exit_code == 1
 
 
 # ── Shell JSON envelope parsing (unit tests with mock executor) ──
@@ -2668,7 +2800,7 @@ async def test_turn_scoped_skill_cache(
 
   # Setup executor for script tool
   executor = mock.create_autospec(skill_toolset.BaseCodeExecutor, instance=True)
-  executor.execute_code.return_value = mock.MagicMock(
+  executor.execute_code.return_value = CodeExecutionResult(
       stdout="hello\n", stderr=""
   )
   toolset._code_executor = executor

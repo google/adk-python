@@ -55,6 +55,7 @@ from sqlalchemy.types import String
 from sqlalchemy.types import TypeDecorator
 from sqlalchemy.types import TypeEngine
 
+from .. import _restricted_pickle
 from .. import _session_util
 from ...events.event import Event
 from ...events.event_actions import EventActions
@@ -94,9 +95,13 @@ def _truncate_str(value: Optional[str], max_length: int) -> Optional[str]:
 
 
 class DynamicPickleType(TypeDecorator[object]):  # type: ignore[misc]
-  """Represents a type that can be pickled."""
+  """Represents a type that can be pickled.
 
-  impl = PickleType
+  Values read back from the database are untrusted input, so they are always
+  unpickled through the restricted unpickler.
+  """
+
+  impl = PickleType(pickler=_restricted_pickle)
   # Behavior depends only on the dialect, which the compiled cache already
   # keys on, so statements using this type are safe to cache.
   cache_ok = True
@@ -125,7 +130,9 @@ class DynamicPickleType(TypeDecorator[object]):  # type: ignore[misc]
     """Ensures the raw bytes from the database are unpickled back into a Python object."""
     if value is not None:
       if dialect.name in ("spanner+spanner", "mysql"):
-        decoded: object = pickle.loads(cast("bytes | bytearray", value))
+        decoded: object = _restricted_pickle.loads(
+            cast("bytes | bytearray", value)
+        )
         return decoded
     return value
 

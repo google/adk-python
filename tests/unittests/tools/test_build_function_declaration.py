@@ -1036,6 +1036,8 @@ class TestBuildFunctionDeclarationFromSchemaDict:
     assert properties['count'].type == 'INTEGER'
     # An optional parameter collapses to its single non-null member type.
     assert properties['nickname'].type == 'STRING'
+    # Only the parameter without a default is required of the model.
+    assert decl.parameters.required == ['name']
     # None of the keywords the Gemini API surface rejects may survive.
     for property_schema in properties.values():
       assert property_schema.any_of is None
@@ -1069,13 +1071,6 @@ class TestBuildFunctionDeclarationFromSchemaDict:
     assert properties['nickname'].type == 'STRING'
     assert properties['count'].type == 'INTEGER'
 
-  @pytest.mark.xfail(
-      strict=True,
-      reason=(
-          'the required field list is computed but never copied onto the'
-          ' generated parameter schema'
-      ),
-  )
   def test_for_crewai_marks_parameters_without_a_default_as_required(self):
     class GreetArgs(BaseModel):
       name: str

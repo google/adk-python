@@ -42,7 +42,7 @@ def test_list_accessible_data_agents_success(mock_get_session):
   )
   assert result["status"] == "SUCCESS"
   assert result["response"] == ["agent1", "agent2"]
-  mock_get_session.assert_called_once_with(mock_creds)
+  mock_get_session.assert_called_once_with(mock_creds, location="global")
   mock_session.get.assert_called_once_with(
       "https://geminidataanalytics.googleapis.com/v1/projects/test-project/locations/global/dataAgents:listAccessible",
       headers={
@@ -70,7 +70,7 @@ def test_list_accessible_data_agents_exception(mock_get_session):
   )
   assert result["status"] == "ERROR"
   assert "List failed!" in result["error_details"]
-  mock_get_session.assert_called_once_with(mock_creds)
+  mock_get_session.assert_called_once_with(mock_creds, location="global")
   mock_session.get.assert_called_once()
 
 
@@ -283,8 +283,6 @@ def test_get_data_agent_info_auto_extract_location(
 )
 def test_list_accessible_data_agents_regional(mock_get_session):
   """Tests list_accessible_data_agents with regional settings."""
-  from google.adk.tools.data_agent.config import DataAgentToolConfig
-
   mock_creds = mock.Mock()
   mock_session = mock.MagicMock()
   mock_response = mock.Mock()
@@ -310,6 +308,58 @@ def test_list_accessible_data_agents_regional(mock_get_session):
       },
       timeout=mock.ANY,
   )
+
+
+@mock.patch.object(
+    data_agent_tool._gda_stream_util, "get_gda_session", autospec=True
+)
+def test_list_accessible_data_agents_explicit_location(mock_get_session):
+  """Tests list_accessible_data_agents with explicit location parameter overriding settings."""
+  mock_creds = mock.Mock()
+  mock_session = mock.MagicMock()
+  mock_response = mock.Mock()
+  mock_response.json.return_value = {"dataAgents": ["agent_us"]}
+  mock_response.raise_for_status.return_value = None
+  mock_session.get.return_value = mock_response
+  mock_get_session.return_value = (
+      mock_session,
+      "https://geminidataanalytics.us.rep.googleapis.com",
+  )
+  settings = DataAgentToolConfig(location="eu")
+  result = data_agent_tool.list_accessible_data_agents(
+      "test-project", mock_creds, location="us", settings=settings
+  )
+  assert result["status"] == "SUCCESS"
+  assert result["response"] == ["agent_us"]
+  mock_get_session.assert_called_once_with(mock_creds, location="us")
+  mock_session.get.assert_called_once_with(
+      "https://geminidataanalytics.us.rep.googleapis.com/v1/projects/test-project/locations/us/dataAgents:listAccessible",
+      headers={
+          "Content-Type": "application/json",
+          "X-Goog-API-Client": "GOOGLE_ADK",
+      },
+      timeout=mock.ANY,
+  )
+
+
+def test_list_accessible_data_agents_invalid_location():
+  """Tests list_accessible_data_agents with invalid location segment."""
+  mock_creds = mock.Mock()
+  result = data_agent_tool.list_accessible_data_agents(
+      "test-project", mock_creds, location="invalid/segment"
+  )
+  assert result["status"] == "ERROR"
+  assert "Invalid location format" in result["error_details"]
+
+
+def test_list_accessible_data_agents_invalid_project_id():
+  """Tests list_accessible_data_agents with invalid project_id segment."""
+  mock_creds = mock.Mock()
+  result = data_agent_tool.list_accessible_data_agents(
+      "invalid/project", mock_creds
+  )
+  assert result["status"] == "ERROR"
+  assert "Invalid project_id format" in result["error_details"]
 
 
 class _FakeClock:

@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 from collections.abc import Awaitable
 import inspect
@@ -30,7 +29,6 @@ from fastapi.openapi.models import APIKeyIn
 from google.genai.types import FunctionDeclaration
 from mcp import ClientSession
 from mcp.shared.exceptions import McpError
-from mcp.shared.session import ProgressFnT
 from mcp.types import Tool as McpBaseTool
 from opentelemetry import propagate
 from typing_extensions import override
@@ -73,6 +71,69 @@ _RESERVED_TOOL_NAMES = frozenset({
     REQUEST_INPUT_FUNCTION_CALL_NAME,
     transfer_to_agent.__name__,
 })
+
+_UNSET = object()
+
+
+def _read_field(model: Any, *names: str) -> Any:
+  """Reads the first attribute in ``names`` that ``model`` defines.
+
+  MCP SDK 1.x names its wire fields in camelCase. 2.x renames them to
+  snake_case and drops the camelCase attribute. Reading both spellings keeps
+  ADK working on either.
+
+  Args:
+    model: The MCP model to read from.
+    *names: Attribute names to try, in order.
+
+  Returns:
+    The value of the first attribute that exists.
+
+  Raises:
+    AttributeError: The model defines none of ``names``.
+  """
+  for name in names:
+    value = getattr(model, name, _UNSET)
+    if value is not _UNSET:
+      return value
+  raise AttributeError(
+      f"{type(model).__name__} defines none of {names}. This usually means the"
+      " installed MCP SDK renamed the field again."
+  )
+
+
+def _is_async_callable(target: Any) -> bool:
+  """Whether calling ``target`` returns a coroutine.
+
+  Functions are callable objects, but not all callable objects are functions:
+  ``iscoroutinefunction`` is False for an instance whose ``__call__`` is async,
+  so check that too.
+  """
+  return inspect.iscoroutinefunction(target) or (
+      hasattr(target, "__call__")
+      and inspect.iscoroutinefunction(target.__call__)
+  )
+
+
+class ProgressFnT(Protocol):
+  """The call signature a progress callback must have.
+
+  This copies the SDK's `ProgressFnT` rather than importing it. The SDK keeps
+  that protocol in `mcp.shared.session`, a module that exists to hold the
+  session base class; a release that reorganizes it takes this import with it,
+  and every MCP tool fails to import. Structural typing means a callback
+  written against either declaration satisfies both.
+
+  The three parameters are positional because the SDK calls them positionally.
+  """
+
+  async def __call__(
+      self,
+      progress: float,
+      total: float | None,
+      message: str | None,
+  ) -> None:
+    ...
 
 
 @runtime_checkable
@@ -222,8 +283,8 @@ class McpTool(BaseAuthenticatedTool):
     Returns:
         FunctionDeclaration: The Gemini function declaration for the tool.
     """
-    input_schema = self._mcp_tool.inputSchema
-    output_schema = self._mcp_tool.outputSchema
+    input_schema = _read_field(self._mcp_tool, "inputSchema", "input_schema")
+    output_schema = _read_field(self._mcp_tool, "outputSchema", "output_schema")
     if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
       function_decl = FunctionDeclaration(
           name=self.name,
@@ -292,14 +353,7 @@ class McpTool(BaseAuthenticatedTool):
   ) -> Any:
     """Invokes a callable, handling both sync and async cases."""
 
-    # Functions are callable objects, but not all callable objects are functions
-    # checking coroutine function is not enough. We also need to check whether
-    # Callable's __call__ function is a coroutine function
-    is_async = inspect.iscoroutinefunction(target) or (
-        hasattr(target, "__call__")
-        and inspect.iscoroutinefunction(target.__call__)
-    )
-    if is_async:
+    if _is_async_callable(target):
       return await target(**args_to_call)
     else:
       return target(**args_to_call)
@@ -474,31 +528,39 @@ class McpTool(BaseAuthenticatedTool):
         meta=meta_trace_context,
     )
 
-    if is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):  # pylint: disable=protected-access
-      # Race the tool call against the background session task so that
-      # transport crashes (e.g. non-2xx HTTP responses from an AGW with
-      # Model Armor) surface immediately instead of hanging until
-      # sse_read_timeout (default 5 minutes) expires. ConnectionError is
-      # intentionally NOT caught here. Replaying a tool call after an
-      # ambiguous transport failure could duplicate a remote side effect, so
-      # the failure surfaces to the run_async wrapper without an automatic
-      # retry.
-      #
-      # The isinstance check is intentional: tests and external subclasses
-      # may inject mock session managers whose `_get_session_context`
-      # returns a Mock instead of a real SessionContext (or None). Falling
-      # back to the direct await keeps those callers working.
-      session_context = self._mcp_session_manager._get_session_context(  # pylint: disable=protected-access
-          headers=final_headers
-      )
-      if isinstance(session_context, SessionContext):
-        response = await session_context._run_guarded(call_coro)  # pylint: disable=protected-access
+    # Hold the session out of the pool's idle sweep for as long as the call
+    # runs. A tool call can easily outlive the idle TTL, and a session that
+    # only looks idle because its call has not come back yet must not have
+    # its transport closed underneath it.
+    self._mcp_session_manager._begin_session_use(final_headers)  # pylint: disable=protected-access
+    try:
+      if is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):  # pylint: disable=protected-access
+        # Race the tool call against the background session task so that
+        # transport crashes (e.g. non-2xx HTTP responses from an AGW with
+        # Model Armor) surface immediately instead of hanging until
+        # sse_read_timeout (default 5 minutes) expires. ConnectionError is
+        # intentionally NOT caught here. Replaying a tool call after an
+        # ambiguous transport failure could duplicate a remote side effect, so
+        # the failure surfaces to the run_async wrapper without an automatic
+        # retry.
+        #
+        # The isinstance check is intentional: tests and external subclasses
+        # may inject mock session managers whose `_get_session_context`
+        # returns a Mock instead of a real SessionContext (or None). Falling
+        # back to the direct await keeps those callers working.
+        session_context = self._mcp_session_manager._get_session_context(  # pylint: disable=protected-access
+            headers=final_headers
+        )
+        if isinstance(session_context, SessionContext):
+          response = await session_context._run_guarded(call_coro)  # pylint: disable=protected-access
+        else:
+          response = await call_coro
       else:
+        # Pre-fix behavior: await the call directly. This is what causes the
+        # ~300s hang when the underlying transport crashes.
         response = await call_coro
-    else:
-      # Pre-fix behavior: await the call directly. This is what causes the
-      # ~300s hang when the underlying transport crashes.
-      response = await call_coro
+    finally:
+      self._mcp_session_manager._end_session_use(final_headers)  # pylint: disable=protected-access
 
     result = response.model_dump(exclude_none=True, mode="json")
 
@@ -519,7 +581,12 @@ class McpTool(BaseAuthenticatedTool):
 
   def _detect_error_in_response(self, response: Any) -> str | None:
     """Telemetry hook: returns an error type if the response indicates an error."""
-    if isinstance(response, dict) and response.get("isError"):
+    # `response` is a dumped CallToolResult. MCP SDK 1.x names the field
+    # `isError`; 2.x names it `is_error`, so `model_dump` emits the snake_case
+    # key and a lookup of `isError` alone silently stops reporting tool errors.
+    if isinstance(response, dict) and (
+        response.get("isError") or response.get("is_error")
+    ):
       return "MCP_TOOL_ERROR"
     return None
 
@@ -543,19 +610,21 @@ class McpTool(BaseAuthenticatedTool):
     ):
       return None
 
-    # Determine if callback is a factory by checking if it's a coroutine
-    # function. ProgressFnT is an async function, while ProgressCallbackFactory
-    # is a sync function that returns an async function.
-    if asyncio.iscoroutinefunction(self._progress_callback):
-      return self._progress_callback
+    # A ProgressFnT is an async callable; a ProgressCallbackFactory is a plain
+    # one that returns an async callable.
+    #
+    # The casts carry that decision to the type checker, which cannot narrow a
+    # union on a call like this. They became necessary once ADK declared
+    # `ProgressFnT` itself: while it came from the SDK the annotation resolved
+    # to `Any` here and every branch type-checked vacuously.
+    if _is_async_callable(self._progress_callback):
+      return cast(ProgressFnT, self._progress_callback)
 
-    # If it's a regular callable (not async), treat it as a factory
-    if callable(self._progress_callback) and not inspect.iscoroutinefunction(
-        self._progress_callback
-    ):
-      return self._progress_callback(self.name, callback_context=tool_context)
+    if callable(self._progress_callback):
+      factory = cast(ProgressCallbackFactory, self._progress_callback)
+      return factory(self.name, callback_context=tool_context)
 
-    return self._progress_callback
+    return cast(ProgressFnT, self._progress_callback)
 
   async def _get_headers(
       self, tool_context: ToolContext, credential: AuthCredential

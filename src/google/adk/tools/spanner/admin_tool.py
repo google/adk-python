@@ -17,11 +17,24 @@
 from __future__ import annotations
 
 from typing import Any
+from typing import cast
+from typing import Protocol
 
 from google.auth.credentials import Credentials
 from google.cloud import spanner_admin_instance_v1
 from google.cloud.spanner_admin_database_v1 import DatabaseAdminAsyncClient
 from google.cloud.spanner_admin_instance_v1 import InstanceAdminAsyncClient
+
+
+class _AsyncOperation(Protocol):
+
+  async def result(self, timeout: float | None = None) -> object:
+    ...
+
+
+async def _wait_for_operation(operation: object, *, timeout: float) -> None:
+  """Wait for an unannotated Google API Core async operation."""
+  await cast(_AsyncOperation, operation).result(timeout=timeout)
 
 
 async def list_instances(
@@ -268,7 +281,7 @@ async def create_instance(
         instance_id=instance_id,
         instance=instance,
     )
-    await operation.result(timeout=300)  # waits for completion
+    await _wait_for_operation(operation, timeout=300)
 
     return {
         "status": "SUCCESS",
@@ -360,7 +373,7 @@ async def create_database(
     # Wait for the operation to complete (default timeout 5 minutes).
     # Result on success is
     # google.cloud.spanner_admin_database_v1.types.Database
-    await operation.result(timeout=300)
+    await _wait_for_operation(operation, timeout=300)
 
     return {
         "status": "SUCCESS",

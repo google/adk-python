@@ -337,7 +337,17 @@ def build_auth_request_event(
   parts: list[types.Part] = []
   long_running_tool_ids: set[str] = set()
 
+  deduplicated_requests: dict[str, AuthConfig] = {}
+  seen_keys = set()
   for function_call_id, auth_config in auth_requests.items():
+    key = auth_config.credential_key
+    if not key:
+      deduplicated_requests[function_call_id] = auth_config
+    elif key not in seen_keys:
+      seen_keys.add(key)
+      deduplicated_requests[function_call_id] = auth_config
+
+  for function_call_id, auth_config in deduplicated_requests.items():
     request_id = generate_client_function_call_id()
     request_euc_function_call = types.FunctionCall(
         name=REQUEST_EUC_FUNCTION_CALL_NAME,
@@ -588,12 +598,12 @@ async def _execute_single_function_call_async(
         tool_context=tool_context,
         error=tool_error,
     )
-    if error_response is not None:
-      return __build_response_event(
-          tool, error_response, tool_context, invocation_context
-      )
-    else:
-      raise tool_error
+    if error_response is None:
+      logger.warning('%s', tool_error)
+      error_response = _build_tool_not_found_response(tool.name, tools_dict)
+    return __build_response_event(
+        tool, error_response, tool_context, invocation_context
+    )
 
   async def _run_with_trace() -> Event | None:
     nonlocal function_args, detected_error_type
@@ -618,7 +628,7 @@ async def _execute_single_function_call_async(
         if inspect.isawaitable(callback_result):
           callback_result = await callback_result
         function_response = callback_result
-        if function_response:
+        if function_response is not None:
           break
 
     # Step 3: Otherwise, proceed calling the tool normally.
@@ -664,7 +674,7 @@ async def _execute_single_function_call_async(
         if inspect.isawaitable(callback_result):
           callback_result = await callback_result
         altered_function_response = callback_result
-        if altered_function_response:
+        if altered_function_response is not None:
           break
 
     # Step 6: If alternative response exists from after_tool_callback, use it
@@ -679,7 +689,9 @@ async def _execute_single_function_call_async(
       # injection) or defers its response by design (e.g., the LlmAgent
       # wrapper for task delegation synthesizes the FR after the
       # sub-agent completes).  Either way, skip the auto-FR build when
-      # the tool returned nothing.
+      # the tool returned nothing.  Truthiness is deliberate here, unlike
+      # the callback chains above: the real FR still arrives later, so an
+      # empty dict must not answer the call early.
       return None
 
     detected_error_type = _detect_error_type_for_telemetry(
@@ -837,11 +849,12 @@ async def _execute_single_function_call_live(
         tool_context=tool_context,
         error=tool_error,
     )
-    if error_response is not None:
-      return __build_response_event(
-          tool, error_response, tool_context, invocation_context
-      )
-    raise tool_error
+    if error_response is None:
+      logger.warning('%s', tool_error)
+      error_response = _build_tool_not_found_response(tool.name, tools_dict)
+    return __build_response_event(
+        tool, error_response, tool_context, invocation_context
+    )
 
   async def _run_with_trace() -> Event | None:
     """Executes the tool with full lifecycle management and telemetry.
@@ -880,7 +893,7 @@ async def _execute_single_function_call_live(
         if inspect.isawaitable(callback_result):
           callback_result = await callback_result
         function_response = callback_result
-        if function_response:
+        if function_response is not None:
           break
 
     # Step 3: Otherwise, proceed calling the tool normally.
@@ -931,7 +944,7 @@ async def _execute_single_function_call_live(
         if inspect.isawaitable(callback_result):
           callback_result = await callback_result
         altered_function_response = callback_result
-        if altered_function_response:
+        if altered_function_response is not None:
           break
 
     # Step 6: If alternative response exists from after_tool_callback, use it
@@ -944,7 +957,9 @@ async def _execute_single_function_call_live(
     ) and not function_response:
       # The tool either runs long (FR will arrive later via session
       # injection) or defers its response by design.  Skip the auto-FR
-      # build when the tool returned nothing.
+      # build when the tool returned nothing.  Truthiness is deliberate
+      # here, unlike the callback chains above: the real FR still arrives
+      # later, so an empty dict must not answer the call early.
       return None
 
     detected_error_type = _detect_error_type_for_telemetry(
@@ -1014,6 +1029,93 @@ async def _execute_single_function_call_live(
       tel_ctx.function_response_event = await _run_with_trace()
       tel_ctx.error_type = detected_error_type
       return tel_ctx.function_response_event
+
+
+_MESSAGE_EVENT_FIELDS = frozenset({'content', 'id', 'timestamp'})
+"""The Event fields a streaming tool's message is built from.
+
+``id`` and ``timestamp`` are stamped at construction, so every Event carries
+them and neither says anything about what the tool asked for.
+"""
+
+
+def _message_content_for_user(
+    event: Event, *, tool: BaseTool
+) -> Optional[types.Content]:
+  """Returns the content to deliver, or None if the event has no message.
+
+  Only the ``content`` field is considered for delivery. All other fields are
+  ignored. The role is set to "user", overriding any other value.
+
+  Args:
+    event: The event the tool yielded.
+    tool: The tool that yielded it, named in the warning.
+
+  Returns:
+    The content to send to the user, or None if there is nothing to send.
+  """
+  problem = None
+  if not event.content:
+    problem = 'it has no content, so there is nothing to deliver'
+  elif event.model_dump(
+      exclude=set(_MESSAGE_EVENT_FIELDS),
+      exclude_defaults=True,
+      # Load-bearing beside exclude_defaults: a field with a custom serializer
+      # skips the default comparison, so ``long_running_tool_ids`` reports as
+      # set on every event. This reads the raw value instead.
+      exclude_none=True,
+      # Only the presence of a field is read, so a mistyped value is not worth
+      # a warning of its own.
+      warnings=False,
+  ):
+    problem = 'it sets fields beyond the message, which are ignored'
+
+  if problem:
+    logger.warning(
+        'Streaming tool `%s` yielded an Event that is not a purely'
+        ' user-facing message: %s. To send a message, use Event(message=...)',
+        tool.name,
+        problem,
+    )
+  if not event.content:
+    return None
+  return event.content.model_copy(deep=True, update={'role': 'user'})
+
+
+async def _emit_streaming_tool_event(
+    event: Event,
+    *,
+    tool: BaseTool,
+    tool_context: ToolContext,
+    invocation_context: InvocationContext,
+) -> None:
+  """Streams an Event yielded by a streaming tool to the user.
+
+  Args:
+    event: The event the tool yielded.
+    tool: The tool that yielded it, named in the branch and in any warning.
+    tool_context: The context of the call, for its function call id.
+    invocation_context: The invocation to enqueue on.
+  """
+  content = _message_content_for_user(event, tool=tool)
+  if content is None:
+    return
+  # Built fresh rather than copied, so the delivered event carries the message
+  # and nothing else, and each delivery gets its own id and timestamp: a tool
+  # may hold one Event and yield it twice, and the session orders events and
+  # decides what compaction has already summarized by timestamp.
+  await invocation_context._enqueue_event(
+      Event(
+          content=content,
+          author=_require_agent_name(invocation_context),
+          invocation_id=invocation_context.invocation_id,
+          branch=(
+              f'{tool.name}@{tool_context.function_call_id}'
+              if tool_context.function_call_id
+              else tool.name
+          ),
+      )
+  )
 
 
 async def _process_function_live_helper(
@@ -1105,6 +1207,15 @@ async def _process_function_live_helper(
         if inspect.isasyncgen(res):
           async with Aclosing(res) as agen:
             async for result in agen:
+              if isinstance(result, Event):
+                await _emit_streaming_tool_event(
+                    result,
+                    tool=tool,
+                    tool_context=tool_context,
+                    invocation_context=invocation_context,
+                )
+                continue
+
               updated_content = _build_function_response_content(
                   tool, result, tool_context.function_call_id
               )
@@ -1223,6 +1334,26 @@ def _get_tool(
     raise ValueError(error_msg)
 
   return tools_dict[tool_name]
+
+
+def _build_tool_not_found_response(
+    tool_name: str, tools_dict: dict[str, BaseTool]
+) -> dict[str, str]:
+  """Returns the error payload for a tool name the model made up.
+
+  A name the model invented is the model's own mistake to correct, so it is
+  reported back to the model the way a malformed argument list already is,
+  rather than raised out of the invocation.
+  """
+  available = ', '.join(tools_dict) or 'none'
+  return {
+      'error': (
+          f'Invoking `{tool_name}()` failed as no tool with that name is'
+          f' available. The tools you can call are: {available}. You could'
+          ' retry, but it is IMPORTANT that you only call a tool from that'
+          ' list.'
+      )
+  }
 
 
 def _create_tool_context(
@@ -1606,6 +1737,16 @@ def find_event_by_function_call_id(
       if function_call.id == function_call_id:
         return event
   return None
+
+
+def _collect_function_call_ids(events: list[Event]) -> set[str]:
+  """Returns the ids of every function call recorded in ``events``."""
+  call_ids: set[str] = set()
+  for event in events:
+    for function_call in event.get_function_calls():
+      if function_call.id:
+        call_ids.add(function_call.id)
+  return call_ids
 
 
 def find_matching_function_call(

@@ -19,8 +19,12 @@ from __future__ import annotations
 Verifies that session utilities correctly decode models and extract state deltas.
 """
 
+import datetime
+import logging
+
 from google.adk.sessions._session_util import decode_model
 from google.adk.sessions._session_util import extract_state_delta
+from google.adk.sessions._session_util import make_json_safe_state
 from google.genai import types
 from pydantic import BaseModel
 import pytest
@@ -115,3 +119,25 @@ class TestExtractStateDelta:
         "user": {"lang": "en"},
         "session": {"turn": 3},
     }
+
+
+class TestMakeJsonSafeState:
+  """Tests for make_json_safe_state utility."""
+
+  def test_serializes_rich_values_faithfully_without_warning(self, caplog):
+    """Values pydantic can serialize are kept, and nothing is logged."""
+    with caplog.at_level(logging.WARNING):
+      state = make_json_safe_state({"when": datetime.datetime(2026, 1, 1)})
+
+    assert state == {"when": "2026-01-01T00:00:00"}
+    assert not caplog.records
+
+  def test_degrades_unserializable_values_and_warns(self, caplog):
+    """A value pydantic cannot serialize degrades to a repr and is logged."""
+    with caplog.at_level(logging.WARNING):
+      state = make_json_safe_state({"callback": lambda: 1, "turn": 3})
+
+    assert state["turn"] == 3
+    assert isinstance(state["callback"], str)
+    assert len(caplog.records) == 1
+    assert caplog.records[0].exc_info is not None

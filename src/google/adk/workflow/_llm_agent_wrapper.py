@@ -40,7 +40,13 @@ if TYPE_CHECKING:
 
 
 def _extract_finish_task_fc(event: Event) -> types.FunctionCall | None:
-  """Returns the finish_task FC in this event, or None."""
+  """Returns the finish_task FC in this event, or None.
+
+  A partial event is skipped: its arguments may still be arriving, and
+  promoting them would make a fragment decide the task's output.
+  """
+  if event.partial:
+    return None
   for fc in event.get_function_calls():
     if fc.name == _FINISH_TASK_FC_NAME:
       return fc
@@ -53,7 +59,16 @@ def _extract_task_delegation_fcs(
   """Return task-delegation FCs from this event.
 
   A task-delegation FC is one whose tool is a ``_TaskAgentTool`` instance.
+
+  A partial event yields nothing, the way ``process_llm_agent_output``
+  already treats one. Its arguments may still be arriving, and the Runner
+  never appends a fragment to the session, so dispatching from one would run
+  the specialist on truncated arguments and leave the delegation out of the
+  history the coordinator replays.
   """
+  if event.partial:
+    return []
+
   from ..tools.agent_tool import _TaskAgentTool
 
   return [
@@ -281,7 +296,9 @@ def prepare_llm_agent_context(agent: LlmAgent, ctx: Context) -> Context:
   )
   agent_ctx.isolation_scope = ctx.isolation_scope
 
-  ic.session = ic.session.model_copy(deep=False)
+  # Share the parent's `session` object (don't copy it): a mid-invocation
+  # write such as compaction must be visible to later nodes, or the DB
+  # service rejects their write as stale.
   return agent_ctx
 
 
@@ -291,7 +308,9 @@ def prepare_llm_agent_input(
   """Prepares the input for running LlmAgent as a node.
 
   For ``single_turn`` mode, append a user-role event with the input
-  directly to session.events (legacy behavior).
+  directly to session.events (legacy behavior). When resuming with
+  ``resume_inputs``, skip appending to avoid injecting duplicate synthetic
+  user events that shadow user function responses.
 
   For ``task`` mode, the input is the parent's task-delegation FC
   args.  Those are NOT appended here — the content-builder
@@ -305,7 +324,17 @@ def prepare_llm_agent_input(
   For workflow nodes running in a sub-branch, stamp the input event with that
   branch. A private node input should not look like the shared root user turn.
   """
-  if node_input is None or agent.mode != 'single_turn':
+  # Skip injection if:
+  # 1. No input was provided.
+  # 2. Agent is not single_turn (task mode handles its own leading turn).
+  # 3. Resuming from pause/interrupt (e.g. HITL confirmation): node is re-run
+  #    with resume_inputs; injecting synthetic user input would shadow the
+  #    user's FunctionResponse on the branch tail and cause infinite loops.
+  if (
+      node_input is None
+      or agent.mode != 'single_turn'
+      or bool(ctx.resume_inputs)
+  ):
     return
   agent_input = to_user_content(node_input)
   user_event = Event(author='user', message=agent_input)

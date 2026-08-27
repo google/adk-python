@@ -1179,6 +1179,86 @@ def test_to_agent_engine_extra_packages_requirements_txt_is_not_clobbered(
   )
 
 
+@pytest.mark.parametrize(
+    "adk_version, expect_flag",
+    [
+        ("2.1.0", False),
+        ("2.1.99", False),
+        ("2.2.0", True),
+        ("2.3.0", True),
+    ],
+)
+def test_to_agent_engine_gates_gemini_enterprise_flag_by_version(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    adk_version: str,
+    expect_flag: bool,
+) -> None:
+  """The api_server flag is only emitted for versions that accept it."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  tmp_dir = src_dir.parent / "tmp"
+
+  with mock.patch("click.secho") as mocked_secho:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        adk_version=adk_version,
+    )
+
+  dockerfile = (tmp_dir / "Dockerfile").read_text()
+  assert ("--gemini_enterprise_app_name" in dockerfile) is expect_flag
+  warned = any(
+      "Omitting --gemini_enterprise_app_name" in call.args[0]
+      for call in mocked_secho.call_args_list
+  )
+  assert warned is not expect_flag
+
+
+def test_to_agent_engine_env_vars_override_reports_names_only(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """The env_vars override notice names the variables without their values."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  (src_dir / ".env").write_text(
+      'GOOGLE_API_KEY="secret-key-value"\nOTHER_VAR="other-secret-value"\n'
+  )
+  config_file = src_dir.parent / "config.json"
+  config_file.write_text(json.dumps({"env_vars": {"FROM_CONFIG": "kept"}}))
+
+  with mock.patch("click.echo") as mocked_echo:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        adk_version="1.2.0",
+        agent_engine_config_file=str(config_file),
+    )
+
+  messages = [str(c[0][0]) for c in mocked_echo.call_args_list if c[0]]
+  assert not [m for m in messages if "secret-key-value" in m]
+  assert not [m for m in messages if "other-secret-value" in m]
+  override_messages = [m for m in messages if "Overriding env_vars" in m]
+  assert len(override_messages) == 1
+  assert "GOOGLE_API_KEY" in override_messages[0]
+  assert "OTHER_VAR" in override_messages[0]
+  # The values are still deployed, only the terminal output omits them.
+  assert captured[0]["env_vars"]["GOOGLE_API_KEY"] == "secret-key-value"
+
+
 # _robust_rmtree / _on_rm_error tests
 
 
@@ -1219,3 +1299,178 @@ class TestRobustRmtree:
 
     cli_deploy._on_rm_error(os.remove, str(ro_file), None)
     assert not ro_file.exists()
+
+
+_VALID_WORKER_POOL = (
+    "projects/my-gcp-project/locations/us-central1/workerPools/my-private-pool"
+)
+
+
+def test_validate_worker_pool_accepts_full_resource_name() -> None:
+  """A well-formed Cloud Build worker pool resource name is accepted."""
+  assert cli_deploy._validate_worker_pool(_VALID_WORKER_POOL) == (
+      _VALID_WORKER_POOL
+  )
+
+
+@pytest.mark.parametrize(
+    "bad_pool",
+    [
+        "",
+        "   ",
+        "my-private-pool",
+        "projects/p/locations/l/workerPools/",
+        "projects/p/locations/l/pools/my-pool",
+        "projects/p/workerPools/my-pool",
+    ],
+)
+def test_validate_worker_pool_rejects_malformed_names(bad_pool: str) -> None:
+  """Malformed worker pool resource names raise a clear ClickException."""
+  with pytest.raises(click.ClickException):
+    cli_deploy._validate_worker_pool(bad_pool)
+
+
+def test_apply_worker_pool_nests_cli_value_into_build_config() -> None:
+  """CLI worker_pool is nested under build_config for the Vertex SDK."""
+  agent_config: Dict[str, Any] = {}
+  cli_deploy._apply_worker_pool_to_agent_config(
+      agent_config, _VALID_WORKER_POOL
+  )
+  assert agent_config["build_config"]["worker_pool"] == _VALID_WORKER_POOL
+  assert "worker_pool" not in agent_config
+
+
+def test_apply_worker_pool_pops_top_level_config_key() -> None:
+  """Top-level worker_pool in .agent_engine_config.json is nested and removed."""
+  agent_config: Dict[str, Any] = {"worker_pool": _VALID_WORKER_POOL}
+  cli_deploy._apply_worker_pool_to_agent_config(agent_config, None)
+  assert agent_config["build_config"]["worker_pool"] == _VALID_WORKER_POOL
+  assert "worker_pool" not in agent_config
+
+
+def test_apply_worker_pool_cli_overrides_config_file() -> None:
+  """Explicit CLI worker_pool overrides values from the config file."""
+  override = "projects/other/locations/europe-west1/workerPools/compliance-pool"
+  agent_config: Dict[str, Any] = {
+      "build_config": {"worker_pool": _VALID_WORKER_POOL},
+  }
+  cli_deploy._apply_worker_pool_to_agent_config(agent_config, override)
+  assert agent_config["build_config"]["worker_pool"] == override
+
+
+def test_apply_worker_pool_preserves_other_build_config_fields() -> None:
+  """Existing build_config.service_account is kept when adding worker_pool."""
+  agent_config: Dict[str, Any] = {
+      "build_config": {
+          "service_account": "builder@example.iam.gserviceaccount.com",
+      },
+  }
+  cli_deploy._apply_worker_pool_to_agent_config(
+      agent_config, _VALID_WORKER_POOL
+  )
+  assert agent_config["build_config"] == {
+      "service_account": "builder@example.iam.gserviceaccount.com",
+      "worker_pool": _VALID_WORKER_POOL,
+  }
+
+
+def test_to_agent_engine_forwards_worker_pool_in_update_config(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """to_agent_engine puts worker_pool under build_config on agent_engines.update."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+      worker_pool=_VALID_WORKER_POOL,
+  )
+
+  assert len(captured) == 1
+  assert captured[0]["build_config"]["worker_pool"] == _VALID_WORKER_POOL
+
+
+def test_to_agent_engine_reads_worker_pool_from_config_file(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """worker_pool from .agent_engine_config.json is forwarded on deploy."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  (src_dir / ".agent_engine_config.json").write_text(
+      json.dumps({"worker_pool": _VALID_WORKER_POOL})
+  )
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+  )
+
+  assert captured[0]["build_config"]["worker_pool"] == _VALID_WORKER_POOL
+  assert "worker_pool" not in captured[0]
+
+
+def test_to_agent_engine_rejects_invalid_worker_pool(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """An invalid --worker_pool value fails before calling Agent Engine APIs."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        adk_version="1.2.0",
+        worker_pool="not-a-resource-name",
+    )
+
+  assert "Invalid worker_pool" in str(exc_info.value)
+  assert captured == []
+
+
+def test_cli_deploy_agent_engine_passes_worker_pool(tmp_path: Path) -> None:
+  """--worker_pool reaches to_agent_engine as a keyword argument."""
+  agent_dir = tmp_path / "my_agent"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  with mock.patch(
+      "src.google.adk.cli.cli_deploy.to_agent_engine"
+  ) as mock_to_agent_engine:
+    result = runner.invoke(
+        cli_tools_click.main,
+        [
+            "deploy",
+            "agent_engine",
+            f"--worker_pool={_VALID_WORKER_POOL}",
+            str(agent_dir),
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    mock_to_agent_engine.assert_called_once()
+    _, kwargs = mock_to_agent_engine.call_args
+    assert kwargs["worker_pool"] == _VALID_WORKER_POOL

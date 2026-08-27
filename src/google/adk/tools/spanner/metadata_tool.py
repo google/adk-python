@@ -55,7 +55,7 @@ def list_table_names(
       }
   """
   try:
-    spanner_client = client.get_spanner_client(
+    spanner_client = client._get_typed_spanner_client(
         project=project_id, credentials=credentials
     )
     instance = spanner_client.instance(instance_id)
@@ -198,7 +198,7 @@ def get_table_schema(
 
   results: dict[str, Any] = {"schema": {}, "metadata": []}
   try:
-    spanner_client = client.get_spanner_client(
+    spanner_client = client._get_typed_spanner_client(
         project=project_id, credentials=credentials
     )
     instance = spanner_client.instance(instance_id)
@@ -336,7 +336,7 @@ def list_table_indexes(
       }
   """
   try:
-    spanner_client = client.get_spanner_client(
+    spanner_client = client._get_typed_spanner_client(
         project=project_id, credentials=credentials
     )
     instance = spanner_client.instance(instance_id)
@@ -359,7 +359,7 @@ def list_table_indexes(
     params = {"table_id": table_id}
     param_types = {"table_id": spanner_param_types.STRING}
 
-    indexes = []
+    indexes: list[object] = []
     with database.snapshot() as snapshot:
       result_set = snapshot.execute_sql(
           sql_query, params=params, param_types=param_types
@@ -376,10 +376,9 @@ def list_table_indexes(
 
         try:
           json.dumps(index_info)
+          indexes.append(index_info)
         except (TypeError, ValueError, OverflowError):
-          index_info = str(index_info)
-
-        indexes.append(index_info)
+          indexes.append(str(index_info))
 
     return {"status": "SUCCESS", "results": indexes}
   except Exception as ex:
@@ -443,7 +442,7 @@ def list_table_index_columns(
       }
   """
   try:
-    spanner_client = client.get_spanner_client(
+    spanner_client = client._get_typed_spanner_client(
         project=project_id, credentials=credentials
     )
     instance = spanner_client.instance(instance_id)
@@ -464,7 +463,7 @@ def list_table_index_columns(
     params = {"table_id": table_id}
     param_types = {"table_id": spanner_param_types.STRING}
 
-    index_columns = []
+    index_columns: list[object] = []
     with database.snapshot() as snapshot:
       result_set = snapshot.execute_sql(
           sql_query, params=params, param_types=param_types
@@ -480,10 +479,9 @@ def list_table_index_columns(
 
         try:
           json.dumps(index_column_info)
+          index_columns.append(index_column_info)
         except (TypeError, ValueError, OverflowError):
-          index_column_info = str(index_column_info)
-
-        index_columns.append(index_column_info)
+          index_columns.append(str(index_column_info))
 
     return {"status": "SUCCESS", "results": index_columns}
   except Exception as ex:
@@ -522,7 +520,7 @@ def list_named_schemas(
       }
   """
   try:
-    spanner_client = client.get_spanner_client(
+    spanner_client = client._get_typed_spanner_client(
         project=project_id, credentials=credentials
     )
     instance = spanner_client.instance(instance_id)

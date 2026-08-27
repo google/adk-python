@@ -1390,8 +1390,8 @@ class ApiServer:
         return ListAppsResponse(apps=[AppInfo(**app) for app in apps_info])
       return self.agent_loader.list_agents()
 
-    @experimental
     @app.get("/apps/{app_name}/app-info", response_model_exclude_none=True)
+    @experimental
     async def get_adk_app_info(app_name: str) -> AppInfo:
       """Returns the detailed info for a given ADK app."""
       if app_name.startswith("__") and not self._allow_special_agents:
@@ -1450,13 +1450,13 @@ class ApiServer:
           if not session.id.startswith(EVAL_SESSION_ID_PREFIX)
       ]
 
-    @deprecated(
-        "Please use create_session instead. This will be removed in future"
-        " releases."
-    )
     @app.post(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}",
         response_model_exclude_none=True,
+    )
+    @deprecated(
+        "Please use create_session instead. This will be removed in future"
+        " releases."
     )
     async def create_session_with_id(
         app_name: str,
@@ -1895,61 +1895,86 @@ class ApiServer:
 
       # Convert the events to properly formatted SSE
       async def event_generator():
-        async with Aclosing(
-            runner.run_async(
-                user_id=req.user_id,
-                session_id=req.session_id,
-                new_message=req.new_message,
-                state_delta=req.state_delta,
-                run_config=RunConfig(
-                    streaming_mode=stream_mode,
-                    custom_metadata=req.custom_metadata,
-                ),
-                invocation_id=req.invocation_id,
-            )
-        ) as agen:
-          try:
-            async for event in agen:
-              # ADK Web renders artifacts from `actions.artifactDelta`
-              # during part processing *and* during action processing
-              # 1) the original event with `artifactDelta` cleared (content)
-              # 2) a content-less "action-only" event carrying `artifactDelta`
-              events_to_stream = [event]
-              if (
-                  not req.function_call_event_id
-                  and event.actions.artifact_delta
-                  and event.content
-                  and event.content.parts
-              ):
-                content_event = event.model_copy(deep=True)
-                content_event.actions.artifact_delta = {}
-                artifact_event = event.model_copy(deep=True)
-                artifact_event.content = None
-                events_to_stream = [content_event, artifact_event]
+        is_closing = False
+        original_exc = None
+        try:
+          async with Aclosing(
+              runner.run_async(
+                  user_id=req.user_id,
+                  session_id=req.session_id,
+                  new_message=req.new_message,
+                  state_delta=req.state_delta,
+                  run_config=RunConfig(
+                      streaming_mode=stream_mode,
+                      custom_metadata=req.custom_metadata,
+                  ),
+                  invocation_id=req.invocation_id,
+              )
+          ) as agen:
+            try:
+              async for event in agen:
+                # ADK Web renders artifacts from `actions.artifactDelta`
+                # during part processing *and* during action processing
+                # 1) the original event with `artifactDelta` cleared (content)
+                # 2) a content-less "action-only" event carrying `artifactDelta`
+                events_to_stream = [event]
+                if (
+                    not req.function_call_event_id
+                    and event.actions.artifact_delta
+                    and event.content
+                    and event.content.parts
+                ):
+                  content_event = event.model_copy(deep=True)
+                  content_event.actions.artifact_delta = {}
+                  artifact_event = event.model_copy(deep=True)
+                  artifact_event.content = None
+                  events_to_stream = [content_event, artifact_event]
 
-              for event_to_stream in events_to_stream:
-                sse_event = event_to_stream.model_dump_json(
-                    exclude_none=True,
-                    by_alias=True,
-                )
-                logger.debug(
-                    "Generated event in agent run streaming: %s", sse_event
-                )
-                yield f"data: {sse_event}\n\n"
-          except Exception as e:
-            logger.exception("Error in event_generator: %s", e)
+                for event_to_stream in events_to_stream:
+                  sse_event = event_to_stream.model_dump_json(
+                      exclude_none=True,
+                      by_alias=True,
+                  )
+                  logger.debug(
+                      "Generated event in agent run streaming: %s", sse_event
+                  )
+                  yield f"data: {sse_event}\n\n"
+            except (GeneratorExit, asyncio.CancelledError) as e:
+              is_closing = True
+              original_exc = e
+              raise
+            except Exception as e:
+              original_exc = e
+              raise
+        except Exception as e:
+          if original_exc:
+            if e is not original_exc:
+              logger.exception("Error during generator cleanup: %s", e)
+            if is_closing:
+              raise original_exc from e
+            logger.exception("Error in event_generator: %s", original_exc)
             error_details = {
-                "error_type": type(e).__name__,
-                "error_message": str(e),
+                "error_type": type(original_exc).__name__,
+                "error_message": str(original_exc),
                 "timestamp": time.time(),
             }
             if logger.isEnabledFor(logging.DEBUG):
-              error_details["stacktrace"] = traceback.format_exc()
-
+              error_details["stacktrace"] = "".join(
+                  traceback.format_exception(
+                      type(original_exc),
+                      original_exc,
+                      original_exc.__traceback__,
+                  )
+              )
             yield (
                 "data:"
-                f" {json.dumps({'error': f'{type(e).__name__}: {e}', 'error_details': error_details})}\n\n"
+                f" {json.dumps({'error': f'{type(original_exc).__name__}: {original_exc}', 'error_details': error_details})}\n\n"
             )
+            return
+          logger.exception(
+              "Error during generator cleanup after completion: %s", e
+          )
+          raise e
 
       # Returns a streaming response with the proper media type for SSE
       return StreamingResponse(
@@ -1963,9 +1988,9 @@ class ApiServer:
         user_id: str,
         session_id: str,
         app_name: Optional[str] = Query(default=None),
-        modalities: List[Literal["TEXT", "AUDIO"]] = Query(
+        modalities: List[Literal["TEXT", "AUDIO", "VIDEO"]] = Query(
             default=["AUDIO"]
-        ),  # Only allows "TEXT" or "AUDIO"
+        ),  # Only allows "TEXT", "AUDIO" or "VIDEO"
         proactive_audio: bool | None = Query(default=None),
         enable_affective_dialog: bool | None = Query(default=None),
         enable_session_resumption: bool | None = Query(default=None),

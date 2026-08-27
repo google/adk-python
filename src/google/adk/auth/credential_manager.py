@@ -256,10 +256,10 @@ class CredentialManager:
     # Step 5: If still no credential available, check if client credentials
     if not credential:
       # For client credentials flow, use raw credentials directly
-      if self._is_client_credentials_flow():
+      if self._is_client_credentials_flow() and raw_auth_credential is not None:
         # Exchange/refresh steps may mutate the credential object in-place, so
         # do not operate on the shared tool config.
-        credential = self._auth_config.raw_auth_credential.model_copy(deep=True)
+        credential = raw_auth_credential.model_copy(deep=True)
       else:
         # For authorization code flow, return None to trigger user authorization
         return None
@@ -320,6 +320,8 @@ class CredentialManager:
     if not exchanger:
       return credential, False
 
+    # ServiceAccountCredentialExchanger predates the async exchanger protocol
+    # and only implements the synchronous exchange_credential().
     if isinstance(exchanger, ServiceAccountCredentialExchanger):
       return (
           exchanger.exchange_credential(

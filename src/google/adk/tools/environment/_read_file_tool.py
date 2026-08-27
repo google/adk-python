@@ -143,7 +143,7 @@ class ReadFileTool(BaseTool):
       numbered = ''.join(
           f'{start + i:6d}\t{line}' for i, line in enumerate(lines)
       )
-      result = {
+      result: dict[str, str | int] = {
           'status': 'ok',
           'content': _truncate(
               numbered,
