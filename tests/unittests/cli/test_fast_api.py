@@ -2116,6 +2116,8 @@ async def test_agent_run_sse_disconnect_with_cleanup_exception_and_cancellation(
   from google.adk.cli.api_server import RunAgentRequest
 
   info = create_test_session
+  release_run = asyncio.Event()
+  cleanup_finished = asyncio.Event()
 
   class MockAsyncGenerator:
 
@@ -2136,10 +2138,11 @@ async def test_agent_run_sse_disconnect_with_cleanup_exception_and_cancellation(
             ),
         )
       # Block indefinitely to allow cancellation simulation
-      await asyncio.sleep(10)
+      await release_run.wait()
       raise StopAsyncIteration
 
     async def aclose(self):
+      cleanup_finished.set()
       raise ValueError("cleanup failed")
 
   def run_async_mock(self, **kwargs):
@@ -2189,6 +2192,58 @@ async def test_agent_run_sse_disconnect_with_cleanup_exception_and_cancellation(
   # Verify that the task raises CancelledError, and NOT ValueError (cleanup failed)
   with pytest.raises(asyncio.CancelledError):
     await task
+
+  release_run.set()
+  await asyncio.wait_for(cleanup_finished.wait(), timeout=1)
+
+
+async def test_agent_run_sse_disconnect_keeps_active_run_alive(
+    test_app, create_test_session, monkeypatch
+):
+  """Disconnecting an SSE client leaves its active agent run running."""
+  from google.adk.cli.api_server import RunAgentRequest
+
+  info = create_test_session
+  continue_run = asyncio.Event()
+  run_finished = asyncio.Event()
+  was_cancelled = asyncio.Event()
+
+  async def run_async_mock(self, **kwargs):
+    del self, kwargs
+    try:
+      yield _event_1()
+      await continue_run.wait()
+      yield _event_2()
+    except asyncio.CancelledError:
+      was_cancelled.set()
+      raise
+    finally:
+      run_finished.set()
+
+  monkeypatch.setattr(Runner, "run_async", run_async_mock)
+
+  handler = next(
+      route.endpoint
+      for route in test_app.app.routes
+      if route.path == "/run_sse"
+  )
+  req = RunAgentRequest(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      new_message={"role": "user", "parts": [{"text": "Hello agent"}]},
+      streaming=True,
+  )
+
+  response = await handler(req)
+  generator = response.body_iterator
+  assert "LLM reply" in await generator.__anext__()
+
+  await generator.aclose()
+  continue_run.set()
+  await asyncio.wait_for(run_finished.wait(), timeout=1)
+
+  assert not was_cancelled.is_set()
 
 
 def test_list_artifact_names(test_app, create_test_session):

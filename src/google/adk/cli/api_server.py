@@ -855,6 +855,7 @@ class ApiServer:
     self.runners_to_clean: set[str] = set()
     self.current_app_name_ref: SharedValue[str] = SharedValue(value="")
     self.runner_dict: dict[str, Runner] = {}
+    self._run_tasks: set[asyncio.Task[None]] = set()
     self.url_prefix = url_prefix
     self.auto_create_session = auto_create_session
     self.trigger_sources = trigger_sources
@@ -1164,6 +1165,10 @@ class ApiServer:
           yield
       finally:
         tear_down_observer(observer, self)
+        run_tasks = list(self._run_tasks)
+        for task in run_tasks:
+          task.cancel()
+        await asyncio.gather(*run_tasks, return_exceptions=True)
         # Create tasks for all runner closures to run concurrently
         await cleanup.close_runners(list(self.runner_dict.values()))
 
@@ -1895,86 +1900,103 @@ class ApiServer:
 
       # Convert the events to properly formatted SSE
       async def event_generator():
-        is_closing = False
-        original_exc = None
-        try:
-          async with Aclosing(
-              runner.run_async(
-                  user_id=req.user_id,
-                  session_id=req.session_id,
-                  new_message=req.new_message,
-                  state_delta=req.state_delta,
-                  run_config=RunConfig(
-                      streaming_mode=stream_mode,
-                      custom_metadata=req.custom_metadata,
-                  ),
-                  invocation_id=req.invocation_id,
-              )
-          ) as agen:
-            try:
-              async for event in agen:
-                # ADK Web renders artifacts from `actions.artifactDelta`
-                # during part processing *and* during action processing
-                # 1) the original event with `artifactDelta` cleared (content)
-                # 2) a content-less "action-only" event carrying `artifactDelta`
-                events_to_stream = [event]
-                if (
-                    not req.function_call_event_id
-                    and event.actions.artifact_delta
-                    and event.content
-                    and event.content.parts
-                ):
-                  content_event = event.model_copy(deep=True)
-                  content_event.actions.artifact_delta = {}
-                  artifact_event = event.model_copy(deep=True)
-                  artifact_event.content = None
-                  events_to_stream = [content_event, artifact_event]
+        client_connected = asyncio.Event()
+        client_connected.set()
+        event_queue: asyncio.Queue[
+            tuple[Optional[Event], Optional[Exception]]
+        ] = asyncio.Queue(maxsize=1)
 
-                for event_to_stream in events_to_stream:
-                  sse_event = event_to_stream.model_dump_json(
-                      exclude_none=True,
-                      by_alias=True,
-                  )
-                  logger.debug(
-                      "Generated event in agent run streaming: %s", sse_event
-                  )
-                  yield f"data: {sse_event}\n\n"
-            except (GeneratorExit, asyncio.CancelledError) as e:
-              is_closing = True
-              original_exc = e
-              raise
-            except Exception as e:
-              original_exc = e
-              raise
-        except Exception as e:
-          if original_exc:
-            if e is not original_exc:
-              logger.exception("Error during generator cleanup: %s", e)
-            if is_closing:
-              raise original_exc from e
-            logger.exception("Error in event_generator: %s", original_exc)
-            error_details = {
-                "error_type": type(original_exc).__name__,
-                "error_message": str(original_exc),
-                "timestamp": time.time(),
-            }
-            if logger.isEnabledFor(logging.DEBUG):
-              error_details["stacktrace"] = "".join(
-                  traceback.format_exception(
-                      type(original_exc),
-                      original_exc,
-                      original_exc.__traceback__,
-                  )
+        async def run_agent() -> None:
+          try:
+            async with Aclosing(
+                runner.run_async(
+                    user_id=req.user_id,
+                    session_id=req.session_id,
+                    new_message=req.new_message,
+                    state_delta=req.state_delta,
+                    run_config=RunConfig(
+                        streaming_mode=stream_mode,
+                        custom_metadata=req.custom_metadata,
+                    ),
+                    invocation_id=req.invocation_id,
+                )
+            ) as agen:
+              async for event in agen:
+                if client_connected.is_set():
+                  await event_queue.put((event, None))
+          except asyncio.CancelledError:
+            client_connected.clear()
+            raise
+          except Exception as e:
+            if client_connected.is_set():
+              await event_queue.put((None, e))
+            else:
+              logger.exception("Detached agent run failed: %s", e)
+          finally:
+            if client_connected.is_set():
+              await event_queue.put((None, None))
+
+        run_task = asyncio.create_task(run_agent())
+        self._run_tasks.add(run_task)
+        run_task.add_done_callback(self._run_tasks.discard)
+        try:
+          while True:
+            event, error = await event_queue.get()
+            if error is not None:
+              logger.exception(
+                  "Error in event_generator: %s",
+                  error,
+                  exc_info=(type(error), error, error.__traceback__),
               )
-            yield (
-                "data:"
-                f" {json.dumps({'error': f'{type(original_exc).__name__}: {original_exc}', 'error_details': error_details})}\n\n"
-            )
-            return
-          logger.exception(
-              "Error during generator cleanup after completion: %s", e
-          )
-          raise e
+              error_details = {
+                  "error_type": type(error).__name__,
+                  "error_message": str(error),
+                  "timestamp": time.time(),
+              }
+              if logger.isEnabledFor(logging.DEBUG):
+                error_details["stacktrace"] = "".join(
+                    traceback.format_exception(
+                        type(error), error, error.__traceback__
+                    )
+                )
+              yield (
+                  "data:"
+                  f" {json.dumps({'error': f'{type(error).__name__}: {error}', 'error_details': error_details})}\n\n"
+              )
+              return
+            if event is None:
+              return
+
+            # ADK Web renders artifacts from `actions.artifactDelta`
+            # during part processing *and* during action processing:
+            # 1) the original event with `artifactDelta` cleared (content)
+            # 2) a content-less "action-only" event carrying `artifactDelta`
+            events_to_stream = [event]
+            if (
+                not req.function_call_event_id
+                and event.actions.artifact_delta
+                and event.content
+                and event.content.parts
+            ):
+              content_event = event.model_copy(deep=True)
+              content_event.actions.artifact_delta = {}
+              artifact_event = event.model_copy(deep=True)
+              artifact_event.content = None
+              events_to_stream = [content_event, artifact_event]
+
+            for event_to_stream in events_to_stream:
+              sse_event = event_to_stream.model_dump_json(
+                  exclude_none=True,
+                  by_alias=True,
+              )
+              logger.debug(
+                  "Generated event in agent run streaming: %s", sse_event
+              )
+              yield f"data: {sse_event}\n\n"
+        finally:
+          client_connected.clear()
+          while not event_queue.empty():
+            event_queue.get_nowait()
 
       # Returns a streaming response with the proper media type for SSE
       return StreamingResponse(
