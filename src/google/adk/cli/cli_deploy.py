@@ -175,6 +175,18 @@ def _ensure_agent_engine_dependency(requirements_txt_path: str) -> None:
     f.write(f'google-adk[a2a]=={__version__}\n')
 
 
+def _get_agent_requirements_copy(
+    app_name: str, requirements_txt_path: str
+) -> str:
+  """Returns the Dockerfile step that copies an agent's requirements file."""
+  if not os.path.exists(requirements_txt_path):
+    return ''
+  return (
+      f'COPY --chown=myuser:myuser "agents/{app_name}/requirements.txt" '
+      f'"/app/agents/{app_name}/requirements.txt"'
+  )
+
+
 _DOCKERFILE_TEMPLATE: Final[str] = """
 FROM python:3.11-slim
 WORKDIR /app
@@ -200,16 +212,17 @@ RUN pip install "google-adk[a2a]=={adk_version}"
 RUN python -c "import os, glob, google.adk.cli as cli; d = os.path.dirname(cli.__file__); [os.remove(f) for f in glob.glob(os.path.join(d, 'dev_server*'))]; [os.remove(f) for f in glob.glob(os.path.join(d, '__pycache__', 'dev_server*'))]" || true
 # Install ADK - End
 
+# Install Agent Deps - Start
+{agent_requirements_copy}
+{install_agent_deps}
+# Install Agent Deps - End
+
 # Copy agent - Start
 
 # Set permission
 COPY --chown=myuser:myuser "agents/{app_name}/" "/app/agents/{app_name}/"
 {extra_packages_copy}
 # Copy agent - End
-
-# Install Agent Deps - Start
-{install_agent_deps}
-# Install Agent Deps - End
 
 EXPOSE {port}
 
@@ -855,6 +868,9 @@ def to_cloud_run(
         app_name=app_name,
         port=port,
         command='api_server --with_ui' if with_ui else 'api_server',
+        agent_requirements_copy=_get_agent_requirements_copy(
+            app_name, requirements_txt_path
+        ),
         install_agent_deps=install_agent_deps,
         service_option=_get_service_option_by_adk_version(
             adk_version,
@@ -1380,6 +1396,9 @@ def to_agent_engine(
           app_name=app_name,
           port=8080,
           command='api_server',
+          agent_requirements_copy=_get_agent_requirements_copy(
+              app_name, requirements_txt_path
+          ),
           install_agent_deps=install_agent_deps,
           service_option=_get_service_option_by_adk_version(
               adk_version,
@@ -1560,6 +1579,9 @@ def to_gke(
         app_name=app_name,
         port=port,
         command='api_server --with_ui' if with_ui else 'api_server',
+        agent_requirements_copy=_get_agent_requirements_copy(
+            app_name, requirements_txt_path
+        ),
         install_agent_deps=install_agent_deps,
         service_option=_get_service_option_by_adk_version(
             adk_version,
