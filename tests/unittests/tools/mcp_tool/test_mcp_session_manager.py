@@ -34,6 +34,7 @@ from google.adk.tools.mcp_tool import mcp_session_manager as mcp_session_manager
 from google.adk.tools.mcp_tool.mcp_session_manager import _DebugHttpxClientFactory
 from google.adk.tools.mcp_tool.mcp_session_manager import _GoogleAuthAsyncByteStream
 from google.adk.tools.mcp_tool.mcp_session_manager import _http_debug_var
+from google.adk.tools.mcp_tool.mcp_session_manager import _is_session_terminated_error
 from google.adk.tools.mcp_tool.mcp_session_manager import _RefreshableAsyncCredentials
 from google.adk.tools.mcp_tool.mcp_session_manager import _sanitize_url
 from google.adk.tools.mcp_tool.mcp_session_manager import _SESSION_IDLE_TTL_SECONDS
@@ -49,6 +50,8 @@ from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 import httpx
 from mcp import StdioServerParameters
+from mcp.shared.exceptions import McpError
+from mcp.types import ErrorData
 import pytest
 
 try:
@@ -1556,6 +1559,131 @@ async def test_retry_on_errors_decorator_does_not_retry_cancelled_error():
     await mock_function(mock_self)
 
   assert call_count == 1
+
+
+def test_is_session_terminated_error():
+  """Only the SDK's session-terminated error marks a session as dead."""
+  assert _is_session_terminated_error(
+      McpError(ErrorData(code=32600, message="Session terminated"))
+  )
+  assert not _is_session_terminated_error(
+      McpError(ErrorData(code=-32602, message="Invalid request parameters"))
+  )
+  assert not _is_session_terminated_error(ConnectionError("Session terminated"))
+  # MCP SDK 2.x servers emit this for a request that was in flight when the
+  # session died; the tool may already have run, so it must never match.
+  assert not _is_session_terminated_error(
+      McpError(
+          ErrorData(
+              code=-32603,
+              message="Session terminated before the request completed",
+          )
+      )
+  )
+
+
+@pytest.mark.asyncio
+async def test_invalidate_session_drops_pooled_session():
+  """Regression test for https://github.com/google/adk-python/issues/6822.
+
+  A server-terminated streamable-HTTP session keeps its local streams open
+  and its background task alive, so `create_session`'s health checks keep
+  returning it. `_invalidate_session` is the explicit path that drops it
+  from the pool so the next call builds a fresh session.
+  """
+  manager = MCPSessionManager(
+      StreamableHTTPConnectionParams(url="http://example.com/mcp")
+  )
+  session_key = manager._session_key_for(None)
+  exit_stack = MockAsyncExitStack()
+  manager._sessions[session_key] = (
+      MockClientSession(),
+      exit_stack,
+      asyncio.get_running_loop(),
+  )
+  manager._session_last_used[session_key] = time.monotonic()
+
+  await manager._invalidate_session()
+
+  # The entry leaves the pool synchronously; the transport close runs in a
+  # background task, never under the session lock.
+  assert session_key not in manager._sessions
+  assert session_key not in manager._session_last_used
+  await asyncio.gather(*manager._eviction_tasks)
+  exit_stack.aclose.assert_awaited_once()
+
+  # Invalidating an absent session is a harmless no-op.
+  await manager._invalidate_session()
+
+
+@pytest.mark.asyncio
+async def test_invalidate_session_defers_close_while_calls_in_flight():
+  """A sibling call on the dead session must get its own clean error.
+
+  When several calls share the pooled session and the server terminates it,
+  each is about to observe its own session-terminated error and retry.
+  Closing the transport under them would replace that recoverable error with
+  an unrecoverable transport failure, so the close waits for the last
+  in-flight call to end.
+  """
+  manager = MCPSessionManager(
+      StreamableHTTPConnectionParams(url="http://example.com/mcp")
+  )
+  session_key = manager._session_key_for(None)
+  exit_stack = MockAsyncExitStack()
+  manager._sessions[session_key] = (
+      MockClientSession(),
+      exit_stack,
+      asyncio.get_running_loop(),
+  )
+
+  # Two calls in flight: the one observing the error, and a sibling.
+  manager._begin_session_use(None)
+  manager._begin_session_use(None)
+
+  await manager._invalidate_session()
+
+  # Pool entry is gone (next create_session builds fresh), but the transport
+  # stays open for the sibling.
+  assert session_key not in manager._sessions
+  await asyncio.gather(*manager._eviction_tasks)
+  exit_stack.aclose.assert_not_awaited()
+
+  manager._end_session_use(None)
+  exit_stack.aclose.assert_not_awaited()
+
+  # The last user is out; now the close fires.
+  manager._end_session_use(None)
+  await asyncio.gather(*manager._eviction_tasks)
+  exit_stack.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_invalidate_session_does_not_hold_lock_during_close():
+  """The session lock is free while the transport close runs."""
+  manager = MCPSessionManager(
+      StreamableHTTPConnectionParams(url="http://example.com/mcp")
+  )
+  session_key = manager._session_key_for(None)
+
+  locked_during_close = []
+
+  async def slow_aclose():
+    locked_during_close.append(manager._session_lock.locked())
+    await asyncio.sleep(0)
+
+  exit_stack = MockAsyncExitStack()
+  exit_stack.aclose = AsyncMock(side_effect=slow_aclose)
+  manager._sessions[session_key] = (
+      MockClientSession(),
+      exit_stack,
+      asyncio.get_running_loop(),
+  )
+
+  await manager._invalidate_session()
+  await asyncio.gather(*manager._eviction_tasks)
+
+  assert locked_during_close == [False]
 
 
 @pytest.mark.asyncio

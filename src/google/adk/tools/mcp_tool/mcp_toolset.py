@@ -55,6 +55,7 @@ from ..load_mcp_resource_tool import LoadMcpResourceTool
 from ..tool_configs import BaseToolConfig
 from ..tool_configs import ToolArgsConfig
 from .mcp_session_manager import _http_debug_var
+from .mcp_session_manager import _is_session_terminated_error
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_errors
 from .mcp_session_manager import SseConnectionParams
@@ -397,28 +398,47 @@ class McpToolset(BaseToolset):
 
     session_headers = headers if headers else None
     try:
-      session = await self._mcp_session_manager.create_session(
-          headers=session_headers
-      )
       timeout_in_seconds = (
           self._connection_params.timeout
           if hasattr(self._connection_params, "timeout")
           else None
       )
-      # Hold the session out of the pool's idle sweep while it is in use, so
-      # another caller's sweep cannot close the transport mid-call.
-      self._mcp_session_manager._begin_session_use(session_headers)  # pylint: disable=protected-access
-      try:
-        return await asyncio.wait_for(
-            coroutine_func(session), timeout=timeout_in_seconds
+      # `retriable` is True on the first attempt only: when the server reports
+      # the pooled session as terminated (restart or idle eviction), it
+      # rejected the request before running it, so retrying once on a fresh
+      # session cannot duplicate anything. Without this, a dead pooled session
+      # would fail every listing here forever, exactly like the tool-call path
+      # in `McpTool._run_async_impl`.
+      for retriable in (True, False):
+        session = await self._mcp_session_manager.create_session(
+            headers=session_headers
         )
-      except Exception as e:
-        logger.exception(
-            f"Exception during MCP session execution: {error_message}: {e}"
-        )
-        raise ConnectionError(f"{error_message}: {e}") from e
-      finally:
-        self._mcp_session_manager._end_session_use(session_headers)  # pylint: disable=protected-access
+        # Hold the session out of the pool's idle sweep while it is in use, so
+        # another caller's sweep cannot close the transport mid-call.
+        self._mcp_session_manager._begin_session_use(session_headers)  # pylint: disable=protected-access
+        try:
+          return await asyncio.wait_for(
+              coroutine_func(session), timeout=timeout_in_seconds
+          )
+        except Exception as e:
+          if _is_session_terminated_error(e):
+            await self._mcp_session_manager._invalidate_session(  # pylint: disable=protected-access
+                headers=session_headers
+            )
+            if retriable:
+              logger.info(
+                  "MCP session was terminated server-side; retrying %s on a"
+                  " fresh session.",
+                  error_message,
+              )
+              continue
+          logger.exception(
+              f"Exception during MCP session execution: {error_message}: {e}"
+          )
+          raise ConnectionError(f"{error_message}: {e}") from e
+        finally:
+          self._mcp_session_manager._end_session_use(session_headers)  # pylint: disable=protected-access
+      raise AssertionError("unreachable: retry loop always returns or raises")
     finally:
       if debug_token is not None:
         _http_debug_var.reset(debug_token)

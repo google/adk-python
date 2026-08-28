@@ -66,6 +66,7 @@ from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import create_mcp_http_client as _create_mcp_http_client
 from mcp.client.streamable_http import streamable_http_client
+from mcp.shared.exceptions import McpError
 from pydantic import BaseModel
 from pydantic import ConfigDict
 
@@ -487,6 +488,32 @@ def retry_on_errors(func):
   return wrapper
 
 
+def _is_session_terminated_error(error: BaseException) -> bool:
+  """Whether `error` means the server no longer knows the session.
+
+  The streamable-HTTP client maps a 404 for a stored `mcp-session-id` (server
+  restart, idle-session eviction) to a JSON-RPC error with this message while
+  leaving the local read/write streams open and the background task alive, so
+  the pooled session passes every local health check yet fails every call.
+
+  The match is exact, not a substring: MCP SDK 2.x servers emit "Session
+  terminated before the request completed" for a request that was already in
+  flight when the session died, and that one may have run the tool, so it
+  must not be treated as safe to retry. The error code is not a usable
+  discriminator (1.x uses 32600, 2.x uses INVALID_REQUEST), so the exact
+  message is the stable signal across both.
+
+  Args:
+      error: The exception raised by a call on the session.
+
+  Returns:
+      True if the session should be dropped from the pool.
+  """
+  return (
+      isinstance(error, McpError) and str(error).strip() == 'Session terminated'
+  )
+
+
 def _is_google_api_host(host: str | None) -> bool:
   """Returns whether host is a Google API endpoint."""
   if not host:
@@ -745,6 +772,14 @@ class MCPSessionManager:
     # still running.
     self._eviction_tasks: set[asyncio.Task[None]] = set()
 
+    # Exit stacks of invalidated sessions whose close is deferred because
+    # calls were still in flight on them; keyed by session key, closed by
+    # `_end_session_use` once the last in-flight call finishes. Guarded by
+    # `_use_count_lock`, like the use counts that decide when to drain it.
+    self._deferred_closes: dict[
+        str, list[tuple[AsyncExitStack, asyncio.AbstractEventLoop]]
+    ] = {}
+
     # Map of event loops to their respective locks to prevent race conditions
     # across different event loops in session creation.
     self._session_lock_map: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
@@ -980,15 +1015,83 @@ class MCPSessionManager:
         headers: The headers the caller passed to ``create_session``.
     """
     session_key = self._generate_session_key(self._merge_headers(headers))
+    deferred = None
     with self._use_count_lock:
       remaining = self._session_use_counts.get(session_key, 0) - 1
       if remaining > 0:
         self._session_use_counts[session_key] = remaining
       else:
         self._session_use_counts.pop(session_key, None)
+        deferred = self._deferred_closes.pop(session_key, None)
     # Start the idle clock now, at the end of the call.
     if session_key in self._sessions:
       self._session_last_used[session_key] = time.monotonic()
+    if deferred:
+      # This call was the last user of one or more invalidated sessions;
+      # their transports can be torn down now without failing anyone.
+      for exit_stack, stored_loop in deferred:
+        self._spawn_close(session_key, exit_stack, stored_loop)
+
+  async def _invalidate_session(
+      self, headers: Optional[Dict[str, str]] = None
+  ) -> None:
+    """Drops the pooled session for these headers so the next call rebuilds it.
+
+    Needed when the server reports it no longer knows the session (see
+    `_is_session_terminated_error`): the local streams and background task
+    still look healthy, so `create_session` would keep returning the dead
+    session from the pool.
+
+    Like `_evict_idle_sessions`, the entry leaves the pool synchronously but
+    the transport is never closed under the session lock: the close is
+    bounded by the connection timeout, and awaiting it here would park every
+    other caller of this toolset behind it. If other calls are still in
+    flight on the session, the close is deferred until the last of them
+    finishes (`_end_session_use`): they are about to observe their own
+    session-terminated error and retry on a fresh session, and closing the
+    transport under them would replace that recoverable error with an
+    unrecoverable transport failure.
+
+    Args:
+        headers: Optional headers identifying the session, exactly as they
+          would be passed to ``create_session``.
+    """
+    session_key = self._session_key_for(headers)
+    async with self._session_lock:
+      entry = self._sessions.get(session_key)
+      if entry is None:
+        return
+      _, exit_stack, stored_loop = entry
+      self._forget_session(session_key)
+    with self._use_count_lock:
+      # The invalidating caller's own call still counts as in flight here, so
+      # on the tool-call path this always defers and the close runs when the
+      # last `_end_session_use` for this key fires.
+      if self._session_use_counts.get(session_key, 0) > 0:
+        self._deferred_closes.setdefault(session_key, []).append(
+            (exit_stack, stored_loop)
+        )
+        return
+    self._spawn_close(session_key, exit_stack, stored_loop)
+
+  def _spawn_close(
+      self,
+      session_key: str,
+      exit_stack: AsyncExitStack,
+      stored_loop: asyncio.AbstractEventLoop,
+  ) -> None:
+    """Tears a session's transport down in a background task.
+
+    Args:
+        session_key: The session key the exit stack belonged to, for logging.
+        exit_stack: The AsyncExitStack managing the session resources.
+        stored_loop: The event loop on which the session was created.
+    """
+    task = asyncio.ensure_future(
+        self._close_exit_stack(session_key, exit_stack, stored_loop)
+    )
+    self._eviction_tasks.add(task)
+    task.add_done_callback(self._eviction_tasks.discard)
 
   async def _cleanup_session(
       self,
@@ -1138,11 +1241,7 @@ class MCPSessionManager:
       # reuses this key gets a fresh session and the in-flight teardown never
       # reaches into the pool to drop it.
       self._forget_session(session_key)
-      task = asyncio.ensure_future(
-          self._close_exit_stack(session_key, exit_stack, stored_loop)
-      )
-      self._eviction_tasks.add(task)
-      task.add_done_callback(self._eviction_tasks.discard)
+      self._spawn_close(session_key, exit_stack, stored_loop)
 
   def _create_client(
       self,
@@ -1359,6 +1458,7 @@ class MCPSessionManager:
     state['_session_contexts'] = {}
     state['_session_last_used'] = {}
     state['_session_use_counts'] = {}
+    state['_deferred_closes'] = {}
     state['_eviction_tasks'] = set()
     state['_session_lock_map'] = {}
     state['_mtls_transports'] = {}
@@ -1380,6 +1480,7 @@ class MCPSessionManager:
     self._session_contexts = {}
     self._session_last_used = {}
     self._session_use_counts = {}
+    self._deferred_closes = {}
     self._eviction_tasks = set()
     self._session_lock_map = {}
     self._mtls_transports = {}
@@ -1398,6 +1499,15 @@ class MCPSessionManager:
       for session_key in list(self._sessions.keys()):
         _, exit_stack, stored_loop = self._sessions[session_key]
         await self._cleanup_session(session_key, exit_stack, stored_loop)
+
+      # Invalidated sessions whose deferred close never fired (their last
+      # in-flight call never ended) still own transports; close them too.
+      with self._use_count_lock:
+        deferred_closes = self._deferred_closes
+        self._deferred_closes = {}
+      for session_key, stacks in deferred_closes.items():
+        for exit_stack, stored_loop in stacks:
+          await self._close_exit_stack(session_key, exit_stack, stored_loop)
 
       # Detached eviction teardowns are still in flight. Only the ones on this
       # loop can be awaited -- this manager is used from more than one loop,
