@@ -32,15 +32,16 @@ from websockets.exceptions import ConnectionClosedOK
 
 from . import _output_schema_processor
 from . import functions
+from ...agents._streaming_mode import StreamingMode
 from ...agents.base_agent import BaseAgent
 from ...agents.callback_context import CallbackContext
 from ...agents.invocation_context import InvocationContext
 from ...agents.live_request_queue import LiveRequestQueue
 from ...agents.readonly_context import ReadonlyContext
-from ...agents.run_config import StreamingMode
 from ...auth.auth_tool import AuthConfig
 from ...events.event import Event
 from ...events.event_actions import EventActions
+from ...live._audio_cache_manager import AudioCacheManager
 from ...models.base_llm_connection import BaseLlmConnection
 from ...models.google_llm import Gemini
 from ...models.llm_request import LlmRequest
@@ -58,7 +59,6 @@ from ._invocation_utils import copy_http_options
 from ._invocation_utils import require_agent as _require_agent
 from ._invocation_utils import require_run_config as _require_run_config
 from ._invocation_utils import run_config_for_new_live_session
-from .audio_cache_manager import AudioCacheManager
 from .functions import build_auth_request_event
 
 # Prefix used by toolset auth credential IDs
@@ -1059,12 +1059,12 @@ class BaseLlmFlow(ABC):
         return
 
       if live_request.activity_start:
-        await llm_connection.send_realtime(types.ActivityStart())
+        await llm_connection.send_realtime(types.ActivityStart())  # type: ignore[arg-type]
       elif live_request.activity_end:
-        await llm_connection.send_realtime(types.ActivityEnd())
+        await llm_connection.send_realtime(types.ActivityEnd())  # type: ignore[arg-type]
       elif live_request.audio_stream_end:
         await llm_connection.send_realtime(
-            types.LiveClientRealtimeInput(audio_stream_end=True)
+            types.LiveClientRealtimeInput(audio_stream_end=True)  # type: ignore[arg-type]
         )
       elif live_request.blob:
         # Cache input audio chunks before flushing

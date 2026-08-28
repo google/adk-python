@@ -19,6 +19,8 @@ import time
 from typing import TYPE_CHECKING
 
 from google.adk import version
+from google.adk.telemetry import _adk_attributes
+from google.adk.telemetry import _hallucination
 from google.adk.telemetry import tracing
 from google.adk.telemetry._token_usage import CACHE_READ_INPUT_TOKENS_MEANING
 from google.adk.telemetry._token_usage import INPUT_TOKENS_MEANING
@@ -288,6 +290,11 @@ _invoke_workflow_tool_calls = meter.create_histogram(
         " `transfer_to_agent` calls that route between them."
     ),
     explicit_bucket_boundaries_advisory=_CALL_COUNT_BUCKET_BOUNDS,
+)
+_skill_script_executions = meter.create_counter(
+    "adk.experimental.skill.script.executions",
+    unit="1",
+    description="Number of skill script executions.",
 )
 
 
@@ -608,3 +615,25 @@ def get_elapsed_s(
 
   # Fallback if span times are missing
   return time.monotonic() - fallback_start
+
+
+def record_skill_script_execution(
+    agent_name: str,
+    skill_name: _hallucination.MaybeHallucinated[str],
+    script_path: _hallucination.MaybeHallucinated[str],
+    script_exit_code: int | None,
+) -> None:
+  """Records the result of skill's script executions."""
+  attrs: dict[str, AttributeValue] = {
+      gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name,
+      _adk_attributes.ADK_EXPERIMENTAL_SKILL_NAME: skill_name.bounded(),
+      _adk_attributes.ADK_EXPERIMENTAL_SKILL_SCRIPT_PATH: script_path.bounded(),
+  }
+  if script_exit_code is not None:
+    # As exit codes can be up to 255, to reduce cardinality we only record
+    # whether the script failed or not.
+    attrs[_adk_attributes.ADK_EXPERIMENTAL_SKILL_SCRIPT_ENDED_WITH_ERROR] = (
+        script_exit_code != 0
+    )
+
+  _skill_script_executions.add(1, attributes=attrs)

@@ -224,15 +224,6 @@ ALL_CASES: list[FunctionalTestCase] = semconv_matrix("agent") + [
         loaded_skills=["local"],
     ),
     FunctionalTestCase(
-        test_id="skill-registry-cache-hit-schema-v2",
-        scenario="skill",
-        semconv_opt_in=None,
-        experimental_telemetry=True,
-        capture_content="false",
-        schema_version=2,
-        loaded_skills=["registry", "registry"],
-    ),
-    FunctionalTestCase(
         test_id="invalid-skill-schema-v2",
         scenario="skill",
         semconv_opt_in=None,
@@ -277,6 +268,25 @@ ALL_CASES: list[FunctionalTestCase] = semconv_matrix("agent") + [
         capture_content="false",
         schema_version=2,
         loaded_resources=["wrong_type", "wrong_name"],
+    ),
+    ## Skill script telemetry scenarios.
+    FunctionalTestCase(
+        test_id="skill-script-telemetry-schema-v1",
+        scenario="skill",
+        semconv_opt_in=None,
+        experimental_telemetry=True,
+        capture_content="false",
+        schema_version=1,
+        script_return_exit_codes=[0, 1, 10, 20],
+    ),
+    FunctionalTestCase(
+        test_id="skill-script-telemetry-schema-v2",
+        scenario="skill",
+        semconv_opt_in=None,
+        experimental_telemetry=True,
+        capture_content="false",
+        schema_version=2,
+        script_return_exit_codes=[0, 1, 10, 20],
     ),
 ]
 

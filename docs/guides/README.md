@@ -5,7 +5,6 @@ This directory contains specific developer guides for the ADK Python implementat
 ## Index
 
 ### Agents
-* [LiveRequestQueue](agents/live_request_queue/index.md) - Streaming content, realtime audio, and stream control signals to live agents.
 * [LlmAgent Single-Turn Mode](agents/llm_agent/single_turn.md) - Guide on using LlmAgent in single-turn mode.
 * [LlmAgent Task Mode](agents/llm_agent/task.md) - Guide on using LlmAgent in task mode.
 * [ManagedAgent](agents/managed_agent/index.md) - Guide on using ManagedAgent with server-side tools.
@@ -32,6 +31,12 @@ This directory contains specific developer guides for the ADK Python implementat
 
 ### Integrations
 * [Model Armor](integrations/model_armor/index.md) - Screening user input and model output with Google Cloud Model Armor.
+
+### Labs
+* [AntigravityAgent](labs/antigravity/index.md) - Runs a Google Antigravity SDK agent as an ADK agent node.
+
+### Live
+* [LiveRequestQueue](live/live_request_queue/index.md) - Streaming content, realtime audio, and stream control signals to live agents.
 
 ### Memory
 * [BaseMemoryService](memory/memory_service/index.md) - Storing finished sessions and recalling them from later conversations.

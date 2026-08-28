@@ -48,6 +48,9 @@ _SENTINEL_REFRESH_TOKEN = "sentinel-refresh-token-91cc03"
 _SENTINEL_CLIENT_SECRET = "sentinel-client-secret-b58d6e"
 _SENTINEL_AUTH_CODE = "sentinel-auth-code-2ad914"
 _SENTINEL_CODE_VERIFIER = "sentinel-code-verifier-7be055"
+_SENTINEL_PRIVATE_KEY = (
+    "-----BEGIN PRIVATE KEY-----\nsentinel-key-body\n-----END PRIVATE KEY-----"
+)
 
 
 def _oauth_credential() -> AuthCredential:
@@ -822,6 +825,133 @@ class TestDebugLoggingPluginRedaction:
     assert oauth2["auth_response_uri"] == "[REDACTED]"
     assert oauth2["code_verifier"] == "[REDACTED]"
     assert oauth2["client_id"] == "test-client-id"
+
+  def test_scoped_state_keys_are_redacted(self):
+    """A state scope prefix says nothing about whether the value is a secret."""
+    plugin = DebugLoggingPlugin()
+
+    result = plugin._safe_serialize({
+        "api_key": _SENTINEL_CLIENT_SECRET,
+        "user:api_key": _SENTINEL_CLIENT_SECRET,
+        "app:client_secret": _SENTINEL_CLIENT_SECRET,
+        "user:profile": {"name": "test-user"},
+    })
+
+    assert result["api_key"] == "[REDACTED]"
+    assert result["user:api_key"] == "[REDACTED]"
+    assert result["app:client_secret"] == "[REDACTED]"
+    assert result["user:profile"] == {"name": "test-user"}
+
+  def test_key_spelling_variants_are_redacted(self):
+    """Camel case and compound names name the same secrets."""
+    plugin = DebugLoggingPlugin()
+
+    result = plugin._safe_serialize({
+        "apiKey": _SENTINEL_CLIENT_SECRET,
+        "secret_key": _SENTINEL_CLIENT_SECRET,
+        "bearer_token": _SENTINEL_ACCESS_TOKEN,
+        "credentials": _SENTINEL_CLIENT_SECRET,
+        "serviceAccountCredentials": _SENTINEL_CLIENT_SECRET,
+    })
+
+    assert set(result.values()) == {"[REDACTED]"}
+
+  def test_usage_counters_survive_key_matching(self):
+    """Counters end in the word `token` and are the point of the log."""
+    plugin = DebugLoggingPlugin()
+
+    result = plugin._safe_serialize({
+        "usage_metadata": {
+            "prompt_token_count": 12,
+            "candidates_token_count": 34,
+            "total_token_count": 46,
+        },
+        "max_output_tokens": 1024,
+        "cache_key": "abc",
+    })
+
+    assert result["usage_metadata"]["prompt_token_count"] == 12
+    assert result["usage_metadata"]["total_token_count"] == 46
+    assert result["max_output_tokens"] == 1024
+    assert result["cache_key"] == "abc"
+
+  def test_private_key_in_a_string_value_is_redacted(self):
+    """A service account file pasted into state has no telling key name."""
+    plugin = DebugLoggingPlugin()
+
+    result = plugin._safe_serialize({
+        "user:uploaded_file": (
+            '{"type": "service_account", "client_email": "a@b.example.com",'
+            f' "private_key": "{_SENTINEL_PRIVATE_KEY}"}}'
+        ),
+        "notes": ["harmless", _SENTINEL_PRIVATE_KEY],
+    })
+
+    assert result["notes"] == ["harmless", "[REDACTED]"]
+    assert "sentinel-key-body" not in str(result)
+
+  def test_only_the_private_key_block_is_cut_from_the_string(self):
+    """The surrounding prompt is what the log exists to show."""
+    plugin = DebugLoggingPlugin()
+
+    result = plugin._safe_serialize(
+        f"here is my key {_SENTINEL_PRIVATE_KEY} please rotate it"
+    )
+
+    assert result == "here is my key [REDACTED] please rotate it"
+
+  def test_armor_header_variants_are_redacted(self):
+    """The header is matched as a unit, not as loose fragments."""
+    plugin = DebugLoggingPlugin()
+
+    result = plugin._safe_serialize({
+        "pgp": (
+            "-----BEGIN PGP PRIVATE KEY BLOCK-----\nsentinel-key-body\n"
+            "-----END PGP PRIVATE KEY BLOCK-----"
+        ),
+        "rsa": (
+            "-----BEGIN RSA PRIVATE KEY-----\nsentinel-key-body\n"
+            "-----END RSA PRIVATE KEY-----"
+        ),
+        "unterminated": "-----BEGIN PRIVATE KEY-----\nsentinel-key-body\n",
+    })
+
+    assert set(result.values()) == {"[REDACTED]"}
+
+  def test_prose_quoting_armor_fragments_is_kept(self):
+    """Two fragments in any order are not a key block."""
+    plugin = DebugLoggingPlugin()
+    prose = "notes about a PRIVATE KEY----- and -----BEGIN elsewhere"
+
+    assert plugin._safe_serialize(prose) == prose
+
+  def test_none_and_scalars_pass_through_unchanged(self):
+    """Redaction runs over whatever the callbacks hand it."""
+    plugin = DebugLoggingPlugin()
+
+    assert plugin._safe_serialize(None) is None
+    assert plugin._safe_serialize("plain") == "plain"
+    assert plugin._safe_serialize(7) == 7
+
+  def test_a_secret_nested_in_a_list_is_redacted(self):
+    """A callback payload is commonly a list of dicts."""
+    plugin = DebugLoggingPlugin()
+
+    result = plugin._safe_serialize([None, {"token": _SENTINEL_ACCESS_TOKEN}])
+
+    assert result == [None, {"token": "[REDACTED]"}]
+
+  def test_the_walk_depth_bound_truncates_instead_of_recursing(self):
+    """A self-referential object would otherwise never terminate."""
+    plugin = DebugLoggingPlugin()
+    deep: Any = {"api_key": _SENTINEL_CLIENT_SECRET}
+    for _ in range(60):
+      deep = {"level": deep}
+
+    result = plugin._safe_serialize(deep)
+
+    assert "<dict ...>" in str(result)
+    assert _SENTINEL_CLIENT_SECRET not in str(result)
 
   def test_non_credential_values_are_not_redacted(self):
     """Redaction must not swallow ordinary debug data."""

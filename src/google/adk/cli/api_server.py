@@ -1390,8 +1390,8 @@ class ApiServer:
         return ListAppsResponse(apps=[AppInfo(**app) for app in apps_info])
       return self.agent_loader.list_agents()
 
-    @experimental
     @app.get("/apps/{app_name}/app-info", response_model_exclude_none=True)
+    @experimental
     async def get_adk_app_info(app_name: str) -> AppInfo:
       """Returns the detailed info for a given ADK app."""
       if app_name.startswith("__") and not self._allow_special_agents:
@@ -1450,13 +1450,13 @@ class ApiServer:
           if not session.id.startswith(EVAL_SESSION_ID_PREFIX)
       ]
 
-    @deprecated(
-        "Please use create_session instead. This will be removed in future"
-        " releases."
-    )
     @app.post(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}",
         response_model_exclude_none=True,
+    )
+    @deprecated(
+        "Please use create_session instead. This will be removed in future"
+        " releases."
     )
     async def create_session_with_id(
         app_name: str,

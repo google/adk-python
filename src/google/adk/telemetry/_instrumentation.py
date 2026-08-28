@@ -25,9 +25,11 @@ from typing import TYPE_CHECKING
 
 from opentelemetry import trace
 import opentelemetry.context as context_api
+from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
 from typing_extensions import assert_never
 
 from . import _adk_attributes
+from . import _hallucination
 from . import _metrics
 from . import _token_usage
 from . import tracing
@@ -159,15 +161,30 @@ class _SkillTelemetryCommon:
   which is what turns it into attributes on the skill related spans.
 
   Attributes:
-    skill_name: The name of the skill, stored in case the skill is not loaded
-      properly.
+    skill_name: The name of the skill as the model wrote it, confirmed only once
+      :func:`confirm_skill` has a loaded skill to back it. See
+      :mod:`._hallucination`.
     skill: The loaded skill, or None if the load did not produce one (unknown
       skill name, registry failure). Nothing is recorded in that case; the
       failure itself is already reported as the span's ``error.type``.
   """
 
-  skill_name: str | None = None
-  skill: Skill | None = None
+  skill_name: _hallucination.MaybeHallucinated[str]
+  skill: Skill | None = dataclasses.field(default=None, init=False)
+
+  def confirm_skill(self, skill: Skill) -> None:
+    """Records the skill the name resolved to.
+
+    Loading the skill is what proves the name real, so the two are set together
+    rather than left for a caller to keep in step.
+
+    Args:
+      skill: The skill that ``skill_name`` named.
+    """
+    self.skill = skill
+    self.skill_name = _hallucination.ConfirmedNotHallucinated(
+        self.skill_name.maybe_hallucinated_value
+    )
 
 
 @dataclasses.dataclass
@@ -192,13 +209,46 @@ class SkillResourceLoadTelemetry(_SkillTelemetryCommon):
   See :class:`_SkillTelemetryCommon`, for more information.
 
   Attributes:
-    resource_path: Path of resource being loaded from skill.
+    resource_path: Path of resource being loaded from skill, confirmed only once
+      :func:`confirm_resource_path` reports the resource was found.
   """
 
-  resource_path: str | None = None
+  resource_path: _hallucination.MaybeHallucinated[str]
+
+  def confirm_resource_path(self) -> None:
+    """Marks the path as one the skill turned out to hold a resource at."""
+    self.resource_path = _hallucination.ConfirmedNotHallucinated(
+        self.resource_path.maybe_hallucinated_value
+    )
 
 
-SkillTelemetry = SkillLoadTelemetry | SkillResourceLoadTelemetry
+@dataclasses.dataclass
+class SkillScriptExecutionTelemetry(_SkillTelemetryCommon):
+  """Skill telemetry extension for skill script execution.
+
+  See :class:`_SkillTelemetryCommon`, for more information.
+
+  Attributes:
+    script_exit_code: The exit code of the skill script.
+    script_path: The path of the skill script, confirmed only once
+      :func:`confirm_script_path` reports the script was found.
+  """
+
+  script_path: _hallucination.MaybeHallucinated[str]
+  script_exit_code: int | None = dataclasses.field(default=None, init=False)
+
+  def confirm_script_path(self) -> None:
+    """Marks the path as one the skill turned out to hold a script at."""
+    self.script_path = _hallucination.ConfirmedNotHallucinated(
+        self.script_path.maybe_hallucinated_value
+    )
+
+
+SkillTelemetry = (
+    SkillLoadTelemetry
+    | SkillResourceLoadTelemetry
+    | SkillScriptExecutionTelemetry
+)
 
 
 @dataclasses.dataclass
@@ -380,7 +430,9 @@ def _active_tool_execution_tel_ctx() -> TelemetryContext | None:
 
 def track_skill_load(skill_name: str) -> SkillLoadTelemetry:
   """Creates a SkillLoadTelemetry for the given skill name, and attaches it to the enclosing tool execution span."""
-  skill_telemetry = SkillLoadTelemetry(skill_name=skill_name)
+  skill_telemetry = SkillLoadTelemetry(
+      skill_name=_hallucination.MaybeHallucinated(skill_name)
+  )
   attach_skill_telemetry(skill_telemetry)
   return skill_telemetry
 
@@ -390,7 +442,20 @@ def track_skill_resource_load(
 ) -> SkillResourceLoadTelemetry:
   """Creates a SkillResourceLoadTelemetry for the given skill name and resource path, and attaches it to the enclosing tool execution span."""
   skill_telemetry = SkillResourceLoadTelemetry(
-      skill_name=skill_name, resource_path=resource_path
+      skill_name=_hallucination.MaybeHallucinated(skill_name),
+      resource_path=_hallucination.MaybeHallucinated(resource_path),
+  )
+  attach_skill_telemetry(skill_telemetry)
+  return skill_telemetry
+
+
+def track_skill_script_execution(
+    skill_name: str, script_path: str
+) -> SkillScriptExecutionTelemetry:
+  """Creates a SkillScriptExecutionTelemetry for the given skill name and script path, and attaches it to the enclosing tool execution span."""
+  skill_telemetry = SkillScriptExecutionTelemetry(
+      skill_name=_hallucination.MaybeHallucinated(skill_name),
+      script_path=_hallucination.MaybeHallucinated(script_path),
   )
   attach_skill_telemetry(skill_telemetry)
   return skill_telemetry
@@ -635,6 +700,22 @@ def _dispatch_skill_telemetry(
       _trace_skill_load(span, skill_telemetry)
     case SkillResourceLoadTelemetry():
       _trace_skill_resource_load(span, skill_telemetry)
+    case SkillScriptExecutionTelemetry():
+      _trace_skill_script_execution(span, skill_telemetry)
+      if invocation_context.agent is None:
+        return
+      try:
+        _metrics.record_skill_script_execution(
+            invocation_context.agent.name,
+            skill_telemetry.skill_name,
+            skill_telemetry.script_path,
+            skill_telemetry.script_exit_code,
+        )
+      except Exception:  # pylint: disable=broad-exception-caught
+        logger.exception(
+            "Failed to record skill script execution metrics for agent %s",
+            invocation_context.agent.name,
+        )
     case _:
       assert_never(skill_telemetry)
 
@@ -645,10 +726,9 @@ def _trace_skill_load(
 ) -> None:
   """Stamps the skill load attributes onto the ``execute_tool`` span."""
   attributes: dict[str, AttributeValue] = {}
-
-  if (skill_name := skill_telemetry.skill_name) is not None:
-    attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_NAME] = skill_name
-
+  attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_NAME] = (
+      skill_telemetry.skill_name.maybe_hallucinated_value
+  )
   skill = skill_telemetry.skill
 
   if skill is not None:
@@ -673,18 +753,48 @@ def _trace_skill_resource_load(
 ) -> None:
   """Stamps the skill resource loading information in the ``execute_tool load_skill_resource`` span."""
   attributes: dict[str, AttributeValue] = {}
-
-  if (skill_name := skill_telemetry.skill_name) is not None:
-    attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_NAME] = skill_name
-
+  attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_NAME] = (
+      skill_telemetry.skill_name.maybe_hallucinated_value
+  )
   if (skill := skill_telemetry.skill) is not None and (
       uri := skill._uri
   ) is not None:
     attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_SOURCE_URI] = uri
 
-  if (resource_path := skill_telemetry.resource_path) is not None:
-    attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_RESOURCE_PATH] = (
-        resource_path
+  attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_RESOURCE_PATH] = (
+      skill_telemetry.resource_path.maybe_hallucinated_value
+  )
+
+  span.set_attributes(attributes)
+
+
+def _trace_skill_script_execution(
+    span: trace.Span,
+    skill_telemetry: SkillScriptExecutionTelemetry,
+) -> None:
+  """Stamps the skill script execution information in the ``execute_tool run_skill_script`` span."""
+  attributes: dict[str, AttributeValue] = {}
+  attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_NAME] = (
+      skill_telemetry.skill_name.maybe_hallucinated_value
+  )
+  attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_SCRIPT_PATH] = (
+      skill_telemetry.script_path.maybe_hallucinated_value
+  )
+
+  if (script_exit_code := skill_telemetry.script_exit_code) is not None:
+    attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_SCRIPT_EXIT_CODE] = (
+        script_exit_code
     )
+
+    if script_exit_code != 0:
+      span.set_status(
+          trace.Status(trace.StatusCode.ERROR, "SKILL_SCRIPT_EXECUTION_ERROR")
+      )
+      span.set_attribute(ERROR_TYPE, "SKILL_SCRIPT_EXECUTION_ERROR")
+
+  if (skill := skill_telemetry.skill) is not None and (
+      uri := skill._uri
+  ) is not None:
+    attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_SOURCE_URI] = uri
 
   span.set_attributes(attributes)

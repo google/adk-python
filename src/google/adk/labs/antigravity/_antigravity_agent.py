@@ -122,9 +122,9 @@ class _ActiveConversation:
   tool_results: ToolResultBuffer | None
 
   async def __aenter__(self) -> _ActiveConversation:
-    # The SDK ``Agent`` is already entered by ``_enter_sdk_agent``; this exists
-    # only so callers can use ``async with``, which reports the true unwinding
-    # exception to ``__aexit__`` rather than ``sys.exc_info()``.
+    # The Antigravity SDK ``Agent`` is already entered by ``_enter_sdk_agent``;
+    # this exists only so callers can use ``async with``, which reports the true
+    # unwinding exception to ``__aexit__`` rather than ``sys.exc_info()``.
     return self
 
   async def __aexit__(
@@ -273,20 +273,20 @@ class AntigravityAgent(BaseAgent):
   @property
   def _tool_result_capture_cls(self) -> type[ToolResultBuffer]:
     # A seam so another Antigravity SDK copy can supply its own capture: a hook
-    # is classified by `isinstance` against the hook classes of the SDK it came
-    # from, so the caller cannot use `ToolResultCapture` directly -- it is bound
-    # to this copy's `PostToolCallHook`. Typed as the non-hook base
+    # is classified by `isinstance` against the hook classes of the Antigravity
+    # SDK it came from, so the caller cannot use `ToolResultCapture` directly --
+    # it is bound to this copy's `PostToolCallHook`. Typed as the non-hook base
     # `ToolResultBuffer`, not this subclass, so an override can subclass that
     # base plus its own hook rather than dragging this copy's hook base in.
     return ToolResultCapture
 
   @property
   def _tool_error_capture_cls(self) -> type[ToolErrorCapture]:
-    # The same seam, overridden for the same reason: each SDK copy binds its own
-    # `OnToolErrorHook`. Separate from the success capture because both hook
-    # interfaces name their entry point `run`. No buffer-only base to widen to
-    # here -- this holds a buffer rather than being one -- so the type stays the
-    # concrete class.
+    # The same seam, overridden for the same reason: each Antigravity SDK copy
+    # binds its own `OnToolErrorHook`. Separate from the success capture because
+    # both hook interfaces name their entry point `run`. No buffer-only base to
+    # widen to here -- this holds a buffer rather than being one -- so the type
+    # stays the concrete class.
     return ToolErrorCapture
 
   def _build_sdk_config(

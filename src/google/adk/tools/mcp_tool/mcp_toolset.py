@@ -36,7 +36,6 @@ from mcp import SamplingCapability
 from mcp import StdioServerParameters
 from mcp.client.session import ElicitationFnT
 from mcp.client.session import SamplingFnT
-from mcp.shared.session import ProgressFnT
 from mcp.types import ListResourcesResult
 from mcp.types import ListToolsResult
 from mcp.types import Tool as McpBaseTool
@@ -64,6 +63,7 @@ from .mcp_session_manager import StreamableHTTPConnectionParams
 from .mcp_tool import _RESERVED_TOOL_NAMES
 from .mcp_tool import MCPTool
 from .mcp_tool import ProgressCallbackFactory
+from .mcp_tool import ProgressFnT
 
 logger = logging.getLogger("google_adk." + __name__)
 

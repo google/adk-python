@@ -23,6 +23,7 @@ from enum import Enum
 import logging
 import os
 from pathlib import Path
+import re
 from typing import Any
 from typing import TYPE_CHECKING
 
@@ -99,6 +100,49 @@ _SENSITIVE_KEYS = frozenset({
     "x_goog_signature",
 })
 
+# Substrings that name a secret wherever they sit in a key. Matched as
+# substrings, not whole keys, so that the spellings the exact set above cannot
+# enumerate are covered too: `openai_api_key`, `secret_key`,
+# `service_account_credentials`.
+_SENSITIVE_SUBSTRINGS = (
+    "api_key",
+    "credentials",
+    "passwd",
+    "password",
+    "private_key",
+    "secret",
+)
+
+# A key ending in one of these names a secret: `bearer_token`,
+# `session_token`. Matched as a suffix rather than as a substring so that the
+# usage counters, `prompt_token_count` and its siblings, keep their values.
+_SENSITIVE_SUFFIXES = ("_token",)
+
+# Session state keys are namespaced by scope. The scope says nothing about
+# whether the value is a secret, so it is stripped before matching, otherwise
+# `api_key` is redacted while `user:api_key` is written out.
+_STATE_PREFIXES = (State.APP_PREFIX, State.USER_PREFIX)
+
+# Splits a camel-cased key so that `apiKey` and `XApiKey` normalize to the
+# same `api_key` that `api-key` and `api_key` do.
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
+# A credential pasted into session state or a tool argument arrives as one
+# long string, and a service account file keeps its private key inside that
+# string, so no key name identifies it. Only an armored private key block is
+# looked for. It is unambiguous, where a general secret scan would be both slow
+# and prone to blanking ordinary text. The armor header is matched as a unit so
+# that prose quoting one of its fragments is left alone, and only the block
+# itself is replaced, so the rest of the string stays readable. A block whose
+# footer never arrives is redacted to the end of the string rather than left in
+# place.
+_PRIVATE_KEY_BLOCK = re.compile(
+    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----"
+    r".*?"
+    r"(-----END [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----|\Z)",
+    re.DOTALL,
+)
+
 # The debug file is written with the process umask otherwise, which commonly
 # leaves it world-readable.
 _OUTPUT_FILE_MODE = 0o600
@@ -112,14 +156,30 @@ def _is_sensitive_key(key: Any) -> bool:
   """Whether a mapping key names a credential-bearing value."""
   if not isinstance(key, str):
     return False
-  # `str.__str__` drops a subclass override of `lower`; hyphens are folded so
-  # that header spellings such as `X-Api-Key` match, as the analytics plugin
-  # does.
-  normalized = str.__str__(key).lower().replace("-", "_")
-  # ADK stores exchanged auth credentials under a `temp:`-prefixed state key.
-  return normalized in _SENSITIVE_KEYS or normalized.startswith(
-      State.TEMP_PREFIX
+  # `str.__str__` drops a subclass override of `lower`; hyphens and case
+  # boundaries are folded so that `X-Api-Key` and `apiKey` match the same way
+  # `api_key` does.
+  normalized = (
+      _CAMEL_BOUNDARY.sub("_", str.__str__(key)).lower().replace("-", "_")
   )
+  # ADK stores exchanged auth credentials under a `temp:`-prefixed state key.
+  if normalized.startswith(State.TEMP_PREFIX):
+    return True
+  for prefix in _STATE_PREFIXES:
+    if normalized.startswith(prefix):
+      normalized = normalized[len(prefix) :]
+      break
+  if normalized in _SENSITIVE_KEYS or normalized.endswith(_SENSITIVE_SUFFIXES):
+    return True
+  return any(marker in normalized for marker in _SENSITIVE_SUBSTRINGS)
+
+
+def _redact_private_keys(value: str) -> str:
+  """Blanks any armored private key block, leaving the rest of the string."""
+  # `str.__str__` drops a subclass override of `__contains__`, which `in`
+  # would otherwise dispatch to, the same way `_is_sensitive_key` drops one
+  # of `lower`.
+  return _PRIVATE_KEY_BLOCK.sub(_REDACTED, str.__str__(value))
 
 
 def _model_items(model: BaseModel) -> list[tuple[str, Any]]:
@@ -190,9 +250,11 @@ class DebugLoggingPlugin(BasePlugin):
   owner and is not safe to hand around.
 
   Redaction covers credential models wherever they appear, mapping keys that
-  name a secret, and every `temp:`-prefixed state key. That last rule blanks
-  all temporary state, not only credentials, so an intermediate value passed
-  between agents under a `temp:` key reads as `[REDACTED]` here.
+  name a secret with the `app:` or `user:` state scope stripped first, an
+  armored private key block found inside any string, and every
+  `temp:`-prefixed state key. That last rule blanks all temporary state, not
+  only credentials, so an intermediate value passed between agents under a
+  `temp:` key reads as `[REDACTED]` here.
 
   Example:
       >>> debug_plugin = DebugLoggingPlugin(output_path="/tmp/adk_debug.yaml")
@@ -292,7 +354,9 @@ class DebugLoggingPlugin(BasePlugin):
     A credential model is replaced with a redaction marker wherever it sits:
     at the top level, or nested inside a dict, list, tuple or another model,
     under any key name. Mapping keys that name a secret are redacted too, for
-    credentials that arrive already dumped to a plain dict.
+    credentials that arrive already dumped to a plain dict. An armored private
+    key block, which no key name identifies, is cut out of whatever string it
+    sits in.
     """
     if obj is None:
       return None
@@ -308,7 +372,9 @@ class DebugLoggingPlugin(BasePlugin):
       # below unchanged, and then reaches `yaml.dump` as a Python object,
       # which writes a `!!python/object` tag that `yaml.safe_load` refuses.
       return self._safe_serialize(obj.value, child_depth)
-    if isinstance(obj, (str, int, float, bool)):
+    if isinstance(obj, str):
+      return _redact_private_keys(obj)
+    if isinstance(obj, (int, float, bool)):
       return obj
     if isinstance(obj, (date, time)):
       return obj.isoformat()

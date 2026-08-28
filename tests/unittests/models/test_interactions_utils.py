@@ -1094,11 +1094,56 @@ class TestConvertInteractionOutputToParts:
     assert result.code_execution_result.output == 'Error: division by zero'
     assert result.code_execution_result.outcome == types.Outcome.OUTCOME_FAILED
 
-  def test_thought_output_returns_empty(self):
-    """Test that thought output returns empty list (not exposed as Part)."""
-    output = ThoughtStep(type='thought', signature='thinking...')
+  def test_thought_output_without_signature_returns_empty(self):
+    """A thought step with no signature contributes no parts."""
+    output = ThoughtStep(type='thought')
     result = interactions_utils._convert_interaction_step_to_parts(output)
     assert result == []
+
+  def test_thought_output_with_signature_becomes_thought_part(self):
+    """A thought step's signature is decoded onto a thought part."""
+    output = ThoughtStep(
+        type='thought',
+        signature=base64.b64encode(b'sig-bytes').decode('utf-8'),
+    )
+
+    result = interactions_utils._convert_interaction_step_to_parts(output)
+
+    assert len(result) == 1
+    assert result[0].thought is True
+    assert result[0].thought_signature == b'sig-bytes'
+
+  def test_thought_output_signature_survives_the_round_trip_back(self):
+    """The signature part re-encodes as a thought step carrying the signature.
+
+    Gemini 3 only accepts the follow-up request if the signature comes back
+    verbatim, so the part has to convert back to a step that still has one.
+    """
+    signature = base64.b64encode(b'sig-bytes').decode('utf-8')
+    output = ThoughtStep(type='thought', signature=signature)
+
+    part = interactions_utils._convert_interaction_step_to_parts(output)[0]
+
+    assert interactions_utils._convert_part_to_interaction_content(part) == {
+        'type': 'thought',
+        'signature': signature,
+    }
+
+  def test_thought_output_summary_is_not_carried_onto_the_part(self):
+    """The signature part stays text-free.
+
+    A part that also carries text converts back to a text step, which has no
+    signature field, so the signature would be dropped on the next request.
+    """
+    output = ThoughtStep(
+        type='thought',
+        signature=base64.b64encode(b'sig-bytes').decode('utf-8'),
+        summary=[TextContent(type='text', text='Let me think...')],
+    )
+
+    result = interactions_utils._convert_interaction_step_to_parts(output)
+
+    assert result[0].text is None
 
   def test_no_type_attribute(self):
     """Test handling output without type attribute."""
@@ -1422,6 +1467,93 @@ class TestGetLatestUserContents:
     assert result[0].parts[0].text == 'Great'
     assert result[1].parts[0].text == 'Tell me more'
 
+  def test_signature_from_preceding_model_turn_is_carried_over(self):
+    """A tool call's thought signature leads the returned contents.
+
+    The signature sits on the model turn that requested the tool call, one
+    step outside the trailing user window, but Gemini 3 rejects the request
+    that carries the tool result unless the signature comes back with it.
+    """
+    contents = [
+        types.Content(role='user', parts=[types.Part(text='Weather?')]),
+        types.Content(
+            role='model',
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(name='get_weather'),
+                    thought_signature=b'sig-bytes',
+                )
+            ],
+        ),
+        types.Content(
+            role='user',
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        name='get_weather', response={'temp': 20}
+                    )
+                )
+            ],
+        ),
+    ]
+
+    result = interactions_utils._get_latest_user_contents(contents)
+
+    assert len(result) == 2
+    assert result[0].role == 'model'
+    assert result[0].parts[0].thought_signature == b'sig-bytes'
+    assert result[1].role == 'user'
+
+  def test_signature_free_parts_of_that_turn_are_left_behind(self):
+    """Only the signature-bearing parts of the model turn come across.
+
+    The rest of that turn is already server-side under
+    previous_interaction_id, so re-sending it would duplicate it.
+    """
+    contents = [
+        types.Content(
+            role='model',
+            parts=[
+                types.Part(text='Let me check the forecast.'),
+                types.Part(thought=True, thought_signature=b'sig-bytes'),
+            ],
+        ),
+        types.Content(role='user', parts=[types.Part(text='Thanks')]),
+    ]
+
+    result = interactions_utils._get_latest_user_contents(contents)
+
+    assert len(result[0].parts) == 1
+    assert result[0].parts[0].thought_signature == b'sig-bytes'
+
+  def test_signature_carried_across_several_trailing_user_messages(self):
+    """The signature part stays ahead of every message in the user window."""
+    contents = [
+        types.Content(
+            role='model',
+            parts=[types.Part(thought=True, thought_signature=b'sig-bytes')],
+        ),
+        types.Content(role='user', parts=[types.Part(text='First')]),
+        types.Content(role='user', parts=[types.Part(text='Second')]),
+    ]
+
+    result = interactions_utils._get_latest_user_contents(contents)
+
+    assert [content.role for content in result] == ['model', 'user', 'user']
+    assert result[0].parts[0].thought_signature == b'sig-bytes'
+
+  def test_partless_preceding_model_turn_is_skipped(self):
+    """A model turn with no parts contributes nothing and does not raise."""
+    contents = [
+        types.Content(role='model'),
+        types.Content(role='user', parts=[types.Part(text='Hello')]),
+    ]
+
+    result = interactions_utils._get_latest_user_contents(contents)
+
+    assert len(result) == 1
+    assert result[0].parts[0].text == 'Hello'
+
 
 class TestConvertInteractionEventToLlmResponse:
   """Tests for convert_interaction_event_to_llm_response."""
@@ -1513,6 +1645,79 @@ class TestConvertInteractionEventToLlmResponse:
     )
     assert result is None
     assert state.parts[-1].thought_signature == b'sig-bytes'
+
+  def test_thought_signature_delta_alone_becomes_its_own_part(self):
+    """A signature with no preceding thought summary still reaches the stream.
+
+    The model routinely emits a signature without a summary, and dropping it
+    would make the next request fail.
+    """
+    state = interactions_utils._StreamState()
+
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={
+                'type': 'thought_signature',
+                'signature': base64.b64encode(b'lone-sig').decode('utf-8'),
+            },
+        ),
+        state,
+        interaction_id='int_ts',
+    )
+
+    assert result is None
+    assert len(state.parts) == 1
+    assert state.parts[0].thought is True
+    assert state.parts[0].thought_signature == b'lone-sig'
+
+  def test_thought_signature_delta_does_not_attach_to_a_text_part(self):
+    """A signature never lands on a text part, which cannot carry one."""
+    state = interactions_utils._StreamState()
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'text', 'text': 'The weather is sunny.'},
+        ),
+        state,
+        interaction_id='int_ts',
+    )
+
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={
+                'type': 'thought_signature',
+                'signature': base64.b64encode(b'sig-bytes').decode('utf-8'),
+            },
+        ),
+        state,
+        interaction_id='int_ts',
+    )
+
+    assert state.parts[0].text == 'The weather is sunny.'
+    assert state.parts[0].thought_signature is None
+    assert state.parts[1].thought_signature == b'sig-bytes'
+
+  def test_thought_signature_delta_without_signature_adds_no_part(self):
+    """An empty signature delta leaves the stream state untouched."""
+    state = interactions_utils._StreamState()
+
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'thought_signature', 'signature': ''},
+        ),
+        state,
+        interaction_id='int_ts',
+    )
+
+    assert result is None
+    assert state.parts == []
 
   def test_audio_delta_with_data(self):
     """audio delta becomes an inline_data part via the shared media handler."""

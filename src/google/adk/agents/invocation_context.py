@@ -32,6 +32,7 @@ from ..auth.auth_credential import AuthCredential
 from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..events._branch_path import _BranchPath
 from ..events.event import Event
+from ..live._audio_cache_manager import RealtimeCacheEntry as RealtimeCacheEntry
 from ..live.live_request_queue import LiveRequestQueue
 from ..memory.base_memory_service import BaseMemoryService
 from ..plugins.plugin_manager import PluginManager
@@ -51,25 +52,6 @@ _EventQueueItem = tuple[object, asyncio.Event | None]
 
 class LlmCallsLimitExceededError(Exception):
   """Error thrown when the number of LLM calls exceed the limit."""
-
-
-class RealtimeCacheEntry(BaseModel):
-  """Store audio data chunks for caching before flushing."""
-
-  model_config = ConfigDict(
-      arbitrary_types_allowed=True,
-      extra="forbid",
-  )
-  """The pydantic model config."""
-
-  role: str
-  """The role that created this audio data, typically "user" or "model"."""
-
-  data: types.Blob
-  """The audio data chunk."""
-
-  timestamp: float
-  """Timestamp when the audio chunk was received."""
 
 
 class _InvocationCostManager(BaseModel):

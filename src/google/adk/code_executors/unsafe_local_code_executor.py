@@ -196,4 +196,5 @@ class UnsafeLocalCodeExecutor(BaseCodeExecutor):
         stdout=output,
         stderr=error,
         output_files=[],
+        exit_code=process.returncode,
     )

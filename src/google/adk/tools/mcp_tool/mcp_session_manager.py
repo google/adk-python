@@ -487,6 +487,13 @@ def retry_on_errors(func):
   return wrapper
 
 
+def _is_google_api_host(host: str | None) -> bool:
+  """Returns whether host is a Google API endpoint."""
+  if not host:
+    return False
+  return host == 'googleapis.com' or host.endswith('.googleapis.com')
+
+
 class _RefreshableAsyncCredentials(AsyncCredentials):
   """Adapter to refresh sync credentials asynchronously."""
 
@@ -499,6 +506,7 @@ class _RefreshableAsyncCredentials(AsyncCredentials):
     self._creds = creds
     self._target_host = target_host
     self._lock = asyncio.Lock()
+    self._warned_non_google_host = False
 
   async def before_request(
       self,
@@ -507,13 +515,26 @@ class _RefreshableAsyncCredentials(AsyncCredentials):
       url: str,
       headers: dict[str, str],
   ) -> None:
-    if self._target_host:
-      parsed_url = urllib.parse.urlparse(url)
-      if parsed_url.netloc != self._target_host:
-        logger.debug(
-            'Skipping token injection for redirect to %s', parsed_url.netloc
+    parsed_url = urllib.parse.urlparse(url)
+    if self._target_host and parsed_url.netloc != self._target_host:
+      logger.debug(
+          'Skipping token injection for redirect to %s', parsed_url.netloc
+      )
+      return
+
+    # Application Default Credentials are issued to the caller by Google, so
+    # the bearer token only goes to Google API hosts. Other MCP servers are
+    # still reached over the mTLS channel, just without the token.
+    if not _is_google_api_host(parsed_url.hostname):
+      if not self._warned_non_google_host:
+        self._warned_non_google_host = True
+        logger.warning(
+            'Not attaching Application Default Credentials to non-Google host'
+            ' %s. Configure explicit authentication for this MCP server if it'
+            ' requires credentials.',
+            parsed_url.hostname,
         )
-        return
+      return
 
     if any(k.lower() == 'authorization' for k in headers):
       logger.debug('Authorization header already present, not overwriting')

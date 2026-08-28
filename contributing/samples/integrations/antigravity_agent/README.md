@@ -13,7 +13,7 @@ are streamed back as standard ADK events recorded in the session.
 This sample uses `AntigravityAgent` as a **standalone ADK root agent**. It may
 also have ADK `sub_agents` of its own, and may itself be nested under an ADK
 parent if it sets `mode='single_turn'`. See the
-[package README](../../../../src/google/adk/labs/antigravity/README.md)
+[AntigravityAgent guide](../../../../docs/guides/labs/antigravity/index.md)
 for the full setup, limitations, and API details.
 
 ## Prerequisites

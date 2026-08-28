@@ -190,7 +190,7 @@ def _builtin_tool_step(status, *, content='', error=''):
 
 
 def _client_tool_active_step():
-  """The ACTIVE step the SDK fabricates when the harness asks us to run a tool."""
+  """The ACTIVE step fabricated when the harness asks us to run a tool."""
   # The only step that ever carries a client tool's call, so the only chance to
   # emit the function call.
   return sdk_types.Step(
@@ -232,9 +232,9 @@ def _tool_result(call_id, *, value=None, error=None, name='naming_reviewer'):
 
 
 class _ToolFailure(RuntimeError):
-  """Stands in for the SDK's ``ToolExecutionError``.
+  """Stands in for the Antigravity SDK's ``ToolExecutionError``.
 
-  Structural rather than the SDK class: the capture reads a ``ToolError``
+  Structural rather than the real class: the capture reads a ``ToolError``
   protocol, and the open-source ``google-antigravity`` does not export that
   class yet. `test_tool_result_capture` pins the real one where it exists.
   """
@@ -369,7 +369,8 @@ def test_a_failed_client_tool_reports_the_error_the_error_hook_captured():
 def test_a_built_in_is_answered_from_its_step_and_its_hook_copy_is_inert():
   """The hook fires for built-ins too, under an id this side never sees.
 
-  The SDK gives a built-in's `ToolCall.id` the step id, while the hook is
+  The Antigravity SDK gives a built-in's `ToolCall.id` the step id, while the
+  hook is
   handed the model's own call id (`ResolveStepCallID`). The copy is therefore
   neither drainable nor droppable by id here; the turn's clear collects it.
   """

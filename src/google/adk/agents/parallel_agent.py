@@ -55,9 +55,21 @@ def _create_branch_ctx_for_sub_agent(
   return invocation_context
 
 
-def _has_escalate_action(event: Event) -> bool:
-  """Returns whether the event asks the parent workflow to exit early."""
-  return bool(event.actions.escalate)
+def _asks_this_agent_to_exit(event: Event, sub_agent_names: set[str]) -> bool:
+  """Returns whether the event asks this parallel agent to exit early.
+
+  An escalation ends the workflow that directly encloses the escalating agent,
+  and that workflow re-yields the event while unwinding, so only an escalation
+  authored by a direct sub-agent is addressed to this one.
+
+  Args:
+      event: The event to inspect.
+      sub_agent_names: Names of this agent's direct sub-agents.
+
+  Returns:
+      Whether this parallel agent should stop its remaining branches.
+  """
+  return bool(event.actions.escalate) and event.author in sub_agent_names
 
 
 def _cancel_tasks(tasks: list[asyncio.Task[None]]) -> None:
@@ -69,6 +81,7 @@ def _cancel_tasks(tasks: list[asyncio.Task[None]]) -> None:
 
 async def _merge_agent_run(
     agent_runs: list[AsyncGenerator[Event, None]],
+    sub_agent_names: set[str],
 ) -> AsyncGenerator[Event, None]:
   """Merges agent runs using asyncio.TaskGroup on Python 3.11+."""
   sentinel = _AgentRunComplete()
@@ -122,7 +135,7 @@ async def _merge_agent_run(
             raise payload
         else:
           yield event
-          if _has_escalate_action(event):
+          if _asks_this_agent_to_exit(event, sub_agent_names):
             _cancel_tasks(tasks)
             return
           # Signal to agent that it should generate next event.
@@ -144,6 +157,7 @@ async def _merge_agent_run(
 # TODO - remove once Python <3.11 is no longer supported.
 async def _merge_agent_run_pre_3_11(
     agent_runs: list[AsyncGenerator[Event, None]],
+    sub_agent_names: set[str],
 ) -> AsyncGenerator[Event, None]:
   """Merges agent runs for Python 3.10 without asyncio.TaskGroup.
 
@@ -152,6 +166,7 @@ async def _merge_agent_run_pre_3_11(
 
   Args:
       agent_runs: Async generators that yield events from each agent.
+      sub_agent_names: Names of the parallel agent's direct sub-agents.
 
   Yields:
       Event: The next event from the merged generator.
@@ -199,7 +214,7 @@ async def _merge_agent_run_pre_3_11(
           raise payload
       else:
         yield event
-        if _has_escalate_action(event):
+        if _asks_this_agent_to_exit(event, sub_agent_names):
           _cancel_tasks(tasks)
           return
         # Signal to agent that event has been processed by runner and it can
@@ -222,13 +237,18 @@ async def _merge_agent_run_pre_3_11(
     ' a future version. Workflow cannot yet be used as an LlmAgent sub-agent.'
 )
 class ParallelAgent(BaseAgent):
-  """A shell agent that runs its sub-agents in parallel in an isolated manner.
+  """A shell agent that runs its sub-agents in parallel on separate branches.
 
   This approach is beneficial for scenarios requiring multiple perspectives or
   attempts on a single task, such as:
 
   - Running different algorithms simultaneously.
   - Generating multiple responses for review by a subsequent evaluation agent.
+
+  Only conversation history is isolated between branches: a sub-agent sees the
+  events that led to the fan-out and its own, but not those of a sibling.
+  Session state is shared by every branch, so branches writing the same key
+  leave only the value written last.
 
   .. deprecated::
     ParallelAgent is deprecated in favor of Workflow and will be removed in a
@@ -255,6 +275,7 @@ class ParallelAgent(BaseAgent):
       yield self._create_agent_state_event(ctx)
 
     agent_runs = []
+    sub_agent_names = {sub_agent.name for sub_agent in self.sub_agents}
     # Prepare and collect async generators for each sub-agent.
     for sub_agent in self.sub_agents:
       sub_agent_ctx = _create_branch_ctx_for_sub_agent(self, sub_agent, ctx)
@@ -270,10 +291,10 @@ class ParallelAgent(BaseAgent):
         if sys.version_info >= (3, 11)
         else _merge_agent_run_pre_3_11
     )
-    async with Aclosing(merge_func(agent_runs)) as agen:
+    async with Aclosing(merge_func(agent_runs, sub_agent_names)) as agen:
       async for event in agen:
         yield event
-        if _has_escalate_action(event):
+        if _asks_this_agent_to_exit(event, sub_agent_names):
           escalated = True
         if ctx.should_pause_invocation(event):
           pause_invocation = True

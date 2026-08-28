@@ -149,8 +149,8 @@ def test_a_sub_agent_without_a_description_is_rejected():
 
 
 def test_two_sub_agents_with_the_same_name_are_rejected():
-  # `BaseAgent.validate_sub_agents_unique_names` only warns, and the SDK's
-  # later "Tool 'reviewer' is already registered." names no agent.
+  # `BaseAgent.validate_sub_agents_unique_names` only warns, and the harness's
+  # later "Tool 'reviewer' is already registered." names no ADK agent.
   first = _StubChild(name='reviewer', description='Reviews a diff.')
   second = _StubChild(name='reviewer', description='Reviews a design.')
 
@@ -792,10 +792,11 @@ class _HarnessError(Exception):
 
 @pytest.mark.asyncio
 async def test_normal_completion_inside_an_outer_except_reports_no_error():
-  # A turn that completes normally must close the SDK agent with no exception,
-  # even while an unrelated exception is being handled higher in the same task.
-  # A bare ``finally: __aexit__(*sys.exc_info())`` reported that outer exception
-  # to the SDK; ``async with`` reports the true unwinding instead.
+  # A turn that completes normally must close the Antigravity SDK agent with no
+  # exception, even while an unrelated exception is being handled higher in the
+  # same task. A bare ``finally: __aexit__(*sys.exc_info())`` reported that
+  # outer exception to the Antigravity SDK; ``async with`` reports the true
+  # unwinding instead.
   active_agent = _fake_active_agent(_steps_once, conversation_id=_CID)
   build, _ = _capture_builder(active_agent)
   agent = AntigravityAgent(name='agy', config=_make_config())
@@ -832,7 +833,7 @@ async def test_resume_index_survives_a_harness_error_mid_turn():
 
   assert exc is failure
   assert _deltas(events) == [{_STATE_KEY: _CID}]
-  # The SDK agent is still closed on the error path.
+  # The Antigravity SDK agent is still closed on the error path.
   assert active_agent.__aexit__.await_count == 1
 
 
@@ -1153,7 +1154,7 @@ def _client_tool_done_step() -> sdk_types.Step:
 
 
 class _ToolFailure(RuntimeError):
-  """Stands in for the SDK's ``ToolExecutionError``, which is not exported."""
+  """Stands in for the Antigravity ``ToolExecutionError``, not exported."""
 
   def __init__(self, message: str, tool_name: str, call_id: str | None = None):
     super().__init__(message)
@@ -1235,7 +1236,7 @@ async def test_subclass_overrides_the_tool_result_capture_class():
   configs: list[AgentConfig] = []
 
   class _OtherCapture(_tool_result_capture.ToolResultCapture):
-    """Stands in for a binding against a different copy of the SDK."""
+    """Stands in for a binding against another Antigravity SDK copy."""
 
   class _Swapped(AntigravityAgent):
 
@@ -1384,7 +1385,7 @@ async def test_a_single_turn_agent_answers_its_client_tool_calls_too(
     hook_arrives: Literal['before_done', 'after_stream'],
 ):
   # mode='single_turn' bypasses the session-keyed path: it enters and exits its
-  # own SDK agent, reaching the capture by a different route.
+  # own Antigravity agent, reaching the capture by a different route.
   child = _StubChild(name='reviewer', description='Reviews a diff.')
   agent = AntigravityAgent(
       name='coder',

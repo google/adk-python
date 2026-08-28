@@ -91,12 +91,12 @@
                 ]
               },
               {
-                "name": "execute_tool load_skill",
+                "name": "execute_tool run_skill_script",
                 "attributes": {
                   "gen_ai.operation.name": "execute_tool",
-                  "gen_ai.tool.description": "Loads the SKILL.md instructions for a given skill.",
-                  "gen_ai.tool.name": "load_skill",
-                  "gen_ai.tool.type": "LoadSkillTool",
+                  "gen_ai.tool.description": "Executes a script from a skill's scripts/ directory.",
+                  "gen_ai.tool.name": "run_skill_script",
+                  "gen_ai.tool.type": "RunSkillScriptTool",
                   "gen_ai.agent.name": "some_root_agent",
                   "gcp.vertex.agent.llm_request": "{}",
                   "gcp.vertex.agent.llm_response": "{}",
@@ -105,9 +105,9 @@
                   "gcp.vertex.agent.event_id": "PRESENT",
                   "gcp.vertex.agent.tool_response": "{}",
                   "adk.experimental.skill.name": "registry-skill",
-                  "adk.experimental.skill.description": "A sample skill.",
-                  "adk.experimental.skill.source.uri": "https://fake-registry.com/skill/registry-skill",
-                  "adk.experimental.skill.additional_tools": []
+                  "adk.experimental.skill.script.path": "scripts/ec_0.py",
+                  "adk.experimental.skill.script.exit_code": 0,
+                  "adk.experimental.skill.source.uri": "https://fake-registry.com/skill/registry-skill"
                 },
                 "status": "UNSET",
                 "children": [],
@@ -207,12 +207,12 @@
                 ]
               },
               {
-                "name": "execute_tool load_skill",
+                "name": "execute_tool run_skill_script",
                 "attributes": {
                   "gen_ai.operation.name": "execute_tool",
-                  "gen_ai.tool.description": "Loads the SKILL.md instructions for a given skill.",
-                  "gen_ai.tool.name": "load_skill",
-                  "gen_ai.tool.type": "LoadSkillTool",
+                  "gen_ai.tool.description": "Executes a script from a skill's scripts/ directory.",
+                  "gen_ai.tool.name": "run_skill_script",
+                  "gen_ai.tool.type": "RunSkillScriptTool",
                   "gen_ai.agent.name": "some_root_agent",
                   "gcp.vertex.agent.llm_request": "{}",
                   "gcp.vertex.agent.llm_response": "{}",
@@ -220,12 +220,300 @@
                   "gen_ai.tool.call.id": "PRESENT",
                   "gcp.vertex.agent.event_id": "PRESENT",
                   "gcp.vertex.agent.tool_response": "{}",
+                  "error.type": "SKILL_SCRIPT_EXECUTION_ERROR",
                   "adk.experimental.skill.name": "registry-skill",
-                  "adk.experimental.skill.description": "A sample skill.",
-                  "adk.experimental.skill.source.uri": "https://fake-registry.com/skill/registry-skill",
-                  "adk.experimental.skill.additional_tools": []
+                  "adk.experimental.skill.script.path": "scripts/ec_1.py",
+                  "adk.experimental.skill.script.exit_code": 1,
+                  "adk.experimental.skill.source.uri": "https://fake-registry.com/skill/registry-skill"
+                },
+                "status": "ERROR",
+                "children": [],
+                "logs": []
+              }
+            ],
+            "logs": []
+          },
+          {
+            "name": "call_llm",
+            "attributes": {
+              "gen_ai.system": "gcp.vertex.agent",
+              "gen_ai.request.model": "gemini-2.5-flash",
+              "gcp.vertex.agent.invocation_id": "PRESENT",
+              "gcp.vertex.agent.session_id": "PRESENT",
+              "gcp.vertex.agent.event_id": "PRESENT",
+              "gcp.vertex.agent.llm_request": "{}",
+              "gcp.vertex.agent.llm_response": "{}",
+              "gen_ai.usage.input_tokens": 100,
+              "gen_ai.usage.output_tokens": 25,
+              "gen_ai.usage.cache_read.input_tokens": 40,
+              "gen_ai.usage.reasoning.output_tokens": 5,
+              "gen_ai.response.finish_reasons": [
+                "stop"
+              ]
+            },
+            "status": "UNSET",
+            "children": [
+              {
+                "name": "generate_content gemini-2.5-flash",
+                "attributes": {
+                  "gen_ai.system": "gemini",
+                  "gen_ai.operation.name": "generate_content",
+                  "gen_ai.request.model": "gemini-2.5-flash",
+                  "gen_ai.agent.name": "some_root_agent",
+                  "gen_ai.conversation.id": "PRESENT",
+                  "gcp.vertex.agent.event_id": "PRESENT",
+                  "gcp.vertex.agent.invocation_id": "PRESENT",
+                  "gen_ai.response.finish_reasons": [
+                    "stop"
+                  ],
+                  "gen_ai.usage.input_tokens": 100,
+                  "gen_ai.usage.output_tokens": 25,
+                  "gen_ai.usage.cache_read.input_tokens": 40,
+                  "gen_ai.usage.reasoning.output_tokens": 5
                 },
                 "status": "UNSET",
+                "children": [],
+                "logs": [
+                  {
+                    "event_name": "gen_ai.system.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.user.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.user.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.user.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.user.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.user.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.choice",
+                    "body": {
+                      "content": "<elided>",
+                      "index": 0,
+                      "finish_reason": "STOP"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  }
+                ]
+              },
+              {
+                "name": "execute_tool run_skill_script",
+                "attributes": {
+                  "gen_ai.operation.name": "execute_tool",
+                  "gen_ai.tool.description": "Executes a script from a skill's scripts/ directory.",
+                  "gen_ai.tool.name": "run_skill_script",
+                  "gen_ai.tool.type": "RunSkillScriptTool",
+                  "gen_ai.agent.name": "some_root_agent",
+                  "gcp.vertex.agent.llm_request": "{}",
+                  "gcp.vertex.agent.llm_response": "{}",
+                  "gcp.vertex.agent.tool_call_args": "{}",
+                  "gen_ai.tool.call.id": "PRESENT",
+                  "gcp.vertex.agent.event_id": "PRESENT",
+                  "gcp.vertex.agent.tool_response": "{}",
+                  "error.type": "SKILL_SCRIPT_EXECUTION_ERROR",
+                  "adk.experimental.skill.name": "registry-skill",
+                  "adk.experimental.skill.script.path": "scripts/ec_10.py",
+                  "adk.experimental.skill.script.exit_code": 10,
+                  "adk.experimental.skill.source.uri": "https://fake-registry.com/skill/registry-skill"
+                },
+                "status": "ERROR",
+                "children": [],
+                "logs": []
+              }
+            ],
+            "logs": []
+          },
+          {
+            "name": "call_llm",
+            "attributes": {
+              "gen_ai.system": "gcp.vertex.agent",
+              "gen_ai.request.model": "gemini-2.5-flash",
+              "gcp.vertex.agent.invocation_id": "PRESENT",
+              "gcp.vertex.agent.session_id": "PRESENT",
+              "gcp.vertex.agent.event_id": "PRESENT",
+              "gcp.vertex.agent.llm_request": "{}",
+              "gcp.vertex.agent.llm_response": "{}",
+              "gen_ai.usage.input_tokens": 100,
+              "gen_ai.usage.output_tokens": 25,
+              "gen_ai.usage.cache_read.input_tokens": 40,
+              "gen_ai.usage.reasoning.output_tokens": 5,
+              "gen_ai.response.finish_reasons": [
+                "stop"
+              ]
+            },
+            "status": "UNSET",
+            "children": [
+              {
+                "name": "generate_content gemini-2.5-flash",
+                "attributes": {
+                  "gen_ai.system": "gemini",
+                  "gen_ai.operation.name": "generate_content",
+                  "gen_ai.request.model": "gemini-2.5-flash",
+                  "gen_ai.agent.name": "some_root_agent",
+                  "gen_ai.conversation.id": "PRESENT",
+                  "gcp.vertex.agent.event_id": "PRESENT",
+                  "gcp.vertex.agent.invocation_id": "PRESENT",
+                  "gen_ai.response.finish_reasons": [
+                    "stop"
+                  ],
+                  "gen_ai.usage.input_tokens": 100,
+                  "gen_ai.usage.output_tokens": 25,
+                  "gen_ai.usage.cache_read.input_tokens": 40,
+                  "gen_ai.usage.reasoning.output_tokens": 5
+                },
+                "status": "UNSET",
+                "children": [],
+                "logs": [
+                  {
+                    "event_name": "gen_ai.system.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.user.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.user.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.user.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.user.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.user.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.user.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.user.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.choice",
+                    "body": {
+                      "content": "<elided>",
+                      "index": 0,
+                      "finish_reason": "STOP"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  }
+                ]
+              },
+              {
+                "name": "execute_tool run_skill_script",
+                "attributes": {
+                  "gen_ai.operation.name": "execute_tool",
+                  "gen_ai.tool.description": "Executes a script from a skill's scripts/ directory.",
+                  "gen_ai.tool.name": "run_skill_script",
+                  "gen_ai.tool.type": "RunSkillScriptTool",
+                  "gen_ai.agent.name": "some_root_agent",
+                  "error.type": "SCRIPT_NOT_FOUND",
+                  "gcp.vertex.agent.llm_request": "{}",
+                  "gcp.vertex.agent.llm_response": "{}",
+                  "gcp.vertex.agent.tool_call_args": "{}",
+                  "gen_ai.tool.call.id": "PRESENT",
+                  "gcp.vertex.agent.event_id": "PRESENT",
+                  "gcp.vertex.agent.tool_response": "{}",
+                  "adk.experimental.skill.name": "registry-skill",
+                  "adk.experimental.skill.script.path": "scripts/ec_20.py",
+                  "adk.experimental.skill.source.uri": "https://fake-registry.com/skill/registry-skill"
+                },
+                "status": "ERROR",
                 "children": [],
                 "logs": []
               }
@@ -328,6 +616,42 @@
                     }
                   },
                   {
+                    "event_name": "gen_ai.user.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.user.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.user.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.user.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
                     "event_name": "gen_ai.choice",
                     "body": {
                       "content": "<elided>",
@@ -355,7 +679,7 @@
         "attributes": {
           "gen_ai.agent.name": "some_root_agent"
         },
-        "value": 140
+        "value": 220
       }
     ],
     "adk.experimental.invoke_agent.input_tokens": [
@@ -363,7 +687,7 @@
         "attributes": {
           "gen_ai.agent.name": "some_root_agent"
         },
-        "value": 350
+        "value": 550
       }
     ],
     "adk.experimental.invoke_agent.output_tokens": [
@@ -371,7 +695,7 @@
         "attributes": {
           "gen_ai.agent.name": "some_root_agent"
         },
-        "value": 100
+        "value": 150
       }
     ],
     "adk.experimental.invoke_agent.reasoning.output_tokens": [
@@ -379,7 +703,7 @@
         "attributes": {
           "gen_ai.agent.name": "some_root_agent"
         },
-        "value": 25
+        "value": 35
       }
     ],
     "adk.experimental.invoke_agent.tool.input_tokens": [
@@ -395,7 +719,7 @@
         "attributes": {
           "gen_ai.agent.name": "some_root_agent"
         },
-        "value": 450
+        "value": 700
       }
     ],
     "adk.experimental.invoke_workflow.cache_read.input_tokens": [
@@ -404,7 +728,7 @@
           "adk.experimental.root_agent.name": "some_root_agent",
           "gen_ai.workflow.name": "some_root_agent"
         },
-        "value": 140
+        "value": 220
       }
     ],
     "adk.experimental.invoke_workflow.inference_calls": [
@@ -413,7 +737,7 @@
           "adk.experimental.root_agent.name": "some_root_agent",
           "gen_ai.workflow.name": "some_root_agent"
         },
-        "value": 3
+        "value": 5
       }
     ],
     "adk.experimental.invoke_workflow.input_tokens": [
@@ -422,7 +746,7 @@
           "adk.experimental.root_agent.name": "some_root_agent",
           "gen_ai.workflow.name": "some_root_agent"
         },
-        "value": 350
+        "value": 550
       }
     ],
     "adk.experimental.invoke_workflow.output_tokens": [
@@ -431,7 +755,7 @@
           "adk.experimental.root_agent.name": "some_root_agent",
           "gen_ai.workflow.name": "some_root_agent"
         },
-        "value": 100
+        "value": 150
       }
     ],
     "adk.experimental.invoke_workflow.reasoning.output_tokens": [
@@ -440,7 +764,7 @@
           "adk.experimental.root_agent.name": "some_root_agent",
           "gen_ai.workflow.name": "some_root_agent"
         },
-        "value": 25
+        "value": 35
       }
     ],
     "adk.experimental.invoke_workflow.tool.input_tokens": [
@@ -458,7 +782,7 @@
           "adk.experimental.root_agent.name": "some_root_agent",
           "gen_ai.workflow.name": "some_root_agent"
         },
-        "value": 2
+        "value": 4
       }
     ],
     "adk.experimental.invoke_workflow.total_tokens": [
@@ -467,7 +791,44 @@
           "adk.experimental.root_agent.name": "some_root_agent",
           "gen_ai.workflow.name": "some_root_agent"
         },
-        "value": 450
+        "value": 700
+      }
+    ],
+    "adk.experimental.skill.script.executions": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent",
+          "adk.experimental.skill.name": "registry-skill",
+          "adk.experimental.skill.script.path": "scripts/ec_0.py",
+          "adk.experimental.skill.script.ended_with_error": false
+        },
+        "value": 1
+      },
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent",
+          "adk.experimental.skill.name": "registry-skill",
+          "adk.experimental.skill.script.path": "scripts/ec_1.py",
+          "adk.experimental.skill.script.ended_with_error": true
+        },
+        "value": 1
+      },
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent",
+          "adk.experimental.skill.name": "registry-skill",
+          "adk.experimental.skill.script.path": "scripts/ec_10.py",
+          "adk.experimental.skill.script.ended_with_error": true
+        },
+        "value": 1
+      },
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent",
+          "adk.experimental.skill.name": "registry-skill",
+          "adk.experimental.skill.script.path": "<hallucinated>"
+        },
+        "value": 1
       }
     ],
     "gen_ai.client.operation.duration": [
@@ -492,7 +853,7 @@
           "gen_ai.response.model": "gemini-2.5-flash",
           "gen_ai.token.type": "input"
         },
-        "value": 350
+        "value": 550
       },
       {
         "attributes": {
@@ -503,15 +864,33 @@
           "gen_ai.response.model": "gemini-2.5-flash",
           "gen_ai.token.type": "output"
         },
-        "value": 100
+        "value": 150
       }
     ],
     "gen_ai.execute_tool.duration": [
       {
         "attributes": {
           "gen_ai.agent.name": "some_root_agent",
-          "gen_ai.tool.name": "load_skill",
-          "gen_ai.tool.type": "LoadSkillTool"
+          "gen_ai.tool.name": "run_skill_script",
+          "gen_ai.tool.type": "RunSkillScriptTool",
+          "error.type": "SCRIPT_NOT_FOUND"
+        },
+        "value": "PRESENT"
+      },
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent",
+          "gen_ai.tool.name": "run_skill_script",
+          "gen_ai.tool.type": "RunSkillScriptTool",
+          "error.type": "SKILL_SCRIPT_EXECUTION_ERROR"
+        },
+        "value": "PRESENT"
+      },
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent",
+          "gen_ai.tool.name": "run_skill_script",
+          "gen_ai.tool.type": "RunSkillScriptTool"
         },
         "value": "PRESENT"
       }
@@ -529,7 +908,7 @@
         "attributes": {
           "gen_ai.agent.name": "some_root_agent"
         },
-        "value": 3
+        "value": 5
       }
     ],
     "gen_ai.invoke_agent.tool_calls": [
@@ -537,7 +916,7 @@
         "attributes": {
           "gen_ai.agent.name": "some_root_agent"
         },
-        "value": 2
+        "value": 4
       }
     ],
     "gen_ai.invoke_workflow.duration": [

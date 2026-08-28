@@ -14,6 +14,10 @@
 
 from __future__ import annotations
 
+from typing import Any
+from typing import Callable
+from typing import cast
+
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.tools.spanner import admin_tool
 from typing_extensions import override
@@ -63,7 +67,7 @@ class SpannerAdminToolset(BaseToolset):
     )
 
   def _is_tool_selected(
-      self, tool: BaseTool, readonly_context: ReadonlyContext
+      self, tool: BaseTool, readonly_context: ReadonlyContext | None
   ) -> bool:
     if self.tool_filter is None:
       return True
@@ -87,16 +91,19 @@ class SpannerAdminToolset(BaseToolset):
             credentials_config=self._credentials_config,
             tool_settings=self._tool_settings,
         )
-        for func in [
-            # Admin tools
-            admin_tool.create_database,
-            admin_tool.list_instances,
-            admin_tool.get_instance,
-            admin_tool.list_databases,
-            admin_tool.create_instance,
-            admin_tool.list_instance_configs,
-            admin_tool.get_instance_config,
-        ]
+        for func in cast(
+            list[Callable[..., Any]],
+            [
+                # Admin tools
+                admin_tool.create_database,
+                admin_tool.list_instances,
+                admin_tool.get_instance,
+                admin_tool.list_databases,
+                admin_tool.create_instance,
+                admin_tool.list_instance_configs,
+                admin_tool.get_instance_config,
+            ],
+        )
     ]
 
     return [
@@ -106,5 +113,5 @@ class SpannerAdminToolset(BaseToolset):
     ]
 
   @override
-  async def close(self):
-    pass
+  async def close(self) -> None:
+    return None

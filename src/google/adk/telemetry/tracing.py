@@ -106,10 +106,10 @@ GCP_MCP_SERVER_DESTINATION_ID = "gcp.mcp.server.destination.id"
 
 # Event name for the log record of one HTTP exchange with an MCP server. OTel's
 # MCP conventions define attributes but no event for the transport hop, so this
-# one is ADK's own, and lives in the `adk.experimental.*` namespace of
-# go/orcas-rfc-1014: emitted only under `ADK_EXPERIMENTAL_TELEMETRY`, and free
-# to be renamed or dropped the moment a standard covers it -- either a generic
-# HTTP client response-end event, or body capture in
+# one is ADK's own, and lives in the `adk.experimental.*` namespace: emitted
+# only under `ADK_EXPERIMENTAL_TELEMETRY`, and free to be renamed or dropped
+# the moment a standard covers it -- either a generic HTTP client
+# response-end event, or body capture in
 # `opentelemetry-instrumentation-httpx`. The attributes on it are the
 # semconv-defined ones.
 _ADK_EXPERIMENTAL_MCP_HTTP_RESPONSE_END_EVENT: Final[str] = (

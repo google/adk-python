@@ -562,6 +562,40 @@ async def test_single_turn_propagates_isolation_scope(
 
 
 @pytest.mark.asyncio
+async def test_single_turn_writes_session_bookkeeping_back_to_the_caller(
+    request: pytest.FixtureRequest,
+):
+  """A single-turn node updates the same Session the caller holds.
+
+  A session service records the storage revision it just wrote on the Session
+  object it appended through. If the node runs against a separate object, the
+  caller keeps a stale revision and its next append is rejected as stale.
+  """
+  agent = _make_agent(mode='single_turn')
+  wrapper = build_node(agent)
+
+  async def fake_run_async(invocation_context):
+    invocation_context.session.last_update_time = 1234.5
+    yield Event(
+        invocation_id='inv',
+        author=wrapper.name,
+        content=types.Content(parts=[types.Part(text='ok')]),
+    )
+
+  object.__setattr__(wrapper, 'run_async', fake_run_async)
+
+  ic = await create_parent_invocation_context(
+      request.function.__name__, wrapper
+  )
+  ctx = Context(invocation_context=ic)
+
+  async for _ in wrapper._run_impl(ctx=ctx, node_input='hi'):
+    pass
+
+  assert ic.session.last_update_time == 1234.5
+
+
+@pytest.mark.asyncio
 async def test_task_mode_does_not_set_branch(
     request: pytest.FixtureRequest,
 ):
