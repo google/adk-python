@@ -4841,6 +4841,53 @@ async def test_streaming_tool_call_truncated_by_max_tokens(
 
 
 @pytest.mark.asyncio
+async def test_streaming_tool_call_aborted_mid_stream(
+    mock_completion, lite_llm_instance
+):
+  """Tests that a stream aborting mid-tool-call (no finish_reason at all)
+
+  yields a graceful error LlmResponse instead of raising JSONDecodeError.
+  """
+  stream_chunks = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_789",
+                              function=Function(
+                                  name="test_function",
+                                  arguments='{"test_arg":',
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+  ]
+  mock_completion.return_value = iter(stream_chunks)
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert len(responses) == 1
+  error_response = responses[0]
+  assert error_response.error_code == types.FinishReason.MAX_TOKENS
+  assert error_response.finish_reason == types.FinishReason.MAX_TOKENS
+  assert "truncated" in error_response.error_message
+
+
+@pytest.mark.asyncio
 async def test_streaming_tool_call_complete_with_length_finish_reason(
     mock_completion, lite_llm_instance
 ):
