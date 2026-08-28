@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -779,6 +780,38 @@ class TestValidateAgentImport:
 
     cli_deploy._validate_agent_import(
         str(tmp_path), "root_agent", is_config_agent=False
+    )
+
+  def test_invalidates_import_cache_for_new_agent(
+      self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    """Should discover an agent created after the import cache is primed."""
+    parent_dir = tmp_path / "agents"
+    parent_dir.mkdir()
+
+    # Prime Python's import cache before the agent package exists.
+    monkeypatch.syspath_prepend(str(parent_dir))
+
+    with pytest.raises(ModuleNotFoundError):
+      importlib.import_module("new_agent.agent")
+
+    parent_stat = parent_dir.stat()
+
+    # Create the agent package after the parent directory was already scanned.
+    agent_dir = parent_dir / "new_agent"
+    agent_dir.mkdir()
+    (agent_dir / "__init__.py").touch()
+    (agent_dir / "agent.py").write_text("root_agent = 'my_agent'\n")
+
+    # Keep the directory timestamp unchanged so the cached directory contents
+    # remain stale unless importlib caches are explicitly invalidated.
+    os.utime(
+        parent_dir,
+        ns=(parent_stat.st_atime_ns, parent_stat.st_mtime_ns),
+    )
+
+    cli_deploy._validate_agent_import(
+        str(agent_dir), "root_agent", is_config_agent=False
     )
 
   def test_raises_on_import_error(self, tmp_path: Path) -> None:
