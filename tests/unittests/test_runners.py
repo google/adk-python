@@ -3025,6 +3025,46 @@ async def test_setup_context_for_new_invocation_restores_branch_for_subagent():
 
 
 @pytest.mark.asyncio
+async def test_append_user_event_leaves_root_context_branch_alone():
+  """A child branch stamped on the user event must not become ic.branch.
+
+  `stamp_event_branch_context` puts the branch of the matching function call on
+  the event, which for a nested tool call is a child branch. Copying that back
+  onto the invocation context moved the root onto that child, and every later
+  event in the invocation inherited it.
+  """
+  session_service = InMemorySessionService()
+  agent = MockLlmAgent("coordinator")
+  app = App(name="test_app", root_agent=agent)
+  runner = Runner(app=app, session_service=session_service)
+
+  session = await session_service.create_session(
+      app_name="test_app", user_id="user_1", session_id="session_1"
+  )
+  ic = InvocationContext(
+      session_service=session_service,
+      invocation_id="inv_1",
+      agent=agent,
+      session=session,
+      run_config=RunConfig(),
+  )
+  ic.branch = None
+
+  # Stamping is what puts a child branch on the event; the root must not follow.
+  with mock.patch.object(
+      InvocationContext,
+      "stamp_event_branch_context",
+      lambda self, event: setattr(event, "branch", "coordinator@1.tool@2"),
+  ):
+    event = await runner._append_user_event(
+        ic, types.Content(parts=[types.Part.from_text(text="hi")])
+    )
+
+  assert event.branch == "coordinator@1.tool@2"
+  assert ic.branch is None
+
+
+@pytest.mark.asyncio
 async def test_setup_context_restores_branch_for_resumed_subagent():
   """Tests that _setup_context_for_resumed_invocation restores ic.branch when resuming a subagent."""
   session_service = InMemorySessionService()

@@ -903,8 +903,6 @@ class Runner:
         event.isolation_scope, _ = active_scope
     _apply_run_config_custom_metadata(event, ic.run_config)
     ic.stamp_event_branch_context(event)
-    if event.branch:
-      ic.branch = event.branch
     return await self.session_service.append_event(
         session=ic.session, event=event
     )

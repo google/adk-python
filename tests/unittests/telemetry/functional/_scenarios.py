@@ -27,6 +27,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import aclosing
 from contextlib import contextmanager
+import copy
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Literal
@@ -499,7 +500,7 @@ def mock_test_model(
           if model_exception is not None
           else [
               LlmResponse(
-                  content=Content(role="model", parts=[part]),
+                  content=Content(role="model", parts=[copy.deepcopy(part)]),
                   finish_reason=FinishReason.STOP,
                   usage_metadata=usage,
               )
@@ -761,7 +762,7 @@ def gemini_test_model(
       GenerateContentResponse(
           candidates=[
               Candidate(
-                  content=Content(role="model", parts=[part]),
+                  content=Content(role="model", parts=[copy.deepcopy(part)]),
                   finish_reason=FinishReason.STOP,
               )
           ],

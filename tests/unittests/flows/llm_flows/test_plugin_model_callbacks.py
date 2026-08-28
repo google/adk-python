@@ -199,7 +199,9 @@ def test_on_model_error_callback_fallback_to_runner(mock_plugin):
 
   error_events = [e for e in events if e.error_code]
   assert len(error_events) == 1
-  assert error_events[0].error_code == 'ClientError'
+  # The error code is the API's canonical status when the exception carries one
+  # (here the genai ClientError's `.status`), falling back to the class name.
+  assert error_events[0].error_code == 'RESOURCE_EXHAUSTED'
 
 
 if __name__ == '__main__':

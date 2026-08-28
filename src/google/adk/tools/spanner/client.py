@@ -15,18 +15,26 @@
 from __future__ import annotations
 
 from contextlib import AbstractContextManager
+import logging
+from typing import Any
 from typing import cast
 from typing import Iterable
 from typing import Iterator
 from typing import Mapping
 from typing import Protocol
 from typing import Sequence
+from typing import TYPE_CHECKING
 
 from google.auth.credentials import Credentials
 from google.cloud import spanner
 from google.cloud.spanner_admin_database_v1.types import DatabaseDialect
 
 from ... import version
+
+if TYPE_CHECKING:
+  from google.cloud.spanner_v1.database import Database
+
+_logger = logging.getLogger("google_adk." + __name__)
 
 USER_AGENT = f"adk-spanner-tool google-adk/{version.__version__}"
 
@@ -156,3 +164,52 @@ def _get_typed_spanner_client(
       _SpannerClient,
       get_spanner_client(project=project, credentials=credentials),
   )
+
+
+def _close_quietly(resource: str, closeable: Any) -> None:
+  """Closes one resource, logging instead of raising when cleanup fails.
+
+  Callers run this from a finally block, where an exception raised while
+  releasing a resource would replace the result they are about to return.
+
+  Args:
+    resource: The name of the resource, used in the warning that is logged.
+    closeable: The resource to close.
+  """
+  try:
+    closeable.close()
+  except Exception:  # pylint: disable=broad-except
+    _logger.warning("Failed to close the Spanner %s.", resource, exc_info=True)
+
+
+def _close_spanner_resources(
+    spanner_client: spanner.Client, database: Database | None = None
+) -> None:
+  """Closes the client, transports and sessions a Spanner operation created.
+
+  ``spanner.Client.close()`` only releases the inherited HTTP session, and the
+  gRPC transports are cached separately on the client and on each database, so
+  every transport that was initialized has to be closed on its own. The cached
+  attributes are read directly because the public accessors create the
+  transport they are asked for.
+
+  Args:
+    spanner_client: The high-level client used by the operation.
+    database: The database object created by the operation, if any.
+  """
+  if database is not None:
+    # Database.close() stops the session manager's maintenance thread and
+    # deletes its multiplexed session.
+    _close_quietly("session manager", database)
+    spanner_api = vars(database).get("_spanner_api")
+    transport = getattr(spanner_api, "transport", None)
+    if transport is not None:
+      _close_quietly("data transport", transport)
+
+  for attribute_name in ("_instance_admin_api", "_database_admin_api"):
+    admin_api = vars(spanner_client).get(attribute_name)
+    transport = getattr(admin_api, "transport", None)
+    if transport is not None:
+      _close_quietly("admin transport", transport)
+
+  _close_quietly("client", spanner_client)
