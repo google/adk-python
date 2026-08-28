@@ -1212,6 +1212,29 @@ def test_cli_deploy_cloud_run_success(
   assert rec.calls, "cli_deploy.to_cloud_run must be invoked"
 
 
+def test_cli_deploy_cloud_run_forwards_extra_packages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  rec = _Recorder()
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
+  agent_dir = tmp_path / "agent"
+  agent_dir.mkdir()
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "cloud_run",
+          "--extra_packages=shared_a",
+          "--extra_packages=shared_b",
+          str(agent_dir),
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert rec.calls[0][1]["extra_packages"] == ["shared_a", "shared_b"]
+
+
 def test_cli_deploy_cloud_run_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1515,6 +1538,30 @@ def test_cli_deploy_gke_success(
   assert called_kwargs.get("project") == "test-proj"
   assert called_kwargs.get("region") == "us-central1"
   assert called_kwargs.get("cluster_name") == "my-cluster"
+
+
+def test_cli_deploy_gke_forwards_extra_packages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  rec = _Recorder()
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_gke", rec)
+  agent_dir = tmp_path / "agent"
+  agent_dir.mkdir()
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "gke",
+          "--cluster_name=cluster",
+          "--extra_packages=shared_a",
+          "--extra_packages=shared_b",
+          str(agent_dir),
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert rec.calls[0][1]["extra_packages"] == ["shared_a", "shared_b"]
 
 
 # cli eval

@@ -780,6 +780,52 @@ def _get_ignore_patterns_func(
   return shutil.ignore_patterns(*patterns)
 
 
+def _stage_extra_packages(
+    requested_packages: list[tuple[str, str]], temp_folder: str
+) -> list[str]:
+  """Copies additional packages into a deployment build context."""
+  staged_packages = []
+  for package, base_dir in requested_packages:
+    package_source = (
+        package if os.path.isabs(package) else os.path.join(base_dir, package)
+    )
+    package_source = os.path.abspath(package_source)
+    if not os.path.exists(package_source):
+      raise click.ClickException(f'extra_packages path not found: {package}')
+
+    basename = os.path.basename(os.path.normpath(package_source))
+    destination = os.path.join(temp_folder, basename)
+    # The Dockerfile may not have been written yet, so reserve its name.
+    if os.path.exists(destination) or basename == 'Dockerfile':
+      raise click.ClickException(
+          f'extra_packages entry has a conflicting name: {basename}'
+      )
+    if os.path.isdir(package_source):
+      shutil.copytree(package_source, destination, dirs_exist_ok=True)
+    else:
+      shutil.copy2(package_source, destination)
+    staged_packages.append(basename)
+
+  return staged_packages
+
+
+def _extra_packages_dockerfile_copy(
+    staged_packages: list[str], temp_folder: str
+) -> str:
+  """Builds Dockerfile instructions for staged extra packages."""
+  if not staged_packages:
+    return ''
+
+  copy_lines = [
+      f'COPY --chown=myuser:myuser "{basename}/" "/app/{basename}/"'
+      if os.path.isdir(os.path.join(temp_folder, basename))
+      else f'COPY --chown=myuser:myuser "{basename}" "/app/{basename}"'
+      for basename in staged_packages
+  ]
+  copy_lines.append('ENV PYTHONPATH="/app:$PYTHONPATH"')
+  return '\n'.join(copy_lines)
+
+
 def to_cloud_run(
     *,
     agent_folder: str,
@@ -804,6 +850,7 @@ def to_cloud_run(
     trigger_sources: Optional[str] = None,
     extra_gcloud_args: Optional[tuple[str, ...]] = None,
     with_cloud_run_sandbox: bool = False,
+    extra_packages: Optional[list[str]] = None,
 ) -> None:
   """Deploys an agent to Google Cloud Run.
 
@@ -842,6 +889,8 @@ def to_cloud_run(
     use_local_storage: Whether to use local .adk storage in the container.
     with_cloud_run_sandbox: Whether to enable the Cloud Run sandbox for code
       execution.
+    extra_packages: Additional local files or directories to stage alongside
+      the agent and make importable in the deployed image.
   """
   app_name = app_name or os.path.basename(os.path.normpath(agent_folder))
   _validate_app_name(app_name)
@@ -862,6 +911,10 @@ def to_cloud_run(
     agent_src_path = os.path.join(temp_folder, 'agents', app_name)
     ignore_func = _get_ignore_patterns_func(agent_folder)
     shutil.copytree(agent_folder, agent_src_path, ignore=ignore_func)
+    staged_extra_packages = _stage_extra_packages(
+        [(package, os.getcwd()) for package in extra_packages or []],
+        temp_folder,
+    )
     requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
     install_agent_deps = (
         f'RUN pip install -r "/app/agents/{app_name}/requirements.txt"'
@@ -903,7 +956,9 @@ def to_cloud_run(
         trigger_sources_option=trigger_sources_option,
         gemini_enterprise_option='',
         express_mode_option='',
-        extra_packages_copy='',
+        extra_packages_copy=_extra_packages_dockerfile_copy(
+            staged_extra_packages, temp_folder
+        ),
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
     os.makedirs(temp_folder, exist_ok=True)
@@ -1212,24 +1267,9 @@ def to_agent_engine(
     requested_extra_packages = [
         (pkg, original_cwd) for pkg in extra_packages or []
     ] + [(pkg, agent_folder_abs) for pkg in config_extra_packages]
-    staged_extra_packages = []
-    for pkg, base_dir in requested_extra_packages:
-      pkg_src = pkg if os.path.isabs(pkg) else os.path.join(base_dir, pkg)
-      pkg_src = os.path.abspath(pkg_src)
-      if not os.path.exists(pkg_src):
-        raise click.ClickException(f'extra_packages path not found: {pkg}')
-      base = os.path.basename(os.path.normpath(pkg_src))
-      dst = os.path.join(temp_folder_path, base)
-      # The Dockerfile is written after this loop, so it is not on disk yet.
-      if os.path.exists(dst) or base == 'Dockerfile':
-        raise click.ClickException(
-            f'extra_packages entry has a conflicting name: {base}'
-        )
-      if os.path.isdir(pkg_src):
-        shutil.copytree(pkg_src, dst, dirs_exist_ok=True)
-      else:
-        shutil.copy2(pkg_src, dst)
-      staged_extra_packages.append(base)
+    staged_extra_packages = _stage_extra_packages(
+        requested_extra_packages, temp_folder_path
+    )
 
     requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
     if requirements_file:
@@ -1385,16 +1425,9 @@ def to_agent_engine(
       trigger_sources_option = (
           f'--trigger_sources={trigger_sources}' if trigger_sources else ''
       )
-      extra_packages_copy = ''
-      if staged_extra_packages:
-        copy_lines = [
-            f'COPY --chown=myuser:myuser "{base}/" "/app/{base}/"'
-            if os.path.isdir(os.path.join(temp_folder_path, base))
-            else f'COPY --chown=myuser:myuser "{base}" "/app/{base}"'
-            for base in staged_extra_packages
-        ]
-        copy_lines.append('ENV PYTHONPATH="/app:$PYTHONPATH"')
-        extra_packages_copy = '\n'.join(copy_lines)
+      extra_packages_copy = _extra_packages_dockerfile_copy(
+          staged_extra_packages, temp_folder_path
+      )
       agent_engine_uri = f'agentengine://{resource_name}'
       supports_gemini_enterprise_flag = parse(adk_version) >= parse(
           _GEMINI_ENTERPRISE_FLAG_MIN_VERSION
@@ -1511,6 +1544,7 @@ def to_gke(
     service_type: Literal[
         'ClusterIP', 'NodePort', 'LoadBalancer'
     ] = 'ClusterIP',
+    extra_packages: Optional[list[str]] = None,
 ) -> None:
   """Deploys an agent to Google Kubernetes Engine(GKE).
 
@@ -1539,6 +1573,8 @@ def to_gke(
     memory_service_uri: The URI of the memory service.
     use_local_storage: Whether to use local .adk storage in the container.
     service_type: The Kubernetes Service type (default: ClusterIP).
+    extra_packages: Additional local files or directories to stage alongside
+      the agent and make importable in the deployed image.
   """
   click.secho(
       '\n🚀 Starting ADK Agent Deployment to GKE...', fg='cyan', bold=True
@@ -1571,6 +1607,10 @@ def to_gke(
     agent_src_path = os.path.join(temp_folder, 'agents', app_name)
     ignore_func = _get_ignore_patterns_func(agent_folder)
     shutil.copytree(agent_folder, agent_src_path, ignore=ignore_func)
+    staged_extra_packages = _stage_extra_packages(
+        [(package, os.getcwd()) for package in extra_packages or []],
+        temp_folder,
+    )
     requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
     install_agent_deps = (
         f'RUN pip install -r "/app/agents/{app_name}/requirements.txt"'
@@ -1612,7 +1652,9 @@ def to_gke(
         ),
         gemini_enterprise_option='',
         express_mode_option='',
-        extra_packages_copy='',
+        extra_packages_copy=_extra_packages_dockerfile_copy(
+            staged_extra_packages, temp_folder
+        ),
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
     os.makedirs(temp_folder, exist_ok=True)

@@ -2361,6 +2361,17 @@ def cli_api_server(
         " execution. Requires the 'gcloud beta run deploy' release track."
     ),
 )
+@click.option(
+    "--extra_packages",
+    multiple=True,
+    type=str,
+    default=(),
+    help=(
+        "Optional. Additional local package paths (a file or directory) to"
+        " stage and deploy alongside the agent, and make importable in the"
+        " deployed image. Repeatable."
+    ),
+)
 # Kept as raw str (not parsed to list) — interpolated directly into Dockerfile CMD.
 @click.option(
     "--trigger_sources",
@@ -2406,6 +2417,7 @@ def cli_deploy_cloud_run(
     a2a: bool = False,
     trigger_sources: str | None = None,
     with_cloud_run_sandbox: bool = False,
+    extra_packages: tuple[str, ...] = (),
 ):
   """Deploys an agent to Cloud Run.
 
@@ -2450,6 +2462,7 @@ def cli_deploy_cloud_run(
         use_local_storage=use_local_storage,
         a2a=a2a,
         trigger_sources=trigger_sources,
+        extra_packages=list(extra_packages),
         extra_gcloud_args=tuple(gcloud_args),
     )
   except Exception as e:
@@ -2925,6 +2938,17 @@ def cli_deploy_agent_engine(
         " version in the dev environment)"
     ),
 )
+@click.option(
+    "--extra_packages",
+    multiple=True,
+    type=str,
+    default=(),
+    help=(
+        "Optional. Additional local package paths (a file or directory) to"
+        " stage and deploy alongside the agent, and make importable in the"
+        " deployed image. Repeatable."
+    ),
+)
 # Kept as raw str (not parsed to list) — interpolated directly into Dockerfile CMD.
 @click.option(
     "--trigger_sources",
@@ -2963,6 +2987,7 @@ def cli_deploy_gke(
     memory_service_uri: str | None = None,
     use_local_storage: bool = False,
     trigger_sources: str | None = None,
+    extra_packages: tuple[str, ...] = (),
 ):
   """Deploys an agent to GKE.
 
@@ -2997,6 +3022,7 @@ def cli_deploy_gke(
         memory_service_uri=memory_service_uri,
         use_local_storage=use_local_storage,
         trigger_sources=trigger_sources,
+        extra_packages=list(extra_packages),
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
