@@ -25,6 +25,7 @@ from typing import Optional
 from typing import Tuple
 from typing import Union
 from urllib.parse import parse_qs
+from urllib.parse import quote
 from urllib.parse import urlparse
 from urllib.parse import urlunparse
 
@@ -392,7 +393,17 @@ class RestApiTool(BaseTool):
       param_location = param_obj.param_location
 
       if param_location == "path":
-        path_params[original_k] = v
+        # Percent-encode path parameter values (including '/') before they
+        # are substituted into the URL template below. Path parameter
+        # values ultimately originate from the model's tool-call
+        # arguments, so an unescaped value (e.g. containing '/', '..',
+        # '?', or '#') could redirect the request to a different,
+        # undeclared path -- or undeclared query parameters -- on the
+        # same host than the one the OpenAPI spec's path template and
+        # this tool's configured auth credentials were intended for.
+        # `safe=""` ensures '/' is escaped too, so a value can never
+        # introduce a new path segment.
+        path_params[original_k] = quote(str(v), safe="")
       elif param_location == "query":
         if v is not None:
           query_params[original_k] = v
@@ -406,8 +417,11 @@ class RestApiTool(BaseTool):
     base_url = base_url[:-1] if base_url.endswith("/") else base_url
     url = f"{base_url}{self.endpoint.path.format(**path_params)}"
 
-    # Move query params embedded in the path into query_params, since httpx
-    # replaces (rather than merges) the URL query string when `params` is set.
+    # Move query params embedded in the path template itself (now that path
+    # parameter values are percent-encoded above, only a spec-authored
+    # literal query string in `self.endpoint.path` can still produce one
+    # here) into query_params, since httpx replaces (rather than merges)
+    # the URL query string when `params` is set.
     parsed_url = urlparse(url)
     if parsed_url.query or parsed_url.fragment:
       for key, values in parse_qs(parsed_url.query).items():

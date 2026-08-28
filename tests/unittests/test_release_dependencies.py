@@ -25,15 +25,19 @@ regressions documented in the bare-install audit cannot silently re-emerge:
   undeclared ``pydantic_core``.
 * The LangGraph extras MUST exclude the releases that reconstruct unsafe
   objects while deserializing checkpoint data.
-* ``google-genai`` MUST exclude 2.11 and include 2.12.1, whose types module
-  defers the optional MCP server stack instead of importing it at Agent startup.
+* ``google-genai`` MUST exclude 2.11 and floor at 2.12.1 or later, since that
+  release is the first whose types module defers the optional MCP server stack
+  instead of importing it at Agent startup.
 * The ``all`` extra MUST stay the union of every extra that unlocks a runtime
   feature, so that ``pip install "google-adk[all]"`` cannot silently stop
   installing a feature's dependencies.
+* Every ``<=`` upper bound MUST name the release the tests run against, so
+  that raising one cannot claim support for a release nothing installed.
 """
 
 from __future__ import annotations
 
+import importlib.metadata
 import importlib.util
 from pathlib import Path
 
@@ -55,6 +59,11 @@ _UNSAFE_CHECKPOINT_RELEASES = {
     'langgraph': (('0.2.60', '0.4.7', '1.0.9'), '1.0.10'),
     'langgraph-checkpoint': (('2.1.0', '3.0.0', '4.0.0', '4.1.0'), '4.1.1'),
 }
+
+# The first google-genai release whose types module defers the optional MCP
+# server stack instead of importing it at Agent startup. The floor may be raised
+# past it to pick up newer API surface, but never lowered below it.
+_LAZY_MCP_GOOGLE_GENAI_RELEASE = Version('2.12.1')
 
 # Extras that ``all`` deliberately leaves out, for the reason recorded in the
 # comment above ``optional-dependencies.all`` in pyproject.toml. Every other
@@ -188,6 +197,32 @@ def _expected_marker(requirements: list[Requirement]) -> str:
   return markers.pop() if len(markers) == 1 else ''
 
 
+def _inclusive_upper_bounds(pyproject: dict) -> dict[str, Version]:
+  """Returns the release each ``<=`` bound names, keyed by distribution.
+
+  Covers the main dependencies and every extra. Exclusive ``<`` bounds are
+  left out on purpose: they rule a release out without saying anything about
+  any particular release below it. Where two extras disagree, the higher bound
+  wins, because installing that extra on its own admits that release.
+  """
+  groups = [pyproject['project']['dependencies']]
+  groups.extend(pyproject['project']['optional-dependencies'].values())
+
+  bounds: dict[str, Version] = {}
+  for group in groups:
+    for entry in group:
+      requirement = Requirement(entry)
+      name = canonicalize_name(requirement.name)
+      for clause in requirement.specifier:
+        if clause.operator != '<=':
+          continue
+        # PEP 440 allows a wildcard only with == and !=, so a <= clause always
+        # names a parseable release and a failure here is worth hearing about.
+        bound = Version(clause.version)
+        bounds[name] = max(bound, bounds.get(name, bound))
+  return bounds
+
+
 def test_main_deps_include_packaging(pyproject: dict) -> None:
   """``packaging`` is imported unguarded by core ADK; it must be a main dep."""
   main_deps = _requirement_names(pyproject['project']['dependencies'])
@@ -245,8 +280,78 @@ def test_main_deps_require_lazy_mcp_google_genai_release(
       if requirement.name == 'google-genai'
   )
 
+  floor = min(
+      Version(specifier.version)
+      for specifier in google_genai.specifier
+      if specifier.operator in ('>=', '==')
+  )
+
   assert Version('2.11.0') not in google_genai.specifier
-  assert Version('2.12.1') in google_genai.specifier
+  assert floor >= _LAZY_MCP_GOOGLE_GENAI_RELEASE, (
+      f'The google-genai floor {floor} predates'
+      f' {_LAZY_MCP_GOOGLE_GENAI_RELEASE}, the first release whose types module'
+      ' defers the optional MCP server stack.'
+  )
+
+
+def test_inclusive_upper_bounds_ignores_other_operators() -> None:
+  """Only ``<=`` names a release as supported, and the highest one wins."""
+  bounds = _inclusive_upper_bounds({
+      'project': {
+          'dependencies': [
+              'named<=1.43',
+              'floored>=1.39',
+              'capped<2',
+              'excluded!=3.1',
+          ],
+          'optional-dependencies': {
+              'low': ['spread>=1,<=1.0'],
+              'high': ['spread>=1,<=2.0'],
+          },
+      }
+  })
+
+  assert bounds == {'named': Version('1.43'), 'spread': Version('2.0')}
+
+
+def test_inclusive_upper_bounds_name_an_installed_release(
+    pyproject: dict,
+) -> None:
+  """Every ``<=`` bound names the release the tests are running against.
+
+  ``opentelemetry-api<=1.43`` claims release 1.43 works. ``<1.44`` claims
+  release 1.44 does not. The second is knowable from an upstream changelog;
+  the first is only knowable by running it. So an inclusive bound that names a
+  release the environment never installed is a claim no test stands behind,
+  and raising one ships that claim to users on the next release.
+  """
+  bounds = _inclusive_upper_bounds(pyproject)
+
+  checked = 0
+  unexercised: list[str] = []
+  for distribution, bound in sorted(bounds.items()):
+    try:
+      installed = Version(importlib.metadata.version(distribution))
+    except importlib.metadata.PackageNotFoundError:
+      # Declared by an extra this environment does not install.
+      continue
+    checked += 1
+    if installed < bound:
+      unexercised.append(f'{distribution}<={bound}, running {installed}')
+
+  assert checked, (
+      'No declared <= bound was compared against an installed release, so '
+      'this test proved nothing. Either pyproject.toml stopped using '
+      'inclusive upper bounds, or _inclusive_upper_bounds stopped finding '
+      'them.'
+  )
+  assert not unexercised, (
+      'These bounds name a release the tests never ran: '
+      + '; '.join(unexercised)
+      + '. Install the named release so the suite covers what the bound '
+      'promises, or state what is actually known with an exclusive bound '
+      '(<1.44 rules out the 1.44 line without claiming 1.43 was exercised).'
+  )
 
 
 def test_all_extra_covers_every_runtime_extra(pyproject: dict) -> None:

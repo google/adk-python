@@ -192,3 +192,30 @@ def test_no_deprecation_warning_when_save_live_audio_is_not_passed():
       for message in _deprecation_messages(caught)
       if "`save_live_audio` config is deprecated" in message
   ]
+
+
+def test_max_llm_calls_default_value(monkeypatch):
+  monkeypatch.delenv("ADK_MAX_LLM_CALLS", raising=False)
+  config = RunConfig()
+  assert config.max_llm_calls == 500
+
+
+def test_max_llm_calls_env_var_override(monkeypatch):
+  monkeypatch.setenv("ADK_MAX_LLM_CALLS", "100")
+  config = RunConfig()
+  assert config.max_llm_calls == 100
+
+
+def test_max_llm_calls_explicit_value_overrides_env_var(monkeypatch):
+  monkeypatch.setenv("ADK_MAX_LLM_CALLS", "100")
+  config = RunConfig(max_llm_calls=200)
+  assert config.max_llm_calls == 200
+
+
+def test_max_llm_calls_invalid_env_var_warning(monkeypatch):
+  monkeypatch.setenv("ADK_MAX_LLM_CALLS", "invalid")
+  with patch("google.adk.agents.run_config.logger.warning") as mock_warning:
+    config = RunConfig()
+    assert config.max_llm_calls == 500
+    mock_warning.assert_called_once()
+    assert "Invalid value for ADK_MAX_LLM_CALLS" in mock_warning.call_args[0][0]

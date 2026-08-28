@@ -20,17 +20,23 @@ from typing import Any
 from typing import AsyncGenerator
 from unittest import mock
 
+from google.adk import platform as adk_platform
+from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.context import Context
+from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events.event import Event
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.session import Session
 from google.adk.workflow import BaseNode
 from google.adk.workflow import Edge
 from google.adk.workflow import START
+from google.adk.workflow._errors import DynamicNodeFailError
 from google.adk.workflow._errors import NodeTimeoutError
 from google.adk.workflow._graph import Graph
-from google.adk.workflow._node import node
 from google.adk.workflow._node import Node
+from google.adk.workflow._node import node
+from google.adk.workflow._node_runner import NodeRunner
 from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow._retry_config import RetryConfig
 from google.adk.workflow._workflow import Workflow
@@ -41,7 +47,6 @@ import pytest
 from typing_extensions import override
 
 from .workflow_testing_utils import _FlakyNode
-from .workflow_testing_utils import create_parent_invocation_context
 from .workflow_testing_utils import CustomNonRetryableError
 from .workflow_testing_utils import CustomRetryableError
 from .workflow_testing_utils import simplify_events_with_node
@@ -715,20 +720,23 @@ async def test_retry_applies_random_jitter(request: pytest.FixtureRequest):
   session = await ss.create_session(app_name=agent.name, user_id='u')
   msg = types.Content(parts=[types.Part(text='start')], role='user')
 
-  with (
-      mock.patch('asyncio.sleep', new_callable=mock.AsyncMock) as mock_sleep,
-      mock.patch('random.uniform', return_value=-1.0) as mock_random,
-  ):
-    events = []
-    async for event in runner.run_async(
-        user_id='u', session_id=session.id, new_message=msg
-    ):
-      events.append(event)
+  mock_random = mock.Mock()
+  mock_random.uniform = mock.Mock(return_value=-1.0)
+  adk_platform.set_random_provider(lambda: mock_random)
+  try:
+    with mock.patch('asyncio.sleep', new_callable=mock.AsyncMock) as mock_sleep:
+      events = []
+      async for event in runner.run_async(
+          user_id='u', session_id=session.id, new_message=msg
+      ):
+        events.append(event)
 
-    # 4.0 + (-1.0) = 3.0
-    mock_sleep.assert_any_await(3.0)
-    # Called with -0.5 * 4.0, 0.5 * 4.0
-    mock_random.assert_called_once_with(-2.0, 2.0)
+      # 4.0 + (-1.0) = 3.0
+      mock_sleep.assert_any_await(3.0)
+      # Called with -0.5 * 4.0, 0.5 * 4.0
+      mock_random.uniform.assert_called_once_with(-2.0, 2.0)
+  finally:
+    adk_platform.reset_random_provider()
 
   results = simplify_events_with_node(events)
   filtered_results = [
@@ -1119,3 +1127,125 @@ async def test_node_runner_timeout_warning(caplog):
       'timeout 0.10 seconds is ignored because Python version is < 3.11'
       in caplog.text
   )
+
+
+@pytest.mark.asyncio
+async def test_node_runner_prefers_api_status_for_error_code():
+  """NodeRunner uses the exception's canonical `.status` string as the error code.
+
+  A genai/Gatekeeper failure carries `.status` (e.g. "PERMISSION_DENIED") and
+  the human-readable message in `str(e)`; both should reach the emitted event.
+  """
+
+  class ClientError(Exception):
+
+    def __init__(self):
+      self.status = 'PERMISSION_DENIED'
+      self.code = 403
+      super().__init__(
+          '403 PERMISSION_DENIED. Egress request is not authorized'
+      )
+
+  async def failing_route(ctx, node_input):
+    raise ClientError()
+
+  err_node = TestingNode(name='ErrNode', route=failing_route)
+  enqueued: list[Event] = []
+
+  async def _capture(event):
+    enqueued.append(event)
+
+  ic = InvocationContext(
+      invocation_id='status_inv',
+      agent=mock.MagicMock(spec=BaseAgent),
+      session=Session(
+          id='test_session', app_name='test_app', user_id='test_user'
+      ),
+      session_service=InMemorySessionService(),
+  )
+  object.__setattr__(ic, '_enqueue_event', mock.AsyncMock(side_effect=_capture))
+  parent_ctx = Context(invocation_context=ic, node_path='')
+
+  ctx = await NodeRunner(node=err_node, parent_ctx=parent_ctx).run()
+
+  assert isinstance(ctx.error, ClientError)
+  error_events = [e for e in enqueued if e.error_code]
+  assert error_events, 'expected an error event to be enqueued'
+  assert error_events[0].error_code == 'PERMISSION_DENIED'
+  assert 'Egress request is not authorized' in error_events[0].error_message
+
+
+@pytest.mark.asyncio
+async def test_node_runner_falls_back_to_class_name_without_status():
+  """Without a string `.status`, the error code is the exception class name."""
+
+  async def failing_route(ctx, node_input):
+    raise ValueError('boom')
+
+  err_node = TestingNode(name='ErrNode', route=failing_route)
+  enqueued: list[Event] = []
+
+  async def _capture(event):
+    enqueued.append(event)
+
+  ic = InvocationContext(
+      invocation_id='fallback_inv',
+      agent=mock.MagicMock(spec=BaseAgent),
+      session=Session(
+          id='test_session', app_name='test_app', user_id='test_user'
+      ),
+      session_service=InMemorySessionService(),
+  )
+  object.__setattr__(ic, '_enqueue_event', mock.AsyncMock(side_effect=_capture))
+  parent_ctx = Context(invocation_context=ic, node_path='')
+
+  await NodeRunner(node=err_node, parent_ctx=parent_ctx).run()
+
+  error_events = [e for e in enqueued if e.error_code]
+  assert error_events, 'expected an error event to be enqueued'
+  assert error_events[0].error_code == 'ValueError'
+
+
+def test_dynamic_node_fail_error_surfaces_wrapped_error_attrs():
+  """DynamicNodeFailError reads status/details off the wrapped error generically."""
+
+  # genai client exposes `.code` (not `.status_code`) and `.details`.
+  class GenaiClientError(Exception):
+
+    def __init__(self):
+      self.code = 403
+      self.details = 'Egress request is not authorized'
+      super().__init__('403 PERMISSION_DENIED')
+
+  genai_err = GenaiClientError()
+  dynamic_err = DynamicNodeFailError(
+      message='Dynamic node ChildNode failed',
+      error=genai_err,
+      error_node_path='parent/ChildNode',
+  )
+  assert dynamic_err.status_code == 403  # via `.code` fallback
+  assert dynamic_err.details == 'Egress request is not authorized'
+  assert dynamic_err.error is genai_err
+  # `.cause` was removed; Python's own `__cause__` chaining covers it.
+  assert not hasattr(dynamic_err, 'cause')
+
+  # Raw httpx-style error: body lives on `.response.text`.
+  class HttpxError(Exception):
+
+    def __init__(self):
+      self.status_code = 403
+
+      class _Resp:
+        text = 'forbidden body'
+
+      self.response = _Resp()
+      super().__init__('403 Forbidden')
+
+  httpx_err = HttpxError()
+  dynamic_err2 = DynamicNodeFailError(
+      message='x', error=httpx_err, error_node_path='p'
+  )
+  assert dynamic_err2.status_code == 403
+  assert (
+      dynamic_err2.details == 'forbidden body'
+  )  # via `.response.text` fallback

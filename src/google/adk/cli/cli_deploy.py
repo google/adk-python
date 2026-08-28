@@ -39,9 +39,96 @@ from .utils import _onboarding
 _IS_WINDOWS = os.name == 'nt'
 _GCLOUD_CMD = 'gcloud.cmd' if _IS_WINDOWS else 'gcloud'
 _LOCAL_STORAGE_FLAG_MIN_VERSION: Final[str] = '1.21.0'
+_GEMINI_ENTERPRISE_FLAG_MIN_VERSION: Final[str] = '2.2.0'
 _AGENT_ENGINE_REQUIREMENT: Final[str] = (
     'google-cloud-aiplatform[adk,agent_engines]'
 )
+# Full Cloud Build private worker pool resource name, e.g.
+# projects/my-project/locations/us-central1/workerPools/my-private-pool
+_WORKER_POOL_RESOURCE_RE: Final[re.Pattern[str]] = re.compile(
+    r'^projects/[^/]+/locations/[^/]+/workerPools/[^/]+$'
+)
+
+
+def _validate_worker_pool(worker_pool: str) -> str:
+  """Validates a Cloud Build worker pool resource name.
+
+  Args:
+    worker_pool: Full resource name of the form
+      `projects/{project}/locations/{location}/workerPools/{pool}`.
+
+  Returns:
+    The validated worker pool resource name.
+
+  Raises:
+    click.ClickException: If the resource name is empty or malformed.
+  """
+  worker_pool = worker_pool.strip()
+  if not worker_pool:
+    raise click.ClickException('worker_pool must be a non-empty resource name.')
+  if not _WORKER_POOL_RESOURCE_RE.fullmatch(worker_pool):
+    raise click.ClickException(
+        'Invalid worker_pool resource name. Expected format:'
+        ' projects/{project}/locations/{location}/workerPools/{pool}.'
+        f' Got: {worker_pool}'
+    )
+  return worker_pool
+
+
+def _apply_worker_pool_to_agent_config(
+    agent_config: dict[str, Any],
+    worker_pool: Optional[str],
+) -> None:
+  """Nests worker_pool into agent_config['build_config'].
+
+  Supports three sources, in increasing precedence:
+
+  1. Existing ``build_config.worker_pool`` already in ``agent_config``.
+  2. Top-level ``worker_pool`` convenience key in ``.agent_engine_config.json``
+     (popped so it is not forwarded as an unknown top-level field).
+  3. Explicit ``worker_pool`` argument (CLI flag), which overrides both.
+
+  The Vertex Agent Engine SDK reads Cloud Build private pools from
+  ``config.build_config.worker_pool`` and maps them onto
+  ``spec.build_spec.worker_pool``.
+  """
+  build_config = agent_config.get('build_config')
+  if build_config is None:
+    build_config = {}
+  elif not isinstance(build_config, dict):
+    raise click.ClickException(
+        'build_config in agent platform config must be a JSON object.'
+    )
+  else:
+    # Copy so we do not mutate a shared structure unexpectedly.
+    build_config = dict(build_config)
+
+  config_worker_pool = agent_config.pop('worker_pool', None)
+  if config_worker_pool is not None:
+    if not isinstance(config_worker_pool, str):
+      raise click.ClickException(
+          'worker_pool in agent platform config must be a string resource name.'
+      )
+    build_config['worker_pool'] = _validate_worker_pool(config_worker_pool)
+
+  if worker_pool is not None:
+    if build_config.get('worker_pool'):
+      click.echo(
+          'Overriding build_config.worker_pool in agent platform config with'
+          f' {worker_pool}'
+      )
+    build_config['worker_pool'] = _validate_worker_pool(worker_pool)
+
+  # Validate any worker_pool that was already nested under build_config.
+  if 'worker_pool' in build_config and build_config['worker_pool'] is not None:
+    build_config['worker_pool'] = _validate_worker_pool(
+        str(build_config['worker_pool'])
+    )
+
+  if build_config:
+    agent_config['build_config'] = build_config
+  else:
+    agent_config.pop('build_config', None)
 
 
 def _on_rm_error(func: Callable[..., Any], path: str, exc_info: Any) -> None:
@@ -438,6 +525,36 @@ def _resolve_project(project_in_option: Optional[str]) -> str:
   return project
 
 
+# app_name is interpolated verbatim into the generated Dockerfile (COPY/RUN
+# instructions and the shell-form CMD) by _DOCKERFILE_TEMPLATE. It defaults to
+# the basename of the agent source folder, so its value can come from a
+# directory name the deploying developer did not choose (a cloned or shared
+# agent template). Restrict it to a plain identifier before it reaches the
+# template so it cannot break out of a Dockerfile instruction or the CMD shell.
+_APP_NAME_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r'^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,62}$'
+)
+
+
+def _validate_app_name(app_name: str) -> None:
+  """Validates the deploy app name before it is written into a Dockerfile.
+
+  Args:
+    app_name: The app name, either passed via --app_name or derived from the
+      agent source folder basename.
+
+  Raises:
+    click.ClickException: If the app name is not a plain identifier.
+  """
+  if not _APP_NAME_PATTERN.fullmatch(app_name):
+    raise click.ClickException(
+        f'Invalid app name {app_name!r}. The app name is used in the generated'
+        ' Dockerfile and must contain only letters, digits, hyphens,'
+        ' underscores, and periods (1-63 characters, starting with a letter,'
+        ' digit, hyphen, or underscore).'
+    )
+
+
 def _validate_gcloud_extra_args(
     extra_gcloud_args: Optional[tuple[str, ...]], adk_managed_args: set[str]
 ) -> None:
@@ -756,7 +873,8 @@ def to_cloud_run(
     with_cloud_run_sandbox: Whether to enable the Cloud Run sandbox for code
       execution.
   """
-  app_name = app_name or os.path.basename(agent_folder)
+  app_name = app_name or os.path.basename(os.path.normpath(agent_folder))
+  _validate_app_name(app_name)
   if parse(adk_version) >= parse('1.3.0') and not use_local_storage:
     session_service_uri = session_service_uri or 'memory://'
     artifact_service_uri = artifact_service_uri or 'memory://'
@@ -944,6 +1062,7 @@ def to_agent_engine(
     artifact_service_uri: Optional[str] = None,
     adk_version: Optional[str] = None,
     extra_packages: Optional[list[str]] = None,
+    worker_pool: Optional[str] = None,
 ) -> None:
   """Deploys an agent to Gemini Enterprise Agent Platform.
 
@@ -1010,10 +1129,18 @@ def to_agent_engine(
       used.
     extra_packages (list[str]): Optional. Additional local file or directory
       paths to stage alongside the agent and make importable in the image.
+    worker_pool (str): Optional. Full Cloud Build private worker pool resource
+      name
+      (`projects/{project}/locations/{location}/workerPools/{pool}`).
+      When set, Agent Engine builds the container image on that pool so
+      deploys can reach private networks / comply with org build policies.
+      Overrides `worker_pool` / `build_config.worker_pool` from
+      `.agent_engine_config.json` when both are present.
   """
   app_name = _validate_agent_folder_name(agent_folder)
+  _validate_app_name(app_name)
   display_name = display_name or app_name
-  parent_folder = os.path.dirname(agent_folder)
+  parent_folder = os.path.dirname(os.path.normpath(agent_folder))
   if adk_app_object:
     warnings.warn(
         'WARNING: `--adk_app_object` is deprecated and will be removed in the'
@@ -1106,6 +1233,8 @@ def to_agent_engine(
             f' {description}'
         )
       agent_config['description'] = description
+
+    _apply_worker_pool_to_agent_config(agent_config, worker_pool)
 
     config_extra_packages = agent_config.pop('extra_packages', None) or []
     # CLI entries resolve against the invocation dir; config-file entries
@@ -1225,8 +1354,11 @@ def to_agent_engine(
         )
     if env_vars:
       if 'env_vars' in agent_config:
+        # sorted() over a dict iterates its keys, so this prints the variable
+        # names only and never their values.
         click.echo(
-            f'Overriding env_vars in agent platform config with {env_vars}'
+            'Overriding env_vars in agent platform config with'
+            f' {sorted(env_vars)}'
         )
       agent_config['env_vars'] = env_vars
     # Set env_vars in agent_config to None if it is not set.
@@ -1294,6 +1426,16 @@ def to_agent_engine(
         copy_lines.append('ENV PYTHONPATH="/app:$PYTHONPATH"')
         extra_packages_copy = '\n'.join(copy_lines)
       agent_engine_uri = f'agentengine://{resource_name}'
+      supports_gemini_enterprise_flag = parse(adk_version) >= parse(
+          _GEMINI_ENTERPRISE_FLAG_MIN_VERSION
+      )
+      if not supports_gemini_enterprise_flag:
+        click.secho(
+            'Omitting --gemini_enterprise_app_name as it requires adk_version'
+            f' {_GEMINI_ENTERPRISE_FLAG_MIN_VERSION} or later, and'
+            f' {adk_version} was requested',
+            fg='yellow',
+        )
       dockerfile_content = _DOCKERFILE_TEMPLATE.format(
           gcp_project_id=project,
           gcp_region=region,
@@ -1315,7 +1457,11 @@ def to_agent_engine(
           host_option='--host=0.0.0.0',
           a2a_option='--a2a',
           trigger_sources_option=trigger_sources_option,
-          gemini_enterprise_option=f'--gemini_enterprise_app_name={app_name}',
+          gemini_enterprise_option=(
+              f'--gemini_enterprise_app_name={app_name}'
+              if supports_gemini_enterprise_flag
+              else ''
+          ),
           express_mode_option=(
               ' --express_mode' if api_key and not project else ''
           ),
@@ -1435,7 +1581,8 @@ def to_gke(
   click.echo(f'  Cluster:         {cluster_name}')
   click.echo('--------------------------------------------------\n')
 
-  app_name = app_name or os.path.basename(agent_folder)
+  app_name = app_name or os.path.basename(os.path.normpath(agent_folder))
+  _validate_app_name(app_name)
   if parse(adk_version) >= parse('1.3.0') and not use_local_storage:
     session_service_uri = session_service_uri or 'memory://'
     artifact_service_uri = artifact_service_uri or 'memory://'

@@ -272,6 +272,7 @@ class ContainerCodeExecutor(BaseCodeExecutor):
         stdout=output,
         stderr=error,
         output_files=[],
+        exit_code=exec_result.exit_code,
     )
 
   def _build_docker_image(self) -> None:

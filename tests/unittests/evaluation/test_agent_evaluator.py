@@ -34,13 +34,18 @@ from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_config import EvalConfig
 from google.adk.evaluation.eval_config import LiveModelConfig
+from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import EvalMetricResult
 from google.adk.evaluation.eval_metrics import EvalMetricResultPerInvocation
+from google.adk.evaluation.eval_metrics import MetricInfo
+from google.adk.evaluation.eval_metrics import MetricValueInfo
 from google.adk.evaluation.eval_result import EvalCaseResult
 from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.eval_set_results_manager import EvalSetResultsManager
 from google.adk.evaluation.evaluator import EvalStatus
+from google.adk.evaluation.metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
 from google.adk.evaluation.simulation.user_simulator_provider import UserSimulatorProvider
+from google.adk.evaluation.trajectory_evaluator import TrajectoryEvaluator
 from google.genai import types as genai_types
 import pandas as pd
 import pytest
@@ -725,6 +730,113 @@ def test_migrate_eval_data_to_new_schema_missing_reference_rejected(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_evaluate_eval_set_registers_custom_metrics(mocker):
+  """Custom metrics in the eval config are available during evaluation."""
+  eval_set = SimpleNamespace(
+      eval_set_id="eval_set_1",
+      eval_cases=[SimpleNamespace(eval_id="case_a")],
+  )
+  eval_config = EvalConfig(
+      custom_metrics={
+          "my_custom_metric": {
+              "code_config": {"name": "math.sqrt"},
+          }
+      }
+  )
+  mocker.patch.object(
+      AgentEvaluator,
+      "_get_agent_for_eval",
+      new=AsyncMock(return_value=(mocker.Mock(), None)),
+  )
+  mocker.patch(
+      "google.adk.evaluation.agent_evaluator.get_eval_metrics_from_config",
+      return_value=[],
+  )
+  get_results_mock = mocker.patch.object(
+      AgentEvaluator,
+      "_get_eval_results_by_eval_id",
+      new=AsyncMock(return_value={}),
+  )
+
+  await AgentEvaluator.evaluate_eval_set(
+      agent_module="my.pkg.search_agent",
+      eval_set=eval_set,
+      eval_config=eval_config,
+      print_detailed_results=False,
+  )
+
+  metric_evaluator_registry = get_results_mock.await_args.kwargs[
+      "metric_evaluator_registry"
+  ]
+  assert "my_custom_metric" in {
+      metric_info.metric_name
+      for metric_info in metric_evaluator_registry.get_registered_metrics()
+  }
+
+
+@pytest.mark.asyncio
+async def test_evaluate_eval_set_keeps_evaluators_from_the_default_registry(
+    mocker,
+):
+  """Evaluators the caller registered on the default registry stay usable.
+
+  Registering an `Evaluator` subclass on `DEFAULT_METRIC_EVALUATOR_REGISTRY` is
+  the only way to plug one in, since an eval config can only name a scoring
+  function. Evaluation must therefore start from that registry's contents.
+  """
+  eval_set = SimpleNamespace(
+      eval_set_id="eval_set_1",
+      eval_cases=[SimpleNamespace(eval_id="case_a")],
+  )
+  metric_name = "globally_registered_metric_for_agent_evaluator_test"
+  DEFAULT_METRIC_EVALUATOR_REGISTRY.register_evaluator(
+      MetricInfo(
+          metric_name=metric_name,
+          description="Registered by the caller, not by an eval config.",
+          metric_value_info=MetricValueInfo(),
+      ),
+      TrajectoryEvaluator,
+  )
+  mocker.patch.object(
+      AgentEvaluator,
+      "_get_agent_for_eval",
+      new=AsyncMock(return_value=(mocker.Mock(), None)),
+  )
+  mocker.patch(
+      "google.adk.evaluation.agent_evaluator.get_eval_metrics_from_config",
+      return_value=[],
+  )
+  get_results_mock = mocker.patch.object(
+      AgentEvaluator,
+      "_get_eval_results_by_eval_id",
+      new=AsyncMock(return_value={}),
+  )
+
+  try:
+    await AgentEvaluator.evaluate_eval_set(
+        agent_module="my.pkg.search_agent",
+        eval_set=eval_set,
+        eval_config=EvalConfig(),
+        print_detailed_results=False,
+    )
+
+    metric_evaluator_registry = get_results_mock.await_args.kwargs[
+        "metric_evaluator_registry"
+    ]
+    assert isinstance(
+        metric_evaluator_registry.get_evaluator(
+            EvalMetric(metric_name=metric_name, threshold=0.5)
+        ),
+        TrajectoryEvaluator,
+    )
+  finally:
+    # The default registry is process-wide state; remove what we added.
+    DEFAULT_METRIC_EVALUATOR_REGISTRY._registry.pop(  # pylint: disable=protected-access
+        metric_name, None
+    )
+
+
+@pytest.mark.asyncio
 async def test_evaluate_eval_set_forwards_results_manager_and_app_name(mocker):
   """Results manager and resolved app_name are handed to the eval service
   (LocalEvalService), which owns persistence."""
@@ -983,6 +1095,52 @@ async def test_evaluate_keeps_positional_initial_session_file_and_print_flag(
       evaluate_eval_set_mock.await_args.kwargs["print_detailed_results"]
       is False
   )
+
+
+@pytest.mark.parametrize(
+    "print_detailed_results, score, threshold, expect_print, expected_status",
+    [
+        # Case 1: print_detailed_results is False. No printing should happen.
+        (False, 0.9, 0.8, False, EvalStatus.PASSED),
+        (False, 0.7, 0.8, False, EvalStatus.FAILED),
+        # Case 2: print_detailed_results is True. Printing should happen.
+        (True, 0.9, 0.8, True, EvalStatus.PASSED),
+        (True, 0.7, 0.8, True, EvalStatus.FAILED),
+    ],
+)
+def test_process_metrics_and_get_failures_printing(
+    print_detailed_results,
+    score,
+    threshold,
+    expect_print,
+    expected_status,
+    mocker,
+):
+  mock_metric_result = mocker.MagicMock()
+  mock_metric_result.eval_metric_result.criterion = None
+  mock_metric_result.eval_metric_result.threshold = threshold
+  mock_metric_result.eval_metric_result.score = score
+
+  eval_metric_results = {"dummy_metric": [mock_metric_result]}
+
+  mock_print_details = mocker.patch.object(AgentEvaluator, "_print_details")
+
+  AgentEvaluator._process_metrics_and_get_failures(
+      eval_metric_results=eval_metric_results,
+      print_detailed_results=print_detailed_results,
+      agent_module="dummy_agent",
+  )
+
+  if expect_print:
+    mock_print_details.assert_called_once_with(
+        eval_metric_result_with_invocations=[mock_metric_result],
+        overall_eval_status=expected_status,
+        overall_score=score,
+        metric_name="dummy_metric",
+        threshold=threshold,
+    )
+  else:
+    mock_print_details.assert_not_called()
 
 
 def _non_utf8_default_open(file, mode="r", *args, **kwargs):

@@ -16,8 +16,7 @@ from __future__ import annotations
 
 """Utility functions for retrying nodes in a workflow."""
 
-import random
-
+from ...platform import _random as platform_random
 from .._node_state import NodeState
 from .._retry_config import RetryConfig
 
@@ -42,8 +41,13 @@ def _should_retry_node(
     return False
 
   if retry_config.exceptions is not None:
-    ex_name = type(exception).__name__
-    if ex_name not in retry_config.exceptions:
+    # Match against every class the exception inherits from, so a configured
+    # exception also covers its subclasses. object is excluded so that naming
+    # it does not silently mean "retry everything".
+    ex_names = {
+        cls.__name__ for cls in type(exception).__mro__ if cls is not object
+    }
+    if ex_names.isdisjoint(retry_config.exceptions):
       return False
 
   return True
@@ -86,7 +90,9 @@ def _get_retry_delay(
     # bound but collapse every overshooting draw onto exactly max_delay,
     # firing the retries jitter exists to spread out at the same instant.
     delay = min(delay, max_delay / (1.0 + jitter))
-    random_offset = random.uniform(-jitter * delay, jitter * delay)
+    random_offset = platform_random.get_random().uniform(
+        -jitter * delay, jitter * delay
+    )
     delay = max(0.0, delay + random_offset)
 
   return min(delay, max_delay)

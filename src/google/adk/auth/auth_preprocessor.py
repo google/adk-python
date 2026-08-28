@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 from typing import AsyncGenerator
 
@@ -27,14 +28,59 @@ from ..flows.llm_flows.functions import handle_function_calls_async
 from ..flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from ..models.llm_request import LlmRequest
 from ..sessions.state import State
+from .auth_credential import AuthCredential
 from .auth_handler import AuthHandler
 from .auth_tool import AuthConfig
 from .auth_tool import AuthToolArguments
+
+
+def _merge_credential_oauth2_fields(
+    target_cred: AuthCredential | None,
+    source_cred: AuthCredential | None,
+) -> AuthCredential | None:
+  """Merges OAuth2 fields from source_cred into target_cred if target_cred fields are None.
+
+  If target_cred is None, returns source_cred.
+  Otherwise, merges fields and returns target_cred.
+  """
+  if not source_cred:
+    return target_cred
+  if not target_cred:
+    return source_cred
+
+  if target_cred.oauth2 is None and source_cred.oauth2 is not None:
+    target_cred.oauth2 = source_cred.oauth2.model_copy(deep=True)
+  elif target_cred.oauth2 and source_cred.oauth2:
+    target = target_cred.oauth2
+    source = source_cred.oauth2
+    for field in [
+        "client_id",
+        "client_secret",
+        "redirect_uri",
+        "code_verifier",
+        "code_challenge_method",
+    ]:
+      if getattr(target, field) is None:
+        setattr(target, field, getattr(source, field))
+
+    # token_endpoint_auth_method has a default value "client_secret_basic" in OAuth2Auth model.
+    # We only merge it if it wasn't explicitly set in target.
+    target_fields_set = getattr(target, "model_fields_set", None)
+    if (
+        target_fields_set is None
+        or "token_endpoint_auth_method" not in target_fields_set
+    ):
+      target.token_endpoint_auth_method = source.token_endpoint_auth_method
+
+  return target_cred
+
 
 # Prefix used by toolset auth credential IDs.
 # Auth requests with this prefix are for toolset authentication (before tool
 # listing) and don't require resuming a function call.
 TOOLSET_AUTH_CREDENTIAL_ID_PREFIX = "_adk_toolset_auth_"
+
+logger = logging.getLogger("google_adk." + __name__)
 
 
 async def _store_auth_and_collect_resume_targets(
@@ -46,11 +92,10 @@ async def _store_auth_and_collect_resume_targets(
   """Store auth credentials and return original function call IDs to resume.
 
   Scans session events for ``adk_request_credential`` function calls whose
-  IDs are in *auth_fc_ids*, extracts ``credential_key`` from their
-  ``AuthToolArguments`` args, merges ``credential_key`` into the
-  corresponding auth response, stores credentials via ``AuthHandler``,
-  and returns the set of original function call IDs that should be
-  re-executed (excluding toolset auth).
+  IDs are in *auth_fc_ids*, merges the ``auth_scheme`` and ``credential_key``
+  this server issued into the corresponding auth response, stores credentials
+  via ``AuthHandler``, and returns the set of original function call IDs that
+  should be re-executed (excluding toolset auth).
 
   Args:
     events: Session events to scan.
@@ -80,18 +125,42 @@ async def _store_auth_and_collect_resume_targets(
     except TypeError:
       continue
 
-  # Step 2: Store credentials. Merge credential_key from the original
-  # request into the client's auth response before storing.
+  # Step 2: Store credentials. The client's response supplies the result of the
+  # user's browser round trip; the auth scheme and the credential key come from
+  # the request this server issued.
+  authorized_keys: set[str] = set()
   for fc_id in auth_fc_ids:
     if fc_id not in auth_responses:
       continue
-    auth_config = AuthConfig.model_validate(auth_responses[fc_id])
     requested_auth_config = requested_auth_config_by_id.get(fc_id)
-    if (
-        requested_auth_config
-        and requested_auth_config.credential_key is not None
-    ):
+    if requested_auth_config is None:
+      # Nothing to pin against, so the response would get to choose both the
+      # credential it is exchanged with and the endpoint that goes to.
+      logger.warning(
+          "Ignoring auth response for function call ID %r, which this session"
+          " never requested.",
+          fc_id,
+      )
+      continue
+
+    auth_config = AuthConfig.model_validate(auth_responses[fc_id])
+    # The scheme names the token endpoint the developer's secret is posted to.
+    auth_config.auth_scheme = requested_auth_config.auth_scheme
+    if requested_auth_config.credential_key is not None:
       auth_config.credential_key = requested_auth_config.credential_key
+    if requested_auth_config.raw_auth_credential:
+      auth_config.raw_auth_credential = _merge_credential_oauth2_fields(
+          auth_config.raw_auth_credential,
+          requested_auth_config.raw_auth_credential,
+      )
+    if requested_auth_config.exchanged_auth_credential:
+      auth_config.exchanged_auth_credential = _merge_credential_oauth2_fields(
+          auth_config.exchanged_auth_credential,
+          requested_auth_config.exchanged_auth_credential,
+      )
+    if auth_config.credential_key:
+      authorized_keys.add(auth_config.credential_key)
+
     await AuthHandler(auth_config=auth_config).parse_and_store_auth_response(
         state=state
     )
@@ -120,6 +189,25 @@ async def _store_auth_and_collect_resume_targets(
           ):
             continue
           tools_to_resume.add(args.function_call_id)
+
+  matching_events: list[Event] = []
+  for event in events:
+    actions = getattr(event, "actions", None)
+    if actions and actions.requested_auth_configs:
+      if any(
+          fc_id in actions.requested_auth_configs for fc_id in tools_to_resume
+      ):
+        matching_events.append(event)
+
+  for event in matching_events:
+    actions = getattr(event, "actions", None)
+    if actions and actions.requested_auth_configs:
+      for (
+          original_fc_id,
+          config,
+      ) in actions.requested_auth_configs.items():
+        if config.credential_key in authorized_keys:
+          tools_to_resume.add(original_fc_id)
 
   return tools_to_resume
 

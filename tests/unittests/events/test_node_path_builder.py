@@ -157,3 +157,11 @@ def test_get_direct_child_raises_value_error_for_unrelated_path():
   other = _NodePathBuilder.from_string('other@1/node@2')
   with pytest.raises(ValueError):
     parent.get_direct_child(other)
+
+
+def test_static_path_strips_run_ids_from_every_segment():
+  """The static path drops the @run_id suffix from each segment."""
+  assert _NodePathBuilder.from_string('').static_path == ''
+  assert _NodePathBuilder.from_string('wf').static_path == 'wf'
+  assert _NodePathBuilder.from_string('wf/node').static_path == 'wf/node'
+  assert _NodePathBuilder.from_string('wf@1/node@2').static_path == 'wf/node'

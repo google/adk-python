@@ -1436,3 +1436,149 @@ async def test_after_run_callback_dispatched_on_workflow_root():
     pass
 
   assert plugin.after_run_calls == 1
+
+
+@pytest.mark.parametrize(
+    'author, node_path',
+    [
+        ('sub_agent', ''),  # Legacy: author is the node name, no path.
+        (
+            'workflow_agent',
+            'workflow_agent/sub_agent',
+        ),  # Workflow: author is the workflow, path carries the node name.
+    ],
+)
+@pytest.mark.asyncio
+async def test_direct_sub_agent_resumption_restores_historical_branch(
+    author, node_path
+):
+  """Direct sub-agent resumption restores the historical branch context."""
+  from google.adk.events.event import NodeInfo
+  from pydantic import Field
+
+  class AssertBranchNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      assert ctx.branch == 'parent_branch.sub_branch'
+      yield 'ok'
+
+  sub_agent = AssertBranchNode(name='sub_agent')
+
+  class ParentNode(BaseNode):
+    child: BaseNode = Field(...)
+
+  root_agent = ParentNode(name=author if node_path else 'root', child=sub_agent)
+
+  ss = InMemorySessionService()
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  fc_part = types.Part(
+      function_call=types.FunctionCall(name='get_input', id='fc-1', args={})
+  )
+  sub_agent_event = Event(
+      invocation_id='inv-1',
+      author=author,
+      content=types.Content(parts=[fc_part]),
+      branch='parent_branch.sub_branch',
+      node_info=NodeInfo(path=node_path) if node_path else NodeInfo(),
+  )
+  await ss.append_event(session, sub_agent_event)
+
+  resume_msg = _make_resume_message(fc_id='fc-1')
+  runner = Runner(app_name='test', node=root_agent, session_service=ss)
+
+  events = []
+  async for event in runner._run_node_async(
+      user_id='u',
+      session_id=session.id,
+      invocation_id='inv-1',
+      new_message=resume_msg,
+      node=sub_agent,
+  ):
+    events.append(event)
+
+  outputs = [e.output for e in events if e.output is not None]
+  assert 'ok' in outputs
+
+
+@pytest.mark.asyncio
+async def test_direct_sub_agent_resumption_with_name_collision_resolves_correctly():
+  """Direct sub-agent resumption with a name collision matches by full path."""
+  from google.adk.events.event import NodeInfo
+  from pydantic import Field
+
+  class AssertBranchNode(BaseNode):
+    expected_branch: str = Field(...)
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      assert ctx.branch == self.expected_branch
+      yield 'ok'
+
+  # Two distinct nodes that share the name 'sub_agent'.
+  sub_agent_1 = AssertBranchNode(name='sub_agent', expected_branch='branch_1')
+  sub_agent_2 = AssertBranchNode(name='sub_agent', expected_branch='branch_2')
+
+  class Child1Node(BaseNode):
+    child: BaseNode = Field(...)
+
+  class Child2Node(BaseNode):
+    child: BaseNode = Field(...)
+
+  child1 = Child1Node(name='child1', child=sub_agent_1)
+  child2 = Child2Node(name='child2', child=sub_agent_2)
+
+  class WorkflowNode(BaseNode):
+    c1: BaseNode = Field(...)
+    c2: BaseNode = Field(...)
+
+  root_agent = WorkflowNode(name='workflow', c1=child1, c2=child2)
+
+  ss = InMemorySessionService()
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  # Older event from child2 (the one we resume) on 'branch_2'.
+  fc_part_2 = types.Part(
+      function_call=types.FunctionCall(name='tool', id='fc-2', args={})
+  )
+  event_child2 = Event(
+      invocation_id='inv-1',
+      author='workflow',
+      content=types.Content(parts=[fc_part_2]),
+      branch='branch_2',
+      node_info=NodeInfo(path='workflow/child2/sub_agent'),
+  )
+  await ss.append_event(session, event_child2)
+
+  # Newer event from child1 on 'branch_1' (must be skipped despite being first
+  # in the reverse scan).
+  fc_part_1 = types.Part(
+      function_call=types.FunctionCall(name='tool', id='fc-1', args={})
+  )
+  event_child1 = Event(
+      invocation_id='inv-1',
+      author='workflow',
+      content=types.Content(parts=[fc_part_1]),
+      branch='branch_1',
+      node_info=NodeInfo(path='workflow/child1/sub_agent'),
+  )
+  await ss.append_event(session, event_child1)
+
+  resume_msg = _make_resume_message(fc_name='tool', fc_id='fc-2')
+  runner = Runner(app_name='test', node=root_agent, session_service=ss)
+
+  events = []
+  async for event in runner._run_node_async(
+      user_id='u',
+      session_id=session.id,
+      invocation_id='inv-1',
+      new_message=resume_msg,
+      node=sub_agent_2,
+  ):
+    events.append(event)
+
+  outputs = [e.output for e in events if e.output is not None]
+  assert 'ok' in outputs

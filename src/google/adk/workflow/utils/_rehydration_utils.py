@@ -266,6 +266,10 @@ def _reconstruct_node_states(
           if owner not in scan_states:
             scan_states[owner] = _ChildScanState()
           scan_states[owner].resolved_ids.add(fr.id)
+          # The node paused mid-run to ask this, so what it emitted earlier
+          # in the scan is not its result. Its route stays: a node that does
+          # not rerun never gets to pick an edge again.
+          scan_states[owner].output = None
           response_data = _unwrap_response(fr.response)
 
           schema = schemas_by_id.get(fr.id)

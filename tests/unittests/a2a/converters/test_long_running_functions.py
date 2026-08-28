@@ -15,9 +15,12 @@
 from google.adk.a2a import _compat
 from google.adk.a2a.converters.long_running_functions import LongRunningFunctions
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
+from google.adk.a2a.converters.part_converter import convert_genai_part_to_a2a_part
 from google.adk.a2a.converters.utils import _get_adk_metadata_key
 from google.adk.events.event import Event
+from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from google.genai import types
+from google.genai import types as genai_types
 
 
 def test_default_converter_returns_a2a_long_running_function_call():
@@ -53,3 +56,40 @@ def test_default_converter_returns_a2a_long_running_function_call():
       ]
       is True
   )
+
+
+def _long_running_call_part(function_name: str):
+  """Builds the A2A DataPart produced for a long-running function call."""
+  genai_part = genai_types.Part(
+      function_call=genai_types.FunctionCall(
+          id="call-1", name=function_name, args={}
+      )
+  )
+  return convert_genai_part_to_a2a_part(genai_part)
+
+
+class TestMarkLongRunningFunctionCall:
+  """Test cases for LongRunningFunctions._mark_long_running_function_call."""
+
+  def test_euc_request_maps_to_auth_required(self):
+    """An EUC (credential) request must produce the auth_required state.
+
+    The function name lives in the DataPart's ``data`` (the FunctionCall
+    dump), not in ``metadata`` -- reading it from ``metadata`` always
+    yielded ``None`` and mislabeled the task as input_required.
+    """
+    lrf = LongRunningFunctions()
+
+    lrf._mark_long_running_function_call(
+        _long_running_call_part(REQUEST_EUC_FUNCTION_CALL_NAME)
+    )
+
+    assert lrf._task_state == _compat.TS_AUTH_REQUIRED
+
+  def test_regular_function_maps_to_input_required(self):
+    """A non-EUC long-running function stays in the input_required state."""
+    lrf = LongRunningFunctions()
+
+    lrf._mark_long_running_function_call(_long_running_call_part("do_thing"))
+
+    assert lrf._task_state == _compat.TS_INPUT_REQUIRED

@@ -302,8 +302,8 @@ def test_after_tool_callback_modify_tool_response():
   ]
 
 
-async def test_on_tool_error_callback_tool_not_found_noop():
-  """Test that the on_tool_error_callback is a no-op when the tool is not found."""
+def test_on_tool_error_callback_tool_not_found_noop():
+  """Test that a no-op on_tool_error_callback keeps the default error response."""
   responses = [
       types.Part.from_function_call(
           name='nonexistent_function',
@@ -320,8 +320,15 @@ async def test_on_tool_error_callback_tool_not_found_noop():
   )
 
   runner = testing_utils.InMemoryRunner(agent)
-  with pytest.raises(ValueError):
-    await runner.run_async('test')
+  events = runner.run('test')
+
+  assert testing_utils.simplify_events(events)[-1] == (
+      'root_agent',
+      'response1',
+  )
+  function_response = events[1].content.parts[0].function_response
+  assert function_response.name == 'nonexistent_function'
+  assert 'nonexistent_function' in function_response.response['error']
 
 
 def test_on_tool_error_callback_tool_not_found_modify_tool_response():

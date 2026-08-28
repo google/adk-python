@@ -16,9 +16,9 @@ from __future__ import annotations
 
 from abc import ABC
 import asyncio
+import enum
 import inspect
 import logging
-from typing import Any
 from typing import AsyncGenerator
 from typing import cast
 from typing import Optional
@@ -32,15 +32,16 @@ from websockets.exceptions import ConnectionClosedOK
 
 from . import _output_schema_processor
 from . import functions
+from ...agents._streaming_mode import StreamingMode
 from ...agents.base_agent import BaseAgent
 from ...agents.callback_context import CallbackContext
 from ...agents.invocation_context import InvocationContext
 from ...agents.live_request_queue import LiveRequestQueue
 from ...agents.readonly_context import ReadonlyContext
-from ...agents.run_config import StreamingMode
 from ...auth.auth_tool import AuthConfig
 from ...events.event import Event
 from ...events.event_actions import EventActions
+from ...live._audio_cache_manager import AudioCacheManager
 from ...models.base_llm_connection import BaseLlmConnection
 from ...models.google_llm import Gemini
 from ...models.llm_request import LlmRequest
@@ -54,17 +55,27 @@ from ...tools.tool_context import ToolContext
 from ...utils.context_utils import Aclosing
 from ...utils.variant_utils import GoogleLLMVariant
 from ._invocation_utils import as_llm_agent as _as_llm_agent
+from ._invocation_utils import copy_http_options
 from ._invocation_utils import require_agent as _require_agent
 from ._invocation_utils import require_run_config as _require_run_config
-from .audio_cache_manager import AudioCacheManager
+from ._invocation_utils import run_config_for_new_live_session
 from .functions import build_auth_request_event
 
 # Prefix used by toolset auth credential IDs
 TOOLSET_AUTH_CREDENTIAL_ID_PREFIX = '_adk_toolset_auth_'
 
 
+class _ReconnectMode(enum.Enum):
+  """The mode of reconnection for the live session."""
+
+  RESUME = 'resume'
+  RESTART = 'restart'
+
+
 class _ReconnectSentinel(Event):
   """Internal sentinel event to signal a silent reconnection request."""
+
+  mode: _ReconnectMode = _ReconnectMode.RESUME
 
 
 if TYPE_CHECKING:
@@ -492,7 +503,9 @@ async def _process_agent_tools(
     return
   agent = cast('LlmAgent', raw_agent)
 
-  multiple_tools = len(agent.tools) > 1
+  from .agent_transfer import _get_transfer_targets
+
+  multiple_tools = len(agent.tools) > 1 or bool(_get_transfer_targets(agent))
   model = agent.canonical_model
 
   from ...agents.llm_agent import _convert_tool_union_to_tools
@@ -615,6 +628,26 @@ class BaseLlmFlow(ABC):
           llm_request.live_connect_config.response_modalities,
       )
 
+      # A caller can resume an earlier live session by handing the flow a
+      # handle it obtained from a previous run, which request assembly has by
+      # now put on the connect config (from `RunConfig.session_resumption`).
+      # Seed the invocation with it so the very first connection is treated as
+      # a resumption like any mid-session reconnect: the history the server
+      # already holds is not replayed, and if this connection drops before the
+      # server has pushed its first `session_resumption_update`, the reconnect
+      # path still has the caller's handle to retry with instead of failing the
+      # run. Without this the handle only reached the connect config while the
+      # rest of the run still behaved as if the session were new.
+      session_resumption = llm_request.live_connect_config.session_resumption
+      if (
+          not invocation_context.live_session_resumption_handle
+          and session_resumption is not None
+          and session_resumption.handle
+      ):
+        invocation_context.live_session_resumption_handle = (
+            session_resumption.handle
+        )
+
       attempt = 1
       while True:
         try:
@@ -692,10 +725,13 @@ class BaseLlmFlow(ABC):
                 )
 
             send_task = asyncio.create_task(
-                self._send_to_model(llm_connection, invocation_context)
+                self._send_to_model(
+                    llm_connection, invocation_context, llm_request
+                )
             )
 
             should_reconnect = False
+            reconnect_mode = None
             try:
               async with Aclosing(
                   self._receive_from_model(
@@ -708,6 +744,7 @@ class BaseLlmFlow(ABC):
                 async for event in agen:
                   if isinstance(event, _ReconnectSentinel):
                     should_reconnect = True
+                    reconnect_mode = event.mode
                     break
                   # Empty event means the queue is closed.
                   if not event:
@@ -770,11 +807,9 @@ class BaseLlmFlow(ABC):
                     child_ctx.live_session_resumption_handle = None
 
                     if child_ctx.run_config:
-                      child_ctx.run_config = child_ctx.run_config.model_copy(
-                          deep=True
+                      child_ctx.run_config = run_config_for_new_live_session(
+                          child_ctx.run_config
                       )
-                      if child_ctx.run_config.session_resumption:
-                        child_ctx.run_config.session_resumption.handle = None
 
                     async with Aclosing(
                         agent_to_run.run_live(child_ctx)
@@ -805,7 +840,21 @@ class BaseLlmFlow(ABC):
               except asyncio.CancelledError:
                 pass
           if should_reconnect:
-            continue
+            if reconnect_mode == _ReconnectMode.RESUME:
+              continue
+
+            if reconnect_mode == _ReconnectMode.RESTART:
+              logger.info('Restarting live session.')
+              restart_context = invocation_context.model_copy()
+              restart_context.live_session_resumption_handle = None
+              if restart_context.run_config:
+                restart_context.run_config = run_config_for_new_live_session(
+                    restart_context.run_config
+                )
+              async with Aclosing(self.run_live(restart_context)) as agen:
+                async for item in agen:
+                  yield item
+              return
           break
         except (ConnectionClosed, ConnectionClosedOK) as e:
           # If we have a session resumption handle, we attempt to reconnect.
@@ -926,10 +975,41 @@ class BaseLlmFlow(ABC):
     if invocation_context.active_non_blocking_tool_tasks:
       invocation_context.active_non_blocking_tool_tasks.clear()
 
+  async def _screen_live_user_content(
+      self,
+      invocation_context: InvocationContext,
+      content: types.Content,
+      llm_request: LlmRequest,
+  ) -> Optional[Event]:
+    """Screens live user content with a before model callback."""
+    callback_llm_request = llm_request.model_copy(
+        update={'contents': [content]}
+    )
+    callback_response_event = Event(
+        id=Event.new_id(),
+        invocation_id=invocation_context.invocation_id,
+        author=_as_llm_agent(invocation_context).name,
+        branch=invocation_context.branch,
+    )
+    if blocked_response := await self._handle_before_model_callback(
+        invocation_context,
+        callback_llm_request,
+        callback_response_event,
+    ):
+      blocked_event = self._finalize_model_response_event(
+          callback_llm_request,
+          blocked_response,
+          callback_response_event,
+      )
+      blocked_event.turn_complete = True
+      return blocked_event
+    return None
+
   async def _send_to_model(
       self,
       llm_connection: BaseLlmConnection,
       invocation_context: InvocationContext,
+      llm_request: LlmRequest,
   ) -> None:
     """Sends data to model."""
     while True:
@@ -979,12 +1059,12 @@ class BaseLlmFlow(ABC):
         return
 
       if live_request.activity_start:
-        await llm_connection.send_realtime(types.ActivityStart())
+        await llm_connection.send_realtime(types.ActivityStart())  # type: ignore[arg-type]
       elif live_request.activity_end:
-        await llm_connection.send_realtime(types.ActivityEnd())
+        await llm_connection.send_realtime(types.ActivityEnd())  # type: ignore[arg-type]
       elif live_request.audio_stream_end:
         await llm_connection.send_realtime(
-            types.LiveClientRealtimeInput(audio_stream_end=True)
+            types.LiveClientRealtimeInput(audio_stream_end=True)  # type: ignore[arg-type]
         )
       elif live_request.blob:
         # Cache input audio chunks before flushing
@@ -1021,6 +1101,15 @@ class BaseLlmFlow(ABC):
               session=invocation_context.session,
               event=user_content_event,
           )
+          # Live callback site 1 of 3: Live typed text is screened directly
+          # before sending to the model. Unlike the other callback sites, a
+          # block here does not reconnect because the model has not yet
+          # received the content.
+          if blocked_event := await self._screen_live_user_content(
+              invocation_context, content, llm_request
+          ):
+            await invocation_context._enqueue_event(blocked_event)
+            continue
         await llm_connection._send_content(
             live_request.content, partial=live_request.partial
         )
@@ -1055,6 +1144,8 @@ class BaseLlmFlow(ABC):
       else:
         return cast('LlmAgent', invocation_context.agent).name
 
+    # Accumulated output transcription from the live session.
+    turn_output_transcription = ''
     while True:
       async with Aclosing(llm_connection.receive()) as agen:
         async for llm_response in agen:
@@ -1072,12 +1163,47 @@ class BaseLlmFlow(ABC):
             # We yield a sentinel event to request reconnection internally.
             yield _ReconnectSentinel()
             return
+          if llm_response.turn_complete or llm_response.interrupted:
+            turn_output_transcription = ''
 
           model_response_event = Event(
               id=Event.new_id(),
               invocation_id=invocation_context.invocation_id,
               author=get_author_for_event(llm_response),
           )
+
+          if llm_response.output_transcription:
+            if llm_response.output_transcription.finished:
+              turn_output_transcription = ''
+            elif llm_response.output_transcription.text:
+              turn_output_transcription += (
+                  llm_response.output_transcription.text
+              )
+
+            # Live callback site 2 of 3: Screen the model's accumulated output
+            # transcription chunks. If the callback blocks, yields the event and
+            # reconnects to drop the model's remaining output.
+            if turn_output_transcription:
+              callback_llm_response = llm_response.model_copy(
+                  update={
+                      'output_transcription': types.Transcription(
+                          text=turn_output_transcription,
+                          finished=False,
+                      ),
+                  }
+              )
+              if blocked_response := await self._handle_after_model_callback(
+                  invocation_context,
+                  callback_llm_response,
+                  model_response_event,
+              ):
+                blocked_output_event = self._finalize_model_response_event(
+                    llm_request, blocked_response, model_response_event
+                )
+                blocked_output_event.turn_complete = True
+                yield blocked_output_event
+                yield _ReconnectSentinel(mode=_ReconnectMode.RESTART)
+                return
 
           async with Aclosing(
               self._postprocess_live(
@@ -1110,6 +1236,35 @@ class BaseLlmFlow(ABC):
                     )
 
               yield event
+
+          # Live callback site 3 of 3: Screen the user's spoken input returned as a
+          # finished input transcription. If the callback blocks, yields the event
+          # and reconnects to drop the model's remaining output. Input transcription
+          # is screened after the user response is postprocessed to ensure the user's
+          # input is still yielded to the event stream. This mirrors the behavior at
+          # live callback site 1.
+          if (
+              llm_response.input_transcription
+              and llm_response.input_transcription.finished
+              and llm_response.input_transcription.text
+          ):
+            spoken_content = types.Content(
+                role='user',
+                parts=[
+                    types.Part.from_text(
+                        text=llm_response.input_transcription.text
+                    )
+                ],
+            )
+            if blocked_event := await self._screen_live_user_content(
+                invocation_context,
+                spoken_content,
+                llm_request,
+            ):
+              yield blocked_event
+              yield _ReconnectSentinel(mode=_ReconnectMode.RESTART)
+              return
+
       # Give opportunity for other tasks to run.
       await asyncio.sleep(0)
 
@@ -1134,6 +1289,7 @@ class BaseLlmFlow(ABC):
   ) -> AsyncGenerator[Event, None]:
     """One step means one LLM call."""
     llm_request = LlmRequest()
+    run_config = _require_run_config(invocation_context)
 
     # Preprocess before calling the LLM.
     async with Aclosing(
@@ -1201,6 +1357,14 @@ class BaseLlmFlow(ABC):
         )
     ) as agen:
       async for llm_response in agen:
+        if run_config.support_cfc:
+          # When support_cfc is True, _call_llm_async delegates to run_live,
+          # which already performs full live postprocessing (including tool
+          # execution via handle_function_calls_live). Yield the event directly
+          # to prevent duplicate tool execution in _postprocess_async.
+          yield cast(Event, llm_response)
+          continue
+
         # Postprocess after calling the LLM.
         async with Aclosing(
             self._postprocess_async(
@@ -1229,12 +1393,14 @@ class BaseLlmFlow(ABC):
       )
 
     # Request defaults; _BasicLlmRequestProcessor merges them onto agent config.
+    # Copied rather than deep copied: http_options can carry a live httpx or
+    # aiohttp client and an SSL context, none of which a deep copy survives.
     if (
         invocation_context.run_config
         and invocation_context.run_config.http_options
     ):
-      llm_request.config.http_options = (
-          invocation_context.run_config.http_options.model_copy(deep=True)
+      llm_request.config.http_options = copy_http_options(
+          invocation_context.run_config.http_options
       )
 
     # Runs processors.
@@ -1569,6 +1735,16 @@ class BaseLlmFlow(ABC):
         if response := await self._handle_before_model_callback(
             invocation_context, llm_request, model_response_event
         ):
+          # The model was never called, but the span still has to carry its
+          # attributes: trace consumers key off the event id attribute and
+          # drop spans that lack it.
+          trace_call_llm(
+              invocation_context,
+              model_response_event.id,
+              llm_request,
+              response,
+              span,
+          )
           yield response
           return
 
@@ -1588,37 +1764,36 @@ class BaseLlmFlow(ABC):
         # execution is stopped right here, and exception is thrown.
         invocation_context.increment_llm_call_count()
 
-        responses_generator: AsyncGenerator[Any, None]
         if run_config.support_cfc:
-          invocation_context.live_request_queue = LiveRequestQueue()
-          responses_generator = self.run_live(invocation_context)
+          if invocation_context.live_request_queue is None:
+            invocation_context.live_request_queue = LiveRequestQueue()
           async with Aclosing(
               self._run_and_handle_error(
-                  responses_generator,
+                  self.run_live(invocation_context),
                   invocation_context,
                   llm_request,
                   model_response_event,
                   call_llm_span=span,
               )
           ) as agen:
-            async for llm_response in agen:
+            async for event in agen:
               # Rebind to call_llm span for after_model_callback.
               with trace.use_span(span, end_on_exit=False):
                 if altered := (
                     await self._handle_after_model_callback(
                         invocation_context,
-                        llm_response,
+                        event,
                         model_response_event,
                     )
                 ):
-                  llm_response = altered
+                  event = altered
               # only yield partial response in SSE streaming mode
               if (
                   run_config.streaming_mode == StreamingMode.SSE
-                  or not llm_response.partial
+                  or not event.partial
               ):
-                yield llm_response
-              if llm_response.turn_complete:
+                yield event
+              if event.turn_complete:
                 queue = invocation_context.live_request_queue
                 assert queue is not None
                 queue.close()
