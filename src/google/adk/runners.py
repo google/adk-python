@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import aclosing
+from dataclasses import dataclass
+from dataclasses import field
 import inspect
 import logging
 from pathlib import Path
@@ -81,6 +83,24 @@ if TYPE_CHECKING:
 logger = logging.getLogger('google_adk.' + __name__)
 
 _EventQueueItem = tuple[object, asyncio.Event | None]
+
+# Put on InvocationContext._event_queue by cancel_async so the consume loop
+# can yield the already-persisted interrupted event and exit cleanly.
+_CANCEL_SENTINEL = object()
+
+
+@dataclass
+class _ActiveInvocation:
+  """A live run_async invocation that cancel_async can stop."""
+
+  user_id: str
+  session_id: str
+  invocation_id: str
+  context: InvocationContext
+  consumer_task: asyncio.Task[Any] | None = None
+  root_task: asyncio.Task[None] | None = None
+  interrupted_event: Event | None = field(default=None)
+
 
 # Silence unused warning.
 # tracer is imported for backwards compatibility, to avoid breaking change in the API.
@@ -306,6 +326,8 @@ class Runner:
     self._app_name_alignment_hint: Optional[str] = None
     self._enforce_app_name_alignment()
     self._warn_uncached_agent_transfer()
+    # Live run_async invocations, keyed by (user_id, session_id, invocation_id).
+    self._active_invocations: dict[tuple[str, str, str], _ActiveInvocation] = {}
 
   def _require_root_agent(self) -> BaseAgent:
     """Returns the root as an agent for agent-only execution paths."""
@@ -628,6 +650,12 @@ class Runner:
               ic, node, root=self.agent, invocation_id=invocation_id
           )
         ic._event_queue = asyncio.Queue()
+        rec = self._register_active_invocation(
+            user_id=user_id,
+            session_id=session_id,
+            invocation_context=ic,
+            consumer_task=asyncio.current_task(),
+        )
 
         # 2. Append user message to session and resolve node_input
         node_input = None
@@ -740,6 +768,7 @@ class Runner:
                   await ic._event_queue.put((done_sentinel, None))
 
               task = asyncio.create_task(_drive_root_node())
+              rec.root_task = task
 
               # 4. Main loop: consume events, persist, yield
               try:
@@ -767,18 +796,23 @@ class Runner:
           # unhandled runner error, so notify on_run_error_callback once and
           # re-raise. on_run_error is notification-only and never raises, so
           # there is no recursive notification.
-          if run_error is None:
-            try:
-              await ic.plugin_manager.run_after_run_callback(
-                  invocation_context=ic
-              )
-              await self._run_post_invocation_compaction(
-                  session=session,
-                  skip_token_compaction=ic.token_compaction_checked,
-              )
-            except Exception as e:
-              await _notify_run_error(ic.plugin_manager, ic, e)
-              raise
+          try:
+            if run_error is None:
+              try:
+                await ic.plugin_manager.run_after_run_callback(
+                    invocation_context=ic
+                )
+                await self._run_post_invocation_compaction(
+                    session=session,
+                    skip_token_compaction=ic.token_compaction_checked,
+                )
+              except Exception as e:
+                await _notify_run_error(ic.plugin_manager, ic, e)
+                raise
+          finally:
+            self._unregister_active_invocation(
+                user_id, session_id, ic.invocation_id
+            )
 
     async with aclosing(_with_caller_context(_run(), caller_ctx)) as agen:
       async for event in agen:
@@ -938,6 +972,12 @@ class Runner:
     while True:
       event_or_done, processed_signal = await event_queue.get()
       if event_or_done is done_sentinel:
+        break
+      if event_or_done is _CANCEL_SENTINEL:
+        key = (ic.session.user_id, ic.session.id, ic.invocation_id)
+        rec = self._active_invocations.get(key)
+        if rec is not None and rec.interrupted_event is not None:
+          yield rec.interrupted_event
         break
       if not isinstance(event_or_done, Event):
         raise TypeError(
@@ -1393,36 +1433,50 @@ class Runner:
               # already final.
               return
 
-        async def execute(
-            ctx: InvocationContext,
-        ) -> AsyncGenerator[Event, None]:
-          active_agent = ctx.agent
-          if not isinstance(active_agent, BaseAgent):
-            raise RuntimeError('Agent execution has no active BaseAgent.')
-          async with aclosing(active_agent.run_async(ctx)) as agen:
+        self._register_active_invocation(
+            user_id=user_id,
+            session_id=session_id,
+            invocation_context=invocation_context,
+            consumer_task=asyncio.current_task(),
+        )
+        try:
+
+          async def execute(
+              ctx: InvocationContext,
+          ) -> AsyncGenerator[Event, None]:
+            active_agent = ctx.agent
+            if not isinstance(active_agent, BaseAgent):
+              raise RuntimeError('Agent execution has no active BaseAgent.')
+            async with aclosing(active_agent.run_async(ctx)) as agen:
+              async for event in agen:
+                yield event
+
+          async with aclosing(
+              _with_caller_context(
+                  self._exec_with_plugin(
+                      invocation_context=invocation_context,
+                      session=invocation_context.session,
+                      execute_fn=execute,
+                      is_live_call=False,
+                  ),
+                  caller_ctx_trace,
+              )
+          ) as agen:
             async for event in agen:
               yield event
-
-        async with aclosing(
-            _with_caller_context(
-                self._exec_with_plugin(
-                    invocation_context=invocation_context,
-                    session=invocation_context.session,
-                    execute_fn=execute,
-                    is_live_call=False,
-                ),
-                caller_ctx_trace,
-            )
-        ) as agen:
-          async for event in agen:
-            yield event
-        # Run compaction after all events are yielded from the agent.
-        # (We don't compact in the middle of an invocation, we only compact at
-        # the end of an invocation.)
-        await self._run_post_invocation_compaction(
-            session=invocation_context.session,
-            skip_token_compaction=(invocation_context.token_compaction_checked),
-        )
+          # Run compaction after all events are yielded from the agent.
+          # (We don't compact in the middle of an invocation, we only compact at
+          # the end of an invocation.)
+          await self._run_post_invocation_compaction(
+              session=invocation_context.session,
+              skip_token_compaction=(
+                  invocation_context.token_compaction_checked
+              ),
+          )
+        finally:
+          self._unregister_active_invocation(
+              user_id, session_id, invocation_context.invocation_id
+          )
 
     async with aclosing(_run_with_trace(new_message, invocation_id)) as agen:
       async for event in agen:
@@ -1478,6 +1532,218 @@ class Runner:
     logger.info('Rewinding session to invocation: %s', rewind_event)
 
     await self.session_service.append_event(session=session, event=rewind_event)
+
+  def _active_invocation_key(
+      self, user_id: str, session_id: str, invocation_id: str
+  ) -> tuple[str, str, str]:
+    return (user_id, session_id, invocation_id)
+
+  def _register_active_invocation(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      invocation_context: InvocationContext,
+      consumer_task: asyncio.Task[Any] | None,
+  ) -> _ActiveInvocation:
+    rec = _ActiveInvocation(
+        user_id=user_id,
+        session_id=session_id,
+        invocation_id=invocation_context.invocation_id,
+        context=invocation_context,
+        consumer_task=consumer_task,
+    )
+    self._active_invocations[
+        self._active_invocation_key(
+            user_id, session_id, invocation_context.invocation_id
+        )
+    ] = rec
+    return rec
+
+  def _unregister_active_invocation(
+      self, user_id: str, session_id: str, invocation_id: str
+  ) -> None:
+    self._active_invocations.pop(
+        self._active_invocation_key(user_id, session_id, invocation_id), None
+    )
+
+  def _matching_active_invocations(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      invocation_id: Optional[str],
+  ) -> list[_ActiveInvocation]:
+    if invocation_id is not None:
+      rec = self._active_invocations.get(
+          self._active_invocation_key(user_id, session_id, invocation_id)
+      )
+      return [rec] if rec is not None else []
+    return [
+        rec
+        for rec in self._active_invocations.values()
+        if rec.user_id == user_id and rec.session_id == session_id
+    ]
+
+  def _interrupted_event(self, ic: InvocationContext) -> Event:
+    agent = ic.agent
+    author = (
+        agent.name if agent is not None and hasattr(agent, 'name') else 'model'
+    )
+    event = Event(
+        invocation_id=ic.invocation_id,
+        author=author,
+        interrupted=True,
+    )
+    _apply_run_config_custom_metadata(event, ic.run_config)
+    ic.stamp_event_branch_context(event)
+    return event
+
+  async def _wait_for_invocations_to_finish(
+      self, keys: list[tuple[str, str, str]], timeout: float = 10.0
+  ) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    pending = list(keys)
+    while pending and loop.time() < deadline:
+      pending = [key for key in pending if key in self._active_invocations]
+      if not pending:
+        return
+      await asyncio.sleep(0.01)
+    if pending:
+      logger.warning(
+          'Timed out waiting for cancelled invocations to finish: %s', pending
+      )
+
+  async def cancel_async(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      invocation_id: Optional[str] = None,
+  ) -> list[str]:
+    """Stops a live agent invocation.
+
+    Cooperative LLM loops see ``InvocationContext.end_invocation``. Blocked
+    tool/model calls are cancelled via the root node task (workflow path) or
+    the consumer task (legacy agents). An ``interrupted=True`` event is
+    appended so the session records the stop.
+
+    Args:
+      user_id: The user ID of the session.
+      session_id: The session ID.
+      invocation_id: If set, only that invocation is cancelled. If omitted,
+        every live invocation on the session is cancelled.
+
+    Returns:
+      The invocation IDs that were actually running and are now stopping.
+      Empty if nothing was in flight (idempotent).
+    """
+    records = self._matching_active_invocations(
+        user_id=user_id, session_id=session_id, invocation_id=invocation_id
+    )
+    if not records:
+      return []
+
+    cancelled_ids: list[str] = []
+    caller_task = asyncio.current_task()
+    for rec in records:
+      rec.context.request_cancel()
+      interrupted = self._interrupted_event(rec.context)
+      rec.interrupted_event = interrupted
+      await self.session_service.append_event(
+          session=rec.context.session, event=interrupted
+      )
+      event_queue = rec.context._event_queue
+      if event_queue is not None:
+        await event_queue.put((_CANCEL_SENTINEL, None))
+      if rec.root_task is not None and not rec.root_task.done():
+        rec.root_task.cancel()
+      elif (
+          rec.consumer_task is not None
+          and rec.consumer_task is not caller_task
+          and not rec.consumer_task.done()
+      ):
+        rec.consumer_task.cancel()
+      cancelled_ids.append(rec.invocation_id)
+      logger.info(
+          'Cancelled invocation %s for session %s',
+          rec.invocation_id,
+          session_id,
+      )
+    return cancelled_ids
+
+  async def edit_message_async(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      invocation_id: str,
+      new_message: types.Content,
+      state_delta: Optional[dict[str, Any]] = None,
+      run_config: Optional[RunConfig] = None,
+  ) -> AsyncGenerator[Event, None]:
+    """Replaces a previous user prompt and regenerates from that turn.
+
+    Stops any live run on the session, rewinds history to before
+    ``invocation_id``, then runs the agent with ``new_message``.
+
+    Args:
+      user_id: The user ID of the session.
+      session_id: The session ID.
+      invocation_id: The user turn to replace (the invocation that user
+        message started).
+      new_message: The edited prompt.
+      state_delta: Optional state changes applied with the new message.
+      run_config: The run config for the regenerated turn.
+
+    Yields:
+      Events from the regenerated invocation.
+
+    Raises:
+      ValueError: If ``invocation_id`` is not a user turn in the session.
+    """
+    if new_message and not new_message.role:
+      new_message.role = 'user'
+
+    run_config = run_config or RunConfig()
+    session = await self._get_or_create_session(
+        user_id=user_id,
+        session_id=session_id,
+        get_session_config=run_config.get_session_config,
+    )
+    original = self._find_original_user_content(session, invocation_id)
+    if original is None:
+      raise ValueError(
+          f'No user message found for invocation ID: {invocation_id}'
+      )
+
+    cancelled_ids = await self.cancel_async(
+        user_id=user_id, session_id=session_id
+    )
+    if cancelled_ids:
+      await self._wait_for_invocations_to_finish([
+          self._active_invocation_key(user_id, session_id, cancelled_id)
+          for cancelled_id in cancelled_ids
+      ])
+
+    await self.rewind_async(
+        user_id=user_id,
+        session_id=session_id,
+        rewind_before_invocation_id=invocation_id,
+        run_config=run_config,
+    )
+    async with aclosing(
+        self.run_async(
+            user_id=user_id,
+            session_id=session_id,
+            new_message=new_message,
+            state_delta=state_delta,
+            run_config=run_config,
+        )
+    ) as agen:
+      async for event in agen:
+        yield event
 
   async def _compute_state_delta_for_rewind(
       self, session: Session, rewind_event_index: int

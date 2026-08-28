@@ -533,6 +533,26 @@ class RunAgentRequest(common.BaseModel):
   custom_metadata: Optional[dict[str, Any]] = None
 
 
+class CancelAgentRequest(common.BaseModel):
+  """Stops a live invocation on a session.
+
+  If ``invocation_id`` is omitted, every live invocation on the session is
+  cancelled.
+  """
+
+  invocation_id: Optional[str] = None
+
+
+class EditMessageRequest(common.BaseModel):
+  """Replaces a previous user prompt and regenerates from that turn."""
+
+  invocation_id: str
+  new_message: types.Content
+  streaming: bool = False
+  state_delta: Optional[dict[str, Any]] = None
+  custom_metadata: Optional[dict[str, Any]] = None
+
+
 class CreateSessionRequest(common.BaseModel):
   session_id: Optional[str] = Field(
       default=None,
@@ -1892,7 +1912,9 @@ class ApiServer:
         monitor_task.cancel()
 
     @app.post("/run_sse")
-    async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
+    async def run_agent_sse(
+        req: RunAgentRequest, request: Request
+    ) -> StreamingResponse:
       app_name = req.app_name or self.default_app_name
       if not app_name:
         raise HTTPException(
@@ -1927,6 +1949,28 @@ class ApiServer:
       async def event_generator():
         is_closing = False
         original_exc = None
+
+        async def watch_disconnect():
+          try:
+            while True:
+              message = await request.receive()
+              if message.get("type") == "http.disconnect":
+                logger.warning(
+                    "Client disconnected. Cancelling agent run for session %s.",
+                    req.session_id,
+                )
+                await runner.cancel_async(
+                    user_id=req.user_id, session_id=req.session_id
+                )
+                break
+          except asyncio.CancelledError:
+            pass
+          except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.error(
+                "Exception in disconnect monitor: %s", e, exc_info=True
+            )
+
+        monitor_task = asyncio.create_task(watch_disconnect())
         try:
           async with Aclosing(
               runner.run_async(
@@ -2005,12 +2049,101 @@ class ApiServer:
               "Error during generator cleanup after completion: %s", e
           )
           raise e
+        finally:
+          monitor_task.cancel()
 
       # Returns a streaming response with the proper media type for SSE
       return StreamingResponse(
           event_generator(),
           media_type="text/event-stream",
       )
+
+    @app.post(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/cancel",
+        response_model_exclude_none=True,
+    )
+    async def cancel_agent_run(
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        req: CancelAgentRequest = CancelAgentRequest(),
+    ) -> dict[str, Any]:
+      """Stops a live agent invocation on this session."""
+      self.current_app_name_ref.value = app_name
+      runner = await self.get_runner_async(app_name)
+      _set_telemetry_context_if_needed(runner)
+      invocation_id = req.invocation_id
+      try:
+        cancelled_ids = await runner.cancel_async(
+            user_id=user_id,
+            session_id=session_id,
+            invocation_id=invocation_id,
+        )
+      except SessionNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+      return {
+          "cancelled": bool(cancelled_ids),
+          "invocationIds": cancelled_ids,
+      }
+
+    @app.post(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/edit",
+        response_model_exclude_none=True,
+    )
+    async def edit_agent_message(
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        req: EditMessageRequest,
+    ):
+      """Rewinds to a previous user turn and regenerates with a new prompt."""
+      self.current_app_name_ref.value = app_name
+      runner = await self.get_runner_async(app_name)
+      _set_telemetry_context_if_needed(runner)
+      run_config = (
+          RunConfig(
+              streaming_mode=(
+                  StreamingMode.SSE if req.streaming else StreamingMode.NONE
+              ),
+              custom_metadata=req.custom_metadata,
+          )
+          if req.custom_metadata or req.streaming
+          else None
+      )
+
+      async def _edit_events():
+        try:
+          async with Aclosing(
+              runner.edit_message_async(
+                  user_id=user_id,
+                  session_id=session_id,
+                  invocation_id=req.invocation_id,
+                  new_message=req.new_message,
+                  state_delta=req.state_delta,
+                  run_config=run_config,
+              )
+          ) as agen:
+            async for event in agen:
+              yield event
+        except SessionNotFoundError as e:
+          raise HTTPException(status_code=404, detail=str(e)) from e
+        except ValueError as e:
+          raise HTTPException(status_code=400, detail=str(e)) from e
+
+      if req.streaming:
+
+        async def event_generator():
+          async for event in _edit_events():
+            sse_event = event.model_dump_json(exclude_none=True, by_alias=True)
+            yield f"data: {sse_event}\n\n"
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+        )
+
+      events = [event async for event in _edit_events()]
+      return events
 
     @app.websocket("/run_live")
     async def run_agent_live(
