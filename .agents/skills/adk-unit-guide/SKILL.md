@@ -26,6 +26,61 @@ Unit guides focus on public APIs and caller-visible behavior. Do not
 discuss internal implementation details (such as private methods, internal state
 mechanisms, or unexported helpers).
 
+## Voice
+
+Write to help the reader understand, not to instruct them from above.
+
+- **Give the reason, not only the rule.** Whenever the guide states a
+  constraint, a default, or a recommendation, say why it is that way. A reader
+  who knows the reason can handle the case the guide did not anticipate.
+- **Do not decide for the reader.** Phrasings such as "most applications never
+  need this" or "you will rarely" tell people what they want. State the
+  trade-off and let them choose.
+- **Explain at the caller's level.** Explaining what happens is required;
+  explaining the machinery that makes it happen is not. If an explanation needs
+  a private symbol to make sense, it is pitched at the wrong layer.
+- **Length follows understanding.** Brevity is not the goal. Where a reader
+  would have a follow-up question, answer it. Where the sentence already lands,
+  leave it.
+- **Problem before syntax.** Say what the reader is trying to do, then show the
+  code.
+- Every heading has at least one sentence under it before the next heading, and
+  every code block has a sentence introducing what it does.
+
+Sentence-level rules, following the Google developer documentation style guide:
+present tense, no contractions, no parentheticals (use commas), no bare "This"
+as a subject, no `e.g.` or `etc.`, no superlatives, sentence case in headings,
+and no heading deeper than H3.
+
+### What the difference looks like
+
+From the `BaseNode` guide. Before:
+
+> Most applications never subclass `BaseNode`, so the sections that follow cover
+> the settings first.
+
+That decides for the reader and gives them nothing to check their own case
+against. After:
+
+> You usually configure a node rather than subclass one, because the settings
+> below cover what most graphs need. Subclassing earns its keep when you want
+> behavior the settings cannot express, and that case is at the end.
+
+Same length, same facts. The second one names the reason, so a reader can tell
+which of the two situations is theirs.
+
+A second pair, from the `JoinNode` guide. Before:
+
+> Here three tasks run in parallel on the same input, and a `JoinNode` collects
+> their results.
+
+That opens in speech rather than documentation, and it drops the name of the
+pattern the reader would search for. After:
+
+> This example builds a fan-out/fan-in workflow. Three tasks run in parallel on
+> the same input, and a `JoinNode` aggregates their results so that a final node
+> can present all three together.
+
 ## Inputs
 
 Require the source file, or a class or method named inside it. Also read, when
@@ -67,8 +122,13 @@ of contents; a guide missing from it is unreachable.
 
 - One minimal example under "Get started", with enough of the surrounding
   classes to show where the call belongs. Start from a unit test if one exists.
-- Omit top-level `import` statements and `asyncio.run(main())` runner
-  boilerplate from example code snippets to keep the guide focused on the unit.
+- Keep the `google.adk` import lines, because the import path is the single
+  most error-prone thing a reader copies. Omit unrelated standard-library
+  imports and `asyncio.run(main())` runner boilerplate, which add nothing about
+  the unit.
+- Show what a developer would actually write. An example that only demonstrates
+  the shape of an interface, or that drives a service the reader would normally
+  reach through `Runner`, does not belong in a guide.
 - Do not set `model=` on a sample agent — guides stay model-agnostic, and no
   guide in `docs/guides/` currently pins a model.
 - For workflow nodes, show the logic as a plain Python function rather than a

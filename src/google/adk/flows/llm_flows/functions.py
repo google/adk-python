@@ -598,12 +598,12 @@ async def _execute_single_function_call_async(
         tool_context=tool_context,
         error=tool_error,
     )
-    if error_response is not None:
-      return __build_response_event(
-          tool, error_response, tool_context, invocation_context
-      )
-    else:
-      raise tool_error
+    if error_response is None:
+      logger.warning('%s', tool_error)
+      error_response = _build_tool_not_found_response(tool.name, tools_dict)
+    return __build_response_event(
+        tool, error_response, tool_context, invocation_context
+    )
 
   async def _run_with_trace() -> Event | None:
     nonlocal function_args, detected_error_type
@@ -628,7 +628,7 @@ async def _execute_single_function_call_async(
         if inspect.isawaitable(callback_result):
           callback_result = await callback_result
         function_response = callback_result
-        if function_response:
+        if function_response is not None:
           break
 
     # Step 3: Otherwise, proceed calling the tool normally.
@@ -674,7 +674,7 @@ async def _execute_single_function_call_async(
         if inspect.isawaitable(callback_result):
           callback_result = await callback_result
         altered_function_response = callback_result
-        if altered_function_response:
+        if altered_function_response is not None:
           break
 
     # Step 6: If alternative response exists from after_tool_callback, use it
@@ -689,7 +689,9 @@ async def _execute_single_function_call_async(
       # injection) or defers its response by design (e.g., the LlmAgent
       # wrapper for task delegation synthesizes the FR after the
       # sub-agent completes).  Either way, skip the auto-FR build when
-      # the tool returned nothing.
+      # the tool returned nothing.  Truthiness is deliberate here, unlike
+      # the callback chains above: the real FR still arrives later, so an
+      # empty dict must not answer the call early.
       return None
 
     detected_error_type = _detect_error_type_for_telemetry(
@@ -847,11 +849,12 @@ async def _execute_single_function_call_live(
         tool_context=tool_context,
         error=tool_error,
     )
-    if error_response is not None:
-      return __build_response_event(
-          tool, error_response, tool_context, invocation_context
-      )
-    raise tool_error
+    if error_response is None:
+      logger.warning('%s', tool_error)
+      error_response = _build_tool_not_found_response(tool.name, tools_dict)
+    return __build_response_event(
+        tool, error_response, tool_context, invocation_context
+    )
 
   async def _run_with_trace() -> Event | None:
     """Executes the tool with full lifecycle management and telemetry.
@@ -890,7 +893,7 @@ async def _execute_single_function_call_live(
         if inspect.isawaitable(callback_result):
           callback_result = await callback_result
         function_response = callback_result
-        if function_response:
+        if function_response is not None:
           break
 
     # Step 3: Otherwise, proceed calling the tool normally.
@@ -941,7 +944,7 @@ async def _execute_single_function_call_live(
         if inspect.isawaitable(callback_result):
           callback_result = await callback_result
         altered_function_response = callback_result
-        if altered_function_response:
+        if altered_function_response is not None:
           break
 
     # Step 6: If alternative response exists from after_tool_callback, use it
@@ -954,7 +957,9 @@ async def _execute_single_function_call_live(
     ) and not function_response:
       # The tool either runs long (FR will arrive later via session
       # injection) or defers its response by design.  Skip the auto-FR
-      # build when the tool returned nothing.
+      # build when the tool returned nothing.  Truthiness is deliberate
+      # here, unlike the callback chains above: the real FR still arrives
+      # later, so an empty dict must not answer the call early.
       return None
 
     detected_error_type = _detect_error_type_for_telemetry(
@@ -1329,6 +1334,26 @@ def _get_tool(
     raise ValueError(error_msg)
 
   return tools_dict[tool_name]
+
+
+def _build_tool_not_found_response(
+    tool_name: str, tools_dict: dict[str, BaseTool]
+) -> dict[str, str]:
+  """Returns the error payload for a tool name the model made up.
+
+  A name the model invented is the model's own mistake to correct, so it is
+  reported back to the model the way a malformed argument list already is,
+  rather than raised out of the invocation.
+  """
+  available = ', '.join(tools_dict) or 'none'
+  return {
+      'error': (
+          f'Invoking `{tool_name}()` failed as no tool with that name is'
+          f' available. The tools you can call are: {available}. You could'
+          ' retry, but it is IMPORTANT that you only call a tool from that'
+          ' list.'
+      )
+  }
 
 
 def _create_tool_context(

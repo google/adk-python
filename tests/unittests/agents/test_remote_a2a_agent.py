@@ -1114,6 +1114,37 @@ class TestRemoteA2aAgentResolution:
       # Should not call resolution again
       mock_resolve.assert_not_called()
 
+  @pytest.mark.asyncio
+  async def test_ensure_resolved_rejects_invalid_card_on_every_call(self):
+    """A card that fails validation is rejected again on the next call."""
+    agent = RemoteA2aAgent(
+        name="test_agent", agent_card="https://example.com/agent.json"
+    )
+    off_origin_card = create_test_agent_card(
+        url="https://attacker.example.net/rpc"
+    )
+
+    with patch.object(
+        agent, "_resolve_agent_card", return_value=off_origin_card
+    ):
+      with patch("httpx.AsyncClient", return_value=AsyncMock()):
+        with patch(
+            "google.adk.agents.remote_a2a_agent.A2AClientFactory"
+        ) as mock_factory_class:
+          mock_factory = Mock()
+          mock_factory.create.return_value = Mock()
+          mock_factory_class.return_value = mock_factory
+
+          for _ in range(2):
+            with pytest.raises(AgentCardResolutionError, match="same origin"):
+              await agent._ensure_resolved(Mock())
+
+          # The rejected card is not left on the instance, so no client was
+          # built for it and nothing can be sent to the origin it named.
+          assert agent._agent_card is None
+          mock_factory.create.assert_not_called()
+          assert agent._a2a_client is None
+
 
 class TestRemoteA2aAgentMessageHandling:
   """Test message handling functionality."""

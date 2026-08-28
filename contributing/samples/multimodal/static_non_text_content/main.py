@@ -35,7 +35,6 @@ async def call_agent_async(
     runner, user_id: str, session_id: str, prompt: str
 ) -> str:
   """Helper function to call agent and return final response."""
-  from google.adk.agents.run_config import RunConfig
   from google.genai import types
 
   content = types.Content(
@@ -47,7 +46,6 @@ async def call_agent_async(
       user_id=user_id,
       session_id=session_id,
       new_message=content,
-      run_config=RunConfig(save_input_blobs_as_artifacts=False),
   ):
     if event.content and event.content.parts:
       if text := "".join(part.text or "" for part in event.content.parts):

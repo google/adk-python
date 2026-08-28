@@ -23,11 +23,13 @@ from __future__ import annotations
 from collections.abc import Sequence
 import dataclasses
 from enum import Enum
+import os
 from typing import Any
 from typing import AsyncGenerator
 from typing import Generator
 from typing import Literal
 from typing import Optional
+from unittest import mock
 
 from absl.testing import parameterized
 from google.adk.tools._function_tool_declarations import build_function_declaration_with_json_schema
@@ -35,6 +37,7 @@ from google.adk.tools.tool_context import ToolContext
 from pydantic import BaseModel
 from pydantic import Field
 from pydantic.dataclasses import dataclass as pyd_dataclass
+import pytest
 
 
 class Color(Enum):
@@ -835,6 +838,97 @@ class TestComplexFunction(parameterized.TestCase):
             "type": "null",
         },
     )
+
+
+@mock.patch.dict(os.environ, {"GOOGLE_GENAI_USE_ENTERPRISE": "true"})
+class TestVertexAiAnyOfSanitization(parameterized.TestCase):
+  """Tests that `Optional`/`Union` `anyOf` schemas are made Vertex-safe.
+
+  Vertex AI rejects schemas where an `anyOf` wrapper has no top-level `type`
+  (see https://github.com/googleapis/python-genai/issues/1807), while AI
+  Studio accepts them unmodified. This is only exercised when the
+  enterprise/Vertex variant is active.
+  """
+
+  def test_optional_field_flattened_to_nullable(self):
+    """Optional[list[str]] should become a plain array schema + nullable."""
+
+    def search(query: str, sources: Optional[list[str]] = None) -> str:
+      """Search using optional sources."""
+      return query
+
+    decl = build_function_declaration_with_json_schema(search)
+    schema = decl.parameters_json_schema
+
+    sources_schema = schema["properties"]["sources"]
+    self.assertNotIn("anyOf", sources_schema)
+    self.assertEqual(sources_schema["type"], "array")
+    self.assertEqual(sources_schema["items"]["type"], "string")
+    self.assertTrue(sources_schema["nullable"])
+    self.assertIsNone(sources_schema["default"])
+
+  def test_optional_pydantic_model_field_flattened(self):
+    """Optional[BaseModel] fields should also be flattened, not just primitives."""
+
+    def save_address(address: Optional[Address] = None) -> str:
+      """Save an optional address."""
+      return "ok"
+
+    decl = build_function_declaration_with_json_schema(save_address)
+    schema = decl.parameters_json_schema
+
+    address_schema = schema["properties"]["address"]
+    self.assertNotIn("anyOf", address_schema)
+    self.assertIn("$ref", address_schema)
+    self.assertTrue(address_schema["nullable"])
+
+  def test_output_schema_pydantic_model_flattened(self):
+    """Optional fields on a BaseModel passed directly should be flattened."""
+
+    class CoordinatorResponse(BaseModel):
+      """A coordinator response."""
+
+      answer: str
+      sources: Optional[list[str]] = None
+
+    decl = build_function_declaration_with_json_schema(CoordinatorResponse)
+    schema = decl.parameters_json_schema
+
+    sources_schema = schema["properties"]["sources"]
+    self.assertNotIn("anyOf", sources_schema)
+    self.assertEqual(sources_schema["type"], "array")
+    self.assertTrue(sources_schema["nullable"])
+
+  def test_true_union_left_untouched(self):
+    """A real multi-variant union (not Optional) is not flattened."""
+
+    def process(value: int | str) -> str:
+      """Process a value."""
+      return str(value)
+
+    decl = build_function_declaration_with_json_schema(process)
+    schema = decl.parameters_json_schema
+
+    value_schema = schema["properties"]["value"]
+    self.assertIn("anyOf", value_schema)
+    self.assertLen(value_schema["anyOf"], 2)
+
+  def test_optional_union_flattened(self):
+    """Optional[Union[int, str]] should flatten to Union[int, str] + nullable."""
+
+    def process(value: Optional[int | str] = None) -> str:
+      """Process an optional union value."""
+      return str(value)
+
+    decl = build_function_declaration_with_json_schema(process)
+    schema = decl.parameters_json_schema
+
+    value_schema = schema["properties"]["value"]
+    self.assertIn("anyOf", value_schema)
+    self.assertLen(value_schema["anyOf"], 2)
+    types = {v.get("type") for v in value_schema["anyOf"]}
+    self.assertEqual(types, {"integer", "string"})
+    self.assertTrue(value_schema["nullable"])
 
 
 class TestPydanticModelAsFunction(parameterized.TestCase):

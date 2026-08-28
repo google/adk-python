@@ -990,14 +990,19 @@ class RemoteA2aAgent(BaseAgent):
       if not self._agent_card:
 
         # Resolve agent card if needed
-        self._agent_card = await self._resolve_agent_card(ctx)
+        agent_card = await self._resolve_agent_card(ctx)
 
         # Validate agent card
-        await self._validate_agent_card(self._agent_card)
+        await self._validate_agent_card(agent_card)
+
+        # Store the card only once it has validated. A rejected card left on
+        # the instance reads as already resolved, so the next call skips the
+        # check and talks to the origin that card named.
+        self._agent_card = agent_card
 
         # Update description if empty
-        if not self.description and self._agent_card.description:
-          self.description = self._agent_card.description
+        if not self.description and agent_card.description:
+          self.description = agent_card.description
 
       # Initialize A2A client
       if not self._a2a_client:

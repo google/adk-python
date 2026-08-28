@@ -181,6 +181,65 @@ class TestUnsafeLocalCodeExecutor:
     assert result.stdout == ""
     assert "Code execution timed out after 1 seconds." in result.stderr
 
+  def test_exit_code_is_zero_for_a_clean_run(
+      self, mock_invocation_context: InvocationContext
+  ):
+    executor = UnsafeLocalCodeExecutor()
+    code_input = CodeExecutionInput(code="print('done')")
+
+    result = executor.execute_code(mock_invocation_context, code_input)
+
+    assert result.exit_code == 0
+
+  def test_exit_code_reports_an_uncaught_exception(
+      self, mock_invocation_context: InvocationContext
+  ):
+    """The runner turns any escaping exception into status 1."""
+    executor = UnsafeLocalCodeExecutor()
+    code_input = CodeExecutionInput(code="print('partial')\n1 / 0")
+
+    result = executor.execute_code(mock_invocation_context, code_input)
+
+    # Output written before the failure is no reason to call the run clean.
+    assert result.stdout == "partial\n"
+    assert result.exit_code == 1
+
+  def test_exit_code_preserves_a_chosen_status(
+      self, mock_invocation_context: InvocationContext
+  ):
+    executor = UnsafeLocalCodeExecutor()
+    code_input = CodeExecutionInput(code="import sys\nsys.exit(3)")
+
+    result = executor.execute_code(mock_invocation_context, code_input)
+
+    assert result.exit_code == 3
+
+  def test_exit_code_sees_an_ending_no_in_process_hook_can(
+      self, mock_invocation_context: InvocationContext
+  ):
+    """`os._exit` bypasses every handler, so only the child's status shows it."""
+    executor = UnsafeLocalCodeExecutor()
+    code_input = CodeExecutionInput(code="import os\nos._exit(5)")
+
+    result = executor.execute_code(mock_invocation_context, code_input)
+
+    assert result.exit_code == 5
+
+  @pytest.mark.skipif(
+      not hasattr(signal, "SIGKILL"), reason="POSIX signals only."
+  )
+  def test_exit_code_is_negative_when_a_signal_kills_the_code(
+      self, mock_invocation_context: InvocationContext
+  ):
+    executor = UnsafeLocalCodeExecutor()
+    code_input = CodeExecutionInput(
+        code="import os, signal\nos.kill(os.getpid(), signal.SIGKILL)"
+    )
+
+    result = executor.execute_code(mock_invocation_context, code_input)
+
+    assert result.exit_code == -signal.SIGKILL
+
   def test_execute_code_main_guard_runs(
       self, mock_invocation_context: InvocationContext
   ):

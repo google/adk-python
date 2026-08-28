@@ -15,20 +15,24 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import List
+from typing import Final
 from typing import Literal
-from typing import Optional
 
 from pydantic import BaseModel
 from pydantic import model_validator
+from typing_extensions import Self
 
 from ...features import experimental
 from ...features import FeatureName
 
 # Vector similarity search nearest neighbors search algorithms.
-EXACT_NEAREST_NEIGHBORS = "EXACT_NEAREST_NEIGHBORS"
-APPROXIMATE_NEAREST_NEIGHBORS = "APPROXIMATE_NEAREST_NEIGHBORS"
-NearestNeighborsAlgorithm = Literal[
+EXACT_NEAREST_NEIGHBORS: Final = "EXACT_NEAREST_NEIGHBORS"
+APPROXIMATE_NEAREST_NEIGHBORS: Final = "APPROXIMATE_NEAREST_NEIGHBORS"
+# A Literal takes spelled-out values, so a type checker rejects the two
+# constants above even though they are Final. Spelling the two strings out a
+# third time here would rewrite the published value of this alias without
+# changing what it accepts, so keep the constants and silence the checker.
+NearestNeighborsAlgorithm = Literal[  # type: ignore[valid-type]
     EXACT_NEAREST_NEIGHBORS,
     APPROXIMATE_NEAREST_NEIGHBORS,
 ]
@@ -80,7 +84,7 @@ class VectorSearchIndexSettings(BaseModel):
   index_name: str
   """Required. The name of the vector similarity search index."""
 
-  additional_key_columns: Optional[list[str]] = None
+  additional_key_columns: list[str] | None = None
   """Optional. The list of the additional key column names in the vector similarity search index.
 
   To further speed up filtering for highly selective filtering columns, organize
@@ -89,7 +93,7 @@ class VectorSearchIndexSettings(BaseModel):
   `CREATE VECTOR INDEX ON documents(embedding, category);`
   """
 
-  additional_storing_columns: Optional[list[str]] = None
+  additional_storing_columns: list[str] | None = None
   """Optional. The list of the storing column names in the vector similarity search index.
 
   This enables filtering while walking the vector index, removing unqualified
@@ -114,7 +118,7 @@ class VectorSearchIndexSettings(BaseModel):
   We recommend that the number of leaves is number_of_rows_in_dataset/1000.
   """
 
-  num_branches: Optional[int] = None
+  num_branches: int | None = None
   """Optional. The number of branches to further partition the vector data.
 
   You can only designate num_branches for trees with 3 levels.
@@ -184,31 +188,31 @@ class SpannerVectorStoreSettings(BaseModel):
   distance_type: str = "COSINE"
   """Required. The distance metric used to build the vector index or perform vector similarity search. This value can be COSINE, DOT_PRODUCT, or EUCLIDEAN."""
 
-  num_leaves_to_search: Optional[int] = None
+  num_leaves_to_search: int | None = None
   """Optional. This option specifies how many leaf nodes of the index are searched.
 
   Note: This option is only used when the nearest neighbors search algorithm (`nearest_neighbors_algorithm`) is APPROXIMATE_NEAREST_NEIGHBORS.
   For more details, see https://docs.cloud.google.com/spanner/docs/vector-index-best-practices
   """
 
-  additional_filter: Optional[str] = None
+  additional_filter: str | None = None
   """Optional. An optional filter to apply to the search query. If provided, this will be added to the WHERE clause of the final query."""
 
-  vector_search_index_settings: Optional[VectorSearchIndexSettings] = None
+  vector_search_index_settings: VectorSearchIndexSettings | None = None
   """Optional. Settings for the index for use with Approximate Nearest Neighbor (ANN) in the vector store.
 
   Note: This option is only required when the nearest neighbors search algorithm (`nearest_neighbors_algorithm`) is APPROXIMATE_NEAREST_NEIGHBORS.
   For more details, see https://docs.cloud.google.com/spanner/docs/vector-indexes
   """
 
-  additional_columns_to_setup: Optional[list[TableColumn]] = None
+  additional_columns_to_setup: list[TableColumn] | None = None
   """Optional. A list of supplemental columns to be created when initializing a new vector store table or inserting content rows.
 
   Note: This configuration is only utilized during the initial table setup
   or when inserting content rows.
   """
 
-  primary_key_columns: Optional[list[str]] = None
+  primary_key_columns: list[str] | None = None
   """Optional. Specifies the column names to be used as the primary key for a new vector store table.
 
   If provided, every column name listed here must be defined within
@@ -220,7 +224,7 @@ class SpannerVectorStoreSettings(BaseModel):
   """
 
   @model_validator(mode="after")
-  def __post_init__(self):
+  def __post_init__(self) -> Self:
     """Validate the vector store settings."""
     if not self.vector_length or self.vector_length <= 0:
       raise ValueError(
@@ -248,7 +252,7 @@ class SpannerVectorStoreSettings(BaseModel):
 class SpannerToolSettings(BaseModel):
   """Settings for Spanner tools."""
 
-  capabilities: List[Capabilities] = [
+  capabilities: list[Capabilities] = [
       Capabilities.DATA_READ,
   ]
   """Allowed capabilities for Spanner tools.
@@ -263,8 +267,8 @@ class SpannerToolSettings(BaseModel):
   query_result_mode: QueryResultMode = QueryResultMode.DEFAULT
   """Mode for Spanner execute sql query result."""
 
-  database_role: Optional[str] = None
+  database_role: str | None = None
   """Optional. The database role to use for the Spanner session."""
 
-  vector_store_settings: Optional[SpannerVectorStoreSettings] = None
+  vector_store_settings: SpannerVectorStoreSettings | None = None
   """Settings for Spanner vector store and vector similarity search."""

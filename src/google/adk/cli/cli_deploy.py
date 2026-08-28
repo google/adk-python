@@ -525,6 +525,36 @@ def _resolve_project(project_in_option: Optional[str]) -> str:
   return project
 
 
+# app_name is interpolated verbatim into the generated Dockerfile (COPY/RUN
+# instructions and the shell-form CMD) by _DOCKERFILE_TEMPLATE. It defaults to
+# the basename of the agent source folder, so its value can come from a
+# directory name the deploying developer did not choose (a cloned or shared
+# agent template). Restrict it to a plain identifier before it reaches the
+# template so it cannot break out of a Dockerfile instruction or the CMD shell.
+_APP_NAME_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r'^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,62}$'
+)
+
+
+def _validate_app_name(app_name: str) -> None:
+  """Validates the deploy app name before it is written into a Dockerfile.
+
+  Args:
+    app_name: The app name, either passed via --app_name or derived from the
+      agent source folder basename.
+
+  Raises:
+    click.ClickException: If the app name is not a plain identifier.
+  """
+  if not _APP_NAME_PATTERN.fullmatch(app_name):
+    raise click.ClickException(
+        f'Invalid app name {app_name!r}. The app name is used in the generated'
+        ' Dockerfile and must contain only letters, digits, hyphens,'
+        ' underscores, and periods (1-63 characters, starting with a letter,'
+        ' digit, hyphen, or underscore).'
+    )
+
+
 def _validate_gcloud_extra_args(
     extra_gcloud_args: Optional[tuple[str, ...]], adk_managed_args: set[str]
 ) -> None:
@@ -813,7 +843,8 @@ def to_cloud_run(
     with_cloud_run_sandbox: Whether to enable the Cloud Run sandbox for code
       execution.
   """
-  app_name = app_name or os.path.basename(agent_folder)
+  app_name = app_name or os.path.basename(os.path.normpath(agent_folder))
+  _validate_app_name(app_name)
   if parse(adk_version) >= parse('1.3.0') and not use_local_storage:
     session_service_uri = session_service_uri or 'memory://'
     artifact_service_uri = artifact_service_uri or 'memory://'
@@ -1076,9 +1107,10 @@ def to_agent_engine(
       Overrides `worker_pool` / `build_config.worker_pool` from
       `.agent_engine_config.json` when both are present.
   """
-  app_name = os.path.basename(agent_folder)
+  app_name = os.path.basename(os.path.normpath(agent_folder))
+  _validate_app_name(app_name)
   display_name = display_name or app_name
-  parent_folder = os.path.dirname(agent_folder)
+  parent_folder = os.path.dirname(os.path.normpath(agent_folder))
   if adk_app_object:
     warnings.warn(
         'WARNING: `--adk_app_object` is deprecated and will be removed in the'
@@ -1519,7 +1551,8 @@ def to_gke(
   click.echo(f'  Cluster:         {cluster_name}')
   click.echo('--------------------------------------------------\n')
 
-  app_name = app_name or os.path.basename(agent_folder)
+  app_name = app_name or os.path.basename(os.path.normpath(agent_folder))
+  _validate_app_name(app_name)
   if parse(adk_version) >= parse('1.3.0') and not use_local_storage:
     session_service_uri = session_service_uri or 'memory://'
     artifact_service_uri = artifact_service_uri or 'memory://'

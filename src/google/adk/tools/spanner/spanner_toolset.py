@@ -14,9 +14,9 @@
 
 from __future__ import annotations
 
+from typing import Any
+from typing import Callable
 from typing import List
-from typing import Optional
-from typing import Union
 
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.tools.spanner import metadata_tool
@@ -55,9 +55,9 @@ class SpannerToolset(BaseToolset):
   def __init__(
       self,
       *,
-      tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
-      credentials_config: Optional[SpannerCredentialsConfig] = None,
-      spanner_tool_settings: Optional[SpannerToolSettings] = None,
+      tool_filter: ToolPredicate | list[str] | None = None,
+      credentials_config: SpannerCredentialsConfig | None = None,
+      spanner_tool_settings: SpannerToolSettings | None = None,
   ):
     super().__init__(
         tool_filter=tool_filter,
@@ -71,7 +71,7 @@ class SpannerToolset(BaseToolset):
     )
 
   def _is_tool_selected(
-      self, tool: BaseTool, readonly_context: ReadonlyContext
+      self, tool: BaseTool, readonly_context: ReadonlyContext | None
   ) -> bool:
     if self.tool_filter is None:
       return True
@@ -86,23 +86,24 @@ class SpannerToolset(BaseToolset):
 
   @override
   async def get_tools(
-      self, readonly_context: Optional[ReadonlyContext] = None
+      self, readonly_context: ReadonlyContext | None = None
   ) -> List[BaseTool]:
     """Get tools from the toolset."""
+    # Metadata tools
+    funcs: list[Callable[..., Any]] = [
+        metadata_tool.list_table_names,
+        metadata_tool.list_table_indexes,
+        metadata_tool.list_table_index_columns,
+        metadata_tool.list_named_schemas,
+        metadata_tool.get_table_schema,
+    ]
     all_tools = [
         GoogleTool(
             func=func,
             credentials_config=self._credentials_config,
             tool_settings=self._tool_settings,
         )
-        for func in [
-            # Metadata tools
-            metadata_tool.list_table_names,
-            metadata_tool.list_table_indexes,
-            metadata_tool.list_table_index_columns,
-            metadata_tool.list_named_schemas,
-            metadata_tool.get_table_schema,
-        ]
+        for func in funcs
     ]
 
     # Query tools
@@ -142,5 +143,5 @@ class SpannerToolset(BaseToolset):
     ]
 
   @override
-  async def close(self):
+  async def close(self) -> None:
     pass

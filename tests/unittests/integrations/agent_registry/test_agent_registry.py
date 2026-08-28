@@ -444,6 +444,7 @@ class TestAgentRegistry:
           ("https://mcp.com", False, False),
           ("https://mcp.googleapis.com/v1", True, False),
           ("https://example.com/googleapis/v1", False, False),
+          ("http://mcp.googleapis.com/v1", False, False),
           ("https://mcp.googleapis.com/v1", True, True),
       ],
   )

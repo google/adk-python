@@ -115,6 +115,13 @@ automatically — there is no reason to import it in agent code.
 `sqlalchemy` installed raises a "missing extra" error rather than
 `ImportError`.
 
+## Live streaming
+
+| Component | Import |
+|---|---|
+| `LiveRequestQueue` | `from google.adk.live import LiveRequestQueue` |
+| `LiveRequest` | `from google.adk.live import LiveRequest` |
+
 ## Models
 
 | Component | Import |

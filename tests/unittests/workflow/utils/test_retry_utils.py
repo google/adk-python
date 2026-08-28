@@ -24,6 +24,10 @@ from google.adk.workflow.utils._retry_utils import _should_retry_node
 import pytest
 
 
+class _CustomValueError(ValueError):
+  """A subclass of a built-in exception."""
+
+
 class TestGetRetryDelay:
 
   def test_returns_default_delay_without_config(self):
@@ -168,4 +172,47 @@ class TestShouldRetryNode:
     assert (
         _should_retry_node(RuntimeError(), config, NodeState(attempt_count=5))
         is False
+    )
+
+  def test_retries_subclass_of_a_configured_exception(self):
+    """A subclass of a configured exception is retried."""
+    config = RetryConfig(exceptions=[ValueError])
+
+    assert (
+        _should_retry_node(
+            _CustomValueError(), config, NodeState(attempt_count=1)
+        )
+        is True
+    )
+
+  def test_configuring_exception_retries_every_exception(self):
+    """Configuring ``Exception`` retries anything deriving from it."""
+    config = RetryConfig(exceptions=[Exception])
+
+    assert (
+        _should_retry_node(ValueError(), config, NodeState(attempt_count=1))
+        is True
+    )
+
+  def test_unrelated_exception_is_not_retried(self):
+    """An exception outside the configured hierarchy is not retried."""
+    config = RetryConfig(exceptions=[ValueError])
+
+    assert (
+        _should_retry_node(KeyError(), config, NodeState(attempt_count=1))
+        is False
+    )
+
+  def test_matching_survives_a_json_round_trip(self):
+    """A config reloaded from JSON is equal to and matches like the original."""
+    config = RetryConfig(exceptions=[ValueError, "KeyError"])
+
+    reloaded = RetryConfig.model_validate_json(config.model_dump_json())
+
+    assert reloaded == config
+    assert (
+        _should_retry_node(
+            _CustomValueError(), reloaded, NodeState(attempt_count=1)
+        )
+        is True
     )
