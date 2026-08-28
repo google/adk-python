@@ -74,14 +74,12 @@ class TransferToAgentTool(FunctionTool):
       return function_decl
 
     # Handle parameters (types.Schema object)
-    if function_decl.parameters:
+   if function_decl.parameters and function_decl.parameters.properties:
       agent_name_schema = function_decl.parameters.properties.get('agent_name')
-      if agent_name_schema:
-        agent_name_schema.enum = self._agent_names
 
     # Handle parameters_json_schema (dict)
     if function_decl.parameters_json_schema:
-      properties = function_decl.parameters_json_schema.get('properties', {})
+      properties = function_decl.parameters_json_schema.get('properties') or {}
       if 'agent_name' in properties:
         properties['agent_name']['enum'] = self._agent_names
 
