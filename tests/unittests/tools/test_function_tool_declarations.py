@@ -38,7 +38,6 @@ from google.adk.tools.tool_context import ToolContext
 from pydantic import BaseModel
 from pydantic import Field
 from pydantic.dataclasses import dataclass as pyd_dataclass
-import pytest
 
 
 class Color(Enum):
