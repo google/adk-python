@@ -45,9 +45,10 @@ import google.auth
 from google.auth.transport import mtls
 from google.auth.transport import requests as requests_auth
 import httpx
-from mcp import StdioServerParameters
 import requests
 from typing_extensions import override
+
+from ...dependencies._mcp import StdioServerParameters
 
 # pylint: disable=g-import-not-at-top
 try:

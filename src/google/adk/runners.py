@@ -49,14 +49,9 @@ from .auth.credential_service.base_credential_service import BaseCredentialServi
 from .code_executors.built_in_code_executor import BuiltInCodeExecutor
 from .errors._stale_session_error import StaleSessionError
 from .errors.session_not_found_error import SessionNotFoundError
-from .events._branch_path import _BranchPath
-from .events._node_path_builder import _NodePathBuilder
 from .events.event import Event
 from .events.event_actions import EventActions
 from .flows.llm_flows import contents
-from .flows.llm_flows.agent_transfer import _get_transfer_targets
-from .flows.llm_flows.functions import _collect_function_call_ids
-from .flows.llm_flows.functions import find_matching_function_call
 from .live import _runner_utils as _live_runner_utils
 from .live.live_request_queue import LiveRequestQueue
 from .memory.base_memory_service import BaseMemoryService
@@ -172,18 +167,9 @@ def _apply_run_config_custom_metadata(
 
 def _can_transfer_between_agents(root: Any) -> bool:
   """Reports whether any agent in the tree can transfer to another agent."""
-  pending = [root]
-  while pending:
-    agent = pending.pop()
-    sub_agents = getattr(agent, 'sub_agents', None)
-    if not isinstance(sub_agents, list):
-      continue
-    if hasattr(agent, 'disallow_transfer_to_parent') and _get_transfer_targets(
-        agent
-    ):
-      return True
-    pending.extend(sub_agents)
-  return False
+  from .agents import _agent_router
+
+  return _agent_router.can_transfer_between_agents(root)
 
 
 class Runner:
@@ -574,213 +560,22 @@ class Runner:
 
     Events flow through ic._event_queue via NodeRunner.
     """
+    from .workflow import _node_runner_utils
 
-    caller_ctx = context.get_current()
-
-    async def _run() -> AsyncGenerator[Event, None]:
-      nonlocal invocation_id, new_message, session
-      with _instrumentation.record_invocation(
-          entrypoint_node=node or self.agent,
-          conversation_id=session_id,
-          run_config=run_config or RunConfig(),
-      ):
-        # 1. Setup
-        if session is None:
-          session = await self._get_or_create_session(
-              user_id=user_id,
-              session_id=session_id,
-              get_session_config=(run_config or RunConfig()).get_session_config,
-          )
-
-        # Validate and resolve resume inputs
-        resume_inputs = self._extract_resume_inputs(new_message)
-        self._validate_new_message(new_message, resume_inputs)
-
-        if not invocation_id and new_message:
-          invocation_id = self._resolve_invocation_id_from_fr(
-              session, new_message
-          )
-          if not invocation_id:
-            active_scope = _find_active_task_scope(session)
-            if active_scope:
-              _, inv_id = active_scope
-              invocation_id = inv_id
-        elif invocation_id and new_message:
-          # A caller-supplied id is reconciled against the responses rather
-          # than trusted: resuming under an id that does not own the call
-          # means the call is not found and the response is dropped, losing
-          # the tool result. This is the same reconciliation the non-node
-          # path performs, through the same helper, so a root LlmAgent gets
-          # one answer no matter which path the runner picked for it.
-          invocation_id = self._resolve_invocation_id(
-              session, new_message, invocation_id
-          )
-
-        ic = self._new_invocation_context(
-            session,
-            new_message=new_message,
-            run_config=run_config or RunConfig(),
+    async with aclosing(
+        _node_runner_utils.run_node_async(
+            self,
+            user_id=user_id,
+            session_id=session_id,
             invocation_id=invocation_id,
+            new_message=new_message,
+            state_delta=state_delta,
+            run_config=run_config,
+            yield_user_message=yield_user_message,
+            node=node,
+            session=session,
         )
-        if node and node is not self.agent:
-          ic.agent = node
-          self._restore_branch_from_history(
-              ic, node, root=self.agent, invocation_id=invocation_id
-          )
-        ic._event_queue = asyncio.Queue()
-
-        # 2. Append user message to session and resolve node_input
-        node_input = None
-        if resume_inputs or invocation_id:
-          # Resume: recover the original user content. new_message here is a
-          # function response (or None), so it can't populate user_content.
-          node_input = self._find_user_message_for_invocation(
-              ic.session.events, ic.invocation_id
-          )
-          if node_input:
-            ic.user_content = node_input
-        if not node_input:
-          # Fresh: use user message as node_input
-          node_input = new_message
-
-        # Failures in the setup hooks below (on_user_message_callback, the
-        # user-event session append, and before_run_callback) must also notify
-        # on_run_error_callback: they are part of runner execution even though
-        # they run before the main event loop. Notification-only; the original
-        # exception is always re-raised, and after_run stays success-only.
-        run_error = None
-        try:
-          try:
-            # Run callbacks on user message
-            if new_message:
-              modified_user_message = (
-                  await ic.plugin_manager.run_on_user_message_callback(
-                      invocation_context=ic, user_message=new_message
-                  )
-              )
-              if modified_user_message is not None:
-                new_message = modified_user_message
-                ic.user_content = new_message
-
-            # Append user message to session for history
-            if new_message:
-              user_event = await self._append_user_event(
-                  ic, new_message, state_delta=state_delta
-              )
-              if yield_user_message and user_event:
-                yield user_event
-
-            # Run before_run callbacks. A returned Content halts execution and ends
-            # the run with that content (same contract as the non-workflow path).
-            early_exit_result = await ic.plugin_manager.run_before_run_callback(
-                invocation_context=ic
-            )
-            if isinstance(early_exit_result, types.Content):
-              early_exit_event = Event(
-                  invocation_id=ic.invocation_id,
-                  author='model',
-                  content=early_exit_result,
-              )
-              _apply_run_config_custom_metadata(early_exit_event, ic.run_config)
-              if self._should_append_event(
-                  early_exit_event, is_live_call=False
-              ):
-                await self.session_service.append_event(
-                    session=ic.session,
-                    event=early_exit_event,
-                )
-              yield early_exit_event
-            else:
-              # 3. Start root node in background
-              from .agents.context import Context
-              from .workflow._dynamic_node_scheduler import DynamicNodeScheduler
-              from .workflow._errors import DynamicNodeFailError
-              from .workflow._errors import NodeInterruptedError
-              from .workflow._workflow import _LoopState
-
-              root_ctx = Context(ic)
-              root_node = node or self.agent
-              is_agent = isinstance(self.agent, BaseAgent)
-              has_sub_agents = is_agent and bool(
-                  getattr(self.agent, 'sub_agents', None)
-              )
-              use_scheduler = is_agent and has_sub_agents
-
-              # The root chat coordinator's isolation_scope stays None: its own
-              # events (FCs, text, synthesized FRs from completed task
-              # delegations) are also unscoped, so the content-builder's
-              # isolation_scope filter lets the coordinator see all of them
-              # across user turns. Task sub-agents are scoped under their
-              # originating function-call id and so remain invisible to the
-              # coordinator's view.
-
-              done_sentinel = object()
-
-              async def _drive_root_node() -> None:
-                try:
-                  if use_scheduler:
-                    # Rehydration warning: DynamicNodeScheduler relies on session.events scanning.
-                    # Stateful live EUC/LRO streams may rehydrate freshly if not yet persisted.
-                    scheduler = DynamicNodeScheduler(state=_LoopState())
-                    root_ctx._workflow_scheduler = scheduler
-
-                  try:
-                    await root_ctx._run_node_internal(
-                        root_node,
-                        node_input=node_input,
-                        resume_inputs=resume_inputs,
-                    )
-                  except NodeInterruptedError:
-                    # The node was interrupted (e.g. for HITL).
-                    pass
-                  except DynamicNodeFailError as e:
-                    raise e.error
-                finally:
-                  assert ic._event_queue is not None
-                  await ic._event_queue.put((done_sentinel, None))
-
-              task = asyncio.create_task(_drive_root_node())
-
-              # 4. Main loop: consume events, persist, yield
-              try:
-                async with aclosing(
-                    self._consume_event_queue(ic, done_sentinel)
-                ) as agen:
-                  async for event in agen:
-                    yield event
-              finally:
-                # _cleanup_root_task re-raises a root-node Exception (if any) after
-                # the event stream has drained.
-                await self._cleanup_root_task(task, self.agent.name)
-          except Exception as e:
-            # An unhandled exception escaped runner execution. Notify plugins
-            # (notification-only) and re-raise. after_run stays success-only.
-            run_error = e
-            await _notify_run_error(ic.plugin_manager, ic, e)
-            raise
-        finally:
-          # Success path (also caller early-stop via GeneratorExit, which is not
-          # an Exception): run after_run and compaction. _cleanup_root_task has
-          # already run in the inner finally above when a root task was created.
-          # A failure in this success cleanup (e.g. an after_run plugin raising,
-          # which PluginManager surfaces as a RuntimeError) is itself an
-          # unhandled runner error, so notify on_run_error_callback once and
-          # re-raise. on_run_error is notification-only and never raises, so
-          # there is no recursive notification.
-          if run_error is None:
-            try:
-              await ic.plugin_manager.run_after_run_callback(
-                  invocation_context=ic
-              )
-              await self._run_post_invocation_compaction(
-                  session=session,
-                  skip_token_compaction=ic.token_compaction_checked,
-              )
-            except Exception as e:
-              await _notify_run_error(ic.plugin_manager, ic, e)
-              raise
-
-    async with aclosing(_with_caller_context(_run(), caller_ctx)) as agen:
+    ) as agen:
       async for event in agen:
         yield event
 
@@ -1958,83 +1753,19 @@ class Runner:
       The agent to run. (the active agent that should reply to the latest user
       message)
     """
-    # Mesh and Workflow Agents handle their own internal routing.
-    # Workflow will figure which node is interrupted and should be resumed.
-    from .workflow._workflow import Workflow
+    from .agents import _agent_router
 
-    if isinstance(root_agent, Workflow):
-      return root_agent
-
-    # If the last event is a function response, should send this response to
-    # the agent that returned the corresponding function call regardless the
-    # type of the agent. e.g. a remote a2a agent may surface a credential
-    # request as a special long-running function tool call.
-    event = find_matching_function_call(session.events)
-    is_resumable = (
-        self.resumability_config and self.resumability_config.is_resumable
+    return _agent_router.find_agent_to_run(
+        session=session,
+        root_agent=root_agent,
+        resumability_config=self.resumability_config,
     )
-    # Only route based on a past function response if resumability is enabled.
-    # In non-resumable scenarios, a turn ending with function call response
-    # shouldn't trap the next turn on that same agent if it's not transferable.
-    # Falling through allows it to return to root.
-    if event and event.author and is_resumable:
-      # `find_agent` returns None when the author does not correspond to any
-      # agent in the current hierarchy (e.g. the author is "user" or a stale or
-      # foreign agent name carried over from a previous turn/session). Returning
-      # None here would propagate to `build_node`, raising a confusing
-      # "Invalid node type: <class 'NoneType'>" error. Fall through to the
-      # event-scan logic below (which ultimately falls back to the root agent)
-      # whenever the author cannot be resolved.
-      if (resumed_agent := root_agent.find_agent(event.author)) is not None:
-        return resumed_agent
-
-    def _event_filter(event: Event) -> bool:
-      """Filters out user-authored events and agent state change events."""
-      if event.author == 'user':
-        return False
-      if event.actions.agent_state is not None or event.actions.end_of_agent:
-        return False
-      return True
-
-    for event in filter(_event_filter, reversed(session.events)):
-      if event.author == root_agent.name:
-        # Found root agent.
-        return root_agent
-      if not (agent := root_agent.find_sub_agent(event.author)):
-        # Agent not found, continue looking.
-        logger.warning(
-            'Event from an unknown agent: %s, event id: %s',
-            event.author,
-            event.id,
-        )
-        continue
-      transferable = self._is_transferable_across_agent_tree(agent)
-      if transferable:
-        return agent
-    # Falls back to root agent if no suitable agents are found in the session.
-    return root_agent
 
   def _is_transferable_across_agent_tree(self, agent_to_run: BaseAgent) -> bool:
-    """Whether the agent to run can transfer to any other agent in the agent tree.
+    """Whether the agent to run can transfer to any other agent in the agent tree."""
+    from .agents import _agent_router
 
-    This typically means all agent_to_run's ancestor can transfer to their
-    parent_agent all the way to the root_agent.
-
-    Args:
-        agent_to_run: The agent to check for transferability.
-
-    Returns:
-        True if the agent can transfer, False otherwise.
-    """
-    agent: BaseAgent | None = agent_to_run
-    while agent:
-      if not hasattr(agent, 'disallow_transfer_to_parent'):
-        # Only agents with transfer capability can transfer.
-        return False
-      if agent.disallow_transfer_to_parent:
-        return False
-      agent = agent.parent_agent
-    return True
+    return _agent_router.is_transferable_across_agent_tree(agent_to_run)
 
   async def run_debug(
       self,
@@ -2153,58 +1884,15 @@ class Runner:
       root: BaseNode,
       invocation_id: Optional[str] = None,
   ) -> None:
-    """Restores a non-root node's branch from its latest matching event.
+    """Restores a non-root node's branch from its latest matching event."""
+    from .agents import _agent_router
 
-    A freshly created ``InvocationContext`` has no branch, so a node that
-    previously ran on a sub-branch (e.g. a resumed sub-agent, or an agent
-    resolved by ``_find_agent_to_run``) would otherwise continue on the root
-    branch.
-
-    Tool branches are skipped. A tool's user-facing message is authored under
-    the agent's name (``functions.py``) and stamped with the agent's node path
-    (``base_agent.py``), so it is indistinguishable from the agent's own turns
-    by author or path; what gives it away is its branch, which the same code
-    builds as ``<tool>@<function_call_id>`` from a call in this session. Such a
-    branch is therefore recognised and skipped, while every other event the node
-    authored -- including a plain text turn, which is all a non-resumable
-    sub-agent may leave behind -- still carries ``ctx.branch`` and is eligible.
-    A branch whose leaf names the node itself is kept even when its id is a
-    function call id, since that is how ``AgentTool`` scopes a real sub-agent.
-
-    Nodes are matched by their static path (run ids stripped) so that two nodes
-    sharing a name (e.g. the same sub-agent mounted under two parents) are
-    disambiguated; events that predate node paths fall back to author/name
-    matching. When ``invocation_id`` is provided (resuming a known invocation),
-    only that invocation's events are considered, so a resumed node cannot
-    inherit a stale branch authored in an earlier invocation. When it is None
-    (a fresh direct-node turn, or a new invocation continuing a sub-agent), the
-    most recent matching event across the session is used.
-    """
-    from .workflow._base_node import find_static_node_path
-
-    expected_static_path = find_static_node_path(root, node)
-    tool_call_ids = _collect_function_call_ids(
-        invocation_context.session.events
+    _agent_router.restore_branch_from_history(
+        invocation_context=invocation_context,
+        node=node,
+        root=root,
+        invocation_id=invocation_id,
     )
-    for event in reversed(invocation_context.session.events):
-      if invocation_id is not None and event.invocation_id != invocation_id:
-        continue
-      if not event.branch:
-        continue
-      if _BranchPath.is_tool_branch(event.branch, node.name, tool_call_ids):
-        continue
-      matched = False
-      if expected_static_path and event.node_info.path:
-        event_static_path = _NodePathBuilder.from_string(
-            event.node_info.path
-        ).static_path
-        if event_static_path == expected_static_path:
-          matched = True
-      elif event.author == node.name or event.node_info.name == node.name:
-        matched = True
-      if matched:
-        invocation_context.branch = event.branch
-        break
 
   async def _setup_context_for_new_invocation(
       self,

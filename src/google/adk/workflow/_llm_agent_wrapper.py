@@ -425,7 +425,7 @@ async def run_llm_agent_as_node(
     update['user_content'] = to_user_content(node_input)
   ic = ic.model_copy(update=update)
 
-  from ..agents.live_request_queue import LiveRequestQueue
+  from ..live.live_request_queue import LiveRequestQueue
 
   # A single_turn LlmAgent in a live session runs in non-live mode
   # and only consumes the node_input (ignoring the live request queue).

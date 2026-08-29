@@ -85,6 +85,62 @@ def test_canonical_model_str():
   assert agent.canonical_model.model == 'gemini-pro'
 
 
+def test_canonical_callbacks_preserve_list_identity_without_warnings():
+  def callback(*args, **kwargs):
+    return None
+
+  before_model_callbacks = [callback]
+  after_model_callbacks = [callback]
+  on_model_error_callbacks = [callback]
+  before_tool_callbacks = [callback]
+  after_tool_callbacks = [callback]
+  on_tool_error_callbacks = [callback]
+  agent = LlmAgent(
+      name='test_agent',
+      before_model_callback=before_model_callbacks,
+      after_model_callback=after_model_callbacks,
+      on_model_error_callback=on_model_error_callbacks,
+      before_tool_callback=before_tool_callbacks,
+      after_tool_callback=after_tool_callbacks,
+      on_tool_error_callback=on_tool_error_callbacks,
+  )
+
+  with warnings.catch_warnings(record=True) as caught_warnings:
+    warnings.simplefilter('always')
+    canonical_callbacks = (
+        agent.canonical_before_model_callbacks,
+        agent.canonical_after_model_callbacks,
+        agent.canonical_on_model_error_callbacks,
+        agent.canonical_before_tool_callbacks,
+        agent.canonical_after_tool_callbacks,
+        agent.canonical_on_tool_error_callbacks,
+    )
+
+  assert canonical_callbacks == (
+      before_model_callbacks,
+      after_model_callbacks,
+      on_model_error_callbacks,
+      before_tool_callbacks,
+      after_tool_callbacks,
+      on_tool_error_callbacks,
+  )
+  assert all(
+      canonical is callback_field
+      for canonical, callback_field in zip(
+          canonical_callbacks,
+          (
+              agent.before_model_callback,
+              agent.after_model_callback,
+              agent.on_model_error_callback,
+              agent.before_tool_callback,
+              agent.after_tool_callback,
+              agent.on_tool_error_callback,
+          ),
+      )
+  )
+  assert caught_warnings == []
+
+
 def test_canonical_model_llm():
   llm = LLMRegistry.new_llm('gemini-pro')
   agent = LlmAgent(name='test_agent', model=llm)

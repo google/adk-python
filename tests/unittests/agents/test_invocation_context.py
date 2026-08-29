@@ -923,3 +923,38 @@ def test_get_events_without_a_branch_matches_every_user_event():
   ctx = _ctx_on_branch(None, [user_elsewhere, agent_elsewhere])
 
   assert ctx._get_events(current_branch=True) == [user_elsewhere]
+
+
+def test_get_events_current_branch_filters_each_response_independently():
+  """Several replies on one branch are each judged against their own call.
+
+  The set of calls issued in this subtree is the same for every event, so it
+  is built once per call rather than rescanned per reply. This pins that the
+  shared set still discriminates: the reply to a foreign call is dropped while
+  the replies around it are kept.
+  """
+  call_here = _call_event('agent_1', 'fc_here')
+  call_on_child = _call_event('agent_1.child', 'fc_child')
+  call_elsewhere = _call_event('agent_2', 'fc_far')
+  reply_here = _user_response_event('agent_1', 'fc_here')
+  reply_far = _user_response_event('agent_1', 'fc_far')
+  reply_child = _user_response_event('agent_1', 'fc_child')
+  ctx = _ctx_on_branch(
+      'agent_1',
+      [
+          call_here,
+          call_on_child,
+          call_elsewhere,
+          reply_here,
+          reply_far,
+          reply_child,
+      ],
+  )
+
+  # `call_here` sits on exactly this branch, so the non-user rule returns it
+  # too; the two sub-branch calls do not.
+  assert ctx._get_events(current_branch=True) == [
+      call_here,
+      reply_here,
+      reply_child,
+  ]
