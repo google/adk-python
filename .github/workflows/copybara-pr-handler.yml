@@ -168,3 +168,4 @@ jobs:
             } else {
               console.log('\n--- Finished processing all commits ---');
             }
+            
