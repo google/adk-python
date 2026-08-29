@@ -114,7 +114,7 @@ class InMemorySessionService(BaseSessionService):
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
   ) -> Session:
-    session_id = session_id.strip() if session_id else None
+    session_id = _session_util.normalize_session_id(session_id)
     if session_id and self._get_session_impl(
         app_name=app_name, user_id=user_id, session_id=session_id
     ):
@@ -188,6 +188,7 @@ class InMemorySessionService(BaseSessionService):
       session_id: str,
       config: Optional[GetSessionConfig] = None,
   ) -> Optional[Session]:
+    session_id = _session_util.normalize_session_id(session_id)
     if app_name not in self.sessions:
       return None
     if user_id not in self.sessions[app_name]:
@@ -303,6 +304,7 @@ class InMemorySessionService(BaseSessionService):
   def _delete_session_impl(
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
+    session_id = _session_util.normalize_session_id(session_id)
     if (
         self._get_session_impl(
             app_name=app_name, user_id=user_id, session_id=session_id

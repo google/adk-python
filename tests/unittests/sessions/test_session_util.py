@@ -25,6 +25,7 @@ import logging
 from google.adk.sessions._session_util import decode_model
 from google.adk.sessions._session_util import extract_state_delta
 from google.adk.sessions._session_util import make_json_safe_state
+from google.adk.sessions._session_util import normalize_session_id
 from google.genai import types
 from pydantic import BaseModel
 import pytest
@@ -60,6 +61,22 @@ class TestDecodeModel:
 
     with pytest.raises(Exception):
       decode_model({"name": "foo"}, _SampleModel)
+
+
+class TestNormalizeSessionId:
+  """Tests for normalize_session_id utility."""
+
+  def test_strips_surrounding_whitespace(self):
+    """An id padded by a file or CSV cell normalizes to its trimmed form."""
+    assert normalize_session_id("  order-42\n") == "order-42"
+
+  def test_maps_whitespace_only_id_to_a_falsy_value(self):
+    """A whitespace-only id is as good as no id, so callers can generate one."""
+    assert not normalize_session_id("   ")
+
+  def test_passes_none_through(self):
+    """A missing id stays missing rather than becoming an empty string."""
+    assert normalize_session_id(None) is None
 
 
 class TestExtractStateDelta:

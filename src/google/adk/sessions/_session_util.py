@@ -44,6 +44,17 @@ def decode_model(data: object | None, model_cls: type[M]) -> M | None:
   return model_cls.model_validate(data)
 
 
+def normalize_session_id(session_id: str | None) -> str | None:
+  """Normalizes a session id so that writes and reads agree on the key.
+
+  Ids often arrive from files, environment variables or spreadsheet cells with
+  surrounding whitespace. Every entry point must apply the same normalization,
+  otherwise a session created with a padded id cannot be read or deleted with
+  that same id.
+  """
+  return session_id.strip() if session_id else session_id
+
+
 def extract_state_delta(
     state: dict[str, Any],
 ) -> dict[str, dict[str, Any]]:
