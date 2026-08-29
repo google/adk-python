@@ -579,6 +579,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
                       role='user',
                   ),
                   timestamp=update_time.isoformat() if update_time else None,
+                  custom_metadata=_from_vertex_metadata(memory.metadata),
               )
           )
         except AttributeError:
@@ -1033,3 +1034,38 @@ def _to_vertex_metadata_value(
     )
     return None
   return {'string_value': str(value)}
+
+
+def _from_vertex_metadata(
+    vertex_metadata: Mapping[str, object] | None,
+) -> dict[str, object]:
+  """Converts Vertex MemoryMetadataValue objects back to plain Python values.
+
+  The read-side counterpart to `_to_vertex_metadata_value`: a `Memory`
+  retrieved from Vertex AI Memory Bank carries whatever `custom_metadata` was
+  written at creation time in this same oneof shape, and this reconstructs
+  the values a caller passed in, rather than leaving them wrapped.
+  """
+  if not vertex_metadata:
+    return {}
+  return {
+      key: _from_vertex_metadata_value(value)
+      for key, value in vertex_metadata.items()
+  }
+
+
+def _from_vertex_metadata_value(value: object) -> object:
+  """Converts one Vertex MemoryMetadataValue back to a plain Python value."""
+  bool_value = getattr(value, 'bool_value', None)
+  if bool_value is not None:
+    return bool_value
+  double_value = getattr(value, 'double_value', None)
+  if double_value is not None:
+    return double_value
+  string_value = getattr(value, 'string_value', None)
+  if string_value is not None:
+    return string_value
+  timestamp_value = getattr(value, 'timestamp_value', None)
+  if timestamp_value is not None:
+    return timestamp_value
+  return value
