@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 from unittest import mock
 from unittest.mock import MagicMock
 
@@ -104,6 +105,8 @@ async def test_similarity_search_knn_success(
   )
   assert result["status"] == "SUCCESS", result
   assert result["rows"] == [("result1",), ("result2",)]
+  mock_database.close.assert_called_once()
+  mock_spanner_client.close.assert_called_once()
 
   # Check the generated SQL for kNN search
   call_args = mock_snapshot.execute_sql.call_args
@@ -188,6 +191,43 @@ async def test_similarity_search_error(
   )
   assert result["status"] == "ERROR"
   assert "Test Exception" in result["error_details"]
+
+
+@pytest.mark.asyncio
+@mock.patch.object(utils, "embed_contents_async")
+@mock.patch.object(client, "get_spanner_client")
+async def test_similarity_search_closes_client_on_base_exception(
+    mock_get_spanner_client,
+    mock_embed_contents_async,
+    mock_spanner_ids,
+    mock_credentials,
+):
+  """A BaseException escapes the except clause but must still release the client."""
+  mock_spanner_client = MagicMock()
+  mock_instance = MagicMock()
+  mock_database = MagicMock()
+  mock_database.database_dialect = DatabaseDialect.GOOGLE_STANDARD_SQL
+  mock_instance.database.return_value = mock_database
+  mock_spanner_client.instance.return_value = mock_instance
+  mock_get_spanner_client.return_value = mock_spanner_client
+  mock_embed_contents_async.side_effect = asyncio.CancelledError
+
+  with pytest.raises(asyncio.CancelledError):
+    await search_tool.similarity_search(
+        project_id=mock_spanner_ids["project_id"],
+        instance_id=mock_spanner_ids["instance_id"],
+        database_id=mock_spanner_ids["database_id"],
+        table_name=mock_spanner_ids["table_name"],
+        query="test query",
+        embedding_column_to_search="embedding_col",
+        columns=["col1"],
+        embedding_options={
+            "vertex_ai_embedding_model_name": "text-embedding-005"
+        },
+        credentials=mock_credentials,
+    )
+
+  mock_spanner_client.close.assert_called_once()
 
 
 @pytest.mark.asyncio

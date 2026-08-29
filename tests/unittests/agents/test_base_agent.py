@@ -23,6 +23,7 @@ from typing import List
 from typing import Optional
 from typing import Union
 from unittest import mock
+import warnings
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.base_agent import BaseAgentState
@@ -358,6 +359,25 @@ async def test_run_async_with_async_before_agent_callback_bypass_agent(
 class CallbackType(Enum):
   SYNC = 1
   ASYNC = 2
+
+
+def test_canonical_agent_callbacks_preserve_list_identity_without_warnings():
+  before_callbacks = [_before_agent_callback_noop]
+  after_callbacks = [_after_agent_callback_noop]
+  agent = _TestingAgent(
+      name='test_agent',
+      before_agent_callback=before_callbacks,
+      after_agent_callback=after_callbacks,
+  )
+
+  with warnings.catch_warnings(record=True) as caught_warnings:
+    warnings.simplefilter('always')
+    canonical_before_callbacks = agent.canonical_before_agent_callbacks
+    canonical_after_callbacks = agent.canonical_after_agent_callbacks
+
+  assert canonical_before_callbacks is agent.before_agent_callback
+  assert canonical_after_callbacks is agent.after_agent_callback
+  assert caught_warnings == []
 
 
 async def mock_async_agent_cb_side_effect(

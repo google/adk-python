@@ -32,6 +32,7 @@ from ..auth.auth_credential import AuthCredential
 from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..events._branch_path import _BranchPath
 from ..events.event import Event
+from ..live._audio_cache_manager import RealtimeCacheEntry as RealtimeCacheEntry
 from ..live.live_request_queue import LiveRequestQueue
 from ..memory.base_memory_service import BaseMemoryService
 from ..plugins.plugin_manager import PluginManager
@@ -51,25 +52,6 @@ _EventQueueItem = tuple[object, asyncio.Event | None]
 
 class LlmCallsLimitExceededError(Exception):
   """Error thrown when the number of LLM calls exceed the limit."""
-
-
-class RealtimeCacheEntry(BaseModel):
-  """Store audio data chunks for caching before flushing."""
-
-  model_config = ConfigDict(
-      arbitrary_types_allowed=True,
-      extra="forbid",
-  )
-  """The pydantic model config."""
-
-  role: str
-  """The role that created this audio data, typically "user" or "model"."""
-
-  data: types.Blob
-  """The audio data chunk."""
-
-  timestamp: float
-  """Timestamp when the audio chunk was received."""
 
 
 class _InvocationCostManager(BaseModel):
@@ -447,6 +429,31 @@ class InvocationContext(BaseModel):
           if event.invocation_id == self.invocation_id
       ]
     if current_branch:
+      branch_fc_ids: set[str] | None = None
+
+      def _branch_function_call_ids() -> set[str]:
+        """Function call ids issued on this branch or a descendant sub-branch.
+
+        The ids depend only on the session and this branch, not on the event
+        being tested, so they are gathered at most once per call. Gathering
+        them inside the predicate instead rescans every session event once per
+        user response event, which is quadratic in the session size.
+        """
+        nonlocal branch_fc_ids
+        if branch_fc_ids is None:
+          descendant_prefix = f"{self.branch}."
+          branch_fc_ids = {
+              fc.id
+              for branch_event in self.session.events
+              if branch_event.branch
+              and (
+                  branch_event.branch == self.branch
+                  or branch_event.branch.startswith(descendant_prefix)
+              )
+              for fc in branch_event.get_function_calls()
+              if fc.id is not None
+          }
+        return branch_fc_ids
 
       def _is_branch_match(event: Event) -> bool:
         """Determines whether an event is part of this invocation's subtree.
@@ -483,28 +490,11 @@ class InvocationContext(BaseModel):
           frs = event.get_function_responses()
           if frs and self.branch and self.session:
             fr_ids = {fr.id for fr in frs if fr.id is not None}
-            if fr_ids:
-              # Gather function calls issued on this branch or descendant sub-branches
-              # to verify the user response targets a call originated within this branch tree.
-              branch_events = [
-                  e
-                  for e in self.session.events
-                  if e.branch
-                  and (
-                      e.branch == self.branch
-                      or e.branch.startswith(f"{self.branch}.")
-                  )
-              ]
-              branch_fc_ids = {
-                  fc.id
-                  for e in branch_events
-                  for fc in e.get_function_calls()
-                  if fc.id is not None
-              }
-              # If user's response IDs do not match any function call on this branch tree,
-              # prevent event leakage across parallel or unrelated branches.
-              if not (fr_ids & branch_fc_ids):
-                return False
+            # If user's response IDs do not match any function call on this
+            # branch tree, prevent event leakage across parallel or unrelated
+            # branches.
+            if fr_ids and not (fr_ids & _branch_function_call_ids()):
+              return False
 
           # Match events yielded directly on this branch or on descendant
           # sub-branches (e.g. child NodeTool/WorkflowTool execution trees).

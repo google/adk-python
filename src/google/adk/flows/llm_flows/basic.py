@@ -137,6 +137,23 @@ def _build_basic_request(
     if not agent.tools or model.capabilities.output_schema_and_tools:
       llm_request.set_output_schema(agent.output_schema)
 
+  # A live session reads `live_connect_config`, not `llm_request.config`, so
+  # the agent's sampling settings would not otherwise reach it.
+  if generate_content_config:
+    live_config = llm_request.live_connect_config
+    if live_config.temperature is None:
+      live_config.temperature = generate_content_config.temperature
+    if live_config.top_p is None:
+      live_config.top_p = generate_content_config.top_p
+    if live_config.top_k is None:
+      live_config.top_k = generate_content_config.top_k
+    if live_config.max_output_tokens is None:
+      live_config.max_output_tokens = generate_content_config.max_output_tokens
+    if live_config.seed is None:
+      live_config.seed = generate_content_config.seed
+    if live_config.media_resolution is None:
+      live_config.media_resolution = generate_content_config.media_resolution
+
   llm_request.live_connect_config.response_modalities = (
       [types.Modality(m) for m in run_config.response_modalities]
       if run_config.response_modalities is not None

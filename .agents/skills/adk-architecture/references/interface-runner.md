@@ -38,8 +38,9 @@ cannot resume.
 
 ### `run_live`
 
-Audio/video streaming entry point, driven by a `LiveRequestQueue` rather than a
-single `new_message`.
+Audio/video streaming entry point, driven by a `LiveRequestQueue`
+(`from google.adk.live import LiveRequestQueue`) rather than a single
+`new_message`.
 
 ### `run_debug`
 

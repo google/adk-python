@@ -1097,6 +1097,52 @@ async def test_evaluate_keeps_positional_initial_session_file_and_print_flag(
   )
 
 
+@pytest.mark.parametrize(
+    "print_detailed_results, score, threshold, expect_print, expected_status",
+    [
+        # Case 1: print_detailed_results is False. No printing should happen.
+        (False, 0.9, 0.8, False, EvalStatus.PASSED),
+        (False, 0.7, 0.8, False, EvalStatus.FAILED),
+        # Case 2: print_detailed_results is True. Printing should happen.
+        (True, 0.9, 0.8, True, EvalStatus.PASSED),
+        (True, 0.7, 0.8, True, EvalStatus.FAILED),
+    ],
+)
+def test_process_metrics_and_get_failures_printing(
+    print_detailed_results,
+    score,
+    threshold,
+    expect_print,
+    expected_status,
+    mocker,
+):
+  mock_metric_result = mocker.MagicMock()
+  mock_metric_result.eval_metric_result.criterion = None
+  mock_metric_result.eval_metric_result.threshold = threshold
+  mock_metric_result.eval_metric_result.score = score
+
+  eval_metric_results = {"dummy_metric": [mock_metric_result]}
+
+  mock_print_details = mocker.patch.object(AgentEvaluator, "_print_details")
+
+  AgentEvaluator._process_metrics_and_get_failures(
+      eval_metric_results=eval_metric_results,
+      print_detailed_results=print_detailed_results,
+      agent_module="dummy_agent",
+  )
+
+  if expect_print:
+    mock_print_details.assert_called_once_with(
+        eval_metric_result_with_invocations=[mock_metric_result],
+        overall_eval_status=expected_status,
+        overall_score=score,
+        metric_name="dummy_metric",
+        threshold=threshold,
+    )
+  else:
+    mock_print_details.assert_not_called()
+
+
 def _non_utf8_default_open(file, mode="r", *args, **kwargs):
   """Emulates a platform whose default text encoding is not UTF-8.
 

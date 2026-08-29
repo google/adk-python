@@ -66,25 +66,92 @@ _BINARY_FILE_DETECTED_MSG = (
 
 
 def _build_skill_system_instruction(
-    prefix: str | None = None, skills_folder: Path | None = None
+    prefix: str | None = None,
+    skills_folder: Path | None = None,
+    script_execution_enabled: bool = True,
 ) -> str:
+  """Builds the skill guidance injected into the model's system instruction.
+
+  Args:
+    prefix: Optional tool name prefix, matching the toolset's.
+    skills_folder: Where skill resources are materialized, when running in an
+      environment.
+    script_execution_enabled: Whether scripts can actually be run. When False,
+      `run_skill_script` is not offered to the model either, so advertising it
+      here would promise a capability that always fails.
+
+  Returns:
+    The system instruction text.
+  """
   p = f"{prefix}_" if prefix else ""
   skills_folder_posix = (
       skills_folder.as_posix() if skills_folder is not None else None
   )
-  env_note = (
-      (
-          "8. NOTE ON ENVIRONMENT EXECUTION: When using"
-          f" `{p}run_skill_script` with the `command` parameter, all skill"
-          " resources (including scripts and assets) are materialized in the"
-          f" execution environment under `{skills_folder_posix}/<skill_name>/`."
-          " Always specify file and script paths relative to or starting with"
-          f" `{skills_folder_posix}/<skill_name>/` (e.g.,"
-          f" `{skills_folder_posix}/<skill_name>/scripts/<script_name>`).\n"
+  scripts_bullet = (
+      "- **scripts/** (Optional): Executable scripts that can be run via "
+      "bash.\n\n"
+      if script_execution_enabled
+      else (
+          "- **scripts/** (Optional): Scripts bundled with the skill. You"
+          f" cannot run them; use `{p}load_skill_resource` to read one and"
+          " follow it yourself.\n\n"
       )
-      if skills_folder_posix is not None
-      else ""
   )
+
+  steps = [
+      (
+          "If a skill seems relevant to the current user query, you MUST use "
+          f'the `{p}load_skill` tool with `skill_name="<SKILL_NAME>"` to read '
+          "its full instructions before proceeding."
+      ),
+      (
+          "Once you have read the instructions, follow them exactly as "
+          "documented before replying to the user. For example, If the "
+          "instruction lists multiple steps, please make sure you complete all "
+          "of them in order."
+      ),
+      (
+          f"The `{p}load_skill_resource` tool is for viewing files within a "
+          "skill's directory (e.g., `references/*`, `assets/*`, `scripts/*`). "
+          "It is ONLY for skill-bundled files — do NOT use it to access "
+          "documents or files provided by the user at runtime. Do NOT use "
+          "other tools to access skill files."
+      ),
+  ]
+  if script_execution_enabled:
+    steps.append(
+        f"Use `{p}run_skill_script` to run scripts from a skill's `scripts/` "
+        f"directory. Use `{p}load_skill_resource` to view script content"
+        " first if "
+        "needed."
+    )
+  steps.append(
+      f"If `{p}load_skill_resource` returns any error, do not retry any "
+      "path. Report the error to the user and stop."
+  )
+  if script_execution_enabled:
+    steps.append(
+        f"If `{p}run_skill_script` returns an error (for example "
+        "`SCRIPT_NOT_FOUND`), do not retry the same script or guess a "
+        "different script path. Report the error to the user and stop."
+    )
+  steps.append(
+      "Loading a skill only retrieves its instructions; it does NOT "
+      f"complete your turn. After a `{p}load_skill` call returns, continue "
+      "in the SAME turn: call whatever tools the skill's steps require "
+      "(search, data retrieval, render), then write your reply. Never end "
+      "your turn with an empty response right after loading a skill."
+  )
+  if script_execution_enabled and skills_folder_posix is not None:
+    steps.append(
+        "NOTE ON ENVIRONMENT EXECUTION: When using"
+        f" `{p}run_skill_script` with the `command` parameter, all skill"
+        " resources (including scripts and assets) are materialized in the"
+        f" execution environment under `{skills_folder_posix}/<skill_name>/`."
+        " Always specify file and script paths relative to or starting with"
+        f" `{skills_folder_posix}/<skill_name>/` (e.g.,"
+        f" `{skills_folder_posix}/<skill_name>/scripts/<script_name>`)."
+    )
 
   return (
       "You can use specialized 'skills' to help you with complex tasks. "
@@ -97,36 +164,9 @@ def _build_skill_system_instruction(
       "skill usage.\n"
       "- **assets/** (Optional): Templates, scripts or other resources used by "
       "the skill.\n"
-      "- **scripts/** (Optional): Executable scripts that can be run via "
-      "bash.\n\n"
-      "This is very important:\n\n"
-      "1. If a skill seems relevant to the current user query, you MUST use "
-      f'the `{p}load_skill` tool with `skill_name="<SKILL_NAME>"` to read '
-      "its full instructions before proceeding.\n"
-      "2. Once you have read the instructions, follow them exactly as "
-      "documented before replying to the user. For example, If the "
-      "instruction lists multiple steps, please make sure you complete all "
-      "of them in order.\n"
-      f"3. The `{p}load_skill_resource` tool is for viewing files within a "
-      "skill's directory (e.g., `references/*`, `assets/*`, `scripts/*`). "
-      "It is ONLY for skill-bundled files — do NOT use it to access "
-      "documents or files provided by the user at runtime. Do NOT use "
-      "other tools to access skill files.\n"
-      f"4. Use `{p}run_skill_script` to run scripts from a skill's `scripts/` "
-      f"directory. Use `{p}load_skill_resource` to view script content"
-      " first if "
-      "needed.\n"
-      f"5. If `{p}load_skill_resource` returns any error, do not retry any "
-      "path. Report the error to the user and stop.\n"
-      f"6. If `{p}run_skill_script` returns an error (for example "
-      f"`SCRIPT_NOT_FOUND`), do not retry the same script or guess a "
-      "different script path. Report the error to the user and stop.\n"
-      f"7. Loading a skill only retrieves its instructions; it does NOT "
-      f"complete your turn. After a `{p}load_skill` call returns, continue "
-      "in the SAME turn: call whatever tools the skill's steps require "
-      "(search, data retrieval, render), then write your reply. Never end "
-      "your turn with an empty response right after loading a skill.\n"
-      + env_note
+      + scripts_bullet
+      + "This is very important:\n\n"
+      + "".join(f"{i}. {step}\n" for i, step in enumerate(steps, start=1))
   )
 
 
@@ -1310,6 +1350,17 @@ class SkillToolset(BaseToolset):
       return self._env.working_dir / "skills"
     return None
 
+  def _has_script_execution(self, context: ReadonlyContext | None) -> bool:
+    """Whether scripts can be run; an unknown agent counts as yes."""
+    if self._env is not None or self._code_executor is not None:
+      return True
+    agent = getattr(
+        getattr(context, "_invocation_context", None), "agent", None
+    )
+    if agent is None:
+      return True
+    return getattr(agent, "code_executor", None) is not None
+
   async def get_tools(
       self, readonly_context: ReadonlyContext | None = None
   ) -> list[BaseTool]:
@@ -1318,6 +1369,10 @@ class SkillToolset(BaseToolset):
         readonly_context
     )
     all_tools = self._tools + dynamic_tools
+    if not self._has_script_execution(readonly_context):
+      all_tools = [
+          t for t in all_tools if not isinstance(t, RunSkillScriptTool)
+      ]
     return [t for t in all_tools if self._is_tool_selected(t, readonly_context)]
 
   async def _resolve_additional_tools_from_state(
@@ -1471,6 +1526,7 @@ class SkillToolset(BaseToolset):
         _build_skill_system_instruction(
             prefix=self.tool_name_prefix,
             skills_folder=self.skills_folder,
+            script_execution_enabled=self._has_script_execution(tool_context),
         )
     ]
 

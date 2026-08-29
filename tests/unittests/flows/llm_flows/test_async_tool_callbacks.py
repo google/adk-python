@@ -126,9 +126,7 @@ def mock_async_before_cb_side_effect(
     tool_context: ToolContext,
     ret_value: Optional[Dict[str, Any]] = None,
 ):
-  if ret_value is not None:
-    return ret_value
-  return None
+  return ret_value
 
 
 def mock_sync_before_cb_side_effect(
@@ -137,9 +135,7 @@ def mock_sync_before_cb_side_effect(
     tool_context: ToolContext,
     ret_value: Optional[Dict[str, Any]] = None,
 ):
-  if ret_value is not None:
-    return ret_value
-  return None
+  return ret_value
 
 
 async def mock_async_after_cb_side_effect(
@@ -149,9 +145,7 @@ async def mock_async_after_cb_side_effect(
     tool_response: Dict[str, Any],
     ret_value: Optional[Dict[str, Any]] = None,
 ):
-  if ret_value is not None:
-    return ret_value
-  return None
+  return ret_value
 
 
 def mock_sync_after_cb_side_effect(
@@ -161,9 +155,7 @@ def mock_sync_after_cb_side_effect(
     tool_response: Dict[str, Any],
     ret_value: Optional[Dict[str, Any]] = None,
 ):
-  if ret_value is not None:
-    return ret_value
-  return None
+  return ret_value
 
 
 CALLBACK_PARAMS = [

@@ -119,6 +119,11 @@ def get_fast_api_app(
     logo_image_url: str | None = None,
     auto_create_session: bool = False,
     trigger_sources: list[Literal["pubsub", "eventarc"]] | None = None,
+    trigger_oidc_audience: str | None = None,
+    trigger_oidc_service_accounts: list[str] | None = None,
+    trigger_auth_verifier: (
+        Callable[[Request], None | Awaitable[None]] | None
+    ) = None,
     default_llm_model: str | None = None,
     gemini_enterprise_app_name: str | None = None,
     express_mode: bool = False,
@@ -174,6 +179,16 @@ def get_fast_api_app(
     trigger_sources: List of trigger sources to enable (e.g. ["pubsub",
       "eventarc"]). When set, registers /trigger/* endpoints for batch and
       event-driven agent invocations. None disables all trigger endpoints.
+    trigger_oidc_audience: When set, every /trigger/* request must carry a
+      Google-signed OIDC bearer token whose audience matches this value.
+    trigger_oidc_service_accounts: When set alongside ``trigger_oidc_audience``,
+      every /trigger/* request's bearer token must be owned by one of these
+      service account emails. This completes authentication of the caller. When
+      None (the default), token signatures and audience are still verified if
+      ``trigger_oidc_audience`` is set, but caller identity is not enforced.
+    trigger_auth_verifier: A custom callable to verify incoming trigger
+      requests. Takes a FastAPI ``Request`` and should raise ``HTTPException``
+      on failure. When set, overrides ``trigger_oidc_audience``.
     default_llm_model: Default LLM model to use for the agent.
     gemini_enterprise_app_name: The Gemini Enterprise app name to use for the
       agent.
@@ -299,6 +314,9 @@ def get_fast_api_app(
       url_prefix=url_prefix,
       auto_create_session=auto_create_session,
       trigger_sources=trigger_sources,
+      trigger_oidc_audience=trigger_oidc_audience,
+      trigger_oidc_service_accounts=trigger_oidc_service_accounts,
+      trigger_auth_verifier=trigger_auth_verifier,
       default_llm_model=default_llm_model,
   )
 

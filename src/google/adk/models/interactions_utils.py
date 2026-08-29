@@ -636,9 +636,16 @@ def _convert_interaction_step_to_parts(step: Step) -> list[types.Part]:
         )
     ]
   elif isinstance(step, ThoughtStep):
-    # ThoughtContent has a 'signature' attribute, not 'thought'
-    # These are internal model reasoning and typically not exposed as Parts
-    # Skip thought outputs for now
+    # Gemini 3 rejects the follow-up unless this signature is echoed back.
+    # Keep it on a part of its own: a part that also carries text is
+    # re-encoded as a text step, which drops the signature.
+    if step.signature:
+      return [
+          types.Part(
+              thought=True,
+              thought_signature=base64.b64decode(step.signature),
+          )
+      ]
     return []
   elif isinstance(step, CodeExecutionResultStep):
     return [
@@ -903,7 +910,12 @@ def _handle_thought_signature(
   for part in reversed(state.parts):
     if part.thought:
       part.thought_signature = base64.b64decode(signature)
-      break
+      return None
+  # A signature often arrives with no preceding thought summary, leaving no
+  # part to attach it to. Keep it on its own part rather than dropping it.
+  state.parts.append(
+      types.Part(thought=True, thought_signature=base64.b64decode(signature))
+  )
   return None
 
 
@@ -1469,15 +1481,26 @@ def _get_latest_user_contents(
 
   # Find the latest continuous user messages from the end
   latest_user_contents: list[types.Content] = []
-  for i in range(len(contents) - 1, -1, -1):
-    content = contents[i]
-    if content.role == 'user':
-      latest_user_contents.append(content)
-    else:
-      # Stop when we hit a non-user message
-      break
+  index = len(contents) - 1
+  while index >= 0 and contents[index].role == 'user':
+    latest_user_contents.append(contents[index])
+    index -= 1
 
   latest_user_contents.reverse()
+
+  # The thought signature Gemini model needs back sits on the preceding
+  # model turn, outside the user-only window above. Carry just those parts
+  # across; the rest of that turn is already server-side under
+  # previous_interaction_id.
+  if index >= 0:
+    signature_parts = [
+        part for part in contents[index].parts or [] if part.thought_signature
+    ]
+    if signature_parts:
+      latest_user_contents.insert(
+          0, types.Content(role='model', parts=signature_parts)
+      )
+
   return latest_user_contents
 
 

@@ -2612,6 +2612,39 @@ def test_fast_api_common_options_leaves_trigger_sources_none_when_unset() -> (
   assert captured["trigger_sources"] is None
 
 
+def test_fast_api_common_options_trigger_oidc_options() -> None:
+  """OIDC audience and comma-separated service accounts are passed and parsed."""
+  command, captured = _fast_api_command()
+
+  result = CliRunner().invoke(
+      command,
+      [
+          "--trigger_oidc_audience",
+          "https://my-service.run.app",
+          "--trigger_oidc_service_accounts",
+          " a@project.iam , b@project.iam ,",
+      ],
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert captured["trigger_oidc_audience"] == "https://my-service.run.app"
+  assert captured["trigger_oidc_service_accounts"] == [
+      "a@project.iam",
+      "b@project.iam",
+  ]
+
+
+def test_fast_api_common_options_leaves_trigger_oidc_none_when_unset() -> None:
+  """Unset OIDC options stay None."""
+  command, captured = _fast_api_command()
+
+  result = CliRunner().invoke(command, [])
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert captured["trigger_oidc_audience"] is None
+  assert captured["trigger_oidc_service_accounts"] is None
+
+
 def test_fast_api_common_options_verbose_only_overrides_default_log_level() -> (
     None
 ):
