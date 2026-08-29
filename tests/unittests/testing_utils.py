@@ -21,7 +21,6 @@ from typing import Optional
 from typing import Union
 
 from google.adk.agents.invocation_context import InvocationContext
-from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
@@ -31,6 +30,7 @@ from google.adk.events.event import Event
 from google.adk.flows.llm_flows._fencing import OTHER_AGENT_CONTEXT_PREAMBLE
 from google.adk.flows.llm_flows._fencing import QUOTED_CONTENT_BEGIN
 from google.adk.flows.llm_flows._fencing import QUOTED_CONTENT_END
+from google.adk.live import LiveRequestQueue
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.models import LlmCapabilities
 from google.adk.models.base_llm import BaseLlm

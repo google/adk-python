@@ -18,7 +18,6 @@ from typing import Callable
 from unittest import mock
 
 from fastapi.openapi.models import HTTPBearer
-from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.auth.auth_tool import AuthToolArguments
@@ -37,6 +36,7 @@ from google.adk.flows.llm_flows.functions import handle_function_calls_live
 from google.adk.flows.llm_flows.functions import merge_parallel_function_response_events
 from google.adk.flows.llm_flows.functions import remove_client_function_call_id
 from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from google.adk.live import LiveRequestQueue
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.computer_use.computer_use_tool import ComputerUseTool
 from google.adk.tools.function_tool import FunctionTool

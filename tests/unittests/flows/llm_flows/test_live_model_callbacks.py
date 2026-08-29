@@ -23,14 +23,14 @@ from typing import Iterable
 from typing import Optional
 from unittest import mock
 
-from google.adk.agents.live_request_queue import LiveRequest
-from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows import contents as contents_processor
 from google.adk.flows.llm_flows.base_llm_flow import _ReconnectMode
 from google.adk.flows.llm_flows.base_llm_flow import _ReconnectSentinel
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
+from google.adk.live import LiveRequest
+from google.adk.live import LiveRequestQueue
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.tools.function_tool import FunctionTool

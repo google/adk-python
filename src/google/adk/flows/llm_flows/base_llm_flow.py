@@ -36,12 +36,12 @@ from ...agents._streaming_mode import StreamingMode
 from ...agents.base_agent import BaseAgent
 from ...agents.callback_context import CallbackContext
 from ...agents.invocation_context import InvocationContext
-from ...agents.live_request_queue import LiveRequestQueue
 from ...agents.readonly_context import ReadonlyContext
 from ...auth.auth_tool import AuthConfig
 from ...events.event import Event
 from ...events.event_actions import EventActions
 from ...live._audio_cache_manager import AudioCacheManager
+from ...live.live_request_queue import LiveRequestQueue
 from ...models.base_llm_connection import BaseLlmConnection
 from ...models.google_llm import Gemini
 from ...models.llm_request import LlmRequest
@@ -52,6 +52,9 @@ from ...telemetry.tracing import trace_send_data
 from ...telemetry.tracing import tracer
 from ...tools.base_toolset import BaseToolset
 from ...tools.tool_context import ToolContext
+from ...utils._callback_pipeline import _run_callbacks
+from ...utils._callback_pipeline import _stop_on_non_none
+from ...utils._callback_pipeline import _stop_on_truthy
 from ...utils.context_utils import Aclosing
 from ...utils.variant_utils import GoogleLLMVariant
 from ._invocation_utils import as_llm_agent as _as_llm_agent
@@ -276,18 +279,14 @@ async def _handle_before_model_callback(
 
   # If no overrides are provided from the plugins, further run the canonical
   # callbacks.
-  if not agent.canonical_before_model_callbacks:
-    return None
-  for callback in agent.canonical_before_model_callbacks:
-    # The callback type aliases are declared positionally, but the framework
-    # has always invoked them by keyword.
-    agent_response = callback(  # type: ignore[call-arg]
-        callback_context=callback_context, llm_request=llm_request
-    )
-    if inspect.isawaitable(agent_response):
-      agent_response = await agent_response
-    if agent_response:
-      return agent_response
+  callback_response = await _run_callbacks(
+      agent.canonical_before_model_callbacks,
+      _stop_on_truthy,
+      callback_context=callback_context,
+      llm_request=llm_request,
+  )
+  if callback_response:
+    return callback_response
   return None
 
 
@@ -350,18 +349,14 @@ async def _handle_after_model_callback(
 
   # If no overrides are provided from the plugins, further run the canonical
   # callbacks.
-  if not agent.canonical_after_model_callbacks:
-    return await _maybe_add_grounding_metadata()
-  for callback in agent.canonical_after_model_callbacks:
-    # The callback type aliases are declared positionally, but the framework
-    # has always invoked them by keyword.
-    agent_response = callback(  # type: ignore[call-arg]
-        callback_context=callback_context, llm_response=llm_response
-    )
-    if inspect.isawaitable(agent_response):
-      agent_response = await agent_response
-    if agent_response:
-      return await _maybe_add_grounding_metadata(agent_response)
+  callback_response = await _run_callbacks(
+      agent.canonical_after_model_callbacks,
+      _stop_on_truthy,
+      callback_context=callback_context,
+      llm_response=llm_response,
+  )
+  if callback_response:
+    return await _maybe_add_grounding_metadata(callback_response)
   return await _maybe_add_grounding_metadata()
 
 
@@ -417,20 +412,13 @@ async def _run_and_handle_error(
     if error_response is not None:
       return error_response
 
-    for callback in agent.canonical_on_model_error_callbacks:
-      # The callback type aliases are declared positionally, but the framework
-      # has always invoked them by keyword.
-      agent_response = callback(  # type: ignore[call-arg]
-          callback_context=callback_context,
-          llm_request=llm_request,
-          error=error,
-      )
-      if inspect.isawaitable(agent_response):
-        agent_response = await agent_response
-      if agent_response is not None:
-        return agent_response
-
-    return None
+    return await _run_callbacks(
+        agent.canonical_on_model_error_callbacks,
+        _stop_on_non_none,
+        callback_context=callback_context,
+        llm_request=llm_request,
+        error=error,
+    )
 
   try:
     async with _instrumentation.record_inference_telemetry(

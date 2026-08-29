@@ -820,6 +820,23 @@ class TestDescriptionBuildingFunctions:
         == "This agent will First agent in a loop (max unlimited iterations)."
     )
 
+  def test_get_workflow_description_loop_agent_zero_iterations(self):
+    """Test _get_workflow_description for LoopAgent capped at zero."""
+    # Arrange
+    mock_sub_agent1 = Mock(spec=BaseAgent)
+    mock_sub_agent1.name = "agent1"
+    mock_sub_agent1.description = "First agent"
+
+    mock_agent = Mock(spec=LoopAgent)
+    mock_agent.sub_agents = [mock_sub_agent1]
+    mock_agent.max_iterations = 0
+
+    # Act
+    result = _get_workflow_description(mock_agent)
+
+    # Assert
+    assert result == "This agent will First agent in a loop (max 0 iterations)."
+
   def test_get_workflow_description_no_sub_agents(self):
     """Test _get_workflow_description for agent without sub-agents."""
     # Arrange
