@@ -24,6 +24,7 @@ from unittest.mock import patch
 
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
+from google.adk.tools.mcp_tool import session_context
 from google.adk.tools.mcp_tool.session_context import _format_exception
 from google.adk.tools.mcp_tool.session_context import _read_timeout
 from google.adk.tools.mcp_tool.session_context import SessionContext
@@ -1023,3 +1024,14 @@ class TestReadTimeout:
 
   def test_fractional_seconds_survive(self):
     assert _read_timeout(0.5) == timedelta(seconds=0.5)
+
+  def test_mcp_2_uses_float_seconds(self, monkeypatch):
+    monkeypatch.setattr(session_context, '_MCP_MAJOR', 2)
+
+    assert _read_timeout(30) == 30
+    assert _read_timeout(0.5) == 0.5
+
+  def test_mcp_1_uses_timedelta(self, monkeypatch):
+    monkeypatch.setattr(session_context, '_MCP_MAJOR', 1)
+
+    assert _read_timeout(30) == timedelta(seconds=30)

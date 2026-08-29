@@ -18,6 +18,7 @@ import asyncio
 from contextlib import AbstractAsyncContextManager
 from contextlib import AsyncExitStack
 from datetime import timedelta
+from importlib.metadata import version
 import logging
 from types import TracebackType
 from typing import Any
@@ -36,8 +37,10 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 _T = TypeVar('_T')
 
+_MCP_MAJOR = int(version('mcp').split('.', 1)[0])
 
-def _read_timeout(seconds: Optional[float]) -> Optional[timedelta]:
+
+def _read_timeout(seconds: Optional[float]) -> Optional[timedelta | float]:
   """Converts a timeout in seconds to the type ``ClientSession`` expects.
 
   ADK carries every timeout as float seconds. MCP SDK 1.x wants a
@@ -52,6 +55,8 @@ def _read_timeout(seconds: Optional[float]) -> Optional[timedelta]:
   """
   if seconds is None:
     return None
+  if _MCP_MAJOR >= 2:
+    return seconds
   return timedelta(seconds=seconds)
 
 
