@@ -83,6 +83,7 @@ _SQLITE_DIALECT = "sqlite"
 _MARIADB_DIALECT = "mariadb"
 _MYSQL_DIALECT = "mysql"
 _POSTGRESQL_DIALECT = "postgresql"
+_MSSQL_DIALECT = "mssql"
 # Dialects whose DATETIME/TIMESTAMP columns do not retain timezone info, so
 # timezone-aware datetimes must have their tzinfo stripped before storage. This
 # keeps the value written by create_session consistent with the value read back
@@ -94,6 +95,7 @@ _NAIVE_DATETIME_DIALECTS = (
     _POSTGRESQL_DIALECT,
     _MYSQL_DIALECT,
     _MARIADB_DIALECT,
+    _MSSQL_DIALECT,
 )
 # Tuple key order for in-process per-session lock maps:
 # (app_name, user_id, session_id).
