@@ -163,7 +163,7 @@ request_processor = _ContentLlmRequestProcessor()
 def _rearrange_events_for_async_function_responses_in_history(
     events: list[Event],
 ) -> list[Event]:
-  """Rearrange the async function_response events in the history."""
+  """Rearrange async function responses and their model replies in history."""
   # A model may hand out the same function call id more than once in a session,
   # so an id on its own does not identify a single call. Each response is
   # attributed to the newest call that precedes it and carries the same id, and
@@ -179,6 +179,7 @@ def _rearrange_events_for_async_function_responses_in_history(
       call_event_indices_by_id.setdefault(function_call.id, []).append(i)
 
   response_event_index_by_call: dict[tuple[str | None, int], int] = {}
+  response_event_indices_by_call: dict[tuple[str | None, int], list[int]] = {}
   history_has_function_responses = False
   for i, event in enumerate(events):
     for function_response in event.get_function_responses():
@@ -191,15 +192,40 @@ def _rearrange_events_for_async_function_responses_in_history(
       # that carries its id keeps the first, as it did before ids could repeat.
       preceding_calls = bisect_left(call_event_indices, i)
       owning_call_event_index = call_event_indices[max(preceding_calls - 1, 0)]
-      response_event_index_by_call[
-          (function_response.id, owning_call_event_index)
-      ] = i
+      call_key = (function_response.id, owning_call_event_index)
+      response_event_index_by_call[call_key] = i
+      response_event_indices_by_call.setdefault(call_key, []).append(i)
 
   if not history_has_function_responses:
     return events
 
+  # A text-only model reply immediately after an old tool update was generated
+  # from the result that is about to be discarded. Remove that reply as well,
+  # while stopping at any user input, function call, or other event boundary.
+  latest_response_event_indices = set(response_event_index_by_call.values())
+  superseded_response_event_indices = {
+      response_event_index
+      for response_event_indices in response_event_indices_by_call.values()
+      for response_event_index in response_event_indices
+      if response_event_index not in latest_response_event_indices
+  }
+  stale_model_event_indices: set[int] = set()
+  for response_event_index in superseded_response_event_indices:
+    for i in range(response_event_index + 1, len(events)):
+      event = events[i]
+      if (
+          not event.content
+          or event.content.role != 'model'
+          or event.get_function_calls()
+          or not any(part.text for part in event.content.parts or [])
+      ):
+        break
+      stale_model_event_indices.add(i)
+
   result_events: list[Event] = []
   for i, event in enumerate(events):
+    if i in stale_model_event_indices:
+      continue
     if event.get_function_responses():
       # function_response should be handled together with function_call below.
       continue
