@@ -639,3 +639,354 @@ async def test_orphaned_function_response_dropped_mid_history():
       ("user", "Regular message"),
       ("user", "Later message"),
   ]
+
+
+@pytest.mark.asyncio
+async def test_idless_trailing_function_response_is_dropped():
+  """Trailing FR without an id must not raise during contents assembly."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Regular message"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent([types.Part(text="done")]),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent([
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      name="orphaned_tool",
+                      id=None,
+                      response={"error": "no id"},
+                  )
+              )
+          ]),
+      ),
+  ]
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  assert testing_utils.simplify_contents(llm_request.contents) == [
+      ("user", "Regular message"),
+      ("model", "done"),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_empty_id_trailing_function_response_is_dropped():
+  """Trailing FR with empty-string id is treated like an unpairable orphan."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Regular message"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="user",
+          content=types.UserContent([
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      name="orphaned_tool",
+                      id="",
+                      response={"error": "empty id"},
+                  )
+              )
+          ]),
+      ),
+  ]
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  assert testing_utils.simplify_contents(llm_request.contents) == [
+      ("user", "Regular message"),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_rearrange_drops_id_orphan_when_prune_bypassed():
+  """Rearrange itself drops id'd orphans (defense in depth for #6751)."""
+  events = [
+      Event(
+          author="user",
+          content=types.UserContent("hi"),
+      ),
+      Event(
+          author="agent",
+          content=types.ModelContent([types.Part(text="done")]),
+      ),
+      Event(
+          author="user",
+          content=types.UserContent([
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      id="orphan-1",
+                      name="tool",
+                      response={"ok": True},
+                  )
+              )
+          ]),
+      ),
+  ]
+
+  result = contents._rearrange_events_for_latest_function_response(events)
+  assert len(result) == 2
+  assert not result[-1].get_function_responses()
+
+
+@pytest.mark.asyncio
+async def test_rearrange_strips_unmatched_responses_instead_of_raising():
+  """Unmatched FR parts on a matched call event are dropped, not raised."""
+  events = [
+      Event(author="user", content=types.UserContent("hi")),
+      Event(
+          author="agent",
+          content=types.ModelContent([
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="c1", name="a", args={}
+                  )
+              )
+          ]),
+      ),
+      Event(
+          author="agent",
+          content=types.ModelContent([types.Part(text="thinking")]),
+      ),
+      Event(
+          author="user",
+          content=types.UserContent([
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      id="c1", name="a", response={"ok": True}
+                  )
+              ),
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      id="extra", name="b", response={"ok": True}
+                  )
+              ),
+          ]),
+      ),
+  ]
+
+  result = contents._rearrange_events_for_latest_function_response(events)
+  trailing_responses = result[-1].get_function_responses()
+  assert [response.id for response in trailing_responses] == ["c1"]
+
+
+@pytest.mark.asyncio
+async def test_orphaned_fr_after_valid_history_keeps_session_usable():
+  """A trailing orphaned FR must not erase prior valid FC/FR history."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  function_call = types.FunctionCall(
+      id="call_ok", name="search_tool", args={"query": "test"}
+  )
+  function_response = types.FunctionResponse(
+      id="call_ok",
+      name="search_tool",
+      response={"result": "ok"},
+  )
+  orphaned_response = types.FunctionResponse(
+      id="orphan-trailing",
+      name="orphaned_tool",
+      response={"error": "no matching call"},
+  )
+
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("hi"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent([
+              types.Part(function_call=function_call),
+          ]),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent([
+              types.Part(function_response=function_response),
+          ]),
+      ),
+      Event(
+          invocation_id="inv4",
+          author="test_agent",
+          content=types.ModelContent([types.Part(text="answer")]),
+      ),
+      Event(
+          invocation_id="inv5",
+          author="user",
+          content=types.UserContent([
+              types.Part(function_response=orphaned_response),
+          ]),
+      ),
+  ]
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  simplified = testing_utils.simplify_contents(llm_request.contents)
+  assert simplified[0] == ("user", "hi")
+  assert simplified[-1] == ("model", "answer")
+  assert "orphan-trailing" not in str(llm_request.contents)
+
+
+@pytest.mark.asyncio
+async def test_multiple_trailing_idless_orphaned_frs_are_all_dropped():
+  """Consecutive id-less orphaned FR events are all dropped without raising."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("hi"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent([types.Part(text="answer")]),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent([
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      name="t1", response={"a": 1}
+                  )
+              )
+          ]),
+      ),
+      Event(
+          invocation_id="inv4",
+          author="user",
+          content=types.UserContent([
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      name="t2", response={"b": 2}
+                  )
+              )
+          ]),
+      ),
+  ]
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  assert testing_utils.simplify_contents(llm_request.contents) == [
+      ("user", "hi"),
+      ("model", "answer"),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_runner_continues_after_idless_orphaned_fr_in_session():
+  """Full runner path: id-less orphaned FR must not crash the next turn."""
+  from google.adk.apps.app import App
+  from google.adk.runners import Runner
+  from google.adk.sessions.in_memory_session_service import InMemorySessionService
+
+  model = testing_utils.MockModel.create(responses=["recovered answer"])
+  agent = Agent(name="agent", model=model)
+  app = App(name="test_app", root_agent=agent)
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name="test_app", user_id="u1", session_id="s1"
+  )
+
+  seed_events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("hi"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="agent",
+          content=types.ModelContent(
+              [types.Part.from_text(text="earlier answer")]
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent([
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      name="ghost_tool",
+                      response={"result": "ok"},
+                  )
+              )
+          ]),
+      ),
+  ]
+  for event in seed_events:
+    await session_service.append_event(session=session, event=event)
+
+  runner = Runner(app=app, session_service=session_service)
+  produced = [
+      event
+      async for event in runner.run_async(
+          user_id="u1",
+          session_id="s1",
+          new_message=types.UserContent("please continue"),
+      )
+  ]
+
+  assert model.requests, "model was never called; orphaned FR still poisoned"
+  assert any(
+      part.text == "recovered answer"
+      for event in produced
+      if event.content
+      for part in event.content.parts or []
+      if part.text
+  )
+  for content in model.requests[-1].contents:
+    for part in content.parts or []:
+      assert not (
+          part.function_response
+          and part.function_response.name == "ghost_tool"
+      )
