@@ -769,6 +769,31 @@ class TestValidateAgentImport:
         str(tmp_path), "app", is_config_agent=False
     )
 
+  def test_validate_agent_import_with_stale_cache(self, tmp_path: Path) -> None:
+    """Should succeed even when parent dir contents were cached before agent package creation."""
+    import sys
+    parent_dir = str(tmp_path)
+    if parent_dir not in sys.path:
+      sys.path.insert(0, parent_dir)
+    # Populate sys.path_importer_cache before agent package directory exists
+    for hook in sys.path_hooks:
+      try:
+        finder = hook(parent_dir)
+        if finder and hasattr(finder, 'find_spec'):
+          finder.find_spec("non_existent_module")
+          break
+      except Exception:
+        pass
+
+    agent_dir = tmp_path / "new_agent_package"
+    agent_dir.mkdir()
+    (agent_dir / "__init__.py").touch()
+    (agent_dir / "agent.py").write_text("root_agent = 'stale_test'\n")
+
+    cli_deploy._validate_agent_import(
+        str(agent_dir), "root_agent", is_config_agent=False
+    )
+
   def test_success_with_relative_imports(self, tmp_path: Path) -> None:
     """Should succeed when agent.py uses relative imports."""
     (tmp_path / "helper.py").write_text("VALUE = 'my_agent'\n")
