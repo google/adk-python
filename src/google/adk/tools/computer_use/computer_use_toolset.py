@@ -20,6 +20,7 @@ import inspect
 import logging
 from typing import Any
 from typing import Callable
+from typing import cast
 from typing import Optional
 from typing import Union
 
@@ -72,7 +73,7 @@ class ComputerUseToolset(BaseToolset):
     self._excluded_predefined_functions = excluded_predefined_functions
     self._allow_private_network_access = allow_private_network_access
     self._initialized = False
-    self._tools = None
+    self._tools: Optional[list[ComputerUseTool]] = None
 
   async def _ensure_initialized(self) -> None:
     if not self._initialized:
@@ -99,7 +100,9 @@ class ComputerUseToolset(BaseToolset):
 
     @functools.wraps(method)
     async def wrapper(
-        *args: Any, tool_context: ToolContext = None, **kwargs: Any
+        *args: Any,
+        tool_context: Optional[ToolContext] = None,
+        **kwargs: Any,
     ) -> Any:
       # Prepare computer before each tool call
       # Computers that need session state (e.g., AgentEngineSandboxComputer)
@@ -121,7 +124,7 @@ class ComputerUseToolset(BaseToolset):
             annotation=ToolContext,
         )
     ]
-    wrapper.__signature__ = orig_sig.replace(parameters=new_params)
+    setattr(wrapper, "__signature__", orig_sig.replace(parameters=new_params))
 
     return wrapper
 
@@ -200,16 +203,14 @@ class ComputerUseToolset(BaseToolset):
       logger.warning("Method %s not found in tools_dict", method_name)
       return
 
-    original_tool = llm_request.tools_dict[method_name]
+    original_tool = cast(ComputerUseTool, llm_request.tools_dict[method_name])
 
     # Create the adapted function using the adapter
-    # Handle both sync and async adapter functions
-    if asyncio.iscoroutinefunction(adapter_func):
-      # If adapter_func is async, await it to get the adapted function
-      adapted_func = await adapter_func(original_tool.func)
+    adapted_func_or_awaitable = adapter_func(original_tool.func)
+    if inspect.isawaitable(adapted_func_or_awaitable):
+      adapted_func = await adapted_func_or_awaitable
     else:
-      # If adapter_func is sync, call it directly
-      adapted_func = adapter_func(original_tool.func)
+      adapted_func = adapted_func_or_awaitable
 
     # Get the name from the adapted function
     new_method_name = adapted_func.__name__
@@ -232,7 +233,9 @@ class ComputerUseToolset(BaseToolset):
     )
 
   @override
-  async def get_tools(
+  # list is invariant, so the narrower element type is not a compatible
+  # override; widening it to BaseTool would change this public signature.
+  async def get_tools(  # type: ignore[override]
       self,
       readonly_context: Optional[ReadonlyContext] = None,
   ) -> list[ComputerUseTool]:
@@ -306,16 +309,20 @@ class ComputerUseToolset(BaseToolset):
       if not self._tools:
         await self.get_tools()
 
-      for tool in self._tools:
-        llm_request.tools_dict[tool.name] = tool
+      assert self._tools is not None
+      for computer_tool in self._tools:
+        llm_request.tools_dict[computer_tool.name] = computer_tool
 
       # Initialize config if needed
       llm_request.config = llm_request.config or types.GenerateContentConfig()
       llm_request.config.tools = llm_request.config.tools or []
 
       # Check if computer use is already configured
-      for tool in llm_request.config.tools:
-        if isinstance(tool, types.Tool) and tool.computer_use:
+      for configured_tool in llm_request.config.tools:
+        if (
+            isinstance(configured_tool, types.Tool)
+            and configured_tool.computer_use
+        ):
           logger.debug("Computer use already configured in LLM request")
           return
 

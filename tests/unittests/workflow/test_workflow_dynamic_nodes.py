@@ -1091,6 +1091,146 @@ async def test_dynamic_node_failure_handling():
 
 
 @pytest.mark.asyncio
+async def test_detached_dynamic_node_failure_surfaces():
+  """A detached (un-awaited) dynamic node failure fails the workflow.
+
+  The parent starts the child with asyncio.create_task(ctx.run_node(...))
+  without awaiting it, so the child is still in flight when the graph
+  finishes. Its failure would otherwise be swallowed and the workflow
+  would report success.
+  """
+
+  @node
+  async def failing_child(*, ctx, node_input):
+    await asyncio.sleep(0.05)
+    if node_input == 'fail':
+      raise ValueError('detached boom')
+    yield f'ok: {node_input}'
+
+  @node(rerun_on_resume=True)
+  async def parent(*, ctx, node_input):
+    task = asyncio.create_task(ctx.run_node(failing_child, node_input='fail'))
+    # The detached task's own exception is surfaced by the workflow; retrieve
+    # it here only so asyncio does not warn that it was never retrieved.
+    task.add_done_callback(lambda t: t.cancelled() or t.exception())
+    await asyncio.sleep(0)  # let the scheduler register the detached run
+    yield 'parent done'
+
+  wf = Workflow(name='wf', edges=[(START, parent)])
+  ss = InMemorySessionService()
+  runner = Runner(app_name='test', node=wf, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  with pytest.raises(ValueError, match='detached boom'):
+    await _run(runner, ss, session, 'go')
+
+
+@pytest.mark.asyncio
+async def test_detached_dynamic_node_interrupt_surfaces():
+  """A detached dynamic node that interrupts fails the workflow.
+
+  A detached node cannot be resumed, so its interrupt is surfaced as an
+  error rather than being silently dropped.
+  """
+
+  @node
+  async def interrupting_child(*, ctx, node_input):
+    await asyncio.sleep(0.05)
+    yield Event(
+        content=types.Content(
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(
+                        name='approve', args={}, id='fc-det'
+                    )
+                )
+            ]
+        ),
+        long_running_tool_ids={'fc-det'},
+    )
+
+  @node(rerun_on_resume=True)
+  async def parent(*, ctx, node_input):
+    task = asyncio.create_task(ctx.run_node(interrupting_child))
+    task.add_done_callback(lambda t: t.cancelled() or t.exception())
+    await asyncio.sleep(0)  # let the scheduler register the detached run
+    yield 'parent done'
+
+  wf = Workflow(name='wf', edges=[(START, parent)])
+  ss = InMemorySessionService()
+  runner = Runner(app_name='test', node=wf, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  with pytest.raises(RuntimeError, match='detached node cannot be resumed'):
+    await _run(runner, ss, session, 'go')
+
+
+@pytest.mark.asyncio
+async def test_detached_dynamic_node_success_keeps_workflow_succeeding():
+  """A detached dynamic node that succeeds in flight keeps the workflow green.
+
+  The in-flight detached run is awaited and inspected after the graph
+  finishes, but a clean outcome must leave the workflow error free.
+  """
+
+  @node
+  async def clean_child(*, ctx, node_input):
+    await asyncio.sleep(0.05)
+    yield 'child done'
+
+  @node(rerun_on_resume=True)
+  async def parent(*, ctx, node_input):
+    asyncio.create_task(ctx.run_node(clean_child))
+    await asyncio.sleep(0)  # let the scheduler register the detached run
+    yield 'parent done'
+
+  wf = Workflow(name='wf', edges=[(START, parent)])
+  ss = InMemorySessionService()
+  runner = Runner(app_name='test', node=wf, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  events = await _run(runner, ss, session, 'go')
+
+  assert 'parent done' in _outputs(events)
+
+
+@pytest.mark.asyncio
+async def test_detached_dynamic_node_finished_before_graph_end_is_not_checked():
+  """A detached run that finished before the graph does is not inspected.
+
+  Known limitation: a finished run cannot be told apart from an awaited,
+  handled run, so get_dynamic_tasks() returns only in-flight tasks and this
+  failure stays swallowed. Pinned so the boundary is not moved by accident.
+  """
+
+  @node
+  async def early_failing_child(*, ctx, node_input):
+    if node_input == 'fail':
+      raise ValueError('early boom')
+    yield f'ok: {node_input}'
+
+  @node(rerun_on_resume=True)
+  async def parent(*, ctx, node_input):
+    task = asyncio.create_task(
+        ctx.run_node(early_failing_child, node_input='fail')
+    )
+    task.add_done_callback(lambda t: t.cancelled() or t.exception())
+    # Let the detached run finish while the graph is still running, so it is
+    # already done when the outcome check looks for in-flight tasks.
+    await asyncio.wait([task])
+    yield 'parent done'
+
+  wf = Workflow(name='wf', edges=[(START, parent)])
+  ss = InMemorySessionService()
+  runner = Runner(app_name='test', node=wf, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  events = await _run(runner, ss, session, 'go')
+
+  assert 'parent done' in _outputs(events)
+
+
+@pytest.mark.asyncio
 async def test_workflow_resume_does_not_rerun_completed_llm_agent():
   """Completed LlmAgent node is not rerun upon workflow resumption.
 

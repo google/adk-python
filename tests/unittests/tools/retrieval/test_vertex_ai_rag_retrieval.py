@@ -16,12 +16,55 @@ from google.adk.agents.llm_agent import Agent
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.retrieval.vertex_ai_rag_retrieval import VertexAiRagRetrieval
 from google.genai import types
+import pytest
+from vertexai.preview import rag
 
 from ... import testing_utils
 
 
 def noop_tool(x: str) -> str:
   return x
+
+
+def test_vertex_rag_resources_are_converted_for_gemini():
+  resource = rag.RagResource(
+      rag_corpus='projects/p/locations/l/ragCorpora/c',
+      rag_file_ids=['file-1'],
+  )
+
+  retrieval = VertexAiRagRetrieval(
+      name='rag_retrieval',
+      description='rag_retrieval',
+      rag_resources=[resource],
+  )
+
+  assert retrieval.vertex_rag_store.rag_resources == [
+      types.VertexRagStoreRagResource(
+          rag_corpus='projects/p/locations/l/ragCorpora/c',
+          rag_file_ids=['file-1'],
+      )
+  ]
+
+
+@pytest.mark.asyncio
+async def test_retrieval_query_gets_the_original_rag_resources(mocker):
+  resource = rag.RagResource(
+      rag_corpus='projects/p/locations/l/ragCorpora/c',
+      rag_file_ids=['file-1'],
+  )
+  retrieval = VertexAiRagRetrieval(
+      name='rag_retrieval',
+      description='rag_retrieval',
+      rag_resources=[resource],
+  )
+  retrieval_query = mocker.patch(
+      'google.adk.dependencies.vertexai.rag.retrieval_query'
+  )
+  retrieval_query.return_value.contexts.contexts = []
+
+  await retrieval.run_async(args={'query': 'q'}, tool_context=mocker.Mock())
+
+  assert retrieval_query.call_args.kwargs['rag_resources'] == [resource]
 
 
 def test_vertex_rag_retrieval_for_non_gemini():

@@ -87,6 +87,11 @@ def long_running_tool_func():
   return None
 
 
+def request_approval_tool() -> dict[str, str]:
+  """A test tool that asks a human to approve and answers only later."""
+  return {'status': 'awaiting_approval'}
+
+
 @pytest.mark.parametrize('resumable', [False, True])
 @pytest.mark.asyncio
 async def test_workflow_pause_and_resume(
@@ -227,6 +232,69 @@ async def test_workflow_pause_and_resume(
         and e[1] == testing_utils.END_OF_AGENT
     ]
     assert len(end_events) == 1
+
+
+@pytest.mark.asyncio
+async def test_agent_node_that_spoke_before_pausing_reruns_on_resume(
+    request: pytest.FixtureRequest,
+):
+  """An agent node that says something before it pauses still reruns.
+
+  The message is recorded as the node's output, so replaying it as a finished
+  node skips the node on resume: the answer never reaches the model and
+  approving or refusing reads the same.
+  """
+  mock_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(name='request_approval_tool', args={}),
+          types.Part.from_text(text='Waiting for you to approve.'),
+          types.Part.from_text(text='Approved, so I sent it.'),
+      ]
+  )
+  sender = LlmAgent(
+      name='sender',
+      model=mock_model,
+      tools=[LongRunningFunctionTool(func=request_approval_tool)],
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=Workflow(name='approval_workflow', edges=[(START, sender)]),
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events1 = await runner.run_async(testing_utils.get_user_content('send it'))
+  fc_event = workflow_testing_utils.find_function_call_event(
+      events1, 'request_approval_tool'
+  )
+  interrupt_id = fc_event.content.parts[0].function_call.id
+  requests_before_resume = len(mock_model.requests)
+
+  events2 = await runner.run_async(
+      new_message=testing_utils.UserContent(
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id=interrupt_id,
+                  name='request_approval_tool',
+                  response={'result': 'approved'},
+              )
+          )
+      ),
+      invocation_id=events1[0].invocation_id,
+  )
+
+  # A replayed node hands back its old message without ever reaching the
+  # model, so a fresh request is what proves the node ran again.
+  assert len(mock_model.requests) == requests_before_resume + 1
+  resumed_texts = [
+      part.text
+      for event in events2
+      if event.content and event.content.parts
+      for part in event.content.parts
+      if part.text
+  ]
+  assert resumed_texts == ['Approved, so I sent it.']
+  assert 'Waiting for you to approve.' not in [e.output for e in events2]
 
 
 @pytest.mark.asyncio

@@ -167,6 +167,24 @@
         "reason": "The instrumentor still dimensions by the deprecated `gen_ai.system`."
       },
       {
+        "path": [],
+        "example_native_instrumentation_value": {
+          "attributes": {
+            "gen_ai.agent.name": "some_specialist_agent",
+            "gen_ai.operation.name": "generate_content",
+            "gen_ai.provider.name": "gemini",
+            "gen_ai.request.model": "gemini-2.5-flash",
+            "gen_ai.response.model": "gemini-2.5-flash"
+          },
+          "value": "PRESENT"
+        },
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "otel_bug",
+        "reason": "Only ADK dimensions by the agent that made the call, so a second agent in the turn earns a datapoint of its own; the instrumentor folds every call into one undimensioned point."
+      },
+      {
         "path": [
           "attributes",
           "error.type"
@@ -243,28 +261,19 @@
       {
         "path": [],
         "example_native_instrumentation_value": {
+          "attributes": {
+            "gen_ai.agent.name": "some_specialist_agent",
+            "gen_ai.operation.name": "generate_content",
+            "gen_ai.provider.name": "gemini",
+            "gen_ai.request.model": "gemini-2.5-flash",
+            "gen_ai.response.model": "gemini-2.5-flash",
+            "gen_ai.token.type": "input"
+          },
+          "value": 150
+        },
+        "example_otel_instrumentation_value": {
           "missing_on_this_side": true
         },
-        "example_otel_instrumentation_value": [
-          {
-            "attributes": {
-              "gen_ai.token.type": "input",
-              "gen_ai.system": "gemini",
-              "gen_ai.request.model": "gemini-2.5-flash",
-              "gen_ai.operation.name": "generate_content"
-            },
-            "value": 0
-          },
-          {
-            "attributes": {
-              "gen_ai.token.type": "output",
-              "gen_ai.system": "gemini",
-              "gen_ai.request.model": "gemini-2.5-flash",
-              "gen_ai.operation.name": "generate_content"
-            },
-            "value": 0
-          }
-        ],
         "kind": "otel_bug",
         "reason": "On a call that failed the instrumentor records a zeroed usage point; ADK records no usage at all."
       }

@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
+import inspect
+import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from unittest.mock import create_autospec
 from unittest.mock import Mock
@@ -27,12 +31,17 @@ from google.adk.auth.auth_credential import ServiceAccount
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.tools.mcp_tool import mcp_tool
+from google.adk.tools.mcp_tool.mcp_session_manager import _SESSION_IDLE_TTL_SECONDS
 from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
+from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from google.adk.tools.mcp_tool.mcp_tool import MCPTool
+from google.adk.tools.mcp_tool.mcp_tool import ProgressCallbackFactory
+from google.adk.tools.mcp_tool.mcp_tool import ProgressFnT
 from google.adk.tools.tool_context import ToolContext
 from google.genai.types import FunctionDeclaration
 from mcp.types import CallToolResult
 from mcp.types import TextContent
+from mcp.types import Tool as McpBaseTool
 import pytest
 
 
@@ -92,6 +101,88 @@ class TestMCPToolLegacy:
     assert declaration.name == "test_tool"
     assert declaration.description == "Test tool description"
     assert declaration.parameters is not None
+
+
+class _SnakeCaseMCPTool:
+  """Mock MCP tool shaped like SDK 2.x, which renamed the wire fields."""
+
+  def __init__(self, output_schema=None):
+    self.name = "test_tool"
+    self.description = "Test tool description"
+    self.meta = None
+    self.input_schema = {
+        "type": "object",
+        "properties": {"param1": {"type": "string"}},
+        "required": ["param1"],
+    }
+    self.output_schema = output_schema
+
+
+class TestMCPToolFieldSpellings:
+  """ADK must read MCP fields on both SDK 1.x (camelCase) and 2.x (snake)."""
+
+  def _tool(self, mcp_tool_obj):
+    return MCPTool(
+        mcp_tool=mcp_tool_obj,
+        mcp_session_manager=Mock(spec=MCPSessionManager),
+    )
+
+  def test_read_field_prefers_the_first_name_present(self):
+    model = SimpleNamespace(inputSchema={"a": 1})
+
+    assert mcp_tool._read_field(model, "inputSchema", "input_schema") == {
+        "a": 1
+    }
+
+  def test_read_field_falls_back_to_the_later_name(self):
+    model = SimpleNamespace(input_schema={"a": 1})
+
+    assert mcp_tool._read_field(model, "inputSchema", "input_schema") == {
+        "a": 1
+    }
+
+  def test_read_field_returns_falsy_values(self):
+    """An empty schema is a real value, not a missing attribute."""
+    model = SimpleNamespace(input_schema={})
+
+    assert mcp_tool._read_field(model, "inputSchema", "input_schema") == {}
+
+  def test_read_field_raises_when_no_name_matches(self):
+    with pytest.raises(AttributeError, match="defines none of"):
+      mcp_tool._read_field(SimpleNamespace(), "inputSchema", "input_schema")
+
+  def test_get_declaration_reads_snake_case_schemas(self):
+    """SDK 2.x drops the camelCase attribute, so reading it would raise."""
+    tool = self._tool(_SnakeCaseMCPTool())
+
+    with temporary_feature_override(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True
+    ):
+      declaration = tool._get_declaration()
+
+    assert declaration.parameters_json_schema == {
+        "type": "object",
+        "properties": {"param1": {"type": "string"}},
+        "required": ["param1"],
+    }
+
+  def test_detect_error_in_response_reads_camel_case(self):
+    tool = self._tool(MockMCPTool())
+
+    assert tool._detect_error_in_response({"isError": True}) == "MCP_TOOL_ERROR"
+
+  def test_detect_error_in_response_reads_snake_case(self):
+    """SDK 2.x dumps `is_error`; reading only `isError` loses tool errors."""
+    tool = self._tool(MockMCPTool())
+
+    assert (
+        tool._detect_error_in_response({"is_error": True}) == "MCP_TOOL_ERROR"
+    )
+
+  def test_detect_error_in_response_returns_none_for_a_clean_result(self):
+    tool = self._tool(MockMCPTool())
+
+    assert tool._detect_error_in_response({"isError": False}) is None
 
 
 class TestMCPToolWithJsonSchema:
@@ -302,6 +393,73 @@ class TestMCPTool:
     # Fix: call_tool uses 'arguments' parameter, not positional args
     self.mock_session.call_tool.assert_called_once_with(
         "test_tool", arguments=args, progress_callback=None, meta=None
+    )
+
+  @pytest.mark.asyncio
+  async def test_in_flight_tool_call_is_held_out_of_the_idle_sweep(self):
+    """A call in flight must not have its session swept out from under it."""
+    manager = MCPSessionManager(
+        StreamableHTTPConnectionParams(url="http://example.com/mcp")
+    )
+    session_key = manager._generate_session_key(manager._merge_headers(None))
+
+    call_started = asyncio.Event()
+    finish_call = asyncio.Event()
+
+    async def _slow_call_tool(*args, **kwargs):
+      call_started.set()
+      await finish_call.wait()
+      return CallToolResult(content=[TextContent(type="text", text="ok")])
+
+    pooled_session = Mock()
+    pooled_session._read_stream = Mock(_closed=False)
+    pooled_session._write_stream = Mock(_closed=False)
+    pooled_session.call_tool = _slow_call_tool
+    exit_stack = AsyncMock()
+    manager._sessions[session_key] = (
+        pooled_session,
+        exit_stack,
+        asyncio.get_running_loop(),
+    )
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=manager,
+    )
+    tool_context = ToolContext(invocation_context=Mock())
+    tool_context.function_call_id = "test-call-id"
+
+    with temporary_feature_override(
+        FeatureName._MCP_GRACEFUL_ERROR_HANDLING, True
+    ):
+      call = asyncio.ensure_future(
+          tool._run_async_impl(
+              args={"param1": "test_value"},
+              tool_context=tool_context,
+              credential=None,
+          )
+      )
+      await asyncio.wait_for(call_started.wait(), timeout=5.0)
+
+      # The call outlives the idle TTL. The pool stamps the session only when
+      # it hands it out, so on the timestamp alone it now looks maximally
+      # idle -- and some unrelated caller touches the pool.
+      manager._session_last_used[session_key] = (
+          time.monotonic() - 10 * _SESSION_IDLE_TTL_SECONDS
+      )
+      manager._evict_idle_sessions(keep_key="key_of_another_caller")
+
+      assert session_key in manager._sessions
+      exit_stack.aclose.assert_not_called()
+
+      finish_call.set()
+      result = await asyncio.wait_for(call, timeout=5.0)
+
+    assert result["content"][0]["text"] == "ok"
+    # Finishing the call is what restarts the idle clock.
+    assert (
+        time.monotonic() - manager._session_last_used[session_key]
+        < _SESSION_IDLE_TTL_SECONDS
     )
 
   @pytest.mark.asyncio
@@ -1223,6 +1381,46 @@ class TestMCPTool:
     assert factory_calls[0][1] is tool_context
 
   @pytest.mark.asyncio
+  async def test_run_async_impl_with_progress_callback_object(self):
+    """An instance whose __call__ is async is a callback, not a factory.
+
+    `iscoroutinefunction` is False for such an instance, so it used to reach
+    the factory branch and get called with the wrong arguments.
+    """
+
+    class ProgressCallback:
+
+      async def __call__(
+          self, progress: float, total: float | None, message: str | None
+      ) -> None:
+        pass
+
+    my_progress_callback = ProgressCallback()
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        progress_callback=my_progress_callback,
+    )
+
+    mcp_response = CallToolResult(
+        content=[TextContent(type="text", text="success")]
+    )
+    self.mock_session.call_tool = AsyncMock(return_value=mcp_response)
+
+    args = {"param1": "test_value"}
+    await tool._run_async_impl(
+        args=args, tool_context=Mock(spec=ToolContext), credential=None
+    )
+
+    self.mock_session.call_tool.assert_called_once_with(
+        "test_tool",
+        arguments=args,
+        progress_callback=my_progress_callback,
+        meta=None,
+    )
+
+  @pytest.mark.asyncio
   async def test_run_async_require_confirmation_callable_with_context_type(
       self,
   ):
@@ -1766,3 +1964,193 @@ class TestMCPToolGracefulErrorHandling:
 
     assert result == mcp_response.model_dump(exclude_none=True, mode="json")
     self.mock_session_manager._get_session_context.assert_not_called()
+
+
+class TestResultDictKeys:
+  """Pins the literal keys of the dict `run_async` hands back to the caller.
+
+  `_run_async_impl` returns `CallToolResult.model_dump(...)` straight through,
+  so the SDK's field names are ADK's response contract. The tests elsewhere in
+  this file all compare the result against `model_dump` of the same object,
+  which holds whatever the SDK calls its fields and so cannot notice a rename.
+  These name the keys.
+  """
+
+  def setup_method(self):
+    self.mock_mcp_tool = MockMCPTool(name="test_tool")
+    self.mock_session_manager = Mock(spec=MCPSessionManager)
+    self.mock_session = AsyncMock()
+    self.mock_session_manager.create_session = AsyncMock(
+        return_value=self.mock_session
+    )
+
+  async def _run(self, mcp_response):
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+    self.mock_session.call_tool = AsyncMock(return_value=mcp_response)
+    tool_context = ToolContext(invocation_context=Mock())
+    tool_context.function_call_id = "test-call-id"
+    return await tool._run_async_impl(
+        args={}, tool_context=tool_context, credential=None
+    )
+
+  @pytest.mark.asyncio
+  async def test_error_flag_reaches_the_caller_as_is_error_camel_case(self):
+    """`isError` is the key callers read. A rename is a breaking change.
+
+    `_detect_error_in_response` already reads both spellings, so telemetry
+    survives a rename with no test failing. The caller's copy does not.
+    """
+    result = await self._run(
+        CallToolResult(
+            content=[TextContent(type="text", text="nope")], isError=True
+        )
+    )
+
+    assert "isError" in result
+    assert result["isError"] is True
+
+  @pytest.mark.asyncio
+  async def test_content_entries_keep_their_wire_names(self):
+    """The content list is handed to the model, so its keys are contractual."""
+    result = await self._run(
+        CallToolResult(content=[TextContent(type="text", text="hello")])
+    )
+
+    assert result["content"] == [{"type": "text", "text": "hello"}]
+
+  @pytest.mark.asyncio
+  async def test_no_snake_case_alias_leaks_alongside_the_camel_case_key(self):
+    """Both spellings at once would be worse than either alone.
+
+    A caller switching on `isError` and a caller switching on `is_error` would
+    both work, and the pair would outlive whichever migration introduced it.
+    """
+    result = await self._run(
+        CallToolResult(
+            content=[TextContent(type="text", text="nope")], isError=True
+        )
+    )
+
+    assert "is_error" not in result
+
+
+class TestVendorExtensionFields:
+  """Pins what happens to fields the SDK does not declare.
+
+  A server can add its own fields. Today the SDK keeps them and they reach
+  ADK's callers. These tests say so, so a change shows up as a failure.
+  """
+
+  def setup_method(self):
+    self.mock_session_manager = Mock(spec=MCPSessionManager)
+    self.mock_session = AsyncMock()
+    self.mock_session_manager.create_session = AsyncMock(
+        return_value=self.mock_session
+    )
+
+  async def _run(self, mcp_response):
+    tool = MCPTool(
+        mcp_tool=MockMCPTool(name="test_tool"),
+        mcp_session_manager=self.mock_session_manager,
+    )
+    self.mock_session.call_tool = AsyncMock(return_value=mcp_response)
+    tool_context = ToolContext(invocation_context=Mock())
+    tool_context.function_call_id = "test-call-id"
+    return await tool._run_async_impl(
+        args={}, tool_context=tool_context, credential=None
+    )
+
+  @pytest.mark.asyncio
+  async def test_unknown_result_field_reaches_the_caller(self):
+    """A field the SDK does not declare still arrives in the result dict."""
+    response = CallToolResult.model_validate({
+        "content": [{"type": "text", "text": "hi"}],
+        "acmeTraceId": "trace-1",
+    })
+
+    result = await self._run(response)
+
+    assert result["acmeTraceId"] == "trace-1"
+
+  def test_unknown_tool_field_survives_on_the_raw_tool(self):
+    """The same holds for a tool declaration, which callers read directly."""
+    raw = McpBaseTool.model_validate({
+        "name": "test_tool",
+        "description": "d",
+        "inputSchema": {"type": "object"},
+        "acmeVisibility": "internal",
+    })
+
+    tool = MCPTool(mcp_tool=raw, mcp_session_manager=self.mock_session_manager)
+
+    assert getattr(tool.raw_mcp_tool, "acmeVisibility", None) == "internal"
+
+  @pytest.mark.asyncio
+  async def test_the_meta_block_reaches_the_caller(self):
+    """`_meta` is the spec's extension point, and a declared field.
+
+    So it survives even if undeclared fields stop arriving. It lands under
+    `meta`, not `_meta`, because the dump is not taken by alias.
+    """
+    response = CallToolResult.model_validate({
+        "content": [{"type": "text", "text": "hi"}],
+        "_meta": {"acme.com/trace": "trace-1"},
+    })
+
+    result = await self._run(response)
+
+    assert "_meta" not in result
+    assert result["meta"] == {"acme.com/trace": "trace-1"}
+
+
+class TestProgressFnT:
+  """Tests for the progress-callback protocol ADK declares."""
+
+  def test_no_sdk_class_in_the_protocol_ancestry(self):
+    """The protocol must not be built on the SDK's.
+
+    `mcp.shared.session` exists to hold the session base class. A release that
+    reorganizes it takes a subclass down with it, and with it every MCP tool.
+    """
+    sdk_ancestors = [
+        klass
+        for klass in ProgressFnT.__mro__
+        if klass.__module__ == "mcp" or klass.__module__.startswith("mcp.")
+    ]
+    assert not sdk_ancestors
+
+  def test_same_call_signature_as_the_sdk_protocol(self):
+    """ADK's protocol must keep describing what the SDK actually calls.
+
+    The callback is handed to `ClientSession.call_tool`, which invokes it
+    positionally. A rename or a changed default here would mislead everyone
+    who writes a callback against the annotation.
+    """
+    sdk_protocol = pytest.importorskip("mcp.shared.session").ProgressFnT
+
+    ours = inspect.signature(ProgressFnT.__call__)
+    theirs = inspect.signature(sdk_protocol.__call__)
+    assert [p.name for p in ours.parameters.values()] == [
+        p.name for p in theirs.parameters.values()
+    ]
+    assert [p.kind for p in ours.parameters.values()] == [
+        p.kind for p in theirs.parameters.values()
+    ]
+    assert [p.default for p in ours.parameters.values()] == [
+        p.default for p in theirs.parameters.values()
+    ]
+
+  def test_factory_protocol_stays_runtime_checkable(self):
+    """`isinstance` against the factory must not raise.
+
+    The decorator sits on the line above the class, so inserting anything
+    between the two silently moves it to the new class.
+    """
+
+    def factory(tool_name, *, callback_context=None, **kwargs):
+      return None
+
+    assert isinstance(factory, ProgressCallbackFactory)

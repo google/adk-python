@@ -31,6 +31,8 @@ from google.adk.telemetry._experimental_semconv import set_operation_details_com
 from google.adk.telemetry.context import ADK_TELEMETRY_IGNORE_RUN_CONFIG
 from google.adk.telemetry.tracing import trace_inference_result
 from google.genai.types import Part
+from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -40,6 +42,7 @@ import pytest
 from ..testing_utils import InMemoryRunner
 from ..testing_utils import MockModel
 from ..testing_utils import UserContent
+from .functional._scenarios import install_telemetry
 
 _ENV_EXPERIMENTAL = 'OTEL_SEMCONV_STABILITY_OPT_IN'
 _ENV_CAPTURE = 'OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT'
@@ -284,22 +287,22 @@ def test_capture_mode_env_legacy_coercion_is_silent(
 # ---------------------------------------------------------------------------
 
 
-def test_resolution_properties_read_env_lazily_at_access_time(
+def test_resolution_properties_are_static_once_constructed(
     monkeypatch: pytest.MonkeyPatch,
 ):
-  """Properties re-read os.environ on each access (not frozen at construction).
+  """Properties resolve at construction, not on each access.
 
-  This is the whole reason resolution lives in properties rather than a
-  ``default_factory``: a caller that mutates the environment after building the
-  (frozen) config still observes the new value.
+  A config is a decision rather than a live view of the environment. Holding
+  one still is what keeps a single run whole: an ``os.environ`` change part way
+  through cannot leave half its telemetry gated one way and half the other.
   """
   _set_env(monkeypatch)
   cfg = TelemetryConfig()  # all fields unset => pure env-fallback.
   assert cfg.should_use_experimental_genai_semconv is False
   monkeypatch.setenv(_ENV_EXPERIMENTAL, 'gen_ai_latest_experimental')
-  assert cfg.should_use_experimental_genai_semconv is True
-  monkeypatch.delenv(_ENV_EXPERIMENTAL, raising=False)
   assert cfg.should_use_experimental_genai_semconv is False
+  # A caller that wants the new environment builds a config under it.
+  assert TelemetryConfig().should_use_experimental_genai_semconv is True
 
 
 # (opt_in field, env value, expected) for should_use_experimental_genai_semconv.
@@ -1157,4 +1160,111 @@ async def test_runner_invocation_with_admin_lock_ignores_span_capture_override(
       'admin lock + env=false should suppress the legacy ADK span'
       ' content attribute regardless of per-request capture=True; some'
       ' call site bypassed the lock guard. attrs={llm_request_attrs}'
+  )
+
+
+# ---------------------------------------------------------------------------
+# The entrypoint invoke_workflow scope must honor the per-request config.
+#
+# The scope resolves the experimental opt-in once, from whatever the runner
+# passes it. A runner that passes nothing leaves it reading the env var, which
+# both ignores a per-request opt-in and leaks metrics a request opted out of.
+# The functional matrix only ever opts in by env var, so it catches neither.
+# ---------------------------------------------------------------------------
+
+_ENV_SCHEMA_VERSION = 'ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN'
+
+# Recorded whenever a workflow scope opts in, even at a count of zero, so its
+# presence reflects the resolved config alone and not what the model reported.
+_WORKFLOW_INFERENCE_CALLS = 'adk.experimental.invoke_workflow.inference_calls'
+
+
+@pytest.fixture(name='metric_reader')
+def _metric_reader_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> InMemoryMetricReader:
+  """Captures the metrics ADK records during a test.
+
+  The resolved config shows up in workflow metrics and nowhere else, so these
+  tests read metrics where the ones above read spans and logs.
+  ``install_telemetry`` insists on all three sinks and repatches the tracer and
+  logger, so don't combine this with ``span_exporter`` or ``log_collector``.
+  """
+  reader = InMemoryMetricReader()
+  install_telemetry(
+      monkeypatch,
+      InMemorySpanExporter(),
+      InMemoryLogRecordExporter(),
+      reader,
+  )
+  return reader
+
+
+def _metrics_recorded(reader: InMemoryMetricReader) -> set[str]:
+  """Names of the metrics that took at least one datapoint."""
+  recorded: set[str] = set()
+  data = reader.get_metrics_data()
+  for resource_metric in data.resource_metrics if data else ():
+    for scope_metric in resource_metric.scope_metrics:
+      for metric in scope_metric.metrics:
+        if metric.data.data_points:
+          recorded.add(metric.name)
+  return recorded
+
+
+@pytest.mark.asyncio
+async def test_runner_invocation_per_request_opt_in_records_workflow_metrics(
+    monkeypatch: pytest.MonkeyPatch,
+    metric_reader: InMemoryMetricReader,
+):
+  """A per-request opt-in is honored with the env var off."""
+  _set_env(monkeypatch)
+  monkeypatch.setenv(_ENV_SCHEMA_VERSION, '2')
+  runner = _make_test_runner()
+  session = await runner.runner.session_service.create_session(
+      app_name=runner.app_name, user_id='test_user'
+  )
+  async for _ in runner.runner.run_async(
+      user_id=session.user_id,
+      session_id=session.id,
+      new_message=UserContent('hi'),
+      run_config=RunConfig(
+          telemetry=TelemetryConfig(adk_experimental_telemetry_opt_in=True)
+      ),
+  ):
+    pass
+
+  recorded = _metrics_recorded(metric_reader)
+  assert _WORKFLOW_INFERENCE_CALLS in recorded, (
+      'opt-in did not reach the entrypoint scope, so the runner is not passing'
+      f' RunConfig.telemetry. recorded={sorted(recorded)}'
+  )
+
+
+@pytest.mark.asyncio
+async def test_runner_invocation_per_request_opt_out_beats_env_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    metric_reader: InMemoryMetricReader,
+):
+  """A per-request opt-out wins over an env var that opts in."""
+  _set_env(monkeypatch, **{_ENV_ADK_EXPERIMENTAL_TELEMETRY: 'true'})
+  monkeypatch.setenv(_ENV_SCHEMA_VERSION, '2')
+  runner = _make_test_runner()
+  session = await runner.runner.session_service.create_session(
+      app_name=runner.app_name, user_id='test_user'
+  )
+  async for _ in runner.runner.run_async(
+      user_id=session.user_id,
+      session_id=session.id,
+      new_message=UserContent('hi'),
+      run_config=RunConfig(
+          telemetry=TelemetryConfig(adk_experimental_telemetry_opt_in=False)
+      ),
+  ):
+    pass
+
+  recorded = _metrics_recorded(metric_reader)
+  assert _WORKFLOW_INFERENCE_CALLS not in recorded, (
+      'the scope read ADK_EXPERIMENTAL_TELEMETRY instead of the per-request'
+      f' opt-out. recorded={sorted(recorded)}'
   )

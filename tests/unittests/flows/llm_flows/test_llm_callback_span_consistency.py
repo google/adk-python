@@ -43,11 +43,12 @@ _SPAN_ID_INVALID = 0
 
 
 class _SpanCapture:
-  """Stores the span ID and trace ID observed from within a callback."""
+  """Stores the span observed from within a callback."""
 
   def __init__(self):
     self.span_id: int = _SPAN_ID_INVALID
     self.trace_id: int = 0
+    self.span: Optional[trace.Span] = None
 
   def capture(self):
     span = trace.get_current_span()
@@ -55,6 +56,7 @@ class _SpanCapture:
     if ctx and ctx.span_id != _SPAN_ID_INVALID:
       self.span_id = ctx.span_id
       self.trace_id = ctx.trace_id
+      self.span = span
 
 
 class SpanCapturingPlugin(BasePlugin):
@@ -218,6 +220,51 @@ def test_short_circuit_before_callback_sees_valid_span():
   ), 'before_model_callback did not observe a valid span on short-circuit'
   # after_model_callback should NOT have been called.
   assert plugin.after_capture.span_id == _SPAN_ID_INVALID
+
+
+def test_short_circuit_call_llm_span_has_attributes():
+  """A short-circuited model call still records the call_llm attributes.
+
+  Trace consumers look a span up by its event id attribute and discard spans
+  that do not carry one, so an attribute-less span is an invisible span.
+  """
+  plugin = SpanCapturingPlugin()
+  plugin._short_circuit_before = True
+  plugin._short_circuit_response = LlmResponse(
+      content=testing_utils.ModelContent(
+          [types.Part.from_text(text='short_circuited')]
+      )
+  )
+  mock_model = testing_utils.MockModel.create(responses=['unused'])
+  agent = Agent(name='root_agent', model=mock_model)
+  runner = testing_utils.InMemoryRunner(agent, plugins=[plugin])
+
+  events = runner.run('test')
+
+  span = plugin.before_capture.span
+  assert span is not None, 'no call_llm span was captured'
+  assert span.name == 'call_llm'
+  attributes = dict(span.attributes or {})
+
+  model_event_ids = {
+      event.id for event in events if event.author == 'root_agent'
+  }
+  assert model_event_ids, 'the short-circuit response produced no event'
+  assert attributes.get('gcp.vertex.agent.event_id') in model_event_ids, (
+      'call_llm span carries no event id on the short-circuit path, so the'
+      f' trace for that event is unreachable; attributes={attributes}'
+  )
+  for key in (
+      'gen_ai.system',
+      'gcp.vertex.agent.invocation_id',
+      'gcp.vertex.agent.session_id',
+      'gcp.vertex.agent.llm_request',
+      'gcp.vertex.agent.llm_response',
+  ):
+    assert key in attributes, (
+        f'call_llm span is missing {key} on the short-circuit path;'
+        f' attributes={attributes}'
+    )
 
 
 # ---------------------------------------------------------------------------

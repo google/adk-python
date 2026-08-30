@@ -42,6 +42,16 @@ def test_oauth2_access_token():
   }
 
 
+def test_oauth2_without_access_token_is_unsupported():
+  """A failed exchange leaves no token, and must not yield "Bearer None"."""
+  credential = AuthCredential(
+      auth_type=AuthCredentialTypes.OAUTH2,
+      oauth2=OAuth2Auth(client_id="client-id", client_secret="secret"),
+  )
+
+  assert build_auth_headers(credential) is None
+
+
 def test_http_bearer_token():
   credential = AuthCredential(
       auth_type=AuthCredentialTypes.HTTP,

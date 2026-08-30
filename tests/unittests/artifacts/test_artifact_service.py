@@ -16,11 +16,15 @@
 
 """Tests for the artifact service."""
 
+import asyncio
 from datetime import datetime
+from datetime import timedelta
 import enum
 import json
 from pathlib import Path
 import stat
+import threading
+from types import SimpleNamespace
 from typing import Any
 from typing import Optional
 from typing import Union
@@ -110,6 +114,19 @@ class MockBlob:
     """Mocks deleting a blob."""
     self.content = None
     self.content_type = None
+
+  def generate_signed_url(
+      self,
+      expiration: Any = None,
+      method: str = "GET",
+      version: Optional[str] = None,
+      **kwargs: Any,
+  ) -> str:
+    """Mocks generating a signed URL for the blob."""
+    url = f"https://storage.example.com/test_bucket/{self.name}?signed=true&method={method}"
+    if version:
+      url += f"&version={version}"
+    return url
 
 
 class MockBucket:
@@ -1203,6 +1220,167 @@ async def test_file_list_artifact_versions(tmp_path, artifact_service_factory):
 
 
 @pytest.mark.asyncio
+async def test_file_save_artifact_reserves_concurrent_versions(tmp_path):
+  service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  original_list_versions = file_artifact_service._list_versions_on_disk
+  first_reads = threading.Barrier(2)
+  calls_lock = threading.Lock()
+  synchronized_calls = 0
+
+  def synchronize_initial_reads(artifact_dir: Path) -> list[int]:
+    nonlocal synchronized_calls
+    versions = original_list_versions(artifact_dir)
+    with calls_lock:
+      synchronized_calls += 1
+      should_wait = synchronized_calls <= 2
+    if should_wait:
+      first_reads.wait(timeout=5)
+    return versions
+
+  save_args = {
+      "app_name": "app",
+      "user_id": "user",
+      "session_id": "session",
+      "filename": "report.txt",
+  }
+  with mock.patch.object(
+      file_artifact_service,
+      "_list_versions_on_disk",
+      side_effect=synchronize_initial_reads,
+  ):
+    saved_versions = await asyncio.gather(
+        service.save_artifact(
+            **save_args,
+            artifact=types.Part(text="first"),
+        ),
+        service.save_artifact(
+            **save_args,
+            artifact=types.Part(text="second"),
+        ),
+    )
+
+  assert sorted(saved_versions) == [0, 1]
+  assert await service.list_versions(**save_args) == [0, 1]
+
+  loaded_texts: set[str] = set()
+  for version in saved_versions:
+    artifact = await service.load_artifact(**save_args, version=version)
+    assert artifact is not None
+    assert artifact.text is not None
+    loaded_texts.add(artifact.text)
+  assert loaded_texts == {"first", "second"}
+
+
+@pytest.mark.asyncio
+async def test_file_save_artifact_does_not_publish_failed_write(tmp_path):
+  service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  save_args = {
+      "app_name": "app",
+      "user_id": "user",
+      "session_id": "session",
+      "filename": "report.txt",
+  }
+
+  with mock.patch.object(
+      file_artifact_service,
+      "_write_metadata",
+      side_effect=OSError("write failed"),
+  ):
+    with pytest.raises(OSError, match="write failed"):
+      await service.save_artifact(
+          **save_args,
+          artifact=types.Part(text="incomplete"),
+      )
+
+  assert await service.list_versions(**save_args) == []
+  assert await service.load_artifact(**save_args) is None
+  # list_versions ignores staging directories, so assert on disk that the
+  # failed reservation was released rather than merely hidden.
+  assert not list(service.root_dir.rglob("*.pending"))
+
+
+@pytest.mark.asyncio
+async def test_file_save_artifact_stages_binary_payload(tmp_path):
+  service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  save_args = {
+      "app_name": "app",
+      "user_id": "user",
+      "session_id": "session",
+      "filename": "photo.png",
+  }
+  payload = bytes(range(256))
+
+  version = await service.save_artifact(
+      **save_args,
+      artifact=types.Part(
+          inline_data=types.Blob(mime_type="image/png", data=payload)
+      ),
+  )
+
+  assert version == 0
+  loaded = await service.load_artifact(**save_args)
+  assert loaded is not None
+  assert loaded.inline_data is not None
+  assert loaded.inline_data.mime_type == "image/png"
+  assert loaded.inline_data.data == payload
+  assert not list(service.root_dir.rglob("*.pending"))
+
+
+@pytest.mark.asyncio
+async def test_file_save_artifact_skips_abandoned_reservation(tmp_path):
+  service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  save_args = {
+      "app_name": "app",
+      "user_id": "user",
+      "session_id": "session",
+      "filename": "report.txt",
+  }
+  versions_dir = file_artifact_service._versions_dir(
+      service._artifact_dir(**save_args)
+  )
+  (versions_dir / ".0.pending").mkdir(parents=True)
+
+  version = await service.save_artifact(
+      **save_args,
+      artifact=types.Part(text="complete"),
+  )
+
+  assert version == 1
+  assert await service.list_versions(**save_args) == [1]
+  # The abandoned reservation holds version 0 permanently; it is skipped, not
+  # reclaimed.
+  assert (versions_dir / ".0.pending").is_dir()
+
+
+@pytest.mark.asyncio
+async def test_file_save_artifact_never_republishes_existing_version(tmp_path):
+  service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  save_args = {
+      "app_name": "app",
+      "user_id": "user",
+      "session_id": "session",
+      "filename": "report.txt",
+  }
+  await service.save_artifact(**save_args, artifact=types.Part(text="first"))
+
+  # A save that reads the version list before a concurrent save publishes
+  # version 0 starts its reservation at 0. Publishing must still not land on
+  # the version already on disk.
+  with mock.patch.object(
+      file_artifact_service, "_list_versions_on_disk", return_value=[]
+  ):
+    version = await service.save_artifact(
+        **save_args, artifact=types.Part(text="second")
+    )
+
+  assert version == 1
+  assert await service.list_versions(**save_args) == [0, 1]
+  first = await service.load_artifact(**save_args, version=0)
+  assert first is not None and first.text == "first"
+  assert not list(service.root_dir.rglob("*.pending"))
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("filename", "session_id"),
     [
@@ -2124,6 +2302,327 @@ async def test_gcs_load_artifact_returns_none_for_missing_version() -> None:
       await service.load_artifact(**scope, filename="notes.txt", version=7)
       is None
   )
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_get_authenticated_url_latest_version() -> None:
+  """GcsArtifactService generates an authenticated URL for latest version."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  scope = {"app_name": "app", "user_id": "user1", "session_id": "sess1"}
+
+  await service.save_artifact(
+      **scope, filename="notes.txt", artifact=types.Part.from_text(text="v0")
+  )
+  await service.save_artifact(
+      **scope, filename="notes.txt", artifact=types.Part.from_text(text="v1")
+  )
+
+  url = await service.get_authenticated_url(**scope, filename="notes.txt")
+  assert (
+      url
+      == "https://storage.cloud.google.com/test_bucket/app/user1/sess1/notes.txt/1"
+  )
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_get_authenticated_url_specific_version() -> None:
+  """GcsArtifactService generates an authenticated URL for a specific version."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  scope = {"app_name": "app", "user_id": "user1", "session_id": "sess1"}
+
+  await service.save_artifact(
+      **scope, filename="notes.txt", artifact=types.Part.from_text(text="v0")
+  )
+  await service.save_artifact(
+      **scope, filename="notes.txt", artifact=types.Part.from_text(text="v1")
+  )
+
+  url = await service.get_authenticated_url(
+      **scope, filename="notes.txt", version=0
+  )
+  assert (
+      url
+      == "https://storage.cloud.google.com/test_bucket/app/user1/sess1/notes.txt/0"
+  )
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_get_authenticated_url_returns_none_for_missing() -> None:
+  """GcsArtifactService returns None for authenticated URL of missing artifact."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  scope = {"app_name": "app", "user_id": "user1", "session_id": "sess1"}
+
+  assert (
+      await service.get_authenticated_url(**scope, filename="nonexistent.txt")
+      is None
+  )
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_get_signed_url_latest_version() -> None:
+  """GcsArtifactService generates a signed URL for latest version."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  scope = {"app_name": "app", "user_id": "user1", "session_id": "sess1"}
+
+  await service.save_artifact(
+      **scope, filename="notes.txt", artifact=types.Part.from_text(text="v0")
+  )
+
+  url = await service.get_signed_url(
+      **scope,
+      filename="notes.txt",
+      expiration=timedelta(hours=2),
+  )
+  assert (
+      url
+      == "https://storage.example.com/test_bucket/app/user1/sess1/notes.txt/0?signed=true&method=GET"
+  )
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_get_signed_url_with_signing_version() -> None:
+  """GcsArtifactService forwards signing_version to blob.generate_signed_url."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  scope = {"app_name": "app", "user_id": "user1", "session_id": "sess1"}
+
+  await service.save_artifact(
+      **scope, filename="notes.txt", artifact=types.Part.from_text(text="v0")
+  )
+  await service.save_artifact(
+      **scope, filename="notes.txt", artifact=types.Part.from_text(text="v1")
+  )
+
+  url = await service.get_signed_url(
+      **scope,
+      filename="notes.txt",
+      version=0,
+      signing_version="v4",
+  )
+  assert (
+      url
+      == "https://storage.example.com/test_bucket/app/user1/sess1/notes.txt/0?signed=true&method=GET&version=v4"
+  )
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_get_signed_url_returns_none_for_missing() -> None:
+  """GcsArtifactService returns None for signed URL of missing artifact."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  scope = {"app_name": "app", "user_id": "user1", "session_id": "sess1"}
+
+  assert (
+      await service.get_signed_url(**scope, filename="nonexistent.txt") is None
+  )
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_get_authenticated_url_encodes_special_characters() -> None:
+  """GcsArtifactService percent-encodes special characters in authenticated URL."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  scope = {"app_name": "app", "user_id": "user1", "session_id": "sess1"}
+
+  await service.save_artifact(
+      **scope,
+      filename="notes#1?v=100%real name.txt",
+      artifact=types.Part.from_text(text="v0"),
+  )
+
+  url = await service.get_authenticated_url(
+      **scope, filename="notes#1?v=100%real name.txt"
+  )
+  assert (
+      url
+      == "https://storage.cloud.google.com/test_bucket/app/user1/sess1/notes%231%3Fv%3D100%25real%20name.txt/0"
+  )
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_get_authenticated_url_resolves_artifact_reference() -> None:
+  """GcsArtifactService resolves artifact reference to target's authenticated URL."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  scope = {"app_name": "app", "user_id": "user1", "session_id": "sess1"}
+
+  await service.save_artifact(
+      **scope,
+      filename="source.txt",
+      artifact=types.Part.from_text(text="hello"),
+  )
+  ref = types.Part(
+      file_data=types.FileData(
+          file_uri=(
+              "artifact://apps/app/users/user1/sessions/sess1/"
+              "artifacts/source.txt/versions/0"
+          ),
+          mime_type="text/plain",
+      )
+  )
+  await service.save_artifact(**scope, filename="ref.txt", artifact=ref)
+
+  url = await service.get_authenticated_url(**scope, filename="ref.txt")
+  assert (
+      url
+      == "https://storage.cloud.google.com/test_bucket/app/user1/sess1/source.txt/0"
+  )
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_get_authenticated_url_returns_none_for_external_file_data() -> (
+    None
+):
+  """GcsArtifactService returns None for authenticated URL of non-artifact file_data."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  scope = {"app_name": "app", "user_id": "user1", "session_id": "sess1"}
+
+  external = types.Part(
+      file_data=types.FileData(
+          file_uri="gs://other-bucket/foo.txt",
+          mime_type="text/plain",
+      )
+  )
+  await service.save_artifact(
+      **scope, filename="external.txt", artifact=external
+  )
+
+  assert (
+      await service.get_authenticated_url(**scope, filename="external.txt")
+      is None
+  )
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_get_signed_url_resolves_artifact_reference() -> None:
+  """GcsArtifactService resolves artifact reference to target's signed URL."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  scope = {"app_name": "app", "user_id": "user1", "session_id": "sess1"}
+
+  await service.save_artifact(
+      **scope,
+      filename="source.txt",
+      artifact=types.Part.from_text(text="hello"),
+  )
+  ref = types.Part(
+      file_data=types.FileData(
+          file_uri=(
+              "artifact://apps/app/users/user1/sessions/sess1/"
+              "artifacts/source.txt/versions/0"
+          ),
+          mime_type="text/plain",
+      )
+  )
+  await service.save_artifact(**scope, filename="ref.txt", artifact=ref)
+
+  url = await service.get_signed_url(**scope, filename="ref.txt")
+  assert (
+      url
+      == "https://storage.example.com/test_bucket/app/user1/sess1/source.txt/0?signed=true&method=GET"
+  )
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_get_signed_url_returns_none_for_external_file_data() -> None:
+  """GcsArtifactService returns None for signed URL of non-artifact file_data."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  scope = {"app_name": "app", "user_id": "user1", "session_id": "sess1"}
+
+  external = types.Part(
+      file_data=types.FileData(
+          file_uri="gs://other-bucket/foo.txt",
+          mime_type="text/plain",
+      )
+  )
+  await service.save_artifact(
+      **scope, filename="external.txt", artifact=external
+  )
+
+  assert await service.get_signed_url(**scope, filename="external.txt") is None
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_get_authenticated_url_user_scoped() -> None:
+  """GcsArtifactService generates an authenticated URL for user-scoped artifact."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  scope = {"app_name": "app", "user_id": "user1", "session_id": None}
+
+  await service.save_artifact(
+      **scope,
+      filename="user:profile.png",
+      artifact=types.Part.from_text(text="v0"),
+  )
+
+  url = await service.get_authenticated_url(
+      **scope, filename="user:profile.png"
+  )
+  assert (
+      url
+      == "https://storage.cloud.google.com/test_bucket/app/user1/user/user%3Aprofile.png/0"
+  )
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_get_signed_url_user_scoped() -> None:
+  """GcsArtifactService generates a signed URL for user-scoped artifact."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  scope = {"app_name": "app", "user_id": "user1", "session_id": None}
+
+  await service.save_artifact(
+      **scope,
+      filename="user:profile.png",
+      artifact=types.Part.from_text(text="v0"),
+  )
+
+  url = await service.get_signed_url(**scope, filename="user:profile.png")
+  assert (
+      url
+      == "https://storage.example.com/test_bucket/app/user1/user/user:profile.png/0?signed=true&method=GET"
+  )
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_get_authenticated_url_cyclic_reference_raises_error() -> (
+    None
+):
+  """GcsArtifactService raises InputValidationError on cyclic artifact references."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  scope = {"app_name": "app", "user_id": "user1", "session_id": "sess1"}
+
+  ref = types.Part(
+      file_data=types.FileData(
+          file_uri=(
+              "artifact://apps/app/users/user1/sessions/sess1/"
+              "artifacts/loop.txt/versions/0"
+          ),
+          mime_type="text/plain",
+      )
+  )
+  await service.save_artifact(**scope, filename="loop.txt", artifact=ref)
+
+  with pytest.raises(
+      InputValidationError, match="Exceeded maximum recursion depth"
+  ):
+    await service.get_authenticated_url(**scope, filename="loop.txt")
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_get_signed_url_cyclic_reference_raises_error() -> None:
+  """GcsArtifactService raises InputValidationError on cyclic artifact references for signed URL."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  scope = {"app_name": "app", "user_id": "user1", "session_id": "sess1"}
+
+  ref = types.Part(
+      file_data=types.FileData(
+          file_uri=(
+              "artifact://apps/app/users/user1/sessions/sess1/"
+              "artifacts/loop.txt/versions/0"
+          ),
+          mime_type="text/plain",
+      )
+  )
+  await service.save_artifact(**scope, filename="loop.txt", artifact=ref)
+
+  with pytest.raises(
+      InputValidationError, match="Exceeded maximum recursion depth"
+  ):
+    await service.get_signed_url(**scope, filename="loop.txt")
 
 
 @pytest.mark.asyncio

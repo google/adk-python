@@ -52,6 +52,7 @@ class StreamingResponseAggregator:
     # For streaming function call arguments
     self._current_fc_name: Optional[str] = None
     self._current_fc_args: dict[str, Any] = {}
+    self._current_fc_arg_chunks: dict[str, list[str]] = {}
     self._current_fc_id: Optional[str] = None
     self._current_thought_signature: Optional[bytes] = None
 
@@ -79,26 +80,18 @@ class StreamingResponseAggregator:
       self._current_text_is_thought = None
       self._current_text_thought_signature = None
 
-  def _get_value_from_partial_arg(
-      self, partial_arg: types.PartialArg, json_path: str
-  ) -> tuple[Any, bool]:
-    """Extract value from a partial argument.
+  def _buffer_string_chunk(self, json_path: str, string_chunk: str) -> None:
+    """Buffer a streamed string chunk for a JSONPath.
+
+    Chunks are kept in a list and joined once, when the function call is
+    flushed, so accumulating a large argument stays linear in its length.
 
     Args:
-      partial_arg: The partial argument object
       json_path: JSONPath for this argument
-
-    Returns:
-      Tuple of (value, has_value) where has_value indicates if a value exists
+      string_chunk: The chunk to append
     """
-    value: Any = None
-    has_value = False
-
-    if partial_arg.string_value is not None:
-      # For streaming strings, append chunks to existing value
-      string_chunk = partial_arg.string_value
-      has_value = True
-
+    chunks = self._current_fc_arg_chunks.get(json_path)
+    if chunks is None:
       # Get current value for this path (if any)
       path_without_prefix = (
           json_path[2:] if json_path.startswith('$.') else json_path
@@ -113,13 +106,28 @@ class StreamingResponseAggregator:
         else:
           break
 
-      # Append to existing string or set new value
-      if isinstance(existing_value, str):
-        value = existing_value + string_chunk
-      else:
-        value = string_chunk
+      chunks = [existing_value] if isinstance(existing_value, str) else []
+      self._current_fc_arg_chunks[json_path] = chunks
+      # Reserve the key so the flushed args keep their arrival order.
+      self._set_value_by_json_path(json_path, '')
 
-    elif partial_arg.number_value is not None:
+    chunks.append(string_chunk)
+
+  def _get_value_from_partial_arg(
+      self, partial_arg: types.PartialArg
+  ) -> tuple[Any, bool]:
+    """Extract a non-string value from a partial argument.
+
+    Args:
+      partial_arg: The partial argument object
+
+    Returns:
+      Tuple of (value, has_value) where has_value indicates if a value exists
+    """
+    value: Any = None
+    has_value = False
+
+    if partial_arg.number_value is not None:
       value = partial_arg.number_value
       has_value = True
     elif partial_arg.bool_value is not None:
@@ -163,6 +171,10 @@ class StreamingResponseAggregator:
     This creates a complete FunctionCall part from accumulated partial args.
     """
     if self._current_fc_name:
+      # Join the buffered string chunks into their final values
+      for json_path, chunks in self._current_fc_arg_chunks.items():
+        self._set_value_by_json_path(json_path, ''.join(chunks))
+
       # Create function call part with accumulated args
       fc_part = types.Part.from_function_call(
           name=self._current_fc_name,
@@ -182,6 +194,7 @@ class StreamingResponseAggregator:
       # Reset FC state
       self._current_fc_name = None
       self._current_fc_args = {}
+      self._current_fc_arg_chunks = {}
       self._current_fc_id = None
       self._current_thought_signature = None
 
@@ -203,13 +216,17 @@ class StreamingResponseAggregator:
       if not json_path:
         continue
 
+      if partial_arg.string_value is not None:
+        self._buffer_string_chunk(json_path, partial_arg.string_value)
+        continue
+
       # Extract value from partial arg
-      value, has_value = self._get_value_from_partial_arg(
-          partial_arg, json_path
-      )
+      value, has_value = self._get_value_from_partial_arg(partial_arg)
 
       # Set the value using JSONPath (only if a value was provided)
       if has_value:
+        # A scalar replaces anything buffered for this path.
+        self._current_fc_arg_chunks.pop(json_path, None)
         self._set_value_by_json_path(json_path, value)
 
     # Check if function call is complete

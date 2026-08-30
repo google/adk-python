@@ -44,6 +44,7 @@ from typing import runtime_checkable
 from typing import TYPE_CHECKING
 from typing import TypedDict
 
+from google.adk.dependencies._mcp_name import SDK_MODULE_NAME as _MCP_SDK_MODULE_NAME
 from google.adk.telemetry._token_usage import TokenUsage
 from google.genai import types
 from opentelemetry._logs import Logger
@@ -53,8 +54,8 @@ from opentelemetry.util.types import AnyValue
 from opentelemetry.util.types import AttributeValue
 
 if TYPE_CHECKING:
-  from mcp import ClientSession as McpClientSession  # noqa: F401
-  from mcp import Tool as McpTool
+  from ..dependencies._mcp import ClientSession as McpClientSession  # noqa: F401
+  from ..dependencies._mcp import Tool as McpTool
 
   from ..models.llm_request import LlmRequest
   from ..models.llm_response import LlmResponse
@@ -484,9 +485,11 @@ def _to_tool_definitions(
   if callable(tool):
     return [_tool_definition_from_callable_tool(tool)]
 
-  if 'mcp' in sys.modules:
-    from mcp import ClientSession as McpClientSession
-    from mcp import Tool as McpTool
+  # Ask for the SDK by the name the seam resolves, not by a literal: the
+  # internal build renames it, and a stale literal would drop MCP tools here.
+  if _MCP_SDK_MODULE_NAME in sys.modules:
+    from ..dependencies._mcp import ClientSession as McpClientSession
+    from ..dependencies._mcp import Tool as McpTool
 
     if isinstance(tool, McpTool):
       return [_tool_definition_from_mcp_tool(tool)]
