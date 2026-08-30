@@ -4165,6 +4165,7 @@ async def test_acompletion_additional_args(mock_acompletion, mock_client):
       # valid args
       model="vertex_ai/test_model",
       llm_client=mock_client,
+      output_schema_and_tools=True,
       api_key="test_key",
       api_base="some://url",
       api_version="2024-09-12",
@@ -4201,6 +4202,7 @@ async def test_acompletion_additional_args(mock_acompletion, mock_client):
   assert kwargs["tools"][0]["function"]["name"] == "test_function"
   assert "stream" not in kwargs
   assert "llm_client" not in kwargs
+  assert "output_schema_and_tools" not in kwargs
   assert kwargs["api_base"] == "some://url"
   assert "headers" in kwargs
   assert kwargs["headers"]["custom"] == "header"

@@ -3035,6 +3035,9 @@ class LiteLlm(BaseLlm):
   Attributes:
     model: The name of the LiteLlm model.
     llm_client: The LLM client to use for the model.
+    output_schema_and_tools: Whether the wrapped model can use an output
+      schema together with tools. Defaults to ``False`` because LiteLLM does
+      not expose whether a provider supports this combination.
   """
 
   # LiteLLMClient has no JSON serializer, so it is excluded from dumps to keep
@@ -3043,16 +3046,27 @@ class LiteLlm(BaseLlm):
   """The LLM client to use for the model."""
 
   _additional_args: Dict[str, Any] = PrivateAttr(default_factory=dict)
+  _output_schema_and_tools: bool = PrivateAttr(default=False)
 
-  def __init__(self, model: str, **kwargs: Any) -> None:
+  def __init__(
+      self,
+      model: str,
+      *,
+      output_schema_and_tools: bool = False,
+      **kwargs: Any,
+  ) -> None:
     """Initializes the LiteLlm class.
 
     Args:
       model: The name of the LiteLlm model.
+      output_schema_and_tools: Whether the wrapped model supports using an
+        output schema together with tools. Set this to ``True`` only when the
+        provider/model combination is known to support both constraints.
       **kwargs: Additional arguments to pass to the litellm completion api.
     """
     drop_params = kwargs.pop("drop_params", None)
     super().__init__(model=model, **kwargs)
+    self._output_schema_and_tools = output_schema_and_tools
     # Warn if using Gemini via LiteLLM
     _warn_gemini_via_litellm(model)
     self._additional_args = dict(kwargs)
@@ -3069,10 +3083,9 @@ class LiteLlm(BaseLlm):
   @property
   @override
   def capabilities(self) -> LlmCapabilities:
-    # LiteLLM reconciles tools + response_format per provider: providers with
-    # native support get both passed through, and the rest are converted to a
-    # json tool call with tool_choice enforcement.
-    return LlmCapabilities(output_schema_and_tools=True)
+    return LlmCapabilities(
+        output_schema_and_tools=self._output_schema_and_tools
+    )
 
   async def generate_content_async(
       self, llm_request: LlmRequest, stream: bool = False
