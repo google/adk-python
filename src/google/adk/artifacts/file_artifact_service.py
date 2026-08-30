@@ -247,6 +247,7 @@ def _user_artifacts_dir(base_root: Path) -> Path:
 
 def _session_artifacts_dir(base_root: Path, session_id: str) -> Path:
   """Returns the path that stores session-scoped artifacts."""
+  session_id = session_id.strip()
   artifact_util.validate_path_segment(session_id, "session_id")
   return base_root / "sessions" / session_id / "artifacts"
 
