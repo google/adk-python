@@ -61,6 +61,18 @@ def _make_eval_set() -> EvalSet:
   )
 
 
+def _passing_eval_case_result() -> EvalCaseResult:
+  """A minimal EvalCaseResult that reports no failures on its own."""
+  return EvalCaseResult(
+      eval_set_id="eval_set_1",
+      eval_id="case_a",
+      final_eval_status=EvalStatus.PASSED,
+      overall_eval_metric_results=[],
+      eval_metric_result_per_invocation=[],
+      session_id="",
+  )
+
+
 async def _empty_async_gen(*args, **kwargs):
   """An async generator that yields nothing (mocks perform_inference/evaluate)."""
   return
@@ -134,13 +146,17 @@ async def test_evaluate_eval_set_threads_artifact_service(mocker):
   instance.perform_inference = _empty
   instance.evaluate = _empty
 
-  await AgentEvaluator.evaluate_eval_set(
-      agent_module="my.agent.module",
-      eval_set=EvalSet(eval_set_id="es1", eval_cases=[]),
-      eval_config=EvalConfig(),
-      num_runs=1,
-      artifact_service=my_service,
-  )
+  # No eval cases means no eval results, which evaluate_eval_set now rejects
+  # (see test_evaluate_eval_set_raises_when_no_eval_cases_were_evaluated);
+  # the artifact_service is threaded through before that check runs.
+  with pytest.raises(ValueError, match="No eval cases were evaluated"):
+    await AgentEvaluator.evaluate_eval_set(
+        agent_module="my.agent.module",
+        eval_set=EvalSet(eval_set_id="es1", eval_cases=[]),
+        eval_config=EvalConfig(),
+        num_runs=1,
+        artifact_service=my_service,
+    )
 
   assert (
       mock_local_eval_service_cls.call_args.kwargs["artifact_service"]
@@ -269,6 +285,36 @@ async def test_evaluate_eval_set_passes_when_metrics_pass(mocker):
   )
 
   await _mock_evaluate_eval_set(mocker, passing_result)
+
+
+@pytest.mark.asyncio
+async def test_evaluate_eval_set_raises_when_no_eval_cases_were_evaluated(
+    mocker,
+):
+  """An empty `eval_results_by_eval_id` must not report a vacuous pass.
+
+  This happens both when `eval_set.eval_cases` is empty and when `num_runs`
+  is 0 on a non-empty eval set: either way `failures` stays `[]` and
+  `assert not failures` would otherwise pass despite nothing being evaluated.
+  """
+  mocker.patch.object(
+      AgentEvaluator,
+      "_get_agent_for_eval",
+      new=mocker.AsyncMock(return_value=(mocker.MagicMock(), None)),
+  )
+  mocker.patch.object(
+      AgentEvaluator,
+      "_get_eval_results_by_eval_id",
+      new=mocker.AsyncMock(return_value={}),
+  )
+
+  with pytest.raises(ValueError, match="No eval cases were evaluated"):
+    await AgentEvaluator.evaluate_eval_set(
+        agent_module="my.agent.module",
+        eval_set=EvalSet(eval_set_id="es1", eval_cases=[]),
+        eval_config=EvalConfig(),
+        num_runs=0,
+    )
 
 
 class TestGetAgentForEval:
@@ -755,7 +801,7 @@ async def test_evaluate_eval_set_registers_custom_metrics(mocker):
   get_results_mock = mocker.patch.object(
       AgentEvaluator,
       "_get_eval_results_by_eval_id",
-      new=AsyncMock(return_value={}),
+      new=AsyncMock(return_value={"case_a": [_passing_eval_case_result()]}),
   )
 
   await AgentEvaluator.evaluate_eval_set(
@@ -809,7 +855,7 @@ async def test_evaluate_eval_set_keeps_evaluators_from_the_default_registry(
   get_results_mock = mocker.patch.object(
       AgentEvaluator,
       "_get_eval_results_by_eval_id",
-      new=AsyncMock(return_value={}),
+      new=AsyncMock(return_value={"case_a": [_passing_eval_case_result()]}),
   )
 
   try:
@@ -857,7 +903,7 @@ async def test_evaluate_eval_set_forwards_results_manager_and_app_name(mocker):
   get_results_mock = mocker.patch.object(
       AgentEvaluator,
       "_get_eval_results_by_eval_id",
-      new=AsyncMock(return_value={}),
+      new=AsyncMock(return_value={"case_a": [_passing_eval_case_result()]}),
   )
 
   manager = mocker.create_autospec(EvalSetResultsManager, instance=True)
