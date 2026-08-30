@@ -4923,6 +4923,94 @@ def test_add_session_to_eval_set_builds_eval_case_from_session(
   ] == ["what is 2+2?"]
 
 
+async def test_get_eval_redacts_oauth2_client_secret(
+    test_app, test_session_info, mock_eval_sets_manager, mock_session_service
+):
+  """GET .../eval-cases/{id} must not leak OAuth2 secrets from an eval case.
+
+  An eval case built from a session (via add-session) carries the raw
+  events from that session in its conversation, including an
+  `adk_request_credential` function call's full credential. This endpoint
+  is dev-UI-only (registered only under DevServer / `adk web`, unlike
+  /run, /run_sse, /run_live, and the session-history endpoints, which are
+  on the production ApiServer), but the redaction is applied here too for
+  consistency and defense in depth.
+  """
+  app_name = test_session_info["app_name"]
+  user_id = test_session_info["user_id"]
+  mock_eval_sets_manager.create_eval_set(
+      app_name=app_name, eval_set_id="my_eval_set"
+  )
+
+  # The `adk_request_credential` function name is reserved for ADK-generated
+  # events and is rejected in client-supplied session-initialization data,
+  # so the credential-bearing event is appended directly through the
+  # session service, exactly as the real runtime would.
+  session = await mock_session_service.create_session(
+      app_name=app_name,
+      user_id=user_id,
+      session_id="eval_source_session_with_secret",
+      state={},
+  )
+  await mock_session_service.append_event(
+      session=session,
+      event=Event(
+          author="agent",
+          invocation_id="inv-1",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name="adk_request_credential",
+                          id="adk-req-cred-id",
+                          args={
+                              "functionCallId": "adk-original-fc-id",
+                              "authConfig": {
+                                  "authScheme": {
+                                      "type": "oauth2",
+                                      "flows": {},
+                                  },
+                                  "rawAuthCredential": {
+                                      "authType": "oauth2",
+                                      "oauth2": {
+                                          "clientId": "public-client-id",
+                                          "clientSecret": (
+                                              "should-never-reach-the"
+                                              "-client-via-eval-case"
+                                          ),
+                                      },
+                                  },
+                                  "credentialKey": "my_tool:oauth2:abcd1234",
+                              },
+                          },
+                      )
+                  )
+              ],
+          ),
+      ),
+  )
+
+  add_session_response = test_app.post(
+      f"/dev/apps/{app_name}/eval-sets/my_eval_set/add-session",
+      json={
+          "eval_id": "my_eval_case_with_secret",
+          "session_id": "eval_source_session_with_secret",
+          "user_id": user_id,
+      },
+  )
+  assert add_session_response.status_code == 200
+
+  response = test_app.get(
+      f"/dev/apps/{app_name}/eval-sets/my_eval_set/eval-cases/my_eval_case_with_secret"
+  )
+  assert response.status_code == 200
+  assert "should-never-reach-the-client-via-eval-case" not in response.text
+  # The credential's non-secret fields must survive the redaction.
+  assert "public-client-id" in response.text
+  assert "my_tool:oauth2:abcd1234" in response.text
+
+
 @pytest.mark.xfail(
     strict=True,
     reason="add-session maps ValueError, but the managers raise NotFoundError",

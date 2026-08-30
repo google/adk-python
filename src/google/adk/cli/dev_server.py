@@ -49,8 +49,10 @@ import anyio
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi import Request as FastAPIRequest
+from fastapi import Response
 from fastapi import UploadFile
 from fastapi.responses import FileResponse
+from fastapi.responses import JSONResponse
 from fastapi.responses import PlainTextResponse
 from fastapi.responses import StreamingResponse
 import graphviz
@@ -78,6 +80,7 @@ from ..evaluation.eval_result import EvalSetResult
 from ..evaluation.eval_set import EvalSet
 from ..utils._telemetry_config import read_telemetry_consent
 from ..utils._telemetry_config import write_telemetry_consent
+from .api_server import _redact_credential_secrets
 from .api_server import ApiServer
 
 NESTED_APP_SEPARATOR = "."
@@ -1069,6 +1072,7 @@ class DevServer(ApiServer):
     # TODO - remove after migration
     @app.get(
         "/dev/apps/{app_name}/eval_results/{eval_result_id}",
+        response_model=EvalSetResult,
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
     )
@@ -1079,10 +1083,17 @@ class DevServer(ApiServer):
     async def get_eval_result_legacy(
         app_name: str,
         eval_result_id: str,
-    ) -> EvalSetResult:
+    ) -> Response:
       try:
-        return self.eval_set_results_manager.get_eval_set_result(
+        eval_set_result = self.eval_set_results_manager.get_eval_set_result(
             app_name, eval_result_id
+        )
+        return JSONResponse(
+            content=_redact_credential_secrets(
+                eval_set_result.model_dump(
+                    exclude_none=True, by_alias=True, mode="json"
+                )
+            )
         )
       except ValueError as ve:
         raise HTTPException(status_code=404, detail=str(ve)) from ve
@@ -1184,24 +1195,42 @@ class DevServer(ApiServer):
 
     @app.get(
         "/dev/apps/{app_name}/eval-sets/{eval_set_id}/eval-cases/{eval_case_id}",
+        response_model=EvalCase,
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
     )
     @app.get(
         "/dev/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}",
+        response_model=EvalCase,
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
     )
     async def get_eval(
         app_name: str, eval_set_id: str, eval_case_id: str
-    ) -> EvalCase:
-      """Gets an eval case in an eval set."""
+    ) -> Response:
+      """Gets an eval case in an eval set.
+
+      An eval case built from a session (via add_session_to_eval_set) may
+      carry an `adk_request_credential` function call in its conversation,
+      including the tool's full credential (e.g. OAuth2 client_secret) --
+      the same secret /run, /run_sse, /run_live, and the session-history
+      endpoints redact. This endpoint is dev-UI-only (registered only under
+      DevServer / `adk web`, not the production ApiServer), so it's a lower
+      severity than those, but the redaction is applied for consistency and
+      defense in depth.
+      """
       eval_case_to_find = self.eval_sets_manager.get_eval_case(
           app_name, eval_set_id, eval_case_id
       )
 
       if eval_case_to_find:
-        return eval_case_to_find
+        return JSONResponse(
+            content=_redact_credential_secrets(
+                eval_case_to_find.model_dump(
+                    exclude_none=True, by_alias=True, mode="json"
+                )
+            )
+        )
 
       raise HTTPException(
           status_code=404,
@@ -1365,19 +1394,25 @@ class DevServer(ApiServer):
 
     @app.get(
         "/dev/apps/{app_name}/eval-results/{eval_result_id}",
+        response_model=EvalResult,
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
     )
     async def get_eval_result(
         app_name: str,
         eval_result_id: str,
-    ) -> EvalResult:
+    ) -> Response:
       """Gets the eval result for the given eval id."""
       try:
         eval_set_result = self.eval_set_results_manager.get_eval_set_result(
             app_name, eval_result_id
         )
-        return EvalResult(**eval_set_result.model_dump())
+        result = EvalResult(**eval_set_result.model_dump())
+        return JSONResponse(
+            content=_redact_credential_secrets(
+                result.model_dump(exclude_none=True, by_alias=True, mode="json")
+            )
+        )
       except ValueError as ve:
         raise HTTPException(status_code=404, detail=str(ve)) from ve
       except ValidationError as ve:
