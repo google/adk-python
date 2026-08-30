@@ -1635,6 +1635,81 @@ def test_get_session(test_app, create_test_session):
   logger.info(f"Retrieved session: {data['id']}")
 
 
+async def test_get_session_redacts_oauth2_client_secret(
+    test_app, create_test_session, mock_session_service
+):
+  """GET .../sessions/{id} must not leak OAuth2 secrets from session history.
+
+  SessionService intentionally persists an `adk_request_credential` call's
+  full credential (including `client_secret`) so a later turn can recover
+  it via the credential merge-backfill mechanism -- see the /run_sse
+  redaction test for why that data can't be stripped at persistence time.
+  That means any endpoint returning session history, not just the live
+  /run family, must redact it before it reaches an external client.
+  """
+  info = create_test_session
+
+  auth_config_dict = {
+      "authScheme": {"type": "oauth2", "flows": {}},
+      "rawAuthCredential": {
+          "authType": "oauth2",
+          "oauth2": {
+              "clientId": "public-client-id",
+              "clientSecret": "should-never-reach-the-client-via-get",
+          },
+      },
+      "credentialKey": "my_tool:oauth2:abcd1234",
+  }
+
+  session = await mock_session_service.get_session(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+  )
+  await mock_session_service.append_event(
+      session=session,
+      event=Event(
+          author="agent",
+          invocation_id="invocation_id",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name="adk_request_credential",
+                          id="adk-req-cred-id",
+                          args={
+                              "functionCallId": "adk-original-fc-id",
+                              "authConfig": auth_config_dict,
+                          },
+                      )
+                  )
+              ],
+          ),
+      ),
+  )
+
+  url = f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/{info['session_id']}"
+
+  # GET a single session.
+  response = test_app.get(url)
+  assert response.status_code == 200
+  assert "should-never-reach-the-client-via-get" not in response.text
+  event = response.json()["events"][0]
+  raw_oauth2 = event["content"]["parts"][0]["functionCall"]["args"][
+      "authConfig"
+  ]["rawAuthCredential"]["oauth2"]
+  assert "clientSecret" not in raw_oauth2
+  assert raw_oauth2["clientId"] == "public-client-id"
+
+  # LIST sessions must not leak it either.
+  list_response = test_app.get(
+      f"/apps/{info['app_name']}/users/{info['user_id']}/sessions"
+  )
+  assert list_response.status_code == 200
+  assert "should-never-reach-the-client-via-get" not in list_response.text
+
+
 def test_list_sessions(test_app, create_test_session):
   """Test listing all sessions for a user."""
   info = create_test_session
