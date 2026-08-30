@@ -137,7 +137,7 @@ def test_build_event_index_groups_events_by_parent_and_transitive_ancestors():
   )
   events = [e_a, e_b, e_c, e_user]
 
-  mgr._build_event_index(events, invocation_id="inv-1")
+  mgr._build_event_index(events)
 
   assert mgr._events_by_parent["wf@1"] == [e_a, e_c, e_user]
   assert mgr._events_by_parent["wf@1/child_a@1"] == [e_b]
@@ -188,7 +188,7 @@ def test_build_event_index_matches_branch_run_ids_not_substrings():
       ),
   )
 
-  mgr._build_event_index([e_short, e_long, e_user], invocation_id="inv-1")
+  mgr._build_event_index([e_short, e_long, e_user])
 
   assert e_user in mgr._events_by_parent["wf@1/branch_y@1"]
   assert e_user not in mgr._events_by_parent.get("wf@1/branch_x@1", [])

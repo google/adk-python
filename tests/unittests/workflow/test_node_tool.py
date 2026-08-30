@@ -762,9 +762,6 @@ async def test_workflow_as_tool_nested_hitl(request: pytest.FixtureRequest):
   assert 'Parent agent finished successfully.' in text_responses
 
 
-@pytest.mark.skip(
-    reason='Requires Step 2 LRO pause resolution in base_llm_flow.py'
-)
 @pytest.mark.asyncio
 async def test_workflow_as_tool_nested_multi_hitl(
     request: pytest.FixtureRequest,

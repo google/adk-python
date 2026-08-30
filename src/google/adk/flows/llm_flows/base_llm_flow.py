@@ -62,6 +62,8 @@ from ._invocation_utils import copy_http_options
 from ._invocation_utils import require_agent as _require_agent
 from ._invocation_utils import require_run_config as _require_run_config
 from ._invocation_utils import run_config_for_new_live_session
+from ._resume_utils import decide_resume
+from ._resume_utils import ResumeAction
 from .functions import build_auth_request_event
 
 # Prefix used by toolset auth credential IDs
@@ -1271,6 +1273,28 @@ class BaseLlmFlow(ABC):
           logger.warning('The last event is partial, which is not expected.')
         break
 
+  async def _replay_function_calls(
+      self,
+      invocation_context: InvocationContext,
+      model_response_event: Event,
+      llm_request: LlmRequest,
+  ) -> AsyncGenerator[Event, None]:
+    """Runs `model_response_event`'s function calls, re-issuing event ids.
+
+    A node that interrupts mid-call raises `NodeInterruptedError`, which is a
+    `BaseException` specifically so intermediate handlers do not swallow it.
+    It is left to propagate: `NodeRunner` catches it and reads the interrupt
+    ids off the context, which `ctx.run_node` populated before raising.
+    """
+    async with Aclosing(
+        self._postprocess_handle_function_calls_async(
+            invocation_context, model_response_event, llm_request
+        )
+    ) as agen:
+      async for event in agen:
+        event.id = Event.new_id()
+        yield event
+
   async def _run_one_step_async(
       self,
       invocation_context: InvocationContext,
@@ -1295,24 +1319,22 @@ class BaseLlmFlow(ABC):
         current_invocation=True, current_branch=True
     )
 
-    # Long running tool calls should have been handled before this point.
-    # If there are still long running tool calls, it means the agent is paused
-    # before, and its branch hasn't been resumed yet.
+    # For a multi-event branch, decide whether to pause (unanswered tool
+    # calls or LROs), replay unexecuted tool calls, or continue to the LLM.
     if invocation_context.is_resumable and events and len(events) > 1:
-      pause = False
-      if invocation_context.should_pause_invocation(events[-1]):
-        pause = True
-      elif invocation_context.should_pause_invocation(events[-2]):
-        # NOTE: This only checks the last 2 events. If an LRO is followed by
-        # multiple text responses, this check may not trigger correctly.
-        # This is a known limitation of the current 2-event window.
-        # Check if the function call in events[-2] is resolved by events[-1]
-        fc_ids = {fc.id for fc in events[-2].get_function_calls()}
-        fr_ids = {fr.id for fr in events[-1].get_function_responses()}
-        if fc_ids and not fc_ids.issubset(fr_ids):
-          pause = True
-
-      if pause:
+      decision = decide_resume(
+          invocation_context, events, llm_request.tools_dict
+      )
+      if decision.action is ResumeAction.PAUSE:
+        return
+      if decision.action is ResumeAction.REPLAY_CALLS:
+        async with Aclosing(
+            self._replay_function_calls(
+                invocation_context, decision.replay_event(), llm_request
+            )
+        ) as agen:
+          async for event in agen:
+            yield event
         return
 
     if (
@@ -1321,16 +1343,14 @@ class BaseLlmFlow(ABC):
         and not events[-1].partial
         and events[-1].get_function_calls()
     ):
-      model_response_event = events[-1]
       async with Aclosing(
-          self._postprocess_handle_function_calls_async(
-              invocation_context, model_response_event, llm_request
+          self._replay_function_calls(
+              invocation_context, events[-1], llm_request
           )
       ) as agen:
         async for event in agen:
-          event.id = Event.new_id()
           yield event
-        return
+      return
 
     # Calls the LLM.
     model_response_event = Event(
@@ -1977,10 +1997,14 @@ async def _finalize_dynamic_instructions(
   # TODO: Deprecate system_instruction fallback and make user content routing standard.
   if is_feature_enabled(FeatureName.DYNAMIC_INSTRUCTION_ROUTING):
     from .contents import _add_instructions_to_user_content
+    from .instructions import _label_dynamic_instruction
 
+    # Same user-role carrier as the agent's instruction, so same label.
     instruction_content = types.Content(
         role='user',
-        parts=[types.Part.from_text(text=combined_text)],
+        parts=[
+            types.Part.from_text(text=_label_dynamic_instruction(combined_text))
+        ],
     )
     await _add_instructions_to_user_content(
         invocation_context,

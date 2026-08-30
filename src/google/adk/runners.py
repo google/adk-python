@@ -1925,7 +1925,6 @@ class Runner:
     # Step 2: Handle new message, by running callbacks and appending to
     # session.
     await self._handle_new_message(
-        session=invocation_context.session,
         new_message=new_message,
         invocation_context=invocation_context,
         run_config=run_config,
@@ -1988,7 +1987,6 @@ class Runner:
     # Step 3: Maybe handle new message.
     if new_message:
       await self._handle_new_message(
-          session=invocation_context.session,
           new_message=user_message,
           invocation_context=invocation_context,
           run_config=run_config,
@@ -2100,7 +2098,6 @@ class Runner:
   async def _handle_new_message(
       self,
       *,
-      session: Session,
       new_message: types.Content,
       invocation_context: InvocationContext,
       run_config: RunConfig,
@@ -2108,8 +2105,9 @@ class Runner:
   ) -> None:
     """Handles a new message by running callbacks and appending to session.
 
+    The session is reached through ``invocation_context.session``.
+
     Args:
-      session: The session of the new message.
       new_message: The new message to process and append to the session.
       invocation_context: The invocation context to use for the message
         handling.

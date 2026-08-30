@@ -2842,7 +2842,11 @@ async def test_finalize_dynamic_instructions_feature_enabled():
   assert llm_request.config.system_instruction is None
   assert len(llm_request.contents) == 2
   assert llm_request.contents[0].role == 'user'
-  assert llm_request.contents[0].parts[0].text == 'dynamic 1\n\ndynamic 2'
+  # The tool's instruction rides the same user-role carrier as the agent's, so
+  # it is labelled the same way rather than sent as bare prose.
+  instruction_text = llm_request.contents[0].parts[0].text
+  assert 'dynamic 1\n\ndynamic 2' in instruction_text
+  assert 'was said by the user' in instruction_text
   assert llm_request.contents[1].role == 'user'
   assert llm_request.contents[1].parts[0].text == 'user question'
 
@@ -2873,7 +2877,11 @@ async def test_finalize_dynamic_instructions_with_static_instruction():
   assert llm_request.config.system_instruction is None
   assert len(llm_request.contents) == 2
   assert llm_request.contents[0].role == 'user'
-  assert llm_request.contents[0].parts[0].text == 'dynamic 1\n\ndynamic 2'
+  # The tool's instruction rides the same user-role carrier as the agent's, so
+  # it is labelled the same way rather than sent as bare prose.
+  instruction_text = llm_request.contents[0].parts[0].text
+  assert 'dynamic 1\n\ndynamic 2' in instruction_text
+  assert 'was said by the user' in instruction_text
   assert llm_request.contents[1].role == 'user'
   assert llm_request.contents[1].parts[0].text == 'user question'
 
