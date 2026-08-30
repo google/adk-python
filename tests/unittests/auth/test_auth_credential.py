@@ -19,10 +19,12 @@ from __future__ import annotations
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import BaseModelWithConfig
+from google.adk.auth.auth_credential import CREDENTIAL_SECRET_KEYS
 from google.adk.auth.auth_credential import HttpAuth
 from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_credential import ServiceAccountCredential
+from pydantic import alias_generators
 import pydantic
 import pytest
 
@@ -121,6 +123,37 @@ def test_oauth2_credentials_redacted_in_repr_and_str():
   assert 'secret_code_verifier' not in repr_str
   assert 'top_secret_client_secret' not in str_str
   assert 'secret_response_code' not in str_str
+
+
+def test_credential_secret_keys_covers_every_repr_hidden_field():
+  """CREDENTIAL_SECRET_KEYS must track every `repr=False` field's alias.
+
+  `repr=False` only hides a field from `repr()`/`str()`; it does nothing for
+  `model_dump()`/`model_dump_json()`, which is what actually leaves the
+  process (e.g. a FastAPI response). `CREDENTIAL_SECRET_KEYS` is the
+  network-facing counterpart consumers must use to redact those same
+  fields before sending a credential-bearing object to an external client.
+  This asserts the two lists can't silently drift apart: every field this
+  module marks `repr=False` has a same-named (by alias) entry in
+  `CREDENTIAL_SECRET_KEYS`.
+  """
+  camel_of = alias_generators.to_camel
+  expected_keys = set()
+  for model_cls in (
+      HttpCredentials,
+      HttpAuth,
+      OAuth2Auth,
+      ServiceAccountCredential,
+      AuthCredential,
+  ):
+    for name, field in model_cls.model_fields.items():
+      if field.repr is False:
+        expected_keys.add(field.alias or camel_of(name))
+  assert expected_keys
+  assert expected_keys <= CREDENTIAL_SECRET_KEYS, (
+      f'Fields marked repr=False but missing from CREDENTIAL_SECRET_KEYS:'
+      f' {expected_keys - CREDENTIAL_SECRET_KEYS}'
+  )
 
 
 def test_service_account_redacted_in_repr_and_str():

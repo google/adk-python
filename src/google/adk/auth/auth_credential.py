@@ -30,6 +30,31 @@ from pydantic import model_validator
 
 _REDACTED = "<redacted>"
 
+# By-alias (camelCase) names of every field on a credential model that is
+# marked `repr=False` above. `repr=False` only redacts these from Python's
+# `repr()`/`str()` (logs, error strings); it has no effect on
+# `model_dump()`/`model_dump_json()`, which is what actually goes out over
+# the network (e.g. FastAPI's /run, /run_sse, /run_live responses). Anything
+# serializing an `AuthCredential`-derived object for an external, untrusted
+# client -- as opposed to internal persistence via SessionService -- must
+# additionally strip these keys. Kept as one set here, next to the field
+# declarations, so the two lists can't silently drift apart.
+CREDENTIAL_SECRET_KEYS = frozenset({
+    "password",
+    "token",
+    "additionalHeaders",
+    "clientSecret",
+    "authResponseUri",
+    "authCode",
+    "accessToken",
+    "refreshToken",
+    "idToken",
+    "codeVerifier",
+    "privateKeyId",
+    "privateKey",
+    "apiKey",
+})
+
 
 # Pydantic echoes the rejected value into ValidationError messages
 # ("input_value=..."), which would put a malformed secret straight into logs and

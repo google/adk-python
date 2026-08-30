@@ -1929,6 +1929,122 @@ def test_agent_run_sse_splits_artifact_delta(
   assert sse_events[1]["actions"]["artifactDelta"] == {"artifact.txt": 0}
 
 
+def test_agent_run_sse_redacts_oauth2_client_secret(
+    test_app, create_test_session, monkeypatch
+):
+  """/run_sse must not leak OAuth2 secrets embedded in a function call.
+
+  When a tool needs OAuth, ADK attaches the credential -- including the
+  app's `client_secret` -- to an `adk_request_credential` function call's
+  `args`. That `args` value is an opaque dict, not a nested pydantic model,
+  so it is not covered by `Event.model_dump(exclude=...)`. This asserts the
+  streamed event has the secret fields stripped while the fields the client
+  actually needs to complete the OAuth redirect (client_id, the
+  authorization URL, the credential key) are preserved.
+  """
+  info = create_test_session
+
+  auth_config_dict = {
+      "authScheme": {
+          "type": "oauth2",
+          "flows": {
+              "authorizationCode": {
+                  "scopes": {"read": "read"},
+                  "authorizationUrl": "https://idp.example.com/oauth2/auth",
+                  "tokenUrl": "https://idp.example.com/oauth2/token",
+              }
+          },
+      },
+      "rawAuthCredential": {
+          "authType": "oauth2",
+          "oauth2": {
+              "clientId": "public-client-id",
+              "clientSecret": "should-never-reach-the-client",
+          },
+      },
+      "exchangedAuthCredential": {
+          "authType": "oauth2",
+          "oauth2": {
+              "clientId": "public-client-id",
+              "clientSecret": "should-never-reach-the-client",
+              "authUri": (
+                  "https://idp.example.com/oauth2/auth?client_id="
+                  "public-client-id&state=xyz"
+              ),
+              "state": "xyz",
+              "codeVerifier": "pkce-verifier-should-not-leak-either",
+          },
+      },
+      "credentialKey": "my_tool:oauth2:abcd1234",
+  }
+
+  async def run_async_with_auth_request(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      invocation_id: Optional[str] = None,
+      new_message: Optional[types.Content] = None,
+      state_delta: Optional[dict[str, Any]] = None,
+      run_config: Optional[RunConfig] = None,
+  ):
+    del user_id, session_id, invocation_id, new_message, state_delta, run_config
+    yield Event(
+        author="agent",
+        invocation_id="invocation_id",
+        content=types.Content(
+            role="user",
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(
+                        name="adk_request_credential",
+                        id="adk-req-cred-id",
+                        args={
+                            "functionCallId": "adk-original-fc-id",
+                            "authConfig": auth_config_dict,
+                        },
+                    )
+                )
+            ],
+        ),
+    )
+
+  monkeypatch.setattr(Runner, "run_async", run_async_with_auth_request)
+
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello agent"}]},
+      "streaming": True,
+  }
+
+  response = test_app.post("/run_sse", json=payload)
+  assert response.status_code == 200
+  assert "should-never-reach-the-client" not in response.text
+  assert "pkce-verifier-should-not-leak-either" not in response.text
+
+  sse_events = [
+      json.loads(line.removeprefix("data: "))
+      for line in response.text.splitlines()
+      if line.startswith("data: ")
+  ]
+  assert len(sse_events) == 1
+  args = sse_events[0]["content"]["parts"][0]["functionCall"]["args"]
+  raw_oauth2 = args["authConfig"]["rawAuthCredential"]["oauth2"]
+  exchanged_oauth2 = args["authConfig"]["exchangedAuthCredential"]["oauth2"]
+  assert "clientSecret" not in raw_oauth2
+  assert "clientSecret" not in exchanged_oauth2
+  assert "codeVerifier" not in exchanged_oauth2
+  # Fields the client actually needs to complete the OAuth redirect must
+  # survive the redaction.
+  assert raw_oauth2["clientId"] == "public-client-id"
+  assert exchanged_oauth2["authUri"].startswith(
+      "https://idp.example.com/oauth2/auth"
+  )
+  assert args["authConfig"]["credentialKey"] == "my_tool:oauth2:abcd1234"
+
+
 def test_agent_run_sse_does_not_split_artifact_delta_for_function_resume(
     test_app, create_test_session, monkeypatch
 ):

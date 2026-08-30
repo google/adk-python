@@ -46,6 +46,7 @@ from fastapi import Query
 from fastapi import Request
 from fastapi import Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.responses import RedirectResponse
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -77,6 +78,7 @@ from ..auth.credential_service.base_credential_service import BaseCredentialServ
 from ..errors.already_exists_error import AlreadyExistsError
 from ..errors.input_validation_error import InputValidationError
 from ..errors.session_not_found_error import SessionNotFoundError
+from ..auth.auth_credential import CREDENTIAL_SECRET_KEYS
 from ..events.event import Event
 from ..events.event_actions import EventActions
 from ..flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
@@ -572,6 +574,32 @@ def _invalid_event_error(event_index: int, disallowed: str) -> HTTPException:
           f" {disallowed}."
       ),
   )
+
+
+def _redact_credential_secrets(value: Any) -> Any:
+  """Recursively strips credential-secret keys from a JSON-like value.
+
+  An event's `function_call.args` (e.g. the `adk_request_credential` call
+  ADK issues when a tool needs OAuth) is an opaque `dict[str, Any]`, not a
+  nested pydantic model -- so `Event.model_dump(exclude=...)` cannot reach
+  a secret embedded inside it by field path. This walks the already-dumped
+  event unconditionally and drops any key in `CREDENTIAL_SECRET_KEYS`
+  wherever it appears, so a credential's `client_secret`, tokens, etc. never
+  reach an external client over /run, /run_sse, or /run_live, regardless of
+  where in the structure they're nested. This must only be applied to the
+  outbound wire representation -- never to what SessionService persists --
+  since later turns reconstruct the original request's credential by
+  re-parsing the persisted `adk_request_credential` call's args.
+  """
+  if isinstance(value, dict):
+    return {
+        key: _redact_credential_secrets(val)
+        for key, val in value.items()
+        if key not in CREDENTIAL_SECRET_KEYS
+    }
+  if isinstance(value, list):
+    return [_redact_credential_secrets(item) for item in value]
+  return value
 
 
 def _validate_session_initialization_events(events: list[Event]) -> None:
@@ -1825,8 +1853,10 @@ class ApiServer:
       else:
         _is_visual_builder.set(False)
 
-    @app.post("/run", response_model_exclude_none=True)
-    async def run_agent(req: RunAgentRequest, request: Request) -> list[Event]:
+    @app.post(
+        "/run", response_model=list[Event], response_model_exclude_none=True
+    )
+    async def run_agent(req: RunAgentRequest, request: Request) -> Response:
       app_name = req.app_name or self.default_app_name
       if not app_name:
         raise HTTPException(
@@ -1883,7 +1913,14 @@ class ApiServer:
         events = await worker_task
         logger.info("Generated %s events in agent run", len(events))
         logger.debug("Events generated: %s", events)
-        return events
+        return JSONResponse(
+            content=[
+                _redact_credential_secrets(
+                    event.model_dump(exclude_none=True, by_alias=True, mode="json")
+                )
+                for event in events
+            ]
+        )
       except asyncio.CancelledError:
         if await request.is_disconnected():
           return Response(status_code=499)
@@ -1961,9 +1998,14 @@ class ApiServer:
                   events_to_stream = [content_event, artifact_event]
 
                 for event_to_stream in events_to_stream:
-                  sse_event = event_to_stream.model_dump_json(
-                      exclude_none=True,
-                      by_alias=True,
+                  sse_event = json.dumps(
+                      _redact_credential_secrets(
+                          event_to_stream.model_dump(
+                              exclude_none=True,
+                              by_alias=True,
+                              mode="json",
+                          )
+                      )
                   )
                   logger.debug(
                       "Generated event in agent run streaming: %s", sse_event
@@ -2101,7 +2143,13 @@ class ApiServer:
         ) as agen:
           async for event in agen:
             await websocket.send_text(
-                event.model_dump_json(exclude_none=True, by_alias=True)
+                json.dumps(
+                    _redact_credential_secrets(
+                        event.model_dump(
+                            exclude_none=True, by_alias=True, mode="json"
+                        )
+                    )
+                )
             )
 
       async def process_messages():
