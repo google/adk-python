@@ -1764,6 +1764,47 @@ class TestRestApiTool:
     request_params = tool._prepare_request_params([], {})
 
     assert request_params["url"] == "https://example.com/test"
+  def test_prepare_request_params_fragment_params_become_query_params(
+    self, sample_auth_credential, sample_auth_scheme
+  ):
+    # When the ApplicationIntegrationToolset builds an endpoint URL, it sometimes
+    # puts params in the fragment (e.g. #triggerId=my_trigger). Without this fix
+    # those params were silently dropped and the API returned a 400 error.
+    # See: https://github.com/google/adk-python/issues/4598
+    integration_endpoint = OperationEndpoint(
+      base_url="https://integrations.googleapis.com",
+      path=(
+        "/v2/projects/demo/locations/us-central1"
+        "/integrations/MyFlow:execute"
+        "?triggerId=api_trigger/MyFlow"
+        "#httpMethod=POST"
+      ),
+      method="POST",
+    )
+    op = Operation(operationId="run_integration")
+    tool = RestApiTool(
+      name="run_integration",
+      description="Runs a Google Cloud integration flow",
+      endpoint=integration_endpoint,
+      operation=op,
+      auth_credential=sample_auth_credential,
+      auth_scheme=sample_auth_scheme,
+    )
+
+    result = tool._prepare_request_params([], {})
+
+    # Both the query string and fragment params should land in query params
+    assert result["params"]["triggerId"] == "api_trigger/MyFlow"
+    assert result["params"]["httpMethod"] == "POST"
+
+    # The final URL should be clean — no leftover ? or #
+    assert "?" not in result["url"]
+    assert "#" not in result["url"]
+    assert result["url"] == (
+      "https://integrations.googleapis.com"
+      "/v2/projects/demo/locations/us-central1"
+      "/integrations/MyFlow:execute"
+    )
 
   def test_rest_api_tool_repr_and_str(
       self, sample_endpoint, sample_operation, sample_auth_scheme
