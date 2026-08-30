@@ -27,9 +27,6 @@ import warnings
 
 from fastapi.openapi.models import APIKeyIn
 from google.genai.types import FunctionDeclaration
-from mcp import ClientSession
-from mcp.shared.exceptions import McpError
-from mcp.types import Tool as McpBaseTool
 from opentelemetry import propagate
 from typing_extensions import override
 
@@ -38,6 +35,9 @@ from ...agents.readonly_context import ReadonlyContext
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
 from ...auth.auth_tool import AuthConfig
+from ...dependencies._mcp import ClientSession
+from ...dependencies._mcp import McpError
+from ...dependencies._mcp import Tool as McpBaseTool
 from ...events.ui_widget import UiWidget
 from ...features import FeatureName
 from ...features import is_feature_enabled

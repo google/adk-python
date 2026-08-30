@@ -495,7 +495,6 @@ def build_agent_card(
     default_input_modes: Any = ("text/plain",),
     default_output_modes: Any = ("text/plain",),
     supports_authenticated_extended_card: bool = False,
-    streaming: bool = False,
 ) -> AgentCard:
   """Builds an ``AgentCard`` from primitive fields.
 
@@ -503,6 +502,10 @@ def build_agent_card(
          transport is ``preferredTransport``.
   1.x:   ``AgentCard`` is a proto message — RPC URL lives in
          ``supported_interfaces[i].url`` (with ``protocol_binding``).
+
+  A caller that knows what the agent supports passes ``capabilities``. Callers
+  that do not, such as a registry entry holding no card of its own, get a card
+  claiming no optional capability rather than one guessing at them.
   """
 
   def _as_dict(obj: Any) -> Any:
@@ -518,7 +521,7 @@ def build_agent_card(
       "1.0" if IS_A2A_V1 else "0.3.0"
   )
 
-  default_capabilities = {"streaming": streaming, "push_notifications": False}
+  default_capabilities = {"streaming": False, "push_notifications": False}
 
   if IS_A2A_V1:
     iface: dict[str, Any] = {

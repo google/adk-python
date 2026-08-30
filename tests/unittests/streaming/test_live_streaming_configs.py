@@ -13,8 +13,8 @@
 # limitations under the License.
 
 from google.adk.agents import Agent
-from google.adk.agents import LiveRequestQueue
 from google.adk.agents.run_config import RunConfig
+from google.adk.live import LiveRequestQueue
 from google.adk.models import LlmResponse
 from google.genai import types
 import pytest

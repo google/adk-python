@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import abc
 import asyncio
-import importlib
 import inspect
 import logging
 from typing import Any
@@ -24,7 +23,6 @@ from typing import AsyncGenerator
 from typing import Awaitable
 from typing import Callable
 from typing import ClassVar
-from typing import Dict
 from typing import Literal
 from typing import Optional
 from typing import Type
@@ -42,8 +40,6 @@ from typing_extensions import TypeAlias
 
 from ..code_executors.base_code_executor import BaseCodeExecutor
 from ..events.event import Event
-from ..features import experimental
-from ..features import FeatureName
 from ..flows.llm_flows.auto_flow import AutoFlow
 from ..flows.llm_flows.base_llm_flow import BaseLlmFlow
 from ..flows.llm_flows.single_flow import SingleFlow
@@ -55,9 +51,8 @@ from ..planners.base_planner import BasePlanner
 from ..tools.base_tool import BaseTool
 from ..tools.base_toolset import BaseToolset
 from ..tools.function_tool import FunctionTool
-from ..tools.tool_configs import ToolArgsConfig
-from ..tools.tool_configs import ToolConfig
 from ..tools.tool_context import ToolContext
+from ..utils._callback_pipeline import _normalize_callbacks
 from ..utils._schema_utils import SchemaType
 from ..utils._schema_utils import validate_schema
 from ..utils.context_utils import Aclosing
@@ -231,10 +226,50 @@ async def _convert_tool_union_to_tools(
     return []
 
 
+# GenerateContentConfig fields that already have a dedicated LlmAgent argument.
+# Passing them as LlmAgent kwargs should point at that argument.
+_GENERATE_CONTENT_FIELDS_OWNED_BY_AGENT: dict[str, str] = {
+    'system_instruction': 'instruction',
+    'response_schema': 'output_schema',
+    'base_url': 'model',
+}
+
+# Snake-case field names and camelCase aliases used by GenerateContentConfig.
+_GENERATE_CONTENT_FIELD_NAMES: dict[str, str] = {
+    name: name for name in types.GenerateContentConfig.model_fields
+} | {
+    field.alias: name
+    for name, field in types.GenerateContentConfig.model_fields.items()
+    if field.alias is not None
+}
+
+
+def _http_options_has_base_url(value: Any) -> bool:
+  if isinstance(value, dict):
+    return bool(value.get('base_url') or value.get('baseUrl'))
+  return bool(getattr(value, 'base_url', None))
+
+
 # TODO: drop the explicit abc.ABC base once BaseNode surfaces ABCMeta to
 # static type checkers.
 class LlmAgent(BaseAgent, abc.ABC):
-  """LLM-based Agent."""
+  """LLM-based Agent.
+
+  Generation settings such as ``temperature``, ``top_p``, and
+  ``max_output_tokens`` belong on ``generate_content_config``:
+
+    ```python
+    from google.adk.agents import LlmAgent
+    from google.genai import types
+
+    agent = LlmAgent(
+        name='grader',
+        model='gemini-3.5-flash',
+        instruction='Grade the exam.',
+        generate_content_config=types.GenerateContentConfig(temperature=0.1),
+    )
+    ```
+  """
 
   DEFAULT_MODEL: ClassVar[str] = 'gemini-3.5-flash'
   """System default model used when no model is set on an agent."""
@@ -807,11 +842,7 @@ class LlmAgent(BaseAgent, abc.ABC):
 
     This method is only for use by Agent Development Kit.
     """
-    if not self.before_model_callback:
-      return []
-    if isinstance(self.before_model_callback, list):
-      return self.before_model_callback
-    return [self.before_model_callback]
+    return _normalize_callbacks(self.before_model_callback)
 
   @property
   def canonical_after_model_callbacks(self) -> list[_SingleAfterModelCallback]:
@@ -819,11 +850,7 @@ class LlmAgent(BaseAgent, abc.ABC):
 
     This method is only for use by Agent Development Kit.
     """
-    if not self.after_model_callback:
-      return []
-    if isinstance(self.after_model_callback, list):
-      return self.after_model_callback
-    return [self.after_model_callback]
+    return _normalize_callbacks(self.after_model_callback)
 
   @property
   def canonical_on_model_error_callbacks(
@@ -833,11 +860,7 @@ class LlmAgent(BaseAgent, abc.ABC):
 
     This method is only for use by Agent Development Kit.
     """
-    if not self.on_model_error_callback:
-      return []
-    if isinstance(self.on_model_error_callback, list):
-      return self.on_model_error_callback
-    return [self.on_model_error_callback]
+    return _normalize_callbacks(self.on_model_error_callback)
 
   @property
   def canonical_before_tool_callbacks(
@@ -847,11 +870,7 @@ class LlmAgent(BaseAgent, abc.ABC):
 
     This method is only for use by Agent Development Kit.
     """
-    if not self.before_tool_callback:
-      return []
-    if isinstance(self.before_tool_callback, list):
-      return self.before_tool_callback
-    return [self.before_tool_callback]
+    return _normalize_callbacks(self.before_tool_callback)
 
   @property
   def canonical_after_tool_callbacks(
@@ -861,11 +880,7 @@ class LlmAgent(BaseAgent, abc.ABC):
 
     This method is only for use by Agent Development Kit.
     """
-    if not self.after_tool_callback:
-      return []
-    if isinstance(self.after_tool_callback, list):
-      return self.after_tool_callback
-    return [self.after_tool_callback]
+    return _normalize_callbacks(self.after_tool_callback)
 
   @property
   def canonical_on_tool_error_callbacks(
@@ -875,11 +890,7 @@ class LlmAgent(BaseAgent, abc.ABC):
 
     This method is only for use by Agent Development Kit.
     """
-    if not self.on_tool_error_callback:
-      return []
-    if isinstance(self.on_tool_error_callback, list):
-      return self.on_tool_error_callback
-    return [self.on_tool_error_callback]
+    return _normalize_callbacks(self.on_tool_error_callback)
 
   @property
   def _llm_flow(self) -> BaseLlmFlow:
@@ -1088,6 +1099,95 @@ class LlmAgent(BaseAgent, abc.ABC):
 
   @model_validator(mode='before')
   @classmethod
+  def _reject_misplaced_generate_content_kwargs(cls, data: Any) -> Any:
+    """Redirect GenerateContentConfig fields passed as LlmAgent kwargs.
+
+    Unknown keys that match a GenerateContentConfig field get an error
+    that names ``generate_content_config``. Reserved fields that already
+    have an LlmAgent argument (system_instruction, response_schema) point
+    at that argument. Other unknown keys are left for extra_forbidden
+    unless they arrive together with a config-field error, in which case
+    they are included in the same ValueError.
+    """
+    if not isinstance(data, dict):
+      return data
+
+    agent_names = set(cls.model_fields) | {
+        f.alias for f in cls.model_fields.values() if f.alias is not None
+    }
+    redirected: list[tuple[str, str]] = []
+    misplaced: dict[str, None] = {}
+    extras: list[str] = []
+    transport_errors: list[str] = []
+    for key, value in data.items():
+      # Known LlmAgent fields, including tools (which is also a
+      # GenerateContentConfig name), must not be hijacked.
+      if key in agent_names:
+        continue
+      if key in ('http_options', 'httpOptions') and _http_options_has_base_url(
+          value
+      ):
+        transport_errors.append(
+            'Base URL is a transport setting and must be set via'
+            f' LlmAgent.model, not via LlmAgent({key}=...).'
+        )
+        continue
+      agent_field = _GENERATE_CONTENT_FIELDS_OWNED_BY_AGENT.get(key)
+      if agent_field is not None:
+        redirected.append((key, agent_field))
+        continue
+      gcc_field = _GENERATE_CONTENT_FIELD_NAMES.get(key)
+      if gcc_field is None:
+        extras.append(key)
+        continue
+      agent_field = _GENERATE_CONTENT_FIELDS_OWNED_BY_AGENT.get(gcc_field)
+      if agent_field is not None:
+        redirected.append((key, agent_field))
+        continue
+      misplaced[gcc_field] = None
+
+    parts: list[str] = []
+    if 'name' not in data or not data.get('name'):
+      parts.append("Field 'name' is required.")
+    if transport_errors:
+      parts.extend(transport_errors)
+    if redirected:
+      parts.append(
+          '. '.join(
+              f'`{src}` must be set via LlmAgent.{dest}, not via'
+              f' LlmAgent({src}=...)'
+              for src, dest in redirected
+          )
+          + '.'
+      )
+    if misplaced:
+      fields = list(misplaced)
+      verb = 'is a' if len(fields) == 1 else 'are'
+      suffix = '' if len(fields) == 1 else 's'
+      example = ', '.join(f'{name}=...' for name in fields)
+      parts.append(
+          f"{', '.join(fields)} {verb} GenerateContentConfig field{suffix}."
+          ' Pass'
+          f' generate_content_config=types.GenerateContentConfig({example})'
+          ' instead.'
+      )
+    if parts:
+      if (
+          not redirected
+          and not misplaced
+          and not extras
+          and not transport_errors
+      ):
+        return data
+      if extras:
+        parts.append(
+            'Extra inputs are not permitted: ' + ', '.join(extras) + '.'
+        )
+      raise ValueError(' '.join(parts))
+    return data
+
+  @model_validator(mode='before')
+  @classmethod
   def _pre_validate_tools(cls, data: Any) -> Any:
     if isinstance(data, dict) and 'tools' in data and data['tools']:
       from google.adk.agents.base_agent import BaseAgent
@@ -1199,124 +1299,6 @@ class LlmAgent(BaseAgent, abc.ABC):
           self.tools.append(_SingleTurnAgentTool(sub_agent))
         elif mode == 'task':
           self.tools.append(_TaskAgentTool(sub_agent))
-
-  @classmethod
-  @experimental(FeatureName.AGENT_CONFIG)
-  def _resolve_tools(
-      cls, tool_configs: list[ToolConfig], config_abs_path: str
-  ) -> list[Any]:
-    """Resolve tools from configuration.
-
-    Args:
-      tool_configs: List of tool configurations (ToolConfig objects).
-      config_abs_path: The absolute path to the agent config file.
-
-    Returns:
-      List of resolved tool objects.
-    """
-
-    resolved_tools = []
-    for tool_config in tool_configs:
-      if '.' not in tool_config.name:
-        # ADK built-in tools
-        module = importlib.import_module('google.adk.tools')
-        obj = getattr(module, tool_config.name)
-      else:
-        # User-defined tools
-        from .config_agent_utils import _validate_module_reference
-
-        _validate_module_reference(tool_config.name)
-        module_path, obj_name = tool_config.name.rsplit('.', 1)
-        module = importlib.import_module(module_path)
-        obj = getattr(module, obj_name)
-
-      if isinstance(obj, BaseTool) or isinstance(obj, BaseToolset):
-        logger.debug(
-            'Tool %s is an instance of BaseTool/BaseToolset.', tool_config.name
-        )
-        resolved_tools.append(obj)
-      elif inspect.isclass(obj) and (
-          issubclass(obj, BaseTool) or issubclass(obj, BaseToolset)
-      ):
-        logger.debug(
-            'Tool %s is a sub-class of BaseTool/BaseToolset.', tool_config.name
-        )
-        tool_args = tool_config.args or ToolArgsConfig()
-        resolved_tools.append(obj.from_config(tool_args, config_abs_path))
-      elif callable(obj):
-        if tool_config.args:
-          logger.debug(
-              'Tool %s is a user-defined tool-generating function.',
-              tool_config.name,
-          )
-          resolved_tools.append(obj(tool_config.args))
-        else:
-          logger.debug(
-              'Tool %s is a user-defined function tool.', tool_config.name
-          )
-          resolved_tools.append(obj)
-      else:
-        raise ValueError(f'Invalid tool YAML config: {tool_config}.')
-
-    return resolved_tools
-
-  @override
-  @classmethod
-  @experimental(FeatureName.AGENT_CONFIG)
-  def _parse_config(
-      cls: Type[LlmAgent],
-      config: BaseAgentConfig,
-      config_abs_path: str,
-      kwargs: Dict[str, Any],
-  ) -> Dict[str, Any]:
-    from .config_agent_utils import resolve_callbacks
-    from .config_agent_utils import resolve_code_reference
-
-    if not isinstance(config, LlmAgentConfig):
-      raise TypeError('LlmAgent requires an LlmAgentConfig.')
-
-    if config.model_code:
-      kwargs['model'] = resolve_code_reference(config.model_code)
-    elif config.model:
-      kwargs['model'] = config.model
-    if config.instruction:
-      kwargs['instruction'] = config.instruction
-    if config.static_instruction:
-      kwargs['static_instruction'] = config.static_instruction
-    if config.disallow_transfer_to_parent:
-      kwargs['disallow_transfer_to_parent'] = config.disallow_transfer_to_parent
-    if config.disallow_transfer_to_peers:
-      kwargs['disallow_transfer_to_peers'] = config.disallow_transfer_to_peers
-    if config.include_contents != 'default':
-      kwargs['include_contents'] = config.include_contents
-    if config.input_schema:
-      kwargs['input_schema'] = resolve_code_reference(config.input_schema)
-    if config.output_schema:
-      kwargs['output_schema'] = resolve_code_reference(config.output_schema)
-    if config.output_key:
-      kwargs['output_key'] = config.output_key
-    if config.tools:
-      kwargs['tools'] = cls._resolve_tools(config.tools, config_abs_path)
-    if config.before_model_callbacks:
-      kwargs['before_model_callback'] = resolve_callbacks(
-          config.before_model_callbacks
-      )
-    if config.after_model_callbacks:
-      kwargs['after_model_callback'] = resolve_callbacks(
-          config.after_model_callbacks
-      )
-    if config.before_tool_callbacks:
-      kwargs['before_tool_callback'] = resolve_callbacks(
-          config.before_tool_callbacks
-      )
-    if config.after_tool_callbacks:
-      kwargs['after_tool_callback'] = resolve_callbacks(
-          config.after_tool_callbacks
-      )
-    if config.generate_content_config:
-      kwargs['generate_content_config'] = config.generate_content_config
-
-    return kwargs
 
 
 Agent: TypeAlias = LlmAgent

@@ -1937,6 +1937,27 @@ def fast_api_common_options():
         ),
         default=None,
     )
+    @click.option(
+        "--trigger_oidc_audience",
+        type=str,
+        help=(
+            "Optional. Expected audience for Google-signed OIDC bearer tokens"
+            " on /apps/{app_name}/trigger/* endpoints. When set, requests"
+            " without a valid token matching this audience are rejected with"
+            " 401."
+        ),
+        default=None,
+    )
+    @click.option(
+        "--trigger_oidc_service_accounts",
+        type=str,
+        help=(
+            "Optional. Comma-separated list of allowed service account emails"
+            " for Google-signed OIDC tokens on /apps/{app_name}/trigger/*"
+            " endpoints. Requires --trigger_oidc_audience."
+        ),
+        default=None,
+    )
     @functools.wraps(func)
     @click.pass_context
     def wrapper(ctx, *args, **kwargs):
@@ -1945,6 +1966,17 @@ def fast_api_common_options():
       if trigger_sources is not None:
         kwargs["trigger_sources"] = [
             s.strip() for s in trigger_sources.split(",") if s.strip()
+        ]
+
+      # Parse comma-separated trigger_oidc_service_accounts into a list.
+      trigger_oidc_service_accounts = kwargs.get(
+          "trigger_oidc_service_accounts"
+      )
+      if trigger_oidc_service_accounts is not None:
+        kwargs["trigger_oidc_service_accounts"] = [
+            s.strip()
+            for s in trigger_oidc_service_accounts.split(",")
+            if s.strip()
         ]
 
       return func(*args, **kwargs)
@@ -2011,6 +2043,8 @@ def cli_web(
     logo_text: str | None = None,
     logo_image_url: str | None = None,
     trigger_sources: list[str] | None = None,
+    trigger_oidc_audience: str | None = None,
+    trigger_oidc_service_accounts: list[str] | None = None,
 ):
   """Starts a FastAPI server with Web UI for agents.
 
@@ -2080,6 +2114,8 @@ def cli_web(
       logo_text=logo_text,
       logo_image_url=logo_image_url,
       trigger_sources=trigger_sources,
+      trigger_oidc_audience=trigger_oidc_audience,
+      trigger_oidc_service_accounts=trigger_oidc_service_accounts,
       default_llm_model=default_llm_model,
   )
   config = uvicorn.Config(
@@ -2162,6 +2198,8 @@ def cli_api_server(
     with_ui: bool = False,
     gemini_enterprise_app_name: str | None = None,
     express_mode: bool = False,
+    trigger_oidc_audience: str | None = None,
+    trigger_oidc_service_accounts: list[str] | None = None,
 ):
   """Starts a FastAPI server for agents.
 
@@ -2220,6 +2258,8 @@ def cli_api_server(
           extra_plugins=extra_plugins,
           auto_create_session=auto_create_session,
           trigger_sources=trigger_sources,
+          trigger_oidc_audience=trigger_oidc_audience,
+          trigger_oidc_service_accounts=trigger_oidc_service_accounts,
           gemini_enterprise_app_name=gemini_enterprise_app_name,
           express_mode=express_mode,
           lifespan=_lifespan,
@@ -2373,6 +2413,25 @@ def cli_api_server(
     default=None,
 )
 @click.option(
+    "--trigger_oidc_audience",
+    type=str,
+    help=(
+        "Optional. Expected audience for Google-signed OIDC bearer tokens"
+        " on /apps/{app_name}/trigger/* endpoints."
+    ),
+    default=None,
+)
+@click.option(
+    "--trigger_oidc_service_accounts",
+    type=str,
+    help=(
+        "Optional. Comma-separated list of allowed service account emails"
+        " for Google-signed OIDC tokens on /apps/{app_name}/trigger/*"
+        " endpoints."
+    ),
+    default=None,
+)
+@click.option(
     "--allow_origins",
     help=(
         "Optional. Origins to allow for CORS. Can be literal origins"
@@ -2406,6 +2465,8 @@ def cli_deploy_cloud_run(
     a2a: bool = False,
     trigger_sources: str | None = None,
     with_cloud_run_sandbox: bool = False,
+    trigger_oidc_audience: str | None = None,
+    trigger_oidc_service_accounts: str | None = None,
 ):
   """Deploys an agent to Cloud Run.
 
@@ -2450,6 +2511,8 @@ def cli_deploy_cloud_run(
         use_local_storage=use_local_storage,
         a2a=a2a,
         trigger_sources=trigger_sources,
+        trigger_oidc_audience=trigger_oidc_audience,
+        trigger_oidc_service_accounts=trigger_oidc_service_accounts,
         extra_gcloud_args=tuple(gcloud_args),
     )
   except Exception as e:
@@ -2684,6 +2747,25 @@ def cli_migrate_session(
     default=None,
 )
 @click.option(
+    "--trigger_oidc_audience",
+    type=str,
+    help=(
+        "Optional. Expected audience for Google-signed OIDC bearer tokens"
+        " on /apps/{app_name}/trigger/* endpoints."
+    ),
+    default=None,
+)
+@click.option(
+    "--trigger_oidc_service_accounts",
+    type=str,
+    help=(
+        "Optional. Comma-separated list of allowed service account emails"
+        " for Google-signed OIDC tokens on /apps/{app_name}/trigger/*"
+        " endpoints."
+    ),
+    default=None,
+)
+@click.option(
     "--adk_version",
     type=str,
     default=version.__version__,
@@ -2755,6 +2837,8 @@ def cli_deploy_agent_engine(
     use_local_storage: bool = False,
     extra_packages: tuple[str, ...] = (),
     worker_pool: str | None = None,
+    trigger_oidc_audience: str | None = None,
+    trigger_oidc_service_accounts: str | None = None,
 ):
   """Deploys an agent to Agent Engine.
 
@@ -2803,6 +2887,8 @@ def cli_deploy_agent_engine(
         agent_engine_config_file=agent_engine_config_file,
         skip_agent_import_validation=not validate_agent_import,
         trigger_sources=trigger_sources,
+        trigger_oidc_audience=trigger_oidc_audience,
+        trigger_oidc_service_accounts=trigger_oidc_service_accounts,
         artifact_service_uri=artifact_service_uri,
         memory_service_uri=memory_service_uri,
         session_service_uri=session_service_uri,
@@ -2936,6 +3022,25 @@ def cli_deploy_agent_engine(
     ),
     default=None,
 )
+@click.option(
+    "--trigger_oidc_audience",
+    type=str,
+    help=(
+        "Optional. Expected audience for Google-signed OIDC bearer tokens"
+        " on /apps/{app_name}/trigger/* endpoints."
+    ),
+    default=None,
+)
+@click.option(
+    "--trigger_oidc_service_accounts",
+    type=str,
+    help=(
+        "Optional. Comma-separated list of allowed service account emails"
+        " for Google-signed OIDC tokens on /apps/{app_name}/trigger/*"
+        " endpoints."
+    ),
+    default=None,
+)
 @adk_services_options(default_use_local_storage=False)
 @click.argument(
     "agent",
@@ -2963,6 +3068,8 @@ def cli_deploy_gke(
     memory_service_uri: str | None = None,
     use_local_storage: bool = False,
     trigger_sources: str | None = None,
+    trigger_oidc_audience: str | None = None,
+    trigger_oidc_service_accounts: str | None = None,
 ):
   """Deploys an agent to GKE.
 
@@ -2997,6 +3104,8 @@ def cli_deploy_gke(
         memory_service_uri=memory_service_uri,
         use_local_storage=use_local_storage,
         trigger_sources=trigger_sources,
+        trigger_oidc_audience=trigger_oidc_audience,
+        trigger_oidc_service_accounts=trigger_oidc_service_accounts,
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)

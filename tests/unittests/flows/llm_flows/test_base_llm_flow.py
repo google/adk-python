@@ -23,7 +23,6 @@ from unittest.mock import AsyncMock
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.invocation_context import LlmCallsLimitExceededError
-from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.run_config import RunConfig
@@ -39,6 +38,7 @@ from google.adk.flows.llm_flows.base_llm_flow import _handle_after_model_callbac
 from google.adk.flows.llm_flows.base_llm_flow import _process_agent_tools
 from google.adk.flows.llm_flows.base_llm_flow import _ReconnectSentinel
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
+from google.adk.live import LiveRequestQueue
 from google.adk.models.base_llm_connection import BaseLlmConnection
 from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
@@ -2765,7 +2765,7 @@ async def test_send_to_model_rejects_function_call():
   invocation_context.live_request_queue = LiveRequestQueue()
 
   # Put a malicious content request in the queue
-  from google.adk.agents.live_request_queue import LiveRequest
+  from google.adk.live import LiveRequest
 
   malicious_request = LiveRequest(
       content=types.Content(
@@ -2842,7 +2842,11 @@ async def test_finalize_dynamic_instructions_feature_enabled():
   assert llm_request.config.system_instruction is None
   assert len(llm_request.contents) == 2
   assert llm_request.contents[0].role == 'user'
-  assert llm_request.contents[0].parts[0].text == 'dynamic 1\n\ndynamic 2'
+  # The tool's instruction rides the same user-role carrier as the agent's, so
+  # it is labelled the same way rather than sent as bare prose.
+  instruction_text = llm_request.contents[0].parts[0].text
+  assert 'dynamic 1\n\ndynamic 2' in instruction_text
+  assert 'was said by the user' in instruction_text
   assert llm_request.contents[1].role == 'user'
   assert llm_request.contents[1].parts[0].text == 'user question'
 
@@ -2873,7 +2877,11 @@ async def test_finalize_dynamic_instructions_with_static_instruction():
   assert llm_request.config.system_instruction is None
   assert len(llm_request.contents) == 2
   assert llm_request.contents[0].role == 'user'
-  assert llm_request.contents[0].parts[0].text == 'dynamic 1\n\ndynamic 2'
+  # The tool's instruction rides the same user-role carrier as the agent's, so
+  # it is labelled the same way rather than sent as bare prose.
+  instruction_text = llm_request.contents[0].parts[0].text
+  assert 'dynamic 1\n\ndynamic 2' in instruction_text
+  assert 'was said by the user' in instruction_text
   assert llm_request.contents[1].role == 'user'
   assert llm_request.contents[1].parts[0].text == 'user question'
 

@@ -29,20 +29,26 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect
 import json
 import logging
 import os
 import random
 from typing import Any
+from typing import Awaitable
+from typing import Callable
 from typing import Literal
 from typing import Optional
 from typing import TYPE_CHECKING
 import uuid
 
+from fastapi import Depends
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi import Request
+from google.auth.transport import requests as google_auth_requests
 from google.genai import types
+from google.oauth2 import id_token as google_id_token
 from pydantic import BaseModel
 from pydantic import Field
 
@@ -224,6 +230,49 @@ def _make_trigger_user_id(
   return normalized.replace("/", "--")
 
 
+class GoogleOidcVerifier:
+  """Verifies the request's OIDC bearer token."""
+
+  def __init__(self, audience: str, allowed_emails: Optional[list[str]] = None):
+    self._audience = audience
+    self._allowed_emails = allowed_emails
+    self._http_request = google_auth_requests.Request()
+
+  async def __call__(self, request: Request) -> None:
+    auth_header = request.headers.get("Authorization", "")
+    scheme, _, token = auth_header.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+      raise HTTPException(
+          status_code=401,
+          detail="Missing or malformed Authorization bearer token.",
+      )
+
+    try:
+      claims = await asyncio.to_thread(
+          google_id_token.verify_oauth2_token,
+          token.strip(),
+          self._http_request,
+          self._audience,
+      )
+      if self._allowed_emails:
+        if (
+            not claims.get("email_verified")
+            or claims.get("email") not in self._allowed_emails
+        ):
+          raise HTTPException(
+              status_code=403,
+              detail="Untrusted token principal.",
+          )
+    except HTTPException:
+      raise
+    except Exception as e:
+      logger.warning("OIDC token verification failed: %s", e)
+      raise HTTPException(
+          status_code=401,
+          detail="OIDC token verification failed.",
+      ) from e
+
+
 # ---------------------------------------------------------------------------
 # Trigger Router
 # ---------------------------------------------------------------------------
@@ -257,8 +306,14 @@ class TriggerRouter:
       max_retries: int = DEFAULT_MAX_RETRIES,
       retry_base_delay: float = DEFAULT_RETRY_BASE_DELAY,
       retry_max_delay: float = DEFAULT_RETRY_MAX_DELAY,
+      verifier: Optional[Callable[[Request], None | Awaitable[None]]] = None,
   ):
     self._server = adk_web_server
+    # When set, every /trigger/* request must be verified by this callable
+    # (e.g. GoogleOidcVerifier). When None (the default), the endpoints
+    # stay unauthenticated and rely on the deployment platform for access
+    # control, preserving existing behavior.
+    self._verifier = verifier
     resolved_sources = (
         trigger_sources
         if trigger_sources is not None
@@ -411,6 +466,14 @@ class TriggerRouter:
     are registered.
     """
 
+    async def _verify_auth(request: Request) -> None:
+      if self._verifier:
+        res = self._verifier(request)
+        if inspect.isawaitable(res):
+          await res
+
+    auth_dependencies = [Depends(_verify_auth)] if self._verifier else []
+
     if "pubsub" in self._trigger_sources:
 
       @app.post(
@@ -423,6 +486,7 @@ class TriggerRouter:
               " Returns 200 on success; errors trigger Pub/Sub retry."
               " Includes automatic retry with backoff on 429 errors."
           ),
+          dependencies=auth_dependencies,
       )
       async def trigger_pubsub(
           app_name: str, req: PubSubTriggerRequest, request: Request
@@ -490,11 +554,11 @@ class TriggerRouter:
               " Returns 200 on success; errors trigger Eventarc retry."
               " Includes automatic retry with backoff on 429 errors."
           ),
+          dependencies=auth_dependencies,
       )
       async def trigger_eventarc(
           app_name: str, req: EventarcTriggerRequest, request: Request
       ) -> TriggerResponse:
-
         user_id = _make_trigger_user_id(
             req.source or request.headers.get("ce-source"),
             default="eventarc-caller",

@@ -858,17 +858,20 @@ class AgentEvaluator:
 
       # Gather all the failures.
       if overall_eval_status != EvalStatus.PASSED:
-        if print_detailed_results:
-          AgentEvaluator._print_details(
-              eval_metric_result_with_invocations=eval_metric_results_with_invocations,
-              overall_eval_status=overall_eval_status,
-              overall_score=overall_score,
-              metric_name=metric_name,
-              threshold=threshold,
-          )
         failures.append(
             f"{metric_name} for {agent_module} Failed. Expected {threshold},"
             f" but got {overall_score}."
+        )
+
+      if print_detailed_results:
+        AgentEvaluator._print_details(
+            eval_metric_result_with_invocations=(
+                eval_metric_results_with_invocations
+            ),
+            overall_eval_status=overall_eval_status,
+            overall_score=overall_score,
+            metric_name=metric_name,
+            threshold=threshold,
         )
 
     return failures
