@@ -112,6 +112,40 @@ def test_get_user_scoped_artifact_uri():
   assert uri == "artifact://apps/app2/users/user2/artifacts/file2/versions/456"
 
 
+def test_normalize_session_id_strips_whitespace():
+  assert artifact_util.normalize_session_id("  sess0\n") == "sess0"
+
+
+def test_normalize_session_id_passes_none_through():
+  assert artifact_util.normalize_session_id(None) is None
+
+
+def test_get_artifact_uri_normalizes_padded_session_id():
+  """A padded session id must not leak into the constructed URI, since the
+  session it points at is stored under the trimmed id."""
+  uri = artifact_util.get_artifact_uri(
+      app_name="app1",
+      user_id="user1",
+      session_id="  session1\n",
+      filename="file1",
+      version=123,
+  )
+  assert (
+      uri
+      == "artifact://apps/app1/users/user1/sessions/session1/artifacts/file1/versions/123"
+  )
+
+
+def test_parse_artifact_uri_normalizes_a_legacy_padded_session_id():
+  """A URI minted before this fix could carry a padded session id in its own
+  path segment; parsing it must still yield the trimmed id so downstream
+  scope checks compare like with like."""
+  uri = "artifact://apps/app1/users/user1/sessions/session1\n/artifacts/file1/versions/123"
+  parsed = artifact_util.parse_artifact_uri(uri)
+  assert parsed is not None
+  assert parsed.session_id == "session1"
+
+
 def test_is_artifact_ref_true():
   """Tests is_artifact_ref with a valid artifact reference."""
   artifact = types.Part(
