@@ -639,3 +639,451 @@ async def test_orphaned_function_response_dropped_mid_history():
       ("user", "Regular message"),
       ("user", "Later message"),
   ]
+
+
+@pytest.mark.asyncio
+async def test_interrupted_call_is_paired_with_placeholder():
+  """A call whose turn ended before its result gets a placeholder result."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  function_call = types.FunctionCall(
+      id="call_123", name="search_tool", args={"query": "test"}
+  )
+
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Search for test"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent([types.Part(function_call=function_call)]),
+      ),
+      # The turn ended here: the result was never recorded.
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent("Are you still there?"),
+      ),
+  ]
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  assert llm_request.contents == [
+      types.UserContent("Search for test"),
+      types.ModelContent([types.Part(function_call=function_call)]),
+      types.Content(
+          role="user",
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      id="call_123",
+                      name="search_tool",
+                      response={"result": contents._MISSING_FUNCTION_RESULT},
+                  )
+              )
+          ],
+      ),
+      types.UserContent("Are you still there?"),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_partially_answered_turn_joins_the_existing_response():
+  """A placeholder joins the response turn that answers the other call."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  answered_call = types.FunctionCall(
+      id="call_1", name="search_tool", args={"query": "test"}
+  )
+  lost_call = types.FunctionCall(
+      id="call_2", name="fetch_tool", args={"url": "http://example.com"}
+  )
+  function_response = types.FunctionResponse(
+      id="call_1", name="search_tool", response={"results": ["item1"]}
+  )
+
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Search and fetch"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent([
+              types.Part(function_call=answered_call),
+              types.Part(function_call=lost_call),
+          ]),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent(
+              [types.Part(function_response=function_response)]
+          ),
+      ),
+  ]
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  assert llm_request.contents == [
+      types.UserContent("Search and fetch"),
+      types.ModelContent([
+          types.Part(function_call=answered_call),
+          types.Part(function_call=lost_call),
+      ]),
+      types.UserContent([
+          types.Part(function_response=function_response),
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id="call_2",
+                  name="fetch_tool",
+                  response={"result": contents._MISSING_FUNCTION_RESULT},
+              )
+          ),
+      ]),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_pending_long_running_call_gets_the_pending_placeholder():
+  """A call ADK holds open is described as awaiting a response."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  long_running_call = types.FunctionCall(
+      id="lro_call_1", name="ask_user", args={"question": "proceed?"}
+  )
+
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Do the thing"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent(
+              [types.Part(function_call=long_running_call)]
+          ),
+          long_running_tool_ids={"lro_call_1"},
+      ),
+  ]
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  assert llm_request.contents == [
+      types.UserContent("Do the thing"),
+      types.ModelContent([types.Part(function_call=long_running_call)]),
+      types.Content(
+          role="user",
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      id="lro_call_1",
+                      name="ask_user",
+                      response={"result": contents._PENDING_FUNCTION_RESULT},
+                  )
+              )
+          ],
+      ),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_answered_long_running_call_is_left_alone():
+  """A long-running call that has a result keeps it."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  long_running_call = types.FunctionCall(
+      id="lro_call_1", name="ask_user", args={"question": "proceed?"}
+  )
+  function_response = types.FunctionResponse(
+      id="lro_call_1", name="ask_user", response={"answer": "yes"}
+  )
+
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Do the thing"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent(
+              [types.Part(function_call=long_running_call)]
+          ),
+          long_running_tool_ids={"lro_call_1"},
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent(
+              [types.Part(function_response=function_response)]
+          ),
+      ),
+  ]
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  assert llm_request.contents == [
+      types.UserContent("Do the thing"),
+      types.ModelContent([types.Part(function_call=long_running_call)]),
+      types.UserContent([types.Part(function_response=function_response)]),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_one_response_does_not_answer_two_calls_without_id():
+  """Calls without an id are answered one at a time, not as a group."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  first_call = types.FunctionCall(name="search_tool", args={"query": "a"})
+  second_call = types.FunctionCall(name="search_tool", args={"query": "b"})
+  function_response = types.FunctionResponse(
+      name="search_tool", response={"results": ["item1"]}
+  )
+
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Search twice"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent([
+              types.Part(function_call=first_call),
+              types.Part(function_call=second_call),
+          ]),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent(
+              [types.Part(function_response=function_response)]
+          ),
+      ),
+  ]
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  assert llm_request.contents[-1] == types.UserContent([
+      types.Part(function_response=function_response),
+      types.Part(
+          function_response=types.FunctionResponse(
+              name="search_tool",
+              response={"result": contents._MISSING_FUNCTION_RESULT},
+          )
+      ),
+  ])
+
+
+@pytest.mark.asyncio
+async def test_paired_contents_satisfy_the_anthropic_invariant():
+  """Every tool_use block is followed by its tool_result block."""
+  anthropic_llm = pytest.importorskip("google.adk.models.anthropic_llm")
+
+  agent = Agent(model="claude-sonnet-4-5", name="test_agent")
+  llm_request = LlmRequest(model="claude-sonnet-4-5")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  function_call = types.FunctionCall(
+      id="call_123", name="search_tool", args={"query": "test"}
+  )
+
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Search for test"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent([types.Part(function_call=function_call)]),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent("Are you still there?"),
+      ),
+  ]
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  messages = [
+      anthropic_llm.content_to_message_param(content)
+      for content in llm_request.contents
+  ]
+  _assert_tool_use_blocks_are_answered(messages)
+
+
+def _assert_tool_use_blocks_are_answered(messages) -> None:
+  """Asserts each tool_use block is answered by the next message.
+
+  Also asserts the placement Anthropic requires: every tool_result block comes
+  before any other block in the message that carries it.
+  """
+  for index, message in enumerate(messages):
+    tool_use_ids = [
+        block["id"]
+        for block in message["content"]
+        if isinstance(block, dict) and block.get("type") == "tool_use"
+    ]
+    if not tool_use_ids:
+      continue
+    following = messages[index + 1] if index + 1 < len(messages) else None
+    blocks = following["content"] if following else []
+    types_in_order = [
+        block.get("type") for block in blocks if isinstance(block, dict)
+    ]
+    result_ids = [
+        block["tool_use_id"]
+        for block in blocks
+        if isinstance(block, dict) and block.get("type") == "tool_result"
+    ]
+    assert sorted(tool_use_ids) == sorted(result_ids)
+    leading_results = 0
+    for block_type in types_in_order:
+      if block_type != "tool_result":
+        break
+      leading_results += 1
+    assert leading_results == len(result_ids)
+
+
+@pytest.mark.asyncio
+async def test_placeholder_stays_ahead_of_a_trailing_text_part():
+  """A placeholder joins the leading run of results, not the end of the turn."""
+  anthropic_llm = pytest.importorskip("google.adk.models.anthropic_llm")
+
+  agent = Agent(model="claude-sonnet-4-5", name="test_agent")
+  llm_request = LlmRequest(model="claude-sonnet-4-5")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  answered_call = types.FunctionCall(
+      id="call_1", name="search_tool", args={"query": "test"}
+  )
+  lost_call = types.FunctionCall(
+      id="call_2", name="fetch_tool", args={"url": "http://example.com"}
+  )
+  function_response = types.FunctionResponse(
+      id="call_1", name="search_tool", response={"results": ["item1"]}
+  )
+
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Search and fetch"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent([
+              types.Part(function_call=answered_call),
+              types.Part(function_call=lost_call),
+          ]),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent([
+              types.Part(function_response=function_response),
+              types.Part(text="and please hurry"),
+          ]),
+      ),
+  ]
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  assert llm_request.contents[-1].parts == [
+      types.Part(function_response=function_response),
+      types.Part(
+          function_response=types.FunctionResponse(
+              id="call_2",
+              name="fetch_tool",
+              response={"result": contents._MISSING_FUNCTION_RESULT},
+          )
+      ),
+      types.Part(text="and please hurry"),
+  ]
+  _assert_tool_use_blocks_are_answered([
+      anthropic_llm.content_to_message_param(content)
+      for content in llm_request.contents
+  ])
+
+
+@pytest.mark.asyncio
+async def test_unpaired_contents_fail_the_anthropic_invariant():
+  """The invariant check rejects the history the repair is there to fix."""
+  anthropic_llm = pytest.importorskip("google.adk.models.anthropic_llm")
+
+  unpaired = [
+      types.UserContent("Search for test"),
+      types.ModelContent([
+          types.Part(
+              function_call=types.FunctionCall(
+                  id="call_123", name="search_tool", args={"query": "test"}
+              )
+          )
+      ]),
+      types.UserContent("Are you still there?"),
+  ]
+
+  messages = [
+      anthropic_llm.content_to_message_param(content) for content in unpaired
+  ]
+  with pytest.raises(AssertionError):
+    _assert_tool_use_blocks_are_answered(messages)

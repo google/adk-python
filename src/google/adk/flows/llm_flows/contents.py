@@ -289,6 +289,186 @@ def _drop_orphaned_function_responses(
   return result_events
 
 
+# Stands in for a result that was never recorded. It names no cause, because
+# there is none to name: the turn may have been interrupted, or the process may
+# have died between the two events.
+_MISSING_FUNCTION_RESULT = 'No response available for this function call.'
+
+# Stands in for a call ADK is deliberately holding open: a long-running tool, a
+# human approval, or a request for user input. No function response exists for
+# these until the answer arrives, so the call is pending rather than lost. The
+# distinction changes what the model does next: told a tool returned nothing, it
+# reissues the call or proceeds without it; told the call is still awaiting a
+# response, it can wait.
+_PENDING_FUNCTION_RESULT = (
+    'This call is awaiting a response and has not completed yet.'
+)
+
+
+def _pending_call_ids(events: list[Event]) -> set[str]:
+  """Returns the ids of the calls ADK is holding open.
+
+  ``long_running_tool_ids`` lives on the event and does not survive the
+  conversion to contents, so it is read here.
+
+  Args:
+    events: The events being assembled into request contents.
+
+  Returns:
+    The ids of the calls that are awaiting a response.
+  """
+  pending: set[str] = set()
+  for event in events:
+    if event.long_running_tool_ids:
+      pending.update(event.long_running_tool_ids)
+  return pending
+
+
+def _unanswered_calls(
+    calls: list[types.FunctionCall],
+    answered_ids: list[str | None],
+) -> list[types.FunctionCall]:
+  """Returns the calls that ``answered_ids`` does not account for.
+
+  Ids are consumed one at a time rather than matched through a set, so a turn
+  that carries several calls without an id (Gemini omits them, and ADK strips
+  its own ``adk-`` ids before the request is built) does not have a single
+  response silently answer all of them.
+
+  Args:
+    calls: The function calls in one content.
+    answered_ids: The ids of the function responses that follow it, in order.
+
+  Returns:
+    The calls with no response of their own.
+  """
+  remaining = list(answered_ids)
+  unanswered: list[types.FunctionCall] = []
+  for call in calls:
+    if call.id in remaining:
+      remaining.remove(call.id)
+      continue
+    unanswered.append(call)
+  return unanswered
+
+
+def _pair_unanswered_function_calls(
+    contents: list[types.Content],
+    pending_ids: set[str],
+) -> list[types.Content]:
+  """Gives every function call a function response in the next content.
+
+  A call and its result are two separate session events. When a turn ends
+  between them (a restart, an OOM kill, a disconnect, a cancellation), the
+  session keeps a ``function_call`` that no ``function_response`` answers. That
+  history is replayed on every later turn, and a provider that requires strict
+  pairing then rejects the whole conversation: Anthropic answers ``tool_use ids
+  were found without tool_result blocks immediately after``, and the session
+  stays unusable until it is deleted.
+
+  The repair runs on the request rather than the stored events, so recorded
+  history stays intact and a session that is already broken heals on its next
+  turn without a migration. It also sits above the session service, so it
+  applies to every store.
+
+  Pairing is checked positionally, against the immediately following content,
+  because that is the invariant the provider enforces. A conversation whose
+  calls are all answered is returned unchanged, and any conversation this does
+  change is one the provider would have rejected.
+
+  Args:
+    contents: The contents built for the request. Not mutated in place, except
+      that a placeholder is inserted into the ``parts`` list of a content that
+      already answers part of a turn.
+    pending_ids: The ids of the calls ADK is holding open.
+
+  Returns:
+    The contents, with a placeholder response for every unanswered call.
+  """
+  paired: list[types.Content] = []
+  lost = 0
+  for index, content in enumerate(contents):
+    paired.append(content)
+
+    calls = [p.function_call for p in content.parts or [] if p.function_call]
+    if not calls:
+      continue
+
+    following = contents[index + 1] if index + 1 < len(contents) else None
+    answered_ids = [
+        p.function_response.id
+        for p in (following.parts or [] if following else [])
+        if p.function_response
+    ]
+    unanswered = _unanswered_calls(calls, answered_ids)
+    if not unanswered:
+      continue
+
+    parts: list[types.Part] = []
+    for call in unanswered:
+      is_pending = bool(call.id) and call.id in pending_ids
+      if not is_pending:
+        lost += 1
+      parts.append(
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id=call.id,
+                  name=call.name,
+                  response={
+                      'result': (
+                          _PENDING_FUNCTION_RESULT
+                          if is_pending
+                          else _MISSING_FUNCTION_RESULT
+                      )
+                  },
+              )
+          )
+      )
+
+    # Join a turn that already answers this call event, so the results stay in
+    # one message; otherwise the results need a turn of their own, before
+    # whatever currently follows.
+    if answered_ids:
+      following.parts = _with_results_inserted(following.parts, parts)
+    else:
+      paired.append(types.Content(role='user', parts=parts))
+
+  if lost:
+    logger.warning(
+        'Supplied a placeholder result for %d function call(s) with no'
+        ' recorded response',
+        lost,
+    )
+  return paired
+
+
+def _with_results_inserted(
+    parts: list[types.Part] | None,
+    results: list[types.Part],
+) -> list[types.Part]:
+  """Returns ``parts`` with ``results`` added to its leading run of responses.
+
+  Anthropic requires every tool result to precede any other block in the
+  message that carries it, so a placeholder appended after a trailing text part
+  would be rejected for the same reason the missing result was.
+
+  Args:
+    parts: The parts of the content that already answers part of the turn.
+    results: The placeholder function response parts to insert.
+
+  Returns:
+    A new list of parts, with the placeholders before the first part that is
+    not a function response.
+  """
+  existing = list(parts or [])
+  insert_index = len(existing)
+  for index, part in enumerate(existing):
+    if not part.function_response:
+      insert_index = index
+      break
+  return existing[:insert_index] + results + existing[insert_index:]
+
+
 def _rearrange_events_for_latest_function_response(
     events: list[Event],
 ) -> list[Event]:
@@ -777,6 +957,12 @@ def _get_contents(
               strip_client_function_call_ids=not preserve_function_call_ids,
           )
       )
+
+  # Ids are read after the conversion so a stripped call id is answered by a
+  # response with the same stripped id.
+  contents = _pair_unanswered_function_calls(
+      contents, _pending_call_ids(result_events)
+  )
 
   # for scoped agents (task / single_turn), prepend a
   # synthetic user-role content built from the originating FC's args.
