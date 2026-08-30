@@ -135,7 +135,17 @@ async def _make_per_agent_database(
 BACKENDS = [
     _Backend('in_memory', _make_in_memory),
     _Backend('in_memory_light_copy', _make_in_memory_light_copy),
-    _Backend('database', _make_database),
+    _Backend(
+        'database',
+        _make_database,
+        divergences={
+            'test_padded_session_id_reads_and_deletes': (
+                'DatabaseSessionService stores the session id verbatim, so a'
+                ' padded id keeps its whitespace instead of being normalized'
+                ' the way the in-memory and sqlite services normalize it.'
+            ),
+        },
+    ),
     _Backend('sqlite', _make_sqlite),
     # Two more Redis divergences have no contract test to hang an xfail on
     # yet: it builds its key scan pattern from a truthiness check on the user
@@ -153,6 +163,11 @@ BACKENDS = [
             'test_session_last_update_time_updates_on_event': (
                 'Redis stamps the session with the wall clock instead of the'
                 " appended event's timestamp."
+            ),
+            'test_padded_session_id_reads_and_deletes': (
+                'RedisSessionService stores the session id verbatim, so a'
+                ' padded id keeps its whitespace instead of being normalized'
+                ' the way the in-memory and sqlite services normalize it.'
             ),
         },
     ),

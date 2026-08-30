@@ -1228,20 +1228,15 @@ async def test_create_session_with_padded_duplicate_id_raises_error():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    'service_type',
-    [SessionServiceType.IN_MEMORY, SessionServiceType.SQLITE],
-)
-async def test_padded_session_id_reads_and_deletes(service_type, tmp_path):
+async def test_padded_session_id_reads_and_deletes(session_service):
   """Tests that the id normalization applied on create also applies on read
   and delete, so a caller passing one padded id throughout keeps reaching the
   session it created."""
-  service = get_session_service(service_type, tmp_path)
   app_name = 'my_app'
   user_id = 'test_user'
   padded_id = 'order-42\n'
 
-  created = await service.create_session(
+  created = await session_service.create_session(
       app_name=app_name,
       user_id=user_id,
       session_id=padded_id,
@@ -1249,18 +1244,18 @@ async def test_padded_session_id_reads_and_deletes(service_type, tmp_path):
   )
   assert created.id == 'order-42'
 
-  session = await service.get_session(
+  session = await session_service.get_session(
       app_name=app_name, user_id=user_id, session_id=padded_id
   )
   assert session is not None
   assert session.id == 'order-42'
   assert session.state['cart'] == 'book'
 
-  await service.delete_session(
+  await session_service.delete_session(
       app_name=app_name, user_id=user_id, session_id=padded_id
   )
   assert (
-      await service.get_session(
+      await session_service.get_session(
           app_name=app_name, user_id=user_id, session_id='order-42'
       )
       is None
