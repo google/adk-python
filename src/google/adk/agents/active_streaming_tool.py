@@ -21,7 +21,7 @@ from typing import Optional
 from pydantic import BaseModel
 from pydantic import ConfigDict
 
-from .live_request_queue import LiveRequestQueue
+from ..live.live_request_queue import LiveRequestQueue
 
 
 class ActiveStreamingTool(BaseModel):

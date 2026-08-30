@@ -14,11 +14,11 @@
 
 from unittest import mock
 
-from google.adk.agents.live_request_queue import LiveRequest
-from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.run_config import RunConfig
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
+from google.adk.live import LiveRequest
+from google.adk.live import LiveRequestQueue
 from google.adk.models.llm_request import LlmRequest
 from google.genai import types
 import pytest

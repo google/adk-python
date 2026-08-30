@@ -940,6 +940,102 @@ def test_cli_deploy_agent_engine_trigger_sources(tmp_path: Path):
     assert kwargs["trigger_sources"] == "pubsub,eventarc"
 
 
+def test_cli_deploy_agent_engine_trigger_oidc_options(tmp_path: Path):
+  """Tests that OIDC flags are passed to to_agent_engine."""
+  agent_dir = tmp_path / "my_agent"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  with mock.patch(
+      "src.google.adk.cli.cli_deploy.to_agent_engine"
+  ) as mock_to_agent_engine:
+    result = runner.invoke(
+        cli_tools_click.main,
+        [
+            "deploy",
+            "agent_engine",
+            "--trigger_sources=pubsub",
+            "--trigger_oidc_audience=https://my-service.run.app",
+            "--trigger_oidc_service_accounts=sa@project.iam.gserviceaccount.com",
+            str(agent_dir),
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    mock_to_agent_engine.assert_called_once()
+    _, kwargs = mock_to_agent_engine.call_args
+    assert kwargs["trigger_sources"] == "pubsub"
+    assert kwargs["trigger_oidc_audience"] == "https://my-service.run.app"
+    assert (
+        kwargs["trigger_oidc_service_accounts"]
+        == "sa@project.iam.gserviceaccount.com"
+    )
+
+
+def test_cli_deploy_cloud_run_trigger_oidc_options(tmp_path: Path):
+  """Tests that OIDC flags are passed to to_cloud_run."""
+  agent_dir = tmp_path / "my_agent"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  with mock.patch(
+      "src.google.adk.cli.cli_deploy.to_cloud_run"
+  ) as mock_to_cloud_run:
+    result = runner.invoke(
+        cli_tools_click.main,
+        [
+            "deploy",
+            "cloud_run",
+            "--project=my-project",
+            "--region=us-central1",
+            "--trigger_sources=pubsub,eventarc",
+            "--trigger_oidc_audience=https://my-service.run.app",
+            "--trigger_oidc_service_accounts=sa@project.iam.gserviceaccount.com",
+            str(agent_dir),
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    mock_to_cloud_run.assert_called_once()
+    _, kwargs = mock_to_cloud_run.call_args
+    assert kwargs["trigger_sources"] == "pubsub,eventarc"
+    assert kwargs["trigger_oidc_audience"] == "https://my-service.run.app"
+    assert (
+        kwargs["trigger_oidc_service_accounts"]
+        == "sa@project.iam.gserviceaccount.com"
+    )
+
+
+def test_cli_deploy_gke_trigger_oidc_options(tmp_path: Path):
+  """Tests that OIDC flags are passed to to_gke."""
+  agent_dir = tmp_path / "my_agent"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  with mock.patch("src.google.adk.cli.cli_deploy.to_gke") as mock_to_gke:
+    result = runner.invoke(
+        cli_tools_click.main,
+        [
+            "deploy",
+            "gke",
+            "--project=my-project",
+            "--region=us-central1",
+            "--cluster_name=my-cluster",
+            "--trigger_sources=pubsub,eventarc",
+            "--trigger_oidc_audience=https://my-service.run.app",
+            "--trigger_oidc_service_accounts=sa@project.iam.gserviceaccount.com",
+            str(agent_dir),
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    mock_to_gke.assert_called_once()
+    _, kwargs = mock_to_gke.call_args
+    assert kwargs["trigger_sources"] == "pubsub,eventarc"
+    assert kwargs["trigger_oidc_audience"] == "https://my-service.run.app"
+    assert (
+        kwargs["trigger_oidc_service_accounts"]
+        == "sa@project.iam.gserviceaccount.com"
+    )
+
+
 def test_cli_deploy_agent_engine_artifact_service_uri(tmp_path: Path):
   """Tests that --artifact_service_uri is passed to to_agent_engine."""
   agent_dir = tmp_path / "my_agent"
@@ -1384,6 +1480,92 @@ def test_to_agent_engine_extra_packages_requirements_txt_is_not_clobbered(
   )
   assert (tmp_dir / "requirements.txt").read_text() == (
       "some-unrelated-package\n"
+  )
+
+
+def test_to_cloud_run_dockerfile_trigger_oidc_options(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """to_cloud_run includes trigger OIDC options in the generated Dockerfile CMD."""
+  src_dir = agent_dir(False, False)
+  temp_dir = tmp_path / "cloud_run_temp"
+  monkeypatch.setattr(
+      subprocess, "run", lambda *a, **k: mock.MagicMock(returncode=0)
+  )
+  monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+
+  cli_deploy.to_cloud_run(
+      agent_folder=str(src_dir),
+      temp_folder=str(temp_dir),
+      project="my-project",
+      region="us-central1",
+      service_name="my-service",
+      app_name="my-app",
+      port=8000,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      adk_version="1.2.0",
+      log_level="INFO",
+      verbosity="INFO",
+      trigger_sources="pubsub,eventarc",
+      trigger_oidc_audience="https://my-service.run.app",
+      trigger_oidc_service_accounts="sa@project.iam.gserviceaccount.com",
+  )
+
+  dockerfile_content = (temp_dir / "Dockerfile").read_text()
+  assert "--trigger_sources=pubsub,eventarc" in dockerfile_content
+  assert (
+      "--trigger_oidc_audience=https://my-service.run.app" in dockerfile_content
+  )
+  assert (
+      "--trigger_oidc_service_accounts=sa@project.iam.gserviceaccount.com"
+      in dockerfile_content
+  )
+
+
+def test_to_gke_dockerfile_trigger_oidc_options(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """to_gke includes trigger OIDC options in the generated Dockerfile CMD."""
+  src_dir = agent_dir(False, False)
+  temp_dir = tmp_path / "gke_temp"
+  monkeypatch.setattr(
+      subprocess, "run", lambda *a, **k: mock.MagicMock(returncode=0)
+  )
+  monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+
+  cli_deploy.to_gke(
+      agent_folder=str(src_dir),
+      temp_folder=str(temp_dir),
+      project="my-project",
+      region="us-central1",
+      cluster_name="my-cluster",
+      service_name="my-service",
+      app_name="my-app",
+      port=8000,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      adk_version="1.2.0",
+      log_level="INFO",
+      trigger_sources="pubsub,eventarc",
+      trigger_oidc_audience="https://my-service.run.app",
+      trigger_oidc_service_accounts="sa@project.iam.gserviceaccount.com",
+  )
+
+  dockerfile_content = (temp_dir / "Dockerfile").read_text()
+  assert "--trigger_sources=pubsub,eventarc" in dockerfile_content
+  assert (
+      "--trigger_oidc_audience=https://my-service.run.app" in dockerfile_content
+  )
+  assert (
+      "--trigger_oidc_service_accounts=sa@project.iam.gserviceaccount.com"
+      in dockerfile_content
   )
 
 

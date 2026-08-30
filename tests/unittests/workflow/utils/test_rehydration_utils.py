@@ -325,6 +325,134 @@ class TestScanNodeEvents:
         results["node_a@1"].resolved_responses["interrupt-1"] == "user answer"
     )
 
+  def test_scan_resolves_by_branch_run_id_not_substring(self):
+    # The branch is a dot-joined `name@run_id` path. Matching an interrupt id
+    # against it as a substring resolves any id contained in the one the branch
+    # actually carries -- here "int-1" inside "int-10".
+    event_short = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        long_running_tool_ids={"int-1"},
+        invocation_id="test_id",
+    )
+    event_long = Event(
+        node_info=NodeInfo(path="/wf@1/node_b@1"),
+        long_running_tool_ids={"int-10"},
+        invocation_id="test_id",
+    )
+    event_fr = Event(
+        author="user",
+        branch="wf@1.node_b@int-10",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id="int-10",
+                        name="adk_request_input",
+                        response={"result": "user answer"},
+                    )
+                )
+            ]
+        ),
+        invocation_id="test_id",
+    )
+
+    results = _reconstruct_node_states(
+        [event_short, event_long, event_fr],
+        "/wf@1",
+        invocation_id="test_id",
+        group_by_direct_child=True,
+    )
+
+    assert "int-10" in results["node_b@1"].resolved_ids
+    assert "int-1" not in results["node_a@1"].resolved_ids
+
+  def test_scan_clears_output_emitted_before_the_node_paused(self):
+    # What a node emitted before stopping to ask is not its result; leaving it
+    # in place lets the workflow route on a value the node never returned.
+    event_output = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        output="partial work",
+        invocation_id="test_id",
+    )
+    event_int = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        long_running_tool_ids={"interrupt-1"},
+        invocation_id="test_id",
+    )
+    event_fr = Event(
+        author="user",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id="interrupt-1",
+                        name="adk_request_input",
+                        response={"result": "user answer"},
+                    )
+                )
+            ]
+        ),
+        invocation_id="test_id",
+    )
+
+    results = _reconstruct_node_states(
+        [event_output, event_int, event_fr],
+        "/wf@1",
+        invocation_id="test_id",
+        group_by_direct_child=True,
+    )
+
+    assert "interrupt-1" in results["node_a@1"].resolved_ids
+    assert results["node_a@1"].output is None
+
+  def test_scan_resolves_an_interrupt_owned_by_an_ancestor_branch(self):
+    # The nested case: the answer comes back carrying its own response id, not
+    # the interrupt's, and only the branch says which interrupt it settles.
+    # `fr.id` is deliberately not an interrupt id here -- if it were, the
+    # owner lookup would handle the event and this path would never run.
+    event_output = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        output="partial work",
+        invocation_id="test_id",
+    )
+    event_int = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        long_running_tool_ids={"int-1"},
+        invocation_id="test_id",
+    )
+    event_fr = Event(
+        author="user",
+        branch="wf@1.node_a@int-1",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id="resp-99",
+                        name="adk_request_input",
+                        response={"result": "user answer"},
+                    )
+                )
+            ]
+        ),
+        invocation_id="test_id",
+    )
+
+    results = _reconstruct_node_states(
+        [event_output, event_int, event_fr],
+        "/wf@1",
+        invocation_id="test_id",
+        group_by_direct_child=True,
+    )
+    state = results["node_a@1"]
+
+    assert "int-1" in state.resolved_ids
+    # Keyed by the interrupt id, because that is what the consumer looks up
+    # (`ctx.resume_inputs.get(interrupt_id)`), not by the response's own id.
+    assert "int-1" in state.resolved_responses
+    assert "resp-99" not in state.resolved_responses
+    # And the pre-pause output is dropped here too, not only on the direct path.
+    assert state.output is None
+
   def test_scan_matches_specific_node_path_without_child_grouping(self):
     """Scanning matches events for a specific node path when not grouping by direct child."""
     event = Event(

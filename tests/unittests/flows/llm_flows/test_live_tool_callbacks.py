@@ -468,3 +468,46 @@ async def test_live_on_tool_error_callback_tool_not_found_modify_tool_response()
   assert part.function_response.response == {
       "result": "on_tool_error_callback_response"
   }
+
+
+@pytest.mark.asyncio
+async def test_live_on_tool_error_callback_stops_on_empty_dict():
+  """Test that an empty error recovery response stops the callback chain."""
+
+  def empty_response_callback(tool, args, tool_context, error):
+    return {}
+
+  unexpected_callback = mock.Mock(
+      side_effect=AssertionError("callback chain should have stopped")
+  )
+  tool = FunctionTool(lambda: {"initial": "response"})
+  agent = Agent(
+      name="agent",
+      model=testing_utils.MockModel.create(responses=[]),
+      tools=[tool],
+      on_tool_error_callback=[empty_response_callback, unexpected_callback],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=""
+  )
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      name="nonexistent_function", args={}
+                  )
+              )
+          ]
+      ),
+  )
+
+  result_event = await handle_function_calls_live(
+      invocation_context, event, {tool.name: tool}
+  )
+
+  assert result_event is not None
+  assert result_event.content.parts[0].function_response.response == {}
+  unexpected_callback.assert_not_called()

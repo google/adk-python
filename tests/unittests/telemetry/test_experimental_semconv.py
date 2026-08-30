@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from google.adk.dependencies._mcp import Tool as McpTool
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.telemetry._experimental_semconv import set_operation_details_attributes_from_request
@@ -229,6 +230,44 @@ def test_request_attributes_describe_function_tools_with_parameters():
       'parameters': {
           'type': 'OBJECT',
           'properties': {'city': {'type': 'STRING'}},
+          'required': ['city'],
+      },
+      'type': 'function',
+  }]
+
+
+def test_request_attributes_describe_a_raw_mcp_tool():
+  """A caller bypassing ADK's tool pipeline can hand genai a raw MCP tool.
+
+  Recognizing it means asking `sys.modules` whether the MCP SDK is loaded, so
+  the SDK's name has to be the one the dependencies seam resolves. Get that
+  wrong and every MCP tool is reported as an unserializable one instead.
+  """
+  llm_request = LlmRequest(
+      model='some-model',
+      config=types.GenerateContentConfig(
+          tools=[
+              McpTool(
+                  name='get_weather',
+                  description='Gets the weather.',
+                  inputSchema={
+                      'type': 'object',
+                      'properties': {'city': {'type': 'string'}},
+                      'required': ['city'],
+                  },
+              )
+          ]
+      ),
+  )
+
+  attributes = _request_attributes(llm_request)
+
+  assert attributes[GEN_AI_TOOL_DEFINITIONS] == [{
+      'name': 'get_weather',
+      'description': 'Gets the weather.',
+      'parameters': {
+          'type': 'object',
+          'properties': {'city': {'type': 'string'}},
           'required': ['city'],
       },
       'type': 'function',

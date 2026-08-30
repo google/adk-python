@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from typing import Any
+from unittest import mock
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.tools.base_tool import BaseTool
@@ -369,6 +370,42 @@ def test_on_tool_error_callback_tool_not_found_modify_tool_response():
       ),
       ('root_agent', 'response1'),
   ]
+
+
+def test_on_tool_error_callback_stops_on_empty_dict():
+  """Test that an empty error recovery response stops the callback chain."""
+
+  def empty_response_callback(tool, args, tool_context, error):
+    return {}
+
+  unexpected_callback = mock.Mock(
+      side_effect=AssertionError('callback chain should have stopped')
+  )
+  responses = [
+      types.Part.from_function_call(name='missing_tool', args={}),
+      'response1',
+  ]
+  agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(responses=responses),
+      on_tool_error_callback=[empty_response_callback, unexpected_callback],
+      tools=[simple_function],
+  )
+
+  events = testing_utils.InMemoryRunner(agent).run('test')
+
+  assert testing_utils.simplify_events(events) == [
+      (
+          'root_agent',
+          Part.from_function_call(name='missing_tool', args={}),
+      ),
+      (
+          'root_agent',
+          Part.from_function_response(name='missing_tool', response={}),
+      ),
+      ('root_agent', 'response1'),
+  ]
+  unexpected_callback.assert_not_called()
 
 
 async def test_on_tool_error_callback_tool_error_noop():
