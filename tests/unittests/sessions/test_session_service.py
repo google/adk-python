@@ -46,6 +46,7 @@ from sqlalchemy import select
 from sqlalchemy import text
 from sqlalchemy import update
 from sqlalchemy.exc import ArgumentError
+from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -2799,6 +2800,7 @@ async def test_database_session_service_requires_one_argument():
         RuntimeError('boom'),
         ArgumentError('bad argument'),
         ImportError('no driver'),
+        InvalidRequestError('not an async driver'),
     ],
 )
 def test_database_session_service_engine_error_hides_password(raised_error):
@@ -2833,6 +2835,16 @@ def test_database_session_service_malformed_url_reports_usable_error():
   assert 'sup3r-s3cret' not in message
   assert 'Invalid database URL format or argument' in message
   assert isinstance(exc_info.value.__cause__, ArgumentError)
+
+
+def test_database_session_service_sync_driver_url_names_async_driver():
+  """A synchronous URL is the common mistake, so name the driver that works."""
+  with pytest.raises(ValueError) as exc_info:
+    DatabaseSessionService('sqlite:///sessions.db')
+
+  message = str(exc_info.value)
+  assert 'synchronous' in message
+  assert 'sqlite+aiosqlite' in message
 
 
 @pytest.mark.asyncio
