@@ -21,6 +21,7 @@ import logging
 from typing import AsyncGenerator
 from typing import ClassVar
 from typing import Type
+import warnings
 
 from typing_extensions import deprecated
 from typing_extensions import override
@@ -38,7 +39,13 @@ from .invocation_context import InvocationContext
 from .llm_agent import LlmAgent
 from .llm_agent import ToolUnion
 from .readonly_context import ReadonlyContext
-from .sequential_agent_config import SequentialAgentConfig
+
+with warnings.catch_warnings():
+  # SequentialAgentConfig subclasses the deprecated BaseAgentConfig purely as
+  # an internal implementation detail, so this import alone should not warn
+  # applications that never touch the deprecated Agent Config APIs.
+  warnings.simplefilter('ignore', DeprecationWarning)
+  from .sequential_agent_config import SequentialAgentConfig
 
 logger = logging.getLogger('google_adk.' + __name__)
 
