@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from typing import Any
+from unittest import mock
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.tools.base_tool import BaseTool
@@ -302,8 +303,8 @@ def test_after_tool_callback_modify_tool_response():
   ]
 
 
-async def test_on_tool_error_callback_tool_not_found_noop():
-  """Test that the on_tool_error_callback is a no-op when the tool is not found."""
+def test_on_tool_error_callback_tool_not_found_noop():
+  """Test that a no-op on_tool_error_callback keeps the default error response."""
   responses = [
       types.Part.from_function_call(
           name='nonexistent_function',
@@ -320,8 +321,15 @@ async def test_on_tool_error_callback_tool_not_found_noop():
   )
 
   runner = testing_utils.InMemoryRunner(agent)
-  with pytest.raises(ValueError):
-    await runner.run_async('test')
+  events = runner.run('test')
+
+  assert testing_utils.simplify_events(events)[-1] == (
+      'root_agent',
+      'response1',
+  )
+  function_response = events[1].content.parts[0].function_response
+  assert function_response.name == 'nonexistent_function'
+  assert 'nonexistent_function' in function_response.response['error']
 
 
 def test_on_tool_error_callback_tool_not_found_modify_tool_response():
@@ -362,6 +370,42 @@ def test_on_tool_error_callback_tool_not_found_modify_tool_response():
       ),
       ('root_agent', 'response1'),
   ]
+
+
+def test_on_tool_error_callback_stops_on_empty_dict():
+  """Test that an empty error recovery response stops the callback chain."""
+
+  def empty_response_callback(tool, args, tool_context, error):
+    return {}
+
+  unexpected_callback = mock.Mock(
+      side_effect=AssertionError('callback chain should have stopped')
+  )
+  responses = [
+      types.Part.from_function_call(name='missing_tool', args={}),
+      'response1',
+  ]
+  agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(responses=responses),
+      on_tool_error_callback=[empty_response_callback, unexpected_callback],
+      tools=[simple_function],
+  )
+
+  events = testing_utils.InMemoryRunner(agent).run('test')
+
+  assert testing_utils.simplify_events(events) == [
+      (
+          'root_agent',
+          Part.from_function_call(name='missing_tool', args={}),
+      ),
+      (
+          'root_agent',
+          Part.from_function_response(name='missing_tool', response={}),
+      ),
+      ('root_agent', 'response1'),
+  ]
+  unexpected_callback.assert_not_called()
 
 
 async def test_on_tool_error_callback_tool_error_noop():

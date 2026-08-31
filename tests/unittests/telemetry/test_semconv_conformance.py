@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -38,6 +39,9 @@ from .functional._recording import FunctionalTestCase
 from .functional_node_test_cases import ALL_NODE_CASES
 from .functional_test_cases import ALL_CASES
 from .functional_test_cases import MCP_CASE
+
+if TYPE_CHECKING:
+  from opentelemetry.util.types import AttributeValue
 
 # Every recorded case, so a property is asserted over the whole corpus rather
 # than the one scenario a test file happens to drive.
@@ -54,6 +58,31 @@ _OPERATION_BY_METRIC: dict[str, str] = {
     "gen_ai.invoke_agent.inference_calls": "invoke_agent",
     "gen_ai.invoke_agent.tool_calls": "invoke_agent",
     "gen_ai.invoke_workflow.duration": "invoke_workflow",
+    "adk.experimental.skill.script.executions": "execute_tool",
+    # Token spend summed over the calls one agent invocation made, so these
+    # cover the same `invoke_agent` operation its duration does.
+    "adk.experimental.invoke_agent.input_tokens": "invoke_agent",
+    "adk.experimental.invoke_agent.output_tokens": "invoke_agent",
+    "adk.experimental.invoke_agent.total_tokens": "invoke_agent",
+    "adk.experimental.invoke_agent.cache_read.input_tokens": "invoke_agent",
+    "adk.experimental.invoke_agent.reasoning.output_tokens": "invoke_agent",
+    "adk.experimental.invoke_agent.tool.input_tokens": "invoke_agent",
+    # The same spend summed over a whole workflow, so these cover the
+    # `invoke_workflow` operation its duration covers.
+    "adk.experimental.invoke_workflow.input_tokens": "invoke_workflow",
+    "adk.experimental.invoke_workflow.output_tokens": "invoke_workflow",
+    "adk.experimental.invoke_workflow.total_tokens": "invoke_workflow",
+    "adk.experimental.invoke_workflow.cache_read.input_tokens": (
+        "invoke_workflow"
+    ),
+    "adk.experimental.invoke_workflow.reasoning.output_tokens": (
+        "invoke_workflow"
+    ),
+    "adk.experimental.invoke_workflow.tool.input_tokens": "invoke_workflow",
+    # The per-agent call counts summed over a whole workflow, so these cover
+    # `invoke_workflow` just as the token totals beside them do.
+    "adk.experimental.invoke_workflow.inference_calls": "invoke_workflow",
+    "adk.experimental.invoke_workflow.tool_calls": "invoke_workflow",
 }
 
 # Attributes that split a histogram into series rather than state a fact about
@@ -62,6 +91,15 @@ _METRIC_ONLY_DIMENSIONS: dict[str, str] = {
     "gen_ai.token.type": (
         "one series per direction, while a span reports both directions at"
         " once under gen_ai.usage.*"
+    ),
+    "adk.experimental.skill.script.ended_with_error": (
+        "too many possible exit codes for metrics, but span does report"
+        " exit code"
+    ),
+    "adk.experimental.root_agent.name": (
+        "one series per app, so a whole app's spend can be read without"
+        " summing its workflows; the span names the workflow it covers, not"
+        " the app the runner was built for"
     ),
 }
 
@@ -78,7 +116,17 @@ _SHARED_FACTS: frozenset[str] = frozenset({
     "gen_ai.tool.type",
     "gen_ai.workflow.name",
     "gen_ai.workflow.nested",
+    "adk.experimental.skill.name",
+    "adk.experimental.skill.script.path",
 })
+
+# The attributes that have reduced cardinality in the metrics, and so their
+# values may differ from the span. If so, they will have one of the values
+# on the list.
+_REDUCED_CARDINALITY: dict[str, list[AttributeValue]] = {
+    "adk.experimental.skill.name": ["<hallucinated>"],
+    "adk.experimental.skill.script.path": ["<hallucinated>"],
+}
 
 # The facts the metrics record and the spans still do not.
 _FACTS_MISSING_FROM_SPANS: dict[str, str] = {
@@ -137,6 +185,7 @@ def _spans_covering(
       for span in spans
       if all(
           span.attributes[key] == value
+          or value in _REDUCED_CARDINALITY.get(key, [])
           for key, value in point.attributes.items()
           if key in span.attributes
       )
@@ -203,7 +252,11 @@ def test_span_records_the_facts_its_metric_records(fact: str) -> None:
         if fact not in point.attributes:
           continue
         for span in _spans_covering(point, spans.get(operation, [])):
-          if span.attributes.get(fact) != point.attributes[fact]:
+          if span.attributes.get(fact) != point.attributes[
+              fact
+          ] and point.attributes[fact] not in _REDUCED_CARDINALITY.get(
+              fact, []
+          ):
             disagreements.append(
                 f"{_case_id(case)}: {metric} records"
                 f" {fact}={point.attributes[fact]!r}, span {span.name!r}"

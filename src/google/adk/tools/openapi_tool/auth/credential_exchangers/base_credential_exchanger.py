@@ -37,7 +37,7 @@ class BaseAuthCredentialExchanger:
       self,
       auth_scheme: AuthScheme,
       auth_credential: Optional[AuthCredential] = None,
-  ) -> AuthCredential:
+  ) -> Optional[AuthCredential]:
     """Exchanges the provided authentication credential for a usable token/credential.
 
     Args:
@@ -45,7 +45,8 @@ class BaseAuthCredentialExchanger:
         auth_credential: The authentication credential.
 
     Returns:
-        An updated AuthCredential object containing the fetched credential.
+        An updated AuthCredential object containing the fetched credential, or
+        None when the exchange cannot yet produce a request-ready credential.
         For simple schemes like API key, it may return the original credential
         if no exchange is needed.
 

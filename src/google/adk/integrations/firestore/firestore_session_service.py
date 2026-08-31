@@ -198,11 +198,13 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
 
     session_ref = self._get_sessions_ref(app_name, user_id).document(session_id)
 
-    # Extract state deltas
+    # Extract state deltas. App and user state are written to Firestore
+    # natively, which keeps datetime and other rich types, so only the session
+    # bucket, which is json.dumps'd below, is coerced.
     state_deltas = _session_util.extract_state_delta(initial_state)
     app_state_delta = state_deltas["app"]
     user_state_delta = state_deltas["user"]
-    session_state = state_deltas["session"]
+    session_state = _session_util.make_json_safe_state(state_deltas["session"])
 
     app_ref = self.client.collection(self.app_state_collection).document(
         app_name
@@ -492,6 +494,9 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
         if event.actions and event.actions.state_delta
         else {}
     )
+    # App and user state are written to Firestore natively, so they keep their
+    # rich types; only the session bucket is json.dumps'd, and it is coerced
+    # once below over the whole merged dict.
     state_deltas = _session_util.extract_state_delta(state_delta)
     app_updates = state_deltas["app"]
     user_updates = state_deltas["user"]
@@ -560,6 +565,11 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
             and not k.startswith(State.TEMP_PREFIX)
         }
         session_only_state.update(session_updates)
+        # `session.state` also carries the raw delta merged by the base class
+        # on every earlier append, so the whole merged dict is coerced here.
+        session_only_state = _session_util.make_json_safe_state(
+            session_only_state
+        )
         transaction.update(
             session_ref,
             {

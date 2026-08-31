@@ -210,6 +210,15 @@ def test_cli_create_cmd_invokes_run_cmd(
   assert rec.calls, "cli_create.run_cmd must be called"
 
 
+@pytest.mark.unmute_click
+def test_cli_create_help_shows_type_option() -> None:
+  """`adk create --help` should list the --type option."""
+  runner = CliRunner()
+  result = runner.invoke(cli_tools_click.main, ["create", "--help"])
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert "--type" in result.output
+
+
 def test_cli_telemetry_captures_subcommand_flags(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2603,6 +2612,39 @@ def test_fast_api_common_options_leaves_trigger_sources_none_when_unset() -> (
   assert captured["trigger_sources"] is None
 
 
+def test_fast_api_common_options_trigger_oidc_options() -> None:
+  """OIDC audience and comma-separated service accounts are passed and parsed."""
+  command, captured = _fast_api_command()
+
+  result = CliRunner().invoke(
+      command,
+      [
+          "--trigger_oidc_audience",
+          "https://my-service.run.app",
+          "--trigger_oidc_service_accounts",
+          " a@project.iam , b@project.iam ,",
+      ],
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert captured["trigger_oidc_audience"] == "https://my-service.run.app"
+  assert captured["trigger_oidc_service_accounts"] == [
+      "a@project.iam",
+      "b@project.iam",
+  ]
+
+
+def test_fast_api_common_options_leaves_trigger_oidc_none_when_unset() -> None:
+  """Unset OIDC options stay None."""
+  command, captured = _fast_api_command()
+
+  result = CliRunner().invoke(command, [])
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert captured["trigger_oidc_audience"] is None
+  assert captured["trigger_oidc_service_accounts"] is None
+
+
 def test_fast_api_common_options_verbose_only_overrides_default_log_level() -> (
     None
 ):
@@ -2855,6 +2897,110 @@ def test_cli_conformance_test_forwards_mode_and_report_options(
       "report_dir": os.path.realpath(report_dir),
       "streaming_mode": StreamingMode.SSE,
   }]
+
+
+def test_cli_conformance_test_accepts_multiple_directories(
+    tmp_path: Path, fake_conformance_test
+) -> None:
+  """Every PATHS argument is forwarded to the conformance runner."""
+  first_dir = tmp_path / "cases_one"
+  second_dir = tmp_path / "cases_two"
+  first_dir.mkdir()
+  second_dir.mkdir()
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      ["conformance", "test", str(first_dir), str(second_dir)],
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert fake_conformance_test == [{
+      "test_paths": [
+          Path(os.path.realpath(first_dir)),
+          Path(os.path.realpath(second_dir)),
+      ],
+      "mode": "replay",
+      "generate_report": False,
+      "report_dir": None,
+      "streaming_mode": None,
+  }]
+
+
+def test_cli_conformance_test_forwards_live_mode(
+    tmp_path: Path, fake_conformance_test
+) -> None:
+  """--mode live is propagated to the conformance runner."""
+  case_dir = tmp_path / "cases"
+  case_dir.mkdir()
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      ["conformance", "test", str(case_dir), "--mode", "live"],
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert fake_conformance_test == [{
+      "test_paths": [Path(os.path.realpath(case_dir))],
+      "mode": "live",
+      "generate_report": False,
+      "report_dir": None,
+      "streaming_mode": None,
+  }]
+
+
+def test_cli_conformance_test_forwards_bidi_streaming_mode(
+    tmp_path: Path, fake_conformance_test
+) -> None:
+  """--streaming-mode bidi is parsed to the StreamingMode enum."""
+  case_dir = tmp_path / "cases"
+  case_dir.mkdir()
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      ["conformance", "test", str(case_dir), "--streaming-mode", "bidi"],
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert fake_conformance_test == [{
+      "test_paths": [Path(os.path.realpath(case_dir))],
+      "mode": "replay",
+      "generate_report": False,
+      "report_dir": None,
+      "streaming_mode": StreamingMode.BIDI,
+  }]
+
+
+def test_cli_conformance_test_rejects_invalid_mode(
+    tmp_path: Path,
+) -> None:
+  """An unknown --mode value is rejected by Click before any dispatch."""
+  case_dir = tmp_path / "cases"
+  case_dir.mkdir()
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      ["conformance", "test", str(case_dir), "--mode", "fast"],
+  )
+
+  assert result.exit_code == 2
+  assert "Invalid value for '--mode'" in result.output
+  assert "'fast' is not one of 'replay', 'live'" in result.output
+
+
+def test_cli_conformance_test_rejects_invalid_streaming_mode(
+    tmp_path: Path,
+) -> None:
+  """An unknown --streaming-mode value is rejected by Click before dispatch."""
+  case_dir = tmp_path / "cases"
+  case_dir.mkdir()
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      ["conformance", "test", str(case_dir), "--streaming-mode", "eventstream"],
+  )
+
+  assert result.exit_code == 2
+  assert "Invalid value for '--streaming-mode'" in result.output
 
 
 # adk eval_set create

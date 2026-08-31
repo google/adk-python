@@ -171,6 +171,25 @@ def test_execute_code_reports_timeout_alongside_stderr(mock_docker):
   assert 'timed out after 7 seconds' in result.stderr
 
 
+@mock.patch('google.adk.code_executors.container_code_executor.docker')
+@pytest.mark.parametrize('exit_code', [0, 1, 42])
+def test_execute_code_reports_the_exit_code(mock_docker, exit_code):
+  """The status the container exec returned is passed through verbatim."""
+  client = _mock_docker_client()
+  mock_docker.from_env.return_value = client
+  executor = ContainerCodeExecutor(image='test-image')
+  container = client.containers.run.return_value
+  container.exec_run.return_value = mock.MagicMock(
+      exit_code=exit_code, output=(b'', b'')
+  )
+
+  result = executor.execute_code(
+      mock.MagicMock(), CodeExecutionInput(code='print(1)')
+  )
+
+  assert result.exit_code == exit_code
+
+
 # The wrapper below is a string of Python that only ever runs inside the
 # container, so the tests run it directly on this host instead: no docker, no
 # daemon, and only snippets written here.

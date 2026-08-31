@@ -400,7 +400,9 @@ def _build_parallel_description(agent: ParallelAgent) -> str:
 
 def _build_loop_description(agent: LoopAgent) -> str:
   """Build description for loop workflow agent."""
-  max_iterations = agent.max_iterations or 'unlimited'
+  max_iterations = (
+      'unlimited' if agent.max_iterations is None else agent.max_iterations
+  )
   descriptions = []
   for i, sub_agent in enumerate(agent.sub_agents):
     sub_description = (
