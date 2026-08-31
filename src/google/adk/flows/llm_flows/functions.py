@@ -583,24 +583,16 @@ async def _execute_single_function_call_async(
       invocation_context, function_call, tool_confirmation
   )
 
+  tool_lookup_error: Exception | None = None
   try:
     tool = _get_tool(function_call, tools_dict)
   except ValueError as tool_error:
     tool = BaseTool(
         name=function_call.name or '<unnamed>', description='Tool not found'
     )
-    error_response = await _run_on_tool_error_callbacks(
-        tool=tool,
-        tool_args=function_args,
-        tool_context=tool_context,
-        error=tool_error,
-    )
-    if error_response is None:
-      logger.warning('%s', tool_error)
-      error_response = _build_tool_not_found_response(tool.name, tools_dict)
-    return __build_response_event(
-        tool, error_response, tool_context, invocation_context
-    )
+    # Defer error handling to _run_with_trace so before-tool callbacks and
+    # telemetry spans can initialize first.
+    tool_lookup_error = tool_error
 
   async def _run_with_trace() -> Event | None:
     nonlocal function_args, detected_error_type
@@ -622,6 +614,23 @@ async def _execute_single_function_call_async(
           tool=tool,
           args=function_args,
           tool_context=tool_context,
+      )
+
+    # Handle tool lookup failure if before-tool callbacks did not override the
+    # response.
+    if function_response is None and tool_lookup_error is not None:
+      error_response = await _run_on_tool_error_callbacks(
+          tool=tool,
+          tool_args=function_args,
+          tool_context=tool_context,
+          error=tool_lookup_error,
+      )
+      if error_response is None:
+        logger.warning('%s', tool_lookup_error)
+        error_response = _build_tool_not_found_response(tool.name, tools_dict)
+      detected_error_type = type(tool_lookup_error).__name__
+      return __build_response_event(
+          tool, error_response, tool_context, invocation_context
       )
 
     # Step 3: Otherwise, proceed calling the tool normally.
@@ -821,24 +830,14 @@ async def _execute_single_function_call_live(
   # so a confirmation-gated tool can only ever be refused, never resumed.
   tool_context = _create_tool_context(invocation_context, function_call)
 
+  tool_lookup_error: Exception | None = None
   try:
     tool = _get_tool(function_call, tools_dict)
   except ValueError as tool_error:
     tool = BaseTool(
         name=function_call.name or '<unnamed>', description='Tool not found'
     )
-    error_response = await _run_on_tool_error_callbacks(
-        tool=tool,
-        tool_args=function_args,
-        tool_context=tool_context,
-        error=tool_error,
-    )
-    if error_response is None:
-      logger.warning('%s', tool_error)
-      error_response = _build_tool_not_found_response(tool.name, tools_dict)
-    return __build_response_event(
-        tool, error_response, tool_context, invocation_context
-    )
+    tool_lookup_error = tool_error
 
   async def _run_with_trace() -> Event | None:
     """Executes the tool with full lifecycle management and telemetry.
@@ -874,6 +873,23 @@ async def _execute_single_function_call_live(
           tool=tool,
           args=function_args,
           tool_context=tool_context,
+      )
+
+    # Handle tool lookup failure if before-tool callbacks did not override the
+    # response.
+    if function_response is None and tool_lookup_error is not None:
+      error_response = await _run_on_tool_error_callbacks(
+          tool=tool,
+          tool_args=function_args,
+          tool_context=tool_context,
+          error=tool_lookup_error,
+      )
+      if error_response is None:
+        logger.warning('%s', tool_lookup_error)
+        error_response = _build_tool_not_found_response(tool.name, tools_dict)
+      detected_error_type = type(tool_lookup_error).__name__
+      return __build_response_event(
+          tool, error_response, tool_context, invocation_context
       )
 
     # Step 3: Otherwise, proceed calling the tool normally.
