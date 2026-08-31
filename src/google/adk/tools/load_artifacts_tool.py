@@ -295,6 +295,10 @@ ProcessArtifactCallback: TypeAlias = Callable[
     [types.Part, str],
     types.Part | None | Awaitable[types.Part | None],
 ]
+ProcessArtifactNamesCallback: TypeAlias = Callable[
+    [list[str]],
+    list[str] | Awaitable[list[str]],
+]
 
 
 class LoadArtifactsTool(BaseTool):
@@ -304,6 +308,7 @@ class LoadArtifactsTool(BaseTool):
       self,
       *,
       process_artifact: ProcessArtifactCallback | None = None,
+      process_artifact_names: ProcessArtifactNamesCallback | None = None,
       enable_spreadsheet_parsing: bool = False,
   ):
     """Initializes the tool.
@@ -315,11 +320,17 @@ class LoadArtifactsTool(BaseTool):
         filtered before being added to the LLM request. If `None` (default), the
         built-in safety conversion (`as_safe_part_for_llm`) is used to convert
         unsupported formats (e.g., extracting text from DOCX/CSV/JSON/plain text
-        or replacing binary data with safe placeholder descriptions). If a
-        custom function is supplied, it bypasses default safety conversions;
+        or replacing binary data with safe placeholder descriptions). If a custom
+        function is supplied, it bypasses default safety conversions;
         returning `None` skips the artifact so it is omitted from the request.
         If a custom callback raises an exception, the error is logged and the
         artifact is skipped.
+      process_artifact_names: An optional sync or async callable with signature
+        `(artifact_names: list[str]) -> list[str]`. The returned names are
+        exposed to the LLM and are the only names the tool will load. This can
+        be used to hide artifacts that are intended only for control code. If
+        the callback raises an exception, the error is logged and no artifacts
+        are exposed for the request.
       enable_spreadsheet_parsing: Whether to enable spreadsheet parsing
         files (e.g., .xlsx, .xls) into text. Defaults to False.
     """
@@ -331,6 +342,9 @@ NOTE: Call when you need access to artifacts (for example, uploads saved by the
 web UI)."""),
     )
     self._process_artifact: ProcessArtifactCallback | None = process_artifact
+    self._process_artifact_names: ProcessArtifactNamesCallback | None = (
+        process_artifact_names
+    )
     self._enable_spreadsheet_parsing: bool = enable_spreadsheet_parsing
 
   def _get_declaration(self) -> types.FunctionDeclaration | None:
@@ -369,6 +383,11 @@ web UI)."""),
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
     artifact_names: list[str] = args.get('artifact_names', [])
+    if self._process_artifact_names is not None:
+      allowed_artifact_names = await self._get_artifact_names(tool_context)
+      artifact_names = [
+          name for name in artifact_names if name in allowed_artifact_names
+      ]
     return {
         'artifact_names': artifact_names,
         'status': (
@@ -376,6 +395,20 @@ web UI)."""),
             ' these artifacts, call load_artifacts tool again.'
         ),
     }
+
+  async def _get_artifact_names(self, tool_context: ToolContext) -> list[str]:
+    artifact_names = await tool_context.list_artifacts()
+    if self._process_artifact_names is None:
+      return artifact_names
+
+    try:
+      processed_names = self._process_artifact_names(list(artifact_names))
+      if inspect.isawaitable(processed_names):
+        processed_names = await processed_names
+      return processed_names
+    except Exception:  # pylint: disable=broad-exception-caught
+      logger.exception('Failed to process artifact names, skipping.')
+      return []
 
   @override
   async def process_llm_request(
@@ -392,7 +425,7 @@ web UI)."""),
   async def _append_artifacts_to_llm_request(
       self, *, tool_context: ToolContext, llm_request: LlmRequest
   ):
-    artifact_names = await tool_context.list_artifacts()
+    artifact_names = await self._get_artifact_names(tool_context)
     if not artifact_names:
       return
 
@@ -413,8 +446,14 @@ web UI)."""),
       function_response = llm_request.contents[-1].parts[0].function_response
       if function_response and function_response.name == 'load_artifacts':
         response = function_response.response or {}
-        artifact_names = response.get('artifact_names', [])
-        for artifact_name in artifact_names:
+        requested_artifact_names = response.get('artifact_names', [])
+        if self._process_artifact_names is not None:
+          requested_artifact_names = [
+              name
+              for name in requested_artifact_names
+              if name in artifact_names
+          ]
+        for artifact_name in requested_artifact_names:
           # Try session-scoped first (default behavior)
           artifact = await tool_context.load_artifact(artifact_name)
 

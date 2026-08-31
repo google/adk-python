@@ -15,6 +15,7 @@
 import base64
 import io
 from typing import Any
+from typing import cast
 from unittest import mock
 import zipfile
 
@@ -24,6 +25,7 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.tools.load_artifacts_tool import _maybe_base64_to_bytes
 from google.adk.tools.load_artifacts_tool import load_artifacts_tool
 from google.adk.tools.load_artifacts_tool import LoadArtifactsTool
+from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 import pandas as pd
 import pytest
@@ -474,6 +476,80 @@ async def test_load_artifacts_registers_dynamic_instructions():
   assert 'You have a list of artifacts' in llm_request._dynamic_instructions[0]
   assert llm_request.config.system_instruction is None
   assert len(llm_request.contents) == 0
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_hides_filtered_names_and_contents():
+  """Filtered artifacts are omitted from both instructions and LLM contents."""
+  visible_name = 'visible.txt'
+  hidden_name = 'internal.txt'
+
+  def filter_artifact_names(artifact_names: list[str]) -> list[str]:
+    return [name for name in artifact_names if name == visible_name]
+
+  tool = LoadArtifactsTool(process_artifact_names=filter_artifact_names)
+  tool_context = _StubToolContext({
+      visible_name: types.Part.from_text(text='visible content'),
+      hidden_name: types.Part.from_text(text='hidden content'),
+  })
+  tool_response = await tool.run_async(
+      args={'artifact_names': [visible_name, hidden_name]},
+      tool_context=cast(ToolContext, tool_context),
+  )
+  assert tool_response['artifact_names'] == [visible_name]
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response=tool_response,
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  await tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  instruction = llm_request._dynamic_instructions[0]
+  assert visible_name in instruction
+  assert hidden_name not in instruction
+  assert len(llm_request.contents) == 2
+  assert llm_request.contents[-1].parts[0].text == (
+      f'Artifact {visible_name} is:'
+  )
+  assert llm_request.contents[-1].parts[1].text == 'visible content'
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_accepts_async_process_artifact_names():
+  """Async artifact-name callbacks filter names before LLM context assembly."""
+  artifact_names_seen = []
+
+  async def filter_artifact_names(artifact_names: list[str]) -> list[str]:
+    artifact_names_seen.extend(artifact_names)
+    return ['visible.txt']
+
+  tool = LoadArtifactsTool(process_artifact_names=filter_artifact_names)
+  tool_context = _StubToolContext({
+      'visible.txt': types.Part.from_text(text='visible content'),
+      'internal.txt': types.Part.from_text(text='hidden content'),
+  })
+  llm_request = LlmRequest()
+
+  await tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert artifact_names_seen == ['visible.txt', 'internal.txt']
+  assert 'visible.txt' in llm_request._dynamic_instructions[0]
+  assert 'internal.txt' not in llm_request._dynamic_instructions[0]
 
 
 def test_load_artifacts_tool_keyword_only():
