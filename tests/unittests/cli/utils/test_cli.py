@@ -549,3 +549,39 @@ def test_print_event_preserves_non_ascii_in_jsonl(
   assert len(echoed) == 1
   assert "日本語の回答" in echoed[0]
   assert "\\u" not in echoed[0]
+
+
+@pytest.mark.asyncio
+async def test_run_cli_in_memory_flag_sets_memory_service_uri(
+    fake_agent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """run_cli with in_memory=True should configure memory_service_uri='memory://'."""
+  parent_dir, folder_name = fake_agent
+  input_json = {"state": {}, "queries": []}
+  input_path = tmp_path / "in_memory_input.json"
+  input_path.write_text(json.dumps(input_json))
+
+  captured_factory_args: dict[str, Any] = {}
+
+  def _memory_factory(
+      *,
+      base_dir: Path | str,
+      memory_service_uri: str | None = None,
+  ) -> object:
+    captured_factory_args["memory_service_uri"] = memory_service_uri
+    return object()
+
+  monkeypatch.setattr(
+      cli, "create_memory_service_from_options", _memory_factory
+  )
+
+  await cli.run_cli(
+      agent_parent_dir=str(parent_dir),
+      agent_folder_name=folder_name,
+      input_file=str(input_path),
+      saved_session_file=None,
+      save_session=False,
+      in_memory=True,
+  )
+
+  assert captured_factory_args["memory_service_uri"] == "memory://"
