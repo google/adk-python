@@ -394,8 +394,14 @@ def _model_dump_to_tool_definition(
       if isinstance(dumped_description, str)
       else _string_attribute(tool, 'description')
   )
+  # MCP SDK 1.x names the schema field `inputSchema` and 2.x names it
+  # `input_schema`, so a dumped MCP tool spells it either way. Missing the
+  # spelling in use costs no error and no log line -- the tool is still
+  # reported, just with no parameters.
   parameters = _clean_parameters(
-      model_dump.get('parameters') or model_dump.get('inputSchema')
+      model_dump.get('parameters')
+      or model_dump.get('inputSchema')
+      or model_dump.get('input_schema')
   )
   return FunctionToolDefinition(
       name=name,
