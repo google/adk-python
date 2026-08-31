@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import abc
+import inspect
 import logging
 from typing import Any
 from typing import AsyncGenerator
@@ -241,6 +242,9 @@ class BaseAgent(BaseNode, abc.ABC):
   ) -> SelfAgent:
     """Creates a copy of this agent instance.
 
+    A callback that is a method of this agent is rebound to the copy, so it
+    acts on the copy rather than on this agent.
+
     Args:
       update: Optional mapping of new values for the fields of the cloned agent.
         The keys of the mapping are the names of the fields to be updated, and
@@ -269,6 +273,15 @@ class BaseAgent(BaseNode, abc.ABC):
 
     cloned_agent = self.model_copy(update=update)
 
+    # A callback registered as one of this agent's own methods (e.g.
+    # before_agent_callback=self._handler) keeps mutating this agent while the
+    # clone runs, so whatever it sets never reaches the clone. Methods bound to
+    # any other object are left alone.
+    def _rebind(value: object) -> object:
+      if inspect.ismethod(value) and value.__self__ is self:
+        return value.__func__.__get__(cloned_agent)
+      return value
+
     # If any field is stored as list and not provided in the update, need to
     # shallow copy it for the cloned agent to avoid sharing the same list object
     # with the original agent.
@@ -279,7 +292,9 @@ class BaseAgent(BaseNode, abc.ABC):
         continue
       field = getattr(cloned_agent, field_name)
       if isinstance(field, list):
-        setattr(cloned_agent, field_name, field.copy())
+        setattr(cloned_agent, field_name, [_rebind(item) for item in field])
+      elif inspect.ismethod(field):
+        setattr(cloned_agent, field_name, _rebind(field))
 
     if update is None or 'sub_agents' not in update:
       # If `sub_agents` is not provided in the update, need to recursively clone
