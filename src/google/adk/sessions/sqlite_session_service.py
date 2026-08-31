@@ -242,21 +242,26 @@ class SqliteSessionService(BaseSessionService):
       storage_user_state = await self._get_user_state(db, app_name, user_id)
 
       # Store the session
-      await db.execute(
-          """
-          INSERT INTO sessions (app_name, user_id, id, state, create_time, update_time)
-          VALUES (?, ?, ?, ?, ?, ?)
-          """,
-          (
-              app_name,
-              user_id,
-              session_id,
-              json.dumps(session_state),
-              now,
-              now,
-          ),
-      )
-      await db.commit()
+      try:
+        await db.execute(
+            """
+            INSERT INTO sessions (app_name, user_id, id, state, create_time, update_time)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                app_name,
+                user_id,
+                session_id,
+                json.dumps(session_state),
+                now,
+                now,
+            ),
+        )
+        await db.commit()
+      except (sqlite3.IntegrityError, aiosqlite.IntegrityError):
+        raise AlreadyExistsError(
+            f"Session with id {session_id} already exists."
+        )
 
       # Merge states for response
       merged_state = _merge_state(
