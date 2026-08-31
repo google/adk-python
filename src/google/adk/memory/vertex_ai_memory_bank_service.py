@@ -621,9 +621,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
     if not _memory_belongs_to_scope(
         existing, app_name=app_name, user_id=user_id
     ):
-      raise ValueError(
-          f'Memory {memory_id} does not belong to user {user_id}.'
-      )
+      raise ValueError(f'Memory {memory_id} does not belong to user {user_id}.')
 
     try:
       await api_client.agent_engines.memories.delete(name=memory_resource_name)

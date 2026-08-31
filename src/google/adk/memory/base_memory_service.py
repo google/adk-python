@@ -154,7 +154,7 @@ class BaseMemoryService(ABC):
         returned by ``search_memory`` or supplied to ``add_memory``.
     """
     raise NotImplementedError(
-        'This memory service does not support deleting memories.'
+        "This memory service does not support deleting memories."
     )
 
   async def delete_memories(self, *, app_name: str, user_id: str) -> None:
@@ -168,5 +168,5 @@ class BaseMemoryService(ABC):
       user_id: The user ID for memory scope.
     """
     raise NotImplementedError(
-        'This memory service does not support deleting memories.'
+        "This memory service does not support deleting memories."
     )

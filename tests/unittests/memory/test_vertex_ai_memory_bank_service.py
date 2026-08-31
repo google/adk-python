@@ -1455,9 +1455,7 @@ async def test_delete_memory_accepts_full_resource_name(mock_vertexai_client):
   await memory_service.delete_memory(
       app_name=MOCK_APP_NAME,
       user_id=MOCK_USER_ID,
-      memory_id=(
-          'projects/p/locations/l/reasoningEngines/123/memories/mem-abc'
-      ),
+      memory_id='projects/p/locations/l/reasoningEngines/123/memories/mem-abc',
   )
 
   mock_vertexai_client.agent_engines.memories.delete.assert_awaited_once_with(
