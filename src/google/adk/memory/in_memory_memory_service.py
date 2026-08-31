@@ -146,6 +146,7 @@ class InMemoryMemoryService(BaseMemoryService):
                   content=event.content,
                   author=event.author,
                   timestamp=_utils.format_timestamp(event.timestamp),
+                  id=event.id or None,
               ),
           ))
 
@@ -158,3 +159,25 @@ class InMemoryMemoryService(BaseMemoryService):
     return SearchMemoryResponse(
         memories=[memory for _, memory in scored_memories[:_MAX_SEARCH_RESULTS]]
     )
+
+  @override
+  async def delete_memory(
+      self, *, app_name: str, user_id: str, memory_id: str
+  ) -> None:
+    user_key = _user_key(app_name, user_id)
+
+    with self._lock:
+      session_events = self._session_events.get(user_key)
+      if not session_events:
+        return
+      for session_id, events in session_events.items():
+        remaining = [event for event in events if event.id != memory_id]
+        if len(remaining) != len(events):
+          session_events[session_id] = remaining
+
+  @override
+  async def delete_memories(self, *, app_name: str, user_id: str) -> None:
+    user_key = _user_key(app_name, user_id)
+
+    with self._lock:
+      self._session_events.pop(user_key, None)

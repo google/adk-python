@@ -134,6 +134,22 @@ holding `memories`, a list of `MemoryEntry`. Each entry carries `content` (a
 `custom_metadata`. Memory is scoped by the `(app_name, user_id)` pair, so one
 user never sees another's memories.
 
+### Deletion
+
+Two optional methods remove memories. A service that does not support them
+raises `NotImplementedError`. A missing memory, or a user with nothing stored,
+is a no-op.
+
+*   `delete_memory(*, app_name, user_id, memory_id)` deletes one entry by the
+    `id` returned on `MemoryEntry`.
+*   `delete_memories(*, app_name, user_id)` deletes every memory stored for
+    that user.
+
+`InMemoryMemoryService` and `VertexAiMemoryBankService` implement both.
+`VertexAiMemoryBankService.delete_memory` wraps Memory Bank
+`memories.delete` after checking the memory belongs to the requested
+`(app_name, user_id)` scope.
+
 ### From inside an agent
 
 `Context` — what tools and callbacks receive — exposes the same operations

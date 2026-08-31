@@ -138,3 +138,35 @@ class BaseMemoryService(ABC):
     Returns:
         A SearchMemoryResponse containing the matching memories.
     """
+
+  async def delete_memory(
+      self, *, app_name: str, user_id: str, memory_id: str
+  ) -> None:
+    """Deletes a single memory entry by id.
+
+    Missing memories are a no-op. Implementations that cannot delete by id
+    raise ``NotImplementedError``.
+
+    Args:
+      app_name: The application name for memory scope.
+      user_id: The user ID for memory scope.
+      memory_id: The id of the memory to delete. This is the ``MemoryEntry.id``
+        returned by ``search_memory`` or supplied to ``add_memory``.
+    """
+    raise NotImplementedError(
+        'This memory service does not support deleting memories.'
+    )
+
+  async def delete_memories(self, *, app_name: str, user_id: str) -> None:
+    """Deletes every memory stored for the given app and user.
+
+    A user with no stored memories is a no-op. Implementations that cannot
+    delete memories raise ``NotImplementedError``.
+
+    Args:
+      app_name: The application name for memory scope.
+      user_id: The user ID for memory scope.
+    """
+    raise NotImplementedError(
+        'This memory service does not support deleting memories.'
+    )

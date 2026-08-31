@@ -27,6 +27,7 @@ from google.adk.memory.vertex_ai_memory_bank_service import VertexAiMemoryBankSe
 from google.adk.sessions.session import Session
 from google.auth.credentials import Credentials
 from google.genai import types
+from google.genai.errors import ClientError
 import pytest
 from vertexai import types as vertex_types
 
@@ -285,6 +286,8 @@ def mock_vertexai_client():
         mock.AsyncMock()
     )
     mock_async_client.agent_engines.memories.ingest_events = mock.AsyncMock()
+    mock_async_client.agent_engines.memories.get = mock.AsyncMock()
+    mock_async_client.agent_engines.memories.delete = mock.AsyncMock()
 
     mock_client = mock.MagicMock()
     mock_client.aio = mock_async_client
@@ -1177,6 +1180,30 @@ async def test_search_memory(mock_vertexai_client):
 
 
 @pytest.mark.asyncio
+async def test_search_memory_populates_id_from_resource_name(
+    mock_vertexai_client,
+):
+  """search_memory exposes the Memory Bank memory id for later delete."""
+  retrieved_memory = mock.MagicMock()
+  retrieved_memory.memory.fact = 'test_content'
+  retrieved_memory.memory.update_time = datetime.datetime(2024, 1, 1)
+  retrieved_memory.memory.name = (
+      'projects/p/locations/l/reasoningEngines/123/memories/mem-abc'
+  )
+
+  mock_vertexai_client.agent_engines.memories.retrieve.return_value = (
+      _AsyncListIterator([retrieved_memory])
+  )
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='query'
+  )
+
+  assert result.memories[0].id == 'mem-abc'
+
+
+@pytest.mark.asyncio
 async def test_search_memory_empty_results(mock_vertexai_client):
   mock_vertexai_client.agent_engines.memories.retrieve.return_value = (
       _AsyncListIterator([])
@@ -1392,3 +1419,158 @@ async def test_search_memory_returns_partial_results_on_iterator_error(
 
   assert len(result.memories) == 1
   assert result.memories[0].content.parts[0].text == 'good fact'
+
+
+def _owned_memory(*, name: str = 'reasoningEngines/123/memories/mem-abc'):
+  memory = mock.MagicMock()
+  memory.name = name
+  memory.scope = {'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID}
+  return memory
+
+
+@pytest.mark.asyncio
+async def test_delete_memory_calls_vertex_delete(mock_vertexai_client):
+  """delete_memory wraps memories.delete after confirming ownership."""
+  mock_vertexai_client.agent_engines.memories.get.return_value = _owned_memory()
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  await memory_service.delete_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, memory_id='mem-abc'
+  )
+
+  mock_vertexai_client.agent_engines.memories.get.assert_awaited_once_with(
+      name='reasoningEngines/123/memories/mem-abc'
+  )
+  mock_vertexai_client.agent_engines.memories.delete.assert_awaited_once_with(
+      name='reasoningEngines/123/memories/mem-abc'
+  )
+
+
+@pytest.mark.asyncio
+async def test_delete_memory_accepts_full_resource_name(mock_vertexai_client):
+  """A full Memory Bank resource name is reduced to the configured engine."""
+  mock_vertexai_client.agent_engines.memories.get.return_value = _owned_memory()
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  await memory_service.delete_memory(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      memory_id=(
+          'projects/p/locations/l/reasoningEngines/123/memories/mem-abc'
+      ),
+  )
+
+  mock_vertexai_client.agent_engines.memories.delete.assert_awaited_once_with(
+      name='reasoningEngines/123/memories/mem-abc'
+  )
+
+
+@pytest.mark.asyncio
+async def test_delete_memory_missing_is_a_noop(mock_vertexai_client):
+  """A 404 from memories.get is treated as already deleted."""
+  mock_vertexai_client.agent_engines.memories.get.side_effect = ClientError(
+      code=404,
+      response_json={'message': 'Memory not found.'},
+      response=None,
+  )
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  await memory_service.delete_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, memory_id='missing'
+  )
+
+  mock_vertexai_client.agent_engines.memories.delete.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_memory_rejects_other_users_memory(mock_vertexai_client):
+  """delete_memory must not delete a memory owned by a different user."""
+  other_users_memory = _owned_memory()
+  other_users_memory.scope = {
+      'app_name': MOCK_APP_NAME,
+      'user_id': 'someone-else',
+  }
+  mock_vertexai_client.agent_engines.memories.get.return_value = (
+      other_users_memory
+  )
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  with pytest.raises(ValueError, match='does not belong to user'):
+    await memory_service.delete_memory(
+        app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, memory_id='mem-abc'
+    )
+
+  mock_vertexai_client.agent_engines.memories.delete.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_memory_rejects_invalid_memory_id(mock_vertexai_client):
+  """Memory ids that could escape the resource path are rejected."""
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  with pytest.raises(ValueError, match='Invalid memory_id'):
+    await memory_service.delete_memory(
+        app_name=MOCK_APP_NAME,
+        user_id=MOCK_USER_ID,
+        memory_id='../escape',
+    )
+
+  mock_vertexai_client.agent_engines.memories.get.assert_not_called()
+  mock_vertexai_client.agent_engines.memories.delete.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_memory_rejects_engine_mismatch(mock_vertexai_client):
+  """A resource name for another reasoning engine is rejected."""
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  with pytest.raises(ValueError, match='Memory resource name mismatch'):
+    await memory_service.delete_memory(
+        app_name=MOCK_APP_NAME,
+        user_id=MOCK_USER_ID,
+        memory_id='reasoningEngines/999/memories/mem-abc',
+    )
+
+  mock_vertexai_client.agent_engines.memories.get.assert_not_called()
+  mock_vertexai_client.agent_engines.memories.delete.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_memories_deletes_each_scoped_memory(mock_vertexai_client):
+  """delete_memories lists the user scope then wraps memories.delete."""
+  first = mock.MagicMock()
+  first.memory = _owned_memory(name='reasoningEngines/123/memories/mem-a')
+  second = mock.MagicMock()
+  second.memory = _owned_memory(name='reasoningEngines/123/memories/mem-b')
+  mock_vertexai_client.agent_engines.memories.retrieve.return_value = (
+      _AsyncListIterator([first, second])
+  )
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  await memory_service.delete_memories(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID
+  )
+
+  mock_vertexai_client.agent_engines.memories.retrieve.assert_awaited_once_with(
+      name='reasoningEngines/123',
+      scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
+  )
+  mock_vertexai_client.agent_engines.memories.delete.assert_has_awaits([
+      mock.call(name='reasoningEngines/123/memories/mem-a'),
+      mock.call(name='reasoningEngines/123/memories/mem-b'),
+  ])
+
+
+@pytest.mark.asyncio
+async def test_delete_memories_empty_scope_is_a_noop(mock_vertexai_client):
+  """A user with no stored memories does not call memories.delete."""
+  mock_vertexai_client.agent_engines.memories.retrieve.return_value = (
+      _AsyncListIterator([])
+  )
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  await memory_service.delete_memories(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID
+  )
+
+  mock_vertexai_client.agent_engines.memories.delete.assert_not_called()

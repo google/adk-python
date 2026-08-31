@@ -259,6 +259,7 @@ async def test_search_memory_simple_match():
   assert len(result.memories) == 1
   assert result.memories[0].content.parts[0].text == 'I like to code in Python.'
   assert result.memories[0].author == 'user'
+  assert result.memories[0].id == 'event-2a'
 
 
 @pytest.mark.asyncio
@@ -362,6 +363,114 @@ async def test_search_memory_does_not_collide_on_slash_in_identifiers():
   )
 
   assert not result.memories
+
+
+@pytest.mark.asyncio
+async def test_delete_memory_removes_entry_from_later_search():
+  """Deleting a memory by id removes it from later search results."""
+  memory_service = InMemoryMemoryService()
+  await memory_service.add_session_to_memory(MOCK_SESSION_1)
+  await memory_service.add_session_to_memory(MOCK_SESSION_2)
+
+  await memory_service.delete_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, memory_id='event-2a'
+  )
+
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='Python'
+  )
+
+  assert not result.memories
+  remaining = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='ADK'
+  )
+  assert len(remaining.memories) == 2
+
+
+@pytest.mark.asyncio
+async def test_delete_memory_missing_id_is_a_noop():
+  """Deleting an unknown memory id does not raise or change stored memories."""
+  memory_service = InMemoryMemoryService()
+  await memory_service.add_session_to_memory(MOCK_SESSION_1)
+
+  await memory_service.delete_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, memory_id='missing-id'
+  )
+
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='ADK'
+  )
+  assert len(result.memories) == 2
+
+
+@pytest.mark.asyncio
+async def test_delete_memory_does_not_remove_other_users_memory():
+  """delete_memory is scoped to the requested user even when ids collide."""
+  memory_service = InMemoryMemoryService()
+  colliding_session = Session(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_OTHER_USER_ID,
+      id='session-collision',
+      last_update_time=3000,
+      events=[
+          Event(
+              id='event-1a',
+              invocation_id='inv-collision',
+              author='user',
+              timestamp=60000,
+              content=types.Content(
+                  parts=[types.Part(text='The ADK is a secret.')]
+              ),
+          ),
+      ],
+  )
+  await memory_service.add_session_to_memory(MOCK_SESSION_1)
+  await memory_service.add_session_to_memory(colliding_session)
+
+  await memory_service.delete_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, memory_id='event-1a'
+  )
+
+  own_result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='ADK'
+  )
+  other_result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_OTHER_USER_ID, query='secret'
+  )
+  assert len(own_result.memories) == 1
+  assert len(other_result.memories) == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_memories_clears_only_the_requested_user():
+  """delete_memories wipes one user and leaves other users untouched."""
+  memory_service = InMemoryMemoryService()
+  await memory_service.add_session_to_memory(MOCK_SESSION_1)
+  await memory_service.add_session_to_memory(MOCK_SESSION_2)
+  await memory_service.add_session_to_memory(MOCK_SESSION_DIFFERENT_USER)
+
+  await memory_service.delete_memories(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID
+  )
+
+  own_result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='ADK Python'
+  )
+  other_result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_OTHER_USER_ID, query='secret'
+  )
+  assert not own_result.memories
+  assert len(other_result.memories) == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_memories_missing_user_is_a_noop():
+  """Deleting memories for a user with none stored does not raise."""
+  memory_service = InMemoryMemoryService()
+
+  await memory_service.delete_memories(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID
+  )
 
 
 # --- Non-Latin language tests ---
