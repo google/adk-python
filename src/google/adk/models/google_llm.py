@@ -732,21 +732,17 @@ def _build_request_log(req: LlmRequest) -> str:
             exclude={
                 'system_instruction': True,
                 'tools': tools_exclusion if req.config.tools else True,
-                # `http_options` carries caller-supplied credentials:
+                # `http_options` is excluded whole, not field by field.
                 # `headers` commonly holds an Authorization bearer token,
-                # and `extra_body` / `*client_args` are free-form
-                # passthroughs that can hold auth material too. None of
-                # it may reach a debug log. Mirrors the same exclusion
-                # applied to trace spans in telemetry/tracing.py.
-                'http_options': {
-                    'httpx_client': True,
-                    'httpx_async_client': True,
-                    'aiohttp_client': True,
-                    'headers': True,
-                    'extra_body': True,
-                    'client_args': True,
-                    'async_client_args': True,
-                },
+                # `extra_body` and the `*client_args` passthroughs can hold
+                # auth material, and `base_url` carries the credential
+                # itself when the caller points at a signed endpoint or an
+                # authenticating proxy. Naming the sensitive fields instead
+                # would also start logging every field the genai SDK adds
+                # later. The live path excludes it the same way; the trace
+                # spans built in telemetry/tracing.py still name the fields
+                # one by one.
+                'http_options': True,
             },
         )
     )

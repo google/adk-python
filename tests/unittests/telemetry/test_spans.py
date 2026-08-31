@@ -35,6 +35,15 @@ from google.adk.telemetry._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_
 from google.adk.telemetry._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_HIT
 from google.adk.telemetry._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_INVOCATIONS_USED
 from google.adk.telemetry._experimental_semconv import _safe_json_serialize_no_whitespaces
+from google.adk.telemetry._stable_semconv import USER_CONTENT_ELIDED
+from google.adk.telemetry.context import ADK_EXPERIMENTAL_TELEMETRY
+from google.adk.telemetry.tracing import _ADK_CAPTURE_MCP_HTTP_BODIES
+from google.adk.telemetry.tracing import _HTTP_REQUEST_BODY_CONTENT
+from google.adk.telemetry.tracing import _HTTP_RESPONSE_BODY_CONTENT
+from google.adk.telemetry.tracing import _OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_REQUEST
+from google.adk.telemetry.tracing import _OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_RESPONSE
+from google.adk.telemetry.tracing import _should_report_mcp_http_exchanges
+from google.adk.telemetry.tracing import _trace_mcp_http_exchange
 from google.adk.telemetry.tracing import _use_extra_generate_content_attributes
 from google.adk.telemetry.tracing import ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS
 from google.adk.telemetry.tracing import GCP_MCP_SERVER_DESTINATION_ID
@@ -58,6 +67,7 @@ from mcp import ClientSession as McpClientSession
 from mcp import ListToolsResult as McpListToolsResult
 from mcp import Tool as McpTool
 from opentelemetry._logs import LogRecord
+from opentelemetry._logs import SeverityNumber
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_AGENT_NAME
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_CONVERSATION_ID
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_INPUT_MESSAGES
@@ -69,7 +79,15 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_SYSTEM_INSTRUCTIONS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_INPUT_TOKENS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_OUTPUT_TOKENS
+from opentelemetry.semconv._incubating.attributes.mcp_attributes import MCP_PROTOCOL_VERSION
+from opentelemetry.semconv._incubating.attributes.mcp_attributes import MCP_SESSION_ID
 from opentelemetry.semconv._incubating.attributes.user_attributes import USER_ID
+from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
+from opentelemetry.semconv.attributes.http_attributes import HTTP_REQUEST_METHOD
+from opentelemetry.semconv.attributes.http_attributes import HTTP_RESPONSE_STATUS_CODE
+from opentelemetry.semconv.attributes.server_attributes import SERVER_ADDRESS
+from opentelemetry.semconv.attributes.server_attributes import SERVER_PORT
+from opentelemetry.semconv.attributes.url_attributes import URL_FULL
 from opentelemetry.trace import StatusCode
 from pydantic import BaseModel
 import pytest
@@ -828,6 +846,176 @@ def test_trace_tool_call_with_dict_response(
   mock_span_fixture.set_attribute.assert_has_calls(
       expected_calls, any_order=True
   )
+
+
+def _trace_mcp_exchange(**overrides):
+  """Reports a plausible MCP exchange, with `overrides` applied."""
+  _trace_mcp_http_exchange(**{
+      'method': 'POST',
+      'url': 'https://mcp.example.com/messages',
+      'server_address': 'mcp.example.com',
+      'server_port': None,
+      'status_code': 200,
+      'mcp_session_id': None,
+      'mcp_protocol_version': None,
+      'request_headers': {'x-req': 'val'},
+      'request_body': '{"method": "tools/call"}',
+      'response_headers': {'content-type': 'application/json'},
+      'response_body': '{"result": {}}',
+      **overrides,
+  })
+
+
+@mock.patch('google.adk.telemetry.tracing.otel_logger')
+def test_trace_mcp_http_exchange_emits_debug_log_record(
+    mock_otel_logger, monkeypatch
+):
+  """Test that an exchange lands as one record with semconv attributes."""
+  monkeypatch.setenv(_ADK_CAPTURE_MCP_HTTP_BODIES, 'true')
+
+  _trace_mcp_exchange(
+      url='https://mcp.example.com:8443/messages?sessionId=REDACTED',
+      server_port=8443,
+      mcp_session_id='sess-1',
+      mcp_protocol_version='2025-06-18',
+  )
+
+  log_record: LogRecord = mock_otel_logger.emit.call_args.args[0]
+  assert (
+      log_record.event_name == 'adk.experimental.mcp.http.client.response.end'
+  )
+  assert log_record.severity_number == SeverityNumber.DEBUG
+  assert log_record.attributes == {
+      HTTP_REQUEST_METHOD: 'POST',
+      URL_FULL: 'https://mcp.example.com:8443/messages?sessionId=REDACTED',
+      SERVER_ADDRESS: 'mcp.example.com',
+      SERVER_PORT: 8443,
+      MCP_SESSION_ID: 'sess-1',
+      MCP_PROTOCOL_VERSION: '2025-06-18',
+      HTTP_RESPONSE_STATUS_CODE: 200,
+  }
+  assert log_record.body == {
+      _HTTP_REQUEST_BODY_CONTENT: '{"method": "tools/call"}',
+      _HTTP_RESPONSE_BODY_CONTENT: '{"result": {}}',
+  }
+
+
+@mock.patch('google.adk.telemetry.tracing.otel_logger')
+def test_trace_mcp_http_exchange_elides_bodies_by_default(
+    mock_otel_logger, monkeypatch
+):
+  """Bodies carry user content, so recording them has to be asked for."""
+  monkeypatch.delenv(_ADK_CAPTURE_MCP_HTTP_BODIES, raising=False)
+
+  _trace_mcp_exchange()
+
+  log_record: LogRecord = mock_otel_logger.emit.call_args.args[0]
+  # The attributes still describe the exchange; only the payload is elided.
+  assert log_record.attributes[HTTP_RESPONSE_STATUS_CODE] == 200
+  assert log_record.body == {
+      _HTTP_REQUEST_BODY_CONTENT: USER_CONTENT_ELIDED,
+      _HTTP_RESPONSE_BODY_CONTENT: USER_CONTENT_ELIDED,
+  }
+  assert SERVER_PORT not in log_record.attributes
+  assert MCP_SESSION_ID not in log_record.attributes
+  assert MCP_PROTOCOL_VERSION not in log_record.attributes
+
+
+@mock.patch('google.adk.telemetry.tracing.otel_logger')
+def test_trace_mcp_http_exchange_records_no_header_unasked(
+    mock_otel_logger, monkeypatch
+):
+  """No header is recorded that the OTel env vars do not name."""
+  monkeypatch.delenv(
+      _OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_REQUEST, raising=False
+  )
+  monkeypatch.delenv(
+      _OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_RESPONSE, raising=False
+  )
+
+  _trace_mcp_exchange(
+      request_headers={'x-req': 'val', 'content-type': 'application/json'}
+  )
+
+  log_record: LogRecord = mock_otel_logger.emit.call_args.args[0]
+  assert not [key for key in log_record.attributes if '.header.' in key]
+
+
+@mock.patch('google.adk.telemetry.tracing.otel_logger')
+def test_trace_mcp_http_exchange_captures_allowlisted_headers(
+    mock_otel_logger, monkeypatch
+):
+  """The OTel httpx env vars are the whole allowlist, regexes included."""
+  monkeypatch.setenv(
+      _OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_REQUEST,
+      'x-req,x-trace-.*',
+  )
+  monkeypatch.setenv(
+      _OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_RESPONSE, 'x-resp'
+  )
+
+  _trace_mcp_exchange(
+      request_headers={
+          'X-Req': 'val',
+          'x-trace-id': 'abc',
+          'x-other': 'dropped',
+          # Allowlisting a credential header still yields only the marker,
+          # because the caller redacts before we ever see it.
+          'authorization': '<redacted>',
+      },
+      response_headers={'x-resp': 'val'},
+  )
+
+  log_record: LogRecord = mock_otel_logger.emit.call_args.args[0]
+  assert log_record.attributes['http.request.header.x-req'] == ['val']
+  assert log_record.attributes['http.request.header.x-trace-id'] == ['abc']
+  assert log_record.attributes['http.response.header.x-resp'] == ['val']
+  assert 'http.request.header.x-other' not in log_record.attributes
+  assert 'http.request.header.authorization' not in log_record.attributes
+
+
+@mock.patch('google.adk.telemetry.tracing.otel_logger')
+def test_trace_mcp_http_exchange_ignores_malformed_header_pattern(
+    mock_otel_logger, monkeypatch
+):
+  """A bad regex drops its own entry rather than the whole record."""
+  monkeypatch.setenv(
+      _OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_REQUEST, 'x-re[,x-req'
+  )
+
+  _trace_mcp_exchange(request_headers={'x-req': 'val'})
+
+  log_record: LogRecord = mock_otel_logger.emit.call_args.args[0]
+  assert log_record.attributes['http.request.header.x-req'] == ['val']
+
+
+@pytest.mark.parametrize(
+    'env_value,reported',
+    [(None, False), ('false', False), ('true', True), ('1', True)],
+)
+def test_should_report_mcp_http_exchanges_follows_the_experimental_opt_in(
+    env_value, reported, monkeypatch
+):
+  """The record is experimental, so nothing is reported without the opt-in."""
+  if env_value is None:
+    monkeypatch.delenv(ADK_EXPERIMENTAL_TELEMETRY, raising=False)
+  else:
+    monkeypatch.setenv(ADK_EXPERIMENTAL_TELEMETRY, env_value)
+
+  assert _should_report_mcp_http_exchanges() is reported
+
+
+@mock.patch('google.adk.telemetry.tracing.otel_logger')
+def test_trace_mcp_http_exchange_sets_error_type_on_failure(mock_otel_logger):
+  """Test that a 4xx or 5xx status is also recorded as `error.type`."""
+  _trace_mcp_exchange(
+      server_address=None, status_code=403, response_body='Forbidden'
+  )
+
+  log_record: LogRecord = mock_otel_logger.emit.call_args.args[0]
+  assert log_record.attributes[ERROR_TYPE] == '403'
+  # An unknown host is omitted rather than recorded as None.
+  assert SERVER_ADDRESS not in log_record.attributes
 
 
 def test_trace_merged_tool_calls_sets_correct_attributes(

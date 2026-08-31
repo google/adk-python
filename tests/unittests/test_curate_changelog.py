@@ -95,3 +95,164 @@ def test_build_block_unwraps_drafted_prose():
       "### Highlights\n\nA release about correctness.\n\n"
       "* **Tools**: return media.\n"
   )
+
+
+def test_dedupe_key_strips_commit_hashes():
+  line1 = (
+      "* **eventarc:** add Eventarc Advanced toolset for ADK"
+      " ([217a90a](https://github.com/google/adk-python/commit/217a90a2e6c9725aeaac3dffedca8d63c25037fd))"
+  )
+  line2 = (
+      "* **eventarc:** add Eventarc Advanced toolset for ADK"
+      " ([d4f157d](https://github.com/google/adk-python/commit/d4f157d2ed6fad21a6aa4c6e29e6133e3fe5db76))"
+  )
+
+  assert curate_changelog._dedupe_key(line1) == curate_changelog._dedupe_key(
+      line2
+  )
+  assert (
+      curate_changelog._dedupe_key(line1)
+      == "* **eventarc:** add eventarc advanced toolset for adk"
+  )
+
+
+def test_dedupe_key_strips_bare_markdown_links():
+  line1 = (
+      "* Remove duplicate options from `adk deploy`"
+      " [3fa2ea7](https://github.com/google/adk-python/commit/3fa2ea7cb923c9f8606d98b45a23bd58a7027436)"
+  )
+  line2 = (
+      "* Remove duplicate options from `adk deploy`"
+      " ([3fa2ea7](https://github.com/google/adk-python/commit/3fa2ea7cb923c9f8606d98b45a23bd58a7027436))"
+  )
+
+  assert curate_changelog._dedupe_key(line1) == curate_changelog._dedupe_key(
+      line2
+  )
+
+
+def test_dedupe_key_strips_pr_links_and_closes():
+  line1 = (
+      "* add state_delta support to LiveRequest for live mode"
+      " ([8219774](https://github.com/google/adk-python/commit/82197740a603e146ee35e0f18d2761a5c8f155d6)),"
+      " closes [#4220](https://github.com/google/adk-python/issues/4220)"
+  )
+  line2 = (
+      "* add state_delta support to LiveRequest for live mode"
+      " ([abcdef1](https://github.com/google/adk-python/commit/abcdef10a603e146ee35e0f18d2761a5c8f155d6))"
+  )
+  line3 = "* add state_delta support to LiveRequest for live mode (#4220)"
+
+  assert curate_changelog._dedupe_key(line1) == curate_changelog._dedupe_key(
+      line2
+  )
+  assert curate_changelog._dedupe_key(line1) == curate_changelog._dedupe_key(
+      line3
+  )
+
+
+def test_dedupe_key_strips_trailing_punctuation():
+  line1 = (
+      "* fix: Resolve scheduler leakage and make scheduler instantiation"
+      " explicit. ([ce2e4ca](https://...))"
+  )
+  line2 = (
+      "* fix: Resolve scheduler leakage and make scheduler instantiation"
+      " explicit ([d4f0772](https://...))"
+  )
+
+  assert curate_changelog._dedupe_key(line1) == curate_changelog._dedupe_key(
+      line2
+  )
+
+
+def test_normalize_body_deduplicates_duplicate_commits():
+  lines = [
+      "### Features\n",
+      "\n",
+      (
+          "* **eventarc:** add Eventarc Advanced toolset for ADK"
+          " ([217a90a](https://...))\n"
+      ),
+      (
+          "* **eventarc:** add Eventarc Advanced toolset for ADK"
+          " ([d4f157d](https://...))\n"
+      ),
+      "* unique feature ([1234567](https://...))\n",
+      "\n",
+      "### Bug Fixes\n",
+      "\n",
+      (
+          "* Resolve scheduler leakage and make scheduler instantiation"
+          " explicit ([ce2e4ca](https://...))\n"
+      ),
+      (
+          "* Resolve scheduler leakage and make scheduler instantiation"
+          " explicit. ([d4f0772](https://...))\n"
+      ),
+  ]
+
+  deduped = curate_changelog._normalize_body(lines)
+  assert deduped == [
+      "### Features\n",
+      "\n",
+      (
+          "* **eventarc:** add Eventarc Advanced toolset for ADK"
+          " ([217a90a](https://...))\n"
+      ),
+      "* unique feature ([1234567](https://...))\n",
+      "\n",
+      "### Bug Fixes\n",
+      "\n",
+      (
+          "* resolve scheduler leakage and make scheduler instantiation"
+          " explicit ([ce2e4ca](https://...))\n"
+      ),
+  ]
+
+
+def test_curate_deduplicates_and_adds_highlights():
+  text = """# Changelog
+
+## [2.7.0](https://github.com/google/adk-python/compare/v2.6.3...v2.7.0) (2026-08-27)
+
+### Features
+
+* **eventarc:** add Eventarc Advanced toolset for ADK ([217a90a](https://...))
+* **eventarc:** add Eventarc Advanced toolset for ADK ([d4f157d](https://...))
+* unique feature ([1234567](https://...))
+"""
+
+  updated = curate_changelog.curate(text, model="test-model", fold_threshold=12)
+  assert (
+      "* **eventarc:** add Eventarc Advanced toolset for ADK"
+      " ([d4f157d](https://...))"
+      not in updated
+  )
+  assert (
+      "* **eventarc:** add Eventarc Advanced toolset for ADK"
+      " ([217a90a](https://...))"
+      in updated
+  )
+  assert "* unique feature ([1234567](https://...))" in updated
+  assert "### Highlights" in updated
+
+
+def test_curate_leaves_already_curated_section_unchanged():
+  text = """# Changelog
+
+## [2.7.0](https://github.com/google/adk-python/compare/v2.6.3...v2.7.0) (2026-08-27)
+
+### Highlights
+
+Theme of the release.
+
+* **eventarc**: add Eventarc toolset. (217a90a)
+
+### Features
+
+* **eventarc:** add Eventarc Advanced toolset for ADK ([217a90a](https://...))
+"""
+
+  updated = curate_changelog.curate(text, model="test-model", fold_threshold=12)
+  assert updated == text

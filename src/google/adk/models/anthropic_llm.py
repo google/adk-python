@@ -939,7 +939,7 @@ class AnthropicLlm(BaseLlm):
   @classmethod
   @override
   def supported_models(cls) -> list[str]:
-    return [r"claude-3-.*", r"claude-.*-4.*", r"claude-.*-5.*"]
+    return [r"claude-.*"]
 
   def _resolve_model_name(self, model: Optional[str]) -> str:
     if not model:

@@ -454,6 +454,34 @@ async def test_add_session_cleans_temp_file_after_partial_upload_failure(
 
 
 @pytest.mark.asyncio
+async def test_failed_temp_file_removal_does_not_mask_the_upload_error(
+    mocker, temp_dir
+):
+  """Cleanup runs in a finally, so it must not displace the real exception.
+
+  A read-only mount, a permissions problem, or a cancelled upload whose worker
+  thread still holds the file all make the remove fail. Raising from the
+  finally block would replace the exception already propagating.
+  """
+  fake_client = _async_client(mocker)
+  fake_client.rag.upload_file.side_effect = RuntimeError("upload failed")
+  mocker.patch(
+      "agentplatform.Client", return_value=mocker.Mock(aio=fake_client)
+  )
+  mocker.patch(
+      "google.adk.memory.vertex_ai_rag_memory_service.os.remove",
+      side_effect=PermissionError("file still in use"),
+  )
+  memory_service = VertexAiRagMemoryService(rag_corpus="corpus")
+
+  with pytest.raises(RuntimeError, match="upload failed"):
+    await memory_service.add_session_to_memory(_session())
+
+  # The transcript is still there, so the removal really did fail.
+  assert list(temp_dir.iterdir())
+
+
+@pytest.mark.asyncio
 async def test_add_session_cleans_temp_file_when_cancelled(mocker, temp_dir):
   upload_started = asyncio.Event()
 

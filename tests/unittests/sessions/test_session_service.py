@@ -1197,6 +1197,50 @@ async def test_create_session_with_existing_id_raises_error(session_service):
 
 
 @pytest.mark.asyncio
+async def test_create_session_with_padded_duplicate_id_raises_error():
+  """Tests that InMemorySessionService checks the duplicate id after
+  stripping it, so a whitespace-padded id maps to the same session as its
+  trimmed form instead of silently overwriting it."""
+  service = InMemorySessionService()
+  app_name = 'my_app'
+  user_id = 'test_user'
+  session_id = 'existing_session'
+
+  await service.create_session(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      state={'keep': 'original'},
+  )
+
+  with pytest.raises(AlreadyExistsError):
+    await service.create_session(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=f'  {session_id}  ',
+        state={'keep': 'clobbered'},
+    )
+
+  session = await service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session_id
+  )
+  assert session.state['keep'] == 'original'
+
+
+@pytest.mark.asyncio
+async def test_create_session_with_blank_id_generates_one():
+  """Tests that a whitespace-only session id is treated the same as no id
+  at all, rather than being stored verbatim."""
+  service = InMemorySessionService()
+
+  session = await service.create_session(
+      app_name='my_app', user_id='test_user', session_id='   '
+  )
+
+  assert session.id.strip()
+
+
+@pytest.mark.asyncio
 async def test_append_event_bytes(session_service):
   app_name = 'my_app'
   user_id = 'user'

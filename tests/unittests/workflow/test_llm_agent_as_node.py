@@ -291,12 +291,6 @@ class TestBuildNode:
     node = build_node(_make_agent(mode='single_turn'))
     assert isinstance(node, LlmAgent)
 
-  @pytest.mark.skip(
-      reason=(
-          'V2 LlmAgent does not allow mode=None and defaults to chat, so'
-          ' fallback in wrapper is not triggered here.'
-      )
-  )
   def test_default_mode_auto_set_to_single_turn(self):
     """LlmAgent with explicit mode=None is auto-converted to single_turn."""
     agent = LlmAgent(
@@ -562,6 +556,40 @@ async def test_single_turn_propagates_isolation_scope(
 
 
 @pytest.mark.asyncio
+async def test_single_turn_writes_session_bookkeeping_back_to_the_caller(
+    request: pytest.FixtureRequest,
+):
+  """A single-turn node updates the same Session the caller holds.
+
+  A session service records the storage revision it just wrote on the Session
+  object it appended through. If the node runs against a separate object, the
+  caller keeps a stale revision and its next append is rejected as stale.
+  """
+  agent = _make_agent(mode='single_turn')
+  wrapper = build_node(agent)
+
+  async def fake_run_async(invocation_context):
+    invocation_context.session.last_update_time = 1234.5
+    yield Event(
+        invocation_id='inv',
+        author=wrapper.name,
+        content=types.Content(parts=[types.Part(text='ok')]),
+    )
+
+  object.__setattr__(wrapper, 'run_async', fake_run_async)
+
+  ic = await create_parent_invocation_context(
+      request.function.__name__, wrapper
+  )
+  ctx = Context(invocation_context=ic)
+
+  async for _ in wrapper._run_impl(ctx=ctx, node_input='hi'):
+    pass
+
+  assert ic.session.last_update_time == 1234.5
+
+
+@pytest.mark.asyncio
 async def test_task_mode_does_not_set_branch(
     request: pytest.FixtureRequest,
 ):
@@ -683,11 +711,6 @@ async def test_react_path_user_content_visible_to_llm(
   assert any('3 days' in t for t in user_texts)
 
 
-@pytest.mark.skip(
-    reason=(
-        '_LlmAgentWrapper does not fully support new workflow path in this test'
-    )
-)
 @pytest.mark.asyncio
 async def test_react_path_output_reaches_downstream(
     request: pytest.FixtureRequest,
@@ -716,11 +739,6 @@ async def test_react_path_output_reaches_downstream(
   assert captured == ['hello world']
 
 
-@pytest.mark.skip(
-    reason=(
-        '_LlmAgentWrapper does not fully support new workflow path in this test'
-    )
-)
 @pytest.mark.asyncio
 async def test_react_path_output_key_stored_in_state(
     request: pytest.FixtureRequest,
@@ -750,11 +768,6 @@ async def test_react_path_output_key_stored_in_state(
   assert captured_state == ['summary text']
 
 
-@pytest.mark.skip(
-    reason=(
-        '_LlmAgentWrapper does not fully support new workflow path in this test'
-    )
-)
 @pytest.mark.asyncio
 async def test_react_path_output_schema_validated(
     request: pytest.FixtureRequest,
@@ -789,11 +802,6 @@ async def test_react_path_output_schema_validated(
   assert captured[0]['content'] == 'Once upon a time'
 
 
-@pytest.mark.skip(
-    reason=(
-        '_LlmAgentWrapper does not fully support new workflow path in this test'
-    )
-)
 @pytest.mark.asyncio
 async def test_react_path_predecessor_input_visible_to_llm(
     request: pytest.FixtureRequest,
@@ -832,11 +840,6 @@ async def test_react_path_predecessor_input_visible_to_llm(
 # --- React path: interrupt and resume ---
 
 
-@pytest.mark.skip(
-    reason=(
-        '_LlmAgentWrapper does not fully support new workflow path in this test'
-    )
-)
 @pytest.mark.asyncio
 async def test_long_running_tool_interrupts_workflow(
     request: pytest.FixtureRequest,
@@ -867,11 +870,6 @@ async def test_long_running_tool_interrupts_workflow(
   assert any(e.long_running_tool_ids for e in events)
 
 
-@pytest.mark.skip(
-    reason=(
-        '_LlmAgentWrapper does not fully support new workflow path in this test'
-    )
-)
 @pytest.mark.asyncio
 async def test_resume_after_interrupt_completes_workflow(
     request: pytest.FixtureRequest,
@@ -946,11 +944,6 @@ async def test_resume_after_interrupt_completes_workflow(
   assert any('Approved and deployed.' in t for t in content_texts)
 
 
-@pytest.mark.skip(
-    reason=(
-        '_LlmAgentWrapper does not fully support new workflow path in this test'
-    )
-)
 @pytest.mark.asyncio
 async def test_multiple_sequential_interrupts_in_workflow(
     request: pytest.FixtureRequest,

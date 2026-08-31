@@ -32,6 +32,7 @@ import time
 import traceback
 import typing
 from typing import Any
+from typing import Awaitable
 from typing import Callable
 from typing import List
 from typing import Literal
@@ -66,8 +67,6 @@ from watchdog.observers import Observer
 import yaml
 
 from ..agents.base_agent import BaseAgent
-from ..agents.live_request_queue import LiveRequest
-from ..agents.live_request_queue import LiveRequestQueue
 from ..agents.llm_agent import LlmAgent
 from ..agents.run_config import RunConfig
 from ..agents.run_config import StreamingMode
@@ -83,6 +82,8 @@ from ..events.event_actions import EventActions
 from ..flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from ..flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from ..flows.llm_flows.functions import REQUEST_INPUT_FUNCTION_CALL_NAME
+from ..live.live_request_queue import LiveRequest
+from ..live.live_request_queue import LiveRequestQueue
 from ..memory.base_memory_service import BaseMemoryService
 from ..plugins.base_plugin import BasePlugin
 from ..runners import Runner
@@ -838,6 +839,11 @@ class ApiServer:
       url_prefix: Optional[str] = None,
       auto_create_session: bool = False,
       trigger_sources: Optional[list[str]] = None,
+      trigger_oidc_audience: Optional[str] = None,
+      trigger_oidc_service_accounts: Optional[list[str]] = None,
+      trigger_auth_verifier: Optional[
+          Callable[[Request], None | Awaitable[None]]
+      ] = None,
       default_llm_model: Optional[str] = None,
   ):
     self.agent_loader = agent_loader
@@ -858,6 +864,18 @@ class ApiServer:
     self.url_prefix = url_prefix
     self.auto_create_session = auto_create_session
     self.trigger_sources = trigger_sources
+    if (
+        trigger_oidc_service_accounts
+        and not trigger_oidc_audience
+        and not trigger_auth_verifier
+    ):
+      raise ValueError(
+          "trigger_oidc_service_accounts requires trigger_oidc_audience to be"
+          " set."
+      )
+    self.trigger_oidc_audience = trigger_oidc_audience
+    self.trigger_oidc_service_accounts = trigger_oidc_service_accounts
+    self.trigger_auth_verifier = trigger_auth_verifier
     self.default_llm_model = default_llm_model
     self.default_app_name = os.getenv("ADK_DEFAULT_APP_NAME")
 
@@ -1263,9 +1281,21 @@ class ApiServer:
 
     # Register /trigger/* endpoints when enabled.
     if self.trigger_sources:
+      from .trigger_routes import GoogleOidcVerifier
       from .trigger_routes import TriggerRouter
 
-      trigger_router = TriggerRouter(self, trigger_sources=self.trigger_sources)
+      verifier = self.trigger_auth_verifier
+      if not verifier and self.trigger_oidc_audience:
+        verifier = GoogleOidcVerifier(
+            self.trigger_oidc_audience,
+            self.trigger_oidc_service_accounts,
+        )
+
+      trigger_router = TriggerRouter(
+          self,
+          trigger_sources=self.trigger_sources,
+          verifier=verifier,
+      )
       trigger_router.register(app)
 
     return app
@@ -1390,8 +1420,8 @@ class ApiServer:
         return ListAppsResponse(apps=[AppInfo(**app) for app in apps_info])
       return self.agent_loader.list_agents()
 
-    @experimental
     @app.get("/apps/{app_name}/app-info", response_model_exclude_none=True)
+    @experimental
     async def get_adk_app_info(app_name: str) -> AppInfo:
       """Returns the detailed info for a given ADK app."""
       if app_name.startswith("__") and not self._allow_special_agents:
@@ -1450,13 +1480,13 @@ class ApiServer:
           if not session.id.startswith(EVAL_SESSION_ID_PREFIX)
       ]
 
-    @deprecated(
-        "Please use create_session instead. This will be removed in future"
-        " releases."
-    )
     @app.post(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}",
         response_model_exclude_none=True,
+    )
+    @deprecated(
+        "Please use create_session instead. This will be removed in future"
+        " releases."
     )
     async def create_session_with_id(
         app_name: str,

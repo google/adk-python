@@ -116,19 +116,16 @@ def test_build_agent_card_with_protocol_version_keeps_caller_value():
   assert _build_card(protocol_version='0.2.9').protocol_version == '0.2.9'
 
 
-@pytest.mark.parametrize('streaming', [True, False])
 @v03_only
-def test_build_agent_card_default_capabilities_follow_streaming_flag(streaming):
-  capabilities = _build_card(streaming=streaming).capabilities
-  assert capabilities.streaming is streaming
-  # Push notifications are never advertised by the default capabilities.
+def test_build_agent_card_without_capabilities_claims_none():
+  capabilities = _build_card().capabilities
+  assert capabilities.streaming is False
   assert capabilities.push_notifications is False
 
 
 @v03_only
-def test_build_agent_card_explicit_capabilities_override_streaming_flag():
+def test_build_agent_card_uses_the_capabilities_it_is_given():
   card = _build_card(
-      streaming=False,
       capabilities=AgentCapabilities(streaming=True, push_notifications=True),
   )
   assert card.capabilities.streaming is True

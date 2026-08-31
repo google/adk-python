@@ -41,8 +41,13 @@ def _should_retry_node(
     return False
 
   if retry_config.exceptions is not None:
-    ex_name = type(exception).__name__
-    if ex_name not in retry_config.exceptions:
+    # Match against every class the exception inherits from, so a configured
+    # exception also covers its subclasses. object is excluded so that naming
+    # it does not silently mean "retry everything".
+    ex_names = {
+        cls.__name__ for cls in type(exception).__mro__ if cls is not object
+    }
+    if ex_names.isdisjoint(retry_config.exceptions):
       return False
 
   return True

@@ -28,13 +28,13 @@ import itertools
 from typing import Any
 from typing import AsyncGenerator
 
-from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.run_config import RunConfig
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.flows.llm_flows import contents
 from google.adk.flows.llm_flows.functions import _message_content_for_user
+from google.adk.live import LiveRequestQueue
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.platform import time as platform_time

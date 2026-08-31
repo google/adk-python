@@ -28,6 +28,7 @@ from ....auth.auth_credential import AuthCredential
 from ....auth.auth_schemes import AuthScheme
 from ..._gemini_schema_util import _to_snake_case
 from ..common.common import ApiParameter
+from .operation_parser import _required_scheme_name
 from .operation_parser import OperationParser
 
 # Valid JSON Schema types as per OpenAPI 3.0/3.1 specification.
@@ -181,12 +182,8 @@ class OpenApiSpecParser:
     if openapi_spec.get("servers"):
       base_url = openapi_spec["servers"][0].get("url", "")
 
-    # Get global security scheme (if any)
-    global_scheme_name = None
-    if openapi_spec.get("security"):
-      # Use first scheme by default.
-      scheme_names = list(openapi_spec["security"][0].keys())
-      global_scheme_name = scheme_names[0] if scheme_names else None
+    # Get global security scheme (if any).
+    global_scheme_name = _required_scheme_name(openapi_spec.get("security"))
 
     auth_schemes = openapi_spec.get("components", {}).get("securitySchemes", {})
 
@@ -226,11 +223,12 @@ class OpenApiSpecParser:
             preserve_property_names=self._preserve_property_names,
         )
 
-        # Check for operation-specific auth scheme
+        # Check for operation-specific auth scheme. An operation that declares
+        # security of its own overrides the global requirement, including when
+        # it declares that no auth is needed.
         auth_scheme_name = operation_parser.get_auth_scheme_name()
-        auth_scheme_name = (
-            auth_scheme_name if auth_scheme_name else global_scheme_name
-        )
+        if not auth_scheme_name and operation.security is None:
+          auth_scheme_name = global_scheme_name
         auth_scheme = (
             auth_schemes.get(auth_scheme_name) if auth_scheme_name else None
         )

@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import re
+
 import numpy as np
 import sounddevice as sd
 
@@ -18,8 +20,11 @@ import sounddevice as sd
 FILE_PATH = 'adk_live_audio_storage_input_audio_1762910896736.pcm'
 # output audio example. replace with the input audio you want to test
 FILE_PATH = 'adk_live_audio_storage_output_audio_1762910893258.pcm;rate=24000'
-# PCM rate is always 24,000 for input and output
-SAMPLE_RATE = 24000
+# Live input audio is 16,000 Hz and live output audio is 24,000 Hz. The stored
+# filename ends in the audio mime type, so it carries the rate whenever the mime
+# type had one; input audio is stored as a bare `.pcm`.
+_rate_match = re.search(r'rate=(\d+)', FILE_PATH)
+SAMPLE_RATE = int(_rate_match.group(1)) if _rate_match else 16000
 CHANNELS = 1
 DTYPE = np.int16  # Common types: int16, float32
 

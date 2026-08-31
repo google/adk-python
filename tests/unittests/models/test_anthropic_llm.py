@@ -153,11 +153,7 @@ def test_claude_anthropic_client_creation_with_full_resource_name():
 
 
 def test_supported_models():
-  models = Claude.supported_models()
-  assert len(models) == 3
-  assert models[0] == r"claude-3-.*"
-  assert models[1] == r"claude-.*-4.*"
-  assert models[2] == r"claude-.*-5.*"
+  assert Claude.supported_models() == [r"claude-.*"]
 
 
 function_declaration_test_cases = [

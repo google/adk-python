@@ -21,6 +21,8 @@ if TYPE_CHECKING:
   from google.genai import types
   from opentelemetry.util.types import AttributeValue
 
+  from ..models.llm_response import LlmResponse
+
 # Centralized OpenTelemetry Semantic Conventions
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_INPUT_TOKENS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_OUTPUT_TOKENS
@@ -75,6 +77,32 @@ class TokenUsage:
   """Centralized representation and processing of GenAI token usage metadata."""
 
   usage_metadata: types.GenerateContentResponseUsageMetadata | None
+
+  @classmethod
+  def from_llm_responses(
+      cls, responses: list[LlmResponse]
+  ) -> TokenUsage | None:
+    """Returns what one model call spent, or None if it reported nothing.
+
+    Each report is cumulative for the call so far, which makes the newest one
+    the whole figure and summing them a double count. Taking the newest report
+    rather than the last response keeps a cut-short stream's usage, which a
+    trailing chunk that carries none would otherwise drop.
+
+    Args:
+      responses: The responses produced by a single model call, in order.
+    """
+    reported = [
+        response.usage_metadata
+        for response in responses
+        if response.usage_metadata
+    ]
+    if not reported:
+      return None
+    usage = cls(reported[-1])
+    if usage.input_token_count is None and usage.output_token_count is None:
+      return None
+    return usage
 
   @property
   def input_token_count(self) -> int | None:
@@ -159,7 +187,10 @@ class TokenUsage:
 
 @dataclasses.dataclass
 class InvocationTokenTotals:
-  """Token usage summed over every model call in a single agent invocation.
+  """Token usage summed over the model calls of one accumulation scope.
+
+  An `invoke_agent` span counts the calls that agent made itself. An
+  `invoke_workflow` scope counts every call made inside it, across agents.
 
   `cache_read_input_tokens` and `tool_input_tokens` are subsets of
   `input_tokens`; `reasoning_output_tokens` is a subset of `output_tokens`.

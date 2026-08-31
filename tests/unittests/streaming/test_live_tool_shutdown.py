@@ -31,12 +31,12 @@ from typing import Callable
 
 from google.adk.agents.active_streaming_tool import ActiveStreamingTool
 from google.adk.agents.invocation_context import InvocationContext
-from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.run_config import RunConfig
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows import base_llm_flow
 from google.adk.flows.llm_flows.single_flow import SingleFlow
+from google.adk.live import LiveRequestQueue
 from google.adk.models.llm_response import LlmResponse
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
