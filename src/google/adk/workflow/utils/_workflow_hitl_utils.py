@@ -301,4 +301,4 @@ def has_auth_credential(
     state: State,
 ) -> bool:
   """Returns True if a credential for the given auth config exists in state."""
-  return AuthHandler(auth_config).get_auth_response(state) is not None
+  return AuthHandler(auth_config).has_auth_response(state)

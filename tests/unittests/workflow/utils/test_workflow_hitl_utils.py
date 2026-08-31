@@ -416,6 +416,24 @@ class TestProcessAuthResumeOAuth:
     assert has_auth_credential(auth_config, state) is True
 
   @pytest.mark.asyncio
+  async def test_existence_check_does_not_exchange(self):
+    """Asking whether a credential exists must not spend the auth code."""
+    auth_config = _oauth_auth_config()
+    state = _empty_state()
+    event = create_auth_request_event(auth_config, "auth-id-1", state)
+
+    await process_auth_resume(
+        _oauth_resume_response(auth_config, _requested_state(event)),
+        auth_config,
+        state,
+        "auth-id-1",
+    )
+    exchanges_so_far = len(self.exchanged_schemes)
+
+    assert has_auth_credential(auth_config, state) is True
+    assert len(self.exchanged_schemes) == exchanges_so_far
+
+  @pytest.mark.asyncio
   async def test_response_with_another_state_is_rejected(self):
     """A response that does not echo the generated state is not exchanged."""
     auth_config = _oauth_auth_config()
