@@ -1220,17 +1220,19 @@ class RemoteA2aAgent(BaseAgent):
           " session history. Workflow path scopes are not supported."
       )
 
-    # Collect all FC IDs emitted by this remote agent in the task scope.
+    # Collect all FC IDs emitted by this remote agent (in the task scope, when
+    # there is one). A function response answering one of these resumes a call
+    # the peer itself made; anything else is history that belongs to someone
+    # else's call.
     remote_fc_ids = set()
-    if self.mode == "task":
-      for event in ctx.session.events:
-        if (
-            not task_scope or event.isolation_scope == task_scope
-        ) and event.author == self.name:
-          calls = event.get_function_calls()
-          for fc in calls:
-            if fc.id is not None:
-              remote_fc_ids.add(fc.id)
+    for event in ctx.session.events:
+      if (
+          not task_scope or event.isolation_scope == task_scope
+      ) and event.author == self.name:
+        calls = event.get_function_calls()
+        for fc in calls:
+          if fc.id is not None:
+            remote_fc_ids.add(fc.id)
 
     for event in reversed(events_to_process):
       # Drop credential material before anything else looks at the event.
@@ -1263,13 +1265,14 @@ class RemoteA2aAgent(BaseAgent):
           continue
 
         if (
-            self.mode == "task"
-            and part.function_response
+            part.function_response
             and isinstance(part.function_response, genai_types.FunctionResponse)
             and part.function_response.id not in remote_fc_ids
         ):
           # Convert non-agent function response to text to prevent A2A server
-          # validation errors.
+          # validation errors. The peer has no invocation to resume for a call
+          # it never made, and the receiving runner rejects a message that
+          # carries a function response next to the text of the same history.
           text_content = (
               f"Tool {part.function_response.name} returned:"
               f" {json.dumps(part.function_response.response)}"
