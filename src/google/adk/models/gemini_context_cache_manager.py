@@ -36,17 +36,22 @@ from .llm_response import LlmResponse
 
 logger = logging.getLogger("google_adk." + __name__)
 
-# Named Gemini model families have documented explicit-cache floors. For
+# Named Gemini model families and backends have documented explicit-cache floors. For
 # opaque tuned-model and endpoint IDs, the server remains authoritative.
 _GEMINI_2_5_MIN_CACHE_TOKENS = 2048
 _GEMINI_3_MIN_CACHE_TOKENS = 4096
+_VERTEX_AI_MIN_CACHE_TOKENS = 32768
 
 if TYPE_CHECKING:
   from google.genai import Client
 
 
-def _minimum_cache_tokens(model: Optional[str]) -> Optional[int]:
+def _minimum_cache_tokens(
+    model: Optional[str], is_vertex: bool = False
+) -> Optional[int]:
   """Return the explicit-cache token floor for a named Gemini model."""
+  if is_vertex:
+    return _VERTEX_AI_MIN_CACHE_TOKENS
   model_name = (model or "").rsplit("/", maxsplit=1)[-1]
   if model_name.startswith("gemini-2.5-"):
     return _GEMINI_2_5_MIN_CACHE_TOKENS
@@ -424,7 +429,10 @@ class GeminiContextCacheManager:
     cacheable_prefix_tokens = self._estimate_cacheable_prefix_tokens(
         llm_request, cache_contents_count
     )
-    minimum_cache_tokens = _minimum_cache_tokens(llm_request.model)
+    minimum_cache_tokens = _minimum_cache_tokens(
+        llm_request.model,
+        is_vertex=bool(self.genai_client.vertexai),
+    )
     if (
         minimum_cache_tokens is not None
         and cacheable_prefix_tokens < minimum_cache_tokens
