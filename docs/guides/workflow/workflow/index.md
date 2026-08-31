@@ -215,3 +215,4 @@ Each of these is a runnable workflow that exercises one of the features above:
 - [Parallel Execution (Fan-Out/Fan-In)](../../../../contributing/samples/workflows/fan_out_fan_in/agent.py): branches running at once and then being joined.
 - [Dynamic Nodes](../../../../contributing/samples/workflows/dynamic_nodes/agent.py): nodes scheduled at runtime through the context.
 - [Node Retries](../../../../contributing/samples/workflows/retry/agent.py): error handling and a retry policy on a node.
+- [Node as Tool](../../../../contributing/samples/workflows/node_as_tool/agent.py): wrap a `Node` or `Workflow` as an agent tool; requires `input_schema` and `description` on the wrapped node/workflow.
