@@ -110,12 +110,20 @@ class BaseTool(ABC):
   def __init__(
       self,
       *,
-      name,
-      description,
+      name: str, # Added type hint for clarity
+      description: str,
       is_long_running: bool = False,
       custom_metadata: Optional[dict[str, Any]] = None,
       response_scheduling: Optional[types.FunctionResponseScheduling] = None,
   ):
+    # -CONTRIBUTION START ---
+    if " " in name:
+        raise ValueError(
+            f"Invalid tool name: '{name}'. Tool names cannot contain spaces. "
+            "Please use underscores instead (e.g., 'my_tool_name')."
+        )
+    # CONTRIBUTION END ---
+
     self.name = name
     self.description = description
     self.is_long_running = is_long_running
