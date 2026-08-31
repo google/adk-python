@@ -122,18 +122,30 @@ async def test_inject_session_state_with_optional_state():
 
 
 @pytest.mark.asyncio
-async def test_inject_session_state_with_missing_state_raises_key_error():
+async def test_inject_session_state_with_missing_state_returns_literal():
   instruction_template = "Hello {missing_key}!"
   invocation_context = await _create_test_readonly_context(
       state={"user_name": "Foo"}
   )
 
-  with pytest.raises(
-      KeyError, match="Context variable not found: `missing_key`."
-  ):
-    await instructions_utils.inject_session_state(
-        instruction_template, invocation_context
-    )
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "Hello {missing_key}!"
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_preserves_literal_identifier_patterns():
+  """Literal {identifier} patterns in docs/tool descriptions should not crash."""
+  instruction_template = (
+      "The formatString supports interpolation via {expression} syntax."
+  )
+  invocation_context = await _create_test_readonly_context()
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == instruction_template
 
 
 @pytest.mark.asyncio

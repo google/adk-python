@@ -171,7 +171,11 @@ async def _render_with_regex(
           )
           return ''
         else:
-          raise KeyError(f'Context variable not found: `{var_name}`.')
+          logger.debug(
+              'Context variable %s not found in session state, returning as-is',
+              var_name,
+          )
+          return match.group()
 
   return await _async_sub(_TEMPLATE_VAR_PATTERN, _replace_match, template)
 
