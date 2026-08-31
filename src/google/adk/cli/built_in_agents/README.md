@@ -32,7 +32,7 @@ agent = AgentBuilderAssistant.create_agent(
 
 ### 📝 **Advanced YAML Configuration**
 - Generates AgentConfig schema-compliant YAML files
-- Supports `LlmAgent` and legacy agent types in YAML (`SequentialAgent`, `ParallelAgent`, `LoopAgent`). **These agent classes are deprecated** on `main` in favor of [`Workflow`](../../docs/guides/workflow/workflow/index.md). Prefer Workflow graphs and samples under [`contributing/samples/workflows/`](../../../contributing/samples/workflows/) and [`contributing/samples/legacy_workflows/`](../../../contributing/samples/legacy_workflows/) for new designs.
+- Supports `LlmAgent` and legacy agent types in YAML (`SequentialAgent`, `ParallelAgent`, `LoopAgent`). **These agent classes are deprecated** on `main` in favor of [`Workflow`](../../../../../docs/guides/workflow/workflow/index.md). Prefer Workflow graphs and samples under [`contributing/samples/workflows/`](../../../../../contributing/samples/workflows/) and [`contributing/samples/legacy_workflows/`](../../../../../contributing/samples/legacy_workflows/) for new designs.
 - Built-in validation with detailed error reporting
 
 ### 🛠️ **Multi-File Management**
