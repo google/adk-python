@@ -45,7 +45,8 @@ def resolve_and_derive_transfer_context(
     returns (target_agent, None).
 
   Raises:
-    ValueError: If target_agent is the same as current_agent.
+    ValueError: If target_agent is the same as current_agent, or if
+      current_agent forbids transferring to the target.
   """
   target_agent = root_agent.find_agent(target_name)
   if not target_agent:
@@ -68,6 +69,11 @@ def resolve_and_derive_transfer_context(
       and current_agent.parent_agent
       and target_agent.parent_agent.name == current_agent.parent_agent.name
   ):
+    if getattr(current_agent, "disallow_transfer_to_peers", False):
+      raise ValueError(
+          f"Cannot transfer from '{current_agent.name}' to peer agent"
+          f" '{target_name}': disallow_transfer_to_peers is set."
+      )
     return target_agent, curr_parent_ctx
 
   # Case 4: Direct PARENT (climbs up the context chain to find the parent's parent)
@@ -75,6 +81,11 @@ def resolve_and_derive_transfer_context(
       current_agent.parent_agent
       and current_agent.parent_agent.name == target_agent.name
   ):
+    if getattr(current_agent, "disallow_transfer_to_parent", False):
+      raise ValueError(
+          f"Cannot transfer from '{current_agent.name}' to parent agent"
+          f" '{target_name}': disallow_transfer_to_parent is set."
+      )
     # Walk up the context chain to find the target parent agent's context
     curr: Context | None = curr_ctx
     while curr is not None and curr.node is not None:

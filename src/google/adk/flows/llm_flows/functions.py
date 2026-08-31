@@ -39,11 +39,11 @@ from google.adk.tools.computer_use.computer_use_tool import ComputerUseTool
 from google.genai import types
 
 from ...agents.active_streaming_tool import ActiveStreamingTool
-from ...agents.live_request_queue import LiveRequestQueue
 from ...auth.auth_tool import AuthConfig
 from ...auth.auth_tool import AuthToolArguments
 from ...events.event import Event
 from ...events.event_actions import EventActions
+from ...live.live_request_queue import LiveRequestQueue
 from ...telemetry import _instrumentation
 from ...telemetry.tracing import trace_merged_tool_calls
 from ...telemetry.tracing import tracer
@@ -52,6 +52,8 @@ from ...tools.function_tool import _use_sync_callable_runner
 from ...tools.function_tool import FunctionTool
 from ...tools.tool_confirmation import ToolConfirmation
 from ...tools.tool_context import ToolContext
+from ...utils._callback_pipeline import _run_callbacks
+from ...utils._callback_pipeline import _stop_on_non_none
 from ...utils.context_utils import Aclosing
 from ._invocation_utils import as_llm_agent as _as_llm_agent
 from ._invocation_utils import require_agent_name as _require_agent_name
@@ -560,19 +562,14 @@ async def _execute_single_function_call_async(
     if error_response is not None:
       return error_response
 
-    for callback in agent.canonical_on_tool_error_callbacks:
-      callback_result = callback(
-          tool=tool,
-          args=tool_args,
-          tool_context=tool_context,
-          error=error,
-      )
-      if inspect.isawaitable(callback_result):
-        callback_result = await callback_result
-      if callback_result is not None:
-        return callback_result
-
-    return None
+    return await _run_callbacks(
+        agent.canonical_on_tool_error_callbacks,
+        _stop_on_non_none,
+        tool=tool,
+        args=tool_args,
+        tool_context=tool_context,
+        error=error,
+    )
 
   # Do not use "args" as the variable name, because it is a reserved keyword
   # in python debugger.
@@ -598,12 +595,12 @@ async def _execute_single_function_call_async(
         tool_context=tool_context,
         error=tool_error,
     )
-    if error_response is not None:
-      return __build_response_event(
-          tool, error_response, tool_context, invocation_context
-      )
-    else:
-      raise tool_error
+    if error_response is None:
+      logger.warning('%s', tool_error)
+      error_response = _build_tool_not_found_response(tool.name, tools_dict)
+    return __build_response_event(
+        tool, error_response, tool_context, invocation_context
+    )
 
   async def _run_with_trace() -> Event | None:
     nonlocal function_args, detected_error_type
@@ -619,17 +616,13 @@ async def _execute_single_function_call_async(
     # Step 2: If no overrides are provided from the plugins, further run the
     # canonical callback.
     if function_response is None:
-      for before_callback in agent.canonical_before_tool_callbacks:
-        callback_result = before_callback(
-            tool=tool,
-            args=function_args,
-            tool_context=tool_context,
-        )
-        if inspect.isawaitable(callback_result):
-          callback_result = await callback_result
-        function_response = callback_result
-        if function_response:
-          break
+      function_response = await _run_callbacks(
+          agent.canonical_before_tool_callbacks,
+          _stop_on_non_none,
+          tool=tool,
+          args=function_args,
+          tool_context=tool_context,
+      )
 
     # Step 3: Otherwise, proceed calling the tool normally.
     if function_response is None:
@@ -664,18 +657,14 @@ async def _execute_single_function_call_async(
     # Step 5: If no overrides are provided from the plugins, further run the
     # canonical after_tool_callbacks.
     if altered_function_response is None:
-      for after_callback in agent.canonical_after_tool_callbacks:
-        callback_result = after_callback(
-            tool=tool,
-            args=function_args,
-            tool_context=tool_context,
-            tool_response=callback_tool_response,
-        )
-        if inspect.isawaitable(callback_result):
-          callback_result = await callback_result
-        altered_function_response = callback_result
-        if altered_function_response:
-          break
+      altered_function_response = await _run_callbacks(
+          agent.canonical_after_tool_callbacks,
+          _stop_on_non_none,
+          tool=tool,
+          args=function_args,
+          tool_context=tool_context,
+          tool_response=callback_tool_response,
+      )
 
     # Step 6: If alternative response exists from after_tool_callback, use it
     # instead of the original function response.
@@ -689,7 +678,9 @@ async def _execute_single_function_call_async(
       # injection) or defers its response by design (e.g., the LlmAgent
       # wrapper for task delegation synthesizes the FR after the
       # sub-agent completes).  Either way, skip the auto-FR build when
-      # the tool returned nothing.
+      # the tool returned nothing.  Truthiness is deliberate here, unlike
+      # the callback chains above: the real FR still arrives later, so an
+      # empty dict must not answer the call early.
       return None
 
     detected_error_type = _detect_error_type_for_telemetry(
@@ -808,19 +799,14 @@ async def _execute_single_function_call_live(
     if error_response is not None:
       return error_response
 
-    for callback in agent.canonical_on_tool_error_callbacks:
-      callback_result = callback(
-          tool=tool,
-          args=tool_args,
-          tool_context=tool_context,
-          error=error,
-      )
-      if inspect.isawaitable(callback_result):
-        callback_result = await callback_result
-      if callback_result is not None:
-        return callback_result
-
-    return None
+    return await _run_callbacks(
+        agent.canonical_on_tool_error_callbacks,
+        _stop_on_non_none,
+        tool=tool,
+        args=tool_args,
+        tool_context=tool_context,
+        error=error,
+    )
 
   # Do not use "args" as the variable name, because it is a reserved keyword
   # in python debugger.
@@ -847,11 +833,12 @@ async def _execute_single_function_call_live(
         tool_context=tool_context,
         error=tool_error,
     )
-    if error_response is not None:
-      return __build_response_event(
-          tool, error_response, tool_context, invocation_context
-      )
-    raise tool_error
+    if error_response is None:
+      logger.warning('%s', tool_error)
+      error_response = _build_tool_not_found_response(tool.name, tools_dict)
+    return __build_response_event(
+        tool, error_response, tool_context, invocation_context
+    )
 
   async def _run_with_trace() -> Event | None:
     """Executes the tool with full lifecycle management and telemetry.
@@ -881,17 +868,13 @@ async def _execute_single_function_call_live(
     # Step 2: If no overrides are provided from the plugins, further run the
     # canonical callback.
     if function_response is None:
-      for before_callback in agent.canonical_before_tool_callbacks:
-        callback_result = before_callback(
-            tool=tool,
-            args=function_args,
-            tool_context=tool_context,
-        )
-        if inspect.isawaitable(callback_result):
-          callback_result = await callback_result
-        function_response = callback_result
-        if function_response:
-          break
+      function_response = await _run_callbacks(
+          agent.canonical_before_tool_callbacks,
+          _stop_on_non_none,
+          tool=tool,
+          args=function_args,
+          tool_context=tool_context,
+      )
 
     # Step 3: Otherwise, proceed calling the tool normally.
     if function_response is None:
@@ -931,18 +914,14 @@ async def _execute_single_function_call_live(
     # Step 5: If no overrides are provided from the plugins, further run the
     # canonical after_tool_callbacks.
     if altered_function_response is None:
-      for after_callback in agent.canonical_after_tool_callbacks:
-        callback_result = after_callback(
-            tool=tool,
-            args=function_args,
-            tool_context=tool_context,
-            tool_response=callback_tool_response,
-        )
-        if inspect.isawaitable(callback_result):
-          callback_result = await callback_result
-        altered_function_response = callback_result
-        if altered_function_response:
-          break
+      altered_function_response = await _run_callbacks(
+          agent.canonical_after_tool_callbacks,
+          _stop_on_non_none,
+          tool=tool,
+          args=function_args,
+          tool_context=tool_context,
+          tool_response=callback_tool_response,
+      )
 
     # Step 6: If alternative response exists from after_tool_callback, use it
     # instead of the original function response.
@@ -954,7 +933,9 @@ async def _execute_single_function_call_live(
     ) and not function_response:
       # The tool either runs long (FR will arrive later via session
       # injection) or defers its response by design.  Skip the auto-FR
-      # build when the tool returned nothing.
+      # build when the tool returned nothing.  Truthiness is deliberate
+      # here, unlike the callback chains above: the real FR still arrives
+      # later, so an empty dict must not answer the call early.
       return None
 
     detected_error_type = _detect_error_type_for_telemetry(
@@ -1329,6 +1310,26 @@ def _get_tool(
     raise ValueError(error_msg)
 
   return tools_dict[tool_name]
+
+
+def _build_tool_not_found_response(
+    tool_name: str, tools_dict: dict[str, BaseTool]
+) -> dict[str, str]:
+  """Returns the error payload for a tool name the model made up.
+
+  A name the model invented is the model's own mistake to correct, so it is
+  reported back to the model the way a malformed argument list already is,
+  rather than raised out of the invocation.
+  """
+  available = ', '.join(tools_dict) or 'none'
+  return {
+      'error': (
+          f'Invoking `{tool_name}()` failed as no tool with that name is'
+          f' available. The tools you can call are: {available}. You could'
+          ' retry, but it is IMPORTANT that you only call a tool from that'
+          ' list.'
+      )
+  }
 
 
 def _create_tool_context(
@@ -1712,6 +1713,16 @@ def find_event_by_function_call_id(
       if function_call.id == function_call_id:
         return event
   return None
+
+
+def _collect_function_call_ids(events: list[Event]) -> set[str]:
+  """Returns the ids of every function call recorded in ``events``."""
+  call_ids: set[str] = set()
+  for event in events:
+    for function_call in event.get_function_calls():
+      if function_call.id:
+        call_ids.add(function_call.id)
+  return call_ids
 
 
 def find_matching_function_call(

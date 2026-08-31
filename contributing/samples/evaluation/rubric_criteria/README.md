@@ -54,8 +54,9 @@ behavior:
   and free of filler."). Write each property as one fair, achievable behavior;
   avoid bundling several requirements into one rubric.
 
-The `rubrics` list must be non-empty: `RubricBasedEvaluator` asserts this at
-init, so a rubric-based criterion with no rubrics fails immediately.
+The `rubrics` list must be non-empty. The evaluator still constructs with an
+empty list, so the failure surfaces mid-run: scoring the first eval case raises
+`ValueError: Rubrics are required.`
 
 For each invocation the judge is sampled `num_samples` times (here `5`); the
 per-rubric verdicts are combined by majority vote, and the criterion score is the

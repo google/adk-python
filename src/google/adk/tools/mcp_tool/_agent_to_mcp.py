@@ -23,14 +23,14 @@ from typing import Optional
 import weakref
 
 from google.genai import types
-from mcp import types as mcp_types
-from mcp.server.fastmcp import Context
-from mcp.server.fastmcp import FastMCP
-from mcp.server.session import ServerSession
 
 from ...agents.base_agent import BaseAgent
 from ...artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ...auth.credential_service.in_memory_credential_service import InMemoryCredentialService
+from ...dependencies._mcp import Context
+from ...dependencies._mcp import FastMCP
+from ...dependencies._mcp import ServerSession
+from ...dependencies._mcp import types as mcp_types
 from ...features import experimental
 from ...features import FeatureName
 from ...memory.in_memory_memory_service import InMemoryMemoryService

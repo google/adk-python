@@ -83,6 +83,12 @@ class CodeExecutionResult:
   The output files from the code execution.
   """
 
+  exit_code: int | None = None
+  """
+  The status the executed process exited with, or None when the executor could
+  not report one.
+  """
+
 
 class CodeExecutionUtils:
   """Utility functions for code execution."""

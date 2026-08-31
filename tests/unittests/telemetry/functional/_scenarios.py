@@ -14,9 +14,8 @@
 
 """The end-to-end scenarios the functional tests record.
 
-Three of them -- a plain agent, a workflow of nodes around that agent, and an
-agent whose tools come from an MCP server -- each driven by the same canned
-conversation, and each recorded under both inference instrumentations.
+One per graph shape, listed in ``Scenario``, each with its own
+``run_*_scenario`` and each recorded under both inference instrumentations.
 
 ``install_telemetry`` points ADK's telemetry globals at in-memory exporters;
 ``inference_under_test`` hands out the model to run with, its instrumentation
@@ -28,6 +27,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import aclosing
 from contextlib import contextmanager
+import copy
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Literal
@@ -36,6 +36,7 @@ from typing import Sequence
 from typing import TYPE_CHECKING
 
 from google.adk.agents.llm_agent import Agent
+from google.adk.code_executors import UnsafeLocalCodeExecutor
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_response import LlmResponse
@@ -48,8 +49,11 @@ from google.adk.skills.skill_registry import SkillRegistry
 from google.adk.telemetry import _metrics
 from google.adk.telemetry import node_tracing
 from google.adk.telemetry import tracing
+from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.mcp_tool.mcp_session_manager import _DebugHttpxClientFactory
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
+from google.adk.tools.mcp_tool.mcp_tool import ProgressFnT
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.adk.tools.skill_toolset import SkillToolset
 from google.adk.workflow._base_node import START
@@ -61,9 +65,9 @@ from google.genai.types import FinishReason
 from google.genai.types import GenerateContentResponse
 from google.genai.types import GenerateContentResponseUsageMetadata
 from google.genai.types import Part
+import httpx
 from mcp import ClientSession as McpClientSession
 from mcp import StdioServerParameters
-from mcp.shared.session import ProgressFnT
 from mcp.types import CallToolResult
 from mcp.types import ListToolsResult
 from mcp.types import PaginatedRequestParams
@@ -100,8 +104,18 @@ EXPERIMENTAL_OPT_IN = "gen_ai_latest_experimental"
 ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN = "ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN"
 ADK_EXPERIMENTAL_TELEMETRY = "ADK_EXPERIMENTAL_TELEMETRY"
 
-# Which end-to-end scenario a test case drives.
-Scenario = Literal["agent", "node", "mcp", "skill"]
+# Which end-to-end scenario a test case drives. The last three are variants of
+# `agent` and `node`, named rather than flagged: which graph a case drives is
+# what the case is, so it belongs here and not in a boolean on the case.
+Scenario = Literal[
+    "agent",
+    "node",
+    "mcp",
+    "skill",
+    "multi_agent",
+    "agent_tool",
+    "nested_agents_in_workflow",
+]
 
 # The type of skill being used in a test case.
 SkillType = Literal["local", "registry", "nonexistent"]
@@ -126,6 +140,8 @@ class HistogramSpec(NamedTuple):
   attr: str
   metric_name: str
 
+
+CounterSpec = HistogramSpec
 
 # Histograms recorded by ADK. Each test redirects these onto an in-memory
 # reader so the recorded points can be asserted.
@@ -164,6 +180,86 @@ _PATCHED_HISTOGRAMS: tuple[HistogramSpec, ...] = (
         module=_metrics,
         attr="_invoke_agent_tool_calls",
         metric_name="gen_ai.invoke_agent.tool_calls",
+    ),
+    # Per-agent token spend, recorded once per agent invocation.
+    HistogramSpec(
+        module=_metrics,
+        attr="_invoke_agent_input_tokens",
+        metric_name="adk.experimental.invoke_agent.input_tokens",
+    ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_invoke_agent_output_tokens",
+        metric_name="adk.experimental.invoke_agent.output_tokens",
+    ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_invoke_agent_total_tokens",
+        metric_name="adk.experimental.invoke_agent.total_tokens",
+    ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_invoke_agent_cache_read_input_tokens",
+        metric_name="adk.experimental.invoke_agent.cache_read.input_tokens",
+    ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_invoke_agent_reasoning_output_tokens",
+        metric_name="adk.experimental.invoke_agent.reasoning.output_tokens",
+    ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_invoke_agent_tool_input_tokens",
+        metric_name="adk.experimental.invoke_agent.tool.input_tokens",
+    ),
+    # The same spend summed over the whole turn, dropping the agent key.
+    HistogramSpec(
+        module=_metrics,
+        attr="_invoke_workflow_input_tokens",
+        metric_name="adk.experimental.invoke_workflow.input_tokens",
+    ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_invoke_workflow_output_tokens",
+        metric_name="adk.experimental.invoke_workflow.output_tokens",
+    ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_invoke_workflow_total_tokens",
+        metric_name="adk.experimental.invoke_workflow.total_tokens",
+    ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_invoke_workflow_cache_read_input_tokens",
+        metric_name="adk.experimental.invoke_workflow.cache_read.input_tokens",
+    ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_invoke_workflow_reasoning_output_tokens",
+        metric_name="adk.experimental.invoke_workflow.reasoning.output_tokens",
+    ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_invoke_workflow_tool_input_tokens",
+        metric_name="adk.experimental.invoke_workflow.tool.input_tokens",
+    ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_invoke_workflow_inference_calls",
+        metric_name="adk.experimental.invoke_workflow.inference_calls",
+    ),
+    HistogramSpec(
+        module=_metrics,
+        attr="_invoke_workflow_tool_calls",
+        metric_name="adk.experimental.invoke_workflow.tool_calls",
+    ),
+)
+
+_PATCHED_COUNTERS: tuple[CounterSpec, ...] = (
+    CounterSpec(
+        module=_metrics,
+        attr="_skill_script_executions",
+        metric_name="adk.experimental.skill.script.executions",
     ),
 )
 
@@ -223,6 +319,11 @@ def install_telemetry(
         spec.module, spec.attr, meter.create_histogram(spec.metric_name)
     )
 
+  for spec in _PATCHED_COUNTERS:
+    monkeypatch.setattr(
+        spec.module, spec.attr, meter.create_counter(spec.metric_name)
+    )
+
   return TelemetryProviders(
       tracer_provider=tracer_provider,
       logger_provider=logger_provider,
@@ -251,6 +352,9 @@ FINAL_TEXT = "text response"
 # ``MockModel`` renamed to match, so the two recordings differ only where the
 # instrumentations do and not over the model name.
 MODEL_NAME = "gemini-2.5-flash"
+# The agent a multi-agent turn is handed on to, mid-turn, by transfer_to_agent.
+SPECIALIST_AGENT_NAME = "some_specialist_agent"
+SPECIALIST_AGENT_DESCRIPTION = "A sample specialist agent."
 TOOL_NAME = "some_tool"
 TOOL_DESCRIPTION = "A sample tool."
 # What the scenario's tool raises for a case that asks it to fail.
@@ -267,6 +371,16 @@ WORKFLOW_NAME = "my_workflow"
 # span attribute + metric dimension (only nested workflows carry it).
 NESTED_WORKFLOW_NAME = "my_nested_workflow"
 NODE_NAME = "some_node"
+# The agent the nested workflow runs in place of its plain node.
+NESTED_AGENT_NAME = "some_nested_agent"
+NESTED_AGENT_DESCRIPTION = "A sample agent inside a nested workflow."
+# The agent-tool graph: an agent whose tool wraps another agent, and the Runner
+# boundary that tool puts between the two.
+AGENT_TOOL_WORKFLOW_NAME = "my_agent_tool_workflow"
+DELEGATING_AGENT_NAME = "some_delegating_agent"
+DELEGATING_AGENT_DESCRIPTION = "A sample agent that delegates."
+DELEGATE_AGENT_NAME = "some_delegate_agent"
+DELEGATE_AGENT_DESCRIPTION = "A sample delegate agent."
 NODE_RESULT = "some result"
 NODE_USER_ID = "some_user"
 NODE_APP_NAME = "some_app"
@@ -295,6 +409,14 @@ SECOND_TURN_CACHED_TOKEN_COUNT = 60
 SECOND_TURN_CANDIDATES_TOKEN_COUNT = 35
 SECOND_TURN_THOUGHTS_TOKEN_COUNT = 15
 SECOND_TURN_TOTAL_TOKEN_COUNT = 200
+# Spent by the nested workflow's agent, in the one graph that runs one. Also
+# distinct from both turns above, so the nested datapoint and the root one it
+# rolls up into cannot be confused for each other.
+NESTED_TURN_PROMPT_TOKEN_COUNT = 70
+NESTED_TURN_CACHED_TOKEN_COUNT = 30
+NESTED_TURN_CANDIDATES_TOKEN_COUNT = 10
+NESTED_TURN_THOUGHTS_TOKEN_COUNT = 3
+NESTED_TURN_TOTAL_TOKEN_COUNT = 83
 
 FIRST_TURN_USAGE = GenerateContentResponseUsageMetadata(
     prompt_token_count=FIRST_TURN_PROMPT_TOKEN_COUNT,
@@ -310,6 +432,13 @@ SECOND_TURN_USAGE = GenerateContentResponseUsageMetadata(
     thoughts_token_count=SECOND_TURN_THOUGHTS_TOKEN_COUNT,
     total_token_count=SECOND_TURN_TOTAL_TOKEN_COUNT,
 )
+NESTED_TURN_USAGE = GenerateContentResponseUsageMetadata(
+    prompt_token_count=NESTED_TURN_PROMPT_TOKEN_COUNT,
+    cached_content_token_count=NESTED_TURN_CACHED_TOKEN_COUNT,
+    candidates_token_count=NESTED_TURN_CANDIDATES_TOKEN_COUNT,
+    thoughts_token_count=NESTED_TURN_THOUGHTS_TOKEN_COUNT,
+    total_token_count=NESTED_TURN_TOTAL_TOKEN_COUNT,
+)
 
 # One canned model response: what it answers, and what it bills for it.
 Turn = tuple[Part, GenerateContentResponseUsageMetadata]
@@ -319,6 +448,40 @@ TOOL_CALLING_TURNS: tuple[Turn, ...] = (
     (Part.from_function_call(name=TOOL_NAME, args=TOOL_ARGS), FIRST_TURN_USAGE),
     (Part.from_text(text=FINAL_TEXT), SECOND_TURN_USAGE),
 )
+
+# The graphs below run more than one agent off the one model, so their turns
+# are consumed in the order the graph invokes the agents, one turn each.
+
+# The root transfers mid-turn, then the specialist answers.
+MULTI_AGENT_TURNS: tuple[Turn, ...] = (
+    (
+        Part.from_function_call(
+            name="transfer_to_agent",
+            args={"agent_name": SPECIALIST_AGENT_NAME},
+        ),
+        FIRST_TURN_USAGE,
+    ),
+    (Part.from_text(text=FINAL_TEXT), SECOND_TURN_USAGE),
+)
+
+# The delegating agent calls the tool, the delegate the tool starts answers,
+# then the delegating agent answers with what came back.
+AGENT_TOOL_TURNS: tuple[Turn, ...] = (
+    (
+        Part.from_function_call(
+            name=DELEGATE_AGENT_NAME, args={"request": USER_PROMPT}
+        ),
+        FIRST_TURN_USAGE,
+    ),
+    (Part.from_text(text=NODE_RESULT), NESTED_TURN_USAGE),
+    (Part.from_text(text=FINAL_TEXT), SECOND_TURN_USAGE),
+)
+
+# The nested workflow's agent answers first, since the graph feeds its output
+# to the canonical agent, which then spends the usual two turns.
+NESTED_WORKFLOW_TURNS: tuple[Turn, ...] = (
+    (Part.from_text(text=NODE_RESULT), NESTED_TURN_USAGE),
+) + TOOL_CALLING_TURNS
 
 
 def mock_test_model(
@@ -337,7 +500,7 @@ def mock_test_model(
           if model_exception is not None
           else [
               LlmResponse(
-                  content=Content(role="model", parts=[part]),
+                  content=Content(role="model", parts=[copy.deepcopy(part)]),
                   finish_reason=FinishReason.STOP,
                   usage_metadata=usage,
               )
@@ -376,6 +539,30 @@ def build_test_agent(
   )
 
 
+def build_multi_agent_test_agent(model: BaseLlm) -> Agent:
+  """Builds the canonical two-agent turn: the root hands off to a specialist.
+
+  One model call each, billing the same two usages the single-agent scenario
+  spends over its two calls. The turn totals therefore match that scenario's
+  exactly, and only the per-agent split tells the two recordings apart --
+  which is the point: it is where an agent's spend is booked that a turn-grain
+  metric has to get right.
+  """
+  specialist = Agent(
+      name=SPECIALIST_AGENT_NAME,
+      description=SPECIALIST_AGENT_DESCRIPTION,
+      instruction=BASE_INSTRUCTION,
+      model=model,
+  )
+  return Agent(
+      name=AGENT_NAME,
+      description=AGENT_DESCRIPTION,
+      instruction=BASE_INSTRUCTION,
+      model=model,
+      sub_agents=[specialist],
+  )
+
+
 def build_test_runner(
     model: BaseLlm, *, tool_exception: Exception | None = None
 ) -> TestInMemoryRunner:
@@ -385,10 +572,20 @@ def build_test_runner(
   )
 
 
+def build_multi_agent_test_runner(model: BaseLlm) -> TestInMemoryRunner:
+  """Builds a runner around the two-agent handoff."""
+  return TestInMemoryRunner(node=build_multi_agent_test_agent(model))
+
+
 def build_test_workflow(
     model: BaseLlm, *, tool_exception: Exception | None = None
 ) -> Workflow:
-  """Builds the canonical Workflow: a nested workflow feeding the agent."""
+  """Builds the canonical Workflow: a nested workflow feeding the agent.
+
+  The nested workflow's node is a plain function, which spends nothing, so the
+  nested workflow earns a `gen_ai.workflow.nested` span and duration but no
+  token datapoint.
+  """
   test_agent = build_test_agent(model, tool_exception=tool_exception)
 
   async def some_node(ctx, node_input):
@@ -406,19 +603,65 @@ def build_test_workflow(
   )
 
 
-async def run_node_scenario(
-    model: BaseLlm,
-    *,
-    tool_exception: Exception | None = None,
-    event_sink: list[Event] | None = None,
-) -> list[Event]:
-  """Runs the workflow scenario to completion, draining the event stream.
+def build_nested_agents_test_workflow(model: BaseLlm) -> Workflow:
+  """Builds the canonical Workflow with an agent as the nested node.
 
-  If ``event_sink`` is provided, collected events are appended to it as they
-  are drained. This lets callers inspect the events that were emitted before
-  an exception propagates (e.g. when ``tool_exception`` is set).
+  A nested workflow has to run an agent for the token grain to have anything
+  to report.
   """
-  workflow = build_test_workflow(model, tool_exception=tool_exception)
+  test_agent = build_test_agent(model)
+
+  nested_workflow = Workflow(
+      name=NESTED_WORKFLOW_NAME,
+      edges=[(START, build_nested_test_agent(model))],
+  )
+
+  return Workflow(
+      name=WORKFLOW_NAME,
+      edges=[(START, nested_workflow, test_agent)],
+  )
+
+
+def build_nested_test_agent(model: BaseLlm) -> Agent:
+  """Builds the single-turn agent the nested workflow runs, when it runs one."""
+  return Agent(
+      name=NESTED_AGENT_NAME,
+      description=NESTED_AGENT_DESCRIPTION,
+      instruction=BASE_INSTRUCTION,
+      model=model,
+  )
+
+
+def build_agent_tool_test_workflow(model: BaseLlm) -> Workflow:
+  """Builds the graph whose agent calls an ``AgentTool``, starting a Runner.
+
+  An ``AgentTool`` runs the agent it wraps on a Runner of its own, nested
+  inside the turn that called the tool. What that Runner spends therefore
+  belongs to the calling turn, and not to a turn of its own.
+  """
+  delegate = Agent(
+      name=DELEGATE_AGENT_NAME,
+      description=DELEGATE_AGENT_DESCRIPTION,
+      instruction=BASE_INSTRUCTION,
+      model=model,
+  )
+  delegating_agent = Agent(
+      name=DELEGATING_AGENT_NAME,
+      description=DELEGATING_AGENT_DESCRIPTION,
+      instruction=BASE_INSTRUCTION,
+      model=model,
+      tools=[AgentTool(agent=delegate)],
+  )
+  return Workflow(
+      name=AGENT_TOOL_WORKFLOW_NAME,
+      edges=[(START, delegating_agent)],
+  )
+
+
+async def _run_workflow(
+    workflow: Workflow, event_sink: list[Event] | None
+) -> list[Event]:
+  """Runs a workflow to completion, draining the event stream."""
   runner = InMemoryRunner(app_name=NODE_APP_NAME, node=workflow)
   session = await runner.session_service.create_session(
       app_name=NODE_APP_NAME, user_id=NODE_USER_ID
@@ -438,6 +681,39 @@ async def run_node_scenario(
       collected_events.append(event)
 
   return collected_events
+
+
+async def run_node_scenario(
+    model: BaseLlm,
+    *,
+    tool_exception: Exception | None = None,
+    event_sink: list[Event] | None = None,
+) -> list[Event]:
+  """Runs the workflow scenario to completion, draining the event stream.
+
+  If ``event_sink`` is provided, collected events are appended to it as they
+  are drained. This lets callers inspect the events that were emitted before
+  an exception propagates (e.g. when ``tool_exception`` is set).
+  """
+  return await _run_workflow(
+      build_test_workflow(model, tool_exception=tool_exception), event_sink
+  )
+
+
+async def run_agent_tool_scenario(
+    model: BaseLlm, *, event_sink: list[Event] | None = None
+) -> list[Event]:
+  """Runs the agent-tool workflow scenario to completion."""
+  return await _run_workflow(build_agent_tool_test_workflow(model), event_sink)
+
+
+async def run_nested_agents_scenario(
+    model: BaseLlm, *, event_sink: list[Event] | None = None
+) -> list[Event]:
+  """Runs the nested-agent workflow scenario to completion."""
+  return await _run_workflow(
+      build_nested_agents_test_workflow(model), event_sink
+  )
 
 
 async def run_agent_scenario(
@@ -486,7 +762,7 @@ def gemini_test_model(
       GenerateContentResponse(
           candidates=[
               Candidate(
-                  content=Content(role="model", parts=[part]),
+                  content=Content(role="model", parts=[copy.deepcopy(part)]),
                   finish_reason=FinishReason.STOP,
               )
           ],
@@ -608,6 +884,22 @@ DEFAULT_MCP_TOOL = McpTool(
     },
 )
 
+# The (fake) streamable HTTP server a ``tools/call`` is posted to when the
+# scenario is asked for a session that talks over HTTP. Everything about the
+# exchange is pinned here, so what the record carries is a value a reader of
+# the golden can look up.
+MCP_SERVER_URL = "https://mcp.example.com/mcp"
+MCP_SESSION_ID = "mcp-session-1"
+MCP_PROTOCOL_VERSION = "2025-06-18"
+# A credential on the request. The case allowlists `authorization`, so the
+# golden shows what asking for it gets you: the marker, never the secret.
+MCP_AUTHORIZATION = "Bearer some-secret-token"
+MCP_REQUEST_BODY = (
+    '{"jsonrpc": "2.0", "id": 1, "method": "tools/call",'
+    f' "params": {{"name": "{TOOL_NAME}"}}}}'
+)
+MCP_RESPONSE_BODY = '{"jsonrpc": "2.0", "id": 1, "result": {"isError": false}}'
+
 
 class FakeMcpSession(McpClientSession):
   """Minimal ``McpClientSession`` stand-in with a counted ``list_tools()``.
@@ -616,10 +908,16 @@ class FakeMcpSession(McpClientSession):
   every ``isinstance(x, McpClientSession)`` check in ADK and in the MCP
   Python client passes, without needing to wire up the underlying anyio
   memory streams + peer process.
+
+  With ``over_http``, ``call_tool`` additionally posts the JSON-RPC call
+  through the httpx client ADK builds for a streamable HTTP connection --
+  hook, redaction and all -- against a canned server. That is what makes the
+  transport itself observable: the exchange is recorded from inside the
+  ``execute_tool`` span, exactly where a real MCP tool call would record it.
   """
 
   def __init__(  # pyright: ignore[reportMissingSuperCall]
-      self, *, tools: list[McpTool] | None = None
+      self, *, tools: list[McpTool] | None = None, over_http: bool = False
   ) -> None:
     # Deliberately skip ``McpClientSession.__init__``: the real one wants
     # live anyio streams + a peer process. ``isinstance`` checks still
@@ -627,7 +925,38 @@ class FakeMcpSession(McpClientSession):
     self._tools: list[McpTool] = (
         tools if tools is not None else [DEFAULT_MCP_TOOL]
     )
+    self._over_http = over_http
     self.list_tools_call_count: int = 0
+
+  async def _post_tool_call(self) -> None:
+    """Posts one ``tools/call`` over ADK's instrumented httpx client."""
+
+    def respond(_request: httpx.Request) -> httpx.Response:
+      return httpx.Response(
+          200,
+          headers={
+              "content-type": "application/json",
+              "mcp-session-id": MCP_SESSION_ID,
+              "mcp-protocol-version": MCP_PROTOCOL_VERSION,
+          },
+          text=MCP_RESPONSE_BODY,
+      )
+
+    def base_factory(
+        headers: dict[str, str] | None = None,
+        timeout: httpx.Timeout | None = None,
+        auth: httpx.Auth | None = None,
+    ) -> httpx.AsyncClient:
+      del timeout, auth  # The canned server has neither to honour.
+      return httpx.AsyncClient(
+          headers=headers, transport=httpx.MockTransport(respond)
+      )
+
+    # The same wrapper `MCPSessionManager._create_client` puts around the
+    # connection's factory for an HTTP transport.
+    factory = _DebugHttpxClientFactory(base_factory)
+    async with factory(headers={"Authorization": MCP_AUTHORIZATION}) as client:
+      await client.post(MCP_SERVER_URL, content=MCP_REQUEST_BODY)
 
   @override
   async def list_tools(
@@ -650,6 +979,8 @@ class FakeMcpSession(McpClientSession):
       meta: dict[str, object] | None = None,
   ) -> CallToolResult:
     """Answers like the agent's own ``some_tool``, over MCP."""
+    if self._over_http:
+      await self._post_tool_call()
     argument = (arguments or {}).get("arg1", "")
     return CallToolResult(
         content=[
@@ -735,7 +1066,12 @@ def _make_skill(
       resources=Resources(
           references={"ref1": "ref1_content"},
           assets={"deeply/hidden/asset1": "asset1_content"},
-          scripts={"script1": Script(src="script1_content")},
+          scripts={
+              "script1": Script(src="script1_content"),
+              "ec_0.py": Script(src="print(':D')"),
+              "ec_1.py": Script(src="foo = 1/0"),
+              "ec_10.py": Script(src="import sys; sys.exit(10)"),
+          },
       ),
   )
   if source == "registry":
@@ -793,8 +1129,20 @@ _SKILL_RESOURCE_PARTS: dict[SkillResourceType, Part] = {
 }
 
 
+def _run_script(exit_code: int) -> Part:
+  return Part.from_function_call(
+      name="run_skill_script",
+      args={
+          "skill_name": REGISTRY_SKILL_NAME,
+          "file_path": f"scripts/ec_{exit_code}.py",
+      },
+  )
+
+
 def skill_turns(
-    skills: Sequence[SkillType], resources: Sequence[SkillResourceType] = ()
+    skills: Sequence[SkillType],
+    resources: Sequence[SkillResourceType] = (),
+    scripts_return_exit_codes: Sequence[int] = (),
 ) -> tuple[Turn, ...]:
   """The canned conversation for the skill scenario.
 
@@ -810,6 +1158,10 @@ def skill_turns(
           (_SKILL_RESOURCE_PARTS[resource], FIRST_TURN_USAGE)
           for resource in resources
       ),
+      *(
+          (_run_script(exit_code), FIRST_TURN_USAGE)
+          for exit_code in scripts_return_exit_codes
+      ),
       (Part.from_text(text=FINAL_TEXT), SECOND_TURN_USAGE),
   )
 
@@ -820,7 +1172,9 @@ def build_skill_test_runner(model: BaseLlm) -> TestInMemoryRunner:
       _make_skill(name=REGISTRY_SKILL_NAME, source="registry"),
   )
   toolset = SkillToolset(
-      [_make_skill(additional_tools=["foo", "bar"])], registry=registry
+      [_make_skill(additional_tools=["foo", "bar"])],
+      registry=registry,
+      code_executor=UnsafeLocalCodeExecutor(),
   )
   test_agent = Agent(
       name=AGENT_NAME,

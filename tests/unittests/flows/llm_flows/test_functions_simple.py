@@ -18,13 +18,13 @@ from typing import Callable
 from unittest import mock
 
 from fastapi.openapi.models import HTTPBearer
-from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.auth.auth_tool import AuthToolArguments
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.events.ui_widget import UiWidget
+from google.adk.flows.llm_flows.functions import _collect_function_call_ids
 from google.adk.flows.llm_flows.functions import AF_FUNCTION_CALL_ID_PREFIX
 from google.adk.flows.llm_flows.functions import deep_merge_dicts
 from google.adk.flows.llm_flows.functions import find_event_by_function_call_id
@@ -36,6 +36,7 @@ from google.adk.flows.llm_flows.functions import handle_function_calls_live
 from google.adk.flows.llm_flows.functions import merge_parallel_function_response_events
 from google.adk.flows.llm_flows.functions import remove_client_function_call_id
 from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from google.adk.live import LiveRequestQueue
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.computer_use.computer_use_tool import ComputerUseTool
 from google.adk.tools.function_tool import FunctionTool
@@ -2514,6 +2515,20 @@ def test_find_event_by_function_call_id_returns_none_when_id_absent():
   result = find_event_by_function_call_id([contentless, other_call], 'call_a')
 
   assert result is None
+
+
+def test_collect_function_call_ids_collects_all_unique_ids():
+  """Returns every non-empty function call id across events."""
+  event_a = _model_call_event('inv_1', 'call_a')
+  event_b = _model_call_event('inv_2', 'call_b')
+  event_dup = _model_call_event('inv_3', 'call_a')
+  contentless = Event(invocation_id='inv_4', author='root_agent')
+
+  result = _collect_function_call_ids(
+      [event_a, event_b, event_dup, contentless]
+  )
+
+  assert result == {'call_a', 'call_b'}
 
 
 def test_get_long_running_function_calls_returns_only_long_running_call_ids():

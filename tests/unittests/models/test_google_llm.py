@@ -2589,8 +2589,8 @@ def test_build_request_log_fallback_to_repr_on_all_failures(monkeypatch):
   assert "<error building config log>" in log_output
 
 
-def test_build_request_log_redacts_http_options_credentials():
-  """Test that _build_request_log redacts sensitive fields in http_options."""
+def test_build_request_log_omits_http_options():
+  """Test that _build_request_log keeps all of http_options out of the log."""
   llm_request = LlmRequest(
       model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
@@ -2601,7 +2601,7 @@ def test_build_request_log_redacts_http_options_credentials():
               extra_body={"secret_key": "some_secret"},
               client_args={"token": "arg_secret"},
               async_client_args={"token": "async_secret"},
-              base_url="https://example.com/api",
+              base_url="https://signed.example.com/api?sig=url_secret",
           ),
       ),
   )
@@ -2609,20 +2609,39 @@ def test_build_request_log_redacts_http_options_credentials():
   log_output = _build_request_log(llm_request)
 
   assert "Config:" in log_output
-  # base_url should be present
-  assert "https://example.com/api" in log_output
-  # sensitive http_options fields should NOT be present in log_output
+  assert "'temperature': 0.7" in log_output
+  # No field of http_options reaches the log, named or not. base_url is
+  # included in that: it is where the credential sits when the caller points
+  # at a signed endpoint or an authenticating proxy.
+  assert "'http_options'" not in log_output
+  assert "url_secret" not in log_output
+  assert "signed.example.com" not in log_output
   assert "secret_token" not in log_output
   assert "secret_key" not in log_output
   assert "arg_secret" not in log_output
   assert "async_secret" not in log_output
-  assert "'headers'" not in log_output
-  assert "'extra_body'" not in log_output
-  assert "'client_args'" not in log_output
-  assert "'async_client_args'" not in log_output
-  assert "'httpx_client'" not in log_output
-  assert "'httpx_async_client'" not in log_output
-  assert "'aiohttp_client'" not in log_output
+
+
+def test_build_request_log_omits_http_options_fields_the_sdk_may_add():
+  """No field name of http_options reaches the log, listed or not."""
+  llm_request = LlmRequest(
+      model="gemini-2.5-flash",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(
+          http_options=types.HttpOptions(
+              base_url="https://proxy.example.com",
+              api_version="v1beta",
+              timeout=1234,
+          ),
+      ),
+  )
+
+  log_output = _build_request_log(llm_request)
+
+  config_section = log_output.split("Config:")[1].split("---")[0]
+  for field_name in types.HttpOptions.model_fields:
+    assert field_name not in config_section
+  assert "1234" not in config_section
 
 
 @pytest.mark.asyncio

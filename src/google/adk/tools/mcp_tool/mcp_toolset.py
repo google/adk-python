@@ -32,14 +32,6 @@ from typing import TypeVar
 from typing import Union
 import warnings
 
-from mcp import SamplingCapability
-from mcp import StdioServerParameters
-from mcp.client.session import ElicitationFnT
-from mcp.client.session import SamplingFnT
-from mcp.shared.session import ProgressFnT
-from mcp.types import ListResourcesResult
-from mcp.types import ListToolsResult
-from mcp.types import Tool as McpBaseTool
 from pydantic import model_validator
 from typing_extensions import override
 
@@ -48,6 +40,13 @@ from ...auth._auth_headers import build_auth_headers
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
 from ...auth.auth_tool import AuthConfig
+from ...dependencies._mcp import ElicitationFnT
+from ...dependencies._mcp import ListResourcesResult
+from ...dependencies._mcp import ListToolsResult
+from ...dependencies._mcp import SamplingCapability
+from ...dependencies._mcp import SamplingFnT
+from ...dependencies._mcp import StdioServerParameters
+from ...dependencies._mcp import Tool as McpBaseTool
 from ...utils.env_utils import is_env_enabled
 from ..base_tool import BaseTool
 from ..base_toolset import BaseToolset
@@ -64,6 +63,7 @@ from .mcp_session_manager import StreamableHTTPConnectionParams
 from .mcp_tool import _RESERVED_TOOL_NAMES
 from .mcp_tool import MCPTool
 from .mcp_tool import ProgressCallbackFactory
+from .mcp_tool import ProgressFnT
 
 logger = logging.getLogger("google_adk." + __name__)
 

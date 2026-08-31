@@ -24,11 +24,26 @@ from google.adk.agents.run_config import RunConfig
 from google.adk.errors.tool_execution_error import ToolErrorType
 from google.adk.errors.tool_execution_error import ToolExecutionError
 from google.adk.events.event import Event
+from google.adk.models.cache_metadata import CacheMetadata
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.telemetry import TelemetryConfig
 from google.adk.telemetry import tracing
+from google.adk.telemetry._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_CONTENTS_COUNT
+from google.adk.telemetry._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_FINGERPRINT
+from google.adk.telemetry._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_HIT
+from google.adk.telemetry._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_INVOCATIONS_USED
 from google.adk.telemetry._experimental_semconv import _safe_json_serialize_no_whitespaces
+from google.adk.telemetry._stable_semconv import USER_CONTENT_ELIDED
+from google.adk.telemetry.context import ADK_EXPERIMENTAL_TELEMETRY
+from google.adk.telemetry.tracing import _ADK_CAPTURE_MCP_HTTP_BODIES
+from google.adk.telemetry.tracing import _HTTP_REQUEST_BODY_CONTENT
+from google.adk.telemetry.tracing import _HTTP_RESPONSE_BODY_CONTENT
+from google.adk.telemetry.tracing import _OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_REQUEST
+from google.adk.telemetry.tracing import _OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_RESPONSE
+from google.adk.telemetry.tracing import _should_report_mcp_http_exchanges
+from google.adk.telemetry.tracing import _trace_mcp_http_exchange
 from google.adk.telemetry.tracing import _use_extra_generate_content_attributes
 from google.adk.telemetry.tracing import ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS
 from google.adk.telemetry.tracing import GCP_MCP_SERVER_DESTINATION_ID
@@ -52,6 +67,7 @@ from mcp import ClientSession as McpClientSession
 from mcp import ListToolsResult as McpListToolsResult
 from mcp import Tool as McpTool
 from opentelemetry._logs import LogRecord
+from opentelemetry._logs import SeverityNumber
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_AGENT_NAME
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_CONVERSATION_ID
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_INPUT_MESSAGES
@@ -63,7 +79,15 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_SYSTEM_INSTRUCTIONS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_INPUT_TOKENS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_OUTPUT_TOKENS
+from opentelemetry.semconv._incubating.attributes.mcp_attributes import MCP_PROTOCOL_VERSION
+from opentelemetry.semconv._incubating.attributes.mcp_attributes import MCP_SESSION_ID
 from opentelemetry.semconv._incubating.attributes.user_attributes import USER_ID
+from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
+from opentelemetry.semconv.attributes.http_attributes import HTTP_REQUEST_METHOD
+from opentelemetry.semconv.attributes.http_attributes import HTTP_RESPONSE_STATUS_CODE
+from opentelemetry.semconv.attributes.server_attributes import SERVER_ADDRESS
+from opentelemetry.semconv.attributes.server_attributes import SERVER_PORT
+from opentelemetry.semconv.attributes.url_attributes import URL_FULL
 from opentelemetry.trace import StatusCode
 from pydantic import BaseModel
 import pytest
@@ -102,7 +126,9 @@ def mock_event_fixture():
 
 
 async def _create_invocation_context(
-    agent: LlmAgent, state: Optional[dict[str, object]] = None
+    agent: LlmAgent,
+    state: Optional[dict[str, object]] = None,
+    run_config: Optional[RunConfig] = None,
 ) -> InvocationContext:
   session_service = InMemorySessionService()
   session = await session_service.create_session(
@@ -113,7 +139,7 @@ async def _create_invocation_context(
       agent=agent,
       session=session,
       session_service=session_service,
-      run_config=RunConfig(),
+      run_config=run_config or RunConfig(),
   )
   return invocation_context
 
@@ -285,6 +311,203 @@ async def test_trace_call_llm_with_no_usage_metadata(
   assert mock_span_fixture.set_attribute.call_count == 10
   mock_span_fixture.set_attribute.assert_has_calls(
       expected_calls, any_order=True
+  )
+
+
+_EXPERIMENTAL_TELEMETRY_ON = RunConfig(
+    telemetry=TelemetryConfig(adk_experimental_telemetry_opt_in=True)
+)
+
+
+@pytest.mark.asyncio
+async def test_trace_call_llm_with_active_context_cache(
+    monkeypatch, mock_span_fixture
+):
+  """Test trace_call_llm records the state of an active context cache."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(
+      agent, run_config=_EXPERIMENTAL_TELEMETRY_ON
+  )
+  llm_request = LlmRequest(
+      model='gemini-pro',
+      contents=[
+          types.Content(role='user', parts=[types.Part(text='Hello')]),
+      ],
+  )
+  llm_response = LlmResponse(
+      turn_complete=True,
+      finish_reason=types.FinishReason.STOP,
+      cache_metadata=CacheMetadata(
+          cache_name='projects/p/locations/l/cachedContents/c',
+          expire_time=1893456000.0,
+          fingerprint='fp-123',
+          invocations_used=3,
+          contents_count=5,
+      ),
+  )
+
+  trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
+
+  mock_span_fixture.set_attributes.assert_any_call({
+      ADK_EXPERIMENTAL_CONTEXT_CACHE_HIT: True,
+      ADK_EXPERIMENTAL_CONTEXT_CACHE_FINGERPRINT: 'fp-123',
+      ADK_EXPERIMENTAL_CONTEXT_CACHE_CONTENTS_COUNT: 5,
+      ADK_EXPERIMENTAL_CONTEXT_CACHE_INVOCATIONS_USED: 3,
+  })
+
+
+@pytest.mark.asyncio
+async def test_trace_call_llm_with_fingerprint_only_context_cache(
+    monkeypatch, mock_span_fixture
+):
+  """Test trace_call_llm records a miss when no cache is active."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(
+      agent, run_config=_EXPERIMENTAL_TELEMETRY_ON
+  )
+  llm_request = LlmRequest(
+      model='gemini-pro',
+      contents=[
+          types.Content(role='user', parts=[types.Part(text='Hello')]),
+      ],
+  )
+  llm_response = LlmResponse(
+      turn_complete=True,
+      finish_reason=types.FinishReason.STOP,
+      cache_metadata=CacheMetadata(fingerprint='fp-123', contents_count=8),
+  )
+
+  trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
+
+  # The exact dict also pins that invocations_used is left out when unset.
+  mock_span_fixture.set_attributes.assert_any_call({
+      ADK_EXPERIMENTAL_CONTEXT_CACHE_HIT: False,
+      ADK_EXPERIMENTAL_CONTEXT_CACHE_FINGERPRINT: 'fp-123',
+      ADK_EXPERIMENTAL_CONTEXT_CACHE_CONTENTS_COUNT: 8,
+  })
+
+
+@pytest.mark.asyncio
+async def test_trace_call_llm_omits_context_cache_without_opt_in(
+    monkeypatch, mock_span_fixture
+):
+  """Test context cache attributes stay off unless experimental is opted in."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest(
+      model='gemini-pro',
+      contents=[
+          types.Content(role='user', parts=[types.Part(text='Hello')]),
+      ],
+  )
+  llm_response = LlmResponse(
+      turn_complete=True,
+      finish_reason=types.FinishReason.STOP,
+      cache_metadata=CacheMetadata(
+          cache_name='projects/p/locations/l/cachedContents/c',
+          expire_time=1893456000.0,
+          fingerprint='fp-123',
+          invocations_used=3,
+          contents_count=5,
+      ),
+  )
+
+  trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
+
+  # The span is still traced; only the experimental attributes are withheld.
+  mock_span_fixture.set_attribute.assert_any_call(
+      'gen_ai.system', 'gcp.vertex.agent'
+  )
+  set_keys = [
+      call.args[0] for call in mock_span_fixture.set_attribute.call_args_list
+  ]
+  for call in mock_span_fixture.set_attributes.call_args_list:
+    set_keys.extend(call.args[0])
+  assert not [key for key in set_keys if key.startswith('adk.experimental.')]
+
+
+@pytest.mark.asyncio
+async def test_trace_inference_result_with_context_cache(mock_span_fixture):
+  """Test the generate_content span also carries context cache state."""
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(
+      agent, run_config=_EXPERIMENTAL_TELEMETRY_ON
+  )
+  llm_response = LlmResponse(
+      turn_complete=True,
+      finish_reason=types.FinishReason.STOP,
+      cache_metadata=CacheMetadata(
+          cache_name='projects/p/locations/l/cachedContents/c',
+          expire_time=1893456000.0,
+          fingerprint='fp-123',
+          invocations_used=3,
+          contents_count=5,
+      ),
+  )
+
+  trace_inference_result(invocation_context, mock_span_fixture, llm_response)
+
+  mock_span_fixture.set_attributes.assert_any_call({
+      ADK_EXPERIMENTAL_CONTEXT_CACHE_HIT: True,
+      ADK_EXPERIMENTAL_CONTEXT_CACHE_FINGERPRINT: 'fp-123',
+      ADK_EXPERIMENTAL_CONTEXT_CACHE_CONTENTS_COUNT: 5,
+      ADK_EXPERIMENTAL_CONTEXT_CACHE_INVOCATIONS_USED: 3,
+  })
+
+
+@pytest.mark.asyncio
+async def test_trace_inference_result_omits_context_cache_without_opt_in(
+    mock_span_fixture,
+):
+  """Test the generate_content span withholds cache state without opt-in."""
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(agent)
+  llm_response = LlmResponse(
+      turn_complete=True,
+      finish_reason=types.FinishReason.STOP,
+      cache_metadata=CacheMetadata(fingerprint='fp-123', contents_count=5),
+  )
+
+  trace_inference_result(invocation_context, mock_span_fixture, llm_response)
+
+  set_keys = []
+  for call in mock_span_fixture.set_attributes.call_args_list:
+    set_keys.extend(call.args[0])
+  assert not [key for key in set_keys if key.startswith('adk.experimental.')]
+
+
+@pytest.mark.asyncio
+async def test_trace_inference_result_allows_a_response_without_cache_metadata(
+    mock_span_fixture,
+):
+  """Test a caller's own response object without cache_metadata is accepted."""
+
+  class ResponseWithoutCacheMetadata:
+    """Stands in for a caller's response type outside adk."""
+
+    partial = False
+    finish_reason = types.FinishReason.STOP
+    usage_metadata = None
+    content = None
+    model_version = 'gemini-pro'
+
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(agent)
+
+  trace_inference_result(
+      invocation_context, mock_span_fixture, ResponseWithoutCacheMetadata()
   )
 
 
@@ -623,6 +846,176 @@ def test_trace_tool_call_with_dict_response(
   mock_span_fixture.set_attribute.assert_has_calls(
       expected_calls, any_order=True
   )
+
+
+def _trace_mcp_exchange(**overrides):
+  """Reports a plausible MCP exchange, with `overrides` applied."""
+  _trace_mcp_http_exchange(**{
+      'method': 'POST',
+      'url': 'https://mcp.example.com/messages',
+      'server_address': 'mcp.example.com',
+      'server_port': None,
+      'status_code': 200,
+      'mcp_session_id': None,
+      'mcp_protocol_version': None,
+      'request_headers': {'x-req': 'val'},
+      'request_body': '{"method": "tools/call"}',
+      'response_headers': {'content-type': 'application/json'},
+      'response_body': '{"result": {}}',
+      **overrides,
+  })
+
+
+@mock.patch('google.adk.telemetry.tracing.otel_logger')
+def test_trace_mcp_http_exchange_emits_debug_log_record(
+    mock_otel_logger, monkeypatch
+):
+  """Test that an exchange lands as one record with semconv attributes."""
+  monkeypatch.setenv(_ADK_CAPTURE_MCP_HTTP_BODIES, 'true')
+
+  _trace_mcp_exchange(
+      url='https://mcp.example.com:8443/messages?sessionId=REDACTED',
+      server_port=8443,
+      mcp_session_id='sess-1',
+      mcp_protocol_version='2025-06-18',
+  )
+
+  log_record: LogRecord = mock_otel_logger.emit.call_args.args[0]
+  assert (
+      log_record.event_name == 'adk.experimental.mcp.http.client.response.end'
+  )
+  assert log_record.severity_number == SeverityNumber.DEBUG
+  assert log_record.attributes == {
+      HTTP_REQUEST_METHOD: 'POST',
+      URL_FULL: 'https://mcp.example.com:8443/messages?sessionId=REDACTED',
+      SERVER_ADDRESS: 'mcp.example.com',
+      SERVER_PORT: 8443,
+      MCP_SESSION_ID: 'sess-1',
+      MCP_PROTOCOL_VERSION: '2025-06-18',
+      HTTP_RESPONSE_STATUS_CODE: 200,
+  }
+  assert log_record.body == {
+      _HTTP_REQUEST_BODY_CONTENT: '{"method": "tools/call"}',
+      _HTTP_RESPONSE_BODY_CONTENT: '{"result": {}}',
+  }
+
+
+@mock.patch('google.adk.telemetry.tracing.otel_logger')
+def test_trace_mcp_http_exchange_elides_bodies_by_default(
+    mock_otel_logger, monkeypatch
+):
+  """Bodies carry user content, so recording them has to be asked for."""
+  monkeypatch.delenv(_ADK_CAPTURE_MCP_HTTP_BODIES, raising=False)
+
+  _trace_mcp_exchange()
+
+  log_record: LogRecord = mock_otel_logger.emit.call_args.args[0]
+  # The attributes still describe the exchange; only the payload is elided.
+  assert log_record.attributes[HTTP_RESPONSE_STATUS_CODE] == 200
+  assert log_record.body == {
+      _HTTP_REQUEST_BODY_CONTENT: USER_CONTENT_ELIDED,
+      _HTTP_RESPONSE_BODY_CONTENT: USER_CONTENT_ELIDED,
+  }
+  assert SERVER_PORT not in log_record.attributes
+  assert MCP_SESSION_ID not in log_record.attributes
+  assert MCP_PROTOCOL_VERSION not in log_record.attributes
+
+
+@mock.patch('google.adk.telemetry.tracing.otel_logger')
+def test_trace_mcp_http_exchange_records_no_header_unasked(
+    mock_otel_logger, monkeypatch
+):
+  """No header is recorded that the OTel env vars do not name."""
+  monkeypatch.delenv(
+      _OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_REQUEST, raising=False
+  )
+  monkeypatch.delenv(
+      _OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_RESPONSE, raising=False
+  )
+
+  _trace_mcp_exchange(
+      request_headers={'x-req': 'val', 'content-type': 'application/json'}
+  )
+
+  log_record: LogRecord = mock_otel_logger.emit.call_args.args[0]
+  assert not [key for key in log_record.attributes if '.header.' in key]
+
+
+@mock.patch('google.adk.telemetry.tracing.otel_logger')
+def test_trace_mcp_http_exchange_captures_allowlisted_headers(
+    mock_otel_logger, monkeypatch
+):
+  """The OTel httpx env vars are the whole allowlist, regexes included."""
+  monkeypatch.setenv(
+      _OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_REQUEST,
+      'x-req,x-trace-.*',
+  )
+  monkeypatch.setenv(
+      _OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_RESPONSE, 'x-resp'
+  )
+
+  _trace_mcp_exchange(
+      request_headers={
+          'X-Req': 'val',
+          'x-trace-id': 'abc',
+          'x-other': 'dropped',
+          # Allowlisting a credential header still yields only the marker,
+          # because the caller redacts before we ever see it.
+          'authorization': '<redacted>',
+      },
+      response_headers={'x-resp': 'val'},
+  )
+
+  log_record: LogRecord = mock_otel_logger.emit.call_args.args[0]
+  assert log_record.attributes['http.request.header.x-req'] == ['val']
+  assert log_record.attributes['http.request.header.x-trace-id'] == ['abc']
+  assert log_record.attributes['http.response.header.x-resp'] == ['val']
+  assert 'http.request.header.x-other' not in log_record.attributes
+  assert 'http.request.header.authorization' not in log_record.attributes
+
+
+@mock.patch('google.adk.telemetry.tracing.otel_logger')
+def test_trace_mcp_http_exchange_ignores_malformed_header_pattern(
+    mock_otel_logger, monkeypatch
+):
+  """A bad regex drops its own entry rather than the whole record."""
+  monkeypatch.setenv(
+      _OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_REQUEST, 'x-re[,x-req'
+  )
+
+  _trace_mcp_exchange(request_headers={'x-req': 'val'})
+
+  log_record: LogRecord = mock_otel_logger.emit.call_args.args[0]
+  assert log_record.attributes['http.request.header.x-req'] == ['val']
+
+
+@pytest.mark.parametrize(
+    'env_value,reported',
+    [(None, False), ('false', False), ('true', True), ('1', True)],
+)
+def test_should_report_mcp_http_exchanges_follows_the_experimental_opt_in(
+    env_value, reported, monkeypatch
+):
+  """The record is experimental, so nothing is reported without the opt-in."""
+  if env_value is None:
+    monkeypatch.delenv(ADK_EXPERIMENTAL_TELEMETRY, raising=False)
+  else:
+    monkeypatch.setenv(ADK_EXPERIMENTAL_TELEMETRY, env_value)
+
+  assert _should_report_mcp_http_exchanges() is reported
+
+
+@mock.patch('google.adk.telemetry.tracing.otel_logger')
+def test_trace_mcp_http_exchange_sets_error_type_on_failure(mock_otel_logger):
+  """Test that a 4xx or 5xx status is also recorded as `error.type`."""
+  _trace_mcp_exchange(
+      server_address=None, status_code=403, response_body='Forbidden'
+  )
+
+  log_record: LogRecord = mock_otel_logger.emit.call_args.args[0]
+  assert log_record.attributes[ERROR_TYPE] == '403'
+  # An unknown host is omitted rather than recorded as None.
+  assert SERVER_ADDRESS not in log_record.attributes
 
 
 def test_trace_merged_tool_calls_sets_correct_attributes(

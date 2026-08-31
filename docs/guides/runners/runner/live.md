@@ -6,7 +6,7 @@
 
 Standard chat models operate via turn-based request-response cycles. For real-time voice, conversational audio, and streaming multimodal applications, waiting for complete turns introduces prohibitive latency. Gemini Live models require persistent, low-latency WebSocket or gRPC connections capable of receiving continuous PCM audio frames while simultaneously streaming back audio responses and executing tools.
 
-The `run_live` subsystem resolves this by connecting `Runner` to Gemini Multimodal Live endpoints. Callers pass a [`LiveRequestQueue`](../../agents/live_request_queue/index.md) to supply real-time user audio or text chunks. The runner maintains an active streaming session, routes non-blocking tool calls to background execution tasks without interrupting the audio stream, and yields real-time model content events (`Event`).
+The `run_live` subsystem resolves this by connecting `Runner` to Gemini Multimodal Live endpoints. Callers pass a [`LiveRequestQueue`](../../live/live_request_queue/index.md) to supply real-time user audio or text chunks. The runner maintains an active streaming session, routes non-blocking tool calls to background execution tasks without interrupting the audio stream, and yields real-time model content events (`Event`).
 
 ## Get started
 
@@ -110,7 +110,7 @@ Configured via `run_config=RunConfig(...)`:
 Tool functions can declare `input_stream: LiveRequestQueue` as a parameter to stream partial tool results or status updates back to the live session while running in the background:
 
 ```python
-from google.adk.agents import LiveRequestQueue
+from google.adk.live import LiveRequestQueue
 from google.genai import types
 
 
@@ -141,7 +141,7 @@ async def fetch_stock_ticker(
 ## Related guides & samples
 
 *   [Runner and InMemoryRunner](index.md) — Main guide on standard turn-based runner execution.
-*   [LiveRequestQueue](../../agents/live_request_queue/index.md) — Guide on real-time input queueing, audio chunking, and non-blocking streaming tools.
+*   [LiveRequestQueue](../../live/live_request_queue/index.md) — Guide on real-time input queueing, audio chunking, and non-blocking streaming tools.
 *   [App Container](../../apps/app/index.md) — Guide on bundling agents and plugins into an `App`.
 *   [Live Bidi Streaming Single Agent](../../../../contributing/samples/live/live_bidi_streaming_single_agent/agent.py) — Sample single-agent real-time streaming application.
 *   [Live Non-Blocking Tool Agent](../../../../contributing/samples/live/live_non_blocking_tool_agent/agent.py) — Sample agent using `LiveRequestQueue` in background tool callbacks.

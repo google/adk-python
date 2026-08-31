@@ -54,9 +54,17 @@ _VERSION_RE = re.compile(r"^## \[")
 _SUBSECTION_RE = re.compile(r"^### ")
 # Matches a changelog entry bullet.
 _ENTRY_RE = re.compile(r"^\s*\* ")
-# Trailing " ([abc1234](url))..." on an entry; stripped only to build the dedupe
-# key so two commits with the same subject collapse to one.
-_TRAILER_RE = re.compile(r"\s*\(\[[0-9a-f]{6,}\]\(.*$")
+# Trailing commit hashes, PR references, issue closures, and links on an entry;
+# stripped only to build the dedupe key so commits with the same subject collapse.
+_TRAILER_RE = re.compile(
+    r"\s*(?:"
+    r"\(?\[[0-9a-f]{6,}\](?:\([^)]*\))?\)?"
+    r"|\(?\[#\d+\](?:\([^)]*\))?\)?"
+    r"|\(\s*#\d+\s*\)"
+    r"|,?\s*(?:closes|fixes|resolves)\s+(?:\[#\d+\](?:\([^)]*\))?|#\d+)"
+    r")+\s*$",
+    re.IGNORECASE,
+)
 # An accidental "[@name](https://github.com/name)" auto-link, produced when a
 # commit subject contained a bare "@name" (e.g. "... in @node decorator").
 _MENTION_RE = re.compile(r"\[@([\w-]+)\]\(https://github\.com/\1\)")
@@ -160,7 +168,8 @@ def _normalize_entry(line: str) -> str:
 
 def _dedupe_key(line: str) -> str:
   """Key for detecting the same change landed under multiple commits."""
-  core = _TRAILER_RE.sub("", line)  # drop the "([hash](url))" trailer
+  core = _TRAILER_RE.sub("", line)  # drop trailing commit hash/PR links
+  core = re.sub(r"[\s\.,;:]+$", "", core)  # strip trailing punctuation
   return re.sub(r"\s+", " ", core).strip().lower()
 
 
