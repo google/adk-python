@@ -4466,6 +4466,159 @@ async def test_generate_content_async_stream_sets_finish_reason(
 
 
 @pytest.mark.asyncio
+async def test_generate_content_async_stream_reports_content_filter(
+    mock_completion, lite_llm_instance
+):
+  """A filtered stream reports SAFETY and an error, not a clean stop."""
+  mock_completion.return_value = iter([
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content="Partial "),
+              )
+          ],
+      ),
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(finish_reason="content_filter", delta=Delta())
+          ],
+      ),
+  ])
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          llm_request, stream=True
+      )
+  ]
+
+  assert responses[-1].partial is False
+  assert responses[-1].content.parts[0].text == "Partial "
+  assert responses[-1].finish_reason == types.FinishReason.SAFETY
+  assert responses[-1].error_code == types.FinishReason.SAFETY
+  assert responses[-1].error_message == "Finished with SAFETY"
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_reason_does_not_carry_over(
+    mock_completion, lite_llm_instance
+):
+  """A finalized segment's reason must not be stamped on the next one."""
+  mock_completion.return_value = iter([
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_1",
+                              function=Function(name="f", arguments='{"a":1}'),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ],
+      ),
+      # Truncates the tool-call segment, finalizing it and clearing buffers.
+      ModelResponseStream(
+          model="test_model",
+          choices=[StreamingChoices(finish_reason="length", delta=Delta())],
+      ),
+      # A fresh text segment that the stream simply ends after.
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content="and then some text"),
+              )
+          ],
+      ),
+  ])
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          llm_request, stream=True
+      )
+  ]
+
+  text_responses = [
+      r
+      for r in responses
+      if r.content and r.content.parts and r.content.parts[0].text
+  ]
+  assert text_responses[-1].finish_reason != types.FinishReason.MAX_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_with_only_finish_reason(
+    mock_completion, lite_llm_instance
+):
+  """A stream with no content still reports its finish reason and usage."""
+  mock_completion.return_value = iter([
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(finish_reason="content_filter", delta=Delta())
+          ],
+          usage={
+              "prompt_tokens": 7,
+              "completion_tokens": 0,
+              "total_tokens": 7,
+          },
+      ),
+  ])
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          llm_request, stream=True
+      )
+  ]
+
+  assert len(responses) == 1
+  assert responses[0].content.parts == []
+  assert responses[0].finish_reason == types.FinishReason.SAFETY
+  assert responses[0].error_code == types.FinishReason.SAFETY
+  assert responses[0].error_message == "Finished with SAFETY"
+  assert responses[0].usage_metadata.prompt_token_count == 7
+  assert responses[0].usage_metadata.total_token_count == 7
+
+
+@pytest.mark.asyncio
 async def test_generate_content_async_stream_with_reasoning_tokens(
     mock_completion, lite_llm_instance
 ):
