@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from typing import Callable
 from typing import Optional
 
@@ -40,7 +41,7 @@ class LongRunningFunctionTool(FunctionTool):
     is_long_running: Whether the tool is a long running operation.
   """
 
-  def __init__(self, func: Callable):
+  def __init__(self, func: Callable[..., Any]):
     super().__init__(func)
     self.is_long_running = True
 
