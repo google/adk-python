@@ -302,15 +302,18 @@ def prepare_llm_agent_context(agent: LlmAgent, ctx: Context) -> Context:
   return agent_ctx
 
 
-def prepare_llm_agent_input(
+async def prepare_llm_agent_input(
     agent: LlmAgent, ctx: Context, node_input: object
 ) -> None:
   """Prepares the input for running LlmAgent as a node.
 
-  For ``single_turn`` mode, append a user-role event with the input
-  directly to session.events (legacy behavior). When resuming with
-  ``resume_inputs``, skip appending to avoid injecting duplicate synthetic
-  user events that shadow user function responses.
+  For ``single_turn`` mode, write a user-role event carrying the input
+  through the session service. Appending to ``session.events`` by hand
+  instead reaches only the in-memory list, so the input never becomes part
+  of the stored session. Nothing is written when the input is the
+  invocation's own user message, because the runner has already recorded
+  that turn, nor when resuming with ``resume_inputs``, because a synthetic
+  user event would shadow the user's function responses.
 
   For ``task`` mode, the input is the parent's task-delegation FC
   args.  Those are NOT appended here — the content-builder
@@ -336,17 +339,32 @@ def prepare_llm_agent_input(
       or bool(ctx.resume_inputs)
   ):
     return
+  from ..runners import _apply_run_config_custom_metadata
+
   agent_input = to_user_content(node_input)
-  user_event = Event(author='user', message=agent_input)
+  ic = ctx._invocation_context
+  # A node wired directly to START is handed the invocation's own user
+  # message, which the runner already recorded. Matching on rendered content
+  # is approximate: a mid-workflow node whose input happens to equal the
+  # user's turn is skipped too.
+  if (
+      ic.user_content is not None
+      and to_user_content(ic.user_content) == agent_input
+  ):
+    return
+  user_event = Event(
+      author='user', message=agent_input, invocation_id=ic.invocation_id
+  )
   if user_event.content is not None:
     user_event.content.role = 'user'
+  _apply_run_config_custom_metadata(user_event, ic.run_config)
   iso = getattr(ctx, 'isolation_scope', None)
   if iso:
     user_event.isolation_scope = iso
-  branch = ctx._invocation_context.branch
+  branch = ic.branch
   if branch:
     user_event.branch = branch
-  ctx.session.events.append(user_event)
+  await ic.session_service.append_event(session=ic.session, event=user_event)
 
 
 def process_llm_agent_output(
@@ -404,7 +422,7 @@ async def run_llm_agent_as_node(
     agent.include_contents = 'none'
 
   agent_ctx = prepare_llm_agent_context(agent, ctx)
-  prepare_llm_agent_input(agent, agent_ctx, node_input)
+  await prepare_llm_agent_input(agent, agent_ctx, node_input)
 
   ic = agent_ctx.get_invocation_context()
   update: dict[str, object] = {'agent': agent}

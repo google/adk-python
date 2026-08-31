@@ -231,13 +231,32 @@ async def test_single_turn_input_event_inherits_branch_and_scope(
   ctx = Context(invocation_context=ic)
   ctx.isolation_scope = 'scope-1'
 
-  prepare_llm_agent_input(agent, ctx, 'hello')
+  await prepare_llm_agent_input(agent, ctx, 'hello')
 
   event = ic.session.events[-1]
   assert event.author == 'user'
+  assert event.invocation_id == ic.invocation_id
   assert event.content and event.content.role == 'user'
   assert event.branch == 'parent.worker@1'
   assert event.isolation_scope == 'scope-1'
+
+
+@pytest.mark.asyncio
+async def test_single_turn_input_event_carries_run_custom_metadata(
+    request: pytest.FixtureRequest,
+):
+  """Run-level custom metadata tags the synthetic input like any other event."""
+  from google.adk.agents.run_config import RunConfig
+  from google.adk.workflow._llm_agent_wrapper import prepare_llm_agent_input
+
+  agent = _make_agent(mode='single_turn')
+  ic = await create_parent_invocation_context(request.function.__name__, agent)
+  ic.run_config = RunConfig(custom_metadata={'tenant': 'acme'})
+  ctx = Context(invocation_context=ic)
+
+  await prepare_llm_agent_input(agent, ctx, 'hello')
+
+  assert ic.session.events[-1].custom_metadata == {'tenant': 'acme'}
 
 
 @pytest.mark.asyncio
@@ -265,12 +284,90 @@ async def test_single_turn_input_skipped_when_resuming(
   )
 
   initial_len = len(ic.session.events)
-  prepare_llm_agent_input(agent, ctx, 'hello')
+  await prepare_llm_agent_input(agent, ctx, 'hello')
 
   # Verify no duplicate user input was appended on resume
   assert len(ic.session.events) == initial_len
   # Verify the resumed node still sees the initial user input from turn 1
   assert ic.session.events[-1].content.parts[0].text == 'turn 1 initial input'
+
+
+@pytest.mark.asyncio
+async def test_single_turn_input_skipped_when_it_is_the_user_message(
+    request: pytest.FixtureRequest,
+):
+  """The runner already recorded the invocation's own user message."""
+  from google.adk.workflow._llm_agent_wrapper import prepare_llm_agent_input
+
+  agent = _make_agent(mode='single_turn')
+  ic = await create_parent_invocation_context(request.function.__name__, agent)
+  ic.user_content = types.Content(
+      role='user', parts=[types.Part(text='who am i')]
+  )
+  ctx = Context(invocation_context=ic)
+
+  await prepare_llm_agent_input(agent, ctx, ic.user_content)
+
+  assert not ic.session.events
+
+
+@pytest.mark.asyncio
+async def test_single_turn_input_event_reaches_the_stored_session(
+    request: pytest.FixtureRequest,
+):
+  """A single-turn node's input becomes part of the stored session.
+
+  Appending to the in-memory events list reaches only the Session object the
+  node happens to hold, so the input is missing from the session anyone loads
+  afterwards and the model turn it prompted has no prompt.
+  """
+  from . import testing_utils
+
+  async def brief(node_input: Any) -> str:
+    return 'write the brief'
+
+  wrapper = build_node(_make_agent(mode='single_turn'))
+  wf = Workflow(name='wf', edges=[(START, brief), (brief, wrapper)])
+  runner = _new_workflow_runner(wf, request.function.__name__)
+
+  agent_clone = next(n for n in wf.graph.nodes if n.name == wrapper.name)
+  with _mock_leaf_run(agent_clone, content_text='Done.'):
+    await runner.run_async(testing_utils.get_user_content('start'))
+
+  stored = runner.session
+  assert any(
+      event.author == 'user'
+      and event.content
+      and event.content.parts
+      and event.content.parts[0].text == 'write the brief'
+      for event in stored.events
+  )
+
+
+@pytest.mark.asyncio
+async def test_first_node_does_not_store_the_user_message_twice(
+    request: pytest.FixtureRequest,
+):
+  """A node wired to START is fed the turn the runner already stored."""
+  from . import testing_utils
+
+  wrapper = build_node(_make_agent(mode='single_turn'))
+  wf = Workflow(name='wf', edges=[(START, wrapper)])
+  runner = _new_workflow_runner(wf, request.function.__name__)
+
+  agent_clone = next(n for n in wf.graph.nodes if n.name == wrapper.name)
+  with _mock_leaf_run(agent_clone, content_text='Done.'):
+    await runner.run_async(testing_utils.get_user_content('who am i'))
+
+  user_turns = [
+      event
+      for event in runner.session.events
+      if event.author == 'user'
+      and event.content
+      and event.content.parts
+      and event.content.parts[0].text == 'who am i'
+  ]
+  assert len(user_turns) == 1
 
 
 # --- build_node auto-wrapping ---
@@ -340,17 +437,16 @@ class TestBuildNode:
           content=types.Content(parts=[types.Part(text='ok')]),
       )
 
+    async def skip_input(agent, ctx, node_input):
+      return None
+
     object.__setattr__(wrapper, 'run_async', mock_run_async)
     monkeypatch.setattr(
         agent_wrapper,
         'prepare_llm_agent_context',
         lambda agent, ctx: ctx,
     )
-    monkeypatch.setattr(
-        agent_wrapper,
-        'prepare_llm_agent_input',
-        lambda agent, ctx, node_input: None,
-    )
+    monkeypatch.setattr(agent_wrapper, 'prepare_llm_agent_input', skip_input)
     ctx = MagicMock(spec=Context)
     ic = MagicMock()
     ctx.get_invocation_context.return_value = ic
