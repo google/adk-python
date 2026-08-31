@@ -1843,7 +1843,6 @@ tzdata==2026.3
 tzlocal==5.4.4
     # via
     #   -c constraints-3.12.txt.stable.tmp
-    #   google-adk (pyproject.toml)
     #   google-adk
 uritemplate==4.2.0
     # via

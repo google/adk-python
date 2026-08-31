@@ -153,7 +153,10 @@ async def _render_with_regex(
           )
           return ''
         else:
-          raise KeyError(f'Artifact {var_name} not found.')
+          raise KeyError(
+              f"Artifact '{var_name}' not found in agent"
+              f" '{readonly_context.agent_name}'."
+          )
       return str(artifact)
     else:
       if not _is_valid_state_name(var_name):
@@ -171,7 +174,10 @@ async def _render_with_regex(
           )
           return ''
         else:
-          raise KeyError(f'Context variable not found: `{var_name}`.')
+          raise KeyError(
+              f'Context variable not found: `{var_name}` in agent'
+              f" '{readonly_context.agent_name}'."
+          )
 
   return await _async_sub(_TEMPLATE_VAR_PATTERN, _replace_match, template)
 
@@ -219,7 +225,10 @@ async def _render_with_jinja2(
         filename=filename,
     )
     if artifact is None:
-      raise KeyError(f'Artifact {filename} not found.')
+      raise KeyError(
+          f"Artifact '{filename}' not found in agent"
+          f" '{readonly_context.agent_name}'."
+      )
     return str(artifact)
 
   env = jinja2.Environment(

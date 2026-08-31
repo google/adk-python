@@ -2216,3 +2216,198 @@ def test_task_input_user_content_preserves_non_ascii():
   assert "שלום עולם" in text
   assert "北京" in text
   assert "\\u" not in text
+
+
+@pytest.mark.asyncio
+async def test_include_contents_none_keeps_turn_across_long_running_resume():
+  """A tool result posted back by the caller does not restart the turn.
+
+  A long-running tool is finished by calling the runner again with the result
+  as the new message, which lands as a user-authored function_response event.
+  The current turn must still anchor on the user input that started it, so the
+  model sees the call the result belongs to.
+  """
+  agent = Agent(
+      model="gemini-2.5-flash", name="test_agent", include_contents="none"
+  )
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("approve the request"),
+      ),
+      Event(
+          invocation_id="inv1",
+          author="test_agent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          args={"ticket": "t1"},
+                          id="call_1",
+                          name="ask_for_approval",
+                      )
+                  )
+              ],
+              role="model",
+          ),
+      ),
+      Event(
+          invocation_id="inv1",
+          author="test_agent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id="call_1",
+                          name="ask_for_approval",
+                          response={"status": "pending"},
+                      )
+                  )
+              ],
+              role="user",
+          ),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="user",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id="call_1",
+                          name="ask_for_approval",
+                          response={"status": "approved"},
+                      )
+                  )
+              ],
+              role="user",
+          ),
+      ),
+  ]
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  assert llm_request.contents == [
+      types.UserContent("approve the request"),
+      types.Content(
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      args={"ticket": "t1"},
+                      id="call_1",
+                      name="ask_for_approval",
+                  )
+              )
+          ],
+          role="model",
+      ),
+      types.Content(
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      id="call_1",
+                      name="ask_for_approval",
+                      response={"status": "approved"},
+                  )
+              )
+          ],
+          role="user",
+      ),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_include_contents_none_resume_after_an_interleaved_user_turn():
+  """The slice must still reach the call, even if the user spoke meanwhile.
+
+  A long-running tool is exactly the case where the conversation carries on
+  while the call is pending, so an ordinary turn can sit between the call and
+  the posted-back result.
+  """
+  agent = Agent(
+      model="gemini-2.5-flash", name="test_agent", include_contents="none"
+  )
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("approve the request"),
+      ),
+      Event(
+          invocation_id="inv1",
+          author="test_agent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          args={"ticket": "t1"},
+                          id="call_1",
+                          name="ask_for_approval",
+                      )
+                  )
+              ],
+              role="model",
+          ),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="user",
+          content=types.UserContent("meanwhile, what is the weather?"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(parts=[types.Part(text="sunny")], role="model"),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id="call_1",
+                          name="ask_for_approval",
+                          response={"status": "approved"},
+                      )
+                  )
+              ],
+              role="user",
+          ),
+      ),
+  ]
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # The approval must reach the model, alongside the call it answers.
+  function_responses = [
+      part.function_response
+      for content in llm_request.contents
+      for part in content.parts or []
+      if part.function_response
+  ]
+  assert [r.response for r in function_responses] == [{"status": "approved"}]
+  function_calls = [
+      part.function_call
+      for content in llm_request.contents
+      for part in content.parts or []
+      if part.function_call
+  ]
+  assert [c.id for c in function_calls] == ["call_1"]

@@ -607,11 +607,29 @@ def _get_current_turn_contents(
     A list of contents for the current turn only, preserving context needed
     for proper tool execution while excluding conversation history.
   """
-  # Find the latest event that starts the current turn and process from there
+  # Find the latest event that starts the current turn and process from there.
+  # A posted-back tool result is not a turn start, and the slice must reach
+  # back far enough to include the call it answers: the conversation can carry
+  # on while a long-running tool is pending, so an ordinary user turn can sit
+  # between the two, and anchoring there would leave the result orphaned.
+  unmatched_response_ids: set[str] = set()
   for i in range(len(events) - 1, -1, -1):
     event = events[i]
+    unmatched_response_ids -= {
+        function_call.id
+        for function_call in event.get_function_calls()
+        if function_call.id
+    }
+    is_submitted_result = _is_submitted_tool_result(event)
+    if is_submitted_result:
+      unmatched_response_ids.update(
+          function_response.id
+          for function_response in event.get_function_responses()
+          if function_response.id
+      )
     if (
-        _should_include_event_in_context(
+        not unmatched_response_ids
+        and _should_include_event_in_context(
             current_branch,
             event,
             isolation_scope=isolation_scope,
@@ -622,6 +640,7 @@ def _get_current_turn_contents(
         )
         and (event.author == 'user' or _is_other_agent_reply(agent_name, event))
         and not _is_direct_transfer(event)
+        and not is_submitted_result
     ):
       return _get_contents(
           current_branch,
@@ -678,6 +697,19 @@ def _is_request_confirmation_event(event: Event) -> bool:
 def _is_adk_framework_event(event: Event) -> bool:
   """Checks if the event is an ADK framework event."""
   return _is_function_call_event(event, 'adk_framework')
+
+
+def _is_submitted_tool_result(event: Event) -> bool:
+  """Whether the event is a tool result the caller posted back.
+
+  A long-running tool is finished by calling the runner again with the result
+  as the new message, which is stored as a user-authored ``function_response``
+  event. It answers a call the model made earlier, so it continues the turn
+  rather than starting one. Anchoring on it would cut the history above the
+  matching ``function_call``, and the response left with nothing to pair with
+  is then pruned as an orphan, so the request would carry no contents at all.
+  """
+  return event.author == 'user' and bool(event.get_function_responses())
 
 
 def _is_direct_transfer(event: Event) -> bool:
