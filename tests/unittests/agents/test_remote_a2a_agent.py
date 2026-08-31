@@ -29,7 +29,6 @@ from a2a.types import AgentCapabilities
 from a2a.types import AgentCard
 from a2a.types import AgentInterface
 from a2a.types import AgentSkill
-from a2a.types import Artifact
 from a2a.types import Message as A2AMessage
 from a2a.types import Task as A2ATask
 from a2a.types import TaskArtifactUpdateEvent
@@ -59,6 +58,7 @@ from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_preprocessor import TOOLSET_AUTH_CREDENTIAL_ID_PREFIX
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from google.adk.sessions.session import Session
 from google.genai import types as genai_types
@@ -1328,6 +1328,24 @@ class TestRemoteA2aAgentMessageHandling:
 
     assert parts == []
     assert context_id is None
+
+  def test_construct_message_parts_warns_for_state_only_handoff(self, caplog):
+    """A state-only hand-off warns before the remote receives stale content."""
+    self.mock_session.events = [
+        Event(
+            author="local_agent",
+            actions=EventActions(state_delta={"routing": "priority"}),
+        )
+    ]
+
+    with caplog.at_level("WARNING"):
+      parts, context_id = self.agent._construct_message_parts_from_session(
+          self.mock_context
+      )
+
+    assert parts == []
+    assert context_id is None
+    assert "cannot forward the preceding state-only event" in caplog.text
 
   def test_construct_message_parts_from_session_foreign_function_response_not_converted(
       self,

@@ -430,6 +430,33 @@ class TestToAdk:
       # Inert fields a peer may set are still honored.
       assert event.actions.escalate is True
 
+  def test_peer_state_delta_logs_session_boundary_warning(self, caplog):
+    metadata = {
+        _get_adk_metadata_key("actions"): {
+            "stateDelta": {"remote_result": "value"}
+        }
+    }
+    message = Message(
+        message_id="msg-1",
+        role=_compat.ROLE_AGENT,
+        parts=[_make_a2a_part_for_test({})],
+        metadata=metadata,
+    )
+
+    with caplog.at_level("WARNING"):
+      event = convert_a2a_message_to_event(
+          message,
+          "test-author",
+          self.mock_context,
+          Mock(return_value=[genai_types.Part.from_text(text="result")]),
+      )
+
+    assert event is not None
+    assert event.actions.state_delta == {}
+    assert (
+        "Ignoring a session state delta from a remote A2A peer" in caplog.text
+    )
+
   def test_peer_settable_action_fields_are_exactly_inert(self):
     """Test the peer allow-list holds every spelling of the inert fields."""
     inert_fields = {"escalate", "skip_summarization"}

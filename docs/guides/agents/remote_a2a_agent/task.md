@@ -196,6 +196,21 @@ behavior:
 
 ## Limitations
 
+### Session state boundary
+
+The caller and remote agent use separate sessions. Session state and
+`EventActions.state_delta` do not cross the A2A boundary in either direction:
+
+- `output_key` on the remote agent writes only to the remote server's session.
+- A caller-side state-only event has no content to include in the A2A request.
+- A state delta supplied by a remote peer is not applied to the caller's
+  session, because peers are not allowed to mutate caller state.
+
+Pass values required by the remote agent in event content. Return values needed
+by the caller as response content or, in task mode, as `finish_task` output.
+ADK logs a warning when it is about to drop a state-only hand-off or receives a
+remote state delta.
+
 -   **Workflow Graphs Not Supported**: `RemoteA2aAgent` in task mode
     (`mode="task"`) cannot be used as a node in ADK `Workflow` graphs. It is
     exclusively designed for sub-agent delegation under a parent coordinator
