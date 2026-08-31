@@ -133,6 +133,14 @@ _ENTRY_POINT_PACKAGE_ALLOWLIST = frozenset({
             ),
         ),
         (
+            'google.adk.code_executors',
+            ('google.genai',),
+        ),
+        (
+            'google.adk.code_executors.built_in_code_executor',
+            ('google.genai',),
+        ),
+        (
             'google.adk.workflow',
             (
                 'google.adk.workflow._function_node',
@@ -154,7 +162,14 @@ _ENTRY_POINT_PACKAGE_ALLOWLIST = frozenset({
             ),
         ),
     ],
-    ids=('root', 'agents', 'workflow', 'cli_commands'),
+    ids=(
+        'root',
+        'agents',
+        'code_executors',
+        'built_in_code_executor',
+        'workflow',
+        'cli_commands',
+    ),
 )
 def test_package_import_defers_unrelated_runtime(
     module_name: str, forbidden: tuple[str, ...]
