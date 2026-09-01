@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from typing import Any
 from typing import Optional
@@ -32,6 +33,22 @@ from ..telemetry.context import TelemetryConfig
 from ._streaming_mode import StreamingMode
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+_DEFAULT_MAX_LLM_CALLS = 500
+
+
+def _default_max_llm_calls() -> int:
+  """Resolves the default max LLM calls limit from environment or fallback."""
+  if env_val := os.getenv('ADK_MAX_LLM_CALLS'):
+    try:
+      return int(env_val)
+    except ValueError:
+      logger.warning(
+          'Invalid value for ADK_MAX_LLM_CALLS env var: %s. Using default %s.',
+          env_val,
+          _DEFAULT_MAX_LLM_CALLS,
+      )
+  return _DEFAULT_MAX_LLM_CALLS
 
 
 class ToolThreadPoolConfig(BaseModel):
@@ -207,9 +224,18 @@ class RunConfig(BaseModel):
       ),
   )
 
-  max_llm_calls: int = 500
+  max_llm_calls: int = Field(
+      default_factory=_default_max_llm_calls,
+      description=(
+          'A limit on the total number of llm calls for a given run. Can be'
+          ' overridden by ADK_MAX_LLM_CALLS environment variable.'
+      ),
+  )
   """
   A limit on the total number of llm calls for a given run.
+
+  This limit can be overridden by setting the `ADK_MAX_LLM_CALLS` environment
+  variable.
 
   Valid Values:
     - More than 0 and less than sys.maxsize: The bound on the number of llm

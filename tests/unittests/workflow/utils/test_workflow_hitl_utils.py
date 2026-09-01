@@ -169,7 +169,7 @@ class TestCreateAuthRequestEvent:
         ),
         credential_key="test_cred",
     )
-    event = create_auth_request_event(auth_config, "auth-id-1")
+    event = create_auth_request_event(auth_config, "auth-id-1", _empty_state())
 
     assert event.long_running_tool_ids is not None
     fc = event.content.parts[0].function_call
@@ -210,13 +210,25 @@ class TestCreateAuthRequestEvent:
             ),
         ),
     )
-    event = create_auth_request_event(auth_config, "auth-id-1")
+    event = create_auth_request_event(auth_config, "auth-id-1", _empty_state())
 
     fc = event.content.parts[0].function_call
 
     # python-mode dump leaves auth_scheme.type a live enum, breaking json.dumps
     json.dumps(fc.args)
     assert fc.args["authConfig"]["authScheme"]["type"] == "oauth2"
+
+  def test_client_secret_is_not_handed_to_the_caller(self):
+    """The caller gets what completes the flow; the secret stays behind."""
+    auth_config = _oauth_auth_config()
+    event = create_auth_request_event(auth_config, "auth-id-1", _empty_state())
+
+    fc = event.content.parts[0].function_call
+    oauth2 = fc.args["authConfig"]["exchangedAuthCredential"]["oauth2"]
+    assert oauth2["authUri"]
+    assert oauth2["state"]
+    assert oauth2["clientId"] == "client-id"
+    assert "client-secret" not in json.dumps(fc.args)
 
 
 # --- process_auth_resume / has_auth_credential ---
@@ -257,7 +269,9 @@ class TestProcessAuthResume:
     state = _empty_state()
     assert has_auth_credential(auth_config, state) is False
 
-    await process_auth_resume("user-supplied-key", auth_config, state)
+    await process_auth_resume(
+        "user-supplied-key", auth_config, state, "auth-id-1"
+    )
 
     stored = state["temp:node-cred"]
     assert stored.auth_type == AuthCredentialTypes.API_KEY
@@ -282,6 +296,7 @@ class TestProcessAuthResume:
         response.model_dump(mode="json", exclude_none=True, by_alias=True),
         auth_config,
         state,
+        "auth-id-1",
     )
 
     assert state["temp:node-cred"].api_key == "from-web-flow"
@@ -310,11 +325,183 @@ class TestProcessAuthResume:
         response.model_dump(mode="json", exclude_none=True, by_alias=True),
         auth_config,
         state,
+        "auth-id-1",
     )
 
     assert "temp:node-cred" in state
     assert "temp:unrelated-cred" not in state
     assert has_auth_credential(auth_config, state) is True
+
+
+def _oauth_auth_config(token_url: str = "https://provider.example.com/token"):
+  """An OAuth2 AuthConfig, the resume shape that runs a token exchange."""
+  from fastapi.openapi.models import OAuth2
+  from fastapi.openapi.models import OAuthFlowAuthorizationCode
+  from fastapi.openapi.models import OAuthFlows
+  from google.adk.auth.auth_credential import AuthCredential
+  from google.adk.auth.auth_credential import AuthCredentialTypes
+  from google.adk.auth.auth_credential import OAuth2Auth
+  from google.adk.auth.auth_tool import AuthConfig
+
+  return AuthConfig(
+      auth_scheme=OAuth2(
+          flows=OAuthFlows(
+              authorizationCode=OAuthFlowAuthorizationCode(
+                  authorizationUrl="https://provider.example.com/auth",
+                  tokenUrl=token_url,
+                  scopes={"read": "Read access"},
+              )
+          )
+      ),
+      raw_auth_credential=AuthCredential(
+          auth_type=AuthCredentialTypes.OAUTH2,
+          oauth2=OAuth2Auth(
+              client_id="client-id",
+              client_secret="client-secret",
+          ),
+      ),
+      credential_key="node-cred",
+  )
+
+
+def _oauth_resume_response(auth_config, state_value: str):
+  """The AuthConfig dict a client sends back after the authorization step."""
+  from google.adk.auth.auth_credential import AuthCredential
+  from google.adk.auth.auth_credential import AuthCredentialTypes
+  from google.adk.auth.auth_credential import OAuth2Auth
+
+  response = auth_config.model_copy(deep=True)
+  response.exchanged_auth_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.OAUTH2,
+      oauth2=OAuth2Auth(
+          client_id="client-id",
+          state=state_value,
+          auth_code="authorization-code",
+      ),
+  )
+  return response.model_dump(mode="json", exclude_none=True, by_alias=True)
+
+
+def _requested_state(event) -> str:
+  """Reads the OAuth state ADK generated, as the client receives it."""
+  args = event.content.parts[0].function_call.args
+  return args["authConfig"]["exchangedAuthCredential"]["oauth2"]["state"]
+
+
+class TestProcessAuthResumeOAuth:
+
+  @pytest.fixture(autouse=True)
+  def _no_network_exchange(self, monkeypatch):
+    """Records what each exchange runs against, without network."""
+    from google.adk.auth import auth_handler as auth_handler_module
+    from google.adk.auth.exchanger.base_credential_exchanger import ExchangeResult
+
+    self.exchanged_schemes = []
+    self.exchanged_credentials = []
+    recorded_schemes = self.exchanged_schemes
+    recorded_credentials = self.exchanged_credentials
+
+    class _RecordingExchanger:
+
+      async def exchange(self, auth_credential, auth_scheme=None):
+        recorded_schemes.append(auth_scheme)
+        recorded_credentials.append(auth_credential)
+        return ExchangeResult(auth_credential, True)
+
+    monkeypatch.setattr(
+        auth_handler_module,
+        "OAuth2CredentialExchanger",
+        _RecordingExchanger,
+    )
+
+  @pytest.mark.asyncio
+  async def test_echoed_state_is_accepted(self):
+    auth_config = _oauth_auth_config()
+    state = _empty_state()
+    event = create_auth_request_event(auth_config, "auth-id-1", state)
+
+    await process_auth_resume(
+        _oauth_resume_response(auth_config, _requested_state(event)),
+        auth_config,
+        state,
+        "auth-id-1",
+    )
+
+    assert has_auth_credential(auth_config, state) is True
+
+  @pytest.mark.asyncio
+  async def test_existence_check_does_not_exchange(self):
+    """Asking whether a credential exists must not spend the auth code."""
+    auth_config = _oauth_auth_config()
+    state = _empty_state()
+    event = create_auth_request_event(auth_config, "auth-id-1", state)
+
+    await process_auth_resume(
+        _oauth_resume_response(auth_config, _requested_state(event)),
+        auth_config,
+        state,
+        "auth-id-1",
+    )
+    exchanges_so_far = len(self.exchanged_schemes)
+
+    assert has_auth_credential(auth_config, state) is True
+    assert len(self.exchanged_schemes) == exchanges_so_far
+
+  @pytest.mark.asyncio
+  async def test_exchange_uses_the_client_secret_from_the_node(self):
+    """The response has no secret to echo, so the node's config supplies it."""
+    auth_config = _oauth_auth_config()
+    state = _empty_state()
+    event = create_auth_request_event(auth_config, "auth-id-1", state)
+
+    await process_auth_resume(
+        _oauth_resume_response(auth_config, _requested_state(event)),
+        auth_config,
+        state,
+        "auth-id-1",
+    )
+
+    assert len(self.exchanged_credentials) == 1
+    assert self.exchanged_credentials[0].oauth2.client_secret == "client-secret"
+
+  @pytest.mark.asyncio
+  async def test_response_with_another_state_is_rejected(self):
+    """A response that does not echo the generated state is not exchanged."""
+    auth_config = _oauth_auth_config()
+    state = _empty_state()
+    create_auth_request_event(auth_config, "auth-id-1", state)
+
+    with pytest.raises(ValueError):
+      await process_auth_resume(
+          _oauth_resume_response(auth_config, "some-other-state"),
+          auth_config,
+          state,
+          "auth-id-1",
+      )
+
+    assert self.exchanged_schemes == []
+    assert has_auth_credential(auth_config, state) is False
+
+  @pytest.mark.asyncio
+  async def test_response_cannot_choose_the_token_endpoint(self):
+    """The node's own scheme decides where the credential is exchanged."""
+    auth_config = _oauth_auth_config(
+        token_url="https://provider.example.com/token"
+    )
+    state = _empty_state()
+    event = create_auth_request_event(auth_config, "auth-id-1", state)
+    response = _oauth_resume_response(
+        _oauth_auth_config(token_url="https://elsewhere.example.com/token"),
+        _requested_state(event),
+    )
+
+    await process_auth_resume(response, auth_config, state, "auth-id-1")
+
+    assert len(self.exchanged_schemes) == 1
+    assert (
+        self.exchanged_schemes[0].flows.authorizationCode.tokenUrl
+        == "https://provider.example.com/token"
+    )
 
 
 class TestHasAuthCredential:
@@ -327,7 +514,7 @@ class TestHasAuthCredential:
     other_config = _api_key_auth_config(credential_key="other-cred")
     state = _empty_state()
 
-    await process_auth_resume("key", auth_config, state)
+    await process_auth_resume("key", auth_config, state, "auth-id-1")
 
     assert has_auth_credential(auth_config, state) is True
     assert has_auth_credential(other_config, state) is False

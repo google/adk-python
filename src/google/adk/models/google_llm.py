@@ -37,6 +37,8 @@ from google.genai.errors import ClientError
 from pydantic import Field
 from typing_extensions import override
 
+from google import genai
+
 from ..utils._google_client_headers import get_tracking_headers
 from ..utils._google_client_headers import merge_tracking_headers
 from ..utils.context_utils import Aclosing
@@ -120,6 +122,13 @@ class Gemini(BaseLlm):
   """
 
   model: str = 'gemini-2.5-flash'
+
+  client: Optional[genai.Client] = Field(default=None, exclude=True)
+  """An optional pre-configured google-genai Client.
+
+  When provided, this client will be used for all API calls instead of
+  constructing a new one from environment variables or other attributes.
+  """
 
   client_kwargs: Optional[dict[str, Any]] = Field(
       default=None, exclude=True, repr=False
@@ -381,6 +390,9 @@ class Gemini(BaseLlm):
     Returns:
       The api client.
     """
+    if self.client:
+      return self.client
+
     from google.genai import Client
 
     base_url, api_version = self._base_url_and_api_version
@@ -450,6 +462,9 @@ class Gemini(BaseLlm):
 
   @cached_property
   def _live_api_client(self) -> Client:
+    if self.client:
+      return self.client
+
     from google.genai import Client
 
     base_url, _ = self._base_url_and_api_version
@@ -717,14 +732,24 @@ def _build_request_log(req: LlmRequest) -> str:
             exclude={
                 'system_instruction': True,
                 'tools': tools_exclusion if req.config.tools else True,
-                # Callers may put credentials in per-request headers, so the
-                # transport options never go to the log.
+                # `http_options` is excluded whole, not field by field.
+                # `headers` commonly holds an Authorization bearer token,
+                # `extra_body` and the `*client_args` passthroughs can hold
+                # auth material, and `base_url` carries the credential
+                # itself when the caller points at a signed endpoint or an
+                # authenticating proxy. Naming the sensitive fields instead
+                # would also start logging every field the genai SDK adds
+                # later. The live path excludes it the same way; the trace
+                # spans built in telemetry/tracing.py still name the fields
+                # one by one.
                 'http_options': True,
             },
         )
     )
   except Exception:
-    config_log = repr(req.config.model_copy(update={'http_options': None}))
+    # Do not fall back to repr(req.config) here: an unredacted repr would
+    # reintroduce the same credential leak this function exists to avoid.
+    config_log = '<error building config log>'
 
   return f"""
 LLM Request:

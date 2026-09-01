@@ -25,8 +25,9 @@ regressions documented in the bare-install audit cannot silently re-emerge:
   undeclared ``pydantic_core``.
 * The LangGraph extras MUST exclude the releases that reconstruct unsafe
   objects while deserializing checkpoint data.
-* ``google-genai`` MUST exclude 2.11 and include 2.12.1, whose types module
-  defers the optional MCP server stack instead of importing it at Agent startup.
+* ``google-genai`` MUST exclude 2.11 and floor at 2.12.1 or later, since that
+  release is the first whose types module defers the optional MCP server stack
+  instead of importing it at Agent startup.
 * The ``all`` extra MUST stay the union of every extra that unlocks a runtime
   feature, so that ``pip install "google-adk[all]"`` cannot silently stop
   installing a feature's dependencies.
@@ -58,6 +59,11 @@ _UNSAFE_CHECKPOINT_RELEASES = {
     'langgraph': (('0.2.60', '0.4.7', '1.0.9'), '1.0.10'),
     'langgraph-checkpoint': (('2.1.0', '3.0.0', '4.0.0', '4.1.0'), '4.1.1'),
 }
+
+# The first google-genai release whose types module defers the optional MCP
+# server stack instead of importing it at Agent startup. The floor may be raised
+# past it to pick up newer API surface, but never lowered below it.
+_LAZY_MCP_GOOGLE_GENAI_RELEASE = Version('2.12.1')
 
 # Extras that ``all`` deliberately leaves out, for the reason recorded in the
 # comment above ``optional-dependencies.all`` in pyproject.toml. Every other
@@ -261,6 +267,43 @@ def test_langgraph_extras_exclude_unsafe_checkpoint_releases(
   )
 
 
+@pytest.mark.parametrize(
+    ('extra', 'reason'),
+    [
+        (
+            'mcp',
+            (
+                'google.auth.aio builds no default transport without aiohttp,'
+                ' so the MCP session manager logs a warning and falls back from'
+                ' mTLS to plain TLS'
+            ),
+        ),
+        (
+            'slack',
+            (
+                "SlackRunner reaches socket mode through slack_bolt's aiohttp"
+                ' adapter, and neither slack-bolt nor slack-sdk declares'
+                ' aiohttp'
+            ),
+        ),
+    ],
+)
+def test_extras_that_reach_aiohttp_indirectly_declare_it(
+    pyproject: dict, extra: str, reason: str
+) -> None:
+  """Every extra needing aiohttp says so, now that the base install drops it.
+
+  No ADK module imports aiohttp, so a tree-wide grep reads the requirement as
+  dead. It is not. Each of these extras reaches it through a third-party
+  package that does not declare it, and used to get it only because every
+  install carried it.
+  """
+  names = _requirement_names(
+      pyproject['project']['optional-dependencies'][extra]
+  )
+  assert 'aiohttp' in names, f'The {extra!r} extra needs aiohttp: {reason}.'
+
+
 def test_main_deps_require_lazy_mcp_google_genai_release(
     pyproject: dict,
 ) -> None:
@@ -274,8 +317,18 @@ def test_main_deps_require_lazy_mcp_google_genai_release(
       if requirement.name == 'google-genai'
   )
 
+  floor = min(
+      Version(specifier.version)
+      for specifier in google_genai.specifier
+      if specifier.operator in ('>=', '==')
+  )
+
   assert Version('2.11.0') not in google_genai.specifier
-  assert Version('2.12.1') in google_genai.specifier
+  assert floor >= _LAZY_MCP_GOOGLE_GENAI_RELEASE, (
+      f'The google-genai floor {floor} predates'
+      f' {_LAZY_MCP_GOOGLE_GENAI_RELEASE}, the first release whose types module'
+      ' defers the optional MCP server stack.'
+  )
 
 
 def test_inclusive_upper_bounds_ignores_other_operators() -> None:

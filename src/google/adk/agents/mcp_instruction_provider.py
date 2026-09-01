@@ -21,8 +21,7 @@ from typing import Any
 from typing import Dict
 from typing import TextIO
 
-from mcp import types
-
+from ..dependencies._mcp import types
 from ..tools.mcp_tool.mcp_session_manager import MCPSessionManager
 from .llm_agent import InstructionProvider
 from .readonly_context import ReadonlyContext
@@ -62,25 +61,31 @@ class McpInstructionProvider(InstructionProvider):  # type: ignore[misc]
         The instruction string.
     """
     session = await self._mcp_session_manager.create_session()
-    # Fetch prompt definition to get the required argument names
-    prompt_definitions = await session.list_prompts()
-    prompt_definition = next(
-        (p for p in prompt_definitions.prompts if p.name == self.prompt_name),
-        None,
-    )
+    # Hold the session out of the pool's idle sweep while it is in use, so
+    # another caller's sweep cannot close the transport mid-call.
+    self._mcp_session_manager._begin_session_use()  # pylint: disable=protected-access
+    try:
+      # Fetch prompt definition to get the required argument names
+      prompt_definitions = await session.list_prompts()
+      prompt_definition = next(
+          (p for p in prompt_definitions.prompts if p.name == self.prompt_name),
+          None,
+      )
 
-    # Fetch arguments from context state if the prompt requires them
-    prompt_args: Dict[str, Any] = {}
-    if prompt_definition and prompt_definition.arguments:
-      arg_names = {arg.name for arg in prompt_definition.arguments}
-      prompt_args = {
-          k: v for k, v in (context.state or {}).items() if k in arg_names
-      }
+      # Fetch arguments from context state if the prompt requires them
+      prompt_args: Dict[str, Any] = {}
+      if prompt_definition and prompt_definition.arguments:
+        arg_names = {arg.name for arg in prompt_definition.arguments}
+        prompt_args = {
+            k: v for k, v in (context.state or {}).items() if k in arg_names
+        }
 
-    # Fetch the specific prompt by name with arguments from context state
-    prompt_result: types.GetPromptResult = await session.get_prompt(
-        self.prompt_name, arguments=prompt_args
-    )
+      # Fetch the specific prompt by name with arguments from context state
+      prompt_result: types.GetPromptResult = await session.get_prompt(
+          self.prompt_name, arguments=prompt_args
+      )
+    finally:
+      self._mcp_session_manager._end_session_use()  # pylint: disable=protected-access
 
     if prompt_result and prompt_result.messages:
       # Concatenate content of all messages to form the instruction.

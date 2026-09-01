@@ -14,14 +14,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from collections.abc import Sequence
 import json
-from typing import List
-from typing import Optional
+from typing import Any
+from typing import cast
+from typing import Protocol
 
 from google.adk.tools.application_integration_tool.clients.connections_client import ConnectionsClient
 import google.auth
 from google.auth import default as default_service_credential
-import google.auth.transport.requests
+from google.auth.credentials import Credentials
 from google.auth.transport.requests import Request
 from google.oauth2 import service_account
 import requests
@@ -37,6 +40,17 @@ _DEFAULT_MTLS_INTEGRATIONS_REGIONAL_ENDPOINT_TEMPLATE = (
 _DEFAULT_REQUEST_TIMEOUT_SECONDS = 30
 
 
+class _ServiceAccountCredentialsFactory(Protocol):
+
+  def __call__(
+      self,
+      info: Mapping[str, object],
+      *,
+      scopes: Sequence[str],
+  ) -> Credentials:
+    ...
+
+
 class IntegrationClient:
   """A client for interacting with Google Cloud Application Integration.
 
@@ -48,13 +62,13 @@ class IntegrationClient:
       self,
       project: str,
       location: str,
-      connection_template_override: Optional[str] = None,
-      integration: Optional[str] = None,
-      triggers: Optional[List[str]] = None,
-      connection: Optional[str] = None,
-      entity_operations: Optional[dict[str, list[str]]] = None,
-      actions: Optional[list[str]] = None,
-      service_account_json: Optional[str] = None,
+      connection_template_override: str | None = None,
+      integration: str | None = None,
+      triggers: list[str] | None = None,
+      connection: str | None = None,
+      entity_operations: dict[str, list[str]] | None = None,
+      actions: list[str] | None = None,
+      service_account_json: str | None = None,
   ):
     """Initializes the ApplicationIntegrationClient.
 
@@ -84,10 +98,10 @@ class IntegrationClient:
     )
     self.actions = actions if actions is not None else []
     self.service_account_json = service_account_json
-    self.credential_cache = None
-    self._quota_project_id = None
+    self.credential_cache: Credentials | None = None
+    self._quota_project_id: str | None = None
 
-  def get_openapi_spec_for_integration(self):
+  def get_openapi_spec_for_integration(self) -> dict[str, Any]:
     """Gets the OpenAPI spec for the integration.
 
     Returns:
@@ -98,6 +112,11 @@ class IntegrationClient:
         Exception: For any other unexpected errors.
     """
     try:
+      if not self.integration or self.triggers is None:
+        raise ValueError(
+            "Integration name and triggers are required to generate an"
+            " integration OpenAPI spec."
+        )
       endpoint = _mtls_utils.get_api_endpoint(
           self.location,
           _DEFAULT_INTEGRATIONS_REGIONAL_ENDPOINT_TEMPLATE,
@@ -110,7 +129,7 @@ class IntegrationClient:
       }
       if not self.service_account_json:
         headers["x-goog-user-project"] = self._quota_project_id or self.project
-      data = {
+      data: dict[str, Any] = {
           "apiTriggerResources": [
               {
                   "integrationResource": self.integration,
@@ -126,8 +145,20 @@ class IntegrationClient:
           timeout=_DEFAULT_REQUEST_TIMEOUT_SECONDS,
       )
       response.raise_for_status()
-      spec = response.json().get("openApiSpec", {})
-      return json.loads(spec)
+      response_payload: object = response.json()
+      if not isinstance(response_payload, Mapping):
+        raise ValueError("Integration API response must be a JSON object.")
+      spec = response_payload.get("openApiSpec")
+      if not isinstance(spec, str):
+        raise ValueError(
+            "Integration API response did not include an OpenAPI spec."
+        )
+      parsed_spec: object = json.loads(spec)
+      if not isinstance(parsed_spec, dict) or not all(
+          isinstance(key, str) for key in parsed_spec
+      ):
+        raise ValueError("Generated OpenAPI spec must be a JSON object.")
+      return cast(dict[str, Any], parsed_spec)
     except google.auth.exceptions.DefaultCredentialsError as e:
       raise PermissionError(f"Credentials error: {e}") from e
     except requests.exceptions.RequestException as e:
@@ -146,7 +177,9 @@ class IntegrationClient:
     except Exception as e:
       raise Exception(f"An unexpected error occurred: {e}") from e
 
-  def get_openapi_spec_for_connection(self, tool_name="", tool_instructions=""):
+  def get_openapi_spec_for_connection(
+      self, tool_name: str = "", tool_instructions: str = ""
+  ) -> dict[str, Any]:
     """Gets the OpenAPI spec for the connection.
 
     Returns:
@@ -157,6 +190,10 @@ class IntegrationClient:
         Exception: For any other unexpected errors.
     """
     # Application Integration needs to be provisioned in the same region as connection and an integration with name "ExecuteConnection" and trigger "api_trigger/ExecuteConnection" should be created as per the documentation.
+    if not self.connection:
+      raise ValueError(
+          "Connection name is required to generate a connection OpenAPI spec."
+      )
     integration_name = self.connection_template_override or "ExecuteConnection"
     connections_client = ConnectionsClient(
         self.project,
@@ -261,11 +298,20 @@ class IntegrationClient:
         The access token.
     """
     if self.credential_cache and not self.credential_cache.expired:
-      return self.credential_cache.token
+      cached_token: object = self.credential_cache.token
+      if isinstance(cached_token, str) and cached_token:
+        return cached_token
 
     if self.service_account_json:
-      credentials = service_account.Credentials.from_service_account_info(
-          json.loads(self.service_account_json),
+      service_account_info: object = json.loads(self.service_account_json)
+      if not isinstance(service_account_info, Mapping):
+        raise ValueError("Service account JSON must contain an object.")
+      credential_factory = cast(
+          _ServiceAccountCredentialsFactory,
+          service_account.Credentials.from_service_account_info,
+      )
+      credentials: Credentials | None = credential_factory(
+          cast(Mapping[str, object], service_account_info),
           scopes=["https://www.googleapis.com/auth/cloud-platform"],
       )
     else:
@@ -276,8 +322,14 @@ class IntegrationClient:
       except google.auth.exceptions.DefaultCredentialsError:
         credentials = None
       if credentials:
-        quota_project_id = getattr(credentials, "quota_project_id", None)
-        self._quota_project_id = quota_project_id or project_id
+        quota_project_id: object = getattr(
+            credentials, "quota_project_id", None
+        )
+        self._quota_project_id = (
+            quota_project_id
+            if isinstance(quota_project_id, str) and quota_project_id
+            else project_id
+        )
 
     if not credentials:
       raise ValueError(
@@ -287,4 +339,7 @@ class IntegrationClient:
 
     credentials.refresh(Request())
     self.credential_cache = credentials
-    return credentials.token
+    refreshed_token: object = credentials.token
+    if not isinstance(refreshed_token, str) or not refreshed_token:
+      raise ValueError("Credential refresh did not return an access token.")
+    return refreshed_token

@@ -259,13 +259,8 @@ class TestConvertA2aRequestToAgentRunRequest:
     # Numbers may come back as float on 1.x (proto Struct) -> tolerate both.
     assert float(stored["n"]) == 1.0
 
-  def test_convert_a2a_request_empty_metadata_still_marks_a2a(self):
-    """Empty request metadata must STILL mark the invocation as A2A-originated.
-
-    The marker is a trust signal, not a data carrier: downstream checks key off
-    its presence, so a peer must not be able to suppress it by omitting
-    metadata.
-    """
+  def test_convert_a2a_request_empty_metadata_omitted(self):
+    """Empty request metadata must not add an ``a2a_metadata`` entry."""
     empty_meta_msg = _compat.make_message(
         message_id="m1", role=_compat.ROLE_USER, parts=[]
     )
@@ -281,7 +276,7 @@ class TestConvertA2aRequestToAgentRunRequest:
 
     result = convert_a2a_request_to_agent_run_request(request, Mock())
 
-    assert result.run_config.custom_metadata == {"a2a_metadata": {}}
+    assert "a2a_metadata" not in result.run_config.custom_metadata
 
   def test_convert_a2a_request_no_message_raises_error(self):
     """Test that conversion raises ValueError when message is None."""

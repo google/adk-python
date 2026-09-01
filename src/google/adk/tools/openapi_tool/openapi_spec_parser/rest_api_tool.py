@@ -19,6 +19,7 @@ import ssl
 from typing import Any
 from typing import Callable
 from typing import Dict
+from typing import Final
 from typing import List
 from typing import Literal
 from typing import Optional
@@ -81,12 +82,22 @@ HttpxClientFactory = Callable[[], httpx.AsyncClient]
 
 When supplied to ``RestApiTool`` or ``OpenAPIToolset``, the factory is invoked
 once per API call and its returned client is used as an async context
-manager to issue the request, in place of the default
-```httpx.AsyncClient(verify=..., timeout=None)```. Because the client is closed
-when the request completes, the factory must return a fresh client on every
-call. This unlocks knobs that the narrower ``ssl_verify`` parameter can't
-reach: proxies, HTTP/2, custom transports (e.g. request-signing), and so on.
+manager to issue the request, in place of the default ``httpx.AsyncClient``.
+Because the client is closed when the request completes, the factory must
+return a fresh client on every call. This unlocks knobs that the narrower
+``ssl_verify`` parameter can't reach: proxies, HTTP/2, custom transports
+(e.g. request-signing), timeout policy, and so on.
 """
+
+# Read and write budgets match the framework's remote-agent default so slow but
+# legitimate APIs still complete; connect and pool stay short so an unreachable
+# peer fails fast instead of occupying the invocation.
+_DEFAULT_TIMEOUT: Final[httpx.Timeout] = httpx.Timeout(
+    connect=10.0,
+    read=600.0,
+    write=600.0,
+    pool=10.0,
+)
 
 
 class RestApiTool(BaseTool):
@@ -161,10 +172,10 @@ class RestApiTool(BaseTool):
           request completes, so the factory must return a fresh client on each
           call. This lets callers configure proxies, HTTP/2, custom transports
           (e.g. request signing), or any other ``httpx.AsyncClient`` option that
-          ``ssl_verify`` can't reach. When ``None`` (default), a fresh
-          ``httpx.AsyncClient(verify=..., timeout=None)`` is created per
-          request. Mirrors the pattern exposed for MCP by
-          ``StreamableHTTPConnectionParams.httpx_client_factory``.
+          ``ssl_verify`` can't reach, including its timeout policy. When
+          ``None`` (default), a fresh ``httpx.AsyncClient`` with bounded
+          timeouts is created per request. Mirrors the pattern exposed for MCP
+          by ``StreamableHTTPConnectionParams.httpx_client_factory``.
         credential_key: Optional stable key used for interactive auth and
           credential caching.
     """
@@ -566,9 +577,25 @@ class RestApiTool(BaseTool):
       if provider_headers:
         request_params.setdefault("headers", {}).update(provider_headers)
 
-    response = await _request(
-        httpx_client_factory=self._httpx_client_factory, **request_params
-    )
+    try:
+      response = await _request(
+          httpx_client_factory=self._httpx_client_factory, **request_params
+      )
+    except httpx.TimeoutException as e:
+      self._logger.warning(
+          "API call timed out for tool %s: %s %s",
+          self.name,
+          request_params.get("method", "").upper(),
+          request_params.get("url", ""),
+      )
+      return {
+          "error": (
+              f"Tool {self.name} execution failed. Analyze this execution error"
+              " and your inputs. Retry with adjustments if applicable. But"
+              " make sure don't retry more than 3 times. Execution Error:"
+              f" Request timed out ({type(e).__name__})."
+          )
+      }
 
     # Log the API response
     self._logger.debug(
@@ -631,5 +658,7 @@ async def _request(
   if httpx_client_factory is not None:
     async with httpx_client_factory() as client:
       return await client.request(**request_params)
-  async with httpx.AsyncClient(verify=verify, timeout=None) as client:
+  async with httpx.AsyncClient(
+      verify=verify, timeout=_DEFAULT_TIMEOUT
+  ) as client:
     return await client.request(**request_params)

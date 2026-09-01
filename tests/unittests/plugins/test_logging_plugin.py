@@ -209,3 +209,49 @@ async def test_before_tool_callback_truncates_long_arguments(
   assert f'Arguments: {str(tool_args)[:300]}...}}' in out
   # The full payload must not reach the console.
   assert str(tool_args) not in out
+
+
+async def test_before_model_callback_formats_content_system_instruction(
+    plugin, callback_context, capsys
+):
+  """ContentUnion instructions are logged without assuming string behavior."""
+  llm_request = LlmRequest(
+      model='test-model',
+      config=types.GenerateContentConfig(
+          system_instruction=types.Content(
+              role='system',
+              parts=[types.Part.from_text(text='Stay concise.')],
+          )
+      ),
+  )
+
+  result = await plugin.before_model_callback(
+      callback_context=callback_context, llm_request=llm_request
+  )
+
+  assert result is None
+  assert 'Stay concise.' in capsys.readouterr().out
+
+
+async def test_before_model_callback_formats_list_system_instruction(
+    plugin, callback_context, capsys
+):
+  """A list instruction renders every entry rather than its repr."""
+  llm_request = LlmRequest(
+      model='test-model',
+      config=types.GenerateContentConfig(
+          system_instruction=[
+              types.Part.from_text(text='Stay concise.'),
+              types.Part.from_text(text='Cite sources.'),
+          ]
+      ),
+  )
+
+  result = await plugin.before_model_callback(
+      callback_context=callback_context, llm_request=llm_request
+  )
+
+  assert result is None
+  out = capsys.readouterr().out
+  assert 'Stay concise.' in out
+  assert 'Cite sources.' in out

@@ -16,13 +16,13 @@
 
 import asyncio
 import logging
+import ssl
 from typing import Optional
 from unittest import mock
 from unittest.mock import AsyncMock
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.invocation_context import LlmCallsLimitExceededError
-from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.run_config import RunConfig
@@ -31,11 +31,14 @@ from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
+from google.adk.flows.llm_flows._invocation_utils import copy_http_options
+from google.adk.flows.llm_flows._invocation_utils import run_config_for_new_live_session
 from google.adk.flows.llm_flows.base_llm_flow import _finalize_dynamic_instructions
 from google.adk.flows.llm_flows.base_llm_flow import _handle_after_model_callback
 from google.adk.flows.llm_flows.base_llm_flow import _process_agent_tools
 from google.adk.flows.llm_flows.base_llm_flow import _ReconnectSentinel
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
+from google.adk.live import LiveRequestQueue
 from google.adk.models.base_llm_connection import BaseLlmConnection
 from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
@@ -43,10 +46,12 @@ from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.base_toolset import BaseToolset
+from google.adk.tools.enterprise_search_tool import EnterpriseWebSearchTool
 from google.adk.tools.google_search_tool import GoogleSearchTool
 from google.adk.utils.context_utils import Aclosing
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
+import httpx
 import pytest
 from websockets.exceptions import ConnectionClosed
 from websockets.exceptions import ConnectionClosedOK
@@ -1378,6 +1383,83 @@ async def test_run_live_server_handle_supersedes_run_config_handle():
 
 
 @pytest.mark.asyncio
+async def test_preprocess_stages_run_config_http_options_holding_a_live_client():
+  """RunConfig http_options can hold a live client, which no deep copy survives."""
+
+  http_options = types.HttpOptions(
+      headers={'RunConfig-Header': 'run-val'},
+      httpx_client=httpx.Client(),
+      client_args={'verify': ssl.create_default_context()},
+  )
+  agent = Agent(name='test_agent', model=Gemini())
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, run_config=RunConfig(http_options=http_options)
+  )
+  llm_request = LlmRequest()
+
+  flow = BaseLlmFlowForTesting()
+  async for _ in flow._preprocess_async(invocation_context, llm_request):
+    pass
+
+  staged = llm_request.config.http_options
+  assert staged.headers == {'RunConfig-Header': 'run-val'}
+  # The client is the caller's own, so it is shared rather than copied.
+  assert staged.httpx_client is http_options.httpx_client
+  # Nothing downstream -- including a before-model callback, which is handed
+  # this config -- can write back into the caller's RunConfig.
+  staged.headers['Injected'] = 'x'
+  staged.client_args['Injected'] = 'x'
+  assert 'Injected' not in http_options.headers
+  assert 'Injected' not in http_options.client_args
+
+
+def test_copy_http_options_copies_containers_but_shares_the_live_client():
+  """Every mutable container is copied; the caller's client is not."""
+  original = types.HttpOptions(
+      headers={'H': '1'},
+      extra_body={'k': 'v'},
+      client_args={'verify': ssl.create_default_context()},
+      async_client_args={'verify': ssl.create_default_context()},
+      retry_options=types.HttpRetryOptions(attempts=3),
+      httpx_client=httpx.Client(),
+  )
+
+  copied = copy_http_options(original)
+
+  for field in (
+      'headers',
+      'extra_body',
+      'client_args',
+      'async_client_args',
+      'retry_options',
+  ):
+    assert getattr(copied, field) is not getattr(original, field), field
+  # A live client cannot be copied, and the caller supplied it to be used.
+  assert copied.httpx_client is original.httpx_client
+
+
+def test_run_config_for_new_live_session_survives_a_live_client():
+  """A fresh live session must not deep copy the caller's RunConfig.
+
+  `RunConfig.http_options` can hold a live client, so a deep copy of the whole
+  config raises `TypeError: cannot pickle` once the session is already open.
+  """
+  run_config = RunConfig(
+      http_options=types.HttpOptions(
+          client_args={'verify': ssl.create_default_context()}
+      ),
+      session_resumption=types.SessionResumptionConfig(handle='parent-handle'),
+  )
+
+  fresh = run_config_for_new_live_session(run_config)
+
+  assert fresh.session_resumption.handle is None
+  # The parent keeps its own handle, and the options are passed through.
+  assert run_config.session_resumption.handle == 'parent-handle'
+  assert fresh.http_options is run_config.http_options
+
+
+@pytest.mark.asyncio
 async def test_run_live_does_not_log_http_options_headers(caplog):
   """run_live must not log http_options headers, which can carry secrets."""
 
@@ -2683,7 +2765,7 @@ async def test_send_to_model_rejects_function_call():
   invocation_context.live_request_queue = LiveRequestQueue()
 
   # Put a malicious content request in the queue
-  from google.adk.agents.live_request_queue import LiveRequest
+  from google.adk.live import LiveRequest
 
   malicious_request = LiveRequest(
       content=types.Content(
@@ -2706,7 +2788,7 @@ async def test_send_to_model_rejects_function_call():
   with pytest.raises(
       ValueError, match='User message cannot contain function calls'
   ):
-    await flow._send_to_model(mock_connection, invocation_context)
+    await flow._send_to_model(mock_connection, invocation_context, LlmRequest())
 
 
 @pytest.mark.asyncio
@@ -2760,7 +2842,11 @@ async def test_finalize_dynamic_instructions_feature_enabled():
   assert llm_request.config.system_instruction is None
   assert len(llm_request.contents) == 2
   assert llm_request.contents[0].role == 'user'
-  assert llm_request.contents[0].parts[0].text == 'dynamic 1\n\ndynamic 2'
+  # The tool's instruction rides the same user-role carrier as the agent's, so
+  # it is labelled the same way rather than sent as bare prose.
+  instruction_text = llm_request.contents[0].parts[0].text
+  assert 'dynamic 1\n\ndynamic 2' in instruction_text
+  assert 'was said by the user' in instruction_text
   assert llm_request.contents[1].role == 'user'
   assert llm_request.contents[1].parts[0].text == 'user question'
 
@@ -2791,7 +2877,11 @@ async def test_finalize_dynamic_instructions_with_static_instruction():
   assert llm_request.config.system_instruction is None
   assert len(llm_request.contents) == 2
   assert llm_request.contents[0].role == 'user'
-  assert llm_request.contents[0].parts[0].text == 'dynamic 1\n\ndynamic 2'
+  # The tool's instruction rides the same user-role carrier as the agent's, so
+  # it is labelled the same way rather than sent as bare prose.
+  instruction_text = llm_request.contents[0].parts[0].text
+  assert 'dynamic 1\n\ndynamic 2' in instruction_text
+  assert 'was said by the user' in instruction_text
   assert llm_request.contents[1].role == 'user'
   assert llm_request.contents[1].parts[0].text == 'user question'
 
@@ -2874,9 +2964,10 @@ class _CfcFlowForTesting(BaseLlmFlow):
   """BaseLlmFlow subclass that stubs run_live so the CFC branch can be driven."""
 
   async def run_live(self, invocation_context):
-    yield LlmResponse(
-        content=testing_utils.ModelContent(
-            [types.Part.from_text(text='live_hello')]
+    yield Event(
+        author='root_agent',
+        content=types.Content(
+            role='model', parts=[types.Part.from_text(text='live_hello')]
         ),
         turn_complete=True,
     )
@@ -2898,6 +2989,100 @@ async def _drive_one_llm_call(flow, invocation_context):
   ) as agen:
     async for _ in agen:
       pass
+
+
+@pytest.mark.asyncio
+async def test_preprocess_final_response_skips_llm_call():
+  """A final response from preprocessing must finish the current step."""
+  agent = Agent(
+      name='root_agent', model=testing_utils.MockModel.create(responses=[])
+  )
+  flow = BaseLlmFlowForTesting()
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='resume'
+  )
+  function_response_event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(
+          role='user',
+          parts=[
+              types.Part.from_function_response(
+                  name='resumed_tool', response={'result': 'done'}
+              )
+          ],
+      ),
+  )
+  function_response_event.actions.skip_summarization = True
+
+  async def mock_preprocess(_ctx, _request):
+    yield function_response_event
+
+  async def fail_if_llm_called(*_args, **_kwargs):
+    raise AssertionError('LLM should not be called after a final response')
+    yield  # pylint: disable=unreachable
+
+  with (
+      mock.patch.object(flow, '_preprocess_async', side_effect=mock_preprocess),
+      mock.patch.object(
+          flow, '_call_llm_async', side_effect=fail_if_llm_called
+      ),
+  ):
+    events = [event async for event in flow.run_async(invocation_context)]
+
+  assert events == [function_response_event]
+
+
+@pytest.mark.asyncio
+async def test_preprocess_non_function_response_does_not_skip_llm_call():
+  """Non-function-response events in preprocessing must not skip the LLM call."""
+  mock_response = types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=types.Content(
+                  role='model',
+                  parts=[types.Part.from_text(text='Analysis done.')],
+              ),
+              finish_reason='STOP',
+          )
+      ]
+  )
+  agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(responses=[mock_response]),
+  )
+  flow = BaseLlmFlowForTesting()
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='test'
+  )
+  processing_file_event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(text='Processing input file: `data.csv`'),
+              types.Part(
+                  executable_code=types.ExecutableCode(
+                      code='import pandas as pd', language='PYTHON'
+                  )
+              ),
+          ],
+      ),
+  )
+  assert processing_file_event.is_final_response()
+
+  async def mock_preprocess(_ctx, _request):
+    yield processing_file_event
+
+  with mock.patch.object(
+      flow, '_preprocess_async', side_effect=mock_preprocess
+  ):
+    events = [event async for event in flow.run_async(invocation_context)]
+
+  assert len(events) == 2
+  assert events[0] == processing_file_event
+  assert events[1].content.parts[0].text == 'Analysis done.'
 
 
 @pytest.mark.asyncio
@@ -2926,6 +3111,68 @@ async def test_cfc_llm_calls_are_counted_against_max_llm_calls():
 
 
 @pytest.mark.asyncio
+async def test_cfc_run_async_does_not_duplicate_function_calls():
+  """support_cfc=True in run_async must invoke tool functions exactly once."""
+  call_count = 0
+
+  def test_tool(param: str) -> str:
+    nonlocal call_count
+    call_count += 1
+    return f'result_{param}'
+
+  from google.adk.flows.llm_flows import functions
+
+  class _MockCfcFlow(BaseLlmFlow):
+
+    async def run_live(self, invocation_context):
+      fc_part = types.Part(
+          function_call=types.FunctionCall(
+              id='call_1',
+              name='test_tool',
+              args={'param': 'val'},
+          )
+      )
+      model_event = Event(
+          author='root_agent',
+          content=types.Content(role='model', parts=[fc_part]),
+      )
+      yield model_event
+      from google.adk.tools.function_tool import FunctionTool
+
+      tools_dict = {'test_tool': FunctionTool(test_tool)}
+      fr_event = await functions.handle_function_calls_live(
+          invocation_context,
+          model_event,
+          tools_dict,
+      )
+      if fr_event:
+        yield fr_event
+      yield Event(
+          author='root_agent',
+          content=types.Content(
+              role='model', parts=[types.Part.from_text(text='done')]
+          ),
+          turn_complete=True,
+      )
+
+  agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(responses=[]),
+      tools=[test_tool],
+  )
+  flow = _MockCfcFlow()
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent,
+      user_content='test',
+      run_config=RunConfig(support_cfc=True),
+  )
+
+  events = [e async for e in flow.run_async(invocation_context)]
+  assert call_count == 1
+  assert len(events) == 3
+
+
+@pytest.mark.asyncio
 async def test_llm_calls_are_counted_against_max_llm_calls():
   """The cap still applies on the ordinary (non-CFC) path."""
   agent = Agent(
@@ -2945,3 +3192,191 @@ async def test_llm_calls_are_counted_against_max_llm_calls():
 
   with pytest.raises(LlmCallsLimitExceededError):
     await _drive_one_llm_call(flow, invocation_context)
+
+
+@pytest.mark.asyncio
+async def test_search_agent_in_hierarchy_without_bypass_does_not_inject_transfer():
+  """A sub-agent using built-in google_search must not receive transfer_to_agent."""
+  search_agent = Agent(
+      name='search_agent',
+      model='gemini-2.0-flash',
+      tools=[GoogleSearchTool(bypass_multi_tools_limit=False)],
+  )
+  _ = Agent(
+      name='root_agent',
+      model='gemini-2.0-flash',
+      sub_agents=[search_agent],
+  )
+  ctx = await testing_utils.create_invocation_context(
+      agent=search_agent, user_content='search for weather'
+  )
+  llm_request = LlmRequest(model='gemini-2.0-flash')
+  flow = search_agent._llm_flow
+
+  async for _ in flow._preprocess_async(ctx, llm_request):
+    pass
+
+  assert 'transfer_to_agent' not in llm_request.tools_dict
+  assert len(llm_request.config.tools) == 1
+  assert llm_request.config.tools[0].google_search is not None
+
+
+@pytest.mark.asyncio
+async def test_search_agent_in_hierarchy_with_bypass_injects_transfer_and_agent_tool():
+  """A sub-agent using bypassed google_search receives both transfer_to_agent and google_search_agent."""
+  search_agent = Agent(
+      name='search_agent',
+      model='gemini-2.0-flash',
+      tools=[GoogleSearchTool(bypass_multi_tools_limit=True)],
+  )
+  _ = Agent(
+      name='root_agent',
+      model='gemini-2.0-flash',
+      sub_agents=[search_agent],
+  )
+  ctx = await testing_utils.create_invocation_context(
+      agent=search_agent, user_content='search for weather'
+  )
+  llm_request = LlmRequest(model='gemini-2.0-flash')
+  flow = search_agent._llm_flow
+
+  async for _ in flow._preprocess_async(ctx, llm_request):
+    pass
+
+  assert 'transfer_to_agent' in llm_request.tools_dict
+  assert 'google_search_agent' in llm_request.tools_dict
+  assert len(llm_request.config.tools) == 1
+  func_decl_names = [
+      fd.name for fd in llm_request.config.tools[0].function_declarations
+  ]
+  assert 'transfer_to_agent' in func_decl_names
+  assert 'google_search_agent' in func_decl_names
+
+
+@pytest.mark.asyncio
+async def test_search_agent_in_hierarchy_enterprise_web_search_does_not_inject_transfer():
+  """A sub-agent using EnterpriseWebSearchTool does not receive transfer_to_agent."""
+  search_agent = Agent(
+      name='search_agent',
+      model='gemini-2.0-flash',
+      tools=[EnterpriseWebSearchTool()],
+  )
+  _ = Agent(
+      name='root_agent',
+      model='gemini-2.0-flash',
+      sub_agents=[search_agent],
+  )
+  ctx = await testing_utils.create_invocation_context(
+      agent=search_agent, user_content='search for enterprise docs'
+  )
+  llm_request = LlmRequest(model='gemini-2.0-flash')
+  flow = search_agent._llm_flow
+
+  async for _ in flow._preprocess_async(ctx, llm_request):
+    pass
+
+  assert 'transfer_to_agent' not in llm_request.tools_dict
+  assert len(llm_request.config.tools) == 1
+  assert llm_request.config.tools[0].enterprise_web_search is not None
+
+
+@pytest.mark.asyncio
+async def test_search_agent_with_sub_agents_and_builtin_search_raises_value_error():
+  """An agent with sub_agents using built-in GoogleSearchTool without bypass raises ValueError."""
+  sub_agent = Agent(
+      name='sub_agent',
+      model='gemini-2.0-flash',
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model='gemini-2.0-flash',
+      tools=[GoogleSearchTool(bypass_multi_tools_limit=False)],
+      sub_agents=[sub_agent],
+  )
+  ctx = await testing_utils.create_invocation_context(
+      agent=root_agent, user_content='search and delegate'
+  )
+  llm_request = LlmRequest(model='gemini-2.0-flash')
+  flow = root_agent._llm_flow
+
+  with pytest.raises(
+      ValueError,
+      match=(
+          'has sub-agent transfer targets but is configured with'
+          ' GoogleSearchTool'
+      ),
+  ):
+    async for _ in flow._preprocess_async(ctx, llm_request):
+      pass
+
+
+@pytest.mark.asyncio
+async def test_search_agent_with_sub_agents_and_enterprise_search_raises_value_error():
+  """An agent with sub_agents using EnterpriseWebSearchTool raises ValueError."""
+  sub_agent = Agent(
+      name='sub_agent',
+      model='gemini-2.0-flash',
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model='gemini-2.0-flash',
+      tools=[EnterpriseWebSearchTool()],
+      sub_agents=[sub_agent],
+  )
+  ctx = await testing_utils.create_invocation_context(
+      agent=root_agent, user_content='search and delegate'
+  )
+  llm_request = LlmRequest(model='gemini-2.0-flash')
+  flow = root_agent._llm_flow
+
+  with pytest.raises(
+      ValueError,
+      match=(
+          'has sub-agent transfer targets but is configured with'
+          ' EnterpriseWebSearchTool'
+      ),
+  ):
+    async for _ in flow._preprocess_async(ctx, llm_request):
+      pass
+
+
+@pytest.mark.asyncio
+async def test_search_agent_with_task_mode_sub_agents_and_builtin_search_does_not_raise():
+  """An agent with task-mode sub_agents (not transfer targets) and built-in search does not raise."""
+  task_agent = Agent(
+      name='task_agent',
+      model='gemini-2.0-flash',
+      mode='task',
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model='gemini-2.0-flash',
+      tools=[GoogleSearchTool(bypass_multi_tools_limit=False)],
+      sub_agents=[task_agent],
+  )
+  ctx = await testing_utils.create_invocation_context(
+      agent=root_agent, user_content='search only'
+  )
+  llm_request = LlmRequest(model='gemini-2.0-flash')
+  flow = root_agent._llm_flow
+
+  # Preprocessing should succeed without raising ValueError since task_agent is not a transfer target.
+  async for _ in flow._preprocess_async(ctx, llm_request):
+    pass
+
+  assert 'transfer_to_agent' not in llm_request.tools_dict
+  assert 'task_agent' in llm_request.tools_dict
+  assert len(llm_request.config.tools) == 2
+  assert llm_request.config.tools[0].google_search is not None
+
+
+def test_duck_typed_agent_transfer_targets_safe():
+  """A duck-typed agent without transfer attributes is safe in _get_transfer_targets."""
+  from google.adk.flows.llm_flows.agent_transfer import _get_transfer_targets
+
+  class DuckAgent:
+    tools = []
+    canonical_model = 'gemini-2.0-flash'
+
+  duck = DuckAgent()
+  assert _get_transfer_targets(duck) == []

@@ -17,16 +17,19 @@ from __future__ import annotations
 from abc import ABC
 from abc import abstractmethod
 import base64
+from collections.abc import Mapping
+from collections.abc import Sequence
 import json
 from typing import Any
+from typing import cast
 from typing import Dict
 from typing import List
-from typing import Optional
-from typing import Tuple
+from typing import Protocol
 from urllib.parse import parse_qs
 from urllib.parse import urlparse
 
 from google.auth import default as default_service_credential
+from google.auth.credentials import Credentials
 from google.auth.exceptions import DefaultCredentialsError
 from google.auth.transport.requests import Request
 from google.oauth2 import service_account
@@ -35,6 +38,51 @@ import requests
 from ....utils import _mtls_utils
 
 _DEFAULT_REQUEST_TIMEOUT_SECONDS = 30
+
+
+class _ServiceAccountCredentialsFactory(Protocol):
+
+  def __call__(
+      self,
+      info: Mapping[str, object],
+      *,
+      scopes: Sequence[str] | None = None,
+  ) -> Credentials:
+    ...
+
+
+def _response_object(response: requests.Response) -> dict[str, object]:
+  """Validate the JSON object returned by API Hub."""
+  payload: object = response.json()
+  if not isinstance(payload, dict) or not all(
+      isinstance(key, str) for key in payload
+  ):
+    raise ValueError("API Hub returned a non-object JSON response.")
+  return cast(dict[str, object], payload)
+
+
+def _string_list(value: object, *, field: str) -> list[str]:
+  """Validate a JSON array whose members must all be strings."""
+  if not isinstance(value, list) or not all(
+      isinstance(item, str) for item in value
+  ):
+    raise ValueError(f"API Hub field '{field}' must be a list of strings.")
+  return cast(list[str], value)
+
+
+def _object_list(value: object, *, field: str) -> list[dict[str, object]]:
+  """Validate a JSON array whose members must be string-keyed objects."""
+  if not isinstance(value, list):
+    raise ValueError(f"API Hub field '{field}' must be a list of objects.")
+
+  result: list[dict[str, object]] = []
+  for item in value:
+    if not isinstance(item, dict) or not all(
+        isinstance(key, str) for key in item
+    ):
+      raise ValueError(f"API Hub field '{field}' must be a list of objects.")
+    result.append(cast(dict[str, object], item))
+  return result
 
 
 class BaseAPIHubClient(ABC):
@@ -52,8 +100,8 @@ class APIHubClient(BaseAPIHubClient):
   def __init__(
       self,
       *,
-      access_token: Optional[str] = None,
-      service_account_json: Optional[str] = None,
+      access_token: str | None = None,
+      service_account_json: str | None = None,
   ):
     """Initializes the APIHubClient.
 
@@ -67,8 +115,9 @@ class APIHubClient(BaseAPIHubClient):
           Required if not using default service credential.
     """
     self.root_url = "https://apihub.googleapis.com/v1"
-    self.credential_cache = None
-    self.access_token, self.service_account = None, None
+    self.credential_cache: Credentials | None = None
+    self.access_token: str | None = None
+    self.service_account: str | None = None
 
     if access_token:
       self.access_token = access_token
@@ -100,7 +149,7 @@ class APIHubClient(BaseAPIHubClient):
 
     if apihub_resource_name and not api_version_resource_name:
       api = self.get_api(apihub_resource_name)
-      versions = api.get("versions", [])
+      versions = _string_list(api.get("versions", []), field="versions")
       if not versions:
         raise ValueError(
             f"No versions found in API Hub resource: {apihub_resource_name}"
@@ -109,7 +158,9 @@ class APIHubClient(BaseAPIHubClient):
 
     if api_version_resource_name and not api_spec_resource_name:
       api_version = self.get_api_version(api_version_resource_name)
-      spec_resource_names = api_version.get("specs", [])
+      spec_resource_names = _string_list(
+          api_version.get("specs", []), field="specs"
+      )
       if not spec_resource_names:
         raise ValueError(
             f"No specs found in API Hub version: {api_version_resource_name}"
@@ -122,6 +173,9 @@ class APIHubClient(BaseAPIHubClient):
 
     raise ValueError(f"No API Hub resource found in path: {path}")
 
+  # The three accessors below keep their released Dict[str, Any] returns. The
+  # bodies now validate the payload, but narrowing Any to object here would
+  # stop callers indexing into the result.
   def list_apis(self, project: str, location: str) -> List[Dict[str, Any]]:
     """Lists all APIs in the specified project and location.
 
@@ -134,8 +188,8 @@ class APIHubClient(BaseAPIHubClient):
     """
     url = f"{self.root_url}/projects/{project}/locations/{location}/apis"
     response = self._get(url)
-    apis = response.json().get("apis", [])
-    return apis
+    payload = _response_object(response)
+    return _object_list(payload.get("apis", []), field="apis")
 
   def get_api(self, api_resource_name: str) -> Dict[str, Any]:
     """Get API detail by API name.
@@ -149,8 +203,7 @@ class APIHubClient(BaseAPIHubClient):
     """
     url = f"{self.root_url}/{api_resource_name}"
     response = self._get(url)
-    apis = response.json()
-    return apis
+    return _response_object(response)
 
   def get_api_version(self, api_version_name: str) -> Dict[str, Any]:
     """Gets details of a specific API version.
@@ -164,7 +217,7 @@ class APIHubClient(BaseAPIHubClient):
     """
     url = f"{self.root_url}/{api_version_name}"
     response = self._get(url)
-    return response.json()
+    return _response_object(response)
 
   def _fetch_spec(self, api_spec_resource_name: str) -> str:
     """Retrieves the content of a specific API specification.
@@ -178,14 +231,18 @@ class APIHubClient(BaseAPIHubClient):
     """
     url = f"{self.root_url}/{api_spec_resource_name}:contents"
     response = self._get(url)
-    content_base64 = response.json().get("contents", "")
+    content_base64 = _response_object(response).get("contents", "")
+    if not isinstance(content_base64, str):
+      raise ValueError("API Hub field 'contents' must be a string.")
     if content_base64:
       content_decoded = base64.b64decode(content_base64).decode("utf-8")
       return content_decoded
     else:
       return ""
 
-  def _extract_resource_name(self, url_or_path: str) -> Tuple[str, str, str]:
+  def _extract_resource_name(
+      self, url_or_path: str
+  ) -> tuple[str, str | None, str | None]:
     """Extracts the resource names of an API, API Version, and API Spec from a given URL or path.
 
     Args:
@@ -207,7 +264,7 @@ class APIHubClient(BaseAPIHubClient):
         (project, location, api) are missing.
     """
 
-    query_params = None
+    query_params: dict[str, list[str]] | None = None
     try:
       parsed_url = urlparse(url_or_path)
       path = parsed_url.path
@@ -328,12 +385,21 @@ class APIHubClient(BaseAPIHubClient):
       return self.access_token
 
     if self.credential_cache and not self.credential_cache.expired:
-      return self.credential_cache.token
+      return self._require_token(self.credential_cache)
 
     if self.service_account:
       try:
-        credentials = service_account.Credentials.from_service_account_info(
-            json.loads(self.service_account),
+        service_account_info: object = json.loads(self.service_account)
+        if not isinstance(service_account_info, dict) or not all(
+            isinstance(key, str) for key in service_account_info
+        ):
+          raise ValueError("Service account JSON must contain an object.")
+        factory = cast(
+            _ServiceAccountCredentialsFactory,
+            service_account.Credentials.from_service_account_info,
+        )
+        credentials: Credentials | None = factory(
+            cast(dict[str, object], service_account_info),
             scopes=["https://www.googleapis.com/auth/cloud-platform"],
         )
       except json.JSONDecodeError as e:
@@ -354,4 +420,12 @@ class APIHubClient(BaseAPIHubClient):
 
     credentials.refresh(Request())
     self.credential_cache = credentials
-    return credentials.token
+    return self._require_token(credentials)
+
+  @staticmethod
+  def _require_token(credentials: Credentials) -> str:
+    """Return a usable token from refreshed Google credentials."""
+    token: object = credentials.token
+    if not isinstance(token, str) or not token:
+      raise ValueError("Google credentials did not provide an access token.")
+    return token

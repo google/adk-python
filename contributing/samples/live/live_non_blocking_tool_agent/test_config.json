@@ -2,7 +2,7 @@
   "criteria": {
     "multi_turn_task_success_v1": 0.5
   },
-  "use_live": true,
+  "live_model_config": {},
   "user_simulator_config": {
     "type": "llm_audio",
     "model": "gemini-3.5-flash",

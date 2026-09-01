@@ -20,6 +20,7 @@ import base64
 import collections.abc
 import enum
 from functools import cached_property
+from functools import partial
 import json
 import logging
 import os
@@ -28,6 +29,8 @@ from typing import AsyncGenerator
 from typing import Generator
 from typing import Optional
 from typing import TYPE_CHECKING
+import warnings
+import weakref
 
 from google.adk import version as adk_version
 from google.genai import types
@@ -35,6 +38,7 @@ import httpx
 import tenacity
 from typing_extensions import override
 
+from ..utils import _json_utils
 from ..utils.env_utils import is_enterprise_mode_enabled
 from .google_llm import Gemini
 from .llm_response import LlmResponse
@@ -115,6 +119,7 @@ class ApigeeLlm(Gemini):
       retry_options: Optional[types.HttpRetryOptions] = None,
       api_type: ApiType | str = ApiType.UNKNOWN,
       credentials: Credentials | None = None,
+      client: Client | None = None,
   ) -> None:
     """Initializes the Apigee LLM backend.
 
@@ -151,9 +156,10 @@ class ApigeeLlm(Gemini):
         additional OAuth scopes (e.g., `userinfo.email` for tokeninfo-based
         caller identification). When omitted, the default `genai.Client`
         authentication flow is used.
+      client: An optional pre-configured google-genai Client.
     """  # fmt: skip
 
-    super().__init__(model=model, retry_options=retry_options)
+    super().__init__(model=model, retry_options=retry_options, client=client)
     # Validate the model string. Create a helper method to validate the model
     # string.
     if not _validate_model_string(model):
@@ -198,6 +204,22 @@ class ApigeeLlm(Gemini):
     self._custom_headers = custom_headers or {}
     self._user_agent = f'google-adk/{adk_version.__version__}'
     self._credentials = credentials
+
+    if client:
+      if self._proxy_url or self._custom_headers:
+        warnings.warn(
+            'Both client and proxy_url/custom_headers were provided. The'
+            ' injected client will be used as-is for GENAI calls, and'
+            ' proxy_url/custom_headers will be ignored. Ensure the injected'
+            ' client is pre-configured with the correct proxy and headers.',
+            UserWarning,
+        )
+      if self._api_type == ApigeeLlm.ApiType.CHAT_COMPLETIONS:
+        warnings.warn(
+            'An injected client was provided but ApiType is CHAT_COMPLETIONS. '
+            'The injected client will be ignored for CHAT_COMPLETIONS calls.',
+            UserWarning,
+        )
 
   @classmethod
   @override
@@ -263,6 +285,9 @@ class ApigeeLlm(Gemini):
     Returns:
       The api client.
     """
+    if self.client:
+      return self.client
+
     from google.genai import Client
 
     http_options = types.HttpOptions(
@@ -454,6 +479,11 @@ def _validate_model_string(model: str) -> bool:
   return False
 
 
+# Keeps a strong reference to fire-and-forget cleanup tasks so they are not
+# garbage collected before they finish (see CompletionsHTTPClient._cleanup_client).
+_CLEANUP_TASKS: set[asyncio.Task[None]] = set()
+
+
 class CompletionsHTTPClient:
   """A generic HTTP client for completions, compatible with OpenAI API."""
 
@@ -479,17 +509,29 @@ class CompletionsHTTPClient:
         timeout=_httpx_timeout(),
         follow_redirects=False,
     )
-    atexit.register(self._cleanup_client, client)
+    # Register with a weakref.proxy so the atexit registry does not keep the
+    # client (and its connection pool) alive for the whole process. Keep the
+    # bound callback per instance so close()/aclose() can unregister just this
+    # client's handler without affecting other CompletionsHTTPClient instances.
+    self._atexit_callback = partial(self._cleanup_client, weakref.proxy(client))
+    atexit.register(self._atexit_callback)
     return client
 
   @staticmethod
   def _cleanup_client(client: httpx.AsyncClient) -> None:
     """Cleans up the httpx client."""
-    if client.is_closed:
+    try:
+      if client.is_closed:
+        return
+    except ReferenceError:
+      # The client was already garbage collected via its weakref.proxy.
       return
     try:
       loop = asyncio.get_running_loop()
-      loop.create_task(client.aclose())
+      task = loop.create_task(client.aclose())
+      # Retain a reference so the task is not garbage collected while pending.
+      _CLEANUP_TASKS.add(task)
+      task.add_done_callback(_CLEANUP_TASKS.discard)
     except RuntimeError:
       try:
         # This fails if asyncio.run is already called in main and is closing.
@@ -501,10 +543,12 @@ class CompletionsHTTPClient:
     if '_client' not in self.__dict__:
       return
     self._cleanup_client(self._client)
+    atexit.unregister(self._atexit_callback)
 
   async def aclose(self) -> None:
     if '_client' not in self.__dict__:
       return
+    atexit.unregister(self._atexit_callback)
     if self._client.is_closed:
       return
     await self._client.aclose()
@@ -646,11 +690,12 @@ class CompletionsHTTPClient:
         if line == '[DONE]':
           break
         try:
-          for res in self._parse_streaming_line(line, accumulator):
-            yield res
-        except json.JSONDecodeError:
+          chunk = _json_utils.safe_json_loads(line, context='streaming chunk')
+        except ValueError:
           logger.warning('Failed to parse JSON chunk: %s', line)
           continue
+        for res in self._parse_streaming_line(chunk, accumulator):
+          yield res
 
   def _construct_payload(
       self, llm_request: LlmRequest, stream: bool
@@ -934,21 +979,19 @@ class CompletionsHTTPClient:
 
   def _parse_streaming_line(
       self,
-      line: str,
+      chunk: dict[str, Any],
       accumulator: ChatCompletionsResponseHandler,
   ) -> Generator[LlmResponse]:
     """Parses a single line from the streaming response.
 
     Args:
-      line: A single line from the streaming response, expected to be a JSON
-        string.
+      chunk: The parsed JSON chunk.
       accumulator: An accumulator to manage partial chat completion choices
         across multiple chunks.
 
     Yields:
       An LlmResponse object parsed from the streaming line.
     """
-    chunk = json.loads(line)
     for response in accumulator.process_chunk(chunk):
       yield response
 
@@ -1264,15 +1307,14 @@ class ChatCompletionsResponseHandler:
     func = tool_call.get('function', {})
     args_delta = func.get('arguments', '')
     if args_delta:
-      try:
-        args = json.loads(args_delta)
-        chunk_function_call.args = args
-        if not function_call.args:
-          function_call.args = dict(args)
-        else:
-          function_call.args.update(args)
-      except json.JSONDecodeError as e:
-        raise ValueError(f'Failed to parse arguments: {args_delta}') from e
+      args = _json_utils.safe_json_loads(
+          args_delta, context=f'tool call arguments: {args_delta}'
+      )
+      chunk_function_call.args = args
+      if not function_call.args:
+        function_call.args = dict(args)
+      else:
+        function_call.args.update(args)
 
     func_name = func.get('name')
     if func_name:

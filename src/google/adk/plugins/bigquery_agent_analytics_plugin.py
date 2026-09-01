@@ -54,9 +54,11 @@ from types import TracebackType
 from typing import Any
 from typing import AsyncIterator
 from typing import Callable
+from typing import cast
 from typing import Coroutine
 from typing import Optional
 from typing import ParamSpec
+from typing import Protocol
 from typing import TYPE_CHECKING
 from typing import TypeVar
 from urllib.parse import parse_qsl
@@ -76,10 +78,10 @@ from google.api_core.gapic_v1 import client_info as gapic_client_info
 import google.auth
 from google.cloud import bigquery
 from google.cloud import exceptions as cloud_exceptions
-from google.cloud import storage
 from google.cloud.bigquery import schema as bq_schema
 from google.cloud.bigquery_storage_v1 import types as bq_storage_types
 from google.cloud.bigquery_storage_v1.services.big_query_write.async_client import BigQueryWriteAsyncClient
+import google.cloud.storage as cloud_storage
 from google.genai import types
 from opentelemetry import trace
 
@@ -90,6 +92,7 @@ except ImportError as e:
 
   raise missing_extra("pyarrow", "bigquery-analytics") from e
 
+from ..agents.base_agent import BaseAgent
 from ..agents.callback_context import CallbackContext
 from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
@@ -116,6 +119,16 @@ _SCHEMA_VERSION_LABEL_KEY = "adk_schema_version"
 # schema version above — this names the producer's ADK 2.0 attribute
 # contract so downstream consumers can gate on it.
 _ADK_ENVELOPE_SCHEMA_VERSION = "1"
+
+
+class _ClientInfoFactory(Protocol):
+  """Typed boundary for google-api-core's untyped ClientInfo constructor."""
+
+  def __call__(self, *, user_agent: str) -> gapic_client_info.ClientInfo:
+    ...
+
+
+_CLIENT_INFO_FACTORY = cast(_ClientInfoFactory, gapic_client_info.ClientInfo)
 
 _HITL_EVENT_MAP = MappingProxyType({
     "adk_request_credential": "HITL_CREDENTIAL_REQUEST",
@@ -321,32 +334,40 @@ def _get_tool_origin(
   from ..tools.function_tool import FunctionTool  # pytype: disable=import-error
   from ..tools.transfer_to_agent_tool import TransferToAgentTool  # pytype: disable=import-error
 
+  mcp_tool_type: type[object] | None = None
   try:
     from ..tools.mcp_tool.mcp_tool import McpTool  # pytype: disable=import-error
   except ImportError:
-    McpTool = None
+    pass
+  else:
+    mcp_tool_type = McpTool
 
+  remote_a2a_agent_type: type[object] | None = None
   try:
     from ..agents.remote_a2a_agent import RemoteA2aAgent  # pytype: disable=import-error
   except ImportError:
-    RemoteA2aAgent = None
+    pass
+  else:
+    remote_a2a_agent_type = RemoteA2aAgent
 
   # Order matters: TransferToAgentTool is a subclass of FunctionTool.
-  if McpTool is not None and isinstance(tool, McpTool):
+  if mcp_tool_type is not None and isinstance(tool, mcp_tool_type):
     return "MCP"
   if isinstance(tool, TransferToAgentTool):
-    if RemoteA2aAgent is not None and tool_args and tool_context:
+    if remote_a2a_agent_type is not None and tool_args and tool_context:
       agent_name = tool_args.get("agent_name")
       if agent_name:
         target = _find_transfer_target(
             tool_context._invocation_context.agent,
             agent_name,
         )
-        if target is not None and isinstance(target, RemoteA2aAgent):
+        if target is not None and isinstance(target, remote_a2a_agent_type):
           return "TRANSFER_A2A"
     return "TRANSFER_AGENT"
   if isinstance(tool, AgentTool):
-    if RemoteA2aAgent is not None and isinstance(tool.agent, RemoteA2aAgent):
+    if remote_a2a_agent_type is not None and isinstance(
+        tool.agent, remote_a2a_agent_type
+    ):
       return "A2A"
     return "SUB_AGENT"
   if isinstance(tool, FunctionTool):
@@ -1869,8 +1890,8 @@ class BigQueryLoggerConfig:
 # within the *same* asyncio task without task boundaries — which the
 # framework's PluginManager already prevents.
 
-_root_agent_name_ctx = contextvars.ContextVar(
-    "_bq_analytics_root_agent_name", default=None
+_root_agent_name_ctx: contextvars.ContextVar[Optional[str]] = (
+    contextvars.ContextVar("_bq_analytics_root_agent_name", default=None)
 )
 
 # Tracks the invocation_id that owns the current span stack so that
@@ -1947,11 +1968,14 @@ class TraceManager:
   def init_trace(callback_context: CallbackContext) -> None:
     # Always refresh root_agent_name — it can change between
     # invocations (e.g. different root agents in the same task).
+    root_agent_name: str | None = None
     try:
-      root_agent = callback_context._invocation_context.agent.root_agent
-      _root_agent_name_ctx.set(root_agent.name)
+      agent = callback_context._invocation_context.agent
+      if isinstance(agent, BaseAgent):
+        root_agent_name = agent.root_agent.name
     except (AttributeError, ValueError):
       pass
+    _root_agent_name_ctx.set(root_agent_name)
 
     # Ensure records stack is initialized
     TraceManager._get_records()
@@ -2198,7 +2222,11 @@ class TraceManager:
 # ==============================================================================
 # HELPER: BATCH PROCESSOR
 # ==============================================================================
-_SHUTDOWN_SENTINEL = object()
+_SHUTDOWN_SENTINEL: None = None
+
+
+class _RetryableWriteResponseError(Exception):
+  """A retryable error reported inside an AppendRows response."""
 
 
 class BatchProcessor:
@@ -2251,7 +2279,7 @@ class BatchProcessor:
 
     self._visual_builder = _is_visual_builder.get()
 
-    self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(
+    self._queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(
         maxsize=queue_max_size
     )
     self._queue_max_size = queue_max_size
@@ -2408,7 +2436,7 @@ class BatchProcessor:
   async def _batch_writer(self) -> None:
     """Worker task that batches and writes rows to BigQuery."""
     while not self._shutdown or not self._queue.empty():
-      batch = []
+      batch: list[dict[str, Any]] = []
       try:
         if self._shutdown:
           try:
@@ -2675,7 +2703,7 @@ class BatchProcessor:
                   _GRPC_INTERNAL,
                   _GRPC_UNAVAILABLE,
               ]:
-                raise ServiceUnavailable(error_message)
+                raise _RetryableWriteResponseError(error_message)
 
               if "schema mismatch" in error_message.lower():
                 logger.error(
@@ -2736,6 +2764,7 @@ class BatchProcessor:
           ServiceUnavailable,
           TooManyRequests,
           InternalServerError,
+          _RetryableWriteResponseError,
           asyncio.TimeoutError,
       ) as e:
         if request_sent and not definitive_rejection:
@@ -2985,9 +3014,9 @@ class GCSOffloader:
       project_id: str,
       bucket_name: str,
       executor: ThreadPoolExecutor,
-      storage_client: Optional[storage.Client] = None,
+      storage_client: Optional[cloud_storage.Client] = None,
   ):
-    self.client = storage_client or storage.Client(project=project_id)
+    self.client = storage_client or cloud_storage.Client(project=project_id)
     self.bucket = self.client.bucket(bucket_name)
     self.executor = executor
 
@@ -3080,7 +3109,7 @@ class HybridContentParser:
     truncated_text, length_truncated = self._truncate(sanitized)
     return truncated_text, content_lost or length_truncated
 
-  def _sanitize_external_uri(self, uri: str) -> tuple[str, bool]:
+  def _sanitize_external_uri(self, uri: str | None) -> tuple[str, bool]:
     """Redacts signed/query credentials while preserving a URI's location."""
     if not isinstance(uri, str):
       return "[REDACTED_SENSITIVE_URI]", True
@@ -3223,7 +3252,7 @@ class HybridContentParser:
 
   async def _parse_content_object(
       self,
-      content: types.Content | types.Part,
+      content: types.ContentUnion,
       *,
       trace_id: Optional[str] = None,
       span_id: Optional[str] = None,
@@ -3245,13 +3274,23 @@ class HybridContentParser:
     trace_id = trace_id if trace_id is not None else self.trace_id
     span_id = span_id if span_id is not None else self.span_id
     parse_uid = parse_uid or uuid.uuid4().hex
-    content_parts = []
+    content_parts: list[dict[str, Any]] = []
     is_truncated = False
-    summary_text = []
+    summary_text: list[str] = []
 
-    parts = content.parts if hasattr(content, "parts") else [content]
-    for idx, part in enumerate(parts):
-      part_data = {
+    raw_parts: list[Any]
+    if isinstance(content, types.Content):
+      raw_parts = list(content.parts or [])
+    elif isinstance(content, (list, tuple)):
+      raw_parts = list(content)
+    else:
+      raw_parts = [content]
+    for idx, raw_part in enumerate(raw_parts):
+      # Callers may pass any ContentUnion member, including a bare string or a
+      # File. Those carry none of the fields below, so they contribute an
+      # empty entry instead of raising.
+      part = raw_part if isinstance(raw_part, types.Part) else types.Part()
+      part_data: dict[str, Any] = {
           "part_index": idx,
           "mime_type": "text/plain",
           "uri": None,
@@ -3262,27 +3301,30 @@ class HybridContentParser:
       }
 
       # CASE A: It is already a URI (e.g. from user input)
-      if hasattr(part, "file_data") and part.file_data:
+      if part.file_data:
+        file_data = part.file_data
         part_data["storage_mode"] = "EXTERNAL_URI"
         safe_uri, uri_content_lost = self._sanitize_external_uri(
-            part.file_data.file_uri
+            file_data.file_uri
         )
         part_data["uri"] = safe_uri
         if uri_content_lost:
           is_truncated = True
-        part_data["mime_type"] = part.file_data.mime_type
+        part_data["mime_type"] = file_data.mime_type
 
       # CASE B: It is Binary/Inline Data (Image/Blob)
-      elif hasattr(part, "inline_data") and part.inline_data:
+      elif part.inline_data:
+        inline_data = part.inline_data
+        mime_type = inline_data.mime_type or "application/octet-stream"
         if self.offloader:
-          ext = mimetypes.guess_extension(part.inline_data.mime_type) or ".bin"
+          ext = mimetypes.guess_extension(mime_type) or ".bin"
           path = (
               f"{datetime.now().date()}/{trace_id}/{span_id}_{parse_uid}"
               f"_c{content_ordinal}_p{idx}{ext}"
           )
           try:
             uri = await self.offloader.upload_content(
-                part.inline_data.data, part.inline_data.mime_type, path
+                inline_data.data or b"", mime_type, path
             )
             part_data["storage_mode"] = "GCS_REFERENCE"
             part_data["uri"] = uri
@@ -3290,12 +3332,12 @@ class HybridContentParser:
                 "uri": uri,
                 "version": None,
                 "authorizer": self.connection_id,
-                "details": json.dumps({
-                    "gcs_metadata": {"content_type": part.inline_data.mime_type}
-                }),
+                "details": json.dumps(
+                    {"gcs_metadata": {"content_type": mime_type}}
+                ),
             }
             part_data["object_ref"] = object_ref
-            part_data["mime_type"] = part.inline_data.mime_type
+            part_data["mime_type"] = mime_type
             part_data["text"] = "[MEDIA OFFLOADED]"
           except Exception as e:
             logger.warning("Failed to offload content to GCS: %s", e)
@@ -3304,7 +3346,7 @@ class HybridContentParser:
           part_data["text"] = "[BINARY DATA]"
 
       # CASE C: Text
-      elif hasattr(part, "text") and part.text:
+      elif part.text:
         safe_text, sanitized_content_lost = self._sanitize_raw_text(part.text)
         if sanitized_content_lost:
           is_truncated = True
@@ -3357,14 +3399,14 @@ class HybridContentParser:
           part_data["text"] = clean_text
           summary_text.append(clean_text)
 
-      elif hasattr(part, "function_call") and part.function_call:
+      elif part.function_call:
         part_data["mime_type"] = "application/json"
         part_data["text"] = f"Function: {part.function_call.name}"
         part_data["part_attributes"] = json.dumps(
             {"function_name": part.function_call.name}
         )
 
-      elif hasattr(part, "function_response") and part.function_response:
+      elif part.function_response:
         response, response_lost = self._serialize_part_model(
             part.function_response
         )
@@ -3382,7 +3424,7 @@ class HybridContentParser:
         )
         summary_text.append(response_summary)
 
-      elif hasattr(part, "executable_code") and part.executable_code:
+      elif part.executable_code:
         executable, code_lost = self._serialize_part_model(part.executable_code)
         if code_lost:
           is_truncated = True
@@ -3401,9 +3443,7 @@ class HybridContentParser:
         })
         summary_text.append(f"Executable code ({language}): {code}")
 
-      elif (
-          hasattr(part, "code_execution_result") and part.code_execution_result
-      ):
+      elif part.code_execution_result:
         result, result_lost = self._serialize_part_model(
             part.code_execution_result
         )
@@ -3452,8 +3492,8 @@ class HybridContentParser:
     # Unique per parse() call: disambiguates GCS object names across the
     # multiple Content objects of one request and across concurrent events.
     parse_uid = uuid.uuid4().hex
-    json_payload = {}
-    content_parts = []
+    json_payload: Any = {}
+    content_parts: list[dict[str, Any]] = []
     is_truncated = False
 
     def process_text(t: str) -> tuple[str, bool]:
@@ -3461,14 +3501,10 @@ class HybridContentParser:
 
     if isinstance(content, LlmRequest):
       # Handle Prompt
-      messages = []
-      contents = (
-          content.contents
-          if isinstance(content.contents, list)
-          else [content.contents]
-      )
+      messages: list[dict[str, str]] = []
+      contents = content.contents
       for content_idx, c in enumerate(contents):
-        role = getattr(c, "role", "unknown")
+        role = c.role or "unknown"
         if isinstance(role, str):
           role, role_truncated = process_text(role)
           if role_truncated:
@@ -3489,16 +3525,16 @@ class HybridContentParser:
         json_payload["prompt"] = messages
 
       # Handle System Instruction
-      if content.config and getattr(content.config, "system_instruction", None):
-        si = content.config.system_instruction
-        if isinstance(si, str):
-          truncated_si, trunc = process_text(si)
+      if content.config.system_instruction:
+        system_instruction = content.config.system_instruction
+        if isinstance(system_instruction, str):
+          truncated_si, trunc = process_text(system_instruction)
           if trunc:
             is_truncated = True
           json_payload["system_prompt"] = truncated_si
         else:
           summary, parts, trunc = await self._parse_content_object(
-              si,
+              system_instruction,
               trace_id=trace_id,
               span_id=span_id,
               parse_uid=parse_uid,
@@ -4236,14 +4272,14 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # Guards ownership changes of _loop_state_by_loop: unsynchronized iteration raced concurrent insertion.
     self._loop_states_guard = threading.Lock()
     self._credentials = credentials
-    self.client = None
+    self.client: bigquery.Client | None = None
     self._loop_state_by_loop: dict[asyncio.AbstractEventLoop, _LoopState] = {}
     self._write_stream_name: Optional[str] = None  # Resolved stream name
     self._executor: Optional[ThreadPoolExecutor] = None
     self.offloader: Optional[GCSOffloader] = None
     self.parser: Optional[HybridContentParser] = None
-    self._schema = None
-    self.arrow_schema = None
+    self._schema: list[bq_schema.SchemaField] | None = None
+    self.arrow_schema: pa.Schema | None = None
     self._init_pid = os.getpid()
     _LIVE_PLUGINS.add(self)
 
@@ -4361,6 +4397,18 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     """The write stream for the current event loop."""
     bp = self._batch_processor_prop
     return bp.write_stream if bp else None
+
+  def _require_client(self) -> bigquery.Client:
+    """Returns the initialized control-plane client."""
+    if self.client is None:
+      raise RuntimeError("BigQuery client is not initialized.")
+    return self.client
+
+  def _require_schema(self) -> list[bq_schema.SchemaField]:
+    """Returns the projected table schema after setup has built it."""
+    if self._schema is None:
+      raise RuntimeError("BigQuery schema is not initialized.")
+    return self._schema
 
   def _format_content_safely(
       self, content: Optional[types.Content]
@@ -4544,9 +4592,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       if self._visual_builder:
         user_agents.append(f"google-adk-visual-builder/{__version__}")
 
-      client_info = gapic_client_info.ClientInfo(
-          user_agent=" ".join(user_agents)
-      )
+      client_info = _CLIENT_INFO_FACTORY(user_agent=" ".join(user_agents))
 
       write_client = BigQueryWriteAsyncClient(
           credentials=self._credentials,
@@ -4566,7 +4612,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
         batch_processor = BatchProcessor(
             write_client=write_client,
-            arrow_schema=self.arrow_schema,
+            arrow_schema=cast(pa.Schema, self.arrow_schema),
             write_stream=write_stream_name,
             batch_size=self.config.batch_size,
             flush_interval=self.config.batch_flush_interval,
@@ -4684,9 +4730,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
     # The executor is needed beyond client construction (schema RPCs, GCS
     # offloader): creating it only inside the client branch left
-    # _executor as None for the offloader when a client was already set
-    # (post-rebase mypy: GCSOffloader argument 3 expects a non-optional
-    # ThreadPoolExecutor — a latent runtime gap, not just typing).
+    # _executor as None for the offloader when a client was already set.
     executor = self._executor
     if executor is None:
       executor = ThreadPoolExecutor(max_workers=1)
@@ -4730,7 +4774,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         raise
 
     self.full_table_id = f"{self.project_id}.{self.dataset_id}.{self.table_id}"
-    if not self._schema:
+    if self._schema is None:
       # Project out denied payload columns schema-first, so the table
       # schema, Arrow schema, row dict, and views all stay consistent.
       self._schema = _project_schema(_get_events_schema(), self._denied_columns)
@@ -4742,7 +4786,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     await loop.run_in_executor(executor, self._ensure_schema_exists)
 
     if not self.parser:
-      self.arrow_schema = to_arrow_schema(self._schema)
+      self.arrow_schema = to_arrow_schema(self._require_schema())
       if not self.arrow_schema:
         raise RuntimeError("Failed to convert BigQuery schema to Arrow schema.")
 
@@ -4766,7 +4810,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
               self.project_id,
               self.config.gcs_bucket_name,
               executor,
-              storage_client=storage.Client(
+              storage_client=cloud_storage.Client(
                   project=self.project_id, credentials=self._credentials
               ),
           )
@@ -4821,9 +4865,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     exists, missing columns are added automatically (additive only).
     A ``adk_schema_version`` label is written for governance.
     """
-    assert self.client is not None  # _lazy_setup creates it before calling.
+    client = self._require_client()
     try:
-      existing_table = self.client.get_table(self.full_table_id)
+      existing_table = client.get_table(self.full_table_id)
       if self.config.auto_schema_upgrade:
         self._maybe_upgrade_schema(existing_table)
       if self.config.create_views:
@@ -4838,13 +4882,13 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       tbl.clustering_fields = self.config.clustering_fields
       tbl.labels = {_SCHEMA_VERSION_LABEL_KEY: _SCHEMA_VERSION}
       try:
-        self.client.create_table(tbl)
+        client.create_table(tbl)
       except cloud_exceptions.Conflict:
         # Another process created it concurrently — but there is no
         # guarantee it used a compatible schema. Re-fetch and run the same
         # readiness path as a pre-existing table; any failure here
         # propagates so _ensure_started keeps _started=False and retries.
-        existing_table = self.client.get_table(self.full_table_id)
+        existing_table = client.get_table(self.full_table_id)
         if self.config.auto_schema_upgrade:
           self._maybe_upgrade_schema(existing_table)
       except Exception as e:
@@ -4954,8 +4998,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     Args:
         existing_table: The current BigQuery table object.
     """
+    schema = self._require_schema()
     new_fields, updated_records = self._schema_fields_match(
-        list(existing_table.schema), list(self._schema)
+        list(existing_table.schema or []), schema
     )
 
     stored_version = (existing_table.labels or {}).get(
@@ -5008,7 +5053,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       existing_table.labels = labels
 
       update_fields = ["schema", "labels"]
-      self.client.update_table(existing_table, update_fields)
+      self._require_client().update_table(existing_table, update_fields)
     except Exception as e:
       logger.error(
           "Schema auto-upgrade failed for %s: %s",
@@ -5054,6 +5099,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     ``CREATE OR REPLACE VIEW`` so it is safe to call repeatedly.
     Errors are logged but never raised.
     """
+    client = self._require_client()
     for event_type, extra_cols in _EVENT_VIEW_DEFS.items():
       view_name = self.config.view_prefix + "_" + event_type.lower()
       # Projection-aware views -- drop any derived column whose SQL
@@ -5070,7 +5116,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           event_type=event_type,
       )
       try:
-        self.client.query(sql).result()
+        client.query(sql).result()
       except cloud_exceptions.Conflict:
         logger.debug(
             "View %s was updated concurrently by another process.",
@@ -5339,7 +5385,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             state.write_client, "transport", None
         ):
           try:
-            await state.write_client.transport.close()
+            close_transport = cast(
+                Callable[[], collections.abc.Awaitable[None]],
+                state.write_client.transport.close,
+            )
+            await close_transport()
           except Exception:
             pass
         with self._loop_states_guard, self._drop_counts_guard:
@@ -6502,13 +6552,19 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       for part in user_message.parts:
         if not part.function_response:
           continue
-        hitl_event = _HITL_EVENT_MAP.get(part.function_response.name)
+        function_response = part.function_response
+        response_name = function_response.name
+        hitl_event = (
+            _HITL_EVENT_MAP.get(response_name)
+            if response_name is not None
+            else None
+        )
         resp_truncated, is_truncated = _recursive_smart_truncate(
-            part.function_response.response or {},
+            function_response.response or {},
             self.config.max_content_length,
         )
         content_dict = {
-            "tool": part.function_response.name,
+            "tool": response_name,
             "result": resp_truncated,
         }
         if hitl_event:
@@ -6528,12 +6584,12 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           # message is the resume side of a previously-paused tool.
           # Stamp the pair keys; pause_orphan / registry semantics
           # are intentionally deferred.
-          if not part.function_response.id:
+          if not function_response.id:
             logger.debug(
                 "User-message function_response for tool %s has no id;"
                 " the resulting TOOL_COMPLETED row cannot pair with a"
                 " TOOL_PAUSED row.",
-                part.function_response.name,
+                response_name,
             )
           await self._log_event(
               "TOOL_COMPLETED",
@@ -6543,7 +6599,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
               event_data=EventData(
                   adk_extras={
                       "pause_kind": "tool",
-                      "function_call_id": part.function_response.id,
+                      "function_call_id": function_response.id,
                   },
               ),
           )
@@ -6710,14 +6766,20 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       for part in event.content.parts:
         # Detect HITL function calls (request events).
         if part.function_call:
-          hitl_event = _HITL_EVENT_MAP.get(part.function_call.name)
+          function_call = part.function_call
+          function_call_name = function_call.name
+          hitl_event = (
+              _HITL_EVENT_MAP.get(function_call_name)
+              if function_call_name is not None
+              else None
+          )
           if hitl_event:
             args_truncated, is_truncated = _recursive_smart_truncate(
-                part.function_call.args or {},
+                function_call.args or {},
                 self.config.max_content_length,
             )
             content_dict = {
-                "tool": part.function_call.name,
+                "tool": function_call_name,
                 "args": args_truncated,
             }
             await self._log_event(
@@ -6730,20 +6792,26 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           # Per-id TOOL_PAUSED emit. pause_kind derives from the
           # function_call NAME — looking it up against the id value
           # would misclassify every HITL pause as 'tool'.
-          if part.function_call.id in long_running_ids:
-            paused_ids_emitted.add(part.function_call.id)
-            pause_kind = _HITL_PAUSE_KIND_MAP.get(
-                part.function_call.name, "tool"
+          function_call_id = function_call.id
+          if (
+              function_call_id is not None
+              and function_call_id in long_running_ids
+          ):
+            paused_ids_emitted.add(function_call_id)
+            pause_kind = (
+                _HITL_PAUSE_KIND_MAP.get(function_call_name, "tool")
+                if function_call_name is not None
+                else "tool"
             )
             args_truncated, is_truncated = _recursive_smart_truncate(
-                part.function_call.args or {},
+                function_call.args or {},
                 self.config.max_content_length,
             )
             await self._log_event(
                 "TOOL_PAUSED",
                 callback_ctx,
                 raw_content={
-                    "tool": part.function_call.name,
+                    "tool": function_call_name,
                     "args": args_truncated,
                 },
                 is_truncated=is_truncated,
@@ -6751,7 +6819,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
                     source_event=event,
                     adk_extras={
                         "pause_kind": pause_kind,
-                        "function_call_id": part.function_call.id,
+                        "function_call_id": function_call_id,
                     },
                 ),
             )
@@ -6759,14 +6827,20 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         # function responses route ONLY here, never to TOOL_COMPLETED
         # (verified by this file's HITL test suite).
         if part.function_response:
-          hitl_event = _HITL_EVENT_MAP.get(part.function_response.name)
+          function_response = part.function_response
+          function_response_name = function_response.name
+          hitl_event = (
+              _HITL_EVENT_MAP.get(function_response_name)
+              if function_response_name is not None
+              else None
+          )
           if hitl_event:
             resp_truncated, is_truncated = _recursive_smart_truncate(
-                part.function_response.response or {},
+                function_response.response or {},
                 self.config.max_content_length,
             )
             content_dict = {
-                "tool": part.function_response.name,
+                "tool": function_response_name,
                 "result": resp_truncated,
             }
             await self._log_event(
@@ -6821,17 +6895,17 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       # so the remote agent's answer is visible in the content
       # column.
       response_payload = a2a_keys.get("a2a:response")
-      content_dict = None
+      a2a_content: object | None = None
       content_truncated = False
       if response_payload is not None:
-        content_dict, content_truncated = _recursive_smart_truncate(
+        a2a_content, content_truncated = _recursive_smart_truncate(
             response_payload,
             self.config.max_content_length,
         )
       await self._log_event(
           "A2A_INTERACTION",
           callback_ctx,
-          raw_content=content_dict,
+          raw_content=a2a_content,
           is_truncated=is_truncated or content_truncated,
           event_data=EventData(
               source_event=event,
@@ -6847,28 +6921,28 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # avoid false positives from skip_summarization function
     # responses, long-running tool pause events, and thought-only
     # events (which ADK treats as invisible internal reasoning).
-    is_agent_response = (
-        event.content
-        and event.content.parts
+    event_content = event.content
+    if (
+        event_content is not None
+        and event_content.parts
         and event.is_final_response()
         and event.partial is not True
         and not event.get_function_calls()
         and not event.get_function_responses()
         and not event.long_running_tool_ids
-    )
-    if is_agent_response:
+    ):
       # Filter to visible text parts only.  Exclude thoughts
       # (internal reasoning, A2A working/submitted updates),
       # empty parts, and non-text parts (executable_code, etc.)
       # that would render as "other" in _format_content.
       visible_parts = [
           p
-          for p in event.content.parts
+          for p in event_content.parts
           if p.text and not getattr(p, "thought", None)
       ]
       if visible_parts:
         visible_content = types.Content(
-            role=event.content.role, parts=visible_parts
+            role=event_content.role, parts=visible_parts
         )
         formatted, truncated = self._format_content_safely(visible_content)
         # source_event=event carries the ADK envelope (A3 / node /
@@ -7089,7 +7163,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         llm_response: The LLM response object.
     """
     is_partial = getattr(llm_response, "partial", None) is True
-    content_dict = {}
+    content_dict: dict[str, object] = {}
     is_truncated = False
     if llm_response.content:
       part_str, part_truncated = self._format_content_safely(
@@ -7149,9 +7223,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           tfft = int((first_token - start_time) * 1000)
 
       # ACTUALLY pop the span
-      popped_span_id, duration = TraceManager.pop_span(
+      popped_span_id, popped_duration = TraceManager.pop_span(
           expected_kind="llm_request"
       )
+      duration = popped_duration or 0
       is_popped = True
 
       # If we popped, the span_id from get_current_span_and_parent() above is correct for THIS event

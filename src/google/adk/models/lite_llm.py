@@ -57,6 +57,7 @@ from typing_extensions import NotRequired
 from typing_extensions import override
 from typing_extensions import Required
 
+from . import _prompt_cache
 from ..utils._google_client_headers import merge_tracking_headers
 from ._capabilities import LlmCapabilities
 from .base_llm import BaseLlm
@@ -80,6 +81,8 @@ if TYPE_CHECKING:
   from litellm import ModelResponseStream
   from litellm import OpenAIMessageContent
   from litellm.types.utils import Delta
+
+  from ..agents.context_cache_config import ContextCacheConfig
 else:
   litellm = None
   acompletion = None
@@ -245,6 +248,19 @@ _FILE_ID_REQUIRED_PROVIDERS = frozenset({"openai", "azure"})
 # Routing-only prefix: requests go through a LiteLLM Proxy deployment, but the
 # payload must still be shaped for the provider named in the next segment.
 _PROXY_PROVIDER = "litellm_proxy"
+
+_MIME_TYPE_TO_EXTENSION = {
+    "application/pdf": ".pdf",
+    "application/msword": ".doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": (
+        ".docx"
+    ),
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": (
+        ".pptx"
+    ),
+    "application/json": ".json",
+    "application/x-sh": ".sh",
+}
 
 _MISSING_TOOL_RESULT_MESSAGE = (
     "Error: Missing tool result (tool execution may have been interrupted "
@@ -843,6 +859,7 @@ class UsageMetadataChunk(BaseModel):
   total_tokens: int
   cached_prompt_tokens: int = 0
   reasoning_tokens: int = 0
+  cache_creation_tokens: Optional[int] = None
 
 
 class LiteLLMClient:
@@ -1014,7 +1031,11 @@ def _extract_cached_prompt_tokens(usage: Any) -> int:
       if total > 0:
         return total
 
-    for key in ("cached_prompt_tokens", "cached_tokens"):
+    for key in (
+        "cached_prompt_tokens",
+        "cached_tokens",
+        "cache_read_input_tokens",
+    ):
       value = usage_dict.get(key)
       if isinstance(value, int):
         return value
@@ -1022,6 +1043,71 @@ def _extract_cached_prompt_tokens(usage: Any) -> int:
     logger.debug("Error extracting cached prompt tokens: %s", e)
 
   return 0
+
+
+def _extract_cache_creation_tokens(usage: Any) -> Optional[int]:
+  """Extracts cache creation (write) tokens from LiteLLM usage.
+
+  Args:
+    usage: Usage dictionary from LiteLLM response.
+
+  Returns:
+    Integer number of cache creation tokens if present; otherwise None.
+  """
+  try:
+    usage_dict = usage
+    if hasattr(usage, "model_dump"):
+      usage_dict = usage.model_dump()
+    elif isinstance(usage, str):
+      try:
+        usage_dict = json.loads(usage)
+      except json.JSONDecodeError:
+        return None
+
+    if not isinstance(usage_dict, dict):
+      return None
+
+    for key in ("cache_creation_input_tokens", "cache_write_input_tokens"):
+      if key in usage_dict:
+        value = usage_dict.get(key)
+        if isinstance(value, int):
+          return value
+  except (TypeError, AttributeError) as e:
+    logger.debug("Error extracting cache creation tokens: %s", e)
+
+  return None
+
+
+def _cache_control_injection_points(
+    cache_config: ContextCacheConfig,
+) -> List[Dict[str, Any]]:
+  """Describes the prefix LiteLLM should mark as cacheable.
+
+  LiteLLM applies these itself and then lets each provider decide what to do
+  with them, so the same two points are correct whatever the model turns out
+  to be: a provider that caches by marked prefix, such as Claude, honors them,
+  and a provider that caches automatically or not at all has them dropped
+  before the request leaves.
+
+  The system instruction is one point because it is the stable head of the
+  prompt. The final message is the other, which caches the conversation so far
+  and moves forward on its own as the conversation grows. Tool definitions get
+  no point of their own, because LiteLLM's only tool-level location is
+  specific to one provider.
+
+  Args:
+    cache_config: Cache configuration for the request.
+
+  Returns:
+    Injection points to hand to LiteLLM.
+  """
+  control: Dict[str, Any] = {"type": "ephemeral"}
+  if _prompt_cache.use_one_hour_ttl(cache_config):
+    control["ttl"] = "1h"
+  return [
+      {"location": "message", "role": "system", "control": control},
+      {"location": "message", "index": -1, "control": control},
+  ]
 
 
 def _decode_thought_signature(value: Any) -> Optional[bytes]:
@@ -1182,7 +1268,7 @@ async def _content_to_message_param(
     *,
     provider: str = "",
     model: str = "",
-) -> Union[Message, list[Message]]:
+) -> Union[Message, list[Message]] | None:
   """Converts a types.Content to a litellm Message or list of Messages.
 
   Handles multipart function responses by returning a list of
@@ -1194,14 +1280,18 @@ async def _content_to_message_param(
     model: The LiteLLM model string, used for provider-specific behavior.
 
   Returns:
-    A litellm Message, a list of litellm Messages.
+    A litellm Message, a list of litellm Messages, or None if skipped.
   """
   _ensure_litellm_imported()
 
+  # Skip content if there are no parts to avoid LiteLLM adapter errors.
+  parts = content.parts or []
+  if not parts:
+    return None
+
   tool_messages: list[Message] = []
   non_tool_parts: list[types.Part] = []
-  content_parts_or_empty = content.parts or []
-  for part in content_parts_or_empty:
+  for part in parts:
     if part.function_response:
       function_response = part.function_response
       response = function_response.response
@@ -1249,7 +1339,7 @@ async def _content_to_message_param(
   role = _to_litellm_role(content.role)
 
   if role == "user":
-    user_parts = [part for part in content_parts_or_empty if not part.thought]
+    user_parts = [part for part in parts if not part.thought]
     message_content = (
         await _get_content(user_parts, provider=provider, model=model) or None
     )
@@ -1261,7 +1351,7 @@ async def _content_to_message_param(
     tool_calls: list[_OutboundToolCall] = []
     content_parts: list[types.Part] = []
     reasoning_parts: list[types.Part] = []
-    for part in content_parts_or_empty:
+    for part in parts:
       if part.function_call:
         function_call = part.function_call
         if not function_call.name:
@@ -1526,8 +1616,14 @@ async def _get_content(
               if model.lower().startswith(_PROXY_PROVIDER + "/")
               else provider
           )
+          ext = (
+              mimetypes.guess_extension(mime_type)
+              or _MIME_TYPE_TO_EXTENSION.get(mime_type)
+              or ".bin"
+          )
+          filename = f"document{ext}"
           file_response = await litellm.acreate_file(
-              file=part.inline_data.data,
+              file=(filename, part.inline_data.data, mime_type),
               purpose="assistants",
               custom_llm_provider=upload_provider,
           )
@@ -2249,6 +2345,7 @@ def _model_response_to_chunk(
           total_tokens=usage.get("total_tokens", 0) or 0,
           cached_prompt_tokens=_extract_cached_prompt_tokens(usage),
           reasoning_tokens=_extract_reasoning_tokens(usage),
+          cache_creation_tokens=_extract_cache_creation_tokens(usage),
       ), None
     except AttributeError as e:
       raise TypeError(
@@ -2344,6 +2441,13 @@ def _model_response_to_generate_content_response(
         cached_content_token_count=_extract_cached_prompt_tokens(usage_dict),
         thoughts_token_count=reasoning_tokens if reasoning_tokens else None,
     )
+    cache_creation = _extract_cache_creation_tokens(usage_dict)
+    if cache_creation is not None:
+      object.__setattr__(
+          llm_response.usage_metadata,
+          "cache_creation_input_tokens",
+          cache_creation,
+      )
 
   grounding_metadata = _extract_grounding_metadata(response)
   if grounding_metadata:
@@ -3013,6 +3117,18 @@ class LiteLlm(BaseLlm):
     }
     completion_args.update(self._additional_args)
 
+    # A caller who named their own injection points at construction has said
+    # more about their provider than the app-level config can, so leave those
+    # alone.
+    cache_config = _prompt_cache.resolve_cache_config(llm_request)
+    if (
+        cache_config is not None
+        and "cache_control_injection_points" not in completion_args
+    ):
+      completion_args["cache_control_injection_points"] = (
+          _cache_control_injection_points(cache_config)
+      )
+
     # merge headers
     if _is_litellm_vertex_model(effective_model) or _is_litellm_gemini_model(
         effective_model
@@ -3069,6 +3185,7 @@ class LiteLlm(BaseLlm):
       aggregated_llm_response_with_tool_call = None
       usage_metadata = None
       grounding_metadata = None
+      last_finish_reason: str | None = None
       fallback_index = 0
 
       def _finalize_tool_call_response(
@@ -3155,11 +3272,14 @@ class LiteLlm(BaseLlm):
         return llm_response
 
       def _reset_stream_buffers() -> None:
-        nonlocal reasoning_parts
+        nonlocal reasoning_parts, last_finish_reason
         text_parts.clear()
         reasoning_parts = []
         function_calls.clear()
         tool_call_trackers.clear()
+        # The reason belongs to the segment just finalized; carrying it into
+        # the next one would stamp the wrong reason on the next response.
+        last_finish_reason = None
 
       async for part in await self.llm_client.acompletion(**completion_args):
         # Grounding metadata can arrive on the first chunk (search queries) or
@@ -3168,6 +3288,8 @@ class LiteLlm(BaseLlm):
         if part_grounding:
           grounding_metadata = part_grounding
         for chunk, finish_reason in _model_response_to_chunk(part):
+          if finish_reason:
+            last_finish_reason = finish_reason
           if isinstance(chunk, FunctionChunk):
             index = chunk.index or fallback_index
             if index not in function_calls:
@@ -3223,6 +3345,12 @@ class LiteLlm(BaseLlm):
                 if chunk.reasoning_tokens
                 else None,
             )
+            if chunk.cache_creation_tokens is not None:
+              object.__setattr__(
+                  usage_metadata,
+                  "cache_creation_input_tokens",
+                  chunk.cache_creation_tokens,
+              )
 
           # LiteLLM 1.81+ can set finish_reason="stop" on partial chunks. Only
           # finalize tool calls on an explicit tool_calls/length finish_reason,
@@ -3253,19 +3381,42 @@ class LiteLlm(BaseLlm):
             )
             _reset_stream_buffers()
 
+      # The in-loop finalizers only fire on the reasons known to end a stream,
+      # so any other terminal reason ("content_filter" above all) reaches the
+      # end of the stream with the buffers still full. Finalize with the reason
+      # the provider actually sent rather than assuming a clean stop, so a
+      # filtered stream reports the same finish_reason and error_code that the
+      # non-streaming path reports.
       if function_calls and not aggregated_llm_response_with_tool_call:
         aggregated_llm_response_with_tool_call = _finalize_tool_call_response(
             model_version=part.model,
-            finish_reason="tool_calls",
+            finish_reason=last_finish_reason or "tool_calls",
         )
         _reset_stream_buffers()
 
       if (text_parts or reasoning_parts) and not aggregated_llm_response:
         aggregated_llm_response = _finalize_text_response(
             model_version=part.model,
-            finish_reason="stop",
+            finish_reason=last_finish_reason or "stop",
         )
         _reset_stream_buffers()
+      elif (
+          not aggregated_llm_response
+          and not aggregated_llm_response_with_tool_call
+      ):
+        # The stream ended abnormally without ever producing content (an
+        # immediate content filter, or truncation before the first token).
+        # Non-streaming reports that as an error response; without this the
+        # generator ends having yielded nothing at all, so the reason, the
+        # error and the usage are all dropped and the caller sees a silent stop.
+        trailing_finish_reason = last_finish_reason or ""
+        if trailing_finish_reason and _map_finish_reason(
+            trailing_finish_reason
+        ) not in (None, types.FinishReason.STOP):
+          aggregated_llm_response = _finalize_text_response(
+              model_version=part.model,
+              finish_reason=trailing_finish_reason,
+          )
 
       # waiting until streaming ends to yield the llm_response as litellm tends
       # to send chunk that contains usage_metadata after the chunk with

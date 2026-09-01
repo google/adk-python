@@ -20,6 +20,7 @@ from typing import Optional
 
 from google.adk.features import experimental
 from google.adk.features import FeatureName
+from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.environment_simulation.tool_connection_map import ToolConnectionMap
 from google.genai import types as genai_types
 
