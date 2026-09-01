@@ -222,6 +222,10 @@ def _update_type_string(value: object) -> None:
   schema_type = value.get('type')
   if isinstance(schema_type, str):
     value['type'] = schema_type.lower()
+  elif isinstance(schema_type, list):
+    value['type'] = [
+        item.lower() if isinstance(item, str) else item for item in schema_type
+    ]
 
   for child_value in value.values():
     if isinstance(child_value, (dict, list)):
@@ -231,7 +235,9 @@ def _update_type_string(value: object) -> None:
 def _schema_to_dict(schema: object) -> dict[str, Any]:
   schema_dict: dict[str, Any]
   if isinstance(schema, types.Schema):
-    schema_dict = schema.model_dump(exclude_none=True, mode='json')
+    schema_dict = schema.model_dump(
+        by_alias=True, exclude_none=True, mode='json'
+    )
   elif isinstance(schema, type) and issubclass(schema, BaseModel):
     schema_dict = cast(type[BaseModel], schema).model_json_schema()
   elif isinstance(schema, BaseModel):
@@ -509,11 +515,12 @@ def _function_declaration_to_response_tool(
 
   required = (
       function_declaration.parameters.required
-      if function_declaration.parameters
+      if not function_declaration.parameters_json_schema
+      and function_declaration.parameters
       and function_declaration.parameters.required
       else None
   )
-  if required:
+  if required and 'required' not in parameters:
     parameters['required'] = required
 
   return FunctionToolParam(

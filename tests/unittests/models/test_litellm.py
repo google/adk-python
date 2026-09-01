@@ -333,8 +333,28 @@ def test_to_litellm_response_format_handles_genai_schema_instance():
   )
   assert formatted["type"] == "json_object"
   assert formatted["response_schema"] == schema_instance.model_dump(
-      exclude_none=True, mode="json"
+      by_alias=True, exclude_none=True, mode="json"
   )
+
+
+def test_to_litellm_response_format_preserves_any_of_for_genai_schema():
+  schema = types.Schema(
+      type=types.Type.OBJECT,
+      properties={
+          "value": types.Schema(
+              any_of=[
+                  types.Schema(type=types.Type.STRING),
+                  types.Schema(type=types.Type.NUMBER),
+              ]
+          )
+      },
+      required=["value"],
+  )
+  formatted = _to_litellm_response_format(schema, model="gpt-4o-mini")
+  assert formatted["type"] == "json_schema"
+  value_schema = formatted["json_schema"]["schema"]["properties"]["value"]
+  assert "any_of" not in value_schema
+  assert value_schema["anyOf"] == [{"type": "string"}, {"type": "number"}]
 
 
 def test_to_litellm_response_format_uses_json_schema_for_openai_model():
@@ -804,6 +824,258 @@ def test_schema_to_dict_filters_none_enum_values():
       "READY",
       "DONE",
   ]
+
+
+def test_schema_to_dict_preserves_any_of_as_camel_case():
+  schema = types.Schema(
+      type=types.Type.OBJECT,
+      properties={
+          "value": types.Schema(
+              any_of=[
+                  types.Schema(type=types.Type.STRING),
+                  types.Schema(type=types.Type.NUMBER),
+              ],
+              description="id or index",
+          ),
+      },
+  )
+
+  value = _schema_to_dict(schema)["properties"]["value"]
+
+  assert "any_of" not in value
+  assert value["anyOf"] == [{"type": "string"}, {"type": "number"}]
+  assert value["description"] == "id or index"
+
+
+def test_schema_to_dict_recurses_into_any_of_branches():
+  """A union of object variants keeps its branches, nested types and all."""
+  schema = types.Schema(
+      type=types.Type.ARRAY,
+      items=types.Schema(
+          any_of=[
+              types.Schema(
+                  type=types.Type.OBJECT,
+                  properties={
+                      "type": types.Schema(
+                          type=types.Type.STRING, enum=["table"]
+                      ),
+                      "rows": types.Schema(
+                          type=types.Type.ARRAY,
+                          items=types.Schema(type=types.Type.STRING),
+                      ),
+                  },
+              ),
+              types.Schema(
+                  type=types.Type.OBJECT,
+                  properties={
+                      "type": types.Schema(
+                          type=types.Type.STRING, enum=["divider"]
+                      ),
+                  },
+              ),
+          ],
+      ),
+  )
+
+  branches = _schema_to_dict(schema)["items"]["anyOf"]
+
+  assert [branch["properties"]["type"]["enum"] for branch in branches] == [
+      ["table"],
+      ["divider"],
+  ]
+  assert branches[0]["type"] == "object"
+  assert branches[0]["properties"]["rows"]["items"]["type"] == "string"
+
+
+def test_schema_to_dict_preserves_camel_case_aliases():
+  schema = types.Schema(
+      type=types.Type.OBJECT,
+      properties={
+          "name": types.Schema(
+              type=types.Type.STRING,
+              min_length=1,
+              max_length=100,
+          ),
+          "tags": types.Schema(
+              type=types.Type.ARRAY,
+              min_items=1,
+              max_items=10,
+              items=types.Schema(type=types.Type.STRING),
+          ),
+          "metadata": types.Schema(
+              type=types.Type.OBJECT,
+              additional_properties=types.Schema(type=types.Type.STRING),
+              property_ordering=["k1", "k2"],
+          ),
+      },
+  )
+
+  result = _schema_to_dict(schema)
+  props = result["properties"]
+
+  assert "min_length" not in props["name"]
+  assert "max_length" not in props["name"]
+  assert props["name"]["minLength"] == 1
+  assert props["name"]["maxLength"] == 100
+
+  assert "min_items" not in props["tags"]
+  assert "max_items" not in props["tags"]
+  assert props["tags"]["minItems"] == 1
+  assert props["tags"]["maxItems"] == 10
+
+  assert "additional_properties" not in props["metadata"]
+  assert "property_ordering" not in props["metadata"]
+  assert props["metadata"]["additionalProperties"] == {"type": "string"}
+  assert props["metadata"]["propertyOrdering"] == ["k1", "k2"]
+
+
+def test_schema_to_dict_handles_dict_input_with_snake_and_camel_case():
+  dict_input = {
+      "type": "OBJECT",
+      "properties": {
+          "snake": {
+              "type": "OBJECT",
+              "any_of": [{"type": "STRING"}],
+              "additional_properties": {"type": "NUMBER"},
+          },
+          "camel": {
+              "type": "OBJECT",
+              "anyOf": [{"type": "BOOLEAN"}],
+              "additionalProperties": {"type": "STRING"},
+          },
+      },
+  }
+  result = _schema_to_dict(dict_input)
+  assert result["type"] == "object"
+  snake_prop = result["properties"]["snake"]
+  assert "any_of" not in snake_prop
+  assert snake_prop["anyOf"] == [{"type": "string"}]
+  assert "additional_properties" not in snake_prop
+  assert snake_prop["additionalProperties"] == {"type": "number"}
+
+  camel_prop = result["properties"]["camel"]
+  assert camel_prop["anyOf"] == [{"type": "boolean"}]
+  assert camel_prop["additionalProperties"] == {"type": "string"}
+
+
+def test_function_declaration_to_tool_param_preserves_top_level_constraints():
+  func_decl = types.FunctionDeclaration(
+      name="search",
+      description="Search tool",
+      parameters=types.Schema(
+          type=types.Type.OBJECT,
+          properties={
+              "query": types.Schema(type=types.Type.STRING),
+              "limit": types.Schema(type=types.Type.INTEGER),
+          },
+          required=["query"],
+          additional_properties=types.Schema(type=types.Type.STRING),
+          property_ordering=["query", "limit"],
+          min_properties=1,
+          max_properties=5,
+      ),
+  )
+  param_dict = _function_declaration_to_tool_param(func_decl)["function"][
+      "parameters"
+  ]
+  assert param_dict["type"] == "object"
+  assert param_dict["properties"]["query"] == {"type": "string"}
+  assert param_dict["properties"]["limit"] == {"type": "integer"}
+  assert param_dict["required"] == ["query"]
+  assert param_dict["additionalProperties"] == {"type": "string"}
+  assert param_dict["propertyOrdering"] == ["query", "limit"]
+  assert param_dict["minProperties"] == 1
+  assert param_dict["maxProperties"] == 5
+
+
+def test_schema_to_dict_raises_for_invalid_input():
+  with pytest.raises(TypeError):
+    _schema_to_dict(123)
+  with pytest.raises((TypeError, ValueError)):
+    _schema_to_dict("invalid")
+  with pytest.raises((TypeError, ValueError)):
+    _schema_to_dict(["a", "b"])
+
+  class _DuckSchema:
+    properties = {"foo": "bar"}
+
+  with pytest.raises(TypeError):
+    _schema_to_dict(_DuckSchema())
+
+
+def test_function_declaration_to_tool_param_with_parameters_json_schema_preserves_constructs():
+  func_decl = types.FunctionDeclaration(
+      name="custom_tool",
+      description="Tool with complex json schema",
+      parameters_json_schema={
+          "type": "object",
+          "properties": {
+              "nullable_str": {"type": ["string", "null"]},
+              "nullable_enum": {"enum": ["a", "b", None]},
+          },
+          "required": ["nullable_str"],
+      },
+  )
+  tool_param = _function_declaration_to_tool_param(func_decl)
+  params = tool_param["function"]["parameters"]
+  assert params["properties"]["nullable_str"]["type"] == ["string", "null"]
+  assert params["properties"]["nullable_enum"]["enum"] == ["a", "b", None]
+  assert params["required"] == ["nullable_str"]
+
+
+def test_function_declaration_to_tool_param_prefers_parameters_json_schema_over_parameters():
+  func_decl = types.FunctionDeclaration(
+      name="custom_tool",
+      description="Tool with both schemas",
+      parameters=types.Schema(
+          type=types.Type.OBJECT,
+          properties={
+              "legacy_param": types.Schema(type=types.Type.STRING),
+          },
+      ),
+      parameters_json_schema={
+          "type": "object",
+          "properties": {
+              "query": {"type": "string"},
+          },
+          "required": ["query"],
+      },
+  )
+  tool_param = _function_declaration_to_tool_param(func_decl)
+  params = tool_param["function"]["parameters"]
+  assert "query" in params["properties"]
+  assert "legacy_param" not in params["properties"]
+
+
+def test_function_declaration_to_tool_param_parameters_json_schema_ignores_parameters_required():
+  func_decl = types.FunctionDeclaration(
+      name="custom_tool",
+      description="Tool with both schemas",
+      parameters=types.Schema(
+          type=types.Type.OBJECT,
+          required=["legacy_param"],
+      ),
+      parameters_json_schema={
+          "type": "object",
+          "properties": {
+              "query": {"type": "string"},
+          },
+      },
+  )
+  tool_param = _function_declaration_to_tool_param(func_decl)
+  params = tool_param["function"]["parameters"]
+  assert "required" not in params
+
+
+def test_schema_to_dict_preserves_list_type_in_dict_input():
+  schema_dict = {
+      "type": "object",
+      "properties": {
+          "nullable": {"type": ["string", "null"]},
+      },
+  }
+  result = _schema_to_dict(schema_dict)
+  assert result["properties"]["nullable"]["type"] == ["string", "null"]
 
 
 def test_safe_json_serialize_serializable_object():
@@ -1636,40 +1908,6 @@ def test_function_declaration_to_tool_param(
       _function_declaration_to_tool_param(function_declaration)
       == expected_output
   )
-
-
-def test_function_declaration_to_tool_param_without_required_attribute():
-  """Ensure tools without a required field attribute don't raise errors."""
-
-  class SchemaWithoutRequired:
-    """Mimics a Schema object that lacks the required attribute."""
-
-    def __init__(self):
-      self.properties = {
-          "optional_arg": types.Schema(type=types.Type.STRING),
-      }
-
-  func_decl = types.FunctionDeclaration(
-      name="function_without_required_attr",
-      description="Function missing required attribute",
-  )
-  func_decl.parameters = SchemaWithoutRequired()
-
-  expected = {
-      "type": "function",
-      "function": {
-          "name": "function_without_required_attr",
-          "description": "Function missing required attribute",
-          "parameters": {
-              "type": "object",
-              "properties": {
-                  "optional_arg": {"type": "string"},
-              },
-          },
-      },
-  }
-
-  assert _function_declaration_to_tool_param(func_decl) == expected
 
 
 def test_function_declaration_to_tool_param_with_parameters_json_schema():
@@ -7492,3 +7730,27 @@ async def test_injection_points_given_at_construction_are_kept(
     pass
 
   assert _injection_points(mock_acompletion) == chosen
+
+
+def test_to_litellm_response_format_strict_openai_schema_for_genai_schema():
+  schema = types.Schema(
+      type=types.Type.OBJECT,
+      properties={
+          "choice": types.Schema(
+              any_of=[
+                  types.Schema(type=types.Type.STRING),
+                  types.Schema(type=types.Type.INTEGER),
+              ]
+          )
+      },
+      required=["choice"],
+  )
+  formatted = _to_litellm_response_format(schema, model="gpt-4o-mini")
+  assert formatted["type"] == "json_schema"
+  json_schema = formatted["json_schema"]["schema"]
+  assert json_schema["type"] == "object"
+  assert json_schema["additionalProperties"] is False
+  assert json_schema["properties"]["choice"]["anyOf"] == [
+      {"type": "string"},
+      {"type": "integer"},
+  ]
