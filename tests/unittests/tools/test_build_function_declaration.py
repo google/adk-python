@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from enum import Enum
+from enum import IntEnum
 from typing import Any
 
 from google.adk.features import FeatureName
@@ -438,6 +439,27 @@ class TestBuildFunctionDeclarationLegacy:
       _automatic_function_calling_util.build_function_declaration(
           func=simple_function_with_wrong_enum
       )
+
+  def test_int_enum(self):
+
+    class Level(IntEnum):
+      LOW = 1
+      HIGH = 2
+
+    def set_level(level: Level = Level.LOW):
+      return level.value
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=set_level
+    )
+
+    level_schema = function_decl.parameters.properties['level']
+    assert level_schema.type == 'STRING'
+    assert level_schema.enum == ['1', '2']
+    assert level_schema.default == '1'
+    # The declaration must be valid for types.Schema's own contract: an
+    # `enum` field on a STRING schema must contain only strings.
+    types.Schema(type=level_schema.type, enum=level_schema.enum)
 
   def test_basemodel_list(self):
     class ChildInput(BaseModel):
