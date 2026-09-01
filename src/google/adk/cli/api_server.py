@@ -576,6 +576,40 @@ def _invalid_event_error(event_index: int, disallowed: str) -> HTTPException:
   )
 
 
+def _is_credential_shaped(value: Any) -> bool:
+  """Reports whether `value` is a dict that is itself an `AuthCredential`.
+
+  `authType` is `AuthCredential.auth_type`'s by-alias serialized name, and
+  every `AuthCredential` dump carries it -- including one parked directly
+  in session state by `SessionStateCredentialService` under an
+  app-or-tool-chosen key, which is why this checks shape rather than a
+  fixed set of container key names like `authConfig`: a credential can
+  legitimately appear anywhere a `dict[str, Any]` the app controls can
+  hold one, not only nested under the names ADK's own code happens to use.
+  """
+  return isinstance(value, dict) and "authType" in value
+
+
+def _strip_secret_keys(value: Any) -> Any:
+  """Unconditionally strips `CREDENTIAL_SECRET_KEYS` from every dict in
+  `value`, at any depth.
+
+  Only safe to call once a `_is_credential_shaped` dict has already been
+  found: everything below that point genuinely belongs to a credential
+  object, so a key named e.g. `token` here is actually a secret, not
+  coincidentally-named application data.
+  """
+  if isinstance(value, dict):
+    return {
+        key: _strip_secret_keys(val)
+        for key, val in value.items()
+        if key not in CREDENTIAL_SECRET_KEYS
+    }
+  if isinstance(value, list):
+    return [_strip_secret_keys(item) for item in value]
+  return value
+
+
 def _redact_credential_secrets(value: Any) -> Any:
   """Recursively strips credential-secret keys from a JSON-like value.
 
@@ -583,20 +617,33 @@ def _redact_credential_secrets(value: Any) -> Any:
   ADK issues when a tool needs OAuth) is an opaque `dict[str, Any]`, not a
   nested pydantic model -- so `Event.model_dump(exclude=...)` cannot reach
   a secret embedded inside it by field path. This walks the already-dumped
-  event unconditionally and drops any key in `CREDENTIAL_SECRET_KEYS`
-  wherever it appears, so a credential's `client_secret`, tokens, etc. never
-  reach an external client over /run, /run_sse, /run_live, or any endpoint
-  that returns session history. This must only be applied to the outbound
-  wire representation -- never to what SessionService persists -- since
-  later turns reconstruct the original request's credential by re-parsing
-  the persisted `adk_request_credential` call's args.
+  event unconditionally, so a credential's `client_secret`, tokens, etc.
+  never reach an external client over /run, /run_sse, /run_live, or any
+  endpoint that returns session history or eval data. This must only be
+  applied to the outbound wire representation -- never to what
+  SessionService persists -- since later turns reconstruct the original
+  request's credential by re-parsing the persisted `adk_request_credential`
+  call's args.
+
+  Stripping is scoped to dicts that are actually `AuthCredential` dumps
+  (identified by carrying `authType`, see `_is_credential_shaped`), not to
+  every `CREDENTIAL_SECRET_KEYS` name anywhere in the structure. Several of
+  those names -- `token`, `password`, `apiKey`, `accessToken` among them --
+  are ordinary words a tool's own return value or an app's own session
+  state can legitimately use for something that isn't a credential at all
+  (a pagination cursor named `token`, a scraped page's own `password`
+  field). Deleting those unconditionally would silently drop data the
+  caller never asked to have redacted, indistinguishable from a key a tool
+  simply never returned. Scoping to credential-shaped subtrees avoids that
+  while still catching every real credential location, including one
+  stored in session state under an arbitrary key -- that dump still
+  carries `authType`, so shape-based detection finds it without needing a
+  fixed list of container key names.
   """
+  if _is_credential_shaped(value):
+    return _strip_secret_keys(value)
   if isinstance(value, dict):
-    return {
-        key: _redact_credential_secrets(val)
-        for key, val in value.items()
-        if key not in CREDENTIAL_SECRET_KEYS
-    }
+    return {key: _redact_credential_secrets(val) for key, val in value.items()}
   if isinstance(value, list):
     return [_redact_credential_secrets(item) for item in value]
   return value

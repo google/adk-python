@@ -45,7 +45,9 @@ from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.plugins.bigquery_agent_analytics_plugin import BigQueryAgentAnalyticsPlugin
 from google.adk.runners import Runner
+from google.adk.sessions.base_session_service import ListSessionsResponse
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.session import Session
 from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.api_core.exceptions import GoogleAPICallError
 from google.api_core.exceptions import InvalidArgument
@@ -5011,6 +5013,330 @@ async def test_get_eval_redacts_oauth2_client_secret(
   assert "my_tool:oauth2:abcd1234" in response.text
 
 
+def test_redact_credential_secrets_does_not_touch_unrelated_app_data():
+  """`_redact_credential_secrets` must only touch credential-shaped dicts.
+
+  `CREDENTIAL_SECRET_KEYS` includes several ordinary words --  `token`,
+  `password`, `apiKey`, `accessToken` among them -- that a tool's own
+  return value or an app's own session state can legitimately use for
+  something that is not a credential at all (a pagination cursor named
+  `token`, a scraped page's own `password` field). An earlier version of
+  this function matched those names anywhere in the structure, silently
+  dropping such fields with nothing to distinguish that from a key the
+  tool simply never returned. This confirms unrelated data survives
+  untouched, while a real credential -- identified by carrying `authType`,
+  the way every `AuthCredential` dump does, wherever it's nested -- is
+  still fully redacted even when parked under an arbitrary,
+  app-or-tool-chosen key (e.g. as `SessionStateCredentialService` stores
+  one in session state) rather than under one of ADK's own fixed
+  container key names like `authConfig`.
+  """
+  from google.adk.cli.api_server import _redact_credential_secrets
+
+  tool_result = {
+      "results": ["a", "b"],
+      "token": "next-page-cursor-abc",
+      "password": "unrelated-app-value",
+      "apiKey": "unrelated-app-key",
+      "nested": {"accessToken": "unrelated-nested-value"},
+  }
+  assert _redact_credential_secrets(tool_result) == tool_result
+
+  state_delta = {"token": 42, "user:password_hint": "x"}
+  assert _redact_credential_secrets(state_delta) == state_delta
+
+  credential_under_arbitrary_key = {
+      "someToolChosenStateKey": {
+          "authType": "oauth2",
+          "oauth2": {
+              "clientId": "public-id",
+              "clientSecret": "real-secret-should-be-redacted",
+          },
+      }
+  }
+  redacted = _redact_credential_secrets(credential_under_arbitrary_key)
+  assert "real-secret-should-be-redacted" not in str(redacted)
+  assert (
+      redacted["someToolChosenStateKey"]["oauth2"]["clientId"] == "public-id"
+  )
+
+
+def test_agent_run_redacts_oauth2_client_secret(
+    test_app, create_test_session, monkeypatch
+):
+  """/run (non-streaming) must not leak OAuth2 secrets, same as /run_sse.
+
+  /run and /run_sse are separate code paths -- /run builds one
+  JSONResponse from the full event list via `_redact_credential_secrets`
+  called once per event in a list comprehension; /run_sse builds one
+  `json.dumps` per streamed event -- so coverage of one does not imply
+  the other actually redacts anything; it could have had its call to
+  `_redact_credential_secrets` silently removed and this suite would
+  still be green without a test exercising this endpoint directly.
+  """
+  info = create_test_session
+
+  auth_config_dict = {
+      "authScheme": {"type": "oauth2", "flows": {}},
+      "rawAuthCredential": {
+          "authType": "oauth2",
+          "oauth2": {
+              "clientId": "public-client-id",
+              "clientSecret": "should-never-reach-the-client",
+          },
+      },
+      "exchangedAuthCredential": {
+          "authType": "oauth2",
+          "oauth2": {
+              "clientId": "public-client-id",
+              "clientSecret": "should-never-reach-the-client",
+              "authUri": (
+                  "https://idp.example.com/oauth2/auth?client_id="
+                  "public-client-id&state=xyz"
+              ),
+              "state": "xyz",
+              "codeVerifier": "pkce-verifier-should-not-leak-either",
+          },
+      },
+      "credentialKey": "my_tool:oauth2:abcd1234",
+  }
+
+  async def run_async_with_auth_request(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      invocation_id: Optional[str] = None,
+      new_message: Optional[types.Content] = None,
+      state_delta: Optional[dict[str, Any]] = None,
+      run_config: Optional[RunConfig] = None,
+  ):
+    del user_id, session_id, invocation_id, new_message, state_delta, run_config
+    yield Event(
+        author="agent",
+        invocation_id="invocation_id",
+        content=types.Content(
+            role="user",
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(
+                        name="adk_request_credential",
+                        id="adk-req-cred-id",
+                        args={
+                            "functionCallId": "adk-original-fc-id",
+                            "authConfig": auth_config_dict,
+                        },
+                    )
+                )
+            ],
+        ),
+    )
+
+  monkeypatch.setattr(Runner, "run_async", run_async_with_auth_request)
+
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello agent"}]},
+      "streaming": False,
+  }
+  response = test_app.post("/run", json=payload)
+
+  assert response.status_code == 200
+  assert "should-never-reach-the-client" not in response.text
+  assert "pkce-verifier-should-not-leak-either" not in response.text
+
+  events = response.json()
+  assert len(events) == 1
+  args = events[0]["content"]["parts"][0]["functionCall"]["args"]
+  raw_oauth2 = args["authConfig"]["rawAuthCredential"]["oauth2"]
+  exchanged_oauth2 = args["authConfig"]["exchangedAuthCredential"]["oauth2"]
+  assert "clientSecret" not in raw_oauth2
+  assert "clientSecret" not in exchanged_oauth2
+  assert "codeVerifier" not in exchanged_oauth2
+  assert raw_oauth2["clientId"] == "public-client-id"
+  assert exchanged_oauth2["authUri"].startswith(
+      "https://idp.example.com/oauth2/auth"
+  )
+  assert args["authConfig"]["credentialKey"] == "my_tool:oauth2:abcd1234"
+
+
+def test_run_live_websocket_redacts_oauth2_client_secret(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """/run_live (websocket) must not leak OAuth2 secrets, same as /run/_sse.
+
+  /run_live is a third, independent code path from /run and /run_sse --
+  it writes directly to a websocket via `websocket.send_text(json.dumps(...))`
+  inside `forward_events()`, not through either endpoint's JSONResponse or
+  SSE machinery -- so a test covering the other two says nothing about
+  whether this one still calls `_redact_credential_secrets` at all.
+  """
+  test_app = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+
+  async def setup_session():
+    await mock_session_service.create_session(
+        app_name="test_app", user_id="user", session_id="session", state={}
+    )
+
+  asyncio.run(setup_session())
+
+  auth_config_dict = {
+      "authScheme": {"type": "oauth2", "flows": {}},
+      "rawAuthCredential": {
+          "authType": "oauth2",
+          "oauth2": {
+              "clientId": "public-client-id",
+              "clientSecret": "should-never-reach-the-client-via-live",
+          },
+      },
+      "credentialKey": "my_tool:oauth2:abcd1234",
+  }
+
+  async def run_live_with_auth_request(self, session, live_request_queue, **kwargs):
+    yield Event(
+        author="agent",
+        invocation_id="invocation_id",
+        content=types.Content(
+            role="user",
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(
+                        name="adk_request_credential",
+                        id="adk-req-cred-id",
+                        args={
+                            "functionCallId": "adk-original-fc-id",
+                            "authConfig": auth_config_dict,
+                        },
+                    )
+                )
+            ],
+        ),
+    )
+
+  monkeypatch.setattr(Runner, "run_live", run_live_with_auth_request)
+
+  url = "/run_live?app_name=test_app&user_id=user&session_id=session&modalities=AUDIO"
+  with test_app.websocket_connect(url) as ws:
+    data = ws.receive_json()
+
+  raw_text = json.dumps(data)
+  assert "should-never-reach-the-client-via-live" not in raw_text
+  args = data["content"]["parts"][0]["functionCall"]["args"]
+  assert "clientSecret" not in args["authConfig"]["rawAuthCredential"]["oauth2"]
+  assert (
+      args["authConfig"]["rawAuthCredential"]["oauth2"]["clientId"]
+      == "public-client-id"
+  )
+  assert args["authConfig"]["credentialKey"] == "my_tool:oauth2:abcd1234"
+
+
+async def test_list_sessions_redacts_oauth2_client_secret(
+    test_app, create_test_session, mock_session_service, monkeypatch
+):
+  """GET .../sessions (list) must not leak secrets, same as GET .../sessions/{id}.
+
+  `_redacted_session_response` (single session) and `_redacted_sessions_response`
+  (list) are two separate functions -- get_session/create_session/update_session
+  use the former, list_sessions uses the latter -- so a passing test for
+  get_session does not exercise whether list_sessions' own redaction call is
+  still wired up. `InMemorySessionService.list_sessions()` deliberately
+  strips `events` from every session it returns (`sessions_without_events`
+  in `_list_sessions_impl`), which makes a secret-in-events check against
+  the real backend vacuously pass regardless of whether
+  `_redacted_sessions_response` does anything at all -- there's never a
+  secret in that response to begin with. `list_sessions` is monkeypatched
+  here to actually include events, so this exercises the real redaction
+  call the endpoint makes rather than a check that can't fail either way.
+  """
+  info = create_test_session
+
+  session = await mock_session_service.get_session(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+  )
+  await mock_session_service.append_event(
+      session=session,
+      event=Event(
+          author="agent",
+          invocation_id="invocation_id",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name="adk_request_credential",
+                          id="adk-req-cred-id",
+                          args={
+                              "functionCallId": "adk-original-fc-id",
+                              "authConfig": {
+                                  "authScheme": {"type": "oauth2", "flows": {}},
+                                  "rawAuthCredential": {
+                                      "authType": "oauth2",
+                                      "oauth2": {
+                                          "clientId": "public-client-id",
+                                          "clientSecret": (
+                                              "should-never-reach-the-client"
+                                              "-via-list"
+                                          ),
+                                      },
+                                  },
+                                  "credentialKey": "my_tool:oauth2:abcd1234",
+                              },
+                          },
+                      )
+                  )
+              ],
+          ),
+      ),
+  )
+
+  session_with_events = await mock_session_service.get_session(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+  )
+
+  async def list_sessions_including_events(self, *, app_name, user_id=None):
+    del app_name, user_id
+    return ListSessionsResponse(sessions=[session_with_events])
+
+  monkeypatch.setattr(
+      type(mock_session_service),
+      "list_sessions",
+      list_sessions_including_events,
+  )
+  response = test_app.get(
+      f"/apps/{info['app_name']}/users/{info['user_id']}/sessions"
+  )
+
+  assert response.status_code == 200
+  assert "should-never-reach-the-client-via-list" not in response.text
+  sessions = response.json()
+  assert len(sessions) == 1
+  args = sessions[0]["events"][0]["content"]["parts"][0]["functionCall"]["args"]
+  assert "clientSecret" not in args["authConfig"]["rawAuthCredential"]["oauth2"]
+  assert (
+      args["authConfig"]["rawAuthCredential"]["oauth2"]["clientId"]
+      == "public-client-id"
+  )
+
+
 @pytest.mark.xfail(
     strict=True,
     reason="add-session maps ValueError, but the managers raise NotFoundError",
@@ -5049,6 +5375,145 @@ def test_get_eval_result_returns_saved_eval_set_result(
   data = response.json()
   assert data["evalSetResultId"] == "test_app_my_eval_set_eval_result"
   assert data["evalSetId"] == "my_eval_set"
+
+
+def _eval_case_result_with_credential_session(
+    eval_set_id: str, eval_id: str, secret_value: str
+) -> "EvalCaseResult":
+  """Builds a minimal EvalCaseResult whose session_details carries a
+  credential-bearing adk_request_credential event, the way a live eval run
+  that triggers a tool's OAuth flow would."""
+  from google.adk.evaluation.eval_metrics import EvalStatus
+  from google.adk.evaluation.eval_result import EvalCaseResult
+
+  session_with_secret = Session(
+      id=f"{eval_id}_session",
+      app_name="test_app",
+      user_id="test_user",
+      events=[
+          Event(
+              author="agent",
+              invocation_id="invocation_id",
+              content=types.Content(
+                  role="user",
+                  parts=[
+                      types.Part(
+                          function_call=types.FunctionCall(
+                              name="adk_request_credential",
+                              id="adk-req-cred-id",
+                              args={
+                                  "functionCallId": "adk-original-fc-id",
+                                  "authConfig": {
+                                      "authScheme": {
+                                          "type": "oauth2",
+                                          "flows": {},
+                                      },
+                                      "rawAuthCredential": {
+                                          "authType": "oauth2",
+                                          "oauth2": {
+                                              "clientId": "public-client-id",
+                                              "clientSecret": secret_value,
+                                          },
+                                      },
+                                      "credentialKey": "my_tool:oauth2:abcd1234",
+                                  },
+                              },
+                          )
+                      )
+                  ],
+              ),
+          )
+      ],
+  )
+  return EvalCaseResult(
+      eval_set_id=eval_set_id,
+      eval_id=eval_id,
+      final_eval_status=EvalStatus.PASSED,
+      overall_eval_metric_results=[],
+      eval_metric_result_per_invocation=[],
+      session_id=session_with_secret.id,
+      session_details=session_with_secret,
+      user_id="test_user",
+  )
+
+
+def test_get_eval_result_redacts_oauth2_client_secret(
+    test_app, mock_eval_set_results_manager
+):
+  """GET .../eval-results/{id} must not leak secrets from an eval run's session.
+
+  EvalCaseResult.session_details holds the full Session produced by a live
+  eval run's inferencing/scraping stage -- if a tool needed OAuth during
+  that run, the same adk_request_credential event (and its full credential)
+  that /run, /run_sse, and /run_live redact can end up here too, via a
+  separate code path (`get_eval_result` in dev_server.py) that a test
+  covering only get_eval (a different endpoint, over EvalCase.conversation
+  rather than EvalCaseResult.session_details) does not exercise.
+  """
+  mock_eval_set_results_manager.save_eval_set_result(
+      "test_app",
+      "my_eval_set",
+      [
+          _eval_case_result_with_credential_session(
+              "my_eval_set",
+              "my_eval_case",
+              "should-never-reach-the-client-via-eval-result",
+          )
+      ],
+  )
+
+  response = test_app.get(
+      "/dev/apps/test_app/eval-results/test_app_my_eval_set_eval_result"
+  )
+
+  assert response.status_code == 200
+  assert (
+      "should-never-reach-the-client-via-eval-result" not in response.text
+  )
+  case_result = response.json()["evalCaseResults"][0]
+  args = case_result["sessionDetails"]["events"][0]["content"]["parts"][0][
+      "functionCall"
+  ]["args"]
+  raw_oauth2 = args["authConfig"]["rawAuthCredential"]["oauth2"]
+  assert "clientSecret" not in raw_oauth2
+  assert raw_oauth2["clientId"] == "public-client-id"
+
+
+def test_get_eval_result_legacy_redacts_oauth2_client_secret(
+    test_app, mock_eval_set_results_manager
+):
+  """Same as test_get_eval_result_redacts_oauth2_client_secret, for the
+  deprecated /dev/apps/{app}/eval_results/{id} route, which calls a
+  separate function (get_eval_result_legacy) with its own
+  _redact_credential_secrets call site."""
+  mock_eval_set_results_manager.save_eval_set_result(
+      "test_app",
+      "my_eval_set",
+      [
+          _eval_case_result_with_credential_session(
+              "my_eval_set",
+              "my_eval_case",
+              "should-never-reach-the-client-via-eval-result-legacy",
+          )
+      ],
+  )
+
+  response = test_app.get(
+      "/dev/apps/test_app/eval_results/test_app_my_eval_set_eval_result"
+  )
+
+  assert response.status_code == 200
+  assert (
+      "should-never-reach-the-client-via-eval-result-legacy"
+      not in response.text
+  )
+  case_result = response.json()["evalCaseResults"][0]
+  args = case_result["sessionDetails"]["events"][0]["content"]["parts"][0][
+      "functionCall"
+  ]["args"]
+  raw_oauth2 = args["authConfig"]["rawAuthCredential"]["oauth2"]
+  assert "clientSecret" not in raw_oauth2
+  assert raw_oauth2["clientId"] == "public-client-id"
 
 
 def test_create_eval_set_legacy_route_creates_eval_set(
