@@ -59,6 +59,9 @@ _OPERATION_BY_METRIC: dict[str, str] = {
     "gen_ai.invoke_agent.tool_calls": "invoke_agent",
     "gen_ai.invoke_workflow.duration": "invoke_workflow",
     "adk.experimental.skill.script.executions": "execute_tool",
+    "adk.experimental.skill.loads": "execute_tool",
+    # One point per agent invocation, counting the loads made anywhere in it.
+    "adk.experimental.invoke_agent.skill.loads": "invoke_agent",
     # Token spend summed over the calls one agent invocation made, so these
     # cover the same `invoke_agent` operation its duration does.
     "adk.experimental.invoke_agent.input_tokens": "invoke_agent",
@@ -83,6 +86,7 @@ _OPERATION_BY_METRIC: dict[str, str] = {
     # `invoke_workflow` just as the token totals beside them do.
     "adk.experimental.invoke_workflow.inference_calls": "invoke_workflow",
     "adk.experimental.invoke_workflow.tool_calls": "invoke_workflow",
+    "adk.experimental.invoke_workflow.skill.loads": "invoke_workflow",
 }
 
 # Attributes that split a histogram into series rather than state a fact about

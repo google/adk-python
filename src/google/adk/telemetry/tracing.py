@@ -892,9 +892,16 @@ def _telemetry_config_from_invocation_context(
   """Returns ``invocation_context.run_config.telemetry`` if reachable, else ``None``."""
   if invocation_context is None:
     return TelemetryConfig()
-  if (run_config := invocation_context.run_config) is None:
+  try:
+    if (run_config := invocation_context.run_config) is None:
+      return TelemetryConfig()
+    return run_config.telemetry or TelemetryConfig()
+  except AttributeError:
+    logger.warning(
+        "Failed to access run_config from invocation_context: type is %s",
+        type(invocation_context).__name__,
+    )
     return TelemetryConfig()
-  return run_config.telemetry or TelemetryConfig()
 
 
 @deprecated("Replaced by use_inference_span to support experimental semconv.")
