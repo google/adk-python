@@ -45,6 +45,10 @@ ApiException = k8s.client.exceptions.ApiException
 
 logger = logging.getLogger("google_adk." + __name__)
 
+# Name of the Job container that runs the user's code, and so the one whose
+# termination status is the status of the execution.
+_CODE_CONTAINER_NAME = "code-runner"
+
 
 class GkeCodeExecutor(BaseCodeExecutor):
   """Executes Python code in a secure gVisor-sandboxed Pod on GKE.
@@ -187,7 +191,11 @@ class GkeCodeExecutor(BaseCodeExecutor):
         sandbox.write("script.py", code)
         result = sandbox.run("python3 script.py")
 
-        return CodeExecutionResult(stdout=result.stdout, stderr=result.stderr)
+        return CodeExecutionResult(
+            stdout=result.stdout,
+            stderr=result.stderr,
+            exit_code=result.exit_code,
+        )
     except RuntimeError as e:
       logger.error(
           "SandboxClient failed to initialize or find gateway", exc_info=True
@@ -272,7 +280,7 @@ class GkeCodeExecutor(BaseCodeExecutor):
     """Creates the complete V1Job object with security best practices."""
     # Define the container that will run the code.
     container = k8s.client.V1Container(
-        name="code-runner",
+        name=_CODE_CONTAINER_NAME,
         image=self.image,
         command=["python3", "/app/code.py"],
         volume_mounts=[
@@ -350,16 +358,25 @@ class GkeCodeExecutor(BaseCodeExecutor):
           timeout_seconds=self.timeout_seconds,
       ):
         job = event["object"]
+        # The Job reports only whether the pod succeeded, so the status the
+        # container terminated with is read from the pod itself. It is absent
+        # when the pod never reached a terminated state, and only then is the
+        # code narrowed to the one the Job's outcome implies.
         if job.status.succeeded:
           watch.stop()
           logger.info(f"Job '{job_name}' succeeded.")
-          logs = self._get_pod_logs(job_name)
-          return CodeExecutionResult(stdout=logs)
+          logs, exit_code = self._get_pod_logs_and_exit_code(job_name)
+          return CodeExecutionResult(
+              stdout=logs, exit_code=0 if exit_code is None else exit_code
+          )
         if job.status.failed:
           watch.stop()
           logger.error(f"Job '{job_name}' failed.")
-          logs = self._get_pod_logs(job_name)
-          return CodeExecutionResult(stderr=f"Job failed. Logs:\n{logs}")
+          logs, exit_code = self._get_pod_logs_and_exit_code(job_name)
+          return CodeExecutionResult(
+              stderr=f"Job failed. Logs:\n{logs}",
+              exit_code=1 if exit_code is None else exit_code,
+          )
 
       # If the loop finishes without returning, the watch timed out.
       raise TimeoutError(
@@ -370,6 +387,25 @@ class GkeCodeExecutor(BaseCodeExecutor):
 
   def _get_pod_logs(self, job_name: str) -> str:
     """Retrieves logs from the pod created by the specified job.
+
+    Raises:
+        RuntimeError: If the pod cannot be found or logs cannot be fetched.
+    """
+    logs, _ = self._get_pod_logs_and_exit_code(job_name)
+    return logs
+
+  def _get_pod_logs_and_exit_code(
+      self, job_name: str
+  ) -> tuple[str, int | None]:
+    """Retrieves the logs and exit code of the pod created by the given job.
+
+    Both are read from a single pod lookup, since the status a container
+    terminated with is only available for as long as the pod its logs come
+    from.
+
+    Returns:
+        The pod's logs, and the status the code container exited with, or None
+        when the pod reports no terminated container to read it from.
 
     Raises:
         RuntimeError: If the pod cannot be found or logs cannot be fetched.
@@ -385,17 +421,33 @@ class GkeCodeExecutor(BaseCodeExecutor):
             f"Could not find Pod for Job '{job_name}' to retrieve logs."
         )
 
-      pod_name = pods.items[0].metadata.name
-      return cast(
+      pod = pods.items[0]
+      logs = cast(
           str,
           self._core_v1.read_namespaced_pod_log(
-              name=pod_name, namespace=self.namespace
+              name=pod.metadata.name, namespace=self.namespace
           ),
       )
+      return logs, self._get_container_exit_code(pod)
     except ApiException as e:
       raise RuntimeError(
           f"API error retrieving logs for job '{job_name}': {e.reason}"
       ) from e
+
+  def _get_container_exit_code(self, pod: k8s.client.V1Pod) -> int | None:
+    """Reads the status the code container of the given pod exited with.
+
+    Returns:
+        The exit code, or None when the container is absent from the pod's
+        status or has not reached a terminated state.
+    """
+    for container_status in pod.status.container_statuses or []:
+      if container_status.name != _CODE_CONTAINER_NAME:
+        continue
+      state = container_status.state
+      terminated = state.terminated if state else None
+      return terminated.exit_code if terminated else None
+    return None
 
   def _create_code_configmap(self, name: str, code: str) -> None:
     """Creates a ConfigMap to hold the Python code."""

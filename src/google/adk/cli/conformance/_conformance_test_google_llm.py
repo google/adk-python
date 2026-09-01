@@ -61,7 +61,14 @@ def _resolve_refs(data: Any, defs: dict[str, Any]) -> Any:
       if ref_path.startswith('#/$defs/'):
         def_name = ref_path.split('/')[-1]
         if def_name in defs:
-          return _resolve_refs(defs[def_name], defs)
+          resolved = _resolve_refs(defs[def_name], defs)
+          if isinstance(resolved, dict):
+            ref_copy = data.copy()
+            del ref_copy['$ref']
+            resolved_copy = resolved.copy()
+            resolved_copy.update(ref_copy)
+            return resolved_copy
+          return resolved
     return {k: _resolve_refs(v, defs) for k, v in data.items()}
   elif isinstance(data, list):
     return [_resolve_refs(x, defs) for x in data]

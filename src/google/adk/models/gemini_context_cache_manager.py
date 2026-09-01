@@ -254,8 +254,8 @@ class GeminiContextCacheManager:
         # Found non-user content, stop the batch
         break
 
-    # Cache all contents before the last user batch
-    # This ensures we always have some user content to send to the API
+    # Cache all contents before the last user batch. There is no such batch
+    # when the last content is not a user content, so this can be every content.
     return last_user_batch_start
 
   async def _is_cache_valid(self, llm_request: LlmRequest) -> bool:
@@ -667,8 +667,13 @@ class GeminiContextCacheManager:
     # Set cached content reference
     llm_request.config.cached_content = cache_name
 
-    # Remove cached contents from the request (keep only uncached contents)
-    llm_request.contents = llm_request.contents[cache_contents_count:]
+    # Remove cached contents from the request (keep only uncached contents).
+    # The API rejects a request with no contents, so the final content is
+    # always sent, even when the cache already covers it.
+    removable_count = min(
+        cache_contents_count, max(len(llm_request.contents) - 1, 0)
+    )
+    llm_request.contents = llm_request.contents[removable_count:]
 
   def populate_cache_metadata_in_response(
       self, llm_response: LlmResponse, cache_metadata: CacheMetadata

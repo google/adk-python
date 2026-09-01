@@ -220,6 +220,20 @@ class FunctionTool(BaseTool):
                 )
               continue
 
+          # Some session stores persist call args as a proto `Struct`, whose
+          # only number type is double, so an int comes back as a float.
+          if target_type is int and type(args[param_name]) is float:
+            if args[param_name].is_integer():
+              converted_args[param_name] = int(args[param_name])
+            else:
+              logger.warning(
+                  "Argument '%s' is typed int but got non-integral %r;"
+                  ' passing it through unchanged.',
+                  param_name,
+                  args[param_name],
+              )
+            continue
+
           # Check if the target type is a Pydantic model
           if inspect.isclass(target_type) and issubclass(
               target_type, pydantic.BaseModel

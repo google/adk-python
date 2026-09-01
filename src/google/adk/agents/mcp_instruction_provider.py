@@ -21,8 +21,7 @@ from typing import Any
 from typing import Dict
 from typing import TextIO
 
-from mcp import types
-
+from ..dependencies._mcp import types
 from ..tools.mcp_tool.mcp_session_manager import MCPSessionManager
 from .llm_agent import InstructionProvider
 from .readonly_context import ReadonlyContext

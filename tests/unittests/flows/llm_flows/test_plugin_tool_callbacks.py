@@ -15,6 +15,7 @@
 from typing import Any
 from typing import Dict
 from typing import Optional
+from unittest import mock
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
@@ -336,6 +337,133 @@ async def test_live_plugin_after_tool_callback_takes_priority(
   part = result_event.content.parts[0]
   # Plugin response should win, not the agent callback
   assert part.function_response.response == mock_plugin.after_tool_response
+
+
+async def _invoke_hallucinated_tool(
+    mock_tool, mock_plugin, handler
+) -> Optional[Event]:
+  """Invokes a hallucinated tool with a plugin using the specified handler."""
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(
+      name="agent",
+      model=model,
+      tools=[mock_tool],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content="", plugins=[mock_plugin]
+  )
+  function_call = types.FunctionCall(
+      name="hallucinated_tool_xyz", args={"query": "test"}
+  )
+  content = types.Content(parts=[types.Part(function_call=function_call)])
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=content,
+  )
+  tools_dict = {mock_tool.name: mock_tool}
+  return await handler(
+      invocation_context,
+      event,
+      tools_dict,
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "handler", [handle_function_calls_async, handle_function_calls_live]
+)
+async def test_hallucinated_tool_fires_before_and_error_callbacks(
+    mock_tool, mock_plugin, handler
+):
+  """Both before_tool and on_tool_error callbacks fire in order for hallucinated tools."""
+  mock_plugin.enable_before_tool_callback = True
+  mock_plugin.enable_on_tool_error_callback = True
+
+  call_order = []
+  original_before = mock_plugin.before_tool_callback
+  original_error = mock_plugin.on_tool_error_callback
+
+  async def tracking_before(**kwargs):
+    call_order.append("before_tool")
+    await original_before(**kwargs)
+    return None
+
+  async def tracking_error(**kwargs):
+    call_order.append("on_tool_error")
+    return await original_error(**kwargs)
+
+  mock_plugin.before_tool_callback = tracking_before
+  mock_plugin.on_tool_error_callback = tracking_error
+
+  result_event = await _invoke_hallucinated_tool(
+      mock_tool, mock_plugin, handler
+  )
+
+  assert result_event is not None
+  part = result_event.content.parts[0]
+  assert part.function_response.response == mock_plugin.on_tool_error_response
+  assert call_order == ["before_tool", "on_tool_error"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "handler", [handle_function_calls_async, handle_function_calls_live]
+)
+async def test_hallucinated_tool_overridden_by_before_tool_callback(
+    mock_tool, mock_plugin, handler
+):
+  """Before-tool callback override prevents on_tool_error from firing for hallucinated tools."""
+  mock_plugin.enable_before_tool_callback = True
+  mock_plugin.enable_on_tool_error_callback = True
+
+  call_order = []
+  original_before = mock_plugin.before_tool_callback
+  original_error = mock_plugin.on_tool_error_callback
+
+  async def tracking_before(**kwargs):
+    call_order.append("before_tool")
+    return await original_before(**kwargs)
+
+  async def tracking_error(**kwargs):
+    call_order.append("on_tool_error")
+    return await original_error(**kwargs)
+
+  mock_plugin.before_tool_callback = tracking_before
+  mock_plugin.on_tool_error_callback = tracking_error
+
+  result_event = await _invoke_hallucinated_tool(
+      mock_tool, mock_plugin, handler
+  )
+
+  assert result_event is not None
+  part = result_event.content.parts[0]
+  assert part.function_response.response == mock_plugin.before_tool_response
+  assert call_order == ["before_tool"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "handler", [handle_function_calls_async, handle_function_calls_live]
+)
+async def test_hallucinated_tool_records_error_type_in_telemetry(
+    mock_tool, mock_plugin, handler, monkeypatch
+):
+  """Hallucinated tool execution records error_type in telemetry."""
+  mock_trace_tool_call = mock.Mock()
+  monkeypatch.setattr(
+      "google.adk.telemetry.tracing.trace_tool_call",
+      mock_trace_tool_call,
+  )
+
+  result_event = await _invoke_hallucinated_tool(
+      mock_tool, mock_plugin, handler
+  )
+
+  assert result_event is not None
+  mock_trace_tool_call.assert_called_once()
+  _, kwargs = mock_trace_tool_call.call_args
+  assert kwargs["error_type"] == "ValueError"
 
 
 if __name__ == "__main__":

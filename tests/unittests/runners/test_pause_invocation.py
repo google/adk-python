@@ -117,7 +117,6 @@ class TestPauseInvocationWithSingleLlmAgent(BasePauseInvocationTest):
         tools=[LongRunningFunctionTool(func=test_tool)],
     )
 
-  @pytest.mark.asyncio
   def test_pause_on_long_running_function_call(
       self,
       runner: testing_utils.InMemoryRunner,
@@ -156,7 +155,6 @@ class TestPauseInvocationWithSequentialAgent(BasePauseInvocationTest):
         sub_agents=[sub_agent1, sub_agent2],
     )
 
-  @pytest.mark.asyncio
   def test_pause_first_agent_on_long_running_function_call(
       self,
       runner: testing_utils.InMemoryRunner,
@@ -174,7 +172,6 @@ class TestPauseInvocationWithSequentialAgent(BasePauseInvocationTest):
           " deprecated."
       )
   )
-  @pytest.mark.asyncio
   def test_pause_second_agent_on_long_running_function_call(
       self,
   ):
@@ -247,7 +244,6 @@ class TestPauseInvocationWithParallelAgent(BasePauseInvocationTest):
         sub_agents=[sub_agent1, sub_agent2],
     )
 
-  @pytest.mark.asyncio
   def test_pause_on_long_running_function_call(
       self,
       runner: testing_utils.InMemoryRunner,
@@ -293,7 +289,6 @@ class TestPauseInvocationWithNestedParallelAgent(BasePauseInvocationTest):
         sub_agents=[sub_agent_1, nested_parallel_agent],
     )
 
-  @pytest.mark.asyncio
   def test_pause_on_long_running_function_call(
       self,
       runner: testing_utils.InMemoryRunner,
@@ -309,7 +304,6 @@ class TestPauseInvocationWithNestedParallelAgent(BasePauseInvocationTest):
     assert ("sub_agent_1", "Delayed message") in simplified_event_parts
     assert ("nested_sub_agent_2", "Delayed message") in simplified_event_parts
 
-  @pytest.mark.asyncio
   def test_pause_on_multiple_long_running_function_calls(
       self,
   ):
@@ -407,7 +401,6 @@ class TestPauseInvocationWithLoopAgent(BasePauseInvocationTest):
           " deprecated."
       )
   )
-  @pytest.mark.asyncio
   def test_pause_on_long_running_function_call(
       self,
       runner: testing_utils.InMemoryRunner,
@@ -460,7 +453,6 @@ class TestPauseInvocationWithLlmAgentTree(BasePauseInvocationTest):
         sub_agents=[sub_llm_agent_1, sub_llm_agent_2],
     )
 
-  @pytest.mark.asyncio
   def test_pause_on_long_running_function_call(
       self,
       runner: testing_utils.InMemoryRunner,
@@ -516,7 +508,6 @@ class TestPauseInvocationWithWithTransferLoop(BasePauseInvocationTest):
         tools=[LongRunningFunctionTool(func=test_tool)],
     )
 
-  @pytest.mark.asyncio
   def test_pause_on_long_running_function_call(
       self,
       runner: testing_utils.InMemoryRunner,

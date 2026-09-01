@@ -21,8 +21,10 @@ main() runner boilerplate to keep the code snippet focused.
 
 ## How it works
 
-How the unit accomplishes its purpose, the classes it depends on, the classes
-that depend on it, and the cross-class interactions a caller will notice.
+How the unit accomplishes its purpose from a caller's perspective, the classes
+it depends on, the classes that depend on it, and the cross-class interactions a
+caller will notice. Do not discuss internal implementation details (such as
+private methods, internal data structures, or unexported helpers).
 
 ## Configuration options
 
@@ -34,8 +36,9 @@ A table of the options the unit itself introduces:
 
 Follow the table with a paragraph per option covering real behaviour and usage
 patterns, not a restatement of the type. Omit options inherited from a base
-class, and do not enumerate every attribute and method — exhaustive API
-reference belongs in the generated reference documentation.
+class, never include private attributes, and do not enumerate every attribute
+and method — exhaustive API reference belongs in the generated reference
+documentation.
 
 ## Advanced applications
 

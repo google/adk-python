@@ -18,7 +18,7 @@ Key features of `LiveRequestQueue` include:
 Here is how to create a `LiveRequestQueue`, send inputs to it, and manage the stream:
 
 ```python
-from google.adk.agents import LiveRequestQueue
+from google.adk.live import LiveRequestQueue
 from google.genai import types
 
 queue = LiveRequestQueue()
@@ -66,7 +66,7 @@ Instead, `send_audio_stream_end()` is used to signal that the audio input stream
 If you enqueue requests directly via `queue.send(req)` rather than using the helper methods, ensure you pass a `LiveRequest` instance:
 
 ```python
-from google.adk.agents.live_request_queue import LiveRequest
+from google.adk.live import LiveRequest
 
 # Send an audio stream end signal directly
 queue.send(LiveRequest(audio_stream_end=True))

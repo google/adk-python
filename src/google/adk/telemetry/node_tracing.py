@@ -32,6 +32,8 @@ from opentelemetry.trace import Span
 from . import _metrics
 from ..agents.context import Context
 from ..workflow._base_node import BaseNode
+from .context import TelemetryConfig
+from .tracing import _telemetry_config_from_invocation_context
 from .tracing import tracer
 
 if TYPE_CHECKING:
@@ -45,15 +47,6 @@ if TYPE_CHECKING:
 # within another workflow. Only emitted for nested workflows; the root
 # (entrypoint) workflow omits it entirely.
 GEN_AI_WORKFLOW_NESTED = "gen_ai.workflow.nested"
-
-# OTel-context key recording that an entrypoint workflow is already active. It
-# rides along the otel_context propagated to child nodes, so only the first
-# workflow invoked within an invocation is treated as the root -- nested
-# workflows (incl. agents-as-tool that spin up their own runner) see the key
-# already set and report nested=true.
-_ENTRYPOINT_WORKFLOW_KEY = context_api.create_key(
-    "adk-entrypoint-workflow-active"
-)
 
 
 @dataclass(frozen=True)
@@ -137,6 +130,9 @@ def _invoke_workflow_span(
       workflow.name,
       context.session.id,
       otel_context=context.telemetry_context.otel_context,
+      telemetry_config=_telemetry_config_from_invocation_context(
+          context.get_invocation_context()
+      ),
   ) as span:
     tel_ctx = TelemetryContext(otel_context=context_api.get_current())
     yield tel_ctx
@@ -178,14 +174,33 @@ def _use_invoke_workflow_span(
     conversation_id: str,
     *,
     otel_context: context_api.Context | None = None,
+    telemetry_config: TelemetryConfig | None = None,
 ) -> Iterator[Span]:
-  """Opens an `invoke_workflow {workflow_name}` span."""
+  """Opens an `invoke_workflow {workflow_name}` span and its token scope.
+
+  The span owns the scope the tokens spent under it accumulate into. A nested
+  workflow accumulates into its own scope and into every scope enclosing it, so
+  outer totals stay inclusive.
+
+  Args:
+    workflow_name: The workflow being invoked.
+    conversation_id: Session/conversation id, stamped on the span.
+    otel_context: Context to open the span under; defaults to the one in force.
+    telemetry_config: The run's config, carrying the experimental opt-in. Read
+      only for a root scope; a nested one inherits the decision already made.
+
+  Yields:
+    The `invoke_workflow` span.
+  """
+  from . import _instrumentation  # pylint: disable=g-import-not-at-top
+
   if otel_context is None:
     otel_context = context_api.get_current()
-  # First workflow in the invocation is the root; subsequent ones are nested.
-  # The flag rides along the otel_context propagated to child nodes, so nested
-  # workflows see it set.
-  nested = bool(context_api.get_value(_ENTRYPOINT_WORKFLOW_KEY, otel_context))
+  # The enclosing scope is itself the nesting signal: it rides along the
+  # otel_context propagated to child nodes, so a workflow already running has
+  # one and the first workflow in the invocation does not.
+  enclosing = _instrumentation._workflow_scope(otel_context)
+  nested = enclosing is not None
   attributes: dict[str, AttributeValue] = {
       GEN_AI_OPERATION_NAME: "invoke_workflow",
       GEN_AI_CONVERSATION_ID: conversation_id,
@@ -200,6 +215,19 @@ def _use_invoke_workflow_span(
       f"invoke_workflow {workflow_name}" if workflow_name else "invoke_workflow"
   )
 
+  scope = _instrumentation._WorkflowScope(
+      root_agent_name=(
+          enclosing.root_agent_name if enclosing else workflow_name
+      ),
+      telemetry_config=(
+          enclosing.telemetry_config
+          if enclosing
+          else telemetry_config or TelemetryConfig()
+      ),
+      workflow_name=workflow_name,
+      parent=enclosing,
+  )
+
   start_s = time.monotonic()
   workflow_span: Span | None = None
   try:
@@ -209,10 +237,19 @@ def _use_invoke_workflow_span(
             attributes=attributes,
             context=otel_context,
         ) as span,
-        _mark_nested_workflows(),
     ):
       workflow_span = span
-      yield span
+      # In the otel context rather than a ContextVar: a caller that abandons
+      # the turn mid-iteration keeps its own pre-span context, so the scope
+      # cannot outlive the span that owns it and no later turn can adopt it.
+      scope_token = context_api.attach(
+          context_api.set_value(_instrumentation._WORKFLOW_SCOPE_KEY, scope)
+      )
+      try:
+        yield span
+      finally:
+        context_api.detach(scope_token)
+        _instrumentation._flush_workflow_metrics(scope)
   finally:
     _metrics.record_workflow_invocation_duration(
         workflow_name=workflow_name,
@@ -220,14 +257,3 @@ def _use_invoke_workflow_span(
         nested=nested,
         error=sys.exc_info()[1],
     )
-
-
-@contextmanager
-def _mark_nested_workflows() -> Iterator[None]:
-  token = context_api.attach(
-      context_api.set_value(_ENTRYPOINT_WORKFLOW_KEY, True)
-  )
-  try:
-    yield
-  finally:
-    context_api.detach(token)

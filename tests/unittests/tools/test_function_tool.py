@@ -14,6 +14,7 @@
 
 import inspect
 from typing import Any
+from typing import Optional
 from unittest import mock
 from unittest.mock import MagicMock
 
@@ -676,3 +677,82 @@ async def test_run_async_with_streaming_tool_missing_mandatory_arg(
   assert isinstance(result, dict)
   assert "error" in result
   assert "mandatory input parameters are not present" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_run_async_coerces_integral_float_to_int_param(mock_tool_context):
+  """A proto Struct round-trip turns an int arg into a float; it is coerced back."""
+
+  async def tool_with_int(component_id: int):
+    return {"got": component_id, "type": type(component_id).__name__}
+
+  tool = FunctionTool(tool_with_int)
+  result = await tool.run_async(
+      args={"component_id": 1396683.0},
+      tool_context=mock_tool_context,
+  )
+  assert result == {"got": 1396683, "type": "int"}
+
+
+@pytest.mark.asyncio
+async def test_run_async_coerces_integral_float_to_optional_int_param(
+    mock_tool_context,
+):
+  """Optional[int] is unwrapped before the check, so it is coerced too."""
+
+  async def tool_with_optional_int(component_id: Optional[int] = None):
+    return {"type": type(component_id).__name__}
+
+  tool = FunctionTool(tool_with_optional_int)
+  result = await tool.run_async(
+      args={"component_id": 7.0},
+      tool_context=mock_tool_context,
+  )
+  assert result == {"type": "int"}
+
+
+@pytest.mark.asyncio
+async def test_run_async_passes_through_non_integral_float_for_int_param(
+    mock_tool_context,
+):
+  """A float that is not a whole number is not silently truncated."""
+
+  async def tool_with_int(component_id: int):
+    return {"got": component_id}
+
+  tool = FunctionTool(tool_with_int)
+  result = await tool.run_async(
+      args={"component_id": 1.5},
+      tool_context=mock_tool_context,
+  )
+  assert result == {"got": 1.5}
+
+
+@pytest.mark.asyncio
+async def test_run_async_leaves_float_param_alone(mock_tool_context):
+  """A float-typed parameter keeps its float, so the coercion is int-only."""
+
+  async def tool_with_float(ratio: float):
+    return {"type": type(ratio).__name__}
+
+  tool = FunctionTool(tool_with_float)
+  result = await tool.run_async(
+      args={"ratio": 2.0},
+      tool_context=mock_tool_context,
+  )
+  assert result == {"type": "float"}
+
+
+@pytest.mark.asyncio
+async def test_run_async_leaves_bool_arg_for_int_param_alone(mock_tool_context):
+  """bool is an int subclass but not a float, so it is untouched."""
+
+  async def tool_with_int(flag: int):
+    return {"type": type(flag).__name__}
+
+  tool = FunctionTool(tool_with_int)
+  result = await tool.run_async(
+      args={"flag": True},
+      tool_context=mock_tool_context,
+  )
+  assert result == {"type": "bool"}

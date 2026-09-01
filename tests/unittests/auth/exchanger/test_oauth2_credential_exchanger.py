@@ -136,6 +136,43 @@ class TestOAuth2CredentialExchanger:
     mock_client.fetch_token.assert_called_once()
 
   @patch("google.adk.auth.oauth2_credential_util.OAuth2Session")
+  async def test_exchange_sync_from_a_running_event_loop(
+      self, mock_oauth2_session
+  ):
+    """The sync entry point is reached from tools that are already awaiting."""
+    mock_client = Mock()
+    mock_oauth2_session.return_value = mock_client
+    mock_client.fetch_token.return_value = OAuth2Token(
+        {"access_token": "new_access_token"}
+    )
+
+    scheme = OpenIdConnectWithConfig(
+        type_="openIdConnect",
+        openId_connect_url=(
+            "https://example.com/.well-known/openid_configuration"
+        ),
+        authorization_endpoint="https://example.com/auth",
+        token_endpoint="https://example.com/token",
+        scopes=["openid"],
+    )
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            auth_response_uri="https://example.com/callback?code=auth_code",
+            auth_code="auth_code",
+        ),
+    )
+
+    exchange_result = OAuth2CredentialExchanger()._exchange_sync(
+        credential, scheme
+    )
+
+    assert exchange_result.credential.oauth2.access_token == "new_access_token"
+    assert exchange_result.was_exchanged
+
+  @patch("google.adk.auth.oauth2_credential_util.OAuth2Session")
   async def test_exchange_success_pkce(self, mock_oauth2_session):
     """Test successful token exchange with PKCE."""
     # Setup mock

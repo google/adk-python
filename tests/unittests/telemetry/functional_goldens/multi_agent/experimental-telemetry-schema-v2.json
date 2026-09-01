@@ -1,0 +1,514 @@
+{
+  "root_span": {
+    "name": "invoke_workflow some_root_agent",
+    "attributes": {
+      "gen_ai.operation.name": "invoke_workflow",
+      "gen_ai.conversation.id": "PRESENT",
+      "gen_ai.workflow.name": "some_root_agent"
+    },
+    "status": "UNSET",
+    "children": [
+      {
+        "name": "invoke_agent some_root_agent",
+        "attributes": {
+          "gen_ai.operation.name": "invoke_agent",
+          "gen_ai.agent.description": "A sample root agent.",
+          "gen_ai.agent.name": "some_root_agent",
+          "gen_ai.conversation.id": "PRESENT"
+        },
+        "status": "UNSET",
+        "children": [
+          {
+            "name": "call_llm",
+            "attributes": {
+              "gen_ai.system": "gcp.vertex.agent",
+              "gen_ai.request.model": "gemini-2.5-flash",
+              "gcp.vertex.agent.invocation_id": "PRESENT",
+              "gcp.vertex.agent.session_id": "PRESENT",
+              "gcp.vertex.agent.event_id": "PRESENT",
+              "gcp.vertex.agent.llm_request": "{}",
+              "gcp.vertex.agent.llm_response": "{}",
+              "gen_ai.usage.input_tokens": 100,
+              "gen_ai.usage.output_tokens": 25,
+              "gen_ai.usage.cache_read.input_tokens": 40,
+              "gen_ai.usage.reasoning.output_tokens": 5,
+              "gen_ai.response.finish_reasons": [
+                "stop"
+              ]
+            },
+            "status": "UNSET",
+            "children": [
+              {
+                "name": "generate_content gemini-2.5-flash",
+                "attributes": {
+                  "gen_ai.system": "gemini",
+                  "gen_ai.operation.name": "generate_content",
+                  "gen_ai.request.model": "gemini-2.5-flash",
+                  "gen_ai.agent.name": "some_root_agent",
+                  "gen_ai.conversation.id": "PRESENT",
+                  "gcp.vertex.agent.event_id": "PRESENT",
+                  "gcp.vertex.agent.invocation_id": "PRESENT",
+                  "gen_ai.response.finish_reasons": [
+                    "stop"
+                  ],
+                  "gen_ai.usage.input_tokens": 100,
+                  "gen_ai.usage.output_tokens": 25,
+                  "gen_ai.usage.cache_read.input_tokens": 40,
+                  "gen_ai.usage.reasoning.output_tokens": 5
+                },
+                "status": "UNSET",
+                "children": [],
+                "logs": [
+                  {
+                    "event_name": "gen_ai.system.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.user.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.choice",
+                    "body": {
+                      "content": "<elided>",
+                      "index": 0,
+                      "finish_reason": "STOP"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  }
+                ]
+              },
+              {
+                "name": "execute_tool transfer_to_agent",
+                "attributes": {
+                  "gen_ai.operation.name": "execute_tool",
+                  "gen_ai.tool.description": "Transfer the query to another agent.\n\nUse this tool to hand off control to another agent that is more suitable to\nanswer the user's query according to the agent's description.\n\nArgs:\n  agent_name: the agent name to transfer to.",
+                  "gen_ai.tool.name": "transfer_to_agent",
+                  "gen_ai.tool.type": "TransferToAgentTool",
+                  "gen_ai.agent.name": "some_root_agent",
+                  "gcp.vertex.agent.llm_request": "{}",
+                  "gcp.vertex.agent.llm_response": "{}",
+                  "gcp.vertex.agent.tool_call_args": "{}",
+                  "gen_ai.tool.call.id": "PRESENT",
+                  "gcp.vertex.agent.event_id": "PRESENT",
+                  "gcp.vertex.agent.tool_response": "{}"
+                },
+                "status": "UNSET",
+                "children": [],
+                "logs": []
+              }
+            ],
+            "logs": []
+          }
+        ],
+        "logs": []
+      },
+      {
+        "name": "invoke_agent some_specialist_agent",
+        "attributes": {
+          "gen_ai.operation.name": "invoke_agent",
+          "gen_ai.agent.description": "A sample specialist agent.",
+          "gen_ai.agent.name": "some_specialist_agent",
+          "gen_ai.conversation.id": "PRESENT"
+        },
+        "status": "UNSET",
+        "children": [
+          {
+            "name": "call_llm",
+            "attributes": {
+              "gen_ai.system": "gcp.vertex.agent",
+              "gen_ai.request.model": "gemini-2.5-flash",
+              "gcp.vertex.agent.invocation_id": "PRESENT",
+              "gcp.vertex.agent.session_id": "PRESENT",
+              "gcp.vertex.agent.event_id": "PRESENT",
+              "gcp.vertex.agent.llm_request": "{}",
+              "gcp.vertex.agent.llm_response": "{}",
+              "gen_ai.usage.input_tokens": 150,
+              "gen_ai.usage.output_tokens": 50,
+              "gen_ai.usage.cache_read.input_tokens": 60,
+              "gen_ai.usage.reasoning.output_tokens": 15,
+              "gen_ai.response.finish_reasons": [
+                "stop"
+              ]
+            },
+            "status": "UNSET",
+            "children": [
+              {
+                "name": "generate_content gemini-2.5-flash",
+                "attributes": {
+                  "gen_ai.system": "gemini",
+                  "gen_ai.operation.name": "generate_content",
+                  "gen_ai.request.model": "gemini-2.5-flash",
+                  "gen_ai.agent.name": "some_specialist_agent",
+                  "gen_ai.conversation.id": "PRESENT",
+                  "gcp.vertex.agent.event_id": "PRESENT",
+                  "gcp.vertex.agent.invocation_id": "PRESENT",
+                  "gen_ai.response.finish_reasons": [
+                    "stop"
+                  ],
+                  "gen_ai.usage.input_tokens": 150,
+                  "gen_ai.usage.output_tokens": 50,
+                  "gen_ai.usage.cache_read.input_tokens": 60,
+                  "gen_ai.usage.reasoning.output_tokens": 15
+                },
+                "status": "UNSET",
+                "children": [],
+                "logs": [
+                  {
+                    "event_name": "gen_ai.system.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.user.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.user.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.user.message",
+                    "body": {
+                      "content": "<elided>"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  },
+                  {
+                    "event_name": "gen_ai.choice",
+                    "body": {
+                      "content": "<elided>",
+                      "index": 0,
+                      "finish_reason": "STOP"
+                    },
+                    "attributes": {
+                      "gen_ai.system": "gemini"
+                    }
+                  }
+                ]
+              }
+            ],
+            "logs": []
+          }
+        ],
+        "logs": []
+      }
+    ],
+    "logs": []
+  },
+  "metric_points": {
+    "adk.experimental.invoke_agent.cache_read.input_tokens": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 40
+      },
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_specialist_agent"
+        },
+        "value": 60
+      }
+    ],
+    "adk.experimental.invoke_agent.input_tokens": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 100
+      },
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_specialist_agent"
+        },
+        "value": 150
+      }
+    ],
+    "adk.experimental.invoke_agent.output_tokens": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 25
+      },
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_specialist_agent"
+        },
+        "value": 50
+      }
+    ],
+    "adk.experimental.invoke_agent.reasoning.output_tokens": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 5
+      },
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_specialist_agent"
+        },
+        "value": 15
+      }
+    ],
+    "adk.experimental.invoke_agent.tool.input_tokens": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 0
+      },
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_specialist_agent"
+        },
+        "value": 0
+      }
+    ],
+    "adk.experimental.invoke_agent.total_tokens": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 125
+      },
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_specialist_agent"
+        },
+        "value": 200
+      }
+    ],
+    "adk.experimental.invoke_workflow.cache_read.input_tokens": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "some_root_agent",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": 100
+      }
+    ],
+    "adk.experimental.invoke_workflow.inference_calls": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "some_root_agent",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": 2
+      }
+    ],
+    "adk.experimental.invoke_workflow.input_tokens": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "some_root_agent",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": 250
+      }
+    ],
+    "adk.experimental.invoke_workflow.output_tokens": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "some_root_agent",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": 75
+      }
+    ],
+    "adk.experimental.invoke_workflow.reasoning.output_tokens": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "some_root_agent",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": 20
+      }
+    ],
+    "adk.experimental.invoke_workflow.tool.input_tokens": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "some_root_agent",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": 0
+      }
+    ],
+    "adk.experimental.invoke_workflow.tool_calls": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "some_root_agent",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": 1
+      }
+    ],
+    "adk.experimental.invoke_workflow.total_tokens": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "some_root_agent",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": 325
+      }
+    ],
+    "gen_ai.client.operation.duration": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent",
+          "gen_ai.operation.name": "generate_content",
+          "gen_ai.provider.name": "gemini",
+          "gen_ai.request.model": "gemini-2.5-flash",
+          "gen_ai.response.model": "gemini-2.5-flash"
+        },
+        "value": "PRESENT"
+      },
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_specialist_agent",
+          "gen_ai.operation.name": "generate_content",
+          "gen_ai.provider.name": "gemini",
+          "gen_ai.request.model": "gemini-2.5-flash",
+          "gen_ai.response.model": "gemini-2.5-flash"
+        },
+        "value": "PRESENT"
+      }
+    ],
+    "gen_ai.client.token.usage": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent",
+          "gen_ai.operation.name": "generate_content",
+          "gen_ai.provider.name": "gemini",
+          "gen_ai.request.model": "gemini-2.5-flash",
+          "gen_ai.response.model": "gemini-2.5-flash",
+          "gen_ai.token.type": "input"
+        },
+        "value": 100
+      },
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent",
+          "gen_ai.operation.name": "generate_content",
+          "gen_ai.provider.name": "gemini",
+          "gen_ai.request.model": "gemini-2.5-flash",
+          "gen_ai.response.model": "gemini-2.5-flash",
+          "gen_ai.token.type": "output"
+        },
+        "value": 25
+      },
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_specialist_agent",
+          "gen_ai.operation.name": "generate_content",
+          "gen_ai.provider.name": "gemini",
+          "gen_ai.request.model": "gemini-2.5-flash",
+          "gen_ai.response.model": "gemini-2.5-flash",
+          "gen_ai.token.type": "input"
+        },
+        "value": 150
+      },
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_specialist_agent",
+          "gen_ai.operation.name": "generate_content",
+          "gen_ai.provider.name": "gemini",
+          "gen_ai.request.model": "gemini-2.5-flash",
+          "gen_ai.response.model": "gemini-2.5-flash",
+          "gen_ai.token.type": "output"
+        },
+        "value": 50
+      }
+    ],
+    "gen_ai.execute_tool.duration": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent",
+          "gen_ai.tool.name": "transfer_to_agent",
+          "gen_ai.tool.type": "TransferToAgentTool"
+        },
+        "value": "PRESENT"
+      }
+    ],
+    "gen_ai.invoke_agent.duration": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": "PRESENT"
+      },
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_specialist_agent"
+        },
+        "value": "PRESENT"
+      }
+    ],
+    "gen_ai.invoke_agent.inference_calls": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 1
+      },
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_specialist_agent"
+        },
+        "value": 1
+      }
+    ],
+    "gen_ai.invoke_agent.tool_calls": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 1
+      },
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_specialist_agent"
+        },
+        "value": 0
+      }
+    ],
+    "gen_ai.invoke_workflow.duration": [
+      {
+        "attributes": {
+          "gen_ai.operation.name": "invoke_workflow",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": "PRESENT"
+      }
+    ]
+  }
+}

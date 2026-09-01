@@ -24,10 +24,14 @@ The blob name format used depends on whether the filename has a user namespace:
 from __future__ import annotations
 
 import asyncio
+import datetime
 import logging
 from typing import Any
+from typing import cast
+from typing import Literal
 from typing import Optional
 from typing import Union
+import urllib.parse
 
 from google.genai import types
 from typing_extensions import override
@@ -44,6 +48,7 @@ _GCS_DISPLAY_NAME_METADATA_KEY = "adkDisplayName"
 _GCS_IS_TEXT_METADATA_KEY = "adkIsText"
 _GCS_FILE_URI_METADATA_KEY = "adkFileUri"
 _GCS_FILE_MIME_TYPE_METADATA_KEY = "adkFileMimeType"
+_MAX_ARTIFACT_REFERENCE_DEPTH = 5
 
 
 def _parse_version(blob_name: str, prefix: str) -> Optional[int]:
@@ -604,4 +609,242 @@ class GcsArtifactService(BaseArtifactService):
         session_id,
         filename,
         version,
+    )
+
+  def _get_authenticated_url_sync(
+      self,
+      app_name: str,
+      user_id: str,
+      session_id: Optional[str],
+      filename: str,
+      version: Optional[int] = None,
+      *,
+      max_depth: int = _MAX_ARTIFACT_REFERENCE_DEPTH,
+  ) -> Optional[str]:
+    """Generates an authenticated browser URL for an artifact."""
+    if version is None:
+      versions = self._list_versions(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=filename,
+      )
+      if not versions:
+        return None
+      version = max(versions)
+
+    blob_name = self._get_blob_name(
+        app_name, user_id, filename, version, session_id
+    )
+    blob = self.bucket.get_blob(blob_name)
+    if not blob:
+      return None
+
+    file_uri = None
+    if blob.metadata:
+      file_uri = blob.metadata.get(
+          _GCS_FILE_URI_METADATA_KEY
+      ) or blob.metadata.get("file_uri")
+
+    if file_uri:
+      if file_uri.startswith("artifact://"):
+        if max_depth <= 0:
+          raise InputValidationError(
+              "Exceeded maximum recursion depth resolving artifact reference:"
+              f" {file_uri}"
+          )
+        parsed_uri = artifact_util.parse_artifact_uri(file_uri)
+        if not parsed_uri:
+          raise InputValidationError(
+              f"Invalid artifact reference URI: {file_uri}"
+          )
+        artifact_util.validate_artifact_reference_scope(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            parsed_uri=parsed_uri,
+        )
+        return self._get_authenticated_url_sync(
+            app_name=parsed_uri.app_name,
+            user_id=parsed_uri.user_id,
+            session_id=parsed_uri.session_id,
+            filename=parsed_uri.filename,
+            version=parsed_uri.version,
+            max_depth=max_depth - 1,
+        )
+      return None
+
+    quoted_blob_name = urllib.parse.quote(blob_name, safe="/")
+    return f"https://storage.cloud.google.com/{self.bucket_name}/{quoted_blob_name}"
+
+  async def get_authenticated_url(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      filename: str,
+      session_id: Optional[str] = None,
+      version: Optional[int] = None,
+  ) -> Optional[str]:
+    """Generates an authenticated browser URL for an artifact.
+
+    The URL returned requires the user to be authenticated with a Google
+    Account that has read permission for the object.
+
+    Args:
+        app_name: The name of the application.
+        user_id: The ID of the user who owns the artifact.
+        filename: The name of the artifact file.
+        session_id: The ID of the session (ignored for user-namespaced files).
+        version: The version of the artifact. If None, the latest version will
+          be used.
+
+    Returns:
+        The authenticated GCS URL (https://storage.cloud.google.com/...), or
+        None if the artifact does not exist.
+    """
+    return await asyncio.to_thread(
+        self._get_authenticated_url_sync,
+        app_name,
+        user_id,
+        session_id,
+        filename,
+        version,
+    )
+
+  def _get_signed_url_sync(
+      self,
+      app_name: str,
+      user_id: str,
+      session_id: Optional[str],
+      filename: str,
+      version: Optional[int] = None,
+      expiration: Optional[
+          Union[datetime.datetime, datetime.timedelta, int]
+      ] = None,
+      method: str = "GET",
+      signing_version: Optional[Literal["v2", "v4"]] = None,
+      extra_signing_options: Optional[dict[str, Any]] = None,
+      *,
+      max_depth: int = _MAX_ARTIFACT_REFERENCE_DEPTH,
+  ) -> Optional[str]:
+    """Generates a time-limited signed URL for an artifact."""
+    if version is None:
+      versions = self._list_versions(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=filename,
+      )
+      if not versions:
+        return None
+      version = max(versions)
+
+    blob_name = self._get_blob_name(
+        app_name, user_id, filename, version, session_id
+    )
+    blob = self.bucket.get_blob(blob_name)
+    if not blob:
+      return None
+
+    file_uri = None
+    if blob.metadata:
+      file_uri = blob.metadata.get(
+          _GCS_FILE_URI_METADATA_KEY
+      ) or blob.metadata.get("file_uri")
+
+    if file_uri:
+      if file_uri.startswith("artifact://"):
+        if max_depth <= 0:
+          raise InputValidationError(
+              "Exceeded maximum recursion depth resolving artifact reference:"
+              f" {file_uri}"
+          )
+        parsed_uri = artifact_util.parse_artifact_uri(file_uri)
+        if not parsed_uri:
+          raise InputValidationError(
+              f"Invalid artifact reference URI: {file_uri}"
+          )
+        artifact_util.validate_artifact_reference_scope(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            parsed_uri=parsed_uri,
+        )
+        return self._get_signed_url_sync(
+            app_name=parsed_uri.app_name,
+            user_id=parsed_uri.user_id,
+            session_id=parsed_uri.session_id,
+            filename=parsed_uri.filename,
+            version=parsed_uri.version,
+            expiration=expiration,
+            method=method,
+            signing_version=signing_version,
+            extra_signing_options=extra_signing_options,
+            max_depth=max_depth - 1,
+        )
+      return None
+
+    if expiration is None:
+      expiration = datetime.timedelta(hours=1)
+
+    call_kwargs = dict(extra_signing_options) if extra_signing_options else {}
+    if signing_version is not None:
+      call_kwargs["version"] = signing_version
+
+    return cast(
+        str,
+        blob.generate_signed_url(
+            expiration=expiration,
+            method=method,
+            **call_kwargs,
+        ),
+    )
+
+  async def get_signed_url(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      filename: str,
+      session_id: Optional[str] = None,
+      version: Optional[int] = None,
+      expiration: Optional[
+          Union[datetime.datetime, datetime.timedelta, int]
+      ] = None,
+      method: str = "GET",
+      signing_version: Optional[Literal["v2", "v4"]] = None,
+      **kwargs: Any,
+  ) -> Optional[str]:
+    """Generates a time-limited signed URL for an artifact.
+
+    Args:
+        app_name: The name of the application.
+        user_id: The ID of the user who owns the artifact.
+        filename: The name of the artifact file.
+        session_id: The ID of the session (ignored for user-namespaced files).
+        version: The version of the artifact. If None, the latest version will
+          be used.
+        expiration: Time when the signed URL expires (datetime, timedelta, or
+          epoch seconds). Defaults to 1 hour if not specified.
+        method: HTTP method allowed for the signed URL (default: "GET").
+        signing_version: The signing version to use ("v2" or "v4"). Forwarded as
+          `version` to `Blob.generate_signed_url`.
+        **kwargs: Additional keyword arguments forwarded to
+          `Blob.generate_signed_url`.
+
+    Returns:
+        The signed URL string, or None if the artifact does not exist.
+    """
+    return await asyncio.to_thread(
+        self._get_signed_url_sync,
+        app_name,
+        user_id,
+        session_id,
+        filename,
+        version,
+        expiration,
+        method,
+        signing_version,
+        kwargs,
     )
