@@ -701,15 +701,14 @@ async def test_workflow_resume_inputs_fallback_branch(monkeypatch):
 
   from google.adk.workflow import _llm_agent_wrapper
 
-  async def skip_input(a, c, i):
-    return None
-
   monkeypatch.setattr(
       _llm_agent_wrapper,
       'prepare_llm_agent_context',
       lambda a, c: DummyAgentCtx(ic),
   )
-  monkeypatch.setattr(_llm_agent_wrapper, 'prepare_llm_agent_input', skip_input)
+  monkeypatch.setattr(
+      _llm_agent_wrapper, 'prepare_llm_agent_input', lambda a, c, i: None
+  )
 
   # Simulate Runner adding the event to the correct branch!
   _append_function_response(
@@ -824,15 +823,14 @@ async def test_workflow_resume_inputs_multiple_branches(monkeypatch):
 
   from google.adk.workflow import _llm_agent_wrapper
 
-  async def skip_input(a, c, i):
-    return None
-
   monkeypatch.setattr(
       _llm_agent_wrapper,
       'prepare_llm_agent_context',
       lambda a, c: DummyAgentCtx(ic),
   )
-  monkeypatch.setattr(_llm_agent_wrapper, 'prepare_llm_agent_input', skip_input)
+  monkeypatch.setattr(
+      _llm_agent_wrapper, 'prepare_llm_agent_input', lambda a, c, i: None
+  )
 
   # Simulate Runner adding the events to the correct branches!
   _append_function_response(
