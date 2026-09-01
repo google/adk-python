@@ -66,8 +66,16 @@ _BINARY_FILE_DETECTED_MSG = (
 )
 
 
+_LIST_SKILLS_TOOL_NAME = "list_skills"
+_SEARCH_SKILLS_TOOL_NAME = "search_skills"
+_LOAD_SKILL_TOOL_NAME = "load_skill"
+_LOAD_SKILL_RESOURCE_TOOL_NAME = "load_skill_resource"
+_RUN_SKILL_SCRIPT_TOOL_NAME = "run_skill_script"
+
+
 def _build_skill_system_instruction(
     prefix: str | None = None,
+    allowed_tools: set[str] | frozenset[str] | None = None,
     skills_folder: Path | None = None,
     script_execution_enabled: bool = True,
 ) -> str:
@@ -75,6 +83,10 @@ def _build_skill_system_instruction(
 
   Args:
     prefix: Optional tool name prefix, matching the toolset's.
+    allowed_tools: Optional set of base tool names available after filtering.
+      When None, documents all skill tools (historical default, used for
+      ``DEFAULT_SKILL_SYSTEM_INSTRUCTION``). When provided, documents all skill
+      tools, and explicitly forbids calling filtered-out tools.
     skills_folder: Where skill resources are materialized, when running in an
       environment.
     script_execution_enabled: Whether scripts can actually be run. When False,
@@ -94,15 +106,16 @@ def _build_skill_system_instruction(
       if script_execution_enabled
       else (
           "- **scripts/** (Optional): Scripts bundled with the skill. You"
-          f" cannot run them; use `{p}load_skill_resource` to read one and"
-          " follow it yourself.\n\n"
+          f" cannot run them; use `{p}{_LOAD_SKILL_RESOURCE_TOOL_NAME}` to read"
+          " one and follow it yourself.\n\n"
       )
   )
 
   steps = [
       (
           "If a skill seems relevant to the current user query, you MUST use "
-          f'the `{p}load_skill` tool with `skill_name="<SKILL_NAME>"` to read '
+          f"the `{p}{_LOAD_SKILL_TOOL_NAME}` tool with"
+          ' `skill_name="<SKILL_NAME>"` to read '
           "its full instructions before proceeding."
       ),
       (
@@ -112,49 +125,49 @@ def _build_skill_system_instruction(
           "of them in order."
       ),
       (
-          f"The `{p}load_skill_resource` tool is for viewing files within a "
-          "skill's directory (e.g., `references/*`, `assets/*`, `scripts/*`). "
-          "It is ONLY for skill-bundled files — do NOT use it to access "
-          "documents or files provided by the user at runtime. Do NOT use "
-          "other tools to access skill files."
+          f"The `{p}{_LOAD_SKILL_RESOURCE_TOOL_NAME}` tool is for viewing files"
+          " within a skill's directory (e.g., `references/*`, `assets/*`,"
+          " `scripts/*`). It is ONLY for skill-bundled files — do NOT use it"
+          " to access documents or files provided by the user at runtime. Do"
+          " NOT use other tools to access skill files."
       ),
   ]
   if script_execution_enabled:
     steps.append(
-        f"Use `{p}run_skill_script` to run scripts from a skill's `scripts/` "
-        f"directory. Use `{p}load_skill_resource` to view script content"
-        " first if "
-        "needed."
+        f"Use `{p}{_RUN_SKILL_SCRIPT_TOOL_NAME}` to run scripts from a skill's"
+        f" `scripts/` directory. Use `{p}{_LOAD_SKILL_RESOURCE_TOOL_NAME}` to"
+        " view script content first if needed."
     )
   steps.append(
-      f"If `{p}load_skill_resource` returns any error, do not retry any "
-      "path. Report the error to the user and stop."
+      f"If `{p}{_LOAD_SKILL_RESOURCE_TOOL_NAME}` returns any error, do not"
+      " retry any path. Report the error to the user and stop."
   )
   if script_execution_enabled:
     steps.append(
-        f"If `{p}run_skill_script` returns an error (for example "
+        f"If `{p}{_RUN_SKILL_SCRIPT_TOOL_NAME}` returns an error (for example "
         "`SCRIPT_NOT_FOUND`), do not retry the same script or guess a "
         "different script path. Report the error to the user and stop."
     )
   steps.append(
-      "Loading a skill only retrieves its instructions; it does NOT "
-      f"complete your turn. After a `{p}load_skill` call returns, continue "
-      "in the SAME turn: call whatever tools the skill's steps require "
-      "(search, data retrieval, render), then write your reply. Never end "
-      "your turn with an empty response right after loading a skill."
+      "Loading a skill only retrieves its instructions; it does NOT complete"
+      f" your turn. After a `{p}{_LOAD_SKILL_TOOL_NAME}` call returns, continue"
+      " in the SAME turn: call whatever tools the skill's steps require"
+      " (search, data retrieval, render), then write your reply. Never end"
+      " your turn with an empty response right after loading a skill."
   )
   if script_execution_enabled and skills_folder_posix is not None:
     steps.append(
         "NOTE ON ENVIRONMENT EXECUTION: When using"
-        f" `{p}run_skill_script` with the `command` parameter, all skill"
-        " resources (including scripts and assets) are materialized in the"
-        f" execution environment under `{skills_folder_posix}/<skill_name>/`."
-        " Always specify file and script paths relative to or starting with"
+        f" `{p}{_RUN_SKILL_SCRIPT_TOOL_NAME}` with the `command` parameter, all"
+        " skill resources (including scripts and assets) are materialized in"
+        " the execution environment under"
+        f" `{skills_folder_posix}/<skill_name>/`. Always specify file and"
+        " script paths relative to or starting with"
         f" `{skills_folder_posix}/<skill_name>/` (e.g.,"
         f" `{skills_folder_posix}/<skill_name>/scripts/<script_name>`)."
     )
 
-  return (
+  instruction = (
       "You can use specialized 'skills' to help you with complex tasks. "
       "You MUST use the skill tools to interact with these skills.\n\n"
       "Skills are folders of instructions and resources that extend your "
@@ -170,13 +183,37 @@ def _build_skill_system_instruction(
       + "".join(f"{i}. {step}\n" for i, step in enumerate(steps, start=1))
   )
 
+  if allowed_tools is not None:
+    banned = []
+    for tool_name in (
+        _RUN_SKILL_SCRIPT_TOOL_NAME,
+        _LOAD_SKILL_RESOURCE_TOOL_NAME,
+        _LOAD_SKILL_TOOL_NAME,
+        _LIST_SKILLS_TOOL_NAME,
+    ):
+      if tool_name not in allowed_tools:
+        banned.append(f"`{p}{tool_name}`")
+    if banned:
+      banned_csv = ", ".join(banned)
+      instruction += (
+          f"\n\nNote: The following tools are NOT available: {banned_csv}."
+          " Do NOT call them. After loading a skill (if available), apply"
+          " its instructions in context and write your final reply as"
+          " normal model text. Never wrap the user-facing answer inside a"
+          " tool call.\n"
+      )
+
+  return instruction
+
 
 class ListSkillsTool(BaseTool):
   """Tool to list all available skills."""
 
+  TOOL_NAME = _LIST_SKILLS_TOOL_NAME
+
   def __init__(self, toolset: "SkillToolset"):
     super().__init__(
-        name="list_skills",
+        name=self.TOOL_NAME,
         description=(
             "Lists all available skills with their names and descriptions."
         ),
@@ -203,6 +240,8 @@ class ListSkillsTool(BaseTool):
 class SearchSkillsTool(BaseTool):
   """Tool to search for relevant skills in the registry."""
 
+  TOOL_NAME = _SEARCH_SKILLS_TOOL_NAME
+
   def __init__(self, toolset: "SkillToolset"):
     if not toolset._registry:
       raise ValueError("SearchSkillsTool requires a configured skill registry.")
@@ -211,7 +250,7 @@ class SearchSkillsTool(BaseTool):
         " keyword query."
     )
     super().__init__(
-        name="search_skills",
+        name=self.TOOL_NAME,
         description=description,
     )
     self._toolset = toolset
@@ -265,9 +304,11 @@ class SearchSkillsTool(BaseTool):
 class LoadSkillTool(BaseTool):
   """Tool to load a skill's instructions."""
 
+  TOOL_NAME = _LOAD_SKILL_TOOL_NAME
+
   def __init__(self, toolset: "SkillToolset"):
     super().__init__(
-        name="load_skill",
+        name=self.TOOL_NAME,
         description="Loads the SKILL.md instructions for a given skill.",
     )
     self._toolset = toolset
@@ -357,9 +398,11 @@ class LoadSkillTool(BaseTool):
 class LoadSkillResourceTool(BaseTool):
   """Tool to load resources (references, assets, or scripts) from a skill."""
 
+  TOOL_NAME = _LOAD_SKILL_RESOURCE_TOOL_NAME
+
   def __init__(self, toolset: "SkillToolset"):
     super().__init__(
-        name="load_skill_resource",
+        name=self.TOOL_NAME,
         description=(
             "Loads a resource file (from references/, assets/, or"
             " scripts/) from within a skill."
@@ -917,9 +960,11 @@ _materialize_and_run()
 class RunSkillScriptTool(BaseTool):
   """Tool to execute scripts from a skill's scripts/ directory."""
 
+  TOOL_NAME = _RUN_SKILL_SCRIPT_TOOL_NAME
+
   def __init__(self, toolset: "SkillToolset"):
     super().__init__(
-        name="run_skill_script",
+        name=self.TOOL_NAME,
         description="Executes a script from a skill's scripts/ directory.",
     )
     self._toolset = toolset
@@ -1547,27 +1592,32 @@ class SkillToolset(BaseToolset):
     """Processes the outgoing LLM request to include available skills."""
     if self._env is not None and not self._env.is_initialized:
       await self._env.initialize()
+    selected_core_tools = {
+        t.name for t in self._tools if self._is_tool_selected(t, tool_context)
+    }
+
     instructions = [
         _build_skill_system_instruction(
             prefix=self.tool_name_prefix,
+            allowed_tools=selected_core_tools,
             skills_folder=self.skills_folder,
             script_execution_enabled=self._has_script_execution(tool_context),
         )
     ]
 
-    has_list_skills = any(isinstance(t, ListSkillsTool) for t in self._tools)
+    has_list_skills = _LIST_SKILLS_TOOL_NAME in selected_core_tools
 
     if not has_list_skills:
       skills = self._list_skills()
       skills_xml = prompt.format_skills_as_xml(skills)
       instructions.append(skills_xml)
 
-    if self._registry:
+    if self._registry and _SEARCH_SKILLS_TOOL_NAME in selected_core_tools:
       p = f"{self.tool_name_prefix}_" if self.tool_name_prefix else ""
       instructions.append(
           "\nIf the locally available skills are not sufficient to complete "
-          f"your task, you can use the `{p}search_skills` tool to discover "
-          "additional skills from the registry."
+          f"your task, you can use the `{p}{_SEARCH_SKILLS_TOOL_NAME}` tool to"
+          " discover additional skills from the registry."
       )
 
     llm_request.append_instructions(instructions)
