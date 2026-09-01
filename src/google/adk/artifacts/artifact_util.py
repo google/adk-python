@@ -151,8 +151,8 @@ def validate_path_segment(value: str, field_name: str) -> None:
     field_name: Human-readable name used in the error message.
 
   Raises:
-    InputValidationError: If the value contains traversal segments, null bytes,
-      is an absolute path / starts with a slash, or is drive-qualified.
+    InputValidationError: If the value contains traversal segments, null
+      bytes, path separators, or is drive-qualified.
   """
   if not value:
     raise input_validation_error.InputValidationError(
@@ -162,12 +162,9 @@ def validate_path_segment(value: str, field_name: str) -> None:
     raise input_validation_error.InputValidationError(
         f"{field_name} must not contain null bytes."
     )
-  if isinstance(value, str) and (
-      value.startswith("/") or value.startswith("\\")
-  ):
+  if isinstance(value, str) and ("/" in value or "\\" in value):
     raise input_validation_error.InputValidationError(
-        f"{field_name} {value!r} must not be an absolute path or start with a"
-        " slash."
+        f"{field_name} {value!r} must not contain path separators."
     )
   if isinstance(value, str) and _is_drive_qualified(value):
     raise input_validation_error.InputValidationError(
