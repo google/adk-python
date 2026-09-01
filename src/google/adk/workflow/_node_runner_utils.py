@@ -85,6 +85,10 @@ async def run_node_async(
       resume_inputs = runner._extract_resume_inputs(new_message)  # pylint: disable=protected-access
       runner._validate_new_message(new_message, resume_inputs)  # pylint: disable=protected-access
 
+      # A message that joins a paused task borrows that task's invocation id so
+      # the task agent sees it, but it is still the user's next turn rather than
+      # a replay of the turn that opened the task.
+      continues_paused_task = False
       if not invocation_id and new_message:
         invocation_id = runner._resolve_invocation_id_from_fr(  # pylint: disable=protected-access
             session, new_message
@@ -94,6 +98,7 @@ async def run_node_async(
           if active_scope:
             _, inv_id = active_scope
             invocation_id = inv_id
+            continues_paused_task = True
       elif invocation_id and new_message:
         # A caller-supplied id is reconciled against the responses rather
         # than trusted: resuming under an id that does not own the call
@@ -119,11 +124,14 @@ async def run_node_async(
       ic._event_queue = asyncio.Queue()  # pylint: disable=protected-access
 
       # 2. Append user message to session and resolve node_input
+      # A message that joins a paused task only borrowed that invocation's id,
+      # so recovering its original content here would run the node on the
+      # previous turn instead of this one.
       existing_user_content = (
           runner._find_user_message_for_invocation(  # pylint: disable=protected-access
               ic.session.events, ic.invocation_id
           )
-          if (invocation_id or resume_inputs)
+          if (invocation_id or resume_inputs) and not continues_paused_task
           else None
       )
       if existing_user_content:
@@ -143,7 +151,12 @@ async def run_node_async(
       try:
         try:
           should_process_message = bool(
-              new_message and (resume_inputs or not existing_user_content)
+              new_message
+              and (
+                  resume_inputs
+                  or continues_paused_task
+                  or not existing_user_content
+              )
           )
           if should_process_message:
             modified_user_message = (

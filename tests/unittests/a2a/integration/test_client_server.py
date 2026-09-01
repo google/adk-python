@@ -38,6 +38,7 @@ from google.adk.a2a.agent.interceptors.new_integration_extension import _NEW_A2A
 from google.adk.a2a.converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
 from google.adk.a2a.executor.config import A2aAgentExecutorConfig
 from google.adk.a2a.executor.interceptors.include_artifacts_in_a2a_event import include_artifacts_in_a2a_event_interceptor
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.remote_a2a_agent import A2A_METADATA_PREFIX
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
@@ -52,6 +53,7 @@ pytestmark = pytest.mark.skipif(
     reason="integration tests use 0.3-only A2AFastAPIApplication",
 )
 
+from ... import testing_utils
 from .client import create_a2a_client
 from .client import create_client
 from .server import agent_card
@@ -614,6 +616,77 @@ async def test_user_follow_up():
   )
 
   assert last_event is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "follow_up", ["London", "book a flight"], ids=["distinct", "repeated"]
+)
+async def test_task_mode_follow_up_reaches_remote_agent(follow_up):
+  """A follow-up turn must reach a task-mode remote agent over the wire.
+
+  The coordinator delegates by calling the remote agent by name, and the
+  remote agent answers without finishing the task, so the delegation stays
+  open. The follow-up joins that open delegation and therefore reuses its
+  invocation id, which a duplicate-message guard can misread as a replay of
+  the turn that opened it. Drop the follow-up and the remote agent has nothing
+  to send at all, because in task mode it only reads session events stamped
+  with the open delegation's scope.
+
+  The follow-up that repeats the first message word for word is the case a
+  guard comparing message content would still get wrong.
+  """
+  received_requests = []
+
+  async def mock_run_async(**kwargs):
+    received_requests.append(kwargs)
+    yield Event(
+        author="FakeAgent",
+        content=types.Content(
+            parts=[types.Part(text=f"reply {len(received_requests)}")],
+            role="model",
+        ),
+    )
+
+  app = create_server_app(mock_run_async)
+  remote_agent = create_client(app, mode="task")
+
+  delegation = types.Part.from_function_call(name="remote_agent", args={})
+  coordinator = LlmAgent(
+      name="coordinator",
+      model=testing_utils.MockModel.create(responses=[delegation]),
+      sub_agents=[remote_agent],
+  )
+
+  session_service = InMemorySessionService()
+  await session_service.create_session(
+      app_name="ClientApp", user_id="test_user", session_id="test_session"
+  )
+  client_runner = Runner(
+      app_name="ClientApp",
+      agent=coordinator,
+      session_service=session_service,
+  )
+
+  replies = []
+  for text in ("book a flight", follow_up):
+    async for event in client_runner.run_async(
+        user_id="test_user",
+        session_id="test_session",
+        new_message=types.Content(parts=[types.Part(text=text)], role="user"),
+    ):
+      if event.author == remote_agent.name and event.content:
+        replies.extend(
+            part.text for part in event.content.parts or [] if part.text
+        )
+
+  assert len(received_requests) == 2, "the follow-up never reached the server"
+  assert [part.text for part in received_requests[1]["new_message"].parts] == [
+      follow_up
+  ]
+  # A remote agent left with nothing to send emits an event carrying no parts,
+  # so the second reply going missing is the symptom the user sees.
+  assert replies == ["reply 1", "reply 2"]
 
 
 @pytest.mark.asyncio
