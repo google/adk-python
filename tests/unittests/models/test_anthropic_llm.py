@@ -1080,6 +1080,38 @@ def test_content_to_message_param(
 # --- Tests for Bug #2: json.dumps for dict/list function results ---
 
 
+def test_content_to_message_param_skips_empty_text_part():
+  """An empty text part must be skipped instead of raising NotImplementedError.
+
+  ADK can emit `Part(text='')` itself, e.g. when code execution produces no
+  output, and Anthropic rejects empty text blocks.
+  """
+  content = types.Content(
+      role="user",
+      parts=[
+          types.Part(text="run it"),
+          types.Part(text=""),
+      ],
+  )
+
+  result = content_to_message_param(content)
+
+  assert result["role"] == "user"
+  assert result["content"] == [{"type": "text", "text": "run it"}]
+
+
+def test_content_to_message_param_keeps_non_text_payload_with_empty_text():
+  """A part that has other payload alongside empty text is not dropped."""
+  part = types.Part(text="")
+  part.function_call = types.FunctionCall(id="call_1", name="tool", args={})
+  content = types.Content(role="model", parts=[part])
+
+  result = content_to_message_param(content)
+
+  assert len(result["content"]) == 1
+  assert result["content"][0]["type"] == "tool_use"
+
+
 def test_part_to_message_block_dict_result_serialized_as_json():
   """Dict results should be serialized with json.dumps, not str()."""
   response_part = types.Part.from_function_response(

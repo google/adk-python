@@ -336,6 +336,16 @@ def _is_pdf_part(part: types.Part) -> bool:
   )
 
 
+def _is_empty_text_part(part: types.Part) -> bool:
+  """Returns True for parts that carry nothing but an empty text string.
+
+  ADK itself can produce such parts (e.g. code execution with no output writes
+  `Part(text='')` into the content), and Anthropic rejects empty text blocks.
+  """
+  payload = part.model_dump(exclude_none=True)
+  return payload.get("text") == "" and set(payload) <= {"text", "thought"}
+
+
 def _normalize_image_media_type(mime_type: str) -> _ImageMediaType:
   normalized = mime_type.split(";", 1)[0].strip().lower()
   if normalized not in _ANTHROPIC_IMAGE_MEDIA_TYPES:
@@ -573,6 +583,12 @@ def _content_to_message_param(
     # PDF data is not supported in Claude for assistant turns.
     if content.role != "user" and _is_pdf_part(part):
       logger.warning("PDF data is not supported in Claude for assistant turns.")
+      continue
+
+    # Anthropic rejects empty text blocks; skip them rather than failing the
+    # whole request with NotImplementedError.
+    if _is_empty_text_part(part):
+      logger.debug("Skipping empty text part for Claude request.")
       continue
 
     message_block.append(_part_to_message_block(part, sanitizer))
