@@ -454,6 +454,61 @@ async def test_generate_content_async(
 
 
 @pytest.mark.asyncio
+async def test_generate_content_async_strips_model_function_call_ids(
+    gemini_llm, generate_content_response
+):
+  """generateContent omits model-supplied function ids."""
+  function_call_id = "call_240342"
+  llm_request = LlmRequest(
+      model="gemini-2.5-flash",
+      contents=[
+          Content(
+              role="model",
+              parts=[
+                  Part(
+                      function_call=types.FunctionCall(
+                          id=function_call_id,
+                          name="test_tool",
+                          args={"x": 1},
+                      )
+                  )
+              ],
+          ),
+          Content(
+              role="user",
+              parts=[
+                  Part(
+                      function_response=types.FunctionResponse(
+                          id=function_call_id,
+                          name="test_tool",
+                          response={"result": 2},
+                      )
+                  )
+              ],
+          ),
+      ],
+  )
+
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+
+    async def mock_coro():
+      return generate_content_response
+
+    mock_client.aio.models.generate_content.return_value = mock_coro()
+
+    _ = [
+        response
+        async for response in gemini_llm.generate_content_async(llm_request)
+    ]
+
+  sent_contents = mock_client.aio.models.generate_content.call_args.kwargs[
+      "contents"
+  ]
+  assert sent_contents[0].parts[0].function_call.id is None
+  assert sent_contents[1].parts[0].function_response.id is None
+
+
+@pytest.mark.asyncio
 async def test_generate_content_async_stream(gemini_llm, llm_request):
   with mock.patch.object(gemini_llm, "api_client") as mock_client:
     mock_responses = [

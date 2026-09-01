@@ -71,6 +71,16 @@ https://google.github.io/adk-docs/agents/models/google-gemini/#error-code-429-re
 """
 
 
+def _remove_function_call_ids(contents: list[types.Content]) -> None:
+  """Removes unsupported function call and response ids in place."""
+  for content in contents:
+    for part in content.parts or []:
+      if part.function_call and part.function_call.id:
+        part.function_call.id = None
+      if part.function_response and part.function_response.id:
+        part.function_response.id = None
+
+
 class _ResourceExhaustedError(ClientError):
   """Represents a resources exhausted error received from the Model."""
 
@@ -234,6 +244,9 @@ class Gemini(BaseLlm):
     model = llm_request.model
     if model is None:
       raise ValueError('Gemini requests require a model name.')
+
+    if not self.use_interactions_api:
+      _remove_function_call_ids(llm_request.contents)
 
     # Handle context caching if configured
     cache_metadata = None
