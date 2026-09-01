@@ -274,8 +274,9 @@ class VertexAiMemoryBankService(BaseMemoryService):
             ``{"generation_rule": {"idle_duration": "60s"}}``.
 
         **GenerateMemories keys** (used when any of these are present):
-          ttl: Time-to-live for generated memories, e.g. ``"6000s"``.
-          revision_ttl: Time-to-live for memory revisions.
+          ttl: Alias for ``revision_ttl``, the only TTL ``memories.generate``
+            accepts. Ignored when ``revision_ttl`` is also set.
+          revision_ttl: Time-to-live for memory revisions, e.g. ``"6000s"``.
           metadata: A mapping of custom metadata key-value pairs.
           wait_for_completion: Whether to wait for generation to complete.
           disable_consolidation: Disable memory consolidation.
