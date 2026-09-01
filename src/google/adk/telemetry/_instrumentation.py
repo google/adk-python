@@ -161,9 +161,7 @@ class _SkillTelemetryCommon:
   which is what turns it into attributes on the skill related spans.
 
   Attributes:
-    skill_name: The name of the skill as the model wrote it, confirmed only once
-      :func:`confirm_skill` has a loaded skill to back it. See
-      :mod:`._hallucination`.
+    skill_name: The name of the skill, possibly hallucinated.
     skill: The loaded skill, or None if the load did not produce one (unknown
       skill name, registry failure). Nothing is recorded in that case; the
       failure itself is already reported as the span's ``error.type``.
@@ -171,20 +169,6 @@ class _SkillTelemetryCommon:
 
   skill_name: _hallucination.MaybeHallucinated[str]
   skill: Skill | None = dataclasses.field(default=None, init=False)
-
-  def confirm_skill(self, skill: Skill) -> None:
-    """Records the skill the name resolved to.
-
-    Loading the skill is what proves the name real, so the two are set together
-    rather than left for a caller to keep in step.
-
-    Args:
-      skill: The skill that ``skill_name`` named.
-    """
-    self.skill = skill
-    self.skill_name = _hallucination.ConfirmedNotHallucinated(
-        self.skill_name.maybe_hallucinated_value
-    )
 
 
 @dataclasses.dataclass
@@ -209,17 +193,11 @@ class SkillResourceLoadTelemetry(_SkillTelemetryCommon):
   See :class:`_SkillTelemetryCommon`, for more information.
 
   Attributes:
-    resource_path: Path of resource being loaded from skill, confirmed only once
-      :func:`confirm_resource_path` reports the resource was found.
+    resource_path: Path of resource being loaded from skill, possibly
+      hallucinated.
   """
 
   resource_path: _hallucination.MaybeHallucinated[str]
-
-  def confirm_resource_path(self) -> None:
-    """Marks the path as one the skill turned out to hold a resource at."""
-    self.resource_path = _hallucination.ConfirmedNotHallucinated(
-        self.resource_path.maybe_hallucinated_value
-    )
 
 
 @dataclasses.dataclass
@@ -230,18 +208,11 @@ class SkillScriptExecutionTelemetry(_SkillTelemetryCommon):
 
   Attributes:
     script_exit_code: The exit code of the skill script.
-    script_path: The path of the skill script, confirmed only once
-      :func:`confirm_script_path` reports the script was found.
+    script_path: The path of the skill script, possibly hallucinated.
   """
 
   script_path: _hallucination.MaybeHallucinated[str]
   script_exit_code: int | None = dataclasses.field(default=None, init=False)
-
-  def confirm_script_path(self) -> None:
-    """Marks the path as one the skill turned out to hold a script at."""
-    self.script_path = _hallucination.ConfirmedNotHallucinated(
-        self.script_path.maybe_hallucinated_value
-    )
 
 
 SkillTelemetry = (
@@ -428,34 +399,36 @@ def _active_tool_execution_tel_ctx() -> TelemetryContext | None:
   return value if isinstance(value, TelemetryContext) else None
 
 
-def track_skill_load(skill_name: str) -> SkillLoadTelemetry:
+def track_skill_load(
+    skill_name: _hallucination.MaybeHallucinated[str],
+) -> SkillLoadTelemetry:
   """Creates a SkillLoadTelemetry for the given skill name, and attaches it to the enclosing tool execution span."""
-  skill_telemetry = SkillLoadTelemetry(
-      skill_name=_hallucination.MaybeHallucinated(skill_name)
-  )
+  skill_telemetry = SkillLoadTelemetry(skill_name)
   attach_skill_telemetry(skill_telemetry)
   return skill_telemetry
 
 
 def track_skill_resource_load(
-    skill_name: str, resource_path: str
+    skill_name: _hallucination.MaybeHallucinated[str],
+    resource_path: _hallucination.MaybeHallucinated[str],
 ) -> SkillResourceLoadTelemetry:
   """Creates a SkillResourceLoadTelemetry for the given skill name and resource path, and attaches it to the enclosing tool execution span."""
   skill_telemetry = SkillResourceLoadTelemetry(
-      skill_name=_hallucination.MaybeHallucinated(skill_name),
-      resource_path=_hallucination.MaybeHallucinated(resource_path),
+      skill_name,
+      resource_path,
   )
   attach_skill_telemetry(skill_telemetry)
   return skill_telemetry
 
 
 def track_skill_script_execution(
-    skill_name: str, script_path: str
+    skill_name: _hallucination.MaybeHallucinated[str],
+    script_path: _hallucination.MaybeHallucinated[str],
 ) -> SkillScriptExecutionTelemetry:
   """Creates a SkillScriptExecutionTelemetry for the given skill name and script path, and attaches it to the enclosing tool execution span."""
   skill_telemetry = SkillScriptExecutionTelemetry(
-      skill_name=_hallucination.MaybeHallucinated(skill_name),
-      script_path=_hallucination.MaybeHallucinated(script_path),
+      skill_name,
+      script_path,
   )
   attach_skill_telemetry(skill_telemetry)
   return skill_telemetry

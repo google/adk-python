@@ -141,8 +141,13 @@ async def test_record_skill_load_reaches_the_enclosing_tool_execution():
       function_args={},
       invocation_context=mock.MagicMock(),
   ) as tel_ctx:
-    skill_telemetry = _instrumentation.track_skill_load("sample_skill")
-    skill_telemetry.confirm_skill(mock.MagicMock())
+    skill_telemetry = _instrumentation.track_skill_load(
+        _hallucination.MaybeHallucinated("sample_skill")
+    )
+    skill_telemetry.skill = mock.MagicMock()
+    skill_telemetry.skill_name = _hallucination.ConfirmedNotHallucinated(
+        skill_telemetry.skill_name.maybe_hallucinated_value
+    )
 
   assert isinstance(
       tel_ctx.skill_telemetry, _instrumentation.SkillLoadTelemetry
@@ -165,9 +170,15 @@ async def test_record_skill_resource_load_reaches_the_enclosing_tool_execution()
       invocation_context=mock.MagicMock(),
   ) as tel_ctx:
     skill_telemetry = _instrumentation.track_skill_resource_load(
-        "sample_skill", "sample_path"
+        _hallucination.MaybeHallucinated("sample_skill"),
+        _hallucination.MaybeHallucinated("sample_path"),
     )
-    skill_telemetry.confirm_resource_path()
+    skill_telemetry.skill_name = _hallucination.ConfirmedNotHallucinated(
+        skill_telemetry.skill_name.maybe_hallucinated_value
+    )
+    skill_telemetry.resource_path = _hallucination.ConfirmedNotHallucinated(
+        skill_telemetry.resource_path.maybe_hallucinated_value
+    )
 
   assert isinstance(
       tel_ctx.skill_telemetry, _instrumentation.SkillResourceLoadTelemetry
@@ -190,7 +201,8 @@ async def test_record_skill_script_execution_reaches_the_enclosing_tool_executio
       invocation_context=mock.MagicMock(),
   ) as tel_ctx:
     skill_telemetry = _instrumentation.track_skill_script_execution(
-        "sample_skill", "scripts/sample.py"
+        _hallucination.MaybeHallucinated("sample_skill"),
+        _hallucination.MaybeHallucinated("scripts/sample.py"),
     )
     # The exit code is only known once the script has run, so the tool keeps
     # the object the tracker handed it and fills this in afterwards.
@@ -204,7 +216,9 @@ async def test_record_skill_script_execution_reaches_the_enclosing_tool_executio
 
 def test_record_skill_load_outside_tool_execution_is_a_noop():
   """Callers never depend on a tool execution (and thus a span) being open."""
-  _instrumentation.track_skill_load("sample_skill")
+  _instrumentation.track_skill_load(
+      _hallucination.MaybeHallucinated("sample_skill")
+  )
 
   assert _instrumentation._active_tool_execution_tel_ctx() is None
 
@@ -212,7 +226,8 @@ def test_record_skill_load_outside_tool_execution_is_a_noop():
 def test_record_skill_script_execution_outside_tool_execution_is_a_noop():
   """The tool still gets an object to record the exit code on."""
   skill_telemetry = _instrumentation.track_skill_script_execution(
-      "sample_skill", "scripts/sample.py"
+      _hallucination.MaybeHallucinated("sample_skill"),
+      _hallucination.MaybeHallucinated("scripts/sample.py"),
   )
 
   assert _instrumentation._active_tool_execution_tel_ctx() is None
@@ -658,10 +673,10 @@ async def test_skill_script_execution_stamps_the_span_and_counts_the_run(
       _script_tool(), agent, {}, ctx
   ):
     skill_telemetry = _instrumentation.track_skill_script_execution(
-        "sample_skill", "scripts/sample.py"
+        _hallucination.ConfirmedNotHallucinated("sample_skill"),
+        _hallucination.ConfirmedNotHallucinated("scripts/sample.py"),
     )
-    skill_telemetry.confirm_skill(_loaded_skill())
-    skill_telemetry.confirm_script_path()
+    skill_telemetry.skill = _loaded_skill()
     skill_telemetry.script_exit_code = 0
 
   span = telemetry.only_span()
@@ -702,10 +717,10 @@ async def test_skill_script_failure_fails_the_span_and_flags_the_count(
       _script_tool(), agent, {}, ctx
   ):
     skill_telemetry = _instrumentation.track_skill_script_execution(
-        "sample_skill", "scripts/sample.py"
+        _hallucination.ConfirmedNotHallucinated("sample_skill"),
+        _hallucination.ConfirmedNotHallucinated("scripts/sample.py"),
     )
-    skill_telemetry.confirm_skill(_loaded_skill())
-    skill_telemetry.confirm_script_path()
+    skill_telemetry.skill = _loaded_skill()
     skill_telemetry.script_exit_code = 3
 
   span = telemetry.only_span()
@@ -746,7 +761,8 @@ async def test_skill_script_execution_that_never_ran_reports_no_exit_code(
       _script_tool(), agent, {}, ctx
   ):
     _instrumentation.track_skill_script_execution(
-        "sample_skill", "scripts/sample.py"
+        _hallucination.MaybeHallucinated("sample_skill"),
+        _hallucination.MaybeHallucinated("scripts/sample.py"),
     )
 
   span = telemetry.only_span()
@@ -779,7 +795,8 @@ async def test_skill_script_execution_is_silent_without_the_experimental_opt_in(
       _script_tool(), agent, {}, ctx
   ):
     skill_telemetry = _instrumentation.track_skill_script_execution(
-        "sample_skill", "scripts/sample.py"
+        _hallucination.ConfirmedNotHallucinated("sample_skill"),
+        _hallucination.ConfirmedNotHallucinated("scripts/sample.py"),
     )
     skill_telemetry.script_exit_code = 3
 

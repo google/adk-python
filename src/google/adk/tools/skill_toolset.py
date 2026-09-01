@@ -40,6 +40,7 @@ from ..code_executors.code_execution_utils import CodeExecutionInput
 from ..skills import models
 from ..skills import prompt
 from ..skills import SkillRegistry
+from ..telemetry import _hallucination
 from ..telemetry import _instrumentation
 from ..utils import instructions_utils
 from .base_tool import BaseTool
@@ -297,7 +298,9 @@ class LoadSkillTool(BaseTool):
           "error_code": "INVALID_ARGUMENTS",
       }
 
-    skill_telemetry = _instrumentation.track_skill_load(skill_name)
+    skill_telemetry = _instrumentation.track_skill_load(
+        _hallucination.MaybeHallucinated(skill_name)
+    )
 
     try:
       skill = await self._toolset._get_or_fetch_skill(
@@ -315,7 +318,11 @@ class LoadSkillTool(BaseTool):
           "error_code": "SKILL_NOT_FOUND",
       }
 
-    skill_telemetry.confirm_skill(skill)
+    skill_telemetry.skill = skill
+    # If we loaded a skill, it's not hallucinated, so we can confirm it.
+    skill_telemetry.skill_name = _hallucination.ConfirmedNotHallucinated(
+        skill.name
+    )
 
     # Record skill activation in agent state for tool resolution.
     agent_name = tool_context.agent_name
@@ -402,7 +409,8 @@ class LoadSkillResourceTool(BaseTool):
       }
 
     skill_telemetry = _instrumentation.track_skill_resource_load(
-        skill_name, file_path
+        _hallucination.MaybeHallucinated(skill_name),
+        _hallucination.MaybeHallucinated(file_path),
     )
 
     try:
@@ -421,7 +429,11 @@ class LoadSkillResourceTool(BaseTool):
           "error_code": "SKILL_NOT_FOUND",
       }
 
-    skill_telemetry.confirm_skill(skill)
+    skill_telemetry.skill = skill
+    # If we loaded a skill, it's not hallucinated, so we can confirm it.
+    skill_telemetry.skill_name = _hallucination.ConfirmedNotHallucinated(
+        skill.name
+    )
 
     content = None
     if file_path.startswith("references/"):
@@ -466,7 +478,11 @@ class LoadSkillResourceTool(BaseTool):
           "error_code": "RESOURCE_NOT_FOUND",
       }
 
-    skill_telemetry.confirm_resource_path()
+    if content is not None:
+      # If we found the resource, it's not hallucinated, so we can confirm it.
+      skill_telemetry.resource_path = _hallucination.ConfirmedNotHallucinated(
+          file_path
+      )
 
     if isinstance(content, bytes):
       return {
@@ -1011,7 +1027,8 @@ class RunSkillScriptTool(BaseTool):
       }
 
     skill_telemetry = _instrumentation.track_skill_script_execution(
-        skill_name=skill_name, script_path=file_path
+        _hallucination.MaybeHallucinated(skill_name),
+        _hallucination.MaybeHallucinated(file_path),
     )
 
     env = self._toolset._env
@@ -1069,7 +1086,11 @@ class RunSkillScriptTool(BaseTool):
           "error_code": "SKILL_NOT_FOUND",
       }
 
-    skill_telemetry.confirm_skill(skill)
+    skill_telemetry.skill = skill
+    # If we loaded the skill, it's not hallucinated, so we can confirm it.
+    skill_telemetry.skill_name = _hallucination.ConfirmedNotHallucinated(
+        skill.name
+    )
 
     if file_path.startswith("scripts/"):
       script = skill.resources.get_script(file_path[len("scripts/") :])
@@ -1101,7 +1122,11 @@ class RunSkillScriptTool(BaseTool):
           "error_code": "SCRIPT_NOT_FOUND",
       }
 
-    skill_telemetry.confirm_script_path()
+    if script is not None:
+      # If we found the script, we can mark the path as not hallucinated.
+      skill_telemetry.script_path = _hallucination.ConfirmedNotHallucinated(
+          file_path
+      )
 
     if env is not None:
       try:
