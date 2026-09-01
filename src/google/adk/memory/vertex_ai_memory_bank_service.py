@@ -579,6 +579,9 @@ class VertexAiMemoryBankService(BaseMemoryService):
                       role='user',
                   ),
                   timestamp=update_time.isoformat() if update_time else None,
+                  custom_metadata=_from_vertex_metadata(
+                      getattr(memory, 'metadata', None)
+                  ),
               )
           )
         except AttributeError:
@@ -706,7 +709,7 @@ def _build_generate_memories_config(
         )
         continue
       if isinstance(value, Mapping):
-        config['metadata'] = _build_vertex_metadata(value)
+        config['metadata'] = _to_vertex_metadata(value)
       else:
         logger.warning(
             'Ignoring metadata because custom_metadata["metadata"] is not a'
@@ -733,12 +736,12 @@ def _build_generate_memories_config(
 
   existing_metadata = config.get('metadata')
   if existing_metadata is None:
-    config['metadata'] = _build_vertex_metadata(metadata_by_key)
+    config['metadata'] = _to_vertex_metadata(metadata_by_key)
     return config
 
   if isinstance(existing_metadata, Mapping):
     merged_metadata = dict(existing_metadata)
-    merged_metadata.update(_build_vertex_metadata(metadata_by_key))
+    merged_metadata.update(_to_vertex_metadata(metadata_by_key))
     config['metadata'] = merged_metadata
     return config
 
@@ -780,7 +783,7 @@ def _build_create_memory_config(
         )
         continue
       if isinstance(value, Mapping):
-        config['metadata'] = _build_vertex_metadata(value)
+        config['metadata'] = _to_vertex_metadata(value)
       else:
         logger.warning(
             'Ignoring metadata because custom_metadata["metadata"] is not a'
@@ -814,10 +817,10 @@ def _build_create_memory_config(
     else:
       existing_metadata = config.get('metadata')
       if existing_metadata is None:
-        config['metadata'] = _build_vertex_metadata(metadata_by_key)
+        config['metadata'] = _to_vertex_metadata(metadata_by_key)
       elif isinstance(existing_metadata, Mapping):
         merged_metadata = dict(existing_metadata)
-        merged_metadata.update(_build_vertex_metadata(metadata_by_key))
+        merged_metadata.update(_to_vertex_metadata(metadata_by_key))
         config['metadata'] = merged_metadata
       else:
         logger.warning(
@@ -991,17 +994,25 @@ def _iter_memory_batches(memories: Sequence[str]) -> Sequence[Sequence[str]]:
   return memory_batches
 
 
-def _build_vertex_metadata(
-    metadata_by_key: Mapping[str, object],
+_VERTEX_METADATA_KEYS = (
+    'bool_value',
+    'double_value',
+    'string_value',
+    'timestamp_value',
+)
+
+
+def _to_vertex_metadata(
+    metadata_by_key: Mapping[str, object] | None,
 ) -> dict[str, object]:
   """Converts metadata values to Vertex MemoryMetadataValue objects."""
-  vertex_metadata: dict[str, object] = {}
-  for key, value in metadata_by_key.items():
-    converted_value = _to_vertex_metadata_value(key, value)
-    if converted_value is None:
-      continue
-    vertex_metadata[key] = converted_value
-  return vertex_metadata
+  if not metadata_by_key:
+    return {}
+  return {
+      key: converted_value
+      for key, value in metadata_by_key.items()
+      if (converted_value := _to_vertex_metadata_value(key, value)) is not None
+  }
 
 
 def _to_vertex_metadata_value(
@@ -1018,12 +1029,7 @@ def _to_vertex_metadata_value(
   if isinstance(value, datetime.datetime):
     return {'timestamp_value': value}
   if isinstance(value, Mapping):
-    if value.keys() <= {
-        'bool_value',
-        'double_value',
-        'string_value',
-        'timestamp_value',
-    }:
+    if value.keys() <= set(_VERTEX_METADATA_KEYS):
       return dict(value)
     return {'string_value': str(dict(value))}
   if value is None:
@@ -1033,3 +1039,28 @@ def _to_vertex_metadata_value(
     )
     return None
   return {'string_value': str(value)}
+
+
+def _from_vertex_metadata(
+    vertex_metadata: Mapping[str, object] | None,
+) -> dict[str, object]:
+  """Converts Vertex MemoryMetadataValue objects back to plain Python values."""
+  if not vertex_metadata:
+    return {}
+  return {
+      key: _from_vertex_metadata_value(value)
+      for key, value in vertex_metadata.items()
+  }
+
+
+def _from_vertex_metadata_value(value: object) -> object:
+  """Converts one Vertex MemoryMetadataValue back to a plain Python value."""
+  getter = (
+      value.get
+      if isinstance(value, Mapping)
+      else lambda k: getattr(value, k, None)
+  )
+  for key in _VERTEX_METADATA_KEYS:
+    if (val := getter(key)) is not None:
+      return val
+  return value
