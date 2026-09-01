@@ -1072,3 +1072,61 @@ async def test_node_tool_primitive_input_schema(request: pytest.FixtureRequest):
   assert func_response_events[0].content.parts[
       0
   ].function_response.response == {'result': 'Echo: hello_world'}
+
+
+@pytest.mark.parametrize('has_context', [False, True])
+@pytest.mark.asyncio
+async def test_node_tool_wraps_zero_argument_function(
+    request: pytest.FixtureRequest,
+    has_context: bool,
+):
+  """NodeTool supports FunctionNode taking no arguments or only context."""
+
+  if has_context:
+
+    @node
+    def get_constant(ctx: Context) -> str:
+      """Returns a constant value."""
+      return 'constant_val'
+
+  else:
+
+    @node
+    def get_constant() -> str:
+      """Returns a constant value."""
+      return 'constant_val'
+
+  tool = NodeTool(node=get_constant)
+  decl = tool._get_declaration()
+  assert decl.name == 'get_constant'
+  assert decl.parameters_json_schema is None
+
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='get_constant',
+                  args={},
+              ),
+              types.Part.from_text(text='Finished.'),
+          ]
+      ),
+      tools=[get_constant],
+  )
+  app = App(
+      name=f'{request.function.__name__}_{has_context}',
+      root_agent=parent_agent,
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+  events = await runner.run_async(testing_utils.get_user_content('Run'))
+
+  func_response_events = [
+      e
+      for e in events
+      if e.content and e.content.parts and e.content.parts[0].function_response
+  ]
+  assert len(func_response_events) == 1
+  assert func_response_events[0].content.parts[
+      0
+  ].function_response.response == {'result': 'constant_val'}

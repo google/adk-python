@@ -12,9 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import atexit
+import gc
 import json
 from unittest import mock
 from unittest.mock import AsyncMock
+import weakref
 
 from google.adk.models.apigee_llm import ChatCompletionsResponseHandler
 from google.adk.models.apigee_llm import CompletionsHTTPClient
@@ -829,3 +832,93 @@ def test_process_chunk_with_refusal_streaming():
       final_response.content.parts[0].text
       == 'Hello\n[[REFUSAL]]: I refuse to answer'
   )
+
+
+def test_client_creation_registers_atexit_cleanup():
+  local_client = CompletionsHTTPClient(base_url='https://localhost')
+  with mock.patch(
+      'google.adk.models.apigee_llm.atexit.register'
+  ) as mock_register:
+    _ = local_client._client
+    mock_register.assert_called_once_with(local_client._atexit_callback)
+
+
+def test_close_unregisters_atexit_cleanup():
+  local_client = CompletionsHTTPClient(base_url='https://localhost')
+  _ = local_client._client
+  callback = local_client._atexit_callback
+  with mock.patch(
+      'google.adk.models.apigee_llm.atexit.unregister'
+  ) as mock_unregister:
+    local_client.close()
+    mock_unregister.assert_called_once_with(callback)
+
+
+@pytest.mark.asyncio
+async def test_aclose_unregisters_atexit_cleanup():
+  local_client = CompletionsHTTPClient(base_url='https://localhost')
+  _ = local_client._client
+  callback = local_client._atexit_callback
+  with mock.patch(
+      'google.adk.models.apigee_llm.atexit.unregister'
+  ) as mock_unregister:
+    await local_client.aclose()
+    mock_unregister.assert_called_once_with(callback)
+  assert local_client._client.is_closed
+
+
+def test_close_without_client_does_not_touch_atexit():
+  local_client = CompletionsHTTPClient(base_url='https://localhost')
+  with mock.patch(
+      'google.adk.models.apigee_llm.atexit.unregister'
+  ) as mock_unregister:
+    local_client.close()
+    mock_unregister.assert_not_called()
+
+
+def test_atexit_registration_does_not_pin_client():
+  # The atexit handler is registered against a weakref.proxy, so the registry
+  # must not keep the underlying httpx client alive after it is closed and its
+  # owner is dropped. Regression test for the leaked AsyncClient / connection
+  # pool that grew unbounded in long-running deployments.
+  local_client = CompletionsHTTPClient(base_url='https://localhost')
+  httpx_client = local_client._client
+  client_ref = weakref.ref(httpx_client)
+
+  local_client.close()
+  del httpx_client
+  del local_client
+  gc.collect()
+
+  assert client_ref() is None
+
+
+def test_cleanup_client_tolerates_dead_weakref_proxy():
+  local_client = CompletionsHTTPClient(base_url='https://localhost')
+  httpx_client = local_client._client
+  proxy = weakref.proxy(httpx_client)
+  del httpx_client
+  del local_client
+  gc.collect()
+
+  # The proxy now points at a collected object; cleanup must not raise.
+  CompletionsHTTPClient._cleanup_client(proxy)
+
+
+@pytest.mark.asyncio
+async def test_cleanup_client_retains_pending_task():
+  from google.adk.models import apigee_llm
+
+  local_client = CompletionsHTTPClient(base_url='https://localhost')
+  httpx_client = local_client._client
+
+  apigee_llm._CLEANUP_TASKS.clear()
+  CompletionsHTTPClient._cleanup_client(httpx_client)
+
+  # While the aclose() task is pending it must be held in the module-level set
+  # so it is not garbage collected before it completes.
+  assert len(apigee_llm._CLEANUP_TASKS) == 1
+  task = next(iter(apigee_llm._CLEANUP_TASKS))
+  await task
+  assert apigee_llm._CLEANUP_TASKS == set()
+  assert httpx_client.is_closed

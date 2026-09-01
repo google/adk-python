@@ -460,6 +460,16 @@ def test_get_declaration_with_json_schema_feature_enabled():
 
 
 @pytest.mark.asyncio
+async def test_load_artifacts_rejects_non_string_artifact_names():
+  result = await load_artifacts_tool.run_async(
+      args={'artifact_names': ['valid.txt', 123]},
+      tool_context=_StubToolContext({}),
+  )
+
+  assert result['error_code'] == 'INVALID_ARGUMENTS'
+
+
+@pytest.mark.asyncio
 async def test_load_artifacts_registers_dynamic_instructions():
   """load_artifacts registers instructions in llm_request._dynamic_instructions."""
   tool_context = _StubToolContext(

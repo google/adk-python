@@ -23,6 +23,7 @@ from typing_extensions import override
 
 from ..artifacts.base_artifact_service import ArtifactVersion
 from ..artifacts.base_artifact_service import BaseArtifactService
+from ..artifacts.base_artifact_service import ensure_part
 
 if TYPE_CHECKING:
   from .tool_context import ToolContext
@@ -42,13 +43,13 @@ class ForwardingArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      artifact: types.Part,
+      artifact: types.Part | dict[str, Any],
       session_id: Optional[str] = None,
       custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
     return await self.tool_context.save_artifact(
         filename=filename,
-        artifact=artifact,
+        artifact=ensure_part(artifact),
         custom_metadata=custom_metadata,
     )
 

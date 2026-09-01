@@ -82,6 +82,7 @@ from ..auth.auth_credential import AuthCredential
 from ..auth.auth_schemes import AuthScheme
 from ..auth.auth_tool import AuthConfig
 from ..events.event import Event
+from ..flows.llm_flows._fencing import quote_untrusted
 from ..flows.llm_flows.contents import _is_other_agent_reply
 from ..flows.llm_flows.contents import _present_other_agent_message
 from ..flows.llm_flows.functions import find_matching_function_call
@@ -150,6 +151,13 @@ _CREDENTIAL_PAYLOAD_KEYS = frozenset({
 # producer in flows.llm_flows.functions emits the camelCase form.
 _AUTH_CONFIG_ARG_KEYS = ("authConfig", "auth_config")
 
+# A card description fetched over the network is peer-controlled text that a
+# parent agent puts in its own instruction, so it is capped before being fenced.
+_MAX_CARD_DESCRIPTION_CHARS = 1024
+# Marks a capped description as incomplete, so neither the model nor a reader
+# takes the cut-off text for the whole description.
+_CARD_DESCRIPTION_TRUNCATION_SUFFIX = "... [truncated]"
+
 
 def _payload_is_auth_config(payload: Any) -> bool:
   """Whether a payload looks like a serialized AuthConfig (fail closed)."""
@@ -193,41 +201,74 @@ def _is_credential_function_call(
   )
 
 
-def _without_credential_function_calls(event: Event) -> Event:
-  """Returns ``event`` with any credential-bearing function_call removed.
+def _is_credential_part(part: genai_types.Part) -> bool:
+  """Whether a part carries credential material (fail closed).
+
+  Both directions count: the request call carries the serialized AuthConfig in
+  its args, and the matching response carries the exchanged credential.
+  """
+  if part.function_response is not None:
+    return _is_credential_function_response(part.function_response)
+  if part.function_call is not None:
+    return _is_credential_function_call(part.function_call)
+  return False
+
+
+def _without_credential_parts(event: Event) -> Event:
+  """Returns ``event`` with every credential-bearing part removed.
 
   An `adk_request_credential` call carries a serialized `AuthConfig` in its
   arguments, including `raw_auth_credential` (an OAuth2 client secret or a
-  service account key). A flow appends that event to the session when it asks
-  the client for a credential, so it is in the history that the next request is
-  rebuilt from and would otherwise be sent to the remote peer.
+  service account key), and the matching response carries the credential that
+  was exchanged for it. A flow appends both to the session, so they are in the
+  history that the next request is rebuilt from.
+
+  Filtering the event rather than the parts that come out of it matters because
+  another agent's turn is flattened into quoted text before it is forwarded: by
+  then the credential is a string like any other, and dropping it afterwards is
+  no longer possible.
 
   Args:
     event: The session event to scrub.
 
   Returns:
-    The event unchanged when it holds no credential call, or a copy without
+    The event unchanged when it holds no credential part, or a copy without
     those parts.
   """
-  if not event.content or not event.content.parts:
+  if event.content is None or not event.content.parts:
     return event
-  if not any(
-      part.function_call is not None
-      and _is_credential_function_call(part.function_call)
-      for part in event.content.parts
-  ):
+  if not any(_is_credential_part(part) for part in event.content.parts):
     return event
-
-  scrubbed = event.model_copy(deep=True)
-  content = scrubbed.content
-  assert content is not None
-  content.parts = [
-      part
-      for part in content.parts or []
-      if part.function_call is None
-      or not _is_credential_function_call(part.function_call)
+  new_event = event.model_copy(deep=True)
+  # ``event.content`` is non-None (checked above) and ``model_copy`` preserves
+  # it; bind a local so the checker keeps it narrowed after ``.parts`` is set.
+  new_content = new_event.content
+  assert new_content is not None
+  new_content.parts = [
+      part for part in new_content.parts or [] if not _is_credential_part(part)
   ]
-  return scrubbed
+  return new_event
+
+
+def _adopted_card_description(
+    description: str, agent_card_source: Optional[str]
+) -> str:
+  """Returns the description to adopt from a resolved agent card.
+
+  A parent agent interpolates a transfer target's description straight into its
+  own instruction, so a description that arrived over the network is capped and
+  fenced as quoted peer content -- the same treatment the peer's message text
+  already gets. A card read from a local file is the caller's own text and is
+  adopted unchanged.
+  """
+  if not agent_card_source or not agent_card_source.startswith(
+      ("http://", "https://")
+  ):
+    return description
+  capped = description[:_MAX_CARD_DESCRIPTION_CHARS]
+  if len(capped) < len(description):
+    capped += _CARD_DESCRIPTION_TRUNCATION_SUFFIX
+  return quote_untrusted(capped)
 
 
 def _render_user_function_response(
@@ -1002,7 +1043,9 @@ class RemoteA2aAgent(BaseAgent):
 
         # Update description if empty
         if not self.description and agent_card.description:
-          self.description = agent_card.description
+          self.description = _adopted_card_description(
+              agent_card.description, self._agent_card_source
+          )
 
       # Initialize A2A client
       if not self._a2a_client:
@@ -1177,23 +1220,26 @@ class RemoteA2aAgent(BaseAgent):
           " session history. Workflow path scopes are not supported."
       )
 
-    # Collect all FC IDs emitted by this remote agent in the task scope.
+    # Collect all FC IDs emitted by this remote agent (in the task scope, when
+    # there is one). A function response answering one of these resumes a call
+    # the peer itself made; anything else is history that belongs to someone
+    # else's call.
     remote_fc_ids = set()
-    if self.mode == "task":
-      for event in ctx.session.events:
-        if (
-            not task_scope or event.isolation_scope == task_scope
-        ) and event.author == self.name:
-          calls = event.get_function_calls()
-          for fc in calls:
-            if fc.id is not None:
-              remote_fc_ids.add(fc.id)
+    for event in ctx.session.events:
+      if (
+          not task_scope or event.isolation_scope == task_scope
+      ) and event.author == self.name:
+        calls = event.get_function_calls()
+        for fc in calls:
+          if fc.id is not None:
+            remote_fc_ids.add(fc.id)
 
     for event in reversed(events_to_process):
       # Drop credential material before anything else looks at the event.
-      # `_present_other_agent_message` renders a function_call as text with its
-      # arguments inlined, so scrubbing after it would be too late.
-      scrubbed_event = _without_credential_function_calls(event)
+      # `_present_other_agent_message` renders a function_call and a
+      # function_response as text with their payloads inlined, so scrubbing
+      # after it would be too late.
+      scrubbed_event = _without_credential_parts(event)
       processed_event: Optional[Event] = scrubbed_event
       if _is_other_agent_reply(self.name, scrubbed_event):
         processed_event = _present_other_agent_message(scrubbed_event)
@@ -1207,17 +1253,6 @@ class RemoteA2aAgent(BaseAgent):
 
       for part in processed_event.content.parts:
         if (
-            part.function_response is not None
-            and _is_credential_function_response(part.function_response)
-        ):
-          # Never forward credential material (an AuthConfig envelope with
-          # access tokens / client secrets) to the remote peer, even when
-          # reconstructing the request from raw session history. This closes the
-          # path where a dropped credential resume falls back to here and the
-          # untouched function_response would otherwise be re-serialized.
-          continue
-
-        if (
             self.mode == "task"
             and task_scope
             and part.function_call
@@ -1230,13 +1265,14 @@ class RemoteA2aAgent(BaseAgent):
           continue
 
         if (
-            self.mode == "task"
-            and part.function_response
+            part.function_response
             and isinstance(part.function_response, genai_types.FunctionResponse)
             and part.function_response.id not in remote_fc_ids
         ):
           # Convert non-agent function response to text to prevent A2A server
-          # validation errors.
+          # validation errors. The peer has no invocation to resume for a call
+          # it never made, and the receiving runner rejects a message that
+          # carries a function response next to the text of the same history.
           text_content = (
               f"Tool {part.function_response.name} returned:"
               f" {json.dumps(part.function_response.response)}"

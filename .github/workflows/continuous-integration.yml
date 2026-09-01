@@ -33,6 +33,13 @@ on:
 permissions:
   contents: read
 
+env:
+  # Packages with no installable wheel for the runner; leaving one in fails
+  # the whole sync. Nothing these jobs import reaches them, and lancedb only
+  # arrives transitively through crewai[tools], whose 0.38.0 release shipped
+  # no Linux x86_64 wheel. Add another as a further --no-install-package.
+  SKIP_PACKAGE_FLAGS: --no-install-package lancedb
+
 jobs:
   # 1. Code format and linting (Linter)
   lint:
@@ -96,7 +103,7 @@ jobs:
           # Install dependencies for target branch
           uv venv .venv
           source .venv/bin/activate
-          uv sync --all-extras
+          uv sync --all-extras $SKIP_PACKAGE_FLAGS
 
           # Run mypy, filter for errors only, remove line numbers, and sort
           # We ignore exit code (|| true) because we expect errors on baseline
@@ -110,7 +117,7 @@ jobs:
 
           # Re-sync dependencies in case the PR changed them
           source .venv/bin/activate
-          uv sync --all-extras
+          uv sync --all-extras $SKIP_PACKAGE_FLAGS
 
           # Run mypy on PR code, apply same processing
           uv run mypy . | grep "error:" | sed 's/:\([0-9]\+\):/::/g' | sort > pr_errors.txt || true
@@ -165,7 +172,7 @@ jobs:
         run: |
           uv venv .venv
           source .venv/bin/activate
-          uv sync --extra test
+          uv sync --extra test $SKIP_PACKAGE_FLAGS
 
       - name: List installed packages
         run: uv pip list
@@ -215,7 +222,7 @@ jobs:
         run: |
           uv venv .venv
           source .venv/bin/activate
-          uv sync --extra test
+          uv sync --extra test $SKIP_PACKAGE_FLAGS
 
       - name: List installed packages (before reinstall)
         run: uv pip list

@@ -18,6 +18,7 @@ import logging
 from typing import Any
 from typing import AsyncGenerator
 
+from pydantic import ValidationError
 from typing_extensions import override
 
 from ..agents.invocation_context import InvocationContext
@@ -92,10 +93,11 @@ async def _store_auth_and_collect_resume_targets(
   """Store auth credentials and return original function call IDs to resume.
 
   Scans session events for ``adk_request_credential`` function calls whose
-  IDs are in *auth_fc_ids*, merges the ``auth_scheme`` and ``credential_key``
-  this server issued into the corresponding auth response, stores credentials
-  via ``AuthHandler``, and returns the set of original function call IDs that
-  should be re-executed (excluding toolset auth).
+  IDs are in *auth_fc_ids*, rebuilds each auth config from the request this
+  server issued and takes only the exchanged credential from the client's
+  response, stores credentials via ``AuthHandler``, and returns the set of
+  original function call IDs that should be re-executed (excluding toolset
+  auth).
 
   Args:
     events: Session events to scan.
@@ -126,8 +128,8 @@ async def _store_auth_and_collect_resume_targets(
       continue
 
   # Step 2: Store credentials. The client's response supplies the result of the
-  # user's browser round trip; the auth scheme and the credential key come from
-  # the request this server issued.
+  # user's browser round trip; the auth scheme, the raw credential and the
+  # credential key come from the request this server issued.
   authorized_keys: set[str] = set()
   for fc_id in auth_fc_ids:
     if fc_id not in auth_responses:
@@ -143,21 +145,26 @@ async def _store_auth_and_collect_resume_targets(
       )
       continue
 
-    auth_config = AuthConfig.model_validate(auth_responses[fc_id])
-    # The scheme names the token endpoint the developer's secret is posted to.
-    auth_config.auth_scheme = requested_auth_config.auth_scheme
-    if requested_auth_config.credential_key is not None:
-      auth_config.credential_key = requested_auth_config.credential_key
-    if requested_auth_config.raw_auth_credential:
-      auth_config.raw_auth_credential = _merge_credential_oauth2_fields(
-          auth_config.raw_auth_credential,
-          requested_auth_config.raw_auth_credential,
+    try:
+      client_auth_config = AuthConfig.model_validate(auth_responses[fc_id])
+    except (ValidationError, TypeError):
+      # The response is attacker-reachable, so a malformed one skips this
+      # function call instead of ending the whole invocation.
+      logger.warning(
+          "Ignoring malformed auth response for function call ID %r.", fc_id
       )
-    if requested_auth_config.exchanged_auth_credential:
-      auth_config.exchanged_auth_credential = _merge_credential_oauth2_fields(
-          auth_config.exchanged_auth_credential,
-          requested_auth_config.exchanged_auth_credential,
-      )
+      continue
+
+    # The scheme names the token endpoint the developer's secret is posted to
+    # and the raw credential names the OAuth2 client it is posted as, so both
+    # stay exactly as this server issued them. Only the outcome of the browser
+    # round trip comes from the client, backfilled from the request for the
+    # fields the client did not echo back.
+    auth_config = requested_auth_config.model_copy(deep=True)
+    auth_config.exchanged_auth_credential = _merge_credential_oauth2_fields(
+        client_auth_config.exchanged_auth_credential,
+        auth_config.exchanged_auth_credential,
+    )
     if auth_config.credential_key:
       authorized_keys.add(auth_config.credential_key)
 

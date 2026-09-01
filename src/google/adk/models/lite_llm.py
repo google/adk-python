@@ -3185,6 +3185,7 @@ class LiteLlm(BaseLlm):
       aggregated_llm_response_with_tool_call = None
       usage_metadata = None
       grounding_metadata = None
+      last_finish_reason: str | None = None
       fallback_index = 0
 
       def _finalize_tool_call_response(
@@ -3271,11 +3272,14 @@ class LiteLlm(BaseLlm):
         return llm_response
 
       def _reset_stream_buffers() -> None:
-        nonlocal reasoning_parts
+        nonlocal reasoning_parts, last_finish_reason
         text_parts.clear()
         reasoning_parts = []
         function_calls.clear()
         tool_call_trackers.clear()
+        # The reason belongs to the segment just finalized; carrying it into
+        # the next one would stamp the wrong reason on the next response.
+        last_finish_reason = None
 
       async for part in await self.llm_client.acompletion(**completion_args):
         # Grounding metadata can arrive on the first chunk (search queries) or
@@ -3284,6 +3288,8 @@ class LiteLlm(BaseLlm):
         if part_grounding:
           grounding_metadata = part_grounding
         for chunk, finish_reason in _model_response_to_chunk(part):
+          if finish_reason:
+            last_finish_reason = finish_reason
           if isinstance(chunk, FunctionChunk):
             index = chunk.index or fallback_index
             if index not in function_calls:
@@ -3375,19 +3381,42 @@ class LiteLlm(BaseLlm):
             )
             _reset_stream_buffers()
 
+      # The in-loop finalizers only fire on the reasons known to end a stream,
+      # so any other terminal reason ("content_filter" above all) reaches the
+      # end of the stream with the buffers still full. Finalize with the reason
+      # the provider actually sent rather than assuming a clean stop, so a
+      # filtered stream reports the same finish_reason and error_code that the
+      # non-streaming path reports.
       if function_calls and not aggregated_llm_response_with_tool_call:
         aggregated_llm_response_with_tool_call = _finalize_tool_call_response(
             model_version=part.model,
-            finish_reason="tool_calls",
+            finish_reason=last_finish_reason or "tool_calls",
         )
         _reset_stream_buffers()
 
       if (text_parts or reasoning_parts) and not aggregated_llm_response:
         aggregated_llm_response = _finalize_text_response(
             model_version=part.model,
-            finish_reason="stop",
+            finish_reason=last_finish_reason or "stop",
         )
         _reset_stream_buffers()
+      elif (
+          not aggregated_llm_response
+          and not aggregated_llm_response_with_tool_call
+      ):
+        # The stream ended abnormally without ever producing content (an
+        # immediate content filter, or truncation before the first token).
+        # Non-streaming reports that as an error response; without this the
+        # generator ends having yielded nothing at all, so the reason, the
+        # error and the usage are all dropped and the caller sees a silent stop.
+        trailing_finish_reason = last_finish_reason or ""
+        if trailing_finish_reason and _map_finish_reason(
+            trailing_finish_reason
+        ) not in (None, types.FinishReason.STOP):
+          aggregated_llm_response = _finalize_text_response(
+              model_version=part.model,
+              finish_reason=trailing_finish_reason,
+          )
 
       # waiting until streaming ends to yield the llm_response as litellm tends
       # to send chunk that contains usage_metadata after the chunk with

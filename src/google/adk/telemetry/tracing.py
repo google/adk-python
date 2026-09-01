@@ -690,6 +690,26 @@ def trace_call_llm(
     )
 
 
+def _without_thought_signature(part: types.Part) -> types.Part:
+  """Returns ``part`` with any thought signature removed.
+
+  A thought signature is opaque bytes that the model round-trips through the
+  conversation, so it stays in history and is replayed on every later request.
+  Serializing a part in JSON mode base64-encodes it onto a span attribute,
+  which grows with the history on each call and carries nothing a reader of
+  the trace can act on.
+
+  Args:
+    part: The part to copy.
+
+  Returns:
+    ``part`` itself when it carries no signature, otherwise a copy without one.
+  """
+  if part.thought_signature is None:
+    return part
+  return part.model_copy(update={"thought_signature": None})
+
+
 def _summarize_inline_data(content: types.Content) -> types.Content:
   """Returns ``content`` with inline binary parts reduced to a description.
 
@@ -708,7 +728,7 @@ def _summarize_inline_data(content: types.Content) -> types.Content:
   for part in content.parts or []:
     blob = part.inline_data
     if blob is None:
-      parts.append(part)
+      parts.append(_without_thought_signature(part))
       continue
     parts.append(
         types.Part(
@@ -853,7 +873,11 @@ def _build_llm_request_for_trace(llm_request: LlmRequest) -> dict[str, object]:
   }
   # We do not want to send bytes data to the trace.
   for content in llm_request.contents:
-    parts = [part for part in content.parts if not part.inline_data]
+    parts = [
+        _without_thought_signature(part)
+        for part in content.parts
+        if not part.inline_data
+    ]
     result["contents"].append(
         types.Content(role=content.role, parts=parts).model_dump(
             exclude_none=True, mode="json"
