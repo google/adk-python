@@ -20,11 +20,13 @@ from collections.abc import Sequence
 import datetime
 from functools import lru_cache
 import logging
+import re
 from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.auth.credentials import Credentials
 from google.genai import types
+from google.genai.errors import ClientError
 from typing_extensions import override
 
 from ..utils.vertex_ai_utils import get_express_mode_api_key
@@ -82,6 +84,8 @@ _INGEST_EVENTS_CONFIG_FALLBACK_KEYS = frozenset({
 })
 
 _ENABLE_CONSOLIDATION_KEY = 'enable_consolidation'
+
+_MEMORY_ID_PATTERN = re.compile(r'^[A-Za-z0-9_-]+$')
 
 
 def _should_use_generate_memories(
@@ -579,6 +583,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
                       role='user',
                   ),
                   timestamp=update_time.isoformat() if update_time else None,
+                  id=_memory_id_from_resource(memory),
               )
           )
         except AttributeError:
@@ -591,6 +596,77 @@ class VertexAiMemoryBankService(BaseMemoryService):
           len(memory_events),
       )
     return SearchMemoryResponse(memories=memory_events)
+
+  @override
+  async def delete_memory(
+      self, *, app_name: str, user_id: str, memory_id: str
+  ) -> None:
+    """Deletes one Memory Bank memory after confirming it belongs to the user.
+
+    A missing memory is a no-op. A memory that exists but belongs to a
+    different ``(app_name, user_id)`` scope raises ``ValueError``.
+    """
+    memory_resource_name = _memory_resource_name(
+        self._agent_engine_id, memory_id
+    )
+    api_client = self._get_api_client()
+    try:
+      existing = await api_client.agent_engines.memories.get(
+          name=memory_resource_name
+      )
+    except ClientError as e:
+      if e.code == 404:
+        return
+      raise
+    if not _memory_belongs_to_scope(
+        existing, app_name=app_name, user_id=user_id
+    ):
+      raise ValueError(f'Memory {memory_id} does not belong to user {user_id}.')
+
+    try:
+      await api_client.agent_engines.memories.delete(name=memory_resource_name)
+    except ClientError as e:
+      if e.code == 404:
+        return
+      raise
+
+  @override
+  async def delete_memories(self, *, app_name: str, user_id: str) -> None:
+    """Deletes every Memory Bank memory stored for the given app and user.
+
+    Lists memories for the scope, then wraps ``memories.delete`` for each.
+    """
+    api_client = self._get_api_client()
+    retrieved_memories_iterator = (
+        await api_client.agent_engines.memories.retrieve(
+            name='reasoningEngines/' + self._agent_engine_id,
+            scope={
+                'app_name': app_name,
+                'user_id': user_id,
+            },
+        )
+    )
+
+    memory_names: list[str] = []
+    try:
+      async for retrieved_memory in retrieved_memories_iterator:
+        memory = getattr(retrieved_memory, 'memory', None)
+        if memory is None:
+          continue
+        name = getattr(memory, 'name', None)
+        if isinstance(name, str) and name:
+          memory_names.append(name)
+    except Exception:
+      logger.exception('Error while listing memories to delete.')
+      raise
+
+    for memory_name in memory_names:
+      try:
+        await api_client.agent_engines.memories.delete(name=memory_name)
+      except ClientError as e:
+        if e.code == 404:
+          continue
+        raise
 
   async def retrieve_profiles(
       self,
@@ -1033,3 +1109,62 @@ def _to_vertex_metadata_value(
     )
     return None
   return {'string_value': str(value)}
+
+
+def _extract_short_memory_id(
+    memory_id: str, expected_engine_id: str | None = None
+) -> str:
+  """Extracts the short memory ID if a full resource name is provided."""
+  if '/' in memory_id:
+    parts = memory_id.split('/')
+    if len(parts) >= 2 and parts[-2] == 'memories':
+      if (
+          len(parts) >= 4
+          and parts[-4] == 'reasoningEngines'
+          and expected_engine_id
+      ):
+        passed_engine_id = parts[-3]
+        if passed_engine_id != expected_engine_id:
+          raise ValueError(
+              'Memory resource name mismatch: memory belongs to '
+              f'reasoningEngine {passed_engine_id!r}, but service is '
+              f'configured for {expected_engine_id!r}.'
+          )
+      return parts[-1]
+  return memory_id
+
+
+def _validate_memory_id(memory_id: str) -> None:
+  """Rejects memory IDs that could escape the URL path segment."""
+  if not memory_id or not _MEMORY_ID_PATTERN.fullmatch(memory_id):
+    raise ValueError(
+        f'Invalid memory_id {memory_id!r}: must match'
+        f' {_MEMORY_ID_PATTERN.pattern}.'
+    )
+
+
+def _memory_resource_name(agent_engine_id: str, memory_id: str) -> str:
+  """Returns the Memory Bank resource name for a caller-supplied id."""
+  short_id = _extract_short_memory_id(
+      memory_id, expected_engine_id=agent_engine_id
+  )
+  _validate_memory_id(short_id)
+  return f'reasoningEngines/{agent_engine_id}/memories/{short_id}'
+
+
+def _memory_id_from_resource(memory: object) -> str | None:
+  """Returns the last path component of a Memory Bank resource name."""
+  name = getattr(memory, 'name', None)
+  if not isinstance(name, str) or not name:
+    return None
+  return name.rsplit('/', 1)[-1]
+
+
+def _memory_belongs_to_scope(
+    memory: object, *, app_name: str, user_id: str
+) -> bool:
+  """Returns whether a Memory Bank memory is scoped to this app and user."""
+  scope = getattr(memory, 'scope', None)
+  if not isinstance(scope, Mapping):
+    return False
+  return scope.get('app_name') == app_name and scope.get('user_id') == user_id
