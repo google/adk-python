@@ -69,6 +69,7 @@ except ImportError as e:
 from ...models.base_llm import BaseLlm
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
+from ...utils._schema_utils import lowercase_schema_types
 from ._openai_schema import enforce_strict_openai_schema
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -209,29 +210,6 @@ def _serialize_system_instruction(
   return None
 
 
-def _update_type_string(value: object) -> None:
-  """Lowercases nested JSON schema type strings for OpenAI compatibility."""
-  if isinstance(value, list):
-    for item in value:
-      _update_type_string(item)
-    return
-
-  if not isinstance(value, dict):
-    return
-
-  schema_type = value.get('type')
-  if isinstance(schema_type, str):
-    value['type'] = schema_type.lower()
-  elif isinstance(schema_type, list):
-    value['type'] = [
-        item.lower() if isinstance(item, str) else item for item in schema_type
-    ]
-
-  for child_value in value.values():
-    if isinstance(child_value, (dict, list)):
-      _update_type_string(child_value)
-
-
 def _schema_to_dict(schema: object) -> dict[str, Any]:
   schema_dict: dict[str, Any]
   if isinstance(schema, types.Schema):
@@ -246,7 +224,7 @@ def _schema_to_dict(schema: object) -> dict[str, Any]:
     schema_dict = copy.deepcopy(dict(schema))
   else:
     schema_dict = {}
-  _update_type_string(schema_dict)
+  lowercase_schema_types(schema_dict)
   return schema_dict
 
 
@@ -507,7 +485,7 @@ def _function_declaration_to_response_tool(
 
   if function_declaration.parameters_json_schema:
     parameters = copy.deepcopy(function_declaration.parameters_json_schema)
-    _update_type_string(parameters)
+    lowercase_schema_types(parameters)
   elif function_declaration.parameters:
     parameters = _schema_to_dict(function_declaration.parameters)
   else:

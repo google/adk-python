@@ -59,6 +59,7 @@ from typing_extensions import Required
 
 from . import _prompt_cache
 from ..utils._google_client_headers import merge_tracking_headers
+from ..utils._schema_utils import lowercase_schema_types
 from ._capabilities import LlmCapabilities
 from .base_llm import BaseLlm
 from .interactions_utils import extract_system_instruction
@@ -2125,29 +2126,6 @@ TYPE_LABELS = {
 }
 
 
-def _update_type_string(value: object) -> None:
-  """Lowercases nested JSON schema type strings for OpenAI compatibility."""
-  if isinstance(value, list):
-    for item in value:
-      _update_type_string(item)
-    return
-
-  if not isinstance(value, dict):
-    return
-
-  schema_type = value.get("type")
-  if isinstance(schema_type, str):
-    value["type"] = schema_type.lower()
-  elif isinstance(schema_type, list):
-    value["type"] = [
-        item.lower() if isinstance(item, str) else item for item in schema_type
-    ]
-
-  for child_value in value.values():
-    if isinstance(child_value, (dict, list)):
-      _update_type_string(child_value)
-
-
 def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict[str, Any]:
   """Recursively converts a schema object or dict to a pure-python dict.
 
@@ -2245,7 +2223,7 @@ def _function_declaration_to_tool_param(
 
   if function_declaration.parameters_json_schema:
     parameters = copy.deepcopy(function_declaration.parameters_json_schema)
-    _update_type_string(parameters)
+    lowercase_schema_types(parameters)
   elif function_declaration.parameters:
     parameters = _schema_to_dict(function_declaration.parameters)
     if "type" not in parameters:
@@ -2695,7 +2673,7 @@ def _to_litellm_response_format(
   # OpenAI-compatible format (default) per LiteLLM docs:
   # https://docs.litellm.ai/docs/completion/json_mode
   if isinstance(schema_dict, dict):
-    _update_type_string(schema_dict)
+    lowercase_schema_types(schema_dict)
     _enforce_strict_openai_schema(schema_dict)
 
   return {

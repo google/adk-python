@@ -18,7 +18,6 @@ from unittest import mock
 
 from google.adk.labs.openai._openai_llm import _function_declaration_to_openai_tool
 from google.adk.labs.openai._openai_llm import _part_to_openai_content
-from google.adk.labs.openai._openai_llm import _update_type_string
 from google.adk.labs.openai._openai_llm import OpenAILlm
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
@@ -34,23 +33,6 @@ def test_supported_models():
   assert len(models) == 2
   assert models[0] == r"gpt-.*"
   assert models[1] == r"o\d+-.*"
-
-
-def test_update_type_string():
-  schema = {
-      "type": "OBJECT",
-      "properties": {
-          "name": {"type": "STRING"},
-          "age": {"type": "INTEGER"},
-          "tags": {"type": "ARRAY", "items": {"type": "STRING"}},
-      },
-  }
-  _update_type_string(schema)
-  assert schema["type"] == "object"
-  assert schema["properties"]["name"]["type"] == "string"
-  assert schema["properties"]["age"]["type"] == "integer"
-  assert schema["properties"]["tags"]["type"] == "array"
-  assert schema["properties"]["tags"]["items"]["type"] == "string"
 
 
 def test_function_declaration_to_openai_tool():

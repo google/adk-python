@@ -17,6 +17,7 @@
 from google.adk.utils._schema_utils import get_list_inner_type
 from google.adk.utils._schema_utils import is_basemodel_schema
 from google.adk.utils._schema_utils import is_list_of_basemodel
+from google.adk.utils._schema_utils import lowercase_schema_types
 from google.adk.utils._schema_utils import schema_to_json_schema
 from google.adk.utils._schema_utils import validate_node_data
 from google.adk.utils._schema_utils import validate_schema
@@ -285,3 +286,64 @@ class TestSchemaToJsonSchema:
     # The item schema is emitted by reference into $defs rather than inline.
     ref = result['items']['$ref'].rsplit('/', 1)[-1]
     assert result['$defs'][ref]['properties']['name']['type'] == 'string'
+
+
+class TestLowercaseSchemaTypes:
+  """Tests for lowercase_schema_types function."""
+
+  def test_properties_and_items_are_lowercased(self):
+    schema = {
+        'type': 'OBJECT',
+        'properties': {
+            'name': {'type': 'STRING'},
+            'age': {'type': 'INTEGER'},
+            'tags': {'type': 'ARRAY', 'items': {'type': 'STRING'}},
+        },
+    }
+    lowercase_schema_types(schema)
+    assert schema['type'] == 'object'
+    assert schema['properties']['name']['type'] == 'string'
+    assert schema['properties']['age']['type'] == 'integer'
+    assert schema['properties']['tags']['type'] == 'array'
+    assert schema['properties']['tags']['items']['type'] == 'string'
+
+  def test_union_branches_are_lowercased_under_either_spelling(self):
+    schema = {'anyOf': [{'type': 'STRING'}], 'any_of': [{'type': 'NUMBER'}]}
+    lowercase_schema_types(schema)
+    assert schema['anyOf'][0]['type'] == 'string'
+    assert schema['any_of'][0]['type'] == 'number'
+
+  def test_a_list_valued_type_is_lowercased_entry_by_entry(self):
+    schema = {'type': ['STRING', 'NULL']}
+    lowercase_schema_types(schema)
+    assert schema['type'] == ['string', 'null']
+
+  def test_referenced_definitions_are_lowercased(self):
+    schema = {
+        '$defs': {'Item': {'type': 'OBJECT'}},
+        'definitions': {'LegacyItem': {'type': 'STRING'}},
+    }
+    lowercase_schema_types(schema)
+    assert schema['$defs']['Item']['type'] == 'object'
+    assert schema['definitions']['LegacyItem']['type'] == 'string'
+
+  def test_a_list_of_schemas_is_accepted(self):
+    schemas = [{'type': 'STRING'}, {'type': 'BOOLEAN'}]
+    lowercase_schema_types(schemas)
+    assert [schema['type'] for schema in schemas] == ['string', 'boolean']
+
+  def test_non_schema_values_keep_their_type_key(self):
+    """A ``type`` key inside a default value is data, not a schema keyword."""
+    schema = {'type': 'OBJECT', 'default': {'type': 'NOT_A_SCHEMA'}}
+    lowercase_schema_types(schema)
+    assert schema['type'] == 'object'
+    assert schema['default']['type'] == 'NOT_A_SCHEMA'
+
+  def test_a_genai_schema_dump_is_lowercased(self):
+    schema = types.Schema(
+        type=types.Type.OBJECT,
+        properties={'name': types.Schema(type=types.Type.STRING)},
+    ).model_dump(exclude_none=True, mode='json')
+    lowercase_schema_types(schema)
+    assert schema['type'] == 'object'
+    assert schema['properties']['name']['type'] == 'string'
