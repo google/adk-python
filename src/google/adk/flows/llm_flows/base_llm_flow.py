@@ -1001,6 +1001,7 @@ class BaseLlmFlow(ABC):
       llm_request: LlmRequest,
   ) -> None:
     """Sends data to model."""
+    run_config = _require_run_config(invocation_context)
     while True:
       live_request_queue = invocation_context.live_request_queue
       assert live_request_queue is not None
@@ -1057,9 +1058,10 @@ class BaseLlmFlow(ABC):
         )
       elif live_request.blob:
         # Cache input audio chunks before flushing
-        self.audio_cache_manager.cache_audio(
-            invocation_context, live_request.blob, cache_type='input'
-        )
+        if run_config.save_live_blob:
+          self.audio_cache_manager.cache_audio(
+              invocation_context, live_request.blob, cache_type='input'
+          )
 
         await llm_connection.send_realtime(live_request.blob)
 
