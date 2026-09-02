@@ -325,8 +325,10 @@ async def receive_from_model(
   # Accumulated output transcription from the live session.
   turn_output_transcription = ''
   while True:
+    received_any = False
     async with Aclosing(llm_connection.receive()) as agen:
       async for llm_response in agen:
+        received_any = True
         if llm_response.live_session_resumption_update:
           logger.info(
               'Update session resumption handle:'
@@ -440,6 +442,13 @@ async def receive_from_model(
             yield blocked_event
             yield _ReconnectSentinel(mode=_ReconnectMode.RESTART)
             return
+
+    if not received_any:
+      # `receive()` returning without yielding means the connection is
+      # done. It is not required to raise on close, so nothing else would
+      # end this loop.
+      logger.info('Live connection produced no further responses.')
+      return
 
     # Give opportunity for other tasks to run.
     await asyncio.sleep(0)
@@ -882,9 +891,19 @@ async def run_live_flow(
             return
         break
       except (ConnectionClosed, ConnectionClosedOK) as e:
+        # A client-initiated close rules out reconnecting: the `close=True`
+        # sentinel is one-shot and already consumed, so a resumed session
+        # would have no sender and never finish. It does not make an
+        # abnormal closure benign -- that still has to reach the caller.
+        client_closed = (
+            invocation_context.live_request_queue is not None
+            and invocation_context.live_request_queue.closed
+        )
         # If we have a session resumption handle, we attempt to reconnect.
         # This handle is updated dynamically during the session.
-        if invocation_context.live_session_resumption_handle:
+        if invocation_context.live_session_resumption_handle and (
+            not client_closed
+        ):
           if attempt > base_llm_flow.DEFAULT_MAX_RECONNECT_ATTEMPTS:
             logger.error('Max reconnection attempts reached (%s).', e)
             raise
@@ -901,10 +920,20 @@ async def run_live_flow(
         logger.error('Connection closed: %s.', e)
         raise
       except errors.APIError as e:
+        # A client-initiated close rules out reconnecting: the `close=True`
+        # sentinel is one-shot and already consumed, so a resumed session
+        # would have no sender and never finish. It does not make an
+        # abnormal closure benign -- that still has to reach the caller.
+        client_closed = (
+            invocation_context.live_request_queue is not None
+            and invocation_context.live_request_queue.closed
+        )
         # Error code 1000, 1006 and 1011 indicates a recoverable connection drop.
         # In that case, we attempt to reconnect with session handle if available.
         if e.code in [1000, 1006, 1011]:
-          if invocation_context.live_session_resumption_handle:
+          if invocation_context.live_session_resumption_handle and (
+              not client_closed
+          ):
             if attempt > base_llm_flow.DEFAULT_MAX_RECONNECT_ATTEMPTS:
               logger.error('Max reconnection attempts reached (%s).', e)
               raise
