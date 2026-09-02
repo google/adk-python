@@ -18,9 +18,17 @@ from typing import Dict
 from typing import Optional
 from unittest import mock
 
+from fastapi.openapi.models import OAuth2
+from fastapi.openapi.models import OAuthFlowAuthorizationCode
+from fastapi.openapi.models import OAuthFlows
+
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
+from google.adk.auth.auth_credential import AuthCredential
+from google.adk.auth.auth_credential import OAuth2Auth
+from google.adk.auth.auth_tool import AuthConfig
+from google.adk.auth.auth_tool import AuthToolArguments
 from google.adk.errors.tool_execution_error import ToolErrorType
 from google.adk.errors.tool_execution_error import ToolExecutionError
 from google.adk.events.event import Event
@@ -236,6 +244,94 @@ async def test_trace_call_llm(monkeypatch, mock_span_fixture):
       expected_calls, any_order=True
   )
   mock_span_fixture.set_attributes.assert_called_once_with(expected_usage_attrs)
+
+
+@pytest.mark.asyncio
+async def test_trace_call_llm_redacts_oauth2_client_secret_from_contents(
+    monkeypatch, mock_span_fixture
+):
+  """The gcp.vertex.agent.llm_request span attribute must not carry a
+  credential secret embedded in an adk_request_credential function call
+  within contents.
+
+  contents accumulates conversation history across turns, and an earlier
+  turn's adk_request_credential call (see build_auth_request_event in
+  flows/llm_flows/functions.py) -- carrying the tool's full AuthCredential,
+  including client_secret -- becomes part of a later turn's llm_request
+  when it is replayed. Unlike http_options (excluded outright a few lines
+  above in _build_llm_request_for_trace, since it never has legitimate
+  debugging value), contents can't simply be excluded: the conversation is
+  the actual point of tracing an LLM request. This is a different code
+  path from /run, /run_sse, and the session-history endpoints: those
+  redact an already-built Event/Session dict; this one builds a fresh
+  dict representation of contents at trace time and must redact it before
+  it is serialized into the string this span attribute actually stores,
+  since redaction can't reach inside an opaque string afterward.
+  """
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  auth_scheme = OAuth2(
+      flows=OAuthFlows(
+          authorizationCode=OAuthFlowAuthorizationCode(
+              authorizationUrl='https://idp.example.com/oauth2/auth',
+              tokenUrl='https://idp.example.com/oauth2/token',
+              scopes={'read': 'read'},
+          )
+      )
+  )
+  credential = AuthCredential(
+      auth_type='oauth2',
+      oauth2=OAuth2Auth(
+          client_id='public-client-id',
+          client_secret='should-never-reach-the-trace',
+      ),
+  )
+  auth_config = AuthConfig(
+      auth_scheme=auth_scheme,
+      raw_auth_credential=credential,
+      credential_key='my_tool:oauth2:abcd1234',
+  )
+  # Built exactly as build_auth_request_event does, in
+  # flows/llm_flows/functions.py.
+  args = AuthToolArguments(
+      function_call_id='adk-original-fc-id', auth_config=auth_config
+  ).model_dump(mode='json', exclude_none=True, by_alias=True)
+  credential_request_content = types.Content(
+      role='user',
+      parts=[
+          types.Part(
+              function_call=types.FunctionCall(
+                  name='adk_request_credential', id='adk-req-cred-id', args=args
+              )
+          )
+      ],
+  )
+
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest(
+      model='gemini-pro',
+      contents=[
+          credential_request_content,
+          types.Content(role='user', parts=[types.Part(text='continue')]),
+      ],
+  )
+  llm_response = LlmResponse(turn_complete=True)
+
+  trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
+
+  llm_request_calls = [
+      call
+      for call in mock_span_fixture.set_attribute.call_args_list
+      if call.args[0] == 'gcp.vertex.agent.llm_request'
+  ]
+  assert len(llm_request_calls) == 1
+  serialized = llm_request_calls[0].args[1]
+  assert 'should-never-reach-the-trace' not in serialized
+  assert 'public-client-id' in serialized
+  assert 'my_tool:oauth2:abcd1234' in serialized
 
 
 @pytest.mark.asyncio

@@ -64,6 +64,7 @@ import yaml
 
 from . import agent_graph
 from ..apps.app import App
+from ..auth.auth_credential import redact_credential_secrets as _redact_credential_secrets
 from ..errors.not_found_error import NotFoundError
 from ..evaluation.base_eval_service import InferenceConfig
 from ..evaluation.base_eval_service import InferenceRequest
@@ -80,7 +81,6 @@ from ..evaluation.eval_result import EvalSetResult
 from ..evaluation.eval_set import EvalSet
 from ..utils._telemetry_config import read_telemetry_consent
 from ..utils._telemetry_config import write_telemetry_consent
-from .api_server import _redact_credential_secrets
 from .api_server import ApiServer
 
 NESTED_APP_SEPARATOR = "."

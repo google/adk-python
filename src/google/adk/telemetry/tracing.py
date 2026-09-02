@@ -71,6 +71,7 @@ from opentelemetry.util.types import AttributeValue
 from typing_extensions import deprecated
 
 from .. import version
+from ..auth.auth_credential import redact_credential_secrets
 from ..utils.env_utils import is_enterprise_mode_enabled
 from ..utils.model_name_utils import extract_model_name
 from ..utils.model_name_utils import is_gemini_model
@@ -878,11 +879,24 @@ def _build_llm_request_for_trace(llm_request: LlmRequest) -> dict[str, object]:
         for part in content.parts
         if not part.inline_data
     ]
-    result["contents"].append(
+    # Unlike http_options above, contents can't simply be excluded: the
+    # conversation is the actual point of tracing an LLM request. But the
+    # conversation can carry an adk_request_credential function call's full
+    # AuthCredential (see build_auth_request_event in
+    # flows/llm_flows/functions.py) or one parked in state and later
+    # replayed into a turn, so it needs the same redaction /run, /run_sse,
+    # and the session-history endpoints already apply -- otherwise this
+    # span attribute becomes an unredacted copy of the same secret,
+    # readable from the dev-UI debug/trace endpoints. Applied here, before
+    # the dict is serialized to the string this attribute actually stores
+    # (see safe_json_serialize above): once it's a string, it's opaque to
+    # this walker, which only descends real dicts and lists.
+    content_dict = redact_credential_secrets(
         types.Content(role=content.role, parts=parts).model_dump(
             exclude_none=True, mode="json"
         )
     )
+    result["contents"].append(content_dict)
   return result
 
 

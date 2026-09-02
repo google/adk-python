@@ -33,6 +33,9 @@ from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
+from google.adk.auth.auth_credential import AuthCredential
+from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.cli import fast_api as fast_api_module
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.errors.input_validation_error import InputValidationError
@@ -1797,6 +1800,77 @@ def test_update_session(test_app, create_test_session):
   assert actions is not None, f"No actions found in event: {state_patch_event}"
   state_delta_in_event = actions.get("stateDelta")
   assert state_delta_in_event == state_delta
+
+
+async def test_update_session_redacts_oauth2_client_secret(
+    test_app, create_test_session, mock_session_service
+):
+  """PATCH .../sessions/{id} returns the whole session, history included.
+
+  update_session returns the full Session, not just the state delta the
+  caller sent -- so an adk_request_credential call persisted by an earlier
+  turn rides out on the response exactly as it does on GET, through the
+  same _redacted_session_response call. This is a separate site from
+  get_session (both route through the same helper, but a regression
+  removing the call from just one of them would not be caught by a test
+  covering only the other).
+  """
+  info = create_test_session
+
+  auth_config_dict = {
+      "authScheme": {"type": "oauth2", "flows": {}},
+      "rawAuthCredential": {
+          "authType": "oauth2",
+          "oauth2": {
+              "clientId": "public-client-id",
+              "clientSecret": "should-never-reach-the-client-via-patch",
+          },
+      },
+      "credentialKey": "my_tool:oauth2:abcd1234",
+  }
+
+  session = await mock_session_service.get_session(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+  )
+  await mock_session_service.append_event(
+      session=session,
+      event=Event(
+          author="agent",
+          invocation_id="invocation_id",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name="adk_request_credential",
+                          id="adk-req-cred-id",
+                          args={
+                              "functionCallId": "adk-original-fc-id",
+                              "authConfig": auth_config_dict,
+                          },
+                      )
+                  )
+              ],
+          ),
+      ),
+  )
+
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}"
+      f"/sessions/{info['session_id']}"
+  )
+  response = test_app.patch(url, json={"state_delta": {"counter": 1}})
+
+  assert response.status_code == 200
+  assert "should-never-reach-the-client-via-patch" not in response.text
+  event = response.json()["events"][0]
+  raw_oauth2 = event["content"]["parts"][0]["functionCall"]["args"][
+      "authConfig"
+  ]["rawAuthCredential"]["oauth2"]
+  assert "clientSecret" not in raw_oauth2
+  assert raw_oauth2["clientId"] == "public-client-id"
 
   logger.info("Session state patched successfully")
 
@@ -5259,9 +5333,14 @@ async def test_list_sessions_redacts_oauth2_client_secret(
   in `_list_sessions_impl`), which makes a secret-in-events check against
   the real backend vacuously pass regardless of whether
   `_redacted_sessions_response` does anything at all -- there's never a
-  secret in that response to begin with. `list_sessions` is monkeypatched
-  here to actually include events, so this exercises the real redaction
-  call the endpoint makes rather than a check that can't fail either way.
+  secret in that response to begin with, confirmed on both bundled
+  SessionService backends (InMemory and Database), not just assumed.
+  `list_sessions` is monkeypatched here to actually include events, so this
+  is a wiring check that the redaction call is present and functions for a
+  response shape a real backend does not currently produce -- see
+  test_list_sessions_redacts_credential_parked_in_state below for the test
+  that proves the same redaction call guards something a real backend does
+  return today.
   """
   info = create_test_session
 
@@ -5335,6 +5414,44 @@ async def test_list_sessions_redacts_oauth2_client_secret(
       args["authConfig"]["rawAuthCredential"]["oauth2"]["clientId"]
       == "public-client-id"
   )
+
+
+async def test_list_sessions_redacts_credential_parked_in_state(
+    test_app, mock_session_service
+):
+  """list_sessions strips events but returns state, and a credential can
+  live there without any monkeypatch.
+
+  SessionStateCredentialService.save_credential parks a live
+  AuthCredential directly in session state under
+  auth_config.credential_key -- a second, independent path onto the
+  response, unrelated to the adk_request_credential function-call events
+  the tests above cover. Both bundled backends (InMemory, Database) return
+  state from list_sessions while dropping events, so this is a real leak
+  path today, not a hypothetical one, and this test needs no
+  monkeypatching to demonstrate it: it constructs exactly the response
+  shape a real SessionService produces.
+  """
+  credential = AuthCredential(
+      auth_type=AuthCredentialTypes.OAUTH2,
+      oauth2=OAuth2Auth(
+          client_id="public-client-id",
+          client_secret="should-never-reach-the-client-via-state",
+      ),
+  )
+  await mock_session_service.create_session(
+      app_name="test_app_name",
+      user_id="test_user",
+      state={"adk_oauth2_scheme_oauth2_cred": credential},
+  )
+
+  response = test_app.get("/apps/test_app_name/users/test_user/sessions")
+
+  assert response.status_code == 200
+  assert "should-never-reach-the-client-via-state" not in response.text
+  parked = response.json()[0]["state"]["adk_oauth2_scheme_oauth2_cred"]
+  assert "clientSecret" not in parked["oauth2"]
+  assert parked["oauth2"]["clientId"] == "public-client-id"
 
 
 @pytest.mark.xfail(
