@@ -460,8 +460,14 @@ class RestApiTool(BaseTool):
               break
         else:  # like string
           for param in parameters:
-            # original_name = '' indicating this param applies to the full body.
-            if param.param_location == "body" and not param.original_name:
+            # original_name = '' indicates this param applies to the full
+            # body. OperationParser also uses original_name = 'body' for the
+            # same purpose when the schema is oneOf/anyOf/allOf or untyped,
+            # to avoid an empty-named property in the function declaration.
+            if param.param_location == "body" and param.original_name in (
+                "",
+                "body",
+            ):
               body_data = (
                   kwargs.get(param.py_name) if param.py_name in kwargs else None
               )
