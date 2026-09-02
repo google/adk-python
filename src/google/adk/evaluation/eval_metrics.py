@@ -259,6 +259,13 @@ class ToolTrajectoryCriterion(BaseCriterion):
       ),
   )
 
+  ignore_args: bool = Field(
+      default=False,
+      description=(
+          "If True, only tool names are compared; arguments are ignored."
+      ),
+  )
+
   @field_validator("match_type", mode="before")
   @classmethod
   def _coerce_match_type(cls, value: object) -> object:
