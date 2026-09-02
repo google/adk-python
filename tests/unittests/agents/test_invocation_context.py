@@ -908,6 +908,19 @@ def test_get_events_current_branch_drops_user_response_to_a_call_elsewhere():
   assert ctx._get_events(current_branch=True) == []
 
 
+def test_get_events_current_branch_drops_user_response_to_a_lookalike_call():
+  """A branch that merely shares a prefix does not count as a sub-branch.
+
+  `agent_10` starts with `agent_1`, so a plain prefix test would read the call
+  as issued in this subtree and let the reply through.
+  """
+  call_on_lookalike = _call_event('agent_10', 'fc_1')
+  reply = _user_response_event('agent_1', 'fc_1')
+  ctx = _ctx_on_branch('agent_1', [call_on_lookalike, reply])
+
+  assert ctx._get_events(current_branch=True) == []
+
+
 def test_get_events_without_a_branch_matches_every_user_event():
   """A context with no branch sees user events wherever they sit.
 
@@ -923,3 +936,38 @@ def test_get_events_without_a_branch_matches_every_user_event():
   ctx = _ctx_on_branch(None, [user_elsewhere, agent_elsewhere])
 
   assert ctx._get_events(current_branch=True) == [user_elsewhere]
+
+
+def test_get_events_current_branch_filters_each_response_independently():
+  """Several replies on one branch are each judged against their own call.
+
+  The set of calls issued in this subtree is the same for every event, so it
+  is built once per call rather than rescanned per reply. This pins that the
+  shared set still discriminates: the reply to a foreign call is dropped while
+  the replies around it are kept.
+  """
+  call_here = _call_event('agent_1', 'fc_here')
+  call_on_child = _call_event('agent_1.child', 'fc_child')
+  call_elsewhere = _call_event('agent_2', 'fc_far')
+  reply_here = _user_response_event('agent_1', 'fc_here')
+  reply_far = _user_response_event('agent_1', 'fc_far')
+  reply_child = _user_response_event('agent_1', 'fc_child')
+  ctx = _ctx_on_branch(
+      'agent_1',
+      [
+          call_here,
+          call_on_child,
+          call_elsewhere,
+          reply_here,
+          reply_far,
+          reply_child,
+      ],
+  )
+
+  # `call_here` sits on exactly this branch, so the non-user rule returns it
+  # too; the two sub-branch calls do not.
+  assert ctx._get_events(current_branch=True) == [
+      call_here,
+      reply_here,
+      reply_child,
+  ]

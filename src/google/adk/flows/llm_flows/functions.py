@@ -39,11 +39,11 @@ from google.adk.tools.computer_use.computer_use_tool import ComputerUseTool
 from google.genai import types
 
 from ...agents.active_streaming_tool import ActiveStreamingTool
-from ...agents.live_request_queue import LiveRequestQueue
 from ...auth.auth_tool import AuthConfig
 from ...auth.auth_tool import AuthToolArguments
 from ...events.event import Event
 from ...events.event_actions import EventActions
+from ...live.live_request_queue import LiveRequestQueue
 from ...telemetry import _instrumentation
 from ...telemetry.tracing import trace_merged_tool_calls
 from ...telemetry.tracing import tracer
@@ -52,6 +52,8 @@ from ...tools.function_tool import _use_sync_callable_runner
 from ...tools.function_tool import FunctionTool
 from ...tools.tool_confirmation import ToolConfirmation
 from ...tools.tool_context import ToolContext
+from ...utils._callback_pipeline import _run_callbacks
+from ...utils._callback_pipeline import _stop_on_non_none
 from ...utils.context_utils import Aclosing
 from ._invocation_utils import as_llm_agent as _as_llm_agent
 from ._invocation_utils import require_agent_name as _require_agent_name
@@ -560,19 +562,14 @@ async def _execute_single_function_call_async(
     if error_response is not None:
       return error_response
 
-    for callback in agent.canonical_on_tool_error_callbacks:
-      callback_result = callback(
-          tool=tool,
-          args=tool_args,
-          tool_context=tool_context,
-          error=error,
-      )
-      if inspect.isawaitable(callback_result):
-        callback_result = await callback_result
-      if callback_result is not None:
-        return callback_result
-
-    return None
+    return await _run_callbacks(
+        agent.canonical_on_tool_error_callbacks,
+        _stop_on_non_none,
+        tool=tool,
+        args=tool_args,
+        tool_context=tool_context,
+        error=error,
+    )
 
   # Do not use "args" as the variable name, because it is a reserved keyword
   # in python debugger.
@@ -586,24 +583,16 @@ async def _execute_single_function_call_async(
       invocation_context, function_call, tool_confirmation
   )
 
+  tool_lookup_error: Exception | None = None
   try:
     tool = _get_tool(function_call, tools_dict)
   except ValueError as tool_error:
     tool = BaseTool(
         name=function_call.name or '<unnamed>', description='Tool not found'
     )
-    error_response = await _run_on_tool_error_callbacks(
-        tool=tool,
-        tool_args=function_args,
-        tool_context=tool_context,
-        error=tool_error,
-    )
-    if error_response is None:
-      logger.warning('%s', tool_error)
-      error_response = _build_tool_not_found_response(tool.name, tools_dict)
-    return __build_response_event(
-        tool, error_response, tool_context, invocation_context
-    )
+    # Defer error handling to _run_with_trace so before-tool callbacks and
+    # telemetry spans can initialize first.
+    tool_lookup_error = tool_error
 
   async def _run_with_trace() -> Event | None:
     nonlocal function_args, detected_error_type
@@ -619,17 +608,30 @@ async def _execute_single_function_call_async(
     # Step 2: If no overrides are provided from the plugins, further run the
     # canonical callback.
     if function_response is None:
-      for before_callback in agent.canonical_before_tool_callbacks:
-        callback_result = before_callback(
-            tool=tool,
-            args=function_args,
-            tool_context=tool_context,
-        )
-        if inspect.isawaitable(callback_result):
-          callback_result = await callback_result
-        function_response = callback_result
-        if function_response is not None:
-          break
+      function_response = await _run_callbacks(
+          agent.canonical_before_tool_callbacks,
+          _stop_on_non_none,
+          tool=tool,
+          args=function_args,
+          tool_context=tool_context,
+      )
+
+    # Handle tool lookup failure if before-tool callbacks did not override the
+    # response.
+    if function_response is None and tool_lookup_error is not None:
+      error_response = await _run_on_tool_error_callbacks(
+          tool=tool,
+          tool_args=function_args,
+          tool_context=tool_context,
+          error=tool_lookup_error,
+      )
+      if error_response is None:
+        logger.warning('%s', tool_lookup_error)
+        error_response = _build_tool_not_found_response(tool.name, tools_dict)
+      detected_error_type = type(tool_lookup_error).__name__
+      return __build_response_event(
+          tool, error_response, tool_context, invocation_context
+      )
 
     # Step 3: Otherwise, proceed calling the tool normally.
     if function_response is None:
@@ -664,18 +666,14 @@ async def _execute_single_function_call_async(
     # Step 5: If no overrides are provided from the plugins, further run the
     # canonical after_tool_callbacks.
     if altered_function_response is None:
-      for after_callback in agent.canonical_after_tool_callbacks:
-        callback_result = after_callback(
-            tool=tool,
-            args=function_args,
-            tool_context=tool_context,
-            tool_response=callback_tool_response,
-        )
-        if inspect.isawaitable(callback_result):
-          callback_result = await callback_result
-        altered_function_response = callback_result
-        if altered_function_response is not None:
-          break
+      altered_function_response = await _run_callbacks(
+          agent.canonical_after_tool_callbacks,
+          _stop_on_non_none,
+          tool=tool,
+          args=function_args,
+          tool_context=tool_context,
+          tool_response=callback_tool_response,
+      )
 
     # Step 6: If alternative response exists from after_tool_callback, use it
     # instead of the original function response.
@@ -810,19 +808,14 @@ async def _execute_single_function_call_live(
     if error_response is not None:
       return error_response
 
-    for callback in agent.canonical_on_tool_error_callbacks:
-      callback_result = callback(
-          tool=tool,
-          args=tool_args,
-          tool_context=tool_context,
-          error=error,
-      )
-      if inspect.isawaitable(callback_result):
-        callback_result = await callback_result
-      if callback_result is not None:
-        return callback_result
-
-    return None
+    return await _run_callbacks(
+        agent.canonical_on_tool_error_callbacks,
+        _stop_on_non_none,
+        tool=tool,
+        args=tool_args,
+        tool_context=tool_context,
+        error=error,
+    )
 
   # Do not use "args" as the variable name, because it is a reserved keyword
   # in python debugger.
@@ -837,24 +830,14 @@ async def _execute_single_function_call_live(
   # so a confirmation-gated tool can only ever be refused, never resumed.
   tool_context = _create_tool_context(invocation_context, function_call)
 
+  tool_lookup_error: Exception | None = None
   try:
     tool = _get_tool(function_call, tools_dict)
   except ValueError as tool_error:
     tool = BaseTool(
         name=function_call.name or '<unnamed>', description='Tool not found'
     )
-    error_response = await _run_on_tool_error_callbacks(
-        tool=tool,
-        tool_args=function_args,
-        tool_context=tool_context,
-        error=tool_error,
-    )
-    if error_response is None:
-      logger.warning('%s', tool_error)
-      error_response = _build_tool_not_found_response(tool.name, tools_dict)
-    return __build_response_event(
-        tool, error_response, tool_context, invocation_context
-    )
+    tool_lookup_error = tool_error
 
   async def _run_with_trace() -> Event | None:
     """Executes the tool with full lifecycle management and telemetry.
@@ -884,17 +867,30 @@ async def _execute_single_function_call_live(
     # Step 2: If no overrides are provided from the plugins, further run the
     # canonical callback.
     if function_response is None:
-      for before_callback in agent.canonical_before_tool_callbacks:
-        callback_result = before_callback(
-            tool=tool,
-            args=function_args,
-            tool_context=tool_context,
-        )
-        if inspect.isawaitable(callback_result):
-          callback_result = await callback_result
-        function_response = callback_result
-        if function_response is not None:
-          break
+      function_response = await _run_callbacks(
+          agent.canonical_before_tool_callbacks,
+          _stop_on_non_none,
+          tool=tool,
+          args=function_args,
+          tool_context=tool_context,
+      )
+
+    # Handle tool lookup failure if before-tool callbacks did not override the
+    # response.
+    if function_response is None and tool_lookup_error is not None:
+      error_response = await _run_on_tool_error_callbacks(
+          tool=tool,
+          tool_args=function_args,
+          tool_context=tool_context,
+          error=tool_lookup_error,
+      )
+      if error_response is None:
+        logger.warning('%s', tool_lookup_error)
+        error_response = _build_tool_not_found_response(tool.name, tools_dict)
+      detected_error_type = type(tool_lookup_error).__name__
+      return __build_response_event(
+          tool, error_response, tool_context, invocation_context
+      )
 
     # Step 3: Otherwise, proceed calling the tool normally.
     if function_response is None:
@@ -934,18 +930,14 @@ async def _execute_single_function_call_live(
     # Step 5: If no overrides are provided from the plugins, further run the
     # canonical after_tool_callbacks.
     if altered_function_response is None:
-      for after_callback in agent.canonical_after_tool_callbacks:
-        callback_result = after_callback(
-            tool=tool,
-            args=function_args,
-            tool_context=tool_context,
-            tool_response=callback_tool_response,
-        )
-        if inspect.isawaitable(callback_result):
-          callback_result = await callback_result
-        altered_function_response = callback_result
-        if altered_function_response is not None:
-          break
+      altered_function_response = await _run_callbacks(
+          agent.canonical_after_tool_callbacks,
+          _stop_on_non_none,
+          tool=tool,
+          args=function_args,
+          tool_context=tool_context,
+          tool_response=callback_tool_response,
+      )
 
     # Step 6: If alternative response exists from after_tool_callback, use it
     # instead of the original function response.

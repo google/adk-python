@@ -27,6 +27,7 @@ from google.genai import types
 from pydantic import TypeAdapter
 from pydantic import ValidationError
 
+from ...events._branch_path import _BranchPath
 from ...events._node_path_builder import _NodePathBuilder
 from ...events.event import Event
 from ._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
@@ -257,21 +258,12 @@ def _reconstruct_node_states(
     if invocation_id and event.invocation_id != invocation_id:
       continue
 
-    # 1. Handle FunctionResponse (User responses to interrupts)
+    # 1. Match user function responses
     if event.author == 'user' and event.content and event.content.parts:
       for part in event.content.parts:
         fr = part.function_response
-        if fr and fr.id and fr.id in interrupt_owner:
-          owner = interrupt_owner[fr.id]
-          if owner not in scan_states:
-            scan_states[owner] = _ChildScanState()
-          scan_states[owner].resolved_ids.add(fr.id)
-          # The node paused mid-run to ask this, so what it emitted earlier
-          # in the scan is not its result. Its route stays: a node that does
-          # not rerun never gets to pick an edge again.
-          scan_states[owner].output = None
+        if fr and fr.id:
           response_data = _unwrap_response(fr.response)
-
           schema = schemas_by_id.get(fr.id)
           if schema:
             try:
@@ -281,7 +273,35 @@ def _reconstruct_node_states(
                   f'Validation failed for interrupt {fr.id}: {e}'
               ) from e
 
-          scan_states[owner].resolved_responses[fr.id] = response_data
+          owner = interrupt_owner.get(fr.id)
+          if owner:
+            if owner not in scan_states:
+              scan_states[owner] = _ChildScanState()
+            scan_states[owner].resolved_ids.add(fr.id)
+            # The node paused mid-run to ask this, so what it emitted earlier
+            # in the scan is not its result. Its route stays: a node that does
+            # not rerun never gets to pick an edge again.
+            scan_states[owner].output = None
+            scan_states[owner].resolved_responses[fr.id] = response_data
+
+          if event.branch:
+            # Match the branch's run ids exactly. A substring test on the raw
+            # branch string resolves an interrupt whose id merely happens to be
+            # contained in another id.
+            branch_run_ids = _BranchPath.from_string(event.branch).run_ids
+            for o_state in scan_states.values():
+              for int_id in o_state.interrupt_ids:
+                if int_id in branch_run_ids:
+                  o_state.resolved_ids.add(int_id)
+                  # Keyed by the interrupt id, like `resolved_ids` and like
+                  # the direct branch above: the consumer looks these up as
+                  # `ctx.resume_inputs.get(interrupt_id)`. `fr.id` here is the
+                  # id of the response that came back on the branch, which is
+                  # not the interrupt it resolves.
+                  o_state.resolved_responses[int_id] = response_data
+                  # Same reason as the direct branch: the node paused mid-run
+                  # to ask this, so what it emitted earlier is not its result.
+                  o_state.output = None
       continue
 
     # 2. Match events under base_path

@@ -27,6 +27,7 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.telemetry import _hallucination
 from google.adk.telemetry import _instrumentation
 from google.adk.telemetry import _metrics
+from google.adk.telemetry import node_tracing
 from google.adk.telemetry import tracing
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
@@ -141,8 +142,13 @@ async def test_record_skill_load_reaches_the_enclosing_tool_execution():
       function_args={},
       invocation_context=mock.MagicMock(),
   ) as tel_ctx:
-    skill_telemetry = _instrumentation.track_skill_load("sample_skill")
-    skill_telemetry.confirm_skill(mock.MagicMock())
+    skill_telemetry = _instrumentation.track_skill_load(
+        _hallucination.MaybeHallucinated("sample_skill")
+    )
+    skill_telemetry.skill = mock.MagicMock()
+    skill_telemetry.skill_name = _hallucination.ConfirmedNotHallucinated(
+        skill_telemetry.skill_name.maybe_hallucinated_value
+    )
 
   assert isinstance(
       tel_ctx.skill_telemetry, _instrumentation.SkillLoadTelemetry
@@ -165,9 +171,15 @@ async def test_record_skill_resource_load_reaches_the_enclosing_tool_execution()
       invocation_context=mock.MagicMock(),
   ) as tel_ctx:
     skill_telemetry = _instrumentation.track_skill_resource_load(
-        "sample_skill", "sample_path"
+        _hallucination.MaybeHallucinated("sample_skill"),
+        _hallucination.MaybeHallucinated("sample_path"),
     )
-    skill_telemetry.confirm_resource_path()
+    skill_telemetry.skill_name = _hallucination.ConfirmedNotHallucinated(
+        skill_telemetry.skill_name.maybe_hallucinated_value
+    )
+    skill_telemetry.resource_path = _hallucination.ConfirmedNotHallucinated(
+        skill_telemetry.resource_path.maybe_hallucinated_value
+    )
 
   assert isinstance(
       tel_ctx.skill_telemetry, _instrumentation.SkillResourceLoadTelemetry
@@ -190,7 +202,8 @@ async def test_record_skill_script_execution_reaches_the_enclosing_tool_executio
       invocation_context=mock.MagicMock(),
   ) as tel_ctx:
     skill_telemetry = _instrumentation.track_skill_script_execution(
-        "sample_skill", "scripts/sample.py"
+        _hallucination.MaybeHallucinated("sample_skill"),
+        _hallucination.MaybeHallucinated("scripts/sample.py"),
     )
     # The exit code is only known once the script has run, so the tool keeps
     # the object the tracker handed it and fills this in afterwards.
@@ -204,7 +217,9 @@ async def test_record_skill_script_execution_reaches_the_enclosing_tool_executio
 
 def test_record_skill_load_outside_tool_execution_is_a_noop():
   """Callers never depend on a tool execution (and thus a span) being open."""
-  _instrumentation.track_skill_load("sample_skill")
+  _instrumentation.track_skill_load(
+      _hallucination.MaybeHallucinated("sample_skill")
+  )
 
   assert _instrumentation._active_tool_execution_tel_ctx() is None
 
@@ -212,7 +227,8 @@ def test_record_skill_load_outside_tool_execution_is_a_noop():
 def test_record_skill_script_execution_outside_tool_execution_is_a_noop():
   """The tool still gets an object to record the exit code on."""
   skill_telemetry = _instrumentation.track_skill_script_execution(
-      "sample_skill", "scripts/sample.py"
+      _hallucination.MaybeHallucinated("sample_skill"),
+      _hallucination.MaybeHallucinated("scripts/sample.py"),
   )
 
   assert _instrumentation._active_tool_execution_tel_ctx() is None
@@ -658,10 +674,10 @@ async def test_skill_script_execution_stamps_the_span_and_counts_the_run(
       _script_tool(), agent, {}, ctx
   ):
     skill_telemetry = _instrumentation.track_skill_script_execution(
-        "sample_skill", "scripts/sample.py"
+        _hallucination.ConfirmedNotHallucinated("sample_skill"),
+        _hallucination.ConfirmedNotHallucinated("scripts/sample.py"),
     )
-    skill_telemetry.confirm_skill(_loaded_skill())
-    skill_telemetry.confirm_script_path()
+    skill_telemetry.skill = _loaded_skill()
     skill_telemetry.script_exit_code = 0
 
   span = telemetry.only_span()
@@ -702,10 +718,10 @@ async def test_skill_script_failure_fails_the_span_and_flags_the_count(
       _script_tool(), agent, {}, ctx
   ):
     skill_telemetry = _instrumentation.track_skill_script_execution(
-        "sample_skill", "scripts/sample.py"
+        _hallucination.ConfirmedNotHallucinated("sample_skill"),
+        _hallucination.ConfirmedNotHallucinated("scripts/sample.py"),
     )
-    skill_telemetry.confirm_skill(_loaded_skill())
-    skill_telemetry.confirm_script_path()
+    skill_telemetry.skill = _loaded_skill()
     skill_telemetry.script_exit_code = 3
 
   span = telemetry.only_span()
@@ -746,7 +762,8 @@ async def test_skill_script_execution_that_never_ran_reports_no_exit_code(
       _script_tool(), agent, {}, ctx
   ):
     _instrumentation.track_skill_script_execution(
-        "sample_skill", "scripts/sample.py"
+        _hallucination.MaybeHallucinated("sample_skill"),
+        _hallucination.MaybeHallucinated("scripts/sample.py"),
     )
 
   span = telemetry.only_span()
@@ -779,7 +796,8 @@ async def test_skill_script_execution_is_silent_without_the_experimental_opt_in(
       _script_tool(), agent, {}, ctx
   ):
     skill_telemetry = _instrumentation.track_skill_script_execution(
-        "sample_skill", "scripts/sample.py"
+        _hallucination.ConfirmedNotHallucinated("sample_skill"),
+        _hallucination.ConfirmedNotHallucinated("scripts/sample.py"),
     )
     skill_telemetry.script_exit_code = 3
 
@@ -789,6 +807,439 @@ async def test_skill_script_execution_is_silent_without_the_experimental_opt_in(
   ]
   assert span.status.status_code is StatusCode.UNSET
   assert telemetry.points(_SKILL_SCRIPT_EXECUTIONS) == []
+
+
+# --- skill loads, on the execute_tool span and per invocation --------------
+#
+# A load produces three metrics: one count per load, dimensioned by the skill
+# and by the error it hit, and the number of loads made over the whole agent
+# invocation and over the whole workflow enclosing it. All three run through
+# the tool execution block, for the same reason the script tests do.
+
+_SKILL_LOADS = "adk.experimental.skill.loads"
+_INVOKE_AGENT_SKILL_LOADS = "adk.experimental.invoke_agent.skill.loads"
+_INVOKE_WORKFLOW_SKILL_LOADS = "adk.experimental.invoke_workflow.skill.loads"
+
+
+def _load_tool() -> _EchoTool:
+  return _EchoTool(name="load_skill", description="loads a skill")
+
+
+def _resource_tool() -> _EchoTool:
+  return _EchoTool(
+      name="load_skill_resource", description="loads a skill resource"
+  )
+
+
+@pytest.mark.asyncio
+async def test_skill_load_stamps_the_span_and_counts_the_load(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
+):
+  """A load that resolved a skill is stamped on the span and counted."""
+  monkeypatch.setenv("ADK_EXPERIMENTAL_TELEMETRY", "true")
+  agent = _agent()
+  ctx = await _invocation_context(agent)
+
+  async with _instrumentation.record_tool_execution(
+      _load_tool(), agent, {}, ctx
+  ):
+    skill_telemetry = _instrumentation.track_skill_load(
+        _hallucination.ConfirmedNotHallucinated("sample_skill")
+    )
+    skill_telemetry.skill = _loaded_skill()
+
+  attributes = dict(telemetry.only_span().attributes)
+  assert attributes["adk.experimental.skill.name"] == "sample_skill"
+  assert (
+      attributes["adk.experimental.skill.source.uri"] == "file:/skills/sample"
+  )
+  assert telemetry.points(_SKILL_LOADS) == [(
+      {
+          "gen_ai.agent.name": "root_agent",
+          "adk.experimental.skill.name": "sample_skill",
+      },
+      1,
+  )]
+
+
+@pytest.mark.asyncio
+async def test_skill_load_that_resolved_nothing_is_counted_with_its_error(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
+):
+  """An unknown skill name still counts as an attempted load.
+
+  The load rate is only readable next to the loads that failed -- but the
+  count carries the placeholder name, since a name that named nothing is the
+  model's invention.
+  """
+  monkeypatch.setenv("ADK_EXPERIMENTAL_TELEMETRY", "true")
+  agent = _agent()
+  ctx = await _invocation_context(agent)
+
+  async with _instrumentation.record_tool_execution(
+      _load_tool(), agent, {}, ctx
+  ) as tel_ctx:
+    _instrumentation.track_skill_load(
+        _hallucination.MaybeHallucinated("sample_skill")
+    )
+    tel_ctx.error_type = "SKILL_NOT_FOUND"
+
+  # The span keeps what the model actually asked for.
+  span_attributes = dict(telemetry.only_span().attributes)
+  assert span_attributes["adk.experimental.skill.name"] == "sample_skill"
+  assert telemetry.point_attributes(_SKILL_LOADS) == [{
+      "gen_ai.agent.name": "root_agent",
+      "adk.experimental.skill.name": "<hallucinated>",
+      "error.type": "SKILL_NOT_FOUND",
+  }]
+
+
+@pytest.mark.asyncio
+async def test_skill_load_is_silent_without_the_experimental_opt_in(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
+):
+  """These attributes are experimental, so nothing is emitted by default."""
+  monkeypatch.delenv("ADK_EXPERIMENTAL_TELEMETRY", raising=False)
+  agent = _agent()
+  ctx = await _invocation_context(agent)
+
+  async with _instrumentation.record_tool_execution(
+      _load_tool(), agent, {}, ctx
+  ):
+    skill_telemetry = _instrumentation.track_skill_load(
+        _hallucination.ConfirmedNotHallucinated("sample_skill")
+    )
+    skill_telemetry.skill = _loaded_skill()
+
+  span = telemetry.only_span()
+  assert not [
+      key for key in span.attributes if key.startswith("adk.experimental")
+  ]
+  assert telemetry.points(_SKILL_LOADS) == []
+
+
+@pytest.mark.asyncio
+async def test_record_agent_invocation_flushes_the_skill_loads_it_made(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
+):
+  """Loads made anywhere under the agent land in its per-invocation total."""
+  monkeypatch.setenv("ADK_EXPERIMENTAL_TELEMETRY", "true")
+  agent = _agent()
+  ctx = await _invocation_context(agent)
+
+  async with _instrumentation.record_agent_invocation(ctx, agent):
+    for _ in range(5):
+      async with _instrumentation.record_tool_execution(
+          _load_tool(), agent, {}, ctx
+      ):
+        tel_ctx = _instrumentation.track_skill_load(
+            _hallucination.ConfirmedNotHallucinated("sample_skill")
+        )
+        tel_ctx.skill = _loaded_skill()
+
+  assert telemetry.points(_INVOKE_AGENT_SKILL_LOADS) == [
+      ({"gen_ai.agent.name": "root_agent"}, 5)
+  ]
+
+
+@pytest.mark.asyncio
+async def test_invoke_agent_skill_loads_count_the_loads_that_failed_too(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
+):
+  """The total counts loads attempted, not loads that resolved a skill.
+
+  A load that named nothing was still a load attempted, and dropping it here
+  would make the total disagree with the per-load counter beside it -- which
+  is where the failures are read, split by the error they hit.
+  """
+  monkeypatch.setenv("ADK_EXPERIMENTAL_TELEMETRY", "true")
+  agent = _agent()
+  ctx = await _invocation_context(agent)
+
+  async with _instrumentation.record_agent_invocation(ctx, agent):
+    for name in ("first_skill", "second_skill"):
+      async with _instrumentation.record_tool_execution(
+          _load_tool(), agent, {}, ctx
+      ):
+        tel_ctx = _instrumentation.track_skill_load(
+            _hallucination.ConfirmedNotHallucinated(name)
+        )
+        tel_ctx.skill = _loaded_skill()
+    async with _instrumentation.record_tool_execution(
+        _load_tool(), agent, {}, ctx
+    ) as tel_ctx:
+      _instrumentation.track_skill_load(
+          _hallucination.MaybeHallucinated("nonexistent_skill")
+      )
+      tel_ctx.error_type = "SKILL_NOT_FOUND"
+
+  assert telemetry.points(_INVOKE_AGENT_SKILL_LOADS) == [
+      ({"gen_ai.agent.name": "root_agent"}, 3)
+  ]
+  # The error stays on the per-load counter, which is dimensioned for it.
+  assert telemetry.point_attributes(_SKILL_LOADS) == [
+      {
+          "gen_ai.agent.name": "root_agent",
+          "adk.experimental.skill.name": "first_skill",
+      },
+      {
+          "gen_ai.agent.name": "root_agent",
+          "adk.experimental.skill.name": "second_skill",
+      },
+      {
+          "gen_ai.agent.name": "root_agent",
+          "adk.experimental.skill.name": "<hallucinated>",
+          "error.type": "SKILL_NOT_FOUND",
+      },
+  ]
+
+
+@pytest.mark.asyncio
+async def test_a_skill_load_that_raised_is_counted_as_a_failed_load(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
+):
+  """A load tool that raises failed just as loudly as one reporting a dict.
+
+  Which of the two a failure arrives as is the tool's implementation detail,
+  and the span and the tool duration metric already read both. Leaving the
+  raised ones out would drop them from the load total entirely.
+  """
+  monkeypatch.setenv("ADK_EXPERIMENTAL_TELEMETRY", "true")
+  agent = _agent()
+  ctx = await _invocation_context(agent)
+
+  async with _instrumentation.record_agent_invocation(ctx, agent):
+    with pytest.raises(ValueError):
+      async with _instrumentation.record_tool_execution(
+          _load_tool(), agent, {}, ctx
+      ):
+        _instrumentation.track_skill_load(
+            _hallucination.MaybeHallucinated("sample_skill")
+        )
+        raise ValueError("the skill registry was unreachable")
+
+  assert telemetry.points(_INVOKE_AGENT_SKILL_LOADS) == [
+      ({"gen_ai.agent.name": "root_agent"}, 1)
+  ]
+  # The per-load counter names the exception, the same label the span took.
+  assert telemetry.point_attributes(_SKILL_LOADS) == [{
+      "gen_ai.agent.name": "root_agent",
+      "adk.experimental.skill.name": "<hallucinated>",
+      "error.type": "ValueError",
+  }]
+
+
+@pytest.mark.asyncio
+async def test_invoke_agent_skill_loads_is_zero_when_no_skill_was_loaded(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
+):
+  """An invocation that loaded nothing reports zero rather than nothing.
+
+  Zero is a measurement that was taken -- the invocation ran and reached for
+  no skill. Dropping the point would sum the loads over only the invocations
+  that used skills, so loads-per-invocation would read as though every
+  invocation did.
+  """
+  monkeypatch.setenv("ADK_EXPERIMENTAL_TELEMETRY", "true")
+  agent = _agent()
+  ctx = await _invocation_context(agent)
+
+  async with _instrumentation.record_agent_invocation(ctx, agent):
+    pass
+
+  assert telemetry.points(_INVOKE_AGENT_SKILL_LOADS) == [
+      ({"gen_ai.agent.name": "root_agent"}, 0)
+  ]
+
+
+@pytest.mark.asyncio
+async def test_the_other_skill_tools_are_not_counted_as_skill_loads(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
+):
+  """Only loads count towards the load total, not the other skill tools.
+
+  A script that exited non-zero and a resource that could not be read both
+  act on a skill already loaded, so counting them here would report loads
+  that never happened.
+  """
+  monkeypatch.setenv("ADK_EXPERIMENTAL_TELEMETRY", "true")
+  agent = _agent()
+  ctx = await _invocation_context(agent)
+
+  async with _instrumentation.record_agent_invocation(ctx, agent):
+    async with _instrumentation.record_tool_execution(
+        _script_tool(), agent, {}, ctx
+    ):
+      skill_telemetry = _instrumentation.track_skill_script_execution(
+          _hallucination.ConfirmedNotHallucinated("sample_skill"),
+          _hallucination.ConfirmedNotHallucinated("scripts/sample.py"),
+      )
+      skill_telemetry.skill = _loaded_skill()
+      skill_telemetry.script_exit_code = 3
+    async with _instrumentation.record_tool_execution(
+        _resource_tool(), agent, {}, ctx
+    ) as tel_ctx:
+      _instrumentation.track_skill_resource_load(
+          _hallucination.MaybeHallucinated("sample_skill"),
+          _hallucination.MaybeHallucinated("refs/none.md"),
+      )
+      tel_ctx.error_type = "SKILL_RESOURCE_NOT_FOUND"
+
+  assert telemetry.points(_INVOKE_AGENT_SKILL_LOADS) == [
+      ({"gen_ai.agent.name": "root_agent"}, 0)
+  ]
+
+
+@pytest.mark.asyncio
+async def test_invoke_agent_skill_loads_is_not_recorded_without_the_opt_in(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
+):
+  """Without the opt-in the loads are never counted, so there is no total.
+
+  Recording one anyway would report every invocation as having loaded no
+  skills, which is a measurement nobody took: the count is missing, not zero.
+  """
+  monkeypatch.delenv("ADK_EXPERIMENTAL_TELEMETRY", raising=False)
+  agent = _agent()
+  ctx = await _invocation_context(agent)
+
+  async with _instrumentation.record_agent_invocation(ctx, agent):
+    async with _instrumentation.record_tool_execution(
+        _load_tool(), agent, {}, ctx
+    ) as tel_ctx:
+      _instrumentation.track_skill_load("nonexistent_skill")
+      tel_ctx.error_type = "SKILL_NOT_FOUND"
+
+  assert telemetry.points(_INVOKE_AGENT_SKILL_LOADS) == []
+  # The stable per-invocation counts are unaffected by the opt-in.
+  assert telemetry.points("gen_ai.invoke_agent.tool_calls") == [
+      ({"gen_ai.agent.name": "root_agent"}, 1)
+  ]
+
+
+@pytest.mark.asyncio
+async def test_invoke_workflow_skill_loads_cover_the_whole_workflow(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
+):
+  """The workflow total spans every agent the turn routed through.
+
+  The per-invocation totals split the same loads by agent, so the workflow
+  point is what answers how many a whole turn made -- one number, whichever
+  agents ended up serving it.
+  """
+  monkeypatch.setenv("ADK_EXPERIMENTAL_TELEMETRY", "true")
+  agent = _agent()
+  ctx = await _invocation_context(agent)
+
+  with node_tracing._use_invoke_workflow_span("my_workflow", "conversation-1"):
+    async with _instrumentation.record_agent_invocation(ctx, agent):
+      for name in ("first_skill", "second_skill"):
+        async with _instrumentation.record_tool_execution(
+            _load_tool(), agent, {}, ctx
+        ):
+          tel_ctx = _instrumentation.track_skill_load(
+              _hallucination.ConfirmedNotHallucinated(name)
+          )
+          tel_ctx.skill = _loaded_skill()
+
+  assert telemetry.points(_INVOKE_WORKFLOW_SKILL_LOADS) == [(
+      {
+          "adk.experimental.root_agent.name": "my_workflow",
+          "gen_ai.workflow.name": "my_workflow",
+      },
+      2,
+  )]
+
+
+@pytest.mark.asyncio
+async def test_invoke_workflow_skill_loads_count_into_every_enclosing_workflow(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
+):
+  """A nested workflow's loads count for it and for the ones around it.
+
+  The outer totals stay inclusive, the same way tokens and call counts do, so
+  a workflow's number is what ran under it rather than what ran directly in
+  it.
+  """
+  monkeypatch.setenv("ADK_EXPERIMENTAL_TELEMETRY", "true")
+  agent = _agent()
+  ctx = await _invocation_context(agent)
+
+  with node_tracing._use_invoke_workflow_span("outer", "conversation-1"):
+    async with _instrumentation.record_agent_invocation(ctx, agent):
+      async with _instrumentation.record_tool_execution(
+          _load_tool(), agent, {}, ctx
+      ):
+        tel_ctx = _instrumentation.track_skill_load(
+            _hallucination.ConfirmedNotHallucinated("outer_skill")
+        )
+        tel_ctx.skill = _loaded_skill()
+      with node_tracing._use_invoke_workflow_span("inner", "conversation-1"):
+        async with _instrumentation.record_tool_execution(
+            _load_tool(), agent, {}, ctx
+        ):
+          tel_ctx = _instrumentation.track_skill_load(
+              _hallucination.ConfirmedNotHallucinated("inner_skill")
+          )
+          tel_ctx.skill = _loaded_skill()
+
+  assert telemetry.points(_INVOKE_WORKFLOW_SKILL_LOADS) == [
+      (
+          {
+              "adk.experimental.root_agent.name": "outer",
+              "gen_ai.workflow.name": "inner",
+              "gen_ai.workflow.nested": True,
+          },
+          1,
+      ),
+      (
+          {
+              "adk.experimental.root_agent.name": "outer",
+              "gen_ai.workflow.name": "outer",
+          },
+          2,
+      ),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_invoke_workflow_skill_loads_is_zero_when_no_skill_was_loaded(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
+):
+  """Zero is recorded here for the same reason it is per invocation."""
+  monkeypatch.setenv("ADK_EXPERIMENTAL_TELEMETRY", "true")
+
+  with node_tracing._use_invoke_workflow_span("my_workflow", "conversation-1"):
+    pass
+
+  assert telemetry.points(_INVOKE_WORKFLOW_SKILL_LOADS) == [(
+      {
+          "adk.experimental.root_agent.name": "my_workflow",
+          "gen_ai.workflow.name": "my_workflow",
+      },
+      0,
+  )]
+
+
+@pytest.mark.asyncio
+async def test_invoke_workflow_skill_loads_is_not_recorded_without_the_opt_in(
+    telemetry: _Telemetry, monkeypatch: pytest.MonkeyPatch
+):
+  """The whole per-workflow block is experimental, this metric included."""
+  monkeypatch.delenv("ADK_EXPERIMENTAL_TELEMETRY", raising=False)
+  agent = _agent()
+  ctx = await _invocation_context(agent)
+
+  with node_tracing._use_invoke_workflow_span("my_workflow", "conversation-1"):
+    async with _instrumentation.record_tool_execution(
+        _load_tool(), agent, {}, ctx
+    ):
+      tel_ctx = _instrumentation.track_skill_load(
+          _hallucination.ConfirmedNotHallucinated("sample_skill")
+      )
+      tel_ctx.skill = _loaded_skill()
+
+  assert telemetry.points(_INVOKE_WORKFLOW_SKILL_LOADS) == []
 
 
 # --- record_inference_telemetry + TelemetryContext.record_llm_response ------

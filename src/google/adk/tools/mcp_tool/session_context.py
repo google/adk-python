@@ -25,11 +25,10 @@ from typing import Coroutine
 from typing import Optional
 from typing import TypeVar
 
-from mcp import ClientSession
-from mcp import SamplingCapability
-from mcp.client.session import ElicitationFnT
-from mcp.client.session import SamplingFnT
-
+from ...dependencies._mcp import ClientSession
+from ...dependencies._mcp import ElicitationFnT
+from ...dependencies._mcp import SamplingCapability
+from ...dependencies._mcp import SamplingFnT
 from ...features import FeatureName
 from ...features import is_feature_enabled
 

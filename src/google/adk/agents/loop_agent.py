@@ -17,10 +17,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 from typing import AsyncGenerator
 from typing import ClassVar
-from typing import Dict
 from typing import Optional
 
 from typing_extensions import deprecated
@@ -76,7 +74,7 @@ class LoopAgent(BaseAgent):
   """The maximum number of iterations to run the loop agent.
 
   If not set, the loop agent will run indefinitely until a sub-agent
-  escalates.
+  escalates. A value of zero or less runs the sub-agents no times at all.
   """
 
   @override
@@ -93,7 +91,7 @@ class LoopAgent(BaseAgent):
     should_exit = False
     pause_invocation = False
     while (
-        not self.max_iterations or times_looped < self.max_iterations
+        self.max_iterations is None or times_looped < self.max_iterations
     ) and not (should_exit or pause_invocation):
       for i in range(start_index, len(self.sub_agents)):
         sub_agent = self.sub_agents[i]
@@ -165,18 +163,3 @@ class LoopAgent(BaseAgent):
   ) -> AsyncGenerator[Event, None]:
     raise NotImplementedError('This is not supported yet for LoopAgent.')
     yield  # AsyncGenerator requires having at least one yield statement
-
-  @override
-  @classmethod
-  @experimental(FeatureName.AGENT_CONFIG)
-  def _parse_config(
-      cls: type[LoopAgent],
-      config: BaseAgentConfig,
-      config_abs_path: str,
-      kwargs: Dict[str, Any],
-  ) -> Dict[str, Any]:
-    if not isinstance(config, LoopAgentConfig):
-      raise TypeError('LoopAgent requires a LoopAgentConfig.')
-    if config.max_iterations:
-      kwargs['max_iterations'] = config.max_iterations
-    return kwargs

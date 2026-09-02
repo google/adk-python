@@ -312,6 +312,7 @@ def _setup_runner_context(
   if in_memory:
     session_service_uri = 'memory://'
     artifact_service_uri = 'memory://'
+    memory_service_uri = 'memory://'
     use_local_storage = False
 
   session_service = create_session_service_from_options(

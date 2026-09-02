@@ -213,7 +213,7 @@ COPY --chown=myuser:myuser "agents/{app_name}/" "/app/agents/{app_name}/"
 
 EXPOSE {port}
 
-CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_option} {otel_to_cloud_option} {allow_origins_option} {a2a_option} {trigger_sources_option} {gemini_enterprise_option}{express_mode_option} "/app/agents"
+CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_option} {otel_to_cloud_option} {allow_origins_option} {a2a_option} {trigger_sources_option} {trigger_oidc_audience_option} {trigger_oidc_service_accounts_option} {gemini_enterprise_option}{express_mode_option} "/app/agents"
 """
 
 _AGENT_ENGINE_CLASS_METHODS = [
@@ -802,6 +802,8 @@ def to_cloud_run(
     use_local_storage: bool = False,
     a2a: bool = False,
     trigger_sources: Optional[str] = None,
+    trigger_oidc_audience: Optional[str] = None,
+    trigger_oidc_service_accounts: Optional[str] = None,
     extra_gcloud_args: Optional[tuple[str, ...]] = None,
     with_cloud_run_sandbox: bool = False,
 ) -> None:
@@ -880,6 +882,16 @@ def to_cloud_run(
     trigger_sources_option = (
         f'--trigger_sources={trigger_sources}' if trigger_sources else ''
     )
+    trigger_oidc_audience_option = (
+        f'--trigger_oidc_audience={trigger_oidc_audience}'
+        if trigger_oidc_audience
+        else ''
+    )
+    trigger_oidc_service_accounts_option = (
+        f'--trigger_oidc_service_accounts={trigger_oidc_service_accounts}'
+        if trigger_oidc_service_accounts
+        else ''
+    )
     dockerfile_content = _DOCKERFILE_TEMPLATE.format(
         gcp_project_id=project,
         gcp_region=region,
@@ -901,6 +913,8 @@ def to_cloud_run(
         host_option=host_option,
         a2a_option=a2a_option,
         trigger_sources_option=trigger_sources_option,
+        trigger_oidc_audience_option=trigger_oidc_audience_option,
+        trigger_oidc_service_accounts_option=trigger_oidc_service_accounts_option,
         gemini_enterprise_option='',
         express_mode_option='',
         extra_packages_copy='',
@@ -1027,6 +1041,8 @@ def to_agent_engine(
     agent_engine_config_file: Optional[str] = None,
     skip_agent_import_validation: bool = True,
     trigger_sources: Optional[str] = None,
+    trigger_oidc_audience: Optional[str] = None,
+    trigger_oidc_service_accounts: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
@@ -1385,6 +1401,16 @@ def to_agent_engine(
       trigger_sources_option = (
           f'--trigger_sources={trigger_sources}' if trigger_sources else ''
       )
+      trigger_oidc_audience_option = (
+          f'--trigger_oidc_audience={trigger_oidc_audience}'
+          if trigger_oidc_audience
+          else ''
+      )
+      trigger_oidc_service_accounts_option = (
+          f'--trigger_oidc_service_accounts={trigger_oidc_service_accounts}'
+          if trigger_oidc_service_accounts
+          else ''
+      )
       extra_packages_copy = ''
       if staged_extra_packages:
         copy_lines = [
@@ -1427,6 +1453,8 @@ def to_agent_engine(
           host_option='--host=0.0.0.0',
           a2a_option='--a2a',
           trigger_sources_option=trigger_sources_option,
+          trigger_oidc_audience_option=trigger_oidc_audience_option,
+          trigger_oidc_service_accounts_option=trigger_oidc_service_accounts_option,
           gemini_enterprise_option=(
               f'--gemini_enterprise_app_name={app_name}'
               if supports_gemini_enterprise_flag
@@ -1508,6 +1536,8 @@ def to_gke(
     use_local_storage: bool = False,
     a2a: bool = False,
     trigger_sources: Optional[str] = None,
+    trigger_oidc_audience: Optional[str] = None,
+    trigger_oidc_service_accounts: Optional[str] = None,
     service_type: Literal[
         'ClusterIP', 'NodePort', 'LoadBalancer'
     ] = 'ClusterIP',
@@ -1587,6 +1617,16 @@ def to_gke(
     click.secho('\nSTEP 2: Generating deployment files...', bold=True)
     click.echo('  - Creating Dockerfile...')
     host_option = '--host=0.0.0.0' if adk_version > '0.5.0' else ''
+    trigger_oidc_audience_option = (
+        f'--trigger_oidc_audience={trigger_oidc_audience}'
+        if trigger_oidc_audience
+        else ''
+    )
+    trigger_oidc_service_accounts_option = (
+        f'--trigger_oidc_service_accounts={trigger_oidc_service_accounts}'
+        if trigger_oidc_service_accounts
+        else ''
+    )
     dockerfile_content = _DOCKERFILE_TEMPLATE.format(
         gcp_project_id=project,
         gcp_region=region,
@@ -1610,6 +1650,8 @@ def to_gke(
         trigger_sources_option=(
             f'--trigger_sources={trigger_sources}' if trigger_sources else ''
         ),
+        trigger_oidc_audience_option=trigger_oidc_audience_option,
+        trigger_oidc_service_accounts_option=trigger_oidc_service_accounts_option,
         gemini_enterprise_option='',
         express_mode_option='',
         extra_packages_copy='',

@@ -46,6 +46,7 @@ from typing_extensions import override
 from ...models.base_llm import BaseLlm
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
+from ...utils._schema_utils import lowercase_schema_types
 from ._openai_schema import enforce_strict_openai_schema
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -181,62 +182,6 @@ def _content_to_openai_messages(
   return messages
 
 
-def _update_type_string(value: Any):
-  """Lowercases nested JSON schema type strings for OpenAI compatibility."""
-  if isinstance(value, list):
-    for item in value:
-      _update_type_string(item)
-    return
-
-  if not isinstance(value, dict):
-    return
-
-  schema_type = value.get("type")
-  if isinstance(schema_type, str):
-    value["type"] = schema_type.lower()
-
-  for dict_key in (
-      "$defs",
-      "defs",
-      "dependentSchemas",
-      "patternProperties",
-      "properties",
-  ):
-    child_dict = value.get(dict_key)
-    if isinstance(child_dict, dict):
-      for child_value in child_dict.values():
-        _update_type_string(child_value)
-
-  for single_key in (
-      "additionalProperties",
-      "additional_properties",
-      "contains",
-      "else",
-      "if",
-      "items",
-      "not",
-      "propertyNames",
-      "then",
-      "unevaluatedProperties",
-  ):
-    child_value = value.get(single_key)
-    if isinstance(child_value, (dict, list)):
-      _update_type_string(child_value)
-
-  for list_key in (
-      "allOf",
-      "all_of",
-      "anyOf",
-      "any_of",
-      "oneOf",
-      "one_of",
-      "prefixItems",
-  ):
-    child_list = value.get(list_key)
-    if isinstance(child_list, list):
-      _update_type_string(child_list)
-
-
 def _function_declaration_to_openai_tool(
     function_declaration: types.FunctionDeclaration,
 ) -> ChatCompletionToolParam:
@@ -247,7 +192,7 @@ def _function_declaration_to_openai_tool(
   # Use parameters_json_schema if available, otherwise convert from parameters
   if function_declaration.parameters_json_schema:
     parameters = copy.deepcopy(function_declaration.parameters_json_schema)
-    _update_type_string(parameters)
+    lowercase_schema_types(parameters)
   else:
     properties = {}
     required_params = []
@@ -264,7 +209,7 @@ def _function_declaration_to_openai_tool(
     }
     if required_params:
       parameters["required"] = required_params
-    _update_type_string(parameters)
+    lowercase_schema_types(parameters)
 
   return {
       "type": "function",

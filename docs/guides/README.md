@@ -5,6 +5,7 @@ This directory contains specific developer guides for the ADK Python implementat
 ## Index
 
 ### Agents
+* [Creating Agents with Configurations](agents/config/index.md) - Building and wiring multi-agent graphs from external YAML configuration files.
 * [LlmAgent Single-Turn Mode](agents/llm_agent/single_turn.md) - Guide on using LlmAgent in single-turn mode.
 * [LlmAgent Task Mode](agents/llm_agent/task.md) - Guide on using LlmAgent in task mode.
 * [ManagedAgent](agents/managed_agent/index.md) - Guide on using ManagedAgent with server-side tools.

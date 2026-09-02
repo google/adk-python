@@ -57,17 +57,18 @@ except ImportError:
 
   _AIO_SUPPORTED = False
 
-from mcp import ClientSession
-from mcp import SamplingCapability
-from mcp import StdioServerParameters
-from mcp.client.session import ElicitationFnT
-from mcp.client.session import SamplingFnT
-from mcp.client.sse import sse_client
-from mcp.client.stdio import stdio_client
-from mcp.client.streamable_http import create_mcp_http_client as _create_mcp_http_client
-from mcp.client.streamable_http import streamable_http_client
 from pydantic import BaseModel
 from pydantic import ConfigDict
+
+from ...dependencies._mcp import ClientSession
+from ...dependencies._mcp import create_mcp_http_client as _create_mcp_http_client
+from ...dependencies._mcp import ElicitationFnT
+from ...dependencies._mcp import SamplingCapability
+from ...dependencies._mcp import SamplingFnT
+from ...dependencies._mcp import sse_client
+from ...dependencies._mcp import stdio_client
+from ...dependencies._mcp import StdioServerParameters
+from ...dependencies._mcp import streamable_http_client
 
 try:
   from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor

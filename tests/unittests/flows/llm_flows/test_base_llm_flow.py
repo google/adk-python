@@ -23,7 +23,6 @@ from unittest.mock import AsyncMock
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.invocation_context import LlmCallsLimitExceededError
-from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.run_config import RunConfig
@@ -39,6 +38,7 @@ from google.adk.flows.llm_flows.base_llm_flow import _handle_after_model_callbac
 from google.adk.flows.llm_flows.base_llm_flow import _process_agent_tools
 from google.adk.flows.llm_flows.base_llm_flow import _ReconnectSentinel
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
+from google.adk.live import LiveRequestQueue
 from google.adk.models.base_llm_connection import BaseLlmConnection
 from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
@@ -1894,7 +1894,7 @@ async def test_receive_from_model_author_attribution():
   events = []
   try:
     async for event in flow._receive_from_model(
-        mock_connection, 'event_id', invocation_context, LlmRequest()
+        mock_connection, invocation_context, LlmRequest()
     ):
       events.append(event)
   except StopTest:
@@ -2765,7 +2765,7 @@ async def test_send_to_model_rejects_function_call():
   invocation_context.live_request_queue = LiveRequestQueue()
 
   # Put a malicious content request in the queue
-  from google.adk.agents.live_request_queue import LiveRequest
+  from google.adk.live import LiveRequest
 
   malicious_request = LiveRequest(
       content=types.Content(
@@ -2842,7 +2842,11 @@ async def test_finalize_dynamic_instructions_feature_enabled():
   assert llm_request.config.system_instruction is None
   assert len(llm_request.contents) == 2
   assert llm_request.contents[0].role == 'user'
-  assert llm_request.contents[0].parts[0].text == 'dynamic 1\n\ndynamic 2'
+  # The tool's instruction rides the same user-role carrier as the agent's, so
+  # it is labelled the same way rather than sent as bare prose.
+  instruction_text = llm_request.contents[0].parts[0].text
+  assert 'dynamic 1\n\ndynamic 2' in instruction_text
+  assert 'was said by the user' in instruction_text
   assert llm_request.contents[1].role == 'user'
   assert llm_request.contents[1].parts[0].text == 'user question'
 
@@ -2873,7 +2877,11 @@ async def test_finalize_dynamic_instructions_with_static_instruction():
   assert llm_request.config.system_instruction is None
   assert len(llm_request.contents) == 2
   assert llm_request.contents[0].role == 'user'
-  assert llm_request.contents[0].parts[0].text == 'dynamic 1\n\ndynamic 2'
+  # The tool's instruction rides the same user-role carrier as the agent's, so
+  # it is labelled the same way rather than sent as bare prose.
+  instruction_text = llm_request.contents[0].parts[0].text
+  assert 'dynamic 1\n\ndynamic 2' in instruction_text
+  assert 'was said by the user' in instruction_text
   assert llm_request.contents[1].role == 'user'
   assert llm_request.contents[1].parts[0].text == 'user question'
 
@@ -2981,6 +2989,100 @@ async def _drive_one_llm_call(flow, invocation_context):
   ) as agen:
     async for _ in agen:
       pass
+
+
+@pytest.mark.asyncio
+async def test_preprocess_final_response_skips_llm_call():
+  """A final response from preprocessing must finish the current step."""
+  agent = Agent(
+      name='root_agent', model=testing_utils.MockModel.create(responses=[])
+  )
+  flow = BaseLlmFlowForTesting()
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='resume'
+  )
+  function_response_event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(
+          role='user',
+          parts=[
+              types.Part.from_function_response(
+                  name='resumed_tool', response={'result': 'done'}
+              )
+          ],
+      ),
+  )
+  function_response_event.actions.skip_summarization = True
+
+  async def mock_preprocess(_ctx, _request):
+    yield function_response_event
+
+  async def fail_if_llm_called(*_args, **_kwargs):
+    raise AssertionError('LLM should not be called after a final response')
+    yield  # pylint: disable=unreachable
+
+  with (
+      mock.patch.object(flow, '_preprocess_async', side_effect=mock_preprocess),
+      mock.patch.object(
+          flow, '_call_llm_async', side_effect=fail_if_llm_called
+      ),
+  ):
+    events = [event async for event in flow.run_async(invocation_context)]
+
+  assert events == [function_response_event]
+
+
+@pytest.mark.asyncio
+async def test_preprocess_non_function_response_does_not_skip_llm_call():
+  """Non-function-response events in preprocessing must not skip the LLM call."""
+  mock_response = types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=types.Content(
+                  role='model',
+                  parts=[types.Part.from_text(text='Analysis done.')],
+              ),
+              finish_reason='STOP',
+          )
+      ]
+  )
+  agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(responses=[mock_response]),
+  )
+  flow = BaseLlmFlowForTesting()
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='test'
+  )
+  processing_file_event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(text='Processing input file: `data.csv`'),
+              types.Part(
+                  executable_code=types.ExecutableCode(
+                      code='import pandas as pd', language='PYTHON'
+                  )
+              ),
+          ],
+      ),
+  )
+  assert processing_file_event.is_final_response()
+
+  async def mock_preprocess(_ctx, _request):
+    yield processing_file_event
+
+  with mock.patch.object(
+      flow, '_preprocess_async', side_effect=mock_preprocess
+  ):
+    events = [event async for event in flow.run_async(invocation_context)]
+
+  assert len(events) == 2
+  assert events[0] == processing_file_event
+  assert events[1].content.parts[0].text == 'Analysis done.'
 
 
 @pytest.mark.asyncio
