@@ -50,12 +50,28 @@ def _normalize_oauth_scopes(
 def _credential_without_client_secret(
     credential: AuthCredential | None,
 ) -> AuthCredential | None:
-  """Returns a copy of credential with the OAuth2 client secret removed."""
+  """Returns a copy of credential with the agent's own secrets removed.
+
+  The auth request is sent to the client and stored in the session, so no
+  secret that belongs to the agent may travel in it. The OAuth2 client secret
+  is one such secret; an API key, an HTTP Basic password, and a service account
+  private key are the agent's too. They are re-supplied from the tool config
+  when the credential is exchanged.
+  """
   if credential is None:
     return None
   redacted = credential.model_copy(deep=True)
   if redacted.oauth2 is not None:
     redacted.oauth2.client_secret = None
+  if redacted.api_key is not None:
+    redacted.api_key = None
+  if redacted.http is not None and redacted.http.credentials is not None:
+    redacted.http.credentials.password = None
+  if (
+      redacted.service_account is not None
+      and redacted.service_account.service_account_credential is not None
+  ):
+    redacted.service_account.service_account_credential.private_key = None
   return redacted
 
 
