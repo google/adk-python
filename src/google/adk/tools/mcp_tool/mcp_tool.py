@@ -430,6 +430,7 @@ class McpTool(BaseAuthenticatedTool):
                   " ToolConfirmation payload."
               ),
           )
+          tool_context.actions.skip_summarization = True
           return {
               "error": (
                   "This tool call requires confirmation, please approve or"

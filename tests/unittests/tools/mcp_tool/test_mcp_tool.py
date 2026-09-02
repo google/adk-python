@@ -1046,6 +1046,7 @@ class TestMCPTool:
     tool_context = Mock(spec=ToolContext)
     tool_context.tool_confirmation = None
     tool_context.request_confirmation = Mock()
+    tool_context.actions = Mock(skip_summarization=False)
     args = {"param1": "test_value"}
 
     result = await tool.run_async(args=args, tool_context=tool_context)
@@ -1056,6 +1057,7 @@ class TestMCPTool:
         )
     }
     tool_context.request_confirmation.assert_called_once()
+    assert tool_context.actions.skip_summarization is True
 
   @pytest.mark.asyncio
   async def test_run_async_require_confirmation_true_rejected(self):
