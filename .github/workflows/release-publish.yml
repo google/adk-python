@@ -36,6 +36,38 @@ jobs:
             exit 1
           fi
 
+      # Publishing is a manual dispatch, so without this step nothing stops a
+      # release going out on a commit whose checks failed or never ran at all.
+      # This job's own check run is excluded, since it is in progress by the
+      # time it looks.
+      - name: Require green checks on the commit being published
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          RUN_MARKER: /runs/${{ github.run_id }}/
+        run: |
+          CHECKS=$(gh api --paginate \
+            "repos/${REPO}/commits/${SHA}/check-runs" \
+            --jq '.check_runs[]
+                  | select(((.details_url // "") | contains($ENV.RUN_MARKER)) | not)
+                  | "\(.conclusion // "pending") \(.name)"')
+
+          if [ -z "${CHECKS}" ]; then
+            echo "::error::No checks have reported on ${SHA}, so nothing has verified this release."
+            exit 1
+          fi
+
+          NOT_GREEN=$(printf '%s\n' "${CHECKS}" | grep -vE '^(success|skipped|neutral) ' || true)
+          if [ -n "${NOT_GREEN}" ]; then
+            echo "::error::These checks are not green on ${SHA}:"
+            printf '%s\n' "${NOT_GREEN}"
+            exit 1
+          fi
+
+          echo "All checks green on ${SHA}:"
+          printf '%s\n' "${CHECKS}"
+
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false

@@ -14,16 +14,19 @@
 
 name: Continuous Integration
 
+# Release branches are listed alongside the development branches because a
+# release is cut to its own branch and published from there, so a branch left
+# out here ships without its tests ever having run.
 on:
   push:
-    branches: [main, v1]
+    branches: [main, v1, 'release/**']
     paths:
       - '**.py'
       - '.pre-commit-config.yaml'
       - 'pyproject.toml'
       - 'tests/**'
   pull_request:
-    branches: [main, v1]
+    branches: [main, v1, 'release/**']
     paths:
       - '**.py'
       - '.pre-commit-config.yaml'
