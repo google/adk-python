@@ -40,3 +40,4 @@ To expose an existing `Node` or `Workflow` as a tool callable by an `Agent`:
 ## Related Guides
 
 - [Workflow](../../../../docs/guides/workflow/workflow/index.md) - Explains building complex multi-step graphs.
+- [Node as tool](../../../../docs/guides/tools/node_tool/index.md) - Explains exposing workflows and nodes as agent tools with isolated runtime branching.
