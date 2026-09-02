@@ -1056,6 +1056,7 @@ class TestMCPTool:
         )
     }
     tool_context.request_confirmation.assert_called_once()
+    assert tool_context.actions.skip_summarization is True
 
   @pytest.mark.asyncio
   async def test_run_async_require_confirmation_true_rejected(self):
