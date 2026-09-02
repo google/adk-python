@@ -1370,3 +1370,47 @@ async def test_concurrent_node_tool_isolation(request: pytest.FixtureRequest):
       if p.text
   ]
   assert 'Finished processing alpha and beta.' in text_responses
+
+
+@pytest.mark.asyncio
+async def test_node_tool_returns_structured_dict(
+    request: pytest.FixtureRequest,
+):
+  """NodeTool returns structured dictionary from wrapped @node function."""
+
+  class UserProfileInput(BaseModel):
+    user_id: str
+
+  @node
+  def get_user_profile(user_id: str) -> dict[str, Any]:
+    return {'id': user_id, 'role': 'admin'}
+
+  get_user_profile.input_schema = UserProfileInput
+  user_tool = NodeTool(node=get_user_profile, name='get_user_profile')
+
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='get_user_profile',
+                  args={'user_id': 'user_123'},
+              ),
+              types.Part.from_text(text='Received user profile.'),
+          ]
+      ),
+      tools=[user_tool],
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=parent_agent,
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(
+      testing_utils.get_user_content('Lookup profile')
+  )
+
+  function_responses = [fr for e in events for fr in e.get_function_responses()]
+  assert len(function_responses) == 1
+  assert function_responses[0].response == {'id': 'user_123', 'role': 'admin'}
