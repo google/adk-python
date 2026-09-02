@@ -95,6 +95,9 @@ class _WorkflowScope:
   """Tool calls made anywhere inside this workflow, including the
   `transfer_to_agent` calls that route between its agents."""
 
+  skill_load_count: int = 0
+  """Skill loads made anywhere inside this workflow."""
+
   def self_and_enclosing(self) -> Iterator[_WorkflowScope]:
     """Yields this scope, then each one enclosing it, outermost last.
 
@@ -236,6 +239,7 @@ class TelemetryContext:
   _inference_span_ended: bool = False
   _inference_call_count: int = 0
   _tool_call_count: int = 0
+  _skill_load_count: int = 0
 
   @property
   def inference_call_count(self) -> int:
@@ -250,6 +254,13 @@ class TelemetryContext:
 
   def increment_tool_calls(self) -> None:
     self._tool_call_count += 1
+
+  @property
+  def skill_load_count(self) -> int:
+    return self._skill_load_count
+
+  def increment_skill_loads(self) -> None:
+    self._skill_load_count += 1
 
   @property
   def llm_responses(self) -> list[LlmResponse]:
@@ -294,7 +305,9 @@ def _record_agent_metrics(
 
 
 def _flush_invoke_agent_metrics(
-    tel_ctx: TelemetryContext, agent_name: str
+    tel_ctx: TelemetryContext,
+    agent_name: str,
+    tel_cfg: TelemetryConfig,
 ) -> None:
   """Flushes this span's accumulated inference/tool-call and token metrics."""
   if tel_ctx.token_totals is not None:
@@ -303,6 +316,11 @@ def _flush_invoke_agent_metrics(
       agent_name, tel_ctx.inference_call_count
   )
   _metrics.record_invoke_agent_tool_calls(agent_name, tel_ctx.tool_call_count)
+
+  if tel_cfg.should_emit_experimental_telemetry:
+    _metrics.record_invoke_agent_skill_loads(
+        agent_name, tel_ctx.skill_load_count
+    )
 
 
 def _flush_workflow_metrics(scope: _WorkflowScope) -> None:
@@ -331,6 +349,12 @@ def _flush_workflow_metrics(scope: _WorkflowScope) -> None:
       root_agent_name=scope.root_agent_name,
       workflow_name=scope.workflow_name,
       count=scope.tool_call_count,
+      nested=nested,
+  )
+  _metrics.record_invoke_workflow_skill_loads(
+      root_agent_name=scope.root_agent_name,
+      workflow_name=scope.workflow_name,
+      count=scope.skill_load_count,
       nested=nested,
   )
 
@@ -367,6 +391,13 @@ def _accumulate_invoke_agent_inference_call() -> None:
     span_tel_ctx.increment_inference_calls()
 
 
+def _accumulate_invoke_agent_skill_load() -> None:
+  """Counts one skill load against the active invoke_agent span."""
+  span_tel_ctx = _invoke_agent_tel_ctx()
+  if span_tel_ctx is not None:
+    span_tel_ctx.increment_skill_loads()
+
+
 def _accumulate_invoke_workflow_tool_call(scope: _WorkflowScope | None) -> None:
   """Counts one tool call against every workflow enclosing it.
 
@@ -391,6 +422,20 @@ def _accumulate_invoke_workflow_inference_call(
     return
   for enclosing in scope.self_and_enclosing():
     enclosing.inference_call_count += 1
+
+
+def _accumulate_invoke_workflow_skill_load(
+    scope: _WorkflowScope | None,
+) -> None:
+  """Counts one skill load against every workflow enclosing it.
+
+  Args:
+    scope: The workflow the call ran inside.
+  """
+  if scope is None:
+    return
+  for enclosing in scope.self_and_enclosing():
+    enclosing.skill_load_count += 1
 
 
 def _active_tool_execution_tel_ctx() -> TelemetryContext | None:
@@ -526,7 +571,8 @@ async def record_agent_invocation(
         _metrics.get_elapsed_s(span, start_time),
         caught_error,
     )
-    _flush_invoke_agent_metrics(tel_ctx, agent.name)
+    tel_cfg = tracing._telemetry_config_from_invocation_context(ctx)
+    _flush_invoke_agent_metrics(tel_ctx, agent.name, tel_cfg)
 
 
 @contextlib.asynccontextmanager
@@ -574,7 +620,12 @@ async def record_tool_execution(
         )
         if tel_ctx.skill_telemetry is not None:
           _dispatch_skill_telemetry(
-              span, tel_ctx.skill_telemetry, invocation_context
+              span,
+              tel_ctx.skill_telemetry,
+              invocation_context,
+              workflow_scope,
+              error=caught_error,
+              error_type=tel_ctx.error_type,
           )
   finally:
     _accumulate_invoke_agent_tool_call()
@@ -660,35 +711,55 @@ def _dispatch_skill_telemetry(
     span: trace.Span,
     skill_telemetry: SkillTelemetry,
     invocation_context: InvocationContext,
+    workflow_scope: _WorkflowScope | None,
+    error: Exception | None = None,
+    error_type: str | None = None,
 ) -> None:
-  """Selects and attaches the correct skill telemetry to the enclosing tool execution span."""
+  """Selects and attaches the correct skill telemetry to the enclosing tool execution span.
+
+  Args:
+    span: The ``execute_tool`` span the skill work ran under.
+    skill_telemetry: What the tool reported about the skill it touched.
+    invocation_context: The invocation the tool call belongs to.
+    workflow_scope: The workflow scope of the tool call.
+    error: The exception the tool raised, if any.
+    error_type: An error type the tool reported without raising. Ignored when
+      `error` is also set.
+  """
   telemetry_config = tracing._telemetry_config_from_invocation_context(
       invocation_context
   )
   if not telemetry_config.should_emit_experimental_telemetry:
     return
 
+  error_type = (
+      tracing.resolve_error_type(error) if error is not None else error_type
+  )
+
   match skill_telemetry:
     case SkillLoadTelemetry():
+      _accumulate_invoke_agent_skill_load()
+      _accumulate_invoke_workflow_skill_load(workflow_scope)
       _trace_skill_load(span, skill_telemetry)
+      if invocation_context.agent is None:
+        return
+      _metrics.record_skill_load(
+          invocation_context.agent.name,
+          skill_telemetry.skill_name,
+          error_type,
+      )
     case SkillResourceLoadTelemetry():
       _trace_skill_resource_load(span, skill_telemetry)
     case SkillScriptExecutionTelemetry():
       _trace_skill_script_execution(span, skill_telemetry)
       if invocation_context.agent is None:
         return
-      try:
-        _metrics.record_skill_script_execution(
-            invocation_context.agent.name,
-            skill_telemetry.skill_name,
-            skill_telemetry.script_path,
-            skill_telemetry.script_exit_code,
-        )
-      except Exception:  # pylint: disable=broad-exception-caught
-        logger.exception(
-            "Failed to record skill script execution metrics for agent %s",
-            invocation_context.agent.name,
-        )
+      _metrics.record_skill_script_execution(
+          invocation_context.agent.name,
+          skill_telemetry.skill_name,
+          skill_telemetry.script_path,
+          skill_telemetry.script_exit_code,
+      )
     case _:
       assert_never(skill_telemetry)
 

@@ -23,7 +23,9 @@ from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
 from google.adk.events.request_input import RequestInput
+from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from google.adk.tools._node_tool import NodeTool
+from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
 from google.adk.workflow import JoinNode
 from google.adk.workflow import node
@@ -1130,3 +1132,285 @@ async def test_node_tool_wraps_zero_argument_function(
   assert func_response_events[0].content.parts[
       0
   ].function_response.response == {'result': 'constant_val'}
+
+
+@pytest.mark.parametrize('tool_confirmed', [True, False])
+@pytest.mark.asyncio
+async def test_workflow_as_tool_nested_tool_confirmation(
+    request: pytest.FixtureRequest, tool_confirmed: bool
+):
+  """Workflow-as-a-tool pauses on nested tool confirmation and resumes after user decision.
+
+  Setup:
+    - Parent agent calls a WorkflowTool wrapping an inner workflow.
+    - Inner workflow runs a child agent that calls a tool requiring
+    confirmation.
+  Act:
+    - Turn 1: Run task. Child agent requests confirmation, pausing execution.
+    - Turn 2: User responds to the confirmation request.
+  Assert:
+    - Turn 1: adk_request_confirmation function call event is yielded on
+    sub-branch.
+    - Turn 2: Confirmed tool executes (or rejection is handled), and parent
+    finishes.
+  """
+  tool_executed = False
+
+  def my_sensitive_action(action: str) -> dict[str, str]:
+    nonlocal tool_executed
+    tool_executed = True
+    return {'result': f'Executed: {action}'}
+
+  child_agent = LlmAgent(
+      name='child_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='my_sensitive_action',
+                  args={'action': 'perform_transfer'},
+              ),
+              types.Part.from_text(
+                  text=(
+                      'Child agent executed action successfully.'
+                      if tool_confirmed
+                      else 'Child agent handled rejection gracefully.'
+                  )
+              ),
+          ]
+      ),
+      tools=[
+          FunctionTool(
+              func=my_sensitive_action,
+              require_confirmation=True,
+          )
+      ],
+  )
+
+  sub_workflow = Workflow(
+      name='sub_workflow',
+      edges=[(START, child_agent)],
+  )
+  sub_workflow.input_schema = DummyRequest
+
+  wf_tool = NodeTool(
+      node=sub_workflow,
+      name='my_wf_tool',
+      description='Call sub workflow.',
+  )
+
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='my_wf_tool',
+                  args={},
+              ),
+              types.Part.from_text(text='Parent agent finished successfully.'),
+          ]
+      ),
+      tools=[wf_tool],
+  )
+
+  app = App(
+      name=f'{request.function.__name__}_{tool_confirmed}',
+      root_agent=parent_agent,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  # Turn 1: Run -> should pause and request confirmation
+  events1 = await runner.run_async(testing_utils.get_user_content('Start task'))
+
+  fc_event = workflow_testing_utils.find_function_call_event(
+      events1, REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+  )
+  assert fc_event is not None, 'Did not find confirmation request event'
+  confirmation_fc = [
+      p.function_call
+      for p in fc_event.content.parts
+      if p.function_call
+      and p.function_call.name == REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+  ][0]
+  assert not tool_executed
+  assert 'my_wf_tool@' in fc_event.branch
+
+  invocation_id = events1[0].invocation_id
+  confirmation_call_id = confirmation_fc.id
+
+  # Turn 2: User responds to tool confirmation
+  user_confirmation = testing_utils.UserContent(
+      types.Part(
+          function_response=types.FunctionResponse(
+              id=confirmation_call_id,
+              name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+              response={'confirmed': tool_confirmed},
+          )
+      )
+  )
+  events2 = await runner.run_async(
+      new_message=user_confirmation,
+      invocation_id=invocation_id,
+  )
+
+  if tool_confirmed:
+    assert tool_executed, 'Tool should have executed after confirmation'
+  else:
+    assert not tool_executed, 'Tool should not execute when rejected'
+
+  text_responses = [
+      p.text
+      for e in events2
+      if e.content and e.content.parts
+      for p in e.content.parts
+      if p.text
+  ]
+  assert 'Parent agent finished successfully.' in text_responses
+
+
+@pytest.mark.asyncio
+async def test_concurrent_node_tool_isolation(request: pytest.FixtureRequest):
+  """Concurrent calls to the same NodeTool maintain isolated branch execution and events.
+
+  Setup:
+    - Parent agent configured with a NodeTool wrapping a workflow.
+  Act:
+    - Model emits two parallel function calls to the same NodeTool in one turn.
+  Assert:
+    - Each call runs on a separate sub-branch scoped by its function call ID.
+    - Intermediate events are isolated to their respective sub-branches.
+    - Function responses correctly match their corresponding call IDs.
+  """
+
+  class ItemRequest(BaseModel):
+    item_id: str
+
+  def process_item(node_input: dict[str, Any]):
+    yield Event(output=f'Step 1 for {node_input["item_id"]}')
+
+  sub_workflow = Workflow(
+      name='process_workflow',
+      edges=[(START, process_item)],
+  )
+  sub_workflow.input_schema = ItemRequest
+
+  proc_tool = NodeTool(
+      node=sub_workflow,
+      name='process_tool',
+      description='Process an item.',
+  )
+
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              # Turn 1: parallel function calls to the SAME tool
+              [
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name='process_tool',
+                          args={'item_id': 'alpha'},
+                          id='fc_alpha',
+                      )
+                  ),
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name='process_tool',
+                          args={'item_id': 'beta'},
+                          id='fc_beta',
+                      )
+                  ),
+              ],
+              # Turn 2: final model response after both tools return
+              types.Part.from_text(text='Finished processing alpha and beta.'),
+          ]
+      ),
+      tools=[proc_tool],
+  )
+
+  app = App(
+      name=request.function.__name__,
+      root_agent=parent_agent,
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(
+      testing_utils.get_user_content('Process alpha and beta')
+  )
+
+  # Verify intermediate events have distinct branches
+  intermediate_events = [
+      e for e in events if e.output and 'Step 1 for' in str(e.output)
+  ]
+  assert len(intermediate_events) == 2
+
+  alpha_events = [e for e in intermediate_events if 'alpha' in str(e.output)]
+  beta_events = [e for e in intermediate_events if 'beta' in str(e.output)]
+  assert len(alpha_events) == 1
+  assert len(beta_events) == 1
+
+  assert 'process_tool@fc_alpha' in alpha_events[0].branch
+  assert 'process_tool@fc_beta' in beta_events[0].branch
+  assert alpha_events[0].branch != beta_events[0].branch
+
+  # Verify function responses
+  fr_events = [e for e in events if e.get_function_responses()]
+  fr_map = {
+      fr.id: fr.response for e in fr_events for fr in e.get_function_responses()
+  }
+  assert fr_map['fc_alpha'] == {'result': 'Step 1 for alpha'}
+  assert fr_map['fc_beta'] == {'result': 'Step 1 for beta'}
+
+  # Verify parent agent final text
+  text_responses = [
+      p.text
+      for e in events
+      if e.content and e.content.parts
+      for p in e.content.parts
+      if p.text
+  ]
+  assert 'Finished processing alpha and beta.' in text_responses
+
+
+@pytest.mark.asyncio
+async def test_node_tool_returns_structured_dict(
+    request: pytest.FixtureRequest,
+):
+  """NodeTool returns structured dictionary from wrapped @node function."""
+
+  class UserProfileInput(BaseModel):
+    user_id: str
+
+  @node
+  def get_user_profile(user_id: str) -> dict[str, Any]:
+    return {'id': user_id, 'role': 'admin'}
+
+  get_user_profile.input_schema = UserProfileInput
+  user_tool = NodeTool(node=get_user_profile, name='get_user_profile')
+
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='get_user_profile',
+                  args={'user_id': 'user_123'},
+              ),
+              types.Part.from_text(text='Received user profile.'),
+          ]
+      ),
+      tools=[user_tool],
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=parent_agent,
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(
+      testing_utils.get_user_content('Lookup profile')
+  )
+
+  function_responses = [fr for e in events for fr in e.get_function_responses()]
+  assert len(function_responses) == 1
+  assert function_responses[0].response == {'id': 'user_123', 'role': 'admin'}

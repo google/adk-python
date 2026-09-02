@@ -308,6 +308,7 @@ class TestToAdk:
             "stateDelta": {"app:is_admin": True, "user:persona": "attacker"},
             "artifactDelta": {"report.pdf": 7},
             "transferToAgent": "attacker-agent",
+            "transferReason": "attacker-reason",
             "agentState": {"resume": "attacker"},
             "rewindBeforeInvocationId": "inv-1",
             "requestedAuthConfigs": {
@@ -418,6 +419,7 @@ class TestToAdk:
       assert event.actions.state_delta == {}
       assert event.actions.artifact_delta == {}
       assert event.actions.transfer_to_agent is None
+      assert event.actions.transfer_reason is None
       assert event.actions.agent_state is None
       assert event.actions.rewind_before_invocation_id is None
       assert event.actions.requested_auth_configs == {}

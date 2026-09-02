@@ -369,6 +369,20 @@
         "value": 20
       }
     ],
+    "adk.experimental.invoke_agent.skill.loads": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_nested_agent"
+        },
+        "value": 0
+      },
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 0
+      }
+    ],
     "adk.experimental.invoke_agent.tool.input_tokens": [
       {
         "attributes": {
@@ -480,6 +494,23 @@
           "gen_ai.workflow.name": "my_workflow"
         },
         "value": 23
+      }
+    ],
+    "adk.experimental.invoke_workflow.skill.loads": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "my_workflow",
+          "gen_ai.workflow.name": "my_nested_workflow",
+          "gen_ai.workflow.nested": true
+        },
+        "value": 0
+      },
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "my_workflow",
+          "gen_ai.workflow.name": "my_workflow"
+        },
+        "value": 0
       }
     ],
     "adk.experimental.invoke_workflow.tool.input_tokens": [

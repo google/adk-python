@@ -1894,7 +1894,7 @@ async def test_receive_from_model_author_attribution():
   events = []
   try:
     async for event in flow._receive_from_model(
-        mock_connection, 'event_id', invocation_context, LlmRequest()
+        mock_connection, invocation_context, LlmRequest()
     ):
       events.append(event)
   except StopTest:

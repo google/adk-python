@@ -6047,7 +6047,8 @@ class TestRemoteA2aAgentWorkflowOutput:
 
 
 # ---------------------------------------------------------------------------
-# Regression coverage for the A2A human-input resume rewrite (b/540026826) and
+# Regression coverage for the A2A human-input resume rewrite, which flattens a
+# pause's function_response into text before forwarding it to the peer, and for
 # its adversarial follow-ups: credential egress via the caller fallback, and a
 # parallel real-tool + human-input resume re-creating the ValueError.
 # ---------------------------------------------------------------------------
@@ -6075,9 +6076,9 @@ def _resume_events(
   Args:
     calls: list of ``(name, id)`` function calls that paused the invocation.
     responses: list of ``(name, id, response_dict)`` user function responses.
-      Unlike the harness in cl/955528102, this can place more than one
-      function_response on the resume event, which is required to reproduce the
-      parallel real-tool + human-input case.
+      All of them go onto one resume event. A fixture that carries a single
+      function_response cannot reach the parallel real-tool + human-input case,
+      which needs two responses in the same turn.
     user_text: optional sibling text part appended to the response event.
     task_id: value stamped into the pausing event's a2a metadata.
 

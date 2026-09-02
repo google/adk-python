@@ -59,6 +59,7 @@ from typing_extensions import Required
 
 from . import _prompt_cache
 from ..utils._google_client_headers import merge_tracking_headers
+from ..utils._schema_utils import lowercase_schema_types
 from ._capabilities import LlmCapabilities
 from .base_llm import BaseLlm
 from .interactions_utils import extract_system_instruction
@@ -2134,20 +2135,31 @@ def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict[str, Any]:
   Returns:
     The dictionary representation of the schema.
   """
-  schema_dict = (
-      schema.model_dump(exclude_none=True)
-      if isinstance(schema, types.Schema)
-      else dict(schema)
-  )
+  if isinstance(schema, types.Schema):
+    schema_dict = schema.model_dump(by_alias=True, exclude_none=True)
+  else:
+    schema_dict = dict(schema)
   enum_values = schema_dict.get("enum")
   if isinstance(enum_values, (list, tuple)):
     schema_dict["enum"] = [value for value in enum_values if value is not None]
 
   if "type" in schema_dict and schema_dict["type"] is not None:
     t = schema_dict["type"]
-    schema_dict["type"] = (
-        t.value if isinstance(t, types.Type) else str(t)
-    ).lower()
+    if isinstance(t, types.Type):
+      schema_dict["type"] = (
+          t.value.lower() if isinstance(t.value, str) else str(t.value).lower()
+      )
+    elif isinstance(t, str):
+      schema_dict["type"] = t.lower()
+    elif isinstance(t, (list, tuple)):
+      schema_dict["type"] = [
+          item.value.lower()
+          if isinstance(item, types.Type)
+          else (item.lower() if isinstance(item, str) else item)
+          for item in t
+      ]
+    else:
+      schema_dict["type"] = str(t).lower()
 
   if "items" in schema_dict:
     items = schema_dict["items"]
@@ -2157,6 +2169,22 @@ def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict[str, Any]:
         else items
     )
 
+  # `model_dump()` spells these with pydantic field names (`any_of`,
+  # `min_items`, ...), but every downstream JSON Schema consumer reads the
+  # camelCase alias, so an un-renamed union is silently dropped and the
+  # argument reaches the model as a bare `{"type": "object"}`. `by_alias=True`
+  # renames all nine; the recursion below also lowercases nested types.
+  any_of = schema_dict.pop("any_of", None)
+  if any_of is None:
+    any_of = schema_dict.get("anyOf")
+  if any_of is not None:
+    schema_dict["anyOf"] = [
+        _schema_to_dict(item)
+        if isinstance(item, (types.Schema, dict))
+        else item
+        for item in any_of
+    ]
+
   if "properties" in schema_dict:
     new_props = {}
     for key, value in schema_dict["properties"].items():
@@ -2165,6 +2193,16 @@ def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict[str, Any]:
       else:
         new_props[key] = value
     schema_dict["properties"] = new_props
+
+  additional_properties = schema_dict.pop("additional_properties", None)
+  if additional_properties is None:
+    additional_properties = schema_dict.get("additionalProperties")
+  if additional_properties is not None:
+    schema_dict["additionalProperties"] = (
+        _schema_to_dict(additional_properties)
+        if isinstance(additional_properties, (types.Schema, dict))
+        else additional_properties
+    )
 
   return schema_dict
 
@@ -2183,24 +2221,20 @@ def _function_declaration_to_tool_param(
 
   assert function_declaration.name
 
-  parameters: dict[str, Any] = {
-      "type": "object",
-      "properties": {},
-  }
-  if (
-      function_declaration.parameters
-      and function_declaration.parameters.properties
-  ):
-    properties = {}
-    for key, value in function_declaration.parameters.properties.items():
-      properties[key] = _schema_to_dict(value)
-
+  if function_declaration.parameters_json_schema:
+    parameters = copy.deepcopy(function_declaration.parameters_json_schema)
+    lowercase_schema_types(parameters)
+  elif function_declaration.parameters:
+    parameters = _schema_to_dict(function_declaration.parameters)
+    if "type" not in parameters:
+      parameters["type"] = "object"
+    if "properties" not in parameters:
+      parameters["properties"] = {}
+  else:
     parameters = {
         "type": "object",
-        "properties": properties,
+        "properties": {},
     }
-  elif function_declaration.parameters_json_schema:
-    parameters = function_declaration.parameters_json_schema
 
   tool_params: dict[str, Any] = {
       "type": "function",
@@ -2212,11 +2246,15 @@ def _function_declaration_to_tool_param(
   }
 
   required_fields = (
-      getattr(function_declaration.parameters, "required", None)
-      if function_declaration.parameters
+      function_declaration.parameters.required
+      if not function_declaration.parameters_json_schema
+      and function_declaration.parameters
       else None
   )
-  if required_fields:
+  if (
+      required_fields
+      and "required" not in tool_params["function"]["parameters"]
+  ):
     tool_params["function"]["parameters"]["required"] = required_fields
 
   return tool_params
@@ -2604,7 +2642,9 @@ def _to_litellm_response_format(
     if isinstance(response_schema, types.Schema):
       # GenAI Schema instances already represent JSON schema definitions.
       schema_dict = copy.deepcopy(
-          response_schema.model_dump(exclude_none=True, mode="json")
+          response_schema.model_dump(
+              by_alias=True, exclude_none=True, mode="json"
+          )
       )
       if "title" in schema_dict:
         schema_name = str(schema_dict["title"])
@@ -2633,6 +2673,7 @@ def _to_litellm_response_format(
   # OpenAI-compatible format (default) per LiteLLM docs:
   # https://docs.litellm.ai/docs/completion/json_mode
   if isinstance(schema_dict, dict):
+    lowercase_schema_types(schema_dict)
     _enforce_strict_openai_schema(schema_dict)
 
   return {

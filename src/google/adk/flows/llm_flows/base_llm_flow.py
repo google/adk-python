@@ -726,7 +726,6 @@ class BaseLlmFlow(ABC):
               async with Aclosing(
                   self._receive_from_model(
                       llm_connection,
-                      event_id,
                       invocation_context,
                       llm_request,
                   )
@@ -1107,7 +1106,6 @@ class BaseLlmFlow(ABC):
   async def _receive_from_model(
       self,
       llm_connection: BaseLlmConnection,
-      event_id: str,
       invocation_context: InvocationContext,
       llm_request: LlmRequest,
   ) -> AsyncGenerator[Event, None]:

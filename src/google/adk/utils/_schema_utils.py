@@ -109,6 +109,77 @@ def schema_to_json_schema(schema: SchemaType) -> dict[str, Any]:
   return TypeAdapter(schema).json_schema()
 
 
+def lowercase_schema_types(value: object) -> None:
+  """Lowercases the JSON Schema ``type`` strings in a schema, in place.
+
+  ``types.Schema`` serializes its type as the uppercase enum name (``STRING``),
+  while JSON Schema and the model providers that consume it expect ``string``.
+  A type may also be a list of names, as in ``["STRING", "NULL"]``. Nested
+  subschemas are reached through the schema keywords only, so a ``type`` key
+  inside a ``default`` or ``example`` value is left untouched.
+
+  Args:
+    value: A JSON Schema dict, or a list of them. Mutated in place.
+  """
+  if isinstance(value, list):
+    for item in value:
+      lowercase_schema_types(item)
+    return
+
+  if not isinstance(value, dict):
+    return
+
+  schema_type = value.get("type")
+  if isinstance(schema_type, str):
+    value["type"] = schema_type.lower()
+  elif isinstance(schema_type, list):
+    value["type"] = [
+        item.lower() if isinstance(item, str) else item for item in schema_type
+    ]
+
+  for dict_key in (
+      "$defs",
+      "definitions",
+      "defs",
+      "dependentSchemas",
+      "patternProperties",
+      "properties",
+  ):
+    child_dict = value.get(dict_key)
+    if isinstance(child_dict, dict):
+      for child_value in child_dict.values():
+        lowercase_schema_types(child_value)
+
+  for single_key in (
+      "additionalProperties",
+      "additional_properties",
+      "contains",
+      "else",
+      "if",
+      "items",
+      "not",
+      "propertyNames",
+      "then",
+      "unevaluatedProperties",
+  ):
+    child_value = value.get(single_key)
+    if isinstance(child_value, (dict, list)):
+      lowercase_schema_types(child_value)
+
+  for list_key in (
+      "allOf",
+      "all_of",
+      "anyOf",
+      "any_of",
+      "oneOf",
+      "one_of",
+      "prefixItems",
+  ):
+    child_list = value.get(list_key)
+    if isinstance(child_list, list):
+      lowercase_schema_types(child_list)
+
+
 def _strip_json_code_fence(json_text: str) -> str:
   """Removes a markdown code fence wrapping the entire JSON payload, if present.
 
