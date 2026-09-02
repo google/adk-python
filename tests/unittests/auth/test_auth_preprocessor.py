@@ -93,6 +93,7 @@ class TestAuthLlmRequestProcessor:
     config.auth_scheme = None
     config.raw_auth_credential = None
     config.exchanged_auth_credential = None
+    config.model_copy.return_value = config
     return config
 
   @pytest.fixture
@@ -532,7 +533,8 @@ class TestAuthLlmRequestProcessor:
     ):
       result.append(event)
 
-    # Nothing is stored and no tool is resumed.
+    # The server never issued a credential request under this ID, so the
+    # response must not be trusted.
     mock_auth_handler.parse_and_store_auth_response.assert_not_called()
     assert result == []
 
@@ -580,6 +582,8 @@ class TestAuthLlmRequestProcessor:
     empty_event = Mock(spec=Event)
     empty_event.content = Mock()  # Non-None content
     empty_event.get_function_calls.return_value = []
+
+    mock_user_event_with_auth_response.get_function_calls.return_value = []
 
     mock_invocation_context.session.events = [
         empty_event,
@@ -657,6 +661,7 @@ class TestAuthLlmRequestProcessor:
     requested_auth_config.auth_scheme = None
     requested_auth_config.raw_auth_credential = None
     requested_auth_config.exchanged_auth_credential = None
+    requested_auth_config.model_copy.return_value = requested_auth_config
 
     system_function_call.args = {
         'function_call_id': 'original_fc_id_1',
@@ -858,7 +863,12 @@ class TestAuthLlmRequestProcessor:
       self,
       mock_auth_handler_class,
   ):
-    """Test that OAuth2 fields are merged from requested to stored config."""
+    """Test that the raw credential is pinned and OAuth2 fields are merged.
+
+    The raw credential is taken from the request wholesale. The exchanged
+    credential is the client's, backfilled from the request wherever the
+    client left a field empty.
+    """
     # Setup AuthHandler mock
     mock_auth_handler = Mock(spec=AuthHandler)
     mock_auth_handler.parse_and_store_auth_response = AsyncMock()
@@ -988,10 +998,10 @@ class TestAuthLlmRequestProcessor:
         called_config.raw_auth_credential.oauth2.token_endpoint_auth_method
         == 'client_secret_post'
     )
-    assert (
-        called_config.raw_auth_credential.oauth2.access_token
-        == 'some_access_token'
-    )
+    # The raw credential names the OAuth2 client the token is exchanged for,
+    # so it is the server's copy and nothing the client put in its own copy —
+    # this access token — carries over.
+    assert called_config.raw_auth_credential.oauth2.access_token is None
 
     # Check exchanged_auth_credential fields
     assert (
@@ -1174,3 +1184,32 @@ class TestRequestPinning:
     mock_auth_handler_class.assert_not_called()
     mock_handler.parse_and_store_auth_response.assert_not_called()
     assert resumed == set()
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize('malformed', ['not-a-config', {'auth_scheme': 7}])
+  @patch('google.adk.auth.auth_preprocessor.AuthHandler')
+  async def test_malformed_auth_response_is_skipped(
+      self, mock_auth_handler_class, malformed
+  ):
+    """A client can send anything here, so a bad payload skips that call
+
+    instead of raising out of the preprocessor and ending the invocation.
+    """
+    from google.adk.auth.auth_preprocessor import _store_auth_and_collect_resume_targets
+
+    issued = self._issued_config()
+
+    mock_handler = Mock()
+    mock_handler.parse_and_store_auth_response = AsyncMock()
+    mock_auth_handler_class.return_value = mock_handler
+
+    await _store_auth_and_collect_resume_targets(
+        events=[self._request_event(issued)],
+        auth_fc_ids={'fc-1'},
+        auth_responses={'fc-1': malformed},
+        state={},
+    )
+
+    # Nothing is stored; the caller is left to re-request auth.
+    mock_auth_handler_class.assert_not_called()
+    mock_handler.parse_and_store_auth_response.assert_not_called()

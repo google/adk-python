@@ -40,6 +40,7 @@ try:
   from sqlalchemy.engine import make_url
   from sqlalchemy.exc import ArgumentError
   from sqlalchemy.exc import IntegrityError
+  from sqlalchemy.exc import InvalidRequestError
   from sqlalchemy.ext.asyncio import async_sessionmaker
   from sqlalchemy.ext.asyncio import AsyncEngine
   from sqlalchemy.ext.asyncio import AsyncSession as DatabaseSessionFactory
@@ -95,6 +96,15 @@ _NAIVE_DATETIME_DIALECTS = (
     _MYSQL_DIALECT,
     _MARIADB_DIALECT,
 )
+# The driver a URL falls back to when it names none is synchronous for each of
+# these backends, and the asyncio extension of SQLAlchemy refuses a synchronous
+# driver, so such a URL cannot be used here.
+_ASYNC_DRIVER_BY_BACKEND = {
+    _SQLITE_DIALECT: "aiosqlite",
+    _POSTGRESQL_DIALECT: "asyncpg",
+    _MYSQL_DIALECT: "aiomysql",
+    _MARIADB_DIALECT: "asyncmy",
+}
 # Tuple key order for in-process per-session lock maps:
 # (app_name, user_id, session_id).
 _SessionLockKey: TypeAlias = tuple[str, str, str]
@@ -358,6 +368,16 @@ class DatabaseSessionService(BaseSessionService):
           raise ValueError(
               f"Invalid database URL format or argument '{redacted_url}'."
           ) from e
+        if isinstance(e, InvalidRequestError):
+          backend = make_url(db_url).get_backend_name()
+          async_driver = _ASYNC_DRIVER_BY_BACKEND.get(backend)
+          message = (
+              f"Database URL '{redacted_url}' resolves to a synchronous"
+              " driver, but this service requires an asynchronous one."
+          )
+          if async_driver:
+            message += f" Use a '{backend}+{async_driver}://' URL instead."
+          raise ValueError(message) from e
         if isinstance(e, ImportError):
           raise ValueError(
               f"Database related module not found for URL '{redacted_url}'."
@@ -639,7 +659,18 @@ class DatabaseSessionService(BaseSessionService):
           storage_app_state.state, storage_user_state.state, session_state
       )
       # Call to_session before commit to avoid post-commit lazy-load.
-      await sql_session.flush()
+      try:
+        await sql_session.flush()
+      except IntegrityError:
+        # A concurrent caller won the race on this (app_name, user_id,
+        # session_id) primary key: the has_user_provided_id check above is
+        # not atomic with this insert, so two callers can both pass it and
+        # then race the same insert. Same failure mode _get_or_create_state
+        # guards against for app_state/user_state; surface the same clean
+        # error here instead of letting the raw IntegrityError propagate.
+        raise AlreadyExistsError(
+            f"Session with id {session_id} already exists."
+        )
       session = storage_session.to_session(
           state=merged_state, is_sqlite=is_sqlite, is_postgresql=is_postgresql
       )

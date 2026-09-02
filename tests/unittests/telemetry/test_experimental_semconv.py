@@ -26,6 +26,7 @@ from typing import Optional
 from google.adk.dependencies._mcp import Tool as McpTool
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.telemetry._experimental_semconv import _model_dump_to_tool_definition
 from google.adk.telemetry._experimental_semconv import set_operation_details_attributes_from_request
 from google.adk.telemetry._experimental_semconv import set_operation_details_attributes_from_response
 from google.adk.telemetry._stable_semconv import choice_body
@@ -411,3 +412,51 @@ def test_stable_and_experimental_encode_the_same_choice_differently():
       'parts': [{'content': 'Response', 'type': 'text'}],
       'finish_reason': 'length',
   }
+
+
+class _DumpingTool:
+  """A pydantic-shaped tool whose dump uses the given schema key."""
+
+  def __init__(self, schema_key: str):
+    self._schema_key = schema_key
+
+  def model_dump(self, *, exclude_none: bool = False) -> dict[str, object]:
+    del exclude_none
+    return {
+        'name': 'mcp_tool',
+        'description': 'A standalone mcp tool',
+        self._schema_key: {
+            'type': 'object',
+            'properties': {'id': {'type': 'integer'}},
+        },
+    }
+
+
+class TestModelDumpToolDefinitionSchemaKey:
+  """The schema key an MCP tool dumps under changes with the SDK version.
+
+  A dumped tool reaches telemetry through `_model_dump_to_tool_definition`.
+  Reading the wrong key is not an error there: the tool is still reported, and
+  reported with no parameters, so the loss shows up only as an emptier span.
+  """
+
+  @pytest.mark.parametrize(
+      'schema_key', ['parameters', 'inputSchema', 'input_schema']
+  )
+  def test_parameters_are_read_under_every_spelling(self, schema_key):
+    definition = _model_dump_to_tool_definition(_DumpingTool(schema_key))
+
+    assert definition['parameters'] == {
+        'type': 'object',
+        'properties': {'id': {'type': 'integer'}},
+    }
+
+  def test_an_unknown_spelling_is_still_reported_without_parameters(self):
+    """The fallback must stay lossy-but-alive, not raise.
+
+    Telemetry is not worth failing a tool call over.
+    """
+    definition = _model_dump_to_tool_definition(_DumpingTool('schemaOfInput'))
+
+    assert definition['name'] == 'mcp_tool'
+    assert definition.get('parameters') is None

@@ -726,7 +726,6 @@ class BaseLlmFlow(ABC):
               async with Aclosing(
                   self._receive_from_model(
                       llm_connection,
-                      event_id,
                       invocation_context,
                       llm_request,
                   )
@@ -1107,7 +1106,6 @@ class BaseLlmFlow(ABC):
   async def _receive_from_model(
       self,
       llm_connection: BaseLlmConnection,
-      event_id: str,
       invocation_context: InvocationContext,
       llm_request: LlmRequest,
   ) -> AsyncGenerator[Event, None]:
@@ -1304,12 +1302,15 @@ class BaseLlmFlow(ABC):
     run_config = _require_run_config(invocation_context)
 
     # Preprocess before calling the LLM.
+    preprocess_yielded_final_response = False
     async with Aclosing(
         self._preprocess_async(invocation_context, llm_request)
     ) as agen:
       async for event in agen:
+        if event.get_function_responses() and event.is_final_response():
+          preprocess_yielded_final_response = True
         yield event
-    if invocation_context.end_invocation:
+    if invocation_context.end_invocation or preprocess_yielded_final_response:
       return
 
     # Resume the LLM agent based on the last event from the current branch.

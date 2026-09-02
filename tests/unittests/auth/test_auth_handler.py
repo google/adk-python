@@ -554,7 +554,11 @@ class TestGenerateAuthRequest:
     result = handler.generate_auth_request()
 
     assert mock_generate_auth_uri.called
-    assert result.exchanged_auth_credential == mock_credential
+    expected = mock_credential.model_copy(deep=True)
+    expected.oauth2.client_secret = None
+    assert result.exchanged_auth_credential == expected
+    assert result.raw_auth_credential.oauth2.client_secret is None
+    assert result.raw_auth_credential.oauth2.client_id == "mock_client_id"
 
   @patch("google.adk.auth.auth_handler.AuthHandler.generate_auth_uri")
   def test_preserves_credential_key_on_generated_request(
@@ -713,6 +717,32 @@ class TestGetAuthResponse:
     assert result.http.scheme == "bearer"
     assert result.http.credentials.token == "my_http_bearer_token"
 
+  @patch("google.adk.auth.oauth2_credential_util.OAuth2Session")
+  def test_reattaches_configured_client_for_exchange(
+      self, mock_oauth2_session, auth_config, oauth2_credentials_with_auth_code
+  ):
+    """Test exchanging a stored response that carries no client secret."""
+    mock_client = Mock()
+    mock_oauth2_session.return_value = mock_client
+    mock_client.fetch_token.return_value = OAuth2Token(
+        {"access_token": "mock_access_token"}
+    )
+    stored = oauth2_credentials_with_auth_code.model_copy(deep=True)
+    stored.oauth2.client_id = None
+    stored.oauth2.client_secret = None
+    state = MockState()
+    credential_key = "temp:" + auth_config.credential_key
+    state[credential_key] = stored
+
+    result = AuthHandler(auth_config).get_auth_response(state)
+
+    assert result.oauth2.access_token == "mock_access_token"
+    assert mock_oauth2_session.call_args[0][0] == "mock_client_id"
+    assert mock_oauth2_session.call_args[0][1] == "mock_client_secret"
+    # The exchanged token is kept, the secret that exchanged it is not.
+    assert state[credential_key].oauth2.access_token == "mock_access_token"
+    assert state[credential_key].oauth2.client_secret is None
+
 
 class TestParseAndStoreAuthResponse:
   """Tests for the parse_and_store_auth_response method."""
@@ -732,9 +762,9 @@ class TestParseAndStoreAuthResponse:
     await handler.parse_and_store_auth_response(state)
 
     credential_key = auth_config.credential_key
-    assert (
-        state["temp:" + credential_key] == auth_config.exchanged_auth_credential
-    )
+    expected = auth_config.exchanged_auth_credential.model_copy(deep=True)
+    expected.oauth2.client_secret = None
+    assert state["temp:" + credential_key] == expected
 
   @patch("google.adk.auth.auth_handler.AuthHandler.exchange_auth_token")
   @pytest.mark.asyncio

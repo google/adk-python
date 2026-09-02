@@ -1618,6 +1618,27 @@ class TestConvertInteractionEventToLlmResponse:
     assert part.thought is True
     assert len(state.parts) == 1
 
+  def test_thought_summary_delta_ignores_non_text_content(self):
+    """A thought summary carrying non-text content emits nothing."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={
+            'type': 'thought_summary',
+            'content': {
+                'type': 'image',
+                'data': 'aW1n',
+                'mime_type': 'image/png',
+            },
+        },
+    )
+    state = interactions_utils._StreamState()
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, state, interaction_id='int_t'
+    )
+    assert result is None
+    assert state.parts == []
+
   def test_thought_signature_delta_attaches_to_last_thought(self):
     """thought_signature mutates the last thought part and emits no event."""
     state = interactions_utils._StreamState()
@@ -1880,6 +1901,27 @@ class TestConvertInteractionEventToLlmResponse:
     assert support.segment.end_index == 5
     assert len(state.grounding_chunks) == 1
     assert len(state.grounding_supports) == 1
+
+  def test_text_annotation_delta_skips_non_url_citations(self):
+    """Annotations that are not url_citations contribute no grounding."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={
+            'type': 'text_annotation_delta',
+            'annotations': [
+                {'type': 'file_citation', 'file_id': 'f1'},
+                {'type': 'word_info', 'word': 'hello'},
+            ],
+        },
+    )
+    state = interactions_utils._StreamState()
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, state, interaction_id='int_an'
+    )
+    assert result is None
+    assert state.grounding_chunks == []
+    assert state.grounding_supports == []
 
   def test_function_result_delta(self):
     """function_result delta becomes a function_response part."""

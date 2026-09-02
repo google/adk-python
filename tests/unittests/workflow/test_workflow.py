@@ -1204,10 +1204,6 @@ async def test_multiple_outputs_rejected():
 
   Maps to: test_run_async_with_multiple_node_outputs_fails
   in test_workflow_agent.py.
-
-  NodeRunner raises ValueError but Runner swallows it in the
-  background task. This test is xfail until Runner error propagation
-  is implemented.
   """
 
   class _Node(BaseNode):

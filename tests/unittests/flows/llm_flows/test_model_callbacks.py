@@ -159,6 +159,22 @@ async def test_after_model_callback_noop():
   ) == [('root_agent', 'model_response')]
 
 
+def test_after_model_callback_lambda_with_arbitrary_param_names():
+  """Test that after_model_callback works with lambda having non-matching param names."""
+  responses = ['model_response']
+  mock_model = testing_utils.MockModel.create(responses=responses)
+  agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      after_model_callback=lambda ctx, resp: None,
+  )
+
+  runner = testing_utils.InMemoryRunner(agent)
+  assert testing_utils.simplify_events(runner.run('test')) == [
+      ('root_agent', 'model_response'),
+  ]
+
+
 @pytest.mark.asyncio
 async def test_on_model_callback_model_error_noop():
   """Test that the on_model_error_callback is a no-op when the model returns an error."""

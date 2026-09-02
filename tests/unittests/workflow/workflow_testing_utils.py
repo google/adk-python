@@ -258,14 +258,11 @@ def simplify_events_with_node_and_agent_state(
     *,
     include_state_delta: bool = False,
     include_inputs_and_triggers: bool = False,
-    include_resume_inputs: bool = False,
     include_workflow_output: bool = False,
 ):
   fields_to_exclude = {'run_id'}
   if not include_inputs_and_triggers:
     fields_to_exclude.add('input')
-  if not include_resume_inputs:
-    fields_to_exclude.add('resume_inputs')
 
   results = []
 
@@ -300,7 +297,6 @@ def simplify_events_with_node_and_agent_state(
             for k, v in node_state.items()
             if k not in fields_to_exclude
             and (k != 'interrupts' or v)  # Exclude empty interrupts
-            and (k != 'resume_inputs' or v)  # Exclude empty resume_inputs
         }
       results.append((author, {'nodes': simplified_nodes}))
   return results

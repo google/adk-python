@@ -719,7 +719,7 @@ class Runner:
           and event.author == 'user'
           and event.content
           and event.content.parts
-          and any(p.text for p in event.content.parts)
+          and not any(p.function_response for p in event.content.parts)
       ):
         return event.content
     return None
@@ -1238,146 +1238,40 @@ class Runner:
         session_id=session_id,
         get_session_config=run_config.get_session_config,
     )
-    rewind_event_index = -1
-    for i, event in enumerate(session.events):
-      if event.invocation_id == rewind_before_invocation_id:
-        rewind_event_index = i
-        break
+    from .sessions import _rewind_utils
 
-    if rewind_event_index == -1:
-      raise ValueError(
-          f'Invocation ID not found: {rewind_before_invocation_id}'
-      )
-
-    # Compute state delta to reverse changes
-    state_delta = await self._compute_state_delta_for_rewind(
-        session, rewind_event_index
+    await _rewind_utils.rewind_session(
+        session_service=self.session_service,
+        session=session,
+        rewind_before_invocation_id=rewind_before_invocation_id,
+        artifact_service=self.artifact_service,
+        app_name=self.app_name,
+        compute_state_delta=self._compute_state_delta_for_rewind,
+        compute_artifact_delta=self._compute_artifact_delta_for_rewind,
     )
-
-    # Compute artifact delta to reverse changes
-    artifact_delta = await self._compute_artifact_delta_for_rewind(
-        session, rewind_event_index
-    )
-
-    # Create rewind event
-    rewind_event = Event(
-        invocation_id=new_invocation_context_id(),
-        author='user',
-        actions=EventActions(
-            rewind_before_invocation_id=rewind_before_invocation_id,
-            state_delta=state_delta,
-            artifact_delta=artifact_delta,
-        ),
-    )
-
-    logger.info('Rewinding session to invocation: %s', rewind_event)
-
-    await self.session_service.append_event(session=session, event=rewind_event)
 
   async def _compute_state_delta_for_rewind(
       self, session: Session, rewind_event_index: int
   ) -> dict[str, Any]:
     """Computes the state delta to reverse changes."""
-    state_at_rewind_point: dict[str, Any] = {}
-    for i in range(rewind_event_index):
-      if session.events[i].actions.state_delta:
-        for k, v in session.events[i].actions.state_delta.items():
-          if k.startswith('app:') or k.startswith('user:'):
-            continue
-          if v is None:
-            state_at_rewind_point.pop(k, None)
-          else:
-            state_at_rewind_point[k] = v
+    from .sessions import _rewind_utils
 
-    current_state = session.state
-    rewind_state_delta = {}
-
-    # 1. Add/update keys in rewind_state_delta to match state_at_rewind_point.
-    for key, value_at_rewind in state_at_rewind_point.items():
-      if key not in current_state or current_state[key] != value_at_rewind:
-        rewind_state_delta[key] = value_at_rewind
-
-    # 2. Set keys to None in rewind_state_delta if they are in current_state
-    #    but not in state_at_rewind_point. These keys were added after the
-    #    rewind point and need to be removed.
-    for key in current_state:
-      if key.startswith('app:') or key.startswith('user:'):
-        continue
-      if key not in state_at_rewind_point:
-        rewind_state_delta[key] = None
-
-    return rewind_state_delta
+    return await _rewind_utils.compute_state_delta_for_rewind(
+        session, rewind_event_index
+    )
 
   async def _compute_artifact_delta_for_rewind(
       self, session: Session, rewind_event_index: int
   ) -> dict[str, int]:
     """Computes the artifact delta to reverse changes."""
-    if not self.artifact_service:
-      return {}
+    from .sessions import _rewind_utils
 
-    versions_at_rewind_point: dict[str, int] = {}
-    for i in range(rewind_event_index):
-      event = session.events[i]
-      if event.actions.artifact_delta:
-        versions_at_rewind_point.update(event.actions.artifact_delta)
-
-    current_versions: dict[str, int] = {}
-    for event in session.events:
-      if event.actions.artifact_delta:
-        current_versions.update(event.actions.artifact_delta)
-
-    rewind_artifact_delta = {}
-    for filename, vn in current_versions.items():
-      if filename.startswith('user:'):
-        # User artifacts are not restored on rewind.
-        continue
-      vt = versions_at_rewind_point.get(filename)
-      if vt == vn:
-        continue
-
-      rewind_artifact_delta[filename] = vn + 1
-      artifact: types.Part
-      if vt is None:
-        # Artifact did not exist at rewind point. Mark it as inaccessible.
-        artifact = types.Part(
-            inline_data=types.Blob(
-                mime_type='application/octet-stream', data=b''
-            )
-        )
-      else:
-        # Artifact version changed after rewind point. Restore to version at
-        # rewind point by loading the actual data via the artifact service.
-        loaded_artifact = await self.artifact_service.load_artifact(
-            app_name=self.app_name,
-            user_id=session.user_id,
-            session_id=session.id,
-            filename=filename,
-            version=vt,
-        )
-        if loaded_artifact is None:
-          logger.warning(
-              'Artifact %s version %d not found during rewind for'
-              ' session %s. Replacing with empty data.',
-              filename,
-              vt,
-              session.id,
-          )
-          artifact = types.Part(
-              inline_data=types.Blob(
-                  mime_type='application/octet-stream', data=b''
-              )
-          )
-        else:
-          artifact = loaded_artifact
-      await self.artifact_service.save_artifact(
-          app_name=self.app_name,
-          user_id=session.user_id,
-          session_id=session.id,
-          filename=filename,
-          artifact=artifact,
-      )
-
-    return rewind_artifact_delta
+    return await _rewind_utils.compute_artifact_delta_for_rewind(
+        session,
+        rewind_event_index,
+        artifact_service=self.artifact_service,
+        app_name=self.app_name,
+    )
 
   def _should_append_event(self, event: Event, is_live_call: bool) -> bool:
     """Checks if an event should be appended to the session."""
@@ -2114,6 +2008,15 @@ class Runner:
       run_config: The run config of the agent.
       state_delta: Optional state changes to apply to the session.
     """
+    is_function_response = bool(
+        new_message.parts
+        and any(p.function_response for p in new_message.parts)
+    )
+    if not is_function_response and self._find_user_message_for_invocation(
+        invocation_context.session.events, invocation_context.invocation_id
+    ):
+      return
+
     modified_user_message = (
         await invocation_context.plugin_manager.run_on_user_message_callback(
             invocation_context=invocation_context, user_message=new_message

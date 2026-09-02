@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+from collections.abc import Sequence
 import inspect
 import io
 import json
@@ -305,7 +306,7 @@ class LoadArtifactsTool(BaseTool):
       *,
       process_artifact: ProcessArtifactCallback | None = None,
       enable_spreadsheet_parsing: bool = False,
-  ):
+  ) -> None:
     """Initializes the tool.
 
     Args:
@@ -368,7 +369,21 @@ web UI)."""),
   async def run_async(
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
-    artifact_names: list[str] = args.get('artifact_names', [])
+    raw_artifact_names = args.get('artifact_names', [])
+    # Any sequence is accepted, because a caller that builds the args itself
+    # may pass a tuple.
+    if (
+        isinstance(raw_artifact_names, (str, bytes))
+        or not isinstance(raw_artifact_names, Sequence)
+        or not all(isinstance(name, str) for name in raw_artifact_names)
+    ):
+      return {
+          'error': "'artifact_names' must be a list of strings.",
+          'error_code': 'INVALID_ARGUMENTS',
+      }
+    artifact_names = [
+        name for name in raw_artifact_names if isinstance(name, str)
+    ]
     return {
         'artifact_names': artifact_names,
         'status': (
@@ -391,7 +406,7 @@ web UI)."""),
 
   async def _append_artifacts_to_llm_request(
       self, *, tool_context: ToolContext, llm_request: LlmRequest
-  ):
+  ) -> None:
     artifact_names = await tool_context.list_artifacts()
     if not artifact_names:
       return
@@ -413,7 +428,19 @@ web UI)."""),
       function_response = llm_request.contents[-1].parts[0].function_response
       if function_response and function_response.name == 'load_artifacts':
         response = function_response.response or {}
-        artifact_names = response.get('artifact_names', [])
+        raw_artifact_names = response.get('artifact_names', [])
+        if (
+            isinstance(raw_artifact_names, (str, bytes))
+            or not isinstance(raw_artifact_names, Sequence)
+            or not all(isinstance(name, str) for name in raw_artifact_names)
+        ):
+          logger.warning(
+              'Ignoring invalid artifact_names in load_artifacts response.'
+          )
+          return
+        artifact_names = [
+            name for name in raw_artifact_names if isinstance(name, str)
+        ]
         for artifact_name in artifact_names:
           # Try session-scoped first (default behavior)
           artifact = await tool_context.load_artifact(artifact_name)

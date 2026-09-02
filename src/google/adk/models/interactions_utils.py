@@ -39,22 +39,31 @@ from typing import AsyncGenerator
 from typing import TYPE_CHECKING
 
 from google.genai import types
+from google.genai.interactions import ArgumentsDelta
 from google.genai.interactions import AudioContentParam
+from google.genai.interactions import AudioDelta
+from google.genai.interactions import CodeExecutionCallDelta
 from google.genai.interactions import CodeExecutionCallStep
 from google.genai.interactions import CodeExecutionCallStepParam
+from google.genai.interactions import CodeExecutionResultDelta
 from google.genai.interactions import CodeExecutionResultStep
 from google.genai.interactions import CodeExecutionResultStepParam
 from google.genai.interactions import ContentParam
 from google.genai.interactions import DocumentContentParam
+from google.genai.interactions import DocumentDelta
 from google.genai.interactions import ErrorEvent
 from google.genai.interactions import FunctionCallStep
 from google.genai.interactions import FunctionCallStepParam
 from google.genai.interactions import FunctionParam
+from google.genai.interactions import FunctionResultDelta
 from google.genai.interactions import FunctionResultStep
 from google.genai.interactions import FunctionResultStepParam
 from google.genai.interactions import GenerationConfigParam
+from google.genai.interactions import GoogleSearchCallDelta
+from google.genai.interactions import GoogleSearchResultDelta
 from google.genai.interactions import GoogleSearchResultStep
 from google.genai.interactions import ImageContentParam
+from google.genai.interactions import ImageDelta
 from google.genai.interactions import Interaction
 from google.genai.interactions import InteractionCompletedEvent
 from google.genai.interactions import InteractionCreatedEvent
@@ -69,13 +78,20 @@ from google.genai.interactions import StepDeltaData
 from google.genai.interactions import StepParam
 from google.genai.interactions import StepStart
 from google.genai.interactions import StepStop
+from google.genai.interactions import TextAnnotationDelta
+from google.genai.interactions import TextContent
 from google.genai.interactions import TextContentParam
+from google.genai.interactions import TextDelta
+from google.genai.interactions import ThoughtSignatureDelta
 from google.genai.interactions import ThoughtStep
 from google.genai.interactions import ThoughtStepParam
+from google.genai.interactions import ThoughtSummaryDelta
 from google.genai.interactions import ToolParam
 from google.genai.interactions import UnknownStepDeltaData
+from google.genai.interactions import URLCitation
 from google.genai.interactions import UserInputStepParam
 from google.genai.interactions import VideoContentParam
+from google.genai.interactions import VideoDelta
 from pydantic import BaseModel
 from typing_extensions import deprecated
 
@@ -814,7 +830,7 @@ def _partial_grounding_response(
 
 
 def _handle_text(
-    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+    delta: TextDelta, state: _StreamState, interaction_id: str | None
 ) -> LlmResponse | None:
   text = delta.text
   if not text:
@@ -825,7 +841,9 @@ def _handle_text(
 
 
 def _handle_media(
-    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+    delta: ImageDelta | AudioDelta | VideoDelta | DocumentDelta,
+    state: _StreamState,
+    interaction_id: str | None,
 ) -> LlmResponse | None:
   """Handle image/audio/video/document deltas (shared data/uri/mime_type)."""
   data = delta.data
@@ -844,7 +862,7 @@ def _handle_media(
 
 
 def _handle_arguments_delta(
-    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+    delta: ArgumentsDelta, state: _StreamState, interaction_id: str | None
 ) -> LlmResponse | None:
   if not state.parts:
     return None
@@ -888,12 +906,10 @@ def _handle_unknown_delta(
 
 
 def _handle_thought_summary(
-    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+    delta: ThoughtSummaryDelta, state: _StreamState, interaction_id: str | None
 ) -> LlmResponse | None:
   content = delta.content
-  text = None
-  if content is not None and getattr(content, 'type', None) == 'text':
-    text = content.text
+  text = content.text if isinstance(content, TextContent) else None
   if not text:
     return None
   part = types.Part(text=text, thought=True)
@@ -902,7 +918,9 @@ def _handle_thought_summary(
 
 
 def _handle_thought_signature(
-    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+    delta: ThoughtSignatureDelta,
+    state: _StreamState,
+    interaction_id: str | None,
 ) -> LlmResponse | None:
   signature = delta.signature
   if not signature:
@@ -920,7 +938,9 @@ def _handle_thought_signature(
 
 
 def _handle_code_execution_call(
-    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+    delta: CodeExecutionCallDelta,
+    state: _StreamState,
+    interaction_id: str | None,
 ) -> LlmResponse | None:
   args = delta.arguments
   code = args.code if args else None
@@ -939,7 +959,9 @@ def _handle_code_execution_call(
 
 
 def _handle_code_execution_result(
-    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+    delta: CodeExecutionResultDelta,
+    state: _StreamState,
+    interaction_id: str | None,
 ) -> LlmResponse | None:
   part = types.Part(
       code_execution_result=types.CodeExecutionResult(
@@ -954,7 +976,9 @@ def _handle_code_execution_result(
 
 
 def _handle_google_search_call(
-    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+    delta: GoogleSearchCallDelta,
+    state: _StreamState,
+    interaction_id: str | None,
 ) -> LlmResponse | None:
   queries = delta.arguments.queries if delta.arguments else None
   if not queries:
@@ -965,7 +989,9 @@ def _handle_google_search_call(
 
 
 def _handle_google_search_result(
-    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+    delta: GoogleSearchResultDelta,
+    state: _StreamState,
+    interaction_id: str | None,
 ) -> LlmResponse | None:
   rendered = None
   for search_result in delta.result or []:
@@ -981,12 +1007,12 @@ def _handle_google_search_result(
 
 
 def _handle_text_annotation(
-    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+    delta: TextAnnotationDelta, state: _StreamState, interaction_id: str | None
 ) -> LlmResponse | None:
   new_chunks: list[types.GroundingChunk] = []
   new_supports: list[types.GroundingSupport] = []
   for annotation in delta.annotations or []:
-    if getattr(annotation, 'type', None) != 'url_citation':
+    if not isinstance(annotation, URLCitation):
       continue
     chunk_index = len(state.grounding_chunks) + len(new_chunks)
     new_chunks.append(
@@ -1017,7 +1043,7 @@ def _handle_text_annotation(
 
 
 def _handle_function_result(
-    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+    delta: FunctionResultDelta, state: _StreamState, interaction_id: str | None
 ) -> LlmResponse | None:
   part = types.Part(
       function_response=types.FunctionResponse(
@@ -1088,29 +1114,31 @@ def convert_interaction_event_to_llm_response(
 
   elif isinstance(event, StepDelta):
     delta = event.delta
-    delta_type = delta.type
 
-    if delta_type == 'text':
+    # Dispatch on the delta class, not on its ``type`` tag, so each handler can
+    # declare the one delta it reads. A renamed class fails at import; a renamed
+    # tag string would leave a branch that silently never matches.
+    if isinstance(delta, TextDelta):
       return _handle_text(delta, state, interaction_id)
-    elif delta_type == 'thought_summary':
+    elif isinstance(delta, ThoughtSummaryDelta):
       return _handle_thought_summary(delta, state, interaction_id)
-    elif delta_type == 'thought_signature':
+    elif isinstance(delta, ThoughtSignatureDelta):
       return _handle_thought_signature(delta, state, interaction_id)
-    elif delta_type in ('image', 'audio', 'video', 'document'):
+    elif isinstance(delta, (ImageDelta, AudioDelta, VideoDelta, DocumentDelta)):
       return _handle_media(delta, state, interaction_id)
-    elif delta_type == 'arguments_delta':
+    elif isinstance(delta, ArgumentsDelta):
       return _handle_arguments_delta(delta, state, interaction_id)
-    elif delta_type == 'code_execution_call':
+    elif isinstance(delta, CodeExecutionCallDelta):
       return _handle_code_execution_call(delta, state, interaction_id)
-    elif delta_type == 'code_execution_result':
+    elif isinstance(delta, CodeExecutionResultDelta):
       return _handle_code_execution_result(delta, state, interaction_id)
-    elif delta_type == 'google_search_call':
+    elif isinstance(delta, GoogleSearchCallDelta):
       return _handle_google_search_call(delta, state, interaction_id)
-    elif delta_type == 'google_search_result':
+    elif isinstance(delta, GoogleSearchResultDelta):
       return _handle_google_search_result(delta, state, interaction_id)
-    elif delta_type == 'text_annotation_delta':
+    elif isinstance(delta, TextAnnotationDelta):
       return _handle_text_annotation(delta, state, interaction_id)
-    elif delta_type == 'function_result':
+    elif isinstance(delta, FunctionResultDelta):
       return _handle_function_result(delta, state, interaction_id)
     else:
       return _handle_unknown_delta(delta, state, interaction_id)

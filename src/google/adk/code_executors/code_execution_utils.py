@@ -20,8 +20,10 @@ import base64
 import binascii
 import copy
 import dataclasses
+from typing import TYPE_CHECKING
 
-from google.genai import types
+if TYPE_CHECKING:
+  from google.genai import types
 
 
 @dataclasses.dataclass(frozen=True)
@@ -194,6 +196,8 @@ class CodeExecutionUtils:
     Returns:
       The constructed executable code part.
     """
+    from google.genai import types
+
     return types.Part.from_executable_code(
         code=code,
         language=types.Language.PYTHON,
@@ -211,6 +215,8 @@ class CodeExecutionUtils:
     Returns:
       The constructed code execution result part.
     """
+    from google.genai import types
+
     if code_execution_result.stderr:
       return types.Part.from_code_execution_result(
           outcome=types.Outcome.OUTCOME_FAILED,
@@ -250,6 +256,8 @@ class CodeExecutionUtils:
     """
     if not content.parts:
       return
+
+    from google.genai import types
 
     # Handle the conversion of trailing executable code parts.
     if content.parts[-1].executable_code:
