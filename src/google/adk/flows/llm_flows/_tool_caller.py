@@ -39,6 +39,7 @@ from google.adk.tools.computer_use.computer_use_tool import ComputerUseTool
 from google.genai import types
 
 from . import _tool_error_handler
+from ...agents._callback_metadata import CallbackHook
 from ...agents.active_streaming_tool import ActiveStreamingTool
 from ...events.event import Event
 from ...live.live_request_queue import LiveRequestQueue
@@ -679,13 +680,14 @@ async def _prepare_single(
   # Step 2: If no overrides are provided from the plugins, further run the
   # canonical callback.
   if override_response is None:
-    override_response = await _run_callbacks(
-        agent.canonical_before_tool_callbacks,  # type: ignore[arg-type]
-        _stop_on_non_none,
-        tool=tool,
-        args=function_args,
-        tool_context=tool_context,
-    )
+    with tool_context._callback_scope(CallbackHook.BEFORE_TOOL):
+      override_response = await _run_callbacks(
+          agent.canonical_before_tool_callbacks,  # type: ignore[arg-type]
+          _stop_on_non_none,
+          tool=tool,
+          args=function_args,
+          tool_context=tool_context,
+      )
 
   # Handle tool lookup failure if before-tool callbacks did not override the
   # response.
@@ -797,14 +799,15 @@ async def _execute_single_prepared_call(
     # Step 5: If no overrides are provided from the plugins, further run the
     # canonical after_tool_callbacks.
     if altered_function_response is None:
-      altered_function_response = await _run_callbacks(
-          agent.canonical_after_tool_callbacks,  # type: ignore[arg-type]
-          _stop_on_non_none,
-          tool=tool,
-          args=function_args,
-          tool_context=tool_context,
-          tool_response=callback_tool_response,
-      )
+      with tool_context._callback_scope(CallbackHook.AFTER_TOOL):
+        altered_function_response = await _run_callbacks(
+            agent.canonical_after_tool_callbacks,  # type: ignore[arg-type]
+            _stop_on_non_none,
+            tool=tool,
+            args=function_args,
+            tool_context=tool_context,
+            tool_response=callback_tool_response,
+        )
 
     # Step 6: If alternative response exists from after_tool_callback, use it
     # instead of the original function response.
