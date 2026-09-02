@@ -14,7 +14,9 @@
 
 """Backward compatibility module for AudioTranscriber.
 
-AudioTranscriber has been moved to ``google.adk.live.audio_transcriber``.
+AudioTranscriber is no longer public; it lives in
+``google.adk.live._audio_transcriber`` and this module only keeps
+existing imports working.
 """
 
 from __future__ import annotations
