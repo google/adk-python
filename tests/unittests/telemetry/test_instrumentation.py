@@ -14,6 +14,8 @@
 
 # pylint: disable=protected-access
 
+import asyncio
+import logging
 import time
 from unittest import mock
 
@@ -36,6 +38,8 @@ from google.genai import types
 from opentelemetry import trace
 from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import StatusCode
 import pytest
@@ -1508,3 +1512,102 @@ def test_record_invocation_defers_to_a_workflow_entrypoints_own_span(
 
   assert telemetry.spans() == []
   assert telemetry.point_attributes("gen_ai.invoke_workflow.duration") == []
+
+
+def _install_v1_tracer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> InMemorySpanExporter:
+  """Installs an in-memory SDK tracer and forces telemetry schema v1."""
+  # Schema v1 (the legacy ``invocation`` span) is the default off Agent Engine.
+  monkeypatch.delenv("ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN", raising=False)
+  monkeypatch.delenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", raising=False)
+
+  exporter = InMemorySpanExporter()
+  provider = TracerProvider()
+  provider.add_span_processor(SimpleSpanProcessor(exporter))
+  real_tracer = provider.get_tracer(__name__)
+  monkeypatch.setattr(tracing.tracer, "start_span", real_tracer.start_span)
+  return exporter
+
+
+async def _event_queue():
+  for i in range(10):
+    await asyncio.sleep(0)
+    yield i
+
+
+def _make_run_node():
+  """Returns an async generator mirroring runners._run_node_async."""
+
+  async def _run_node_async():
+    with _instrumentation.record_invocation(
+        entrypoint_node=None, conversation_id="conversation-id"
+    ):
+      async for event in _event_queue():
+        yield event
+
+  return _run_node_async
+
+
+def test_record_invocation_no_detach_error_on_early_close(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+  """Early caller stop must not log an OTel 'Failed to detach context' ERROR.
+
+  Regression test: when a caller stops iterating runners._run_node_async early,
+  the async generator is finalized in a different execution context than the one
+  where the invocation span was attached. Automatically detaching there raises
+  "Token was created in a different Context" (swallowed by OpenTelemetry but
+  logged at ERROR on every early-terminated run).
+  """
+  exporter = _install_v1_tracer(monkeypatch)
+  run_node = _make_run_node()
+
+  async def _caller_early_stop():
+    async for event in run_node():
+      if event == 2:
+        return  # leave generator open -> closed later in a different context
+
+  caplog.set_level(logging.ERROR, logger="opentelemetry.context")
+  # asyncio.run finalizes the still-open async generator via
+  # loop.shutdown_asyncgens(), reproducing the different-context close.
+  asyncio.run(_caller_early_stop())
+
+  detach_errors = [
+      record
+      for record in caplog.records
+      if "Failed to detach context" in record.getMessage()
+  ]
+  assert not detach_errors, f"unexpected detach errors: {detach_errors}"
+
+  # The invocation span is still ended, so trace data stays complete.
+  spans = exporter.get_finished_spans()
+  assert [span.name for span in spans] == ["invocation"]
+  assert spans[0].end_time is not None
+
+
+def test_record_invocation_full_consumption_still_records_span(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+  """Full consumption keeps working: span recorded, no detach error."""
+  exporter = _install_v1_tracer(monkeypatch)
+  run_node = _make_run_node()
+
+  async def _caller_full():
+    count = 0
+    async for _ in run_node():
+      count += 1
+    return count
+
+  caplog.set_level(logging.ERROR, logger="opentelemetry.context")
+  count = asyncio.run(_caller_full())
+
+  assert count == 10
+  detach_errors = [
+      record
+      for record in caplog.records
+      if "Failed to detach context" in record.getMessage()
+  ]
+  assert not detach_errors
+  spans = exporter.get_finished_spans()
+  assert [span.name for span in spans] == ["invocation"]
