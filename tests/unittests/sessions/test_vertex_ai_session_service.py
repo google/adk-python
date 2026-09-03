@@ -891,6 +891,26 @@ async def test_get_session_from_raw_event(
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+async def test_get_session_falls_back_to_resource_id_without_raw_event_id(
+    mock_api_client_instance: MockAsyncClient,
+) -> None:
+  mock_api_client_instance.session_dict['6'] = MOCK_SESSION_WITH_OVERRIDE_JSON
+  mock_api_client_instance.event_dict['6'] = (
+      copy.deepcopy(MOCK_EVENT_WITH_OVERRIDE_JSON),
+      None,
+  )
+  session_service = mock_vertex_ai_session_service()
+
+  session = await session_service.get_session(
+      app_name='123', user_id='user_with_override', session_id='6'
+  )
+
+  assert session is not None
+  assert session.events[0].id == '1'
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_get_session_with_many_events(mock_api_client_instance):
   mock_api_client_instance.session_dict['5'] = MOCK_SESSION_JSON_5
   mock_api_client_instance.event_dict['5'] = (
@@ -1244,6 +1264,30 @@ async def test_append_event_with_part_metadata_round_trips(
   assert appended.content is not None
   assert appended.content.parts[0].text == 'hello'
   assert appended.content.parts[0].part_metadata is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_round_trips_event_id() -> None:
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  event_to_append = Event(
+      invocation_id='inv_event_id_rt',
+      author='user',
+      timestamp=1734005535.0,
+  )
+
+  await session_service.append_event(session, event_to_append)
+  retrieved = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+
+  appended = next(
+      e for e in retrieved.events if e.invocation_id == 'inv_event_id_rt'
+  )
+  assert appended.id == event_to_append.id
 
 
 @pytest.mark.asyncio
