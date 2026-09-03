@@ -477,17 +477,25 @@ class VertexAiSessionService(BaseSessionService):
     async with self._get_api_client() as api_client:
 
       async def _do_append(cfg: dict[str, Any]) -> None:
-        await api_client.agent_engines.sessions.events.append(
-            name=(
-                f'reasoningEngines/{reasoning_engine_id}/sessions/{session.id}'
-            ),
-            author=event.author,
-            invocation_id=event.invocation_id,
-            timestamp=datetime.datetime.fromtimestamp(
-                event.timestamp, tz=datetime.timezone.utc
-            ),
-            config=cfg,
-        )
+        for attempt in range(2):
+          try:
+            await api_client.agent_engines.sessions.events.append(
+                name=(
+                    f'reasoningEngines/{reasoning_engine_id}/sessions/{session.id}'
+                ),
+                author=event.author,
+                invocation_id=event.invocation_id,
+                timestamp=datetime.datetime.fromtimestamp(
+                    event.timestamp, tz=datetime.timezone.utc
+                ),
+                config=cfg,
+            )
+            return
+          except ClientError as e:
+            if e.code == 429 and attempt == 0:
+              await asyncio.sleep(1.0)
+              continue
+            raise
 
       try:
         await _do_append(config)
