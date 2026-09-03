@@ -35,7 +35,6 @@ import click
 from click.testing import CliRunner
 import pytest
 
-from src.google.adk.agents import Agent
 import src.google.adk.cli.cli_deploy as cli_deploy
 import src.google.adk.cli.cli_tools_click as cli_tools_click
 
@@ -1880,8 +1879,10 @@ def _adk_app_template() -> type:
 def test_agent_engine_class_methods_match_the_template_operations() -> None:
   """The deployed resource advertises the operations the template registers."""
   adk_app_template = _adk_app_template()
-  # register_operations is an instance method, hence the throwaway agent.
-  operations = adk_app_template(agent=Agent(name="tmp")).register_operations()
+  # register_operations reads nothing off the instance, so call it unbound.
+  # Constructing the template would resolve Application Default Credentials,
+  # which a unit test must not depend on.
+  operations = adk_app_template.register_operations(None)
 
   declared = {
       (method["name"], method["api_mode"])
