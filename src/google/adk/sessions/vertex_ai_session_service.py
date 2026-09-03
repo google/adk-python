@@ -576,10 +576,13 @@ def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
     event_dict = copy.deepcopy(raw_event_dict)
     timestamp_obj = getattr(api_event_obj, 'timestamp', None)
     event_dict.update({
-        'id': api_event_obj.name.split('/')[-1],
         'invocation_id': getattr(api_event_obj, 'invocation_id', None),
         'author': getattr(api_event_obj, 'author', None),
     })
+    # Preserve the original ADK event id from raw_event so it stays stable
+    # across streaming and reload; only fall back to the Vertex resource
+    # name if raw_event lacks an id (older data).
+    event_dict.setdefault('id', api_event_obj.name.split('/')[-1])
     if timestamp_obj:
       event_dict['timestamp'] = timestamp_obj.timestamp()
     return Event.model_validate(event_dict)
