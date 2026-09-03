@@ -20,6 +20,7 @@ import asyncio
 import base64
 import binascii
 from concurrent.futures import ThreadPoolExecutor
+import contextlib
 import contextvars
 import copy
 import dataclasses
@@ -28,6 +29,7 @@ import json
 import logging
 import threading
 from typing import Any
+from typing import AsyncGenerator
 from typing import Callable
 from typing import cast
 from typing import Dict
@@ -747,6 +749,12 @@ async def _execute_single_prepared_call_async(
         function_response = await __call_tool_async(
             tool, args=function_args, tool_context=tool_context
         )
+        function_response = await _drain_tool_result_stream(
+            function_response,
+            tool=tool,
+            tool_context=tool_context,
+            invocation_context=invocation_context,
+        )
       except Exception as tool_error:
         error_response = await _run_on_tool_error_callbacks(
             invocation_context=invocation_context,
@@ -1207,6 +1215,152 @@ async def _emit_streaming_tool_event(
           ),
       )
   )
+
+
+async def _iter_tool_yields(
+    generator: object,
+) -> AsyncGenerator[object, None]:
+  """Yields every value a generator tool produces, async or sync.
+
+  Args:
+    generator: The async or sync generator the tool returned.
+
+  Yields:
+    Each value the tool yields, in order.
+  """
+  if inspect.isasyncgen(generator):
+    async with Aclosing(generator) as agen:
+      async for value in agen:
+        yield value
+    return
+
+  with contextlib.closing(cast(Any, generator)) as gen:
+    for value in gen:
+      yield value
+
+
+async def _emit_intermediate_tool_result(
+    function_result: object,
+    *,
+    tool: BaseTool,
+    tool_context: ToolContext,
+    invocation_context: InvocationContext,
+) -> None:
+  """Streams one intermediate result of a generator tool to the client.
+
+  Args:
+    function_result: The value the tool yielded.
+    tool: The tool that yielded it.
+    tool_context: The context of the call, for its function call id.
+    invocation_context: The invocation to enqueue on.
+  """
+  remaining_result, function_response_parts = _extract_multimodal_parts(
+      function_result
+  )
+  content = _build_function_response_content(
+      tool,
+      _normalize_tool_result(remaining_result),
+      tool_context.function_call_id,
+      function_response_parts,
+  )
+  for part in content.parts or []:
+    if part.function_response is not None:
+      part.function_response.will_continue = True
+
+  await invocation_context._enqueue_event(
+      Event(
+          content=content,
+          author=_require_agent_name(invocation_context),
+          invocation_id=invocation_context.invocation_id,
+          branch=invocation_context.branch,
+          partial=True,
+          actions=EventActions(),
+      )
+  )
+
+
+async def _drain_tool_result_stream(
+    function_response: object,
+    *,
+    tool: BaseTool,
+    tool_context: ToolContext,
+    invocation_context: InvocationContext,
+) -> object:
+  """Streams a generator tool's progress and returns the result for the model.
+
+  A tool that yields instead of returning reports progress. Every value it
+  yields but the last is streamed to the client as a partial event and is
+  never shown to the model; the last one is the tool result, and is the only
+  one the model sees. A yielded ``Event`` is a user-facing message rather than
+  a result, so it is streamed and then does not compete to be the last value.
+
+  Args:
+    function_response: The tool's return value. Anything that is not a
+      generator is returned unchanged.
+    tool: The tool being called.
+    tool_context: The context of the call.
+    invocation_context: The invocation to stream on.
+
+  Returns:
+    The last non-Event value the tool yielded, or None if it yielded none.
+  """
+  if not inspect.isasyncgen(function_response) and not inspect.isgenerator(
+      function_response
+  ):
+    return function_response
+
+  can_stream = invocation_context._event_queue is not None
+  if not can_stream:
+    logger.warning(
+        'Tool `%s` yields intermediate results, but this invocation has no'
+        ' event queue to deliver them on, so only its last result is'
+        ' reported. Streaming intermediate results requires running the agent'
+        ' through Runner.',
+        tool.name,
+    )
+
+  result: object = None
+  has_result = False
+  try:
+    async with Aclosing(_iter_tool_yields(function_response)) as stream:
+      async for value in stream:
+        if isinstance(value, Event):
+          if can_stream:
+            await _emit_streaming_tool_event(
+                value,
+                tool=tool,
+                tool_context=tool_context,
+                invocation_context=invocation_context,
+            )
+          continue
+        if has_result and can_stream:
+          await _emit_intermediate_tool_result(
+              result,
+              tool=tool,
+              tool_context=tool_context,
+              invocation_context=invocation_context,
+          )
+        result = value
+        has_result = True
+
+  except Exception:
+    if has_result and can_stream:
+      try:
+        await _emit_intermediate_tool_result(
+            result,
+            tool=tool,
+            tool_context=tool_context,
+            invocation_context=invocation_context,
+        )
+      except Exception:  # pylint: disable=broad-except
+        # Never masks the tool's own failure, which is what the caller has to
+        # see, with a failure to report progress about it.
+        logger.exception(
+            'Failed to report the last progress of failing tool `%s`.',
+            tool.name,
+        )
+    raise
+  return result
 
 
 async def _process_function_live_helper(
