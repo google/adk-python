@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import AsyncExitStack
 from datetime import timedelta
+from importlib.metadata import PackageNotFoundError
 import time
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
@@ -25,6 +26,7 @@ from unittest.mock import patch
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.tools.mcp_tool.session_context import _format_exception
+from google.adk.tools.mcp_tool.session_context import _mcp_wants_float_timeouts
 from google.adk.tools.mcp_tool.session_context import _read_timeout
 from google.adk.tools.mcp_tool.session_context import SessionContext
 import httpx
@@ -1013,13 +1015,44 @@ class TestReadTimeout:
   """ADK carries timeouts as float seconds and converts at the SDK boundary."""
 
   def test_none_stays_none(self):
-    assert _read_timeout(None) is None
+    with patch(
+        'google.adk.tools.mcp_tool.session_context._mcp_wants_float_timeouts',
+        return_value=False,
+    ):
+      assert _read_timeout(None) is None
+    with patch(
+        'google.adk.tools.mcp_tool.session_context._mcp_wants_float_timeouts',
+        return_value=True,
+    ):
+      assert _read_timeout(None) is None
 
-  def test_seconds_become_the_type_the_sdk_wants(self):
-    assert _read_timeout(30) == timedelta(seconds=30)
+  def test_mcp_1x_seconds_become_a_timedelta(self):
+    with patch(
+        'google.adk.tools.mcp_tool.session_context._mcp_wants_float_timeouts',
+        return_value=False,
+    ):
+      assert _read_timeout(30) == timedelta(seconds=30)
+      assert _read_timeout(0) == timedelta(seconds=0)
+      assert _read_timeout(0.5) == timedelta(seconds=0.5)
 
-  def test_zero_is_a_real_timeout_not_a_missing_one(self):
-    assert _read_timeout(0) == timedelta(seconds=0)
+  def test_mcp_2x_seconds_stay_seconds(self):
+    with patch(
+        'google.adk.tools.mcp_tool.session_context._mcp_wants_float_timeouts',
+        return_value=True,
+    ):
+      assert _read_timeout(30) == 30
+      assert _read_timeout(0) == 0
+      assert _read_timeout(0.5) == 0.5
+      assert isinstance(_read_timeout(30), float)
 
-  def test_fractional_seconds_survive(self):
-    assert _read_timeout(0.5) == timedelta(seconds=0.5)
+  def test_detection_failure_falls_back_to_timedelta(self):
+    with patch(
+        'google.adk.tools.mcp_tool.session_context.version',
+        side_effect=PackageNotFoundError('mcp'),
+    ):
+      _mcp_wants_float_timeouts.cache_clear()
+      try:
+        assert _mcp_wants_float_timeouts() is False
+        assert _read_timeout(30) == timedelta(seconds=30)
+      finally:
+        _mcp_wants_float_timeouts.cache_clear()

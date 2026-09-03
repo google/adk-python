@@ -18,6 +18,9 @@ import asyncio
 from contextlib import AbstractAsyncContextManager
 from contextlib import AsyncExitStack
 from datetime import timedelta
+from functools import lru_cache
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version
 import logging
 from types import TracebackType
 from typing import Any
@@ -37,7 +40,21 @@ logger = logging.getLogger('google_adk.' + __name__)
 _T = TypeVar('_T')
 
 
-def _read_timeout(seconds: Optional[float]) -> Optional[timedelta]:
+@lru_cache(maxsize=1)
+def _mcp_wants_float_timeouts() -> bool:
+  """Whether the installed MCP SDK expects plain seconds as timeouts.
+
+  MCP SDK 1.x requires a ``datetime.timedelta`` for ``read_timeout_seconds``,
+  while 2.x takes the number of seconds as a float. Detection failures fall
+  back to the 1.x behavior, which is what ADK pins today.
+  """
+  try:
+    return int(version('mcp').split('.')[0]) >= 2
+  except (PackageNotFoundError, ValueError, IndexError):
+    return False
+
+
+def _read_timeout(seconds: Optional[float]) -> Optional[float | timedelta]:
   """Converts a timeout in seconds to the type ``ClientSession`` expects.
 
   ADK carries every timeout as float seconds. MCP SDK 1.x wants a
@@ -52,6 +69,8 @@ def _read_timeout(seconds: Optional[float]) -> Optional[timedelta]:
   """
   if seconds is None:
     return None
+  if _mcp_wants_float_timeouts():
+    return float(seconds)
   return timedelta(seconds=seconds)
 
 
