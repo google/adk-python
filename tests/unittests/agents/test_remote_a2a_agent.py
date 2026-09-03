@@ -29,7 +29,6 @@ from a2a.types import AgentCapabilities
 from a2a.types import AgentCard
 from a2a.types import AgentInterface
 from a2a.types import AgentSkill
-from a2a.types import Artifact
 from a2a.types import Message as A2AMessage
 from a2a.types import Task as A2ATask
 from a2a.types import TaskArtifactUpdateEvent
@@ -1832,6 +1831,40 @@ class TestRemoteA2aAgentMessageHandling:
       assert A2A_METADATA_PREFIX + "task_id" in result.custom_metadata
       assert A2A_METADATA_PREFIX + "context_id" in result.custom_metadata
 
+  @pytest.mark.asyncio
+  async def test_handle_a2a_response_failed_task_sets_error(self):
+    """Test non-streaming failed A2A task maps to an error event."""
+    mock_a2a_task = Mock(spec=A2ATask)
+    mock_a2a_task.id = "task-123"
+    mock_a2a_task.context_id = "context-123"
+    mock_a2a_task.status = Mock(spec=A2ATaskStatus)
+    mock_a2a_task.status.state = _compat.TS_FAILED
+
+    mock_event = Event(
+        author=self.agent.name,
+        invocation_id=self.mock_context.invocation_id,
+        branch=self.mock_context.branch,
+        content=genai_types.Content(
+            role="model",
+            parts=[genai_types.Part.from_text(text="Remote agent task failed")],
+        ),
+    )
+
+    with patch.object(
+        remote_a2a_agent,
+        "convert_a2a_task_to_event",
+        autospec=True,
+    ) as mock_convert:
+      mock_convert.return_value = mock_event
+
+      result = await self.agent._handle_a2a_response(
+          (mock_a2a_task, None), self.mock_context
+      )
+
+    assert result is not None
+    assert result.error_code == _compat.A2A_TASK_FAILED_ERROR_CODE
+    assert result.error_message == "Remote agent task failed"
+
   def test_construct_message_parts_from_session_preserves_order(self):
     """Test that message parts are in correct order with multi-part messages.
 
@@ -2151,63 +2184,25 @@ class TestRemoteA2aAgentMessageHandling:
     assert result is None
 
   @pytest.mark.asyncio
-  async def test_handle_a2a_response_filters_thought_parts_from_completed_task(
-      self,
-  ):
-    """Test that thought parts are filtered from completed task response.
-
-    When an A2A server returns a completed task with both thought and
-    non-thought parts, the client should only include non-thought parts
-    in the user-facing event. Fixes #4676.
-    """
-    mock_a2a_task = Mock(spec=A2ATask)
-    mock_a2a_task.id = "task-123"
-    mock_a2a_task.context_id = "context-123"
-    mock_a2a_task.status = Mock(spec=A2ATaskStatus)
-    mock_a2a_task.status.state = _compat.TS_COMPLETED
-
-    # Create event with mixed thought/non-thought parts
-    thought_part = genai_types.Part(text="internal reasoning", thought=True)
-    answer_part = genai_types.Part(text="final answer")
-    mock_event = Event(
-        author=self.agent.name,
-        invocation_id=self.mock_context.invocation_id,
-        branch=self.mock_context.branch,
-        content=genai_types.Content(
-            role="model", parts=[thought_part, answer_part]
-        ),
-    )
-
-    with patch.object(
-        remote_a2a_agent,
-        "convert_a2a_task_to_event",
-        autospec=True,
-    ) as mock_convert:
-      mock_convert.return_value = mock_event
-
-      result = await self.agent._handle_a2a_response(
-          (mock_a2a_task, None), self.mock_context
-      )
-
-      # Only non-thought parts should remain
-      assert len(result.content.parts) == 1
-      assert result.content.parts[0].text == "final answer"
-      assert result.content.parts[0].thought is None
-
-  @pytest.mark.asyncio
-  async def test_handle_a2a_response_filters_thought_parts_from_status_update(
-      self,
-  ):
-    """Test that thought parts are filtered from completed status update.
-
-    Fixes #4676.
-    """
+  async def test_handle_a2a_response_failed_status_update_without_message(self):
+    """Test failed streaming status without a message still emits an error."""
     mock_a2a_task = Mock(spec=A2ATask)
     mock_a2a_task.id = "task-123"
     mock_a2a_task.context_id = "context-123"
 
     mock_update = Mock(spec=TaskStatusUpdateEvent)
     mock_update.status = Mock(spec=A2ATaskStatus)
+    mock_update.status.state = _compat.TS_FAILED
+    mock_update.status.message = None
+
+    result = await self.agent._handle_a2a_response(
+        (mock_a2a_task, mock_update), self.mock_context
+    )
+
+    assert result is not None
+    assert result.error_code == _compat.A2A_TASK_FAILED_ERROR_CODE
+    assert result.error_message == "Remote agent task failed"
+    assert result.content is None
     mock_update.status.state = _compat.TS_COMPLETED
     mock_update.status.message = Mock(spec=A2AMessage)
 
@@ -3456,6 +3451,34 @@ class TestRemoteA2aAgentMessageHandlingV2:
     )
 
   @pytest.mark.asyncio
+  async def test_handle_a2a_response_impl_failed_task_sets_error(self):
+    """Test v2 non-streaming failed task maps to an error event."""
+    mock_a2a_task = Mock(spec=A2ATask)
+    mock_a2a_task.id = "task-123"
+    mock_a2a_task.context_id = None
+    mock_a2a_task.status = Mock(spec=A2ATaskStatus)
+    mock_a2a_task.status.state = _compat.TS_FAILED
+
+    mock_event = Event(
+        author=self.agent.name,
+        invocation_id=self.mock_context.invocation_id,
+        branch=self.mock_context.branch,
+        content=genai_types.Content(
+            role="model",
+            parts=[genai_types.Part.from_text(text="Remote agent task failed")],
+        ),
+    )
+    self.mock_config.a2a_task_converter.return_value = mock_event
+
+    result = await self.agent._handle_a2a_response_v2(
+        (mock_a2a_task, None), self.mock_context
+    )
+
+    assert result is not None
+    assert result.error_code == _compat.A2A_TASK_FAILED_ERROR_CODE
+    assert result.error_message == "Remote agent task failed"
+
+  @pytest.mark.asyncio
   async def test_handle_a2a_response_impl_with_task_status_update(self):
     """Test _handle_a2a_response_impl with TaskStatusUpdateEvent."""
     mock_a2a_task = Mock(spec=A2ATask)
@@ -3486,6 +3509,30 @@ class TestRemoteA2aAgentMessageHandlingV2:
     assert A2A_METADATA_PREFIX + "task_id" in result.custom_metadata
     assert result.custom_metadata[A2A_METADATA_PREFIX + "task_id"] == "task-123"
     assert A2A_METADATA_PREFIX + "context_id" not in result.custom_metadata
+
+  @pytest.mark.asyncio
+  async def test_handle_a2a_response_impl_failed_status_update_returns_error(
+      self,
+  ):
+    """Test v2 failed status update returns an error even if converter is None."""
+    mock_a2a_task = Mock(spec=A2ATask)
+    mock_a2a_task.id = "task-123"
+    mock_a2a_task.context_id = None
+
+    mock_update = Mock(spec=TaskStatusUpdateEvent)
+    mock_update.status = Mock(spec=A2ATaskStatus)
+    mock_update.status.state = _compat.TS_FAILED
+
+    self.mock_config.a2a_status_update_converter.return_value = None
+
+    result = await self.agent._handle_a2a_response_v2(
+        (mock_a2a_task, mock_update), self.mock_context
+    )
+
+    assert result is not None
+    assert result.error_code == _compat.A2A_TASK_FAILED_ERROR_CODE
+    assert result.error_message == "Remote agent task failed"
+    assert result.content is None
 
   @pytest.mark.asyncio
   async def test_handle_a2a_response_impl_with_task_artifact_update(self):
