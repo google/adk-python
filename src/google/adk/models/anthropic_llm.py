@@ -717,6 +717,7 @@ def message_to_generate_content_response(
       ),
       usage_metadata=usage_metadata,
       finish_reason=to_google_genai_finish_reason(message.stop_reason),
+      model_version=message.model,
   )
 
 
@@ -1074,6 +1075,7 @@ class AnthropicLlm(BaseLlm):
     cached_input_tokens: int | None = None
     cache_creation_tokens: int | None = None
     stop_reason: Optional[anthropic_types.StopReason] = None
+    model_version: Optional[str] = None
 
     async for event in raw_stream:
       if event.type == "message_start":
@@ -1084,6 +1086,7 @@ class AnthropicLlm(BaseLlm):
         cache_creation_tokens = _extract_cache_creation_token_count(
             event.message.usage
         )
+        model_version = event.message.model
 
       elif event.type == "content_block_start":
         block = event.content_block
@@ -1117,6 +1120,7 @@ class AnthropicLlm(BaseLlm):
                   role="model",
                   parts=[types.Part(text=delta.thinking, thought=True)],
               ),
+              model_version=model_version,
               partial=True,
           )
         elif isinstance(delta, anthropic_types.SignatureDelta):
@@ -1141,6 +1145,7 @@ class AnthropicLlm(BaseLlm):
                   role="model",
                   parts=[types.Part.from_text(text=delta.text)],
               ),
+              model_version=model_version,
               partial=True,
           )
         elif isinstance(delta, anthropic_types.InputJSONDelta):
@@ -1213,6 +1218,7 @@ class AnthropicLlm(BaseLlm):
         content=types.Content(role="model", parts=all_parts),
         usage_metadata=usage_metadata,
         finish_reason=to_google_genai_finish_reason(stop_reason),
+        model_version=model_version,
         partial=False,
     )
 

@@ -1332,7 +1332,10 @@ async def test_streaming_text_yields_partial_and_final():
   events = [
       MagicMock(
           type="message_start",
-          message=MagicMock(usage=MagicMock(input_tokens=10, output_tokens=0)),
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=MagicMock(input_tokens=10, output_tokens=0),
+          ),
       ),
       MagicMock(
           type="content_block_start",
@@ -1397,7 +1400,10 @@ async def test_streaming_tool_use_yields_function_call():
   events = [
       MagicMock(
           type="message_start",
-          message=MagicMock(usage=MagicMock(input_tokens=20, output_tokens=0)),
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=MagicMock(input_tokens=20, output_tokens=0),
+          ),
       ),
       MagicMock(
           type="content_block_start",
@@ -1480,7 +1486,10 @@ async def test_streaming_passes_stream_true_to_create():
   events = [
       MagicMock(
           type="message_start",
-          message=MagicMock(usage=MagicMock(input_tokens=5, output_tokens=0)),
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=MagicMock(input_tokens=5, output_tokens=0),
+          ),
       ),
       MagicMock(
           type="content_block_start",
@@ -1818,6 +1827,38 @@ def test_message_to_generate_content_response_reports_cache_read_tokens():
   assert response.usage_metadata.cached_content_token_count == 75
 
 
+def test_message_to_generate_content_response_sets_model_version():
+  """LlmResponse.model_version reflects the resolved snapshot Anthropic served.
+
+  The requested model can be an alias (e.g. "claude-sonnet-4-5"); the
+  response's `model` field is the concrete snapshot that actually served it,
+  and that is what should end up in model_version.
+  """
+  message = anthropic_types.Message(
+      id="msg_model_version",
+      content=[
+          anthropic_types.TextBlock(text="hi", type="text", citations=None)
+      ],
+      model="claude-sonnet-4-20250514",
+      role="assistant",
+      stop_reason="end_turn",
+      stop_sequence=None,
+      type="message",
+      usage=anthropic_types.Usage(
+          input_tokens=100,
+          output_tokens=20,
+          cache_creation_input_tokens=0,
+          cache_read_input_tokens=0,
+          server_tool_use=None,
+          service_tier=None,
+      ),
+  )
+
+  response = message_to_generate_content_response(message)
+
+  assert response.model_version == "claude-sonnet-4-20250514"
+
+
 def test_message_to_generate_content_response_no_cache_read_tokens():
   """Absent cache_read_input_tokens yields cached_content_token_count=None."""
   from google.adk.models.anthropic_llm import message_to_generate_content_response
@@ -2049,12 +2090,13 @@ async def test_streaming_reports_cache_creation_tokens():
       MagicMock(
           type="message_start",
           message=MagicMock(
+              model="claude-sonnet-4-20250514",
               usage=MagicMock(
                   input_tokens=100,
                   output_tokens=0,
                   cache_creation_input_tokens=50,
                   cache_read_input_tokens=0,
-              )
+              ),
           ),
       ),
       MagicMock(
@@ -2096,6 +2138,71 @@ async def test_streaming_reports_cache_creation_tokens():
   assert final_response.usage_metadata.cache_creation_input_tokens == 50
   dumped = final_response.model_dump()
   assert "usage_metadata" in dumped
+
+
+async def test_streaming_sets_model_version():
+  """model_version is set on every streamed response, partials included.
+
+  message_start carries the resolved snapshot before any content arrives, so
+  every LlmResponse yielded afterwards -- partial deltas and the final
+  aggregated response alike -- should carry it, matching the parity
+  lite_llm.py already has for its own partial yields.
+  """
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+
+  events = [
+      MagicMock(
+          type="message_start",
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=MagicMock(
+                  input_tokens=100,
+                  output_tokens=0,
+                  cache_creation_input_tokens=0,
+                  cache_read_input_tokens=0,
+              ),
+          ),
+      ),
+      MagicMock(
+          type="content_block_start",
+          index=0,
+          content_block=anthropic_types.TextBlock(text="", type="text"),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=0,
+          delta=anthropic_types.TextDelta(text="Hi", type="text_delta"),
+      ),
+      MagicMock(type="content_block_stop", index=0),
+      MagicMock(
+          type="message_delta",
+          delta=MagicMock(stop_reason="end_turn"),
+          usage=MagicMock(output_tokens=20),
+      ),
+      MagicMock(type="message_stop"),
+  ]
+
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_make_mock_stream_events(events)
+  )
+
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    responses = [
+        r async for r in llm.generate_content_async(llm_request, stream=True)
+    ]
+
+  assert len(responses) == 2
+  partial_response, final_response = responses
+  assert partial_response.partial is True
+  assert partial_response.model_version == "claude-sonnet-4-20250514"
+  assert final_response.partial is False
+  assert final_response.model_version == "claude-sonnet-4-20250514"
 
 
 def test_part_to_message_block_thinking_roundtrip():
@@ -2226,7 +2333,10 @@ async def test_streaming_thinking_yields_partial_and_final():
   events = [
       MagicMock(
           type="message_start",
-          message=MagicMock(usage=MagicMock(input_tokens=15, output_tokens=0)),
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=MagicMock(input_tokens=15, output_tokens=0),
+          ),
       ),
       # Thinking block start
       MagicMock(
@@ -2334,12 +2444,13 @@ async def test_streaming_reports_thinking_tokens_disjoint_from_candidates():
       MagicMock(
           type="message_start",
           message=MagicMock(
+              model="claude-sonnet-4-20250514",
               usage=anthropic_types.Usage(
                   input_tokens=15,
                   output_tokens=0,
                   cache_read_input_tokens=5,
                   cache_creation_input_tokens=0,
-              )
+              ),
           ),
       ),
       MagicMock(
@@ -2420,7 +2531,10 @@ async def test_streaming_thinking_captures_signature_delta():
   events = [
       MagicMock(
           type="message_start",
-          message=MagicMock(usage=MagicMock(input_tokens=15, output_tokens=0)),
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=MagicMock(input_tokens=15, output_tokens=0),
+          ),
       ),
       MagicMock(
           type="content_block_start",
@@ -2492,7 +2606,10 @@ async def test_streaming_passes_thinking_param():
   events = [
       MagicMock(
           type="message_start",
-          message=MagicMock(usage=MagicMock(input_tokens=5, output_tokens=0)),
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=MagicMock(input_tokens=5, output_tokens=0),
+          ),
       ),
       MagicMock(
           type="content_block_start",
@@ -2546,7 +2663,10 @@ async def test_streaming_redacted_thinking_block_preserved_in_final():
   events = [
       MagicMock(
           type="message_start",
-          message=MagicMock(usage=MagicMock(input_tokens=8, output_tokens=0)),
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=MagicMock(input_tokens=8, output_tokens=0),
+          ),
       ),
       MagicMock(
           type="content_block_start",
@@ -2811,7 +2931,10 @@ async def test_streaming_no_system_instruction_passes_not_given():
   events = [
       MagicMock(
           type="message_start",
-          message=MagicMock(usage=MagicMock(input_tokens=1, output_tokens=0)),
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=MagicMock(input_tokens=1, output_tokens=0),
+          ),
       ),
       MagicMock(
           type="content_block_start",
@@ -3209,7 +3332,10 @@ async def test_streaming_sets_finish_reason():
   events = [
       MagicMock(
           type="message_start",
-          message=MagicMock(usage=MagicMock(input_tokens=5, output_tokens=0)),
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=MagicMock(input_tokens=5, output_tokens=0),
+          ),
       ),
       MagicMock(
           type="content_block_start",
