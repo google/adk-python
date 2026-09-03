@@ -739,6 +739,85 @@ class TestA2AToEventConverters:
       assert called_message.role == _compat.ROLE_AGENT
       assert called_message.parts == [artifact_part]
 
+  @pytest.mark.parametrize(
+      "terminal_state",
+      [_compat.TS_COMPLETED, _compat.TS_FAILED, _compat.TS_CANCELED],
+  )
+  def test_convert_a2a_task_to_event_terminal_task_is_final_response(
+      self, terminal_state
+  ):
+    """A terminal task carrying tool activity must read as a final response."""
+    task = Task(
+        id="task-1",
+        context_id="context-1",
+        status=_compat.make_task_status(
+            terminal_state, timestamp="2024-01-01T00:00:00Z"
+        ),
+        artifacts=[
+            _compat.make_artifact(
+                artifact_id="art-1",
+                artifact_type="message",
+                parts=[_compat.make_text_part("fr")],
+            )
+        ],
+    )
+
+    def part_converter(part):
+      return [
+          genai_types.Part(
+              function_response=genai_types.FunctionResponse(
+                  id="call-1", name="divide", response={"quotient": 5}
+              )
+          )
+      ]
+
+    result = convert_a2a_task_to_event(
+        task,
+        "test-author",
+        self.mock_invocation_context,
+        part_converter=part_converter,
+    )
+
+    assert len(result.get_function_responses()) == 1
+    assert result.actions.skip_summarization is True
+    assert result.is_final_response() is True
+
+  def test_convert_a2a_task_to_event_working_task_is_not_final(self):
+    """An in-flight task must keep reporting that the turn is still open."""
+    task = Task(
+        id="task-1",
+        context_id="context-1",
+        status=_compat.make_task_status(
+            _compat.TS_WORKING, timestamp="2024-01-01T00:00:00Z"
+        ),
+        artifacts=[
+            _compat.make_artifact(
+                artifact_id="art-1",
+                artifact_type="message",
+                parts=[_compat.make_text_part("fr")],
+            )
+        ],
+    )
+
+    def part_converter(part):
+      return [
+          genai_types.Part(
+              function_response=genai_types.FunctionResponse(
+                  id="call-1", name="divide", response={"quotient": 5}
+              )
+          )
+      ]
+
+    result = convert_a2a_task_to_event(
+        task,
+        "test-author",
+        self.mock_invocation_context,
+        part_converter=part_converter,
+    )
+
+    assert result.actions.skip_summarization is None
+    assert result.is_final_response() is False
+
   def test_convert_a2a_task_to_event_with_status_message(self):
     """Test convert_a2a_task_to_event with status message (no artifacts)."""
 

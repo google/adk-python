@@ -51,6 +51,24 @@ DEFAULT_ERROR_MESSAGE = "An error occurred during processing"
 # Logger
 logger = logging.getLogger("google_adk." + __name__)
 
+_TERMINAL_TASK_STATES = frozenset({
+    _compat.TS_COMPLETED,
+    _compat.TS_FAILED,
+    _compat.TS_CANCELED,
+})
+"""Task states that mean the peer's turn is over."""
+
+
+def _is_terminal_task(a2a_task: Task) -> bool:
+  """Returns whether the task reports a state that ends the peer's turn.
+
+  ``state`` is read defensively: 1.x tasks carry a protobuf ``TaskStatus``
+  whose fields are not always reachable on stand-in objects, and an
+  unreadable state simply means we cannot claim the turn is over.
+  """
+  status = getattr(a2a_task, "status", None)
+  return getattr(status, "state", None) in _TERMINAL_TASK_STATES
+
 
 AdkEventToA2AEventsConverter = Callable[
     [
@@ -256,6 +274,12 @@ def convert_a2a_task_to_event(
         event: Event = convert_a2a_message_to_event(
             message, author, invocation_context, part_converter=part_converter
         )
+        if _is_terminal_task(a2a_task):
+          # See the note in ``to_adk_event.convert_a2a_task_to_event``: a
+          # terminal task is the end of the peer's turn, but the event holds
+          # the peer's tool activity, so ``is_final_response()`` would report
+          # False without this.
+          event.actions.skip_summarization = True
         return event
       except Exception as e:
         logger.error("Failed to convert A2A task message to event: %s", e)
