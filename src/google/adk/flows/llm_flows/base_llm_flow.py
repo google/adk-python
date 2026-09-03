@@ -55,7 +55,7 @@ from ._invocation_utils import as_llm_agent as _as_llm_agent
 from ._invocation_utils import copy_http_options
 from ._invocation_utils import require_agent as _require_agent
 from ._invocation_utils import require_run_config as _require_run_config
-from ._resume_utils import decide_resume
+from ._resume_utils import decide_step_resume
 from ._resume_utils import ResumeAction
 from .functions import build_auth_request_event
 
@@ -688,40 +688,16 @@ class BaseLlmFlow(ABC):
     if invocation_context.end_invocation or preprocess_yielded_final_response:
       return
 
-    # Resume the LLM agent based on the last event from the current branch.
-    # 1. User content: continue the normal flow
-    # 2. Function call: call the tool and get the response event.
-    events = invocation_context._get_events(
-        current_invocation=True, current_branch=True
+    # Check if the step should pause or replay function calls from a previous run.
+    resume_decision = decide_step_resume(
+        invocation_context, llm_request.tools_dict
     )
-
-    # For a multi-event branch, decide whether to pause (unanswered tool
-    # calls or LROs), replay unexecuted tool calls, or continue to the LLM.
-    if invocation_context.is_resumable and events and len(events) > 1:
-      decision = decide_resume(
-          invocation_context, events, llm_request.tools_dict
-      )
-      if decision.action is ResumeAction.PAUSE:
-        return
-      if decision.action is ResumeAction.REPLAY_CALLS:
-        async with Aclosing(
-            self._replay_function_calls(
-                invocation_context, decision.replay_event(), llm_request
-            )
-        ) as agen:
-          async for event in agen:
-            yield event
-        return
-
-    if (
-        invocation_context.is_resumable
-        and events
-        and not events[-1].partial
-        and events[-1].get_function_calls()
-    ):
+    if resume_decision.action is ResumeAction.PAUSE:
+      return
+    if resume_decision.action is ResumeAction.REPLAY_CALLS:
       async with Aclosing(
           self._replay_function_calls(
-              invocation_context, events[-1], llm_request
+              invocation_context, resume_decision.replay_event(), llm_request
           )
       ) as agen:
         async for event in agen:
