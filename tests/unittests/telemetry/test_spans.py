@@ -32,6 +32,7 @@ from google.adk.auth.auth_tool import AuthToolArguments
 from google.adk.errors.tool_execution_error import ToolErrorType
 from google.adk.errors.tool_execution_error import ToolExecutionError
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.models.cache_metadata import CacheMetadata
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
@@ -1167,6 +1168,74 @@ def test_trace_merged_tool_calls_sets_correct_attributes(
   parsed = json.loads(recorded_response)
   assert parsed['id'] == 'test_event_id'
   assert 'merged_details' in recorded_response
+
+
+def test_trace_merged_tool_calls_redacts_credential_in_state_delta(
+    monkeypatch, mock_span_fixture
+):
+  """The merged-event span this function builds dumps the whole event,
+  including actions.state_delta -- exactly where
+  SessionStateCredentialService.save_credential parks an exchanged
+  AuthCredential under an app-chosen key (see redact_credential_secrets'
+  docstring). Unlike the other spans this function's own docstring says
+  it exists to unblock (dev-UI /debug/trace requests), this one was not
+  covered by the earlier redaction work in this file.
+  """
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  credential = AuthCredential(
+      auth_type='oauth2',
+      oauth2=OAuth2Auth(
+          client_id='public-client-id',
+          client_secret='should-never-reach-the-trace',
+      ),
+  )
+  merged_event = Event(
+      invocation_id='inv-1',
+      author='root_agent',
+      id='merged-event-id',
+      content=types.Content(
+          role='user',
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      id='fc-1',
+                      name='connect_calendar',
+                      response={'status': 'connected'},
+                  )
+              )
+          ],
+      ),
+      actions=EventActions(
+          state_delta={
+              'my_tool:oauth2:abcd1234': credential.model_dump(
+                  by_alias=True, exclude_none=True, mode='json'
+              )
+          }
+      ),
+  )
+
+  trace_merged_tool_calls(
+      response_event_id=merged_event.id,
+      function_response_event=merged_event,
+  )
+
+  calls = [
+      call_obj
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
+      if call_obj.args[0] == 'gcp.vertex.agent.tool_response'
+  ]
+  assert len(calls) == 1
+  serialized = calls[0].args[1]
+
+  assert 'should-never-reach-the-trace' not in serialized
+  # Must not "redact" by blanking the whole attribute the UI renders --
+  # everything else the merged event carries should still be there.
+  assert 'public-client-id' in serialized
+  assert 'connect_calendar' in serialized
+  assert 'my_tool:oauth2:abcd1234' in serialized
 
 
 def test_trace_tool_call_skips_non_recording_span(

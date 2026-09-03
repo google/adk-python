@@ -133,6 +133,21 @@ def redact_credential_secrets(value: Any) -> Any:
   built by json-serializing a dict first) is opaque to this walker, which
   only descends real dicts and lists. Call this before serializing to a
   string, not after.
+
+  `_is_credential_shaped` keys on the by-alias field spelling
+  (`authType`, not `auth_type`), since that's what every dump this
+  function is actually called on carries in practice -- an
+  outbound-facing dict is by-alias by construction (matching the wire
+  format), and a dict parked in session state by
+  `SessionStateCredentialService.save_credential` is too, verified
+  against a real end-to-end run to be byte-equal to
+  `AuthCredential.model_dump(by_alias=True, exclude_none=True,
+  mode="json")`. `BaseCredentialService.save_credential` is a public
+  extension point, though, and a different implementation that stores
+  the model object itself, or dumps it without `by_alias=True`, would
+  get a silent no-op here rather than an error: `_is_credential_shaped`
+  would find no `authType` key, conclude the dict isn't a credential,
+  and leave it untouched.
   """
   if _is_credential_shaped(value):
     return _strip_secret_keys(value)

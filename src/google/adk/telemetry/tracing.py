@@ -29,6 +29,7 @@ from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from contextlib import contextmanager
 from contextlib import ExitStack
+import json
 import logging
 import os
 import re
@@ -532,8 +533,27 @@ def trace_merged_tool_calls(
   span.set_attribute("gcp.vertex.agent.event_id", response_event_id)
   if telemetry_config.should_add_content_to_legacy_spans:
     try:
-      function_response_event_json = function_response_event.model_dump_json(
-          exclude_none=True
+      # Unlike the other spans this function's docstring says it exists
+      # to unblock (dev-UI /debug/trace requests), this one dumps the
+      # whole merged event -- and an event's actions.state_delta is
+      # exactly where SessionStateCredentialService.save_credential parks
+      # an exchanged AuthCredential under an app-chosen key (see
+      # _is_credential_shaped's docstring). model_dump_json would emit
+      # that credential dict unredacted; redacting the dict before
+      # serializing it to a string is required, same as elsewhere in
+      # this file, since redaction can't reach inside an already-built
+      # string. separators=(",", ":") matches model_dump_json's default,
+      # compact output -- json.dumps's own default inserts a space after
+      # each separator, which would change this attribute's bytes for
+      # every event, not just ones carrying a credential.
+      function_response_event_json = json.dumps(
+          redact_credential_secrets(
+              function_response_event.model_dump(
+                  exclude_none=True, mode="json"
+              )
+          ),
+          ensure_ascii=False,
+          separators=(",", ":"),
       )
     except Exception:  # pylint: disable=broad-exception-caught
       function_response_event_json = "<not serializable>"
