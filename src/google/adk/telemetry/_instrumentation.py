@@ -33,6 +33,7 @@ from . import _hallucination
 from . import _metrics
 from . import _token_usage
 from . import tracing
+from ._finish_reason import is_reported_finish_reason
 from ._schema_version import resolve_schema_version
 from ._schema_version import SCHEMA_VERSION_SEMCONV_ALIGNED
 from .context import TelemetryConfig
@@ -276,12 +277,17 @@ class TelemetryContext:
       return
 
     tracing.trace_inference_result(invocation_context, self.span, response)
-    # A non-partial response is the end of the inference: end the span before
-    # the response is handed back to the caller, so what the caller does with
-    # it (running the tool the model asked for) is not nested inside the
-    # inference span. Partial chunks keep it open until the final one arrives.
+    # The inference ends at the response that says why generation stopped. End
+    # the span there, before the response is handed back to the caller, so what
+    # the caller does with it (running the tool the model asked for) is not
+    # nested inside the inference span.
+    #
+    # `response.partial` is deliberately not consulted. It is set within ADK
+    # rather than by the model, and a `BaseLlm` implementation is free to leave
+    # it out, which made chunk one look like the end of the turn. The finish
+    # reason comes from the model and marks the last response reliably.
     if (
-        not response.partial
+        is_reported_finish_reason(response.finish_reason)
         and isinstance(self.span, tracing.GenerateContentSpan)
         and (exit_stack := self.span._exit_stack) is not None  # pylint: disable=protected-access
     ):
