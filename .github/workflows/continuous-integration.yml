@@ -234,3 +234,65 @@ jobs:
           uv run pytest tests/unittests/a2a \
             tests/unittests/agents/test_remote_a2a_agent.py \
             tests/unittests/integrations/agent_registry/test_agent_registry.py
+
+  # 3c. Dual-version MCP coverage: the pin admits both SDK majors, but the lock
+  # resolves 1.x, so nothing else here ever exercises 2.x. This job reinstalls
+  # mcp 2.x and re-runs the MCP tests, keeping the dependencies seam verified
+  # against the major it is not resolved against by default.
+  # TODO: Remove this 2.x re-run once mcp 1.x support is dropped.
+  unit-test-mcp-v2:
+    name: MCP v2 Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          enable-cache: true
+
+      - name: Set the dependency resolution cutoff
+        # PyPI uploads a release's wheels one platform at a time, so resolving
+        # mid-upload can select a version whose wheel for this interpreter does
+        # not exist yet and fail the install. Skip the last hour of releases.
+        run: echo "UV_EXCLUDE_NEWER=$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: |
+          uv venv .venv
+          source .venv/bin/activate
+          uv sync --extra test $SKIP_PACKAGE_FLAGS
+
+      - name: List installed packages (before reinstall)
+        run: uv pip list
+
+      - name: Run MCP tests against mcp v2
+        # --no-sync, or uv re-syncs the environment to uv.lock first and puts
+        # the locked 1.x back, leaving this job re-testing the major the job
+        # above already covers. The version assert makes that failure loud
+        # instead of a green run that proved nothing.
+        run: |
+          uv pip install --reinstall-package mcp 'mcp>=2,<3'
+          uv pip list
+          uv run --no-sync python -c "
+          import importlib.metadata as m
+          version = m.version('mcp')
+          assert version.startswith('2.'), f'expected mcp 2.x, got {version}'
+          print('testing against mcp', version)
+          "
+          uv run --no-sync pytest tests/unittests/tools/mcp_tool \
+            tests/unittests/tools/test_load_mcp_resource_tool.py \
+            tests/unittests/telemetry/test_spans.py

@@ -25,6 +25,7 @@ from unittest.mock import Mock
 from unittest.mock import patch
 import urllib.parse
 
+from google.adk.dependencies import _httpx as httpx
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.platform import thread as platform_thread
@@ -47,7 +48,6 @@ from google.adk.tools.mcp_tool.mcp_session_manager import retry_on_errors
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
-import httpx
 from mcp import StdioServerParameters
 import pytest
 
@@ -91,7 +91,8 @@ class MockSessionContext:
     """Initialize MockSessionContext.
 
     Args:
-        session: The mock session to return from __aenter__ and session property.
+        session: The mock session to return from __aenter__ and session
+          property.
     """
     self._session = session
     self._aenter_mock = AsyncMock(return_value=session)
@@ -293,6 +294,7 @@ class TestMCPSessionManager:
       "google.adk.tools.mcp_tool.mcp_session_manager._HAS_HTTPX_INSTRUMENTOR",
       True,
   )
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.IS_MCP_SDK_V2", False)
   def test_default_httpx_factory_instruments_client_when_available(
       self, mock_base_factory, mock_instrumentor
   ):
@@ -304,6 +306,34 @@ class TestMCPSessionManager:
 
     assert result is client
     mock_instrumentor.instrument_client.assert_called_once_with(client)
+
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_session_manager.HTTPXClientInstrumentor",
+      create=True,
+  )
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_session_manager._create_mcp_http_client"
+  )
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_session_manager._HAS_HTTPX_INSTRUMENTOR",
+      True,
+  )
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.IS_MCP_SDK_V2", True)
+  def test_default_httpx_factory_skips_instrumentation_on_mcp_2x(
+      self, mock_base_factory, mock_instrumentor
+  ):
+    """The OTel instrumentor is httpx 1.x only and must not see an httpx2 client.
+
+    It wraps one without complaint and then fails at request time, so the
+    breakage surfaces far from here. Instrumenting is skipped instead.
+    """
+    client = Mock()
+    mock_base_factory.return_value = client
+
+    result = create_mcp_http_client()
+
+    assert result is client
+    mock_instrumentor.instrument_client.assert_not_called()
 
   @patch(
       "google.adk.tools.mcp_tool.mcp_session_manager._create_mcp_http_client"
@@ -2060,9 +2090,13 @@ class TestCheckableMcpHttpClientFactory:
     keyword, and `sse_client` receives that wrapper typed with the SDK's
     protocol. Both hold only while the two signatures agree.
     """
-    sdk_protocol = pytest.importorskip(
-        "mcp.shared._httpx_utils"
-    ).McpHttpClientFactory
+    # Imported outright rather than `importorskip`ed: skipping would retire
+    # this comparison on whichever major moved the module, which is the major
+    # it exists to check. If the path moves, resolve it in `_sdk_compat` the
+    # way `sdk_progress_fn_t` resolves `ProgressFnT`.
+    from mcp.shared._httpx_utils import McpHttpClientFactory  # pylint: disable=g-import-not-at-top
+
+    sdk_protocol = McpHttpClientFactory
 
     ours = inspect.signature(CheckableMcpHttpClientFactory.__call__)
     theirs = inspect.signature(sdk_protocol.__call__)
