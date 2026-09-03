@@ -1868,6 +1868,51 @@ def test_cli_eval_exit_code_reflects_final_eval_status(
   )
 
 
+def test_cli_eval_empty_summary_does_not_exit_zero(
+    mock_load_eval_set_from_file,
+    mock_get_root_agent,
+    tmp_path,
+):
+  """An empty eval_run_summary must not be reported as a pass.
+
+  With zero eval_results (no evals ran at all -- e.g. an empty eval set),
+  eval_run_summary is {}. "Nothing was evaluated" is not the same claim as
+  "everything passed" and must not take the same exit(0) path -- same
+  fail-loud-not-silently-succeed shape as
+  AgentEvaluator.evaluate_eval_set (see google/adk-python#6952).
+  """
+  agent_path = tmp_path / "my_agent"
+  agent_path.mkdir()
+  (agent_path / "__init__.py").touch()
+
+  eval_set_file = tmp_path / "my_evals.json"
+  eval_set_file.write_text("{}")
+
+  mock_load_eval_set_from_file.return_value = EvalSet(
+      eval_set_id="my_evals",
+      eval_cases=[],
+  )
+
+  with (
+      mock.patch(
+          "google.adk.cli.cli_eval._collect_inferences",
+          new_callable=mock.AsyncMock,
+          return_value=[],
+      ),
+      mock.patch(
+          "google.adk.cli.cli_eval._collect_eval_results",
+          new_callable=mock.AsyncMock,
+          return_value=[],
+      ),
+  ):
+    result = CliRunner().invoke(
+        cli_tools_click.cli_eval,
+        [str(agent_path), str(eval_set_file)],
+    )
+
+  assert result.exit_code != 0, (result.output, result.exception)
+
+
 def test_cli_create_eval_set(tmp_path: Path):
   app_name = "test_app"
   eval_set_id = "test_eval_set"

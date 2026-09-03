@@ -1392,6 +1392,17 @@ def cli_eval(
       )
       pretty_print_eval_result(eval_result)
 
+  # An empty eval_run_summary means no eval case was ever evaluated (e.g. an
+  # empty eval set, or every case failing before producing a result) -- that
+  # is not the same claim as "every case passed" and must not exit 0. Same
+  # fail-loud-not-silently-succeed shape as AgentEvaluator.evaluate_eval_set
+  # (see google/adk-python#6952).
+  if not eval_run_summary:
+    raise click.ClickException(
+        "No eval case was evaluated; refusing to report a passing exit"
+        " code for zero evaluated cases."
+    )
+
   # The printed "Eval Run Summary" above is otherwise the only place this
   # command's verdict is visible -- without this, the process exit code is
   # always 0 regardless of any failed test, indistinguishable from every
