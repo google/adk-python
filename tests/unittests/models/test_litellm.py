@@ -2903,6 +2903,59 @@ def test_message_to_generate_content_response_tool_call_accepts_unquoted_json_ke
   }
 
 
+def test_message_to_generate_content_response_tool_call_with_malformed_json_arguments():
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id="test_tool_call_id",
+              function=Function(
+                  name="test_function",
+                  arguments='{"city": "unterminated',
+              ),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+
+  assert response.content.role == "model"
+  assert response.content.parts[0].function_call.name == "test_function"
+  assert response.content.parts[0].function_call.id == "test_tool_call_id"
+  assert response.content.parts[0].function_call.args == {}
+
+
+def test_message_to_generate_content_response_tool_call_malformed_json_warns(
+    caplog,
+):
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id="test_tool_call_id",
+              function=Function(
+                  name="test_function",
+                  arguments='{"city": "unterminated',
+              ),
+          )
+      ],
+  )
+
+  with caplog.at_level(logging.WARNING, logger="google_adk"):
+    response = _message_to_generate_content_response(message)
+
+  assert response.content.parts[0].function_call.args == {}
+  assert any(
+      record.levelno >= logging.WARNING
+      for record in caplog.records
+      if "Failed to parse arguments" in record.getMessage()
+  )
+
+
 def test_message_to_generate_content_response_inline_tool_call_text():
   message = ChatCompletionAssistantMessage(
       role="assistant",
