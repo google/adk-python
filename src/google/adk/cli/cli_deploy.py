@@ -216,6 +216,14 @@ EXPOSE {port}
 CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_option} {otel_to_cloud_option} {allow_origins_option} {a2a_option} {trigger_sources_option} {trigger_oidc_audience_option} {trigger_oidc_service_accounts_option} {gemini_enterprise_option}{express_mode_option} "/app/agents"
 """
 
+# What a deployment advertises to Agent Platform: one entry per operation the
+# AdkApp template registers, mirroring the method's own documentation and
+# signature. A unit test checks the operation names and the parameters each
+# entry declares against the installed template, because a catalogue that
+# disagrees with the method makes the deployed resource advertise an API it
+# does not serve. The descriptions are not checked: wording drift is cosmetic,
+# and it varies with whichever Agent Platform SDK the version floor resolves
+# to.
 _AGENT_ENGINE_CLASS_METHODS = [
     {
         'name': 'get_session',
@@ -454,7 +462,12 @@ _AGENT_ENGINE_CLASS_METHODS = [
             ' (str):\n                Required. The ID of the user.\n          '
             '  session_id (str):\n                Optional. The ID of the'
             ' session. If not provided, a new\n                session will be'
-            ' created for the user.\n            run_config (Optional[Dict[str,'
+            ' created for the user. If this is specified, then\n               '
+            ' `session_events` will be ignored.\n            session_events'
+            ' (Optional[List[Dict[str, Any]]]):\n                Optional. The'
+            ' session events to use for the query. This will be\n             '
+            '   used to initialize the session if `session_id` is not'
+            ' provided.\n            run_config (Optional[Dict[str,'
             ' Any]]):\n                Optional. The run config to use for the'
             ' query. If you want to\n                pass in a `run_config`'
             ' pydantic object, you can pass in a dict\n               '
@@ -462,7 +475,10 @@ _AGENT_ENGINE_CLASS_METHODS = [
             '     **kwargs (dict[str, Any]):\n                Optional.'
             ' Additional keyword arguments to pass to the\n               '
             ' runner.\n\n        Yields:\n            Event dictionaries'
-            ' asynchronously.\n        '
+            ' asynchronously.\n\n        Raises:\n            TypeError: If'
+            ' message is not a string or a dictionary representing\n           '
+            ' a Content object.\n            ValueError: If both session_id and'
+            ' session_events are specified.\n        '
         ),
         'parameters': {
             'properties': {
@@ -474,6 +490,7 @@ _AGENT_ENGINE_CLASS_METHODS = [
                 },
                 'user_id': {'type': 'string'},
                 'session_id': {'type': 'string', 'nullable': True},
+                'session_events': {'type': 'array', 'nullable': True},
                 'run_config': {'type': 'object', 'nullable': True},
             },
             'required': ['message', 'user_id'],
