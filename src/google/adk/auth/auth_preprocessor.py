@@ -284,6 +284,13 @@ class _AuthLlmRequestProcessor(BaseLlmRequestProcessor):
           function_call.id in tools_to_resume
           for function_call in function_calls
       ]):
+        # If this tool call was authored by another agent, skip it to let
+        # that agent's own auth processor handle it. Without this check, a
+        # shared session's events could cause one agent to resume and
+        # execute a different agent's auth-gated tool call using its own
+        # (potentially differently-scoped) canonical_tools.
+        if event.author != agent.name:
+          continue
         if function_response_event := await handle_function_calls_async(
             invocation_context,
             event,
