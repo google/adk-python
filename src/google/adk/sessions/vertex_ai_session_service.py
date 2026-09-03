@@ -390,8 +390,14 @@ class VertexAiSessionService(BaseSessionService):
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:
-    # Update the in-memory session.
-    await super().append_event(session=session, event=event)
+    if not event.partial:
+      # Apply temp-scoped state to the in-memory session and strip it from
+      # the event before the remote append succeeds. Normal state and the
+      # event itself are only applied to the session once the remote append
+      # succeeds, so a failed append leaves the session unchanged and a
+      # retry does not re-apply state or duplicate the event.
+      self._apply_temp_state(session, event)
+      event = self._trim_temp_delta_state(event)
 
     _validate_session_id(session.id)
     reasoning_engine_id = self._get_reasoning_engine_id(session.app_name)
@@ -496,6 +502,10 @@ class VertexAiSessionService(BaseSessionService):
         if 'raw_event' in config:
           del config['raw_event']
         await _do_append(config)
+
+    if not event.partial:
+      self._update_session_state(session, event)
+      session.events.append(event)
     return event
 
   def _get_reasoning_engine_id(self, app_name: str) -> str:
