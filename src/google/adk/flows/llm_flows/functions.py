@@ -22,6 +22,7 @@ import binascii
 from concurrent.futures import ThreadPoolExecutor
 import contextvars
 import copy
+import dataclasses
 import inspect
 import json
 import logging
@@ -32,6 +33,7 @@ from typing import cast
 from typing import Dict
 from typing import Optional
 from typing import TYPE_CHECKING
+from typing import TypeVar
 import weakref
 
 from google.adk.platform import uuid as platform_uuid
@@ -68,6 +70,8 @@ REQUEST_CONFIRMATION_FUNCTION_CALL_NAME = 'adk_request_confirmation'
 REQUEST_INPUT_FUNCTION_CALL_NAME = 'adk_request_input'
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+_T = TypeVar('_T')
 
 # Thread pool executors for running tools in background threads, keyed by the
 # event loop they serve and then by max_workers. A pool dedicated to tools keeps
@@ -472,112 +476,143 @@ async def handle_function_call_list_async(
     tool_confirmation_dict: Optional[dict[str, ToolConfirmation]] = None,
 ) -> Optional[Event]:
   """Calls the functions and returns the function response event."""
-
   agent = _as_llm_agent(invocation_context)
-
-  # Filter function calls
-  filtered_calls = [
-      fc for fc in function_calls if not filters or fc.id in filters
-  ]
-
-  if not filtered_calls:
-    return None
-
-  # Create tasks for parallel execution
-  tasks = [
-      asyncio.create_task(
-          _execute_single_function_call_async(
-              invocation_context,
-              function_call,
-              tools_dict,
-              agent,
-              tool_confirmation_dict.get(function_call.id)
-              if tool_confirmation_dict and function_call.id is not None
-              else None,
-          )
-      )
-      for function_call in filtered_calls
-  ]
-
-  # Wait for all tasks to complete
-  try:
-    maybe_function_response_events = await asyncio.gather(*tasks)
-  except Exception:
-    for t in tasks:
-      if not t.done():
-        t.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
-    raise
-
-  # Filter out None results
-  function_response_events = [
-      event for event in maybe_function_response_events if event is not None
-  ]
-
-  if not function_response_events:
-    return None
-
-  merged_event = merge_parallel_function_response_events(
-      function_response_events
+  prepared_calls = await _prepare_function_calls(
+      invocation_context,
+      function_calls,
+      tools_dict,
+      agent,
+      filters=filters,
+      tool_confirmation_dict=tool_confirmation_dict,
+  )
+  return await _execute_prepared_function_calls_async(
+      invocation_context, prepared_calls, agent
   )
 
-  if len(function_response_events) > 1:
-    # this is needed for debug traces of parallel calls
-    # individual response with tool.name is traced in __build_response_event
-    # (we drop tool.name from span name here as this is merged event)
-    with tracer.start_as_current_span('execute_tool (merged)'):
-      trace_merged_tool_calls(
-          response_event_id=merged_event.id,
-          function_response_event=merged_event,
-          invocation_context=invocation_context,
+
+async def handle_function_calls_live(
+    invocation_context: InvocationContext,
+    function_call_event: Event,
+    tools_dict: dict[str, BaseTool],
+) -> Event | None:
+  """Calls the functions and returns the function response event."""
+  agent = _as_llm_agent(invocation_context)
+  active_tools_lock = asyncio.Lock()
+
+  blocking_calls: list[types.FunctionCall] = []
+  for function_call in function_call_event.get_function_calls():
+    tool = tools_dict.get(function_call.name) if function_call.name else None
+    if _is_non_blocking_tool(tool):
+      assert tool is not None
+      await _launch_non_blocking_call_live(
+          invocation_context,
+          function_call,
+          tool,
+          tools_dict,
+          agent,
+          active_tools_lock,
       )
-  return merged_event
+    else:
+      blocking_calls.append(function_call)
+
+  if not blocking_calls:
+    return None
+
+  # TODO: thread a ToolConfirmation dict through here so an approved tool can
+  # be re-executed in live mode. No confirmation ever reaches this path, so a
+  # confirmation-gated tool can only ever be refused, never resumed.
+  prepared_calls = await _prepare_function_calls(
+      invocation_context,
+      blocking_calls,
+      tools_dict,
+      agent,
+  )
+  return await _execute_prepared_function_calls_live(
+      invocation_context,
+      function_call_event,
+      prepared_calls,
+      agent,
+      active_tools_lock,
+  )
 
 
-async def _execute_single_function_call_async(
+async def _run_on_tool_error_callbacks(
+    *,
+    invocation_context: InvocationContext,
+    agent: LlmAgent,
+    tool: BaseTool,
+    tool_args: dict[str, Any],
+    tool_context: ToolContext,
+    error: Exception,
+) -> Optional[dict[str, Any]]:
+  """Runs the on_tool_error_callbacks for the given tool."""
+  error_response = (
+      await invocation_context.plugin_manager.run_on_tool_error_callback(
+          tool=tool,
+          tool_args=tool_args,
+          tool_context=tool_context,
+          error=error,
+      )
+  )
+  if error_response is not None:
+    return error_response
+
+  return await _run_callbacks(
+      agent.canonical_on_tool_error_callbacks,
+      _stop_on_non_none,
+      tool=tool,
+      args=tool_args,
+      tool_context=tool_context,
+      error=error,
+  )
+
+
+@dataclasses.dataclass
+class _PreparedFunctionCall:
+  """One function call taken as far as its before-tool callbacks.
+
+  Attributes:
+    function_call: The call the model made.
+    tool: The tool it names, or a placeholder tool when the name is unknown.
+    tool_context: The context the tool and all of its callbacks share.
+    function_args: The deep copy of the call arguments handed to the tool.
+    override_response: A response that already answers the call, so the tool
+      does not run: either what a before-tool callback returned, or the
+      not-found payload for a tool name the model invented. None means the tool
+      still has to run.
+    tool_lookup_error: The lookup failure, when the tool name was unknown.
+    is_tool_lookup_failure: Whether `override_response` answers a failed lookup
+      rather than coming from a before-tool callback. Such a response skips the
+      after-tool callbacks, which describe a tool that never ran.
+  """
+
+  function_call: types.FunctionCall
+  tool: BaseTool
+  tool_context: ToolContext
+  function_args: dict[str, Any]
+  override_response: Optional[object] = None
+  tool_lookup_error: Optional[Exception] = None
+  is_tool_lookup_failure: bool = False
+
+
+async def _prepare_single(
     invocation_context: InvocationContext,
     function_call: types.FunctionCall,
     tools_dict: dict[str, BaseTool],
     agent: LlmAgent,
     tool_confirmation: Optional[ToolConfirmation] = None,
-) -> Optional[Event]:
-  """Execute a single function call with thread safety for state modifications."""
+) -> _PreparedFunctionCall:
+  """Resolves one call's tool and runs its before-tool callbacks.
 
-  async def _run_on_tool_error_callbacks(
-      *,
-      tool: BaseTool,
-      tool_args: dict[str, Any],
-      tool_context: ToolContext,
-      error: Exception,
-  ) -> Optional[dict[str, Any]]:
-    """Runs the on_tool_error_callbacks for the given tool."""
-    error_response = (
-        await invocation_context.plugin_manager.run_on_tool_error_callback(
-            tool=tool,
-            tool_args=tool_args,
-            tool_context=tool_context,
-            error=error,
-        )
-    )
-    if error_response is not None:
-      return error_response
-
-    return await _run_callbacks(
-        agent.canonical_on_tool_error_callbacks,
-        _stop_on_non_none,
-        tool=tool,
-        args=tool_args,
-        tool_context=tool_context,
-        error=error,
-    )
-
+  This is steps 1 and 2 of the tool pipeline, plus the handling of a tool name
+  that resolves to nothing. Nothing here runs the tool.
+  """
   # Do not use "args" as the variable name, because it is a reserved keyword
   # in python debugger.
   # Make a deep copy to avoid being modified.
   function_args = (
       copy.deepcopy(function_call.args) if function_call.args else {}
   )
-  detected_error_type: Optional[str] = None
 
   tool_context = _create_tool_context(
       invocation_context, function_call, tool_confirmation
@@ -590,50 +625,123 @@ async def _execute_single_function_call_async(
     tool = BaseTool(
         name=function_call.name or '<unnamed>', description='Tool not found'
     )
-    # Defer error handling to _run_with_trace so before-tool callbacks and
-    # telemetry spans can initialize first.
+    # Defer error handling until the before-tool callbacks have run, so that
+    # one of them can still answer the call.
     tool_lookup_error = tool_error
 
-  async def _run_with_trace() -> Event | None:
-    nonlocal function_args, detected_error_type
+  # Step 1: Check if plugin before_tool_callback overrides the function
+  # response.
+  override_response: object | None = (
+      await invocation_context.plugin_manager.run_before_tool_callback(
+          tool=tool, tool_args=function_args, tool_context=tool_context
+      )
+  )
 
-    # Step 1: Check if plugin before_tool_callback overrides the function
-    # response.
-    function_response: object | None = (
-        await invocation_context.plugin_manager.run_before_tool_callback(
-            tool=tool, tool_args=function_args, tool_context=tool_context
-        )
+  # Step 2: If no overrides are provided from the plugins, further run the
+  # canonical callback.
+  if override_response is None:
+    override_response = await _run_callbacks(
+        agent.canonical_before_tool_callbacks,
+        _stop_on_non_none,
+        tool=tool,
+        args=function_args,
+        tool_context=tool_context,
     )
 
-    # Step 2: If no overrides are provided from the plugins, further run the
-    # canonical callback.
-    if function_response is None:
-      function_response = await _run_callbacks(
-          agent.canonical_before_tool_callbacks,
-          _stop_on_non_none,
-          tool=tool,
-          args=function_args,
-          tool_context=tool_context,
-      )
+  # Handle tool lookup failure if before-tool callbacks did not override the
+  # response.
+  is_tool_lookup_failure = False
+  if override_response is None and tool_lookup_error is not None:
+    is_tool_lookup_failure = True
+    override_response = await _run_on_tool_error_callbacks(
+        invocation_context=invocation_context,
+        agent=agent,
+        tool=tool,
+        tool_args=function_args,
+        tool_context=tool_context,
+        error=tool_lookup_error,
+    )
+    if override_response is None:
+      logger.warning('%s', tool_lookup_error)
+      override_response = _build_tool_not_found_response(tool.name, tools_dict)
 
-    # Handle tool lookup failure if before-tool callbacks did not override the
-    # response.
-    if function_response is None and tool_lookup_error is not None:
-      error_response = await _run_on_tool_error_callbacks(
-          tool=tool,
-          tool_args=function_args,
-          tool_context=tool_context,
-          error=tool_lookup_error,
+  return _PreparedFunctionCall(
+      function_call=function_call,
+      tool=tool,
+      tool_context=tool_context,
+      function_args=function_args,
+      override_response=override_response,
+      tool_lookup_error=tool_lookup_error,
+      is_tool_lookup_failure=is_tool_lookup_failure,
+  )
+
+
+async def _prepare_function_calls(
+    invocation_context: InvocationContext,
+    function_calls: list[types.FunctionCall],
+    tools_dict: dict[str, BaseTool],
+    agent: LlmAgent,
+    *,
+    filters: Optional[set[str]] = None,
+    tool_confirmation_dict: Optional[dict[str, ToolConfirmation]] = None,
+) -> list[_PreparedFunctionCall]:
+  """Prepares every call that the execute phase will run, in parallel."""
+  filtered_calls = [
+      fc for fc in function_calls if not filters or fc.id in filters
+  ]
+
+  if not filtered_calls:
+    return []
+
+  tasks = [
+      asyncio.create_task(
+          _prepare_single(
+              invocation_context,
+              function_call,
+              tools_dict,
+              agent,
+              tool_confirmation_dict.get(function_call.id)
+              if tool_confirmation_dict and function_call.id is not None
+              else None,
+          )
       )
-      if error_response is None:
-        logger.warning('%s', tool_lookup_error)
-        error_response = _build_tool_not_found_response(tool.name, tools_dict)
-      detected_error_type = type(tool_lookup_error).__name__
+      for function_call in filtered_calls
+  ]
+  return await _gather_or_cancel(tasks)
+
+
+async def _execute_single_prepared_call_async(
+    invocation_context: InvocationContext,
+    prepared_call: _PreparedFunctionCall,
+    agent: LlmAgent,
+) -> Optional[Event]:
+  """Runs one prepared function call and builds its response event.
+
+  This is steps 3 to 6 of the tool pipeline: run the tool unless the prepare
+  phase already answered the call, run the after-tool callbacks, and turn the
+  result into an event. State modifications stay thread safe because each call
+  owns its own ToolContext.
+  """
+  tool = prepared_call.tool
+  tool_context = prepared_call.tool_context
+  function_args = prepared_call.function_args
+  function_response = prepared_call.override_response
+  detected_error_type: Optional[str] = None
+
+  async def _run_with_trace() -> Event | None:
+    nonlocal function_response, detected_error_type
+
+    # A response the prepare phase built for a tool that was never found
+    # answers the call as it is: the after-tool callbacks describe a tool run
+    # that did not happen.
+    if prepared_call.is_tool_lookup_failure:
+      detected_error_type = type(prepared_call.tool_lookup_error).__name__
       return __build_response_event(
-          tool, error_response, tool_context, invocation_context
+          tool, function_response, tool_context, invocation_context
       )
 
-    # Step 3: Otherwise, proceed calling the tool normally.
+    # Step 3: No before-tool callback answered the call, so proceed calling
+    # the tool normally.
     if function_response is None:
       try:
         function_response = await __call_tool_async(
@@ -641,6 +749,8 @@ async def _execute_single_function_call_async(
         )
       except Exception as tool_error:
         error_response = await _run_on_tool_error_callbacks(
+            invocation_context=invocation_context,
+            agent=agent,
             tool=tool,
             tool_args=function_args,
             tool_context=tool_context,
@@ -714,185 +824,83 @@ async def _execute_single_function_call_async(
     return tel_ctx.function_response_event
 
 
-async def handle_function_calls_live(
+async def _execute_prepared_function_calls_async(
     invocation_context: InvocationContext,
-    function_call_event: Event,
-    tools_dict: dict[str, BaseTool],
-) -> Event | None:
-  """Calls the functions and returns the function response event."""
-  agent = _as_llm_agent(invocation_context)
-  function_calls = function_call_event.get_function_calls()
-
-  if not function_calls:
+    prepared_calls: list[_PreparedFunctionCall],
+    agent: LlmAgent,
+) -> Optional[Event]:
+  """Runs the prepared calls in parallel and merges their response events."""
+  if not prepared_calls:
     return None
-
-  # Create async lock for active_streaming_tools and active_non_blocking_tool_tasks modifications
-  active_tools_lock = asyncio.Lock()
 
   # Create tasks for parallel execution
   tasks = [
       asyncio.create_task(
-          _execute_single_function_call_live(
-              invocation_context,
-              function_call,
-              tools_dict,
-              agent,
-              active_tools_lock,
+          _execute_single_prepared_call_async(
+              invocation_context, prepared_call, agent
           )
       )
-      for function_call in function_calls
+      for prepared_call in prepared_calls
   ]
 
   # Wait for all tasks to complete
-  try:
-    maybe_function_response_events = await asyncio.gather(*tasks)
-  except Exception:
-    for t in tasks:
-      if not t.done():
-        t.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
-    raise
+  maybe_function_response_events = await _gather_or_cancel(tasks)
 
   # Filter out None results
   function_response_events = [
       event for event in maybe_function_response_events if event is not None
   ]
 
-  for event in function_response_events:
-    event.live_session_id = function_call_event.live_session_id
-
   if not function_response_events:
     return None
 
-  merged_event = merge_parallel_function_response_events(
-      function_response_events
+  return _merge_and_trace_function_response_events(
+      invocation_context, function_response_events
   )
-  if len(function_response_events) > 1:
-    # this is needed for debug traces of parallel calls
-    # individual response with tool.name is traced in __build_response_event
-    # (we drop tool.name from span name here as this is merged event)
-    with tracer.start_as_current_span('execute_tool (merged)'):
-      trace_merged_tool_calls(
-          response_event_id=merged_event.id,
-          function_response_event=merged_event,
-          invocation_context=invocation_context,
-      )
-  return merged_event
 
 
-async def _execute_single_function_call_live(
+async def _execute_single_prepared_call_live(
     invocation_context: InvocationContext,
-    function_call: types.FunctionCall,
-    tools_dict: dict[str, BaseTool],
+    prepared_call: _PreparedFunctionCall,
     agent: LlmAgent,
     active_tools_lock: asyncio.Lock,
 ) -> Optional[Event]:
-  """Execute a single function call for live mode with thread safety."""
+  """Runs one prepared function call in live mode.
 
-  async def _run_on_tool_error_callbacks(
-      *,
-      tool: BaseTool,
-      tool_args: dict[str, Any],
-      tool_context: ToolContext,
-      error: Exception,
-  ) -> Optional[dict[str, Any]]:
-    """Runs the on_tool_error_callbacks for the given tool."""
-    error_response = (
-        await invocation_context.plugin_manager.run_on_tool_error_callback(
-            tool=tool,
-            tool_args=tool_args,
-            tool_context=tool_context,
-            error=error,
-        )
-    )
-    if error_response is not None:
-      return error_response
-
-    return await _run_callbacks(
-        agent.canonical_on_tool_error_callbacks,
-        _stop_on_non_none,
-        tool=tool,
-        args=tool_args,
-        tool_context=tool_context,
-        error=error,
-    )
-
-  # Do not use "args" as the variable name, because it is a reserved keyword
-  # in python debugger.
-  # Make a deep copy to avoid being modified.
-  function_args = (
-      copy.deepcopy(function_call.args) if function_call.args else {}
-  )
+  This is the live counterpart of `_execute_single_prepared_call_async`: steps
+  3 to 6 of the tool pipeline, with the tool call itself going through
+  `_process_function_live_helper`.
+  """
+  tool = prepared_call.tool
+  tool_context = prepared_call.tool_context
+  function_args = prepared_call.function_args
+  function_call = prepared_call.function_call
+  function_response = prepared_call.override_response
   detected_error_type: Optional[str] = None
-
-  # TODO: thread a ToolConfirmation through here so an approved tool can be
-  # re-executed in live mode. `tool_confirmation` is always None on this path,
-  # so a confirmation-gated tool can only ever be refused, never resumed.
-  tool_context = _create_tool_context(invocation_context, function_call)
-
-  tool_lookup_error: Exception | None = None
-  try:
-    tool = _get_tool(function_call, tools_dict)
-  except ValueError as tool_error:
-    tool = BaseTool(
-        name=function_call.name or '<unnamed>', description='Tool not found'
-    )
-    tool_lookup_error = tool_error
 
   async def _run_with_trace() -> Event | None:
     """Executes the tool with full lifecycle management and telemetry.
 
-    This function orchestrates the tool execution pipeline, including:
-    1. Running plugin and canonical before-tool callbacks.
-    2. Executing the actual tool logic.
-    3. Running plugin and canonical after-tool callbacks.
-    4. Detecting error types for telemetry.
-    5. Building the final FunctionResponse Event to be returned.
+    This function orchestrates the rest of the tool execution pipeline,
+    including:
+    1. Executing the actual tool logic.
+    2. Running plugin and canonical after-tool callbacks.
+    3. Detecting error types for telemetry.
+    4. Building the final FunctionResponse Event to be returned.
     """
-    nonlocal function_args, detected_error_type
+    nonlocal function_response, detected_error_type
 
-    # Do not use "args" as the variable name, because it is a reserved keyword
-    # in python debugger.
-    # Make a deep copy to avoid being modified.
-    function_response: object | None = None
-
-    # Step 1: Check if plugin before_tool_callback overrides the function
-    # response.
-    function_response = (
-        await invocation_context.plugin_manager.run_before_tool_callback(
-            tool=tool, tool_args=function_args, tool_context=tool_context
-        )
-    )
-
-    # Step 2: If no overrides are provided from the plugins, further run the
-    # canonical callback.
-    if function_response is None:
-      function_response = await _run_callbacks(
-          agent.canonical_before_tool_callbacks,
-          _stop_on_non_none,
-          tool=tool,
-          args=function_args,
-          tool_context=tool_context,
-      )
-
-    # Handle tool lookup failure if before-tool callbacks did not override the
-    # response.
-    if function_response is None and tool_lookup_error is not None:
-      error_response = await _run_on_tool_error_callbacks(
-          tool=tool,
-          tool_args=function_args,
-          tool_context=tool_context,
-          error=tool_lookup_error,
-      )
-      if error_response is None:
-        logger.warning('%s', tool_lookup_error)
-        error_response = _build_tool_not_found_response(tool.name, tools_dict)
-      detected_error_type = type(tool_lookup_error).__name__
+    # A response the prepare phase built for a tool that was never found
+    # answers the call as it is: the after-tool callbacks describe a tool run
+    # that did not happen.
+    if prepared_call.is_tool_lookup_failure:
+      detected_error_type = type(prepared_call.tool_lookup_error).__name__
       return __build_response_event(
-          tool, error_response, tool_context, invocation_context
+          tool, function_response, tool_context, invocation_context
       )
 
-    # Step 3: Otherwise, proceed calling the tool normally.
+    # Step 3: No before-tool callback answered the call, so proceed calling
+    # the tool normally.
     if function_response is None:
       try:
         function_response = await _process_function_live_helper(
@@ -905,6 +913,8 @@ async def _execute_single_function_call_live(
         )
       except Exception as tool_error:
         error_response = await _run_on_tool_error_callbacks(
+            invocation_context=invocation_context,
+            agent=agent,
             tool=tool,
             tool_args=function_args,
             tool_context=tool_context,
@@ -968,59 +978,148 @@ async def _execute_single_function_call_live(
     )
     return function_response_event
 
+  async with _instrumentation.record_tool_execution(
+      tool, agent, function_args, invocation_context=invocation_context
+  ) as tel_ctx:
+    tel_ctx.function_response_event = await _run_with_trace()
+    tel_ctx.error_type = detected_error_type
+    return tel_ctx.function_response_event
+
+
+def _is_non_blocking_tool(tool: BaseTool | None) -> bool:
+  if tool is None:
+    return False
   is_streaming = hasattr(tool, 'func') and inspect.isasyncgenfunction(tool.func)
-  is_non_blocking = not is_streaming and tool.response_scheduling is not None
-  if is_non_blocking:
-    task_key = f'{tool.name}_{function_call.id}'
+  return not is_streaming and tool.response_scheduling is not None
 
-    async def _background_task() -> None:
-      try:
-        async with _instrumentation.record_tool_execution(
-            tool, agent, function_args, invocation_context=invocation_context
-        ) as tel_ctx:
-          function_response_event = await _run_with_trace()
-          tel_ctx.function_response_event = function_response_event
-          tel_ctx.error_type = detected_error_type
 
-          if function_response_event:
-            if (
-                invocation_context.session_service
-                and invocation_context.session
-            ):
-              await invocation_context.session_service.append_event(
-                  session=invocation_context.session,
-                  event=function_response_event,
-              )
-            if (
-                invocation_context.live_request_queue
-                and function_response_event.content
-            ):
-              invocation_context.live_request_queue.send_content(
-                  function_response_event.content
-              )
-      except Exception:
-        logger.exception('Error running non-blocking tool %s', tool.name)
-      finally:
-        async with active_tools_lock:
-          if (
-              invocation_context.active_non_blocking_tool_tasks
-              and task_key in invocation_context.active_non_blocking_tool_tasks
-          ):
-            del invocation_context.active_non_blocking_tool_tasks[task_key]
+async def _launch_non_blocking_call_live(
+    invocation_context: InvocationContext,
+    function_call: types.FunctionCall,
+    tool: BaseTool,
+    tools_dict: dict[str, BaseTool],
+    agent: LlmAgent,
+    active_tools_lock: asyncio.Lock,
+) -> None:
+  """Runs a non-blocking live tool's prepare and execute in the background."""
+  task_key = f'{tool.name}_{function_call.id}'
 
-    task = asyncio.create_task(_background_task())
-    async with active_tools_lock:
-      if invocation_context.active_non_blocking_tool_tasks is None:
-        invocation_context.active_non_blocking_tool_tasks = {}
-      invocation_context.active_non_blocking_tool_tasks[task_key] = task
+  async def _background_task() -> None:
+    try:
+      prepared_call = await _prepare_single(
+          invocation_context, function_call, tools_dict, agent
+      )
+      function_response_event = await _execute_single_prepared_call_live(
+          invocation_context, prepared_call, agent, active_tools_lock
+      )
+      if function_response_event:
+        if invocation_context.session_service and invocation_context.session:
+          await invocation_context.session_service.append_event(
+              session=invocation_context.session,
+              event=function_response_event,
+          )
+        if (
+            invocation_context.live_request_queue
+            and function_response_event.content
+        ):
+          invocation_context.live_request_queue.send_content(
+              function_response_event.content
+          )
+    except Exception:
+      logger.exception('Error running non-blocking tool %s', tool.name)
+    finally:
+      async with active_tools_lock:
+        if (
+            invocation_context.active_non_blocking_tool_tasks
+            and task_key in invocation_context.active_non_blocking_tool_tasks
+        ):
+          del invocation_context.active_non_blocking_tool_tasks[task_key]
+
+  task = asyncio.create_task(_background_task())
+  async with active_tools_lock:
+    if invocation_context.active_non_blocking_tool_tasks is None:
+      invocation_context.active_non_blocking_tool_tasks = {}
+    invocation_context.active_non_blocking_tool_tasks[task_key] = task
+
+
+async def _execute_prepared_function_calls_live(
+    invocation_context: InvocationContext,
+    function_call_event: Event,
+    prepared_calls: list[_PreparedFunctionCall],
+    agent: LlmAgent,
+    active_tools_lock: Optional[asyncio.Lock] = None,
+) -> Event | None:
+  """Runs the prepared live calls in parallel and merges their events."""
+  if not prepared_calls:
     return None
-  else:
-    async with _instrumentation.record_tool_execution(
-        tool, agent, function_args, invocation_context=invocation_context
-    ) as tel_ctx:
-      tel_ctx.function_response_event = await _run_with_trace()
-      tel_ctx.error_type = detected_error_type
-      return tel_ctx.function_response_event
+
+  if active_tools_lock is None:
+    active_tools_lock = asyncio.Lock()
+
+  # Create tasks for parallel execution
+  tasks = [
+      asyncio.create_task(
+          _execute_single_prepared_call_live(
+              invocation_context,
+              prepared_call,
+              agent,
+              active_tools_lock,
+          )
+      )
+      for prepared_call in prepared_calls
+  ]
+
+  # Wait for all tasks to complete
+  maybe_function_response_events = await _gather_or_cancel(tasks)
+
+  # Filter out None results
+  function_response_events = [
+      event for event in maybe_function_response_events if event is not None
+  ]
+
+  for event in function_response_events:
+    event.live_session_id = function_call_event.live_session_id
+
+  if not function_response_events:
+    return None
+
+  return _merge_and_trace_function_response_events(
+      invocation_context, function_response_events
+  )
+
+
+async def _gather_or_cancel(tasks: list[asyncio.Task[_T]]) -> list[_T]:
+  """Awaits every task, cancelling the rest as soon as one of them fails."""
+  try:
+    return list(await asyncio.gather(*tasks))
+  except Exception:
+    for t in tasks:
+      if not t.done():
+        t.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    raise
+
+
+def _merge_and_trace_function_response_events(
+    invocation_context: InvocationContext,
+    function_response_events: list[Event],
+) -> Event:
+  """Merges the response events of parallel calls into a single event."""
+  merged_event = merge_parallel_function_response_events(
+      function_response_events
+  )
+
+  if len(function_response_events) > 1:
+    # this is needed for debug traces of parallel calls
+    # individual response with tool.name is traced in __build_response_event
+    # (we drop tool.name from span name here as this is merged event)
+    with tracer.start_as_current_span('execute_tool (merged)'):
+      trace_merged_tool_calls(
+          response_event_id=merged_event.id,
+          function_response_event=merged_event,
+          invocation_context=invocation_context,
+      )
+  return merged_event
 
 
 _MESSAGE_EVENT_FIELDS = frozenset({'content', 'id', 'timestamp'})

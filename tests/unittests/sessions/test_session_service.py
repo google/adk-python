@@ -141,16 +141,16 @@ def test_dynamic_json_column_statement_is_cacheable():
 
 
 @pytest.mark.parametrize(
-    'dialect_name', ['sqlite', 'postgresql', 'mysql', 'mariadb']
+    'dialect_name', ['sqlite', 'postgresql', 'mysql', 'mariadb', 'mssql']
 )
 def test_database_session_service_uses_naive_datetime_for_dialect(dialect_name):
   """Verifies dialects that store DATETIME WITHOUT TIME ZONE are treated as naive.
 
-  SQLite, PostgreSQL, MySQL, and MariaDB all store DATETIME/TIMESTAMP WITHOUT
-  TIME ZONE, so create_session must strip tzinfo before storing. Otherwise the
-  marker produced by create_session (with +00:00) mismatches the marker read
-  back from storage (without +00:00), triggering a false stale-writer error on
-  the first append_event after create_session.
+  SQLite, PostgreSQL, MySQL, MariaDB, and MSSQL all store DATETIME/TIMESTAMP
+  WITHOUT TIME ZONE, so create_session must strip tzinfo before storing.
+  Otherwise the marker produced by create_session (with +00:00) mismatches the
+  marker read back from storage (without +00:00), triggering a false stale-writer
+  error on the first append_event after create_session.
 
   This exercises the production decision (_uses_naive_datetime) directly rather
   than re-implementing the strip logic, so it actually guards create_session.
