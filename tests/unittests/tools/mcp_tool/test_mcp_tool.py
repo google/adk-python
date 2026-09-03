@@ -28,6 +28,7 @@ from google.adk.auth.auth_credential import HttpAuth
 from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_credential import ServiceAccount
+from google.adk.events.event_actions import EventActions
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.tools.mcp_tool import mcp_tool
@@ -1046,6 +1047,7 @@ class TestMCPTool:
     tool_context = Mock(spec=ToolContext)
     tool_context.tool_confirmation = None
     tool_context.request_confirmation = Mock()
+    tool_context.actions = EventActions()
     args = {"param1": "test_value"}
 
     result = await tool.run_async(args=args, tool_context=tool_context)
@@ -1056,6 +1058,7 @@ class TestMCPTool:
         )
     }
     tool_context.request_confirmation.assert_called_once()
+    assert tool_context.actions.skip_summarization is True
 
   @pytest.mark.asyncio
   async def test_run_async_require_confirmation_true_rejected(self):
@@ -1151,6 +1154,7 @@ class TestMCPTool:
     tool_context = Mock(spec=ToolContext)
     tool_context.tool_confirmation = None
     tool_context.request_confirmation = Mock()
+    tool_context.actions = EventActions()
     args = {"param1": "test_value"}
 
     result = await tool.run_async(args=args, tool_context=tool_context)
@@ -1161,6 +1165,7 @@ class TestMCPTool:
         )
     }
     tool_context.request_confirmation.assert_called_once()
+    assert tool_context.actions.skip_summarization is True
 
   def test_init_validation(self):
     """Test that initialization validates required parameters."""

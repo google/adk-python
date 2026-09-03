@@ -430,6 +430,9 @@ class McpTool(BaseAuthenticatedTool):
                   " ToolConfirmation payload."
               ),
           )
+          # The pause is not a tool result for the model to summarize; without
+          # this the flow re-invokes the model, which calls the tool again.
+          tool_context.actions.skip_summarization = True
           return {
               "error": (
                   "This tool call requires confirmation, please approve or"
