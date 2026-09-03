@@ -108,6 +108,28 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 _NEW_LINE = '\n'
 
+# Sampling knobs the interactions API applies, but that the installed
+# google-genai release does not declare on its request model. That model
+# discards keys it has no field for while serializing, so these never reach the
+# API and sending them is indistinguishable from never setting them.
+_UNDECLARED_SAMPLING_PARAMS = (
+    'temperature',
+    'top_p',
+    'top_k',
+)
+
+# Sampling knobs the interactions API itself rejects as unknown parameters.
+# No release of the client can carry these, so the caller has to stop setting
+# them or stop using the interactions API.
+_UNSUPPORTED_SAMPLING_PARAMS = (
+    'presence_penalty',
+    'frequency_penalty',
+)
+
+# Sampling knobs already reported as dropped, so each warning below is emitted
+# once per process instead of once per model turn.
+_WARNED_SAMPLING_PARAMS: set[str] = set()
+
 
 def _extract_stream_interaction_id(
     event: InteractionSSEEvent,
@@ -1260,10 +1282,27 @@ def convert_interaction_event_to_llm_response(
   return None
 
 
+def _unwarned_params_set_on(
+    config: types.GenerateContentConfig, names: tuple[str, ...]
+) -> list[str]:
+  """Return the names the caller set that have not been warned about yet."""
+  return [
+      name
+      for name in names
+      if getattr(config, name) is not None
+      and name not in _WARNED_SAMPLING_PARAMS
+  ]
+
+
 def build_generation_config(
     config: types.GenerateContentConfig,
 ) -> GenerationConfigParam:
   """Build generation config dict for interactions API.
+
+  Only the parameters that reach the interactions API are carried over. A
+  sampling parameter that would be discarded before the request is sent is
+  logged as ignored, once per parameter per process, naming whether the client
+  or the API is the one that cannot carry it.
 
   Args:
     config: The GenerateContentConfig to extract parameters from.
@@ -1272,20 +1311,33 @@ def build_generation_config(
     A dictionary containing generation configuration parameters.
   """
   generation_config: GenerationConfigParam = {}
-  if config.temperature is not None:
-    generation_config['temperature'] = config.temperature
-  if config.top_p is not None:
-    generation_config['top_p'] = config.top_p
-  if config.top_k is not None:
-    generation_config['top_k'] = config.top_k
   if config.max_output_tokens is not None:
     generation_config['max_output_tokens'] = config.max_output_tokens
   if config.stop_sequences:
     generation_config['stop_sequences'] = config.stop_sequences
-  if config.presence_penalty is not None:
-    generation_config['presence_penalty'] = config.presence_penalty
-  if config.frequency_penalty is not None:
-    generation_config['frequency_penalty'] = config.frequency_penalty
+  if config.seed is not None:
+    generation_config['seed'] = config.seed
+
+  undeclared = _unwarned_params_set_on(config, _UNDECLARED_SAMPLING_PARAMS)
+  if undeclared:
+    _WARNED_SAMPLING_PARAMS.update(undeclared)
+    logger.warning(
+        'The installed google-genai has no field for %s on the interactions'
+        ' request, so they are dropped before the request is sent even though'
+        ' the API itself applies them. Applying them needs a google-genai'
+        ' release that declares those fields.',
+        ', '.join(undeclared),
+    )
+
+  unsupported = _unwarned_params_set_on(config, _UNSUPPORTED_SAMPLING_PARAMS)
+  if unsupported:
+    _WARNED_SAMPLING_PARAMS.update(unsupported)
+    logger.warning(
+        'The interactions API has no equivalent for %s, so the model decodes'
+        ' with its own defaults instead. Unset them, or turn off'
+        ' use_interactions_api to have them applied.',
+        ', '.join(unsupported),
+    )
   return generation_config
 
 

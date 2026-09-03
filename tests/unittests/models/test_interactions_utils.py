@@ -22,6 +22,7 @@ from datetime import datetime
 from datetime import timezone
 import json
 import logging
+import typing
 from unittest.mock import MagicMock
 
 from google.adk.models import interactions_utils
@@ -1290,8 +1291,15 @@ class TestConvertInteractionToLlmResponse:
 class TestBuildGenerationConfig:
   """Tests for build_generation_config."""
 
+  @pytest.fixture(autouse=True)
+  def _forget_warned_parameters(self):
+    """Each test starts with nothing warned about yet."""
+    interactions_utils._WARNED_SAMPLING_PARAMS.clear()
+    yield
+    interactions_utils._WARNED_SAMPLING_PARAMS.clear()
+
   def test_all_parameters(self):
-    """Test building config with all parameters."""
+    """Test that only parameters that reach the interactions API are sent."""
     config = types.GenerateContentConfig(
         temperature=0.7,
         top_p=0.9,
@@ -1300,16 +1308,13 @@ class TestBuildGenerationConfig:
         stop_sequences=['END'],
         presence_penalty=0.5,
         frequency_penalty=0.3,
+        seed=7,
     )
     result = interactions_utils.build_generation_config(config)
     assert result == {
-        'temperature': 0.7,
-        'top_p': 0.9,
-        'top_k': 40,
         'max_output_tokens': 100,
         'stop_sequences': ['END'],
-        'presence_penalty': 0.5,
-        'frequency_penalty': 0.3,
+        'seed': 7,
     }
 
   def test_partial_parameters(self):
@@ -1319,16 +1324,119 @@ class TestBuildGenerationConfig:
         max_output_tokens=50,
     )
     result = interactions_utils.build_generation_config(config)
-    assert result == {
-        'temperature': 0.5,
-        'max_output_tokens': 50,
-    }
+    assert result == {'max_output_tokens': 50}
 
   def test_empty_config(self):
     """Test building config with no parameters."""
     config = types.GenerateContentConfig()
     result = interactions_utils.build_generation_config(config)
     assert result == {}
+
+  def test_every_key_is_a_real_generation_config_field(self):
+    """Keys absent from GenerationConfigParam are dropped before the wire."""
+    config = types.GenerateContentConfig(
+        temperature=0.7,
+        top_p=0.9,
+        top_k=40,
+        max_output_tokens=100,
+        stop_sequences=['END'],
+        presence_penalty=0.5,
+        frequency_penalty=0.3,
+        seed=7,
+    )
+    result = interactions_utils.build_generation_config(config)
+    supported = set(typing.get_type_hints(interactions.GenerationConfigParam))
+    assert set(result) == {'max_output_tokens', 'stop_sequences', 'seed'}
+    assert set(result) <= supported
+
+  def test_dropped_parameters_are_the_ones_the_request_cannot_carry(self):
+    """The parameters left out are exactly those with no request field."""
+    dropped = set(interactions_utils._UNDECLARED_SAMPLING_PARAMS) | set(
+        interactions_utils._UNSUPPORTED_SAMPLING_PARAMS
+    )
+    supported = set(typing.get_type_hints(interactions.GenerationConfigParam))
+    assert dropped.isdisjoint(supported)
+
+  def test_undeclared_parameters_point_at_the_client(self, caplog):
+    """A parameter the API applies but the client cannot send blames genai."""
+    config = types.GenerateContentConfig(temperature=0.7, top_p=0.9, top_k=40)
+
+    with caplog.at_level(
+        logging.WARNING, logger=interactions_utils.logger.name
+    ):
+      interactions_utils.build_generation_config(config)
+
+    warnings = [
+        r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+    ]
+    assert len(warnings) == 1
+    assert 'temperature' in warnings[0]
+    assert 'top_p' in warnings[0]
+    assert 'top_k' in warnings[0]
+    assert 'google-genai' in warnings[0]
+    assert 'use_interactions_api' not in warnings[0]
+
+  def test_unsupported_parameters_point_at_the_api(self, caplog):
+    """A parameter the API rejects tells the caller to unset it instead."""
+    config = types.GenerateContentConfig(
+        presence_penalty=0.5, frequency_penalty=0.3
+    )
+
+    with caplog.at_level(
+        logging.WARNING, logger=interactions_utils.logger.name
+    ):
+      interactions_utils.build_generation_config(config)
+
+    warnings = [
+        r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+    ]
+    assert len(warnings) == 1
+    assert 'presence_penalty' in warnings[0]
+    assert 'frequency_penalty' in warnings[0]
+    assert 'use_interactions_api' in warnings[0]
+
+  def test_the_two_causes_are_reported_separately(self, caplog):
+    """Test that one cause is not folded into the other's remedy."""
+    config = types.GenerateContentConfig(temperature=0.7, presence_penalty=0.5)
+
+    with caplog.at_level(
+        logging.WARNING, logger=interactions_utils.logger.name
+    ):
+      interactions_utils.build_generation_config(config)
+
+    warnings = [
+        r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+    ]
+    assert len(warnings) == 2
+    client, api = sorted(warnings, key=lambda w: 'use_interactions_api' in w)
+    assert 'temperature' in client and 'presence_penalty' not in client
+    assert 'presence_penalty' in api and 'temperature' not in api
+
+  def test_dropped_parameters_are_logged_once(self, caplog):
+    """Test that a parameter is reported once, not on every model turn."""
+    config = types.GenerateContentConfig(temperature=0.7)
+
+    with caplog.at_level(
+        logging.WARNING, logger=interactions_utils.logger.name
+    ):
+      interactions_utils.build_generation_config(config)
+      interactions_utils.build_generation_config(config)
+
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+
+  def test_supported_parameters_only_do_not_warn(self, caplog):
+    """Test that a config the API can honor logs nothing."""
+    config = types.GenerateContentConfig(
+        max_output_tokens=100, stop_sequences=['END'], seed=7
+    )
+
+    with caplog.at_level(
+        logging.WARNING, logger=interactions_utils.logger.name
+    ):
+      interactions_utils.build_generation_config(config)
+
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
 class TestExtractSystemInstruction:
