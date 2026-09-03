@@ -39,7 +39,9 @@ from google.adk.tools.mcp_tool.mcp_tool import ProgressCallbackFactory
 from google.adk.tools.mcp_tool.mcp_tool import ProgressFnT
 from google.adk.tools.tool_context import ToolContext
 from google.genai.types import FunctionDeclaration
+from mcp.shared.exceptions import McpError
 from mcp.types import CallToolResult
+from mcp.types import ErrorData
 from mcp.types import TextContent
 from mcp.types import Tool as McpBaseTool
 import pytest
@@ -975,6 +977,104 @@ class TestMCPTool:
     assert result == {"result": "ok"}
     assert self.mock_session_manager.create_session.await_count == 2
     self.mock_session.call_tool.assert_awaited_once()
+
+  @pytest.mark.asyncio
+  async def test_run_async_impl_recovers_from_terminated_session(self):
+    """Regression test for https://github.com/google/adk-python/issues/6822.
+
+    A server-side session termination (restart or idle eviction) leaves the
+    pooled session locally healthy but rejected by the server. The dead
+    session must be dropped from the pool and the call retried once on a
+    fresh session: the server refused the request before running the tool,
+    so the retry cannot duplicate a side effect.
+    """
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+    dead_session = AsyncMock()
+    dead_session.call_tool = AsyncMock(
+        side_effect=McpError(
+            ErrorData(code=32600, message="Session terminated")
+        )
+    )
+    fresh_session = AsyncMock()
+    response = Mock()
+    response.model_dump.return_value = {"result": "ok"}
+    fresh_session.call_tool = AsyncMock(return_value=response)
+    self.mock_session_manager.create_session = AsyncMock(
+        side_effect=[dead_session, fresh_session]
+    )
+    self.mock_session_manager._invalidate_session = AsyncMock()
+    tool_context = ToolContext(invocation_context=Mock())
+
+    result = await tool._run_async_impl(
+        args={"param1": "test_value"},
+        tool_context=tool_context,
+        credential=None,
+    )
+
+    assert result == {"result": "ok"}
+    self.mock_session_manager._invalidate_session.assert_awaited_once_with(
+        headers=None
+    )
+    assert self.mock_session_manager.create_session.await_count == 2
+    fresh_session.call_tool.assert_awaited_once()
+
+  @pytest.mark.asyncio
+  async def test_run_async_impl_does_not_retry_other_mcp_errors(self):
+    """An ordinary MCP protocol error keeps the pooled session and no retry."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+    self.mock_session.call_tool = AsyncMock(
+        side_effect=McpError(
+            ErrorData(code=-32602, message="Invalid request parameters")
+        )
+    )
+    self.mock_session_manager._invalidate_session = AsyncMock()
+    tool_context = ToolContext(invocation_context=Mock())
+
+    with pytest.raises(McpError, match="Invalid request parameters"):
+      await tool._run_async_impl(
+          args={"param1": "test_value"},
+          tool_context=tool_context,
+          credential=None,
+      )
+
+    self.mock_session_manager._invalidate_session.assert_not_awaited()
+    self.mock_session_manager.create_session.assert_awaited_once_with(
+        headers=None
+    )
+    self.mock_session.call_tool.assert_awaited_once()
+
+  @pytest.mark.asyncio
+  async def test_run_async_impl_terminated_session_twice_raises(self):
+    """A second terminated-session failure surfaces instead of looping."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+    self.mock_session.call_tool = AsyncMock(
+        side_effect=McpError(
+            ErrorData(code=32600, message="Session terminated")
+        )
+    )
+    self.mock_session_manager._invalidate_session = AsyncMock()
+    tool_context = ToolContext(invocation_context=Mock())
+
+    with pytest.raises(McpError, match="Session terminated"):
+      await tool._run_async_impl(
+          args={"param1": "test_value"},
+          tool_context=tool_context,
+          credential=None,
+      )
+
+    # Both attempts invalidated the dead pool entry; only one retry happened.
+    assert self.mock_session_manager._invalidate_session.await_count == 2
+    assert self.mock_session_manager.create_session.await_count == 2
+    assert self.mock_session.call_tool.await_count == 2
 
   @pytest.mark.asyncio
   async def test_get_headers_http_custom_scheme(self):

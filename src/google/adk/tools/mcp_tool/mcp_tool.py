@@ -35,6 +35,7 @@ from ...agents.readonly_context import ReadonlyContext
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
 from ...auth.auth_tool import AuthConfig
+from ...dependencies._mcp import CallToolResult
 from ...dependencies._mcp import ClientSession
 from ...dependencies._mcp import McpError
 from ...dependencies._mcp import Tool as McpBaseTool
@@ -56,6 +57,7 @@ from ..base_authenticated_tool import BaseAuthenticatedTool
 from ..tool_context import ToolContext
 from ..transfer_to_agent_tool import transfer_to_agent
 from .mcp_session_manager import _http_debug_var
+from .mcp_session_manager import _is_session_terminated_error
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_errors
 from .session_context import SessionContext
@@ -521,6 +523,59 @@ class McpTool(BaseAuthenticatedTool):
     # Resolve progress callback (may be a factory that needs runtime context)
     resolved_callback = self._resolve_progress_callback(tool_context)
 
+    try:
+      response = await self._call_tool_on_session(
+          session, final_headers, args, resolved_callback, meta_trace_context
+      )
+    except McpError as e:
+      if not _is_session_terminated_error(e):
+        raise
+      # The server rejected the pooled session id (restart or idle eviction)
+      # before running the tool, so no side effect happened and one retry on
+      # a fresh session is safe. `_call_tool_on_session` already dropped the
+      # dead session from the pool, so `_create_session` builds a new one.
+      logger.info(
+          "MCP session was terminated server-side; retrying %s on a fresh"
+          " session.",
+          self._mcp_tool.name,
+      )
+      session = await self._create_session(headers=final_headers)
+      response = await self._call_tool_on_session(
+          session, final_headers, args, resolved_callback, meta_trace_context
+      )
+
+    result = response.model_dump(exclude_none=True, mode="json")
+
+    # Push UI widget to the event actions if the tool supports it.
+    if self.mcp_app_resource_uri:
+      tool_context.render_ui_widget(
+          UiWidget(
+              id=tool_context.function_call_id,
+              provider="mcp",
+              payload={
+                  "resource_uri": self.mcp_app_resource_uri,
+                  "tool": self._mcp_tool,
+                  "tool_args": args,
+              },
+          )
+      )
+    return result
+
+  async def _call_tool_on_session(
+      self,
+      session: ClientSession,
+      final_headers: dict[str, str] | None,
+      args: dict[str, Any],
+      resolved_callback: ProgressFnT | None,
+      meta_trace_context: dict[str, str] | None,
+  ) -> CallToolResult:
+    """Runs one tool call on `session`.
+
+    If the server reports the session as terminated (it restarted or evicted
+    the session id), the pooled session is dropped before the error
+    propagates: its local streams and background task still look healthy, so
+    without this every later call would keep reusing the dead session.
+    """
     call_coro = session.call_tool(
         self._mcp_tool.name,
         arguments=args,
@@ -552,32 +607,20 @@ class McpTool(BaseAuthenticatedTool):
             headers=final_headers
         )
         if isinstance(session_context, SessionContext):
-          response = await session_context._run_guarded(call_coro)  # pylint: disable=protected-access
-        else:
-          response = await call_coro
+          return await session_context._run_guarded(call_coro)  # pylint: disable=protected-access
+        return await call_coro
       else:
         # Pre-fix behavior: await the call directly. This is what causes the
         # ~300s hang when the underlying transport crashes.
-        response = await call_coro
+        return await call_coro
+    except McpError as e:
+      if _is_session_terminated_error(e):
+        await self._mcp_session_manager._invalidate_session(  # pylint: disable=protected-access
+            headers=final_headers
+        )
+      raise
     finally:
       self._mcp_session_manager._end_session_use(final_headers)  # pylint: disable=protected-access
-
-    result = response.model_dump(exclude_none=True, mode="json")
-
-    # Push UI widget to the event actions if the tool supports it.
-    if self.mcp_app_resource_uri:
-      tool_context.render_ui_widget(
-          UiWidget(
-              id=tool_context.function_call_id,
-              provider="mcp",
-              payload={
-                  "resource_uri": self.mcp_app_resource_uri,
-                  "tool": self._mcp_tool,
-                  "tool_args": args,
-              },
-          )
-      )
-    return result
 
   def _detect_error_in_response(self, response: Any) -> str | None:
     """Telemetry hook: returns an error type if the response indicates an error."""

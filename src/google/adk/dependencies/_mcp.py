@@ -40,11 +40,13 @@ from mcp.server.fastmcp import Context as Context
 from mcp.server.fastmcp import FastMCP as FastMCP
 from mcp.server.session import ServerSession as ServerSession
 from mcp.shared.exceptions import McpError as McpError
+from mcp.types import CallToolResult as CallToolResult
 from mcp.types import ListResourcesResult as ListResourcesResult
 from mcp.types import ListToolsResult as ListToolsResult
 from mcp.types import Tool as Tool
 
 __all__ = [
+    "CallToolResult",
     "ClientSession",
     "Context",
     "ElicitationFnT",

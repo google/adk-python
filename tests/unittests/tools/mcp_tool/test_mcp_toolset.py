@@ -49,7 +49,9 @@ from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolsetConfig
 from google.adk.tools.tool_configs import ToolArgsConfig
 from mcp import StdioServerParameters
+from mcp.shared.exceptions import McpError
 from mcp.types import BlobResourceContents
+from mcp.types import ErrorData
 from mcp.types import ListResourcesResult
 from mcp.types import ReadResourceResult
 from mcp.types import Resource
@@ -1377,3 +1379,71 @@ class TestMcpToolsetSessionInUse:
         time.monotonic() - manager._session_last_used[session_key]
         < _SESSION_IDLE_TTL_SECONDS
     )
+
+
+class TestMcpToolsetTerminatedSession:
+  """Tests recovery of the list path from a server-terminated session."""
+
+  def _make_toolset_with_mock_manager(self):
+    toolset = McpToolset(
+        connection_params=StreamableHTTPConnectionParams(
+            url="http://example.com/mcp"
+        )
+    )
+    manager = Mock(spec=MCPSessionManager)
+    manager.create_session = AsyncMock()
+    manager._invalidate_session = AsyncMock()
+    toolset._mcp_session_manager = manager
+    return toolset, manager
+
+  @pytest.mark.asyncio
+  async def test_execute_with_session_recovers_from_terminated_session(self):
+    """A dead pooled session is invalidated and the listing retried once."""
+    toolset, manager = self._make_toolset_with_mock_manager()
+
+    dead_session = Mock(name="dead_session")
+    fresh_session = Mock(name="fresh_session")
+    manager.create_session.side_effect = [dead_session, fresh_session]
+
+    async def coro(session):
+      if session is dead_session:
+        raise McpError(ErrorData(code=32600, message="Session terminated"))
+      return "tools"
+
+    result = await toolset._execute_with_session(coro, "error")
+
+    assert result == "tools"
+    manager._invalidate_session.assert_awaited_once_with(headers=None)
+    assert manager.create_session.await_count == 2
+
+  @pytest.mark.asyncio
+  async def test_execute_with_session_does_not_retry_other_errors(self):
+    """Ordinary failures keep the session and surface as ConnectionError."""
+    toolset, manager = self._make_toolset_with_mock_manager()
+    manager.create_session.return_value = Mock()
+
+    async def coro(session):
+      raise McpError(
+          ErrorData(code=-32602, message="Invalid request parameters")
+      )
+
+    with pytest.raises(ConnectionError, match="Invalid request parameters"):
+      await toolset._execute_with_session(coro, "error")
+
+    manager._invalidate_session.assert_not_awaited()
+    assert manager.create_session.await_count == 1
+
+  @pytest.mark.asyncio
+  async def test_execute_with_session_terminated_twice_raises(self):
+    """A second terminated-session failure surfaces instead of looping."""
+    toolset, manager = self._make_toolset_with_mock_manager()
+    manager.create_session.return_value = Mock()
+
+    async def coro(session):
+      raise McpError(ErrorData(code=32600, message="Session terminated"))
+
+    with pytest.raises(ConnectionError, match="Session terminated"):
+      await toolset._execute_with_session(coro, "error")
+
+    assert manager._invalidate_session.await_count == 2
+    assert manager.create_session.await_count == 2
