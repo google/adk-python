@@ -14,16 +14,19 @@
 
 name: Continuous Integration
 
+# Release branches are listed alongside the development branches because a
+# release is cut to its own branch and published from there, so a branch left
+# out here ships without its tests ever having run.
 on:
   push:
-    branches: [main, v1]
+    branches: [main, v1, 'release/**']
     paths:
       - '**.py'
       - '.pre-commit-config.yaml'
       - 'pyproject.toml'
       - 'tests/**'
   pull_request:
-    branches: [main, v1]
+    branches: [main, v1, 'release/**']
     paths:
       - '**.py'
       - '.pre-commit-config.yaml'
@@ -179,10 +182,7 @@ jobs:
 
       - name: Run unit tests with pytest
         run: |
-          uv run pytest tests/unittests \
-            -n auto \
-            --ignore=tests/unittests/artifacts/test_artifact_service.py \
-            --ignore=tests/unittests/tools/google_api_tool/test_googleapi_to_openapi_converter.py
+          uv run pytest tests/unittests -n auto
 
   # 3b. Dual-version A2A coverage: This job pins a2a-sdk to 0.3.x and
   # runs only the A2A-related tests, so the a2a/_compat.py shim stays

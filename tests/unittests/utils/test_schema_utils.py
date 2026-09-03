@@ -14,10 +14,16 @@
 
 """Tests for _schema_utils module."""
 
+import functools
+import inspect
+from typing import Optional
+
+from google.adk.utils._callable_utils import get_type_hints_cached
 from google.adk.utils._schema_utils import get_list_inner_type
 from google.adk.utils._schema_utils import is_basemodel_schema
 from google.adk.utils._schema_utils import is_list_of_basemodel
 from google.adk.utils._schema_utils import lowercase_schema_types
+from google.adk.utils._schema_utils import preprocess_args
 from google.adk.utils._schema_utils import schema_to_json_schema
 from google.adk.utils._schema_utils import validate_node_data
 from google.adk.utils._schema_utils import validate_schema
@@ -32,6 +38,12 @@ class SampleModel(BaseModel):
 
   name: str
   value: int
+
+
+class OtherModel(BaseModel):
+  """Another model for testing."""
+
+  tag: str
 
 
 class TestIsBasemodelSchema:
@@ -117,7 +129,7 @@ class TestValidateSchema:
     """Test validation with a BaseModel schema."""
     json_text = '{"name": "test", "value": 42}'
     result = validate_schema(SampleModel, json_text)
-    assert result == {'name': 'test', 'value': 42}
+    assert result == {"name": "test", "value": 42}
 
   def test_basemodel_schema_excludes_none(self):
     """Test that None values are excluded from the result."""
@@ -128,76 +140,76 @@ class TestValidateSchema:
 
     json_text = '{"name": "test", "optional_field": null}'
     result = validate_schema(ModelWithOptional, json_text)
-    assert result == {'name': 'test'}
+    assert result == {"name": "test"}
 
   def test_list_of_basemodel_schema(self):
     """Test validation with a list[BaseModel] schema."""
     json_text = '[{"name": "item1", "value": 1}, {"name": "item2", "value": 2}]'
     result = validate_schema(list[SampleModel], json_text)
     assert result == [
-        {'name': 'item1', 'value': 1},
-        {'name': 'item2', 'value': 2},
+        {"name": "item1", "value": 1},
+        {"name": "item2", "value": 2},
     ]
 
   def test_list_of_str_schema(self):
     """Test validation with a list[str] schema."""
     json_text = '["a", "b", "c"]'
     result = validate_schema(list[str], json_text)
-    assert result == ['a', 'b', 'c']
+    assert result == ["a", "b", "c"]
 
   def test_dict_schema(self):
     """Test validation with a dict schema."""
     json_text = '{"key1": 1, "key2": 2}'
     result = validate_schema(dict[str, int], json_text)
-    assert result == {'key1': 1, 'key2': 2}
+    assert result == {"key1": 1, "key2": 2}
 
   def test_json_code_fence_is_stripped(self):
     """Test that a ```json fenced payload is unwrapped before validation."""
     json_text = '```json\n{"name": "test", "value": 42}\n```'
     result = validate_schema(SampleModel, json_text)
-    assert result == {'name': 'test', 'value': 42}
+    assert result == {"name": "test", "value": 42}
 
   def test_uppercase_json_code_fence_is_stripped(self):
     """Test that an uppercase language tag is not left in the payload."""
     json_text = '```JSON\n{"name": "test", "value": 42}\n```'
     result = validate_schema(SampleModel, json_text)
-    assert result == {'name': 'test', 'value': 42}
+    assert result == {"name": "test", "value": 42}
 
   def test_other_language_tag_code_fence_is_stripped(self):
     """Test that any language tag on the fence is unwrapped."""
     json_text = '```python\n{"name": "test", "value": 42}\n```'
     result = validate_schema(SampleModel, json_text)
-    assert result == {'name': 'test', 'value': 42}
+    assert result == {"name": "test", "value": 42}
 
   def test_bare_code_fence_is_stripped(self):
     """Test that a fence without a language tag is unwrapped."""
     json_text = '```\n{"name": "test", "value": 42}\n```'
     result = validate_schema(SampleModel, json_text)
-    assert result == {'name': 'test', 'value': 42}
+    assert result == {"name": "test", "value": 42}
 
   def test_code_fence_with_surrounding_whitespace_is_stripped(self):
     """Test that whitespace around the fence does not break unwrapping."""
     json_text = '  \n```json\n{"name": "test", "value": 42}\n```  \n'
     result = validate_schema(SampleModel, json_text)
-    assert result == {'name': 'test', 'value': 42}
+    assert result == {"name": "test", "value": 42}
 
   def test_list_schema_code_fence_is_stripped(self):
     """Test that a fenced list[BaseModel] payload is unwrapped."""
     json_text = '```json\n[{"name": "item1", "value": 1}]\n```'
     result = validate_schema(list[SampleModel], json_text)
-    assert result == [{'name': 'item1', 'value': 1}]
+    assert result == [{"name": "item1", "value": 1}]
 
   def test_plain_json_is_unaffected(self):
     """Test that unfenced JSON is validated unchanged."""
     json_text = '{"name": "test", "value": 42}'
     result = validate_schema(SampleModel, json_text)
-    assert result == {'name': 'test', 'value': 42}
+    assert result == {"name": "test", "value": 42}
 
   def test_backticks_inside_value_are_preserved(self):
     """Test that triple backticks inside a valid JSON value are not stripped."""
     json_text = '{"name": "```", "value": 42}'
     result = validate_schema(SampleModel, json_text)
-    assert result == {'name': '```', 'value': 42}
+    assert result == {"name": "```", "value": 42}
 
 
 class TestValidateNodeData:
@@ -205,49 +217,49 @@ class TestValidateNodeData:
 
   def test_none_schema_or_data_returns_data(self):
     """Bypasses validation if schema or data is None."""
-    assert validate_node_data(None, 'some_data') == 'some_data'
+    assert validate_node_data(None, "some_data") == "some_data"
     assert validate_node_data(SampleModel, None) is None
 
   def test_dict_or_types_schema_returns_data(self):
     """Bypasses validation if schema is dict or types.Schema."""
-    assert validate_node_data({'key': int}, 'some_data') == 'some_data'
+    assert validate_node_data({"key": int}, "some_data") == "some_data"
     # Mock types.Schema
     schema = types.Schema(type=types.Type.STRING)
-    assert validate_node_data(schema, 'some_data') == 'some_data'
+    assert validate_node_data(schema, "some_data") == "some_data"
 
   def test_content_schema_returns_data(self):
     """Bypasses validation if target schema is types.Content or subclass."""
     result = validate_node_data(
-        types.Content, types.Content(role='user', parts=[])
+        types.Content, types.Content(role="user", parts=[])
     )
-    assert result == {'role': 'user', 'parts': []}
+    assert result == {"role": "user", "parts": []}
 
   def test_plain_basemodel_schema_validates_raw_dict(self):
     """Validates raw dict data against BaseModel schema."""
-    result = validate_node_data(SampleModel, {'name': 'test', 'value': 42})
-    assert result == {'name': 'test', 'value': 42}
+    result = validate_node_data(SampleModel, {"name": "test", "value": 42})
+    assert result == {"name": "test", "value": 42}
 
   def test_content_data_and_preserve_content(self):
     """Validates wrapped content and wraps result back into Content."""
     data = types.Content(
-        role='user',
+        role="user",
         parts=[types.Part(text='{"name": "test", "value": 42}')],
     )
     result = validate_node_data(SampleModel, data, preserve_content=True)
     assert isinstance(result, types.Content)
-    assert result.role == 'user'
+    assert result.role == "user"
     assert len(result.parts) == 1
     assert result.parts[0].text == '{"name": "test", "value": 42}'
 
   def test_content_data_no_preserve_content(self):
     """Validates wrapped content and returns unwrapped dictionary."""
     data = types.Content(
-        role='user',
+        role="user",
         parts=[types.Part(text='{"name": "test", "value": 42}')],
     )
     result = validate_node_data(SampleModel, data, preserve_content=False)
     assert isinstance(result, dict)
-    assert result == {'name': 'test', 'value': 42}
+    assert result == {"name": "test", "value": 42}
 
   def test_raw_json_string_validated_against_basemodel_schema(self):
     """Raw JSON string fails validation against BaseModel schema (not auto-parsed)."""
@@ -256,8 +268,8 @@ class TestValidateNodeData:
 
   def test_raw_string_not_parsed_with_str_schema(self):
     """Bypasses JSON parsing if schema is str."""
-    result = validate_node_data(str, 'hello')
-    assert result == 'hello'
+    result = validate_node_data(str, "hello")
+    assert result == "hello"
 
 
 class TestSchemaToJsonSchema:
@@ -265,27 +277,27 @@ class TestSchemaToJsonSchema:
 
   def test_dict_schema_is_returned_unchanged(self):
     """A raw dict is already JSON Schema, so it must not be re-derived."""
-    raw = {'type': 'object', 'properties': {'name': {'type': 'string'}}}
+    raw = {"type": "object", "properties": {"name": {"type": "string"}}}
     assert schema_to_json_schema(raw) is raw
 
   def test_basemodel_schema_describes_its_fields(self):
     result = schema_to_json_schema(SampleModel)
-    assert result['type'] == 'object'
-    assert result['properties']['name']['type'] == 'string'
-    assert result['properties']['value']['type'] == 'integer'
+    assert result["type"] == "object"
+    assert result["properties"]["name"]["type"] == "string"
+    assert result["properties"]["value"]["type"] == "integer"
     # Neither field has a default, so both are required.
-    assert sorted(result['required']) == ['name', 'value']
+    assert sorted(result["required"]) == ["name", "value"]
 
   def test_builtin_generic_schema_becomes_an_array(self):
     result = schema_to_json_schema(list[str])
-    assert result == {'type': 'array', 'items': {'type': 'string'}}
+    assert result == {"type": "array", "items": {"type": "string"}}
 
   def test_list_of_basemodel_schema_becomes_an_array_of_objects(self):
     result = schema_to_json_schema(list[SampleModel])
-    assert result['type'] == 'array'
+    assert result["type"] == "array"
     # The item schema is emitted by reference into $defs rather than inline.
-    ref = result['items']['$ref'].rsplit('/', 1)[-1]
-    assert result['$defs'][ref]['properties']['name']['type'] == 'string'
+    ref = result["items"]["$ref"].rsplit("/", 1)[-1]
+    assert result["$defs"][ref]["properties"]["name"]["type"] == "string"
 
 
 class TestLowercaseSchemaTypes:
@@ -293,57 +305,175 @@ class TestLowercaseSchemaTypes:
 
   def test_properties_and_items_are_lowercased(self):
     schema = {
-        'type': 'OBJECT',
-        'properties': {
-            'name': {'type': 'STRING'},
-            'age': {'type': 'INTEGER'},
-            'tags': {'type': 'ARRAY', 'items': {'type': 'STRING'}},
+        "type": "OBJECT",
+        "properties": {
+            "name": {"type": "STRING"},
+            "age": {"type": "INTEGER"},
+            "tags": {"type": "ARRAY", "items": {"type": "STRING"}},
         },
     }
     lowercase_schema_types(schema)
-    assert schema['type'] == 'object'
-    assert schema['properties']['name']['type'] == 'string'
-    assert schema['properties']['age']['type'] == 'integer'
-    assert schema['properties']['tags']['type'] == 'array'
-    assert schema['properties']['tags']['items']['type'] == 'string'
+    assert schema["type"] == "object"
+    assert schema["properties"]["name"]["type"] == "string"
+    assert schema["properties"]["age"]["type"] == "integer"
+    assert schema["properties"]["tags"]["type"] == "array"
+    assert schema["properties"]["tags"]["items"]["type"] == "string"
 
   def test_union_branches_are_lowercased_under_either_spelling(self):
-    schema = {'anyOf': [{'type': 'STRING'}], 'any_of': [{'type': 'NUMBER'}]}
+    schema = {"anyOf": [{"type": "STRING"}], "any_of": [{"type": "NUMBER"}]}
     lowercase_schema_types(schema)
-    assert schema['anyOf'][0]['type'] == 'string'
-    assert schema['any_of'][0]['type'] == 'number'
+    assert schema["anyOf"][0]["type"] == "string"
+    assert schema["any_of"][0]["type"] == "number"
 
   def test_a_list_valued_type_is_lowercased_entry_by_entry(self):
-    schema = {'type': ['STRING', 'NULL']}
+    schema = {"type": ["STRING", "NULL"]}
     lowercase_schema_types(schema)
-    assert schema['type'] == ['string', 'null']
+    assert schema["type"] == ["string", "null"]
 
   def test_referenced_definitions_are_lowercased(self):
     schema = {
-        '$defs': {'Item': {'type': 'OBJECT'}},
-        'definitions': {'LegacyItem': {'type': 'STRING'}},
+        "$defs": {"Item": {"type": "OBJECT"}},
+        "definitions": {"LegacyItem": {"type": "STRING"}},
     }
     lowercase_schema_types(schema)
-    assert schema['$defs']['Item']['type'] == 'object'
-    assert schema['definitions']['LegacyItem']['type'] == 'string'
+    assert schema["$defs"]["Item"]["type"] == "object"
+    assert schema["definitions"]["LegacyItem"]["type"] == "string"
 
   def test_a_list_of_schemas_is_accepted(self):
-    schemas = [{'type': 'STRING'}, {'type': 'BOOLEAN'}]
+    schemas = [{"type": "STRING"}, {"type": "BOOLEAN"}]
     lowercase_schema_types(schemas)
-    assert [schema['type'] for schema in schemas] == ['string', 'boolean']
+    assert [schema["type"] for schema in schemas] == ["string", "boolean"]
 
   def test_non_schema_values_keep_their_type_key(self):
     """A ``type`` key inside a default value is data, not a schema keyword."""
-    schema = {'type': 'OBJECT', 'default': {'type': 'NOT_A_SCHEMA'}}
+    schema = {"type": "OBJECT", "default": {"type": "NOT_A_SCHEMA"}}
     lowercase_schema_types(schema)
-    assert schema['type'] == 'object'
-    assert schema['default']['type'] == 'NOT_A_SCHEMA'
+    assert schema["type"] == "object"
+    assert schema["default"]["type"] == "NOT_A_SCHEMA"
 
   def test_a_genai_schema_dump_is_lowercased(self):
     schema = types.Schema(
         type=types.Type.OBJECT,
-        properties={'name': types.Schema(type=types.Type.STRING)},
-    ).model_dump(exclude_none=True, mode='json')
+        properties={"name": types.Schema(type=types.Type.STRING)},
+    ).model_dump(exclude_none=True, mode="json")
     lowercase_schema_types(schema)
-    assert schema['type'] == 'object'
-    assert schema['properties']['name']['type'] == 'string'
+    assert schema["type"] == "object"
+    assert schema["properties"]["name"]["type"] == "string"
+
+
+class TestPreprocessArgs:
+  """Tests for preprocess_args function."""
+
+  def test_preprocess_args_converts_pydantic_model(self):
+    def model_fn(data: SampleModel, note: Optional[SampleModel] = None):
+      pass
+
+    sig = inspect.signature(model_fn)
+    hints = get_type_hints_cached(model_fn)
+    raw_args = {
+        "data": {"name": "custom", "value": 42},
+        "note": {"name": "default", "value": 10},
+    }
+    coerced = preprocess_args(raw_args, sig, hints)
+
+    assert isinstance(coerced["data"], SampleModel)
+    assert coerced["data"].value == 42
+    assert coerced["data"].name == "custom"
+    assert isinstance(coerced["note"], SampleModel)
+    assert coerced["note"].value == 10
+
+  def test_preprocess_args_converts_list_of_models(self):
+    def list_fn(items: list[SampleModel]):
+      pass
+
+    sig = inspect.signature(list_fn)
+    hints = get_type_hints_cached(list_fn)
+    raw_args = {
+        "items": [{"name": "one", "value": 1}, {"name": "two", "value": 2}]
+    }
+    coerced = preprocess_args(raw_args, sig, hints)
+
+    assert len(coerced["items"]) == 2
+    assert isinstance(coerced["items"][0], SampleModel)
+    assert coerced["items"][0].value == 1
+    assert isinstance(coerced["items"][1], SampleModel)
+    assert coerced["items"][1].value == 2
+
+  def test_preprocess_args_optional_and_union(self):
+    def union_fn(
+        user: SampleModel | None = None,
+        item: Optional[OtherModel] = None,
+        count: int = 10,
+    ):
+      pass
+
+    sig = inspect.signature(union_fn)
+    hints = get_type_hints_cached(union_fn)
+    dict_args = {
+        "user": {"name": "Alice", "value": 42},
+        "item": {"tag": "custom_tag"},
+        "count": 20,
+    }
+    coerced = preprocess_args(dict_args, sig, hints)
+    assert isinstance(coerced["user"], SampleModel)
+    assert coerced["user"].name == "Alice"
+    assert isinstance(coerced["item"], OtherModel)
+    assert coerced["item"].tag == "custom_tag"
+    assert coerced["count"] == 20
+
+    existing = SampleModel(name="existing", value=99)
+    existing_other = OtherModel(tag="existing_tag")
+    raw_args = {"user": existing, "item": existing_other, "count": 20}
+    coerced_existing = preprocess_args(raw_args, sig, hints)
+    assert coerced_existing["user"] is existing
+    assert coerced_existing["item"] is existing_other
+
+    invalid_args = {"user": "not_a_dict", "item": 123}
+    coerced_invalid = preprocess_args(invalid_args, sig, hints)
+    assert coerced_invalid["user"] == "not_a_dict"
+    assert coerced_invalid["item"] == 123
+
+  def test_preprocess_args_optional_list_of_models(self):
+    def optional_list_fn(
+        items: Optional[list[SampleModel]] = None,
+        pipe_items: list[OtherModel] | None = None,
+    ):
+      pass
+
+    sig = inspect.signature(optional_list_fn)
+    hints = get_type_hints_cached(optional_list_fn)
+    raw_args = {
+        "items": [{"name": "one", "value": 1}],
+        "pipe_items": [{"tag": "tagged"}],
+    }
+    coerced = preprocess_args(raw_args, sig, hints)
+    assert isinstance(coerced["items"], list)
+    assert len(coerced["items"]) == 1
+    assert isinstance(coerced["items"][0], SampleModel)
+    assert coerced["items"][0].name == "one"
+    assert coerced["items"][0].value == 1
+
+    assert isinstance(coerced["pipe_items"], list)
+    assert len(coerced["pipe_items"]) == 1
+    assert isinstance(coerced["pipe_items"][0], OtherModel)
+    assert coerced["pipe_items"][0].tag == "tagged"
+
+  def test_preprocess_args_partial_converts_pydantic_model(self):
+    def model_fn(x: int, data: SampleModel) -> int:
+      return x + data.value
+
+    partial_fn = functools.partial(model_fn, x=10)
+    sig = inspect.signature(partial_fn)
+    hints = get_type_hints_cached(partial_fn)
+    raw_args = {"data": {"name": "partial", "value": 32}}
+    coerced = preprocess_args(raw_args, sig, hints)
+
+    assert isinstance(coerced["data"], SampleModel)
+    assert coerced["data"].value == 32
+    assert coerced["data"].name == "partial"
+
+  def test_preprocess_args_signature_none_returns_copy(self):
+    raw_args = {"a": 1, "b": "val"}
+    result = preprocess_args(raw_args, None)
+    assert result == raw_args
+    assert result is not raw_args
