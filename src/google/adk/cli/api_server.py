@@ -46,6 +46,7 @@ from fastapi import Query
 from fastapi import Request
 from fastapi import Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.responses import RedirectResponse
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -77,6 +78,8 @@ from ..auth.credential_service.base_credential_service import BaseCredentialServ
 from ..errors.already_exists_error import AlreadyExistsError
 from ..errors.input_validation_error import InputValidationError
 from ..errors.session_not_found_error import SessionNotFoundError
+from ..auth.auth_credential import CREDENTIAL_SECRET_KEYS
+from ..auth.auth_credential import redact_credential_secrets as _redact_credential_secrets
 from ..events.event import Event
 from ..events.event_actions import EventActions
 from ..flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
@@ -571,6 +574,35 @@ def _invalid_event_error(event_index: int, disallowed: str) -> HTTPException:
           f"Session initialization event {event_index} cannot include"
           f" {disallowed}."
       ),
+  )
+
+
+def _redacted_session_response(session: Session) -> JSONResponse:
+  """Returns a `Session` as a `JSONResponse` with credential secrets stripped.
+
+  A session's persisted events may include an `adk_request_credential`
+  function call carrying a tool's full `AuthCredential` -- SessionService
+  intentionally retains the secret there so a later turn can recover it via
+  the credential merge-backfill mechanism, which means every endpoint that
+  returns a `Session` (not just /run, /run_sse, /run_live) must redact it
+  before it reaches an external client.
+  """
+  return JSONResponse(
+      content=_redact_credential_secrets(
+          session.model_dump(exclude_none=True, by_alias=True, mode="json")
+      )
+  )
+
+
+def _redacted_sessions_response(sessions: list[Session]) -> JSONResponse:
+  """Same as `_redacted_session_response`, for a list of sessions."""
+  return JSONResponse(
+      content=[
+          _redact_credential_secrets(
+              session.model_dump(exclude_none=True, by_alias=True, mode="json")
+          )
+          for session in sessions
+      ]
   )
 
 
@@ -1452,36 +1484,39 @@ class ApiServer:
 
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}",
+        response_model=Session,
         response_model_exclude_none=True,
     )
     async def get_session(
         app_name: str, user_id: str, session_id: str
-    ) -> Session:
+    ) -> Response:
       session = await self.session_service.get_session(
           app_name=app_name, user_id=user_id, session_id=session_id
       )
       if not session:
         raise HTTPException(status_code=404, detail="Session not found")
       self.current_app_name_ref.value = app_name
-      return session
+      return _redacted_session_response(session)
 
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions",
+        response_model=list[Session],
         response_model_exclude_none=True,
     )
-    async def list_sessions(app_name: str, user_id: str) -> list[Session]:
+    async def list_sessions(app_name: str, user_id: str) -> Response:
       list_sessions_response = await self.session_service.list_sessions(
           app_name=app_name, user_id=user_id
       )
-      return [
+      return _redacted_sessions_response([
           session
           for session in list_sessions_response.sessions
           # Remove sessions that were generated as a part of Eval.
           if not session.id.startswith(EVAL_SESSION_ID_PREFIX)
-      ]
+      ])
 
     @app.post(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}",
+        response_model=Session,
         response_model_exclude_none=True,
     )
     @deprecated(
@@ -1493,25 +1528,28 @@ class ApiServer:
         user_id: str,
         session_id: str,
         state: Optional[dict[str, Any]] = None,
-    ) -> Session:
-      return await self._create_session(
+    ) -> Response:
+      session = await self._create_session(
           app_name=app_name,
           user_id=user_id,
           state=state,
           session_id=session_id,
       )
+      return _redacted_session_response(session)
 
     @app.post(
         "/apps/{app_name}/users/{user_id}/sessions",
+        response_model=Session,
         response_model_exclude_none=True,
     )
     async def create_session(
         app_name: str,
         user_id: str,
         req: Optional[CreateSessionRequest] = None,
-    ) -> Session:
+    ) -> Response:
       if not req:
-        return await self._create_session(app_name=app_name, user_id=user_id)
+        session = await self._create_session(app_name=app_name, user_id=user_id)
+        return _redacted_session_response(session)
 
       if req.events:
         _validate_session_initialization_events(req.events)
@@ -1527,7 +1565,7 @@ class ApiServer:
         for event in req.events:
           await self.session_service.append_event(session=session, event=event)
 
-      return session
+      return _redacted_session_response(session)
 
     @app.delete("/apps/{app_name}/users/{user_id}/sessions/{session_id}")
     async def delete_session(
@@ -1539,6 +1577,7 @@ class ApiServer:
 
     @app.patch(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}",
+        response_model=Session,
         response_model_exclude_none=True,
     )
     async def update_session(
@@ -1546,7 +1585,7 @@ class ApiServer:
         user_id: str,
         session_id: str,
         req: UpdateSessionRequest,
-    ) -> Session:
+    ) -> Response:
       """Updates session state without running the agent.
 
       Args:
@@ -1585,7 +1624,7 @@ class ApiServer:
           session=session, event=state_update_event
       )
 
-      return session
+      return _redacted_session_response(session)
 
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name:path}/versions/{version_id}/metadata",
@@ -1825,8 +1864,10 @@ class ApiServer:
       else:
         _is_visual_builder.set(False)
 
-    @app.post("/run", response_model_exclude_none=True)
-    async def run_agent(req: RunAgentRequest, request: Request) -> list[Event]:
+    @app.post(
+        "/run", response_model=list[Event], response_model_exclude_none=True
+    )
+    async def run_agent(req: RunAgentRequest, request: Request) -> Response:
       app_name = req.app_name or self.default_app_name
       if not app_name:
         raise HTTPException(
@@ -1883,7 +1924,14 @@ class ApiServer:
         events = await worker_task
         logger.info("Generated %s events in agent run", len(events))
         logger.debug("Events generated: %s", events)
-        return events
+        return JSONResponse(
+            content=[
+                _redact_credential_secrets(
+                    event.model_dump(exclude_none=True, by_alias=True, mode="json")
+                )
+                for event in events
+            ]
+        )
       except asyncio.CancelledError:
         if await request.is_disconnected():
           return Response(status_code=499)
@@ -1961,9 +2009,14 @@ class ApiServer:
                   events_to_stream = [content_event, artifact_event]
 
                 for event_to_stream in events_to_stream:
-                  sse_event = event_to_stream.model_dump_json(
-                      exclude_none=True,
-                      by_alias=True,
+                  sse_event = json.dumps(
+                      _redact_credential_secrets(
+                          event_to_stream.model_dump(
+                              exclude_none=True,
+                              by_alias=True,
+                              mode="json",
+                          )
+                      )
                   )
                   logger.debug(
                       "Generated event in agent run streaming: %s", sse_event
@@ -2101,7 +2154,13 @@ class ApiServer:
         ) as agen:
           async for event in agen:
             await websocket.send_text(
-                event.model_dump_json(exclude_none=True, by_alias=True)
+                json.dumps(
+                    _redact_credential_secrets(
+                        event.model_dump(
+                            exclude_none=True, by_alias=True, mode="json"
+                        )
+                    )
+                )
             )
 
       async def process_messages():

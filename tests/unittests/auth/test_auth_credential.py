@@ -16,13 +16,18 @@
 
 from __future__ import annotations
 
+import inspect
+
+from google.adk.auth import auth_credential
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import BaseModelWithConfig
+from google.adk.auth.auth_credential import CREDENTIAL_SECRET_KEYS
 from google.adk.auth.auth_credential import HttpAuth
 from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_credential import ServiceAccountCredential
+from pydantic import alias_generators
 import pydantic
 import pytest
 
@@ -121,6 +126,44 @@ def test_oauth2_credentials_redacted_in_repr_and_str():
   assert 'secret_code_verifier' not in repr_str
   assert 'top_secret_client_secret' not in str_str
   assert 'secret_response_code' not in str_str
+
+
+def test_credential_secret_keys_covers_every_repr_hidden_field():
+  """CREDENTIAL_SECRET_KEYS must track every `repr=False` field's alias.
+
+  `repr=False` only hides a field from `repr()`/`str()`; it does nothing for
+  `model_dump()`/`model_dump_json()`, which is what actually leaves the
+  process (e.g. a FastAPI response). `CREDENTIAL_SECRET_KEYS` is the
+  network-facing counterpart consumers must use to redact those same
+  fields before sending a credential-bearing object to an external client.
+
+  Discovers every `BaseModelWithConfig` subclass in this module by
+  reflection rather than naming them, so a credential class added later
+  (e.g. an `MtlsCredential` with its own `repr=False` field) is included
+  automatically -- a hardcoded tuple of classes would silently exclude
+  it, and CREDENTIAL_SECRET_KEYS would then miss that field with nothing
+  to catch the gap. Asserts exact equality rather than only that expected
+  keys are covered, so a key that stops being used anywhere is caught
+  too, not left in the set indefinitely.
+  """
+  camel_of = alias_generators.to_camel
+  expected_keys = set()
+  for _, model_cls in inspect.getmembers(auth_credential, inspect.isclass):
+    if (
+        not issubclass(model_cls, BaseModelWithConfig)
+        or model_cls is BaseModelWithConfig
+    ):
+      continue
+    for name, field in model_cls.model_fields.items():
+      if field.repr is False:
+        expected_keys.add(field.alias or camel_of(name))
+  assert expected_keys
+  assert expected_keys == CREDENTIAL_SECRET_KEYS, (
+      'CREDENTIAL_SECRET_KEYS has drifted from the repr=False fields'
+      ' discovered by reflection.\n'
+      f'Missing from CREDENTIAL_SECRET_KEYS: {expected_keys - CREDENTIAL_SECRET_KEYS}\n'
+      f'No longer used by any repr=False field: {CREDENTIAL_SECRET_KEYS - expected_keys}'
+  )
 
 
 def test_service_account_redacted_in_repr_and_str():

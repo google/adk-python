@@ -29,6 +29,7 @@ from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from contextlib import contextmanager
 from contextlib import ExitStack
+import json
 import logging
 import os
 import re
@@ -71,6 +72,7 @@ from opentelemetry.util.types import AttributeValue
 from typing_extensions import deprecated
 
 from .. import version
+from ..auth.auth_credential import redact_credential_secrets
 from ..utils.env_utils import is_enterprise_mode_enabled
 from ..utils.model_name_utils import extract_model_name
 from ..utils.model_name_utils import is_gemini_model
@@ -532,8 +534,27 @@ def trace_merged_tool_calls(
   span.set_attribute("gcp.vertex.agent.event_id", response_event_id)
   if telemetry_config.should_add_content_to_legacy_spans:
     try:
-      function_response_event_json = function_response_event.model_dump_json(
-          exclude_none=True
+      # Unlike the other spans this function's docstring says it exists
+      # to unblock (dev-UI /debug/trace requests), this one dumps the
+      # whole merged event -- and an event's actions.state_delta is
+      # exactly where SessionStateCredentialService.save_credential parks
+      # an exchanged AuthCredential under an app-chosen key (see
+      # _is_credential_shaped's docstring). model_dump_json would emit
+      # that credential dict unredacted; redacting the dict before
+      # serializing it to a string is required, same as elsewhere in
+      # this file, since redaction can't reach inside an already-built
+      # string. separators=(",", ":") matches model_dump_json's default,
+      # compact output -- json.dumps's own default inserts a space after
+      # each separator, which would change this attribute's bytes for
+      # every event, not just ones carrying a credential.
+      function_response_event_json = json.dumps(
+          redact_credential_secrets(
+              function_response_event.model_dump(
+                  exclude_none=True, mode="json"
+              )
+          ),
+          ensure_ascii=False,
+          separators=(",", ":"),
       )
     except Exception:  # pylint: disable=broad-exception-caught
       function_response_event_json = "<not serializable>"
@@ -872,11 +893,24 @@ def _build_llm_request_for_trace(llm_request: LlmRequest) -> dict[str, object]:
         for part in content.parts
         if not part.inline_data
     ]
-    result["contents"].append(
+    # Unlike http_options above, contents can't simply be excluded: the
+    # conversation is the actual point of tracing an LLM request. But the
+    # conversation can carry an adk_request_credential function call's full
+    # AuthCredential (see build_auth_request_event in
+    # flows/llm_flows/functions.py) or one parked in state and later
+    # replayed into a turn, so it needs the same redaction /run, /run_sse,
+    # and the session-history endpoints already apply -- otherwise this
+    # span attribute becomes an unredacted copy of the same secret,
+    # readable from the dev-UI debug/trace endpoints. Applied here, before
+    # the dict is serialized to the string this attribute actually stores
+    # (see safe_json_serialize above): once it's a string, it's opaque to
+    # this walker, which only descends real dicts and lists.
+    content_dict = redact_credential_secrets(
         types.Content(role=content.role, parts=parts).model_dump(
             exclude_none=True, mode="json"
         )
     )
+    result["contents"].append(content_dict)
   return result
 
 

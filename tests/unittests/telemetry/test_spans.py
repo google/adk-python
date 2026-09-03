@@ -18,12 +18,21 @@ from typing import Dict
 from typing import Optional
 from unittest import mock
 
+from fastapi.openapi.models import OAuth2
+from fastapi.openapi.models import OAuthFlowAuthorizationCode
+from fastapi.openapi.models import OAuthFlows
+
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
+from google.adk.auth.auth_credential import AuthCredential
+from google.adk.auth.auth_credential import OAuth2Auth
+from google.adk.auth.auth_tool import AuthConfig
+from google.adk.auth.auth_tool import AuthToolArguments
 from google.adk.errors.tool_execution_error import ToolErrorType
 from google.adk.errors.tool_execution_error import ToolExecutionError
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.models.cache_metadata import CacheMetadata
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
@@ -236,6 +245,94 @@ async def test_trace_call_llm(monkeypatch, mock_span_fixture):
       expected_calls, any_order=True
   )
   mock_span_fixture.set_attributes.assert_called_once_with(expected_usage_attrs)
+
+
+@pytest.mark.asyncio
+async def test_trace_call_llm_redacts_oauth2_client_secret_from_contents(
+    monkeypatch, mock_span_fixture
+):
+  """The gcp.vertex.agent.llm_request span attribute must not carry a
+  credential secret embedded in an adk_request_credential function call
+  within contents.
+
+  contents accumulates conversation history across turns, and an earlier
+  turn's adk_request_credential call (see build_auth_request_event in
+  flows/llm_flows/functions.py) -- carrying the tool's full AuthCredential,
+  including client_secret -- becomes part of a later turn's llm_request
+  when it is replayed. Unlike http_options (excluded outright a few lines
+  above in _build_llm_request_for_trace, since it never has legitimate
+  debugging value), contents can't simply be excluded: the conversation is
+  the actual point of tracing an LLM request. This is a different code
+  path from /run, /run_sse, and the session-history endpoints: those
+  redact an already-built Event/Session dict; this one builds a fresh
+  dict representation of contents at trace time and must redact it before
+  it is serialized into the string this span attribute actually stores,
+  since redaction can't reach inside an opaque string afterward.
+  """
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  auth_scheme = OAuth2(
+      flows=OAuthFlows(
+          authorizationCode=OAuthFlowAuthorizationCode(
+              authorizationUrl='https://idp.example.com/oauth2/auth',
+              tokenUrl='https://idp.example.com/oauth2/token',
+              scopes={'read': 'read'},
+          )
+      )
+  )
+  credential = AuthCredential(
+      auth_type='oauth2',
+      oauth2=OAuth2Auth(
+          client_id='public-client-id',
+          client_secret='should-never-reach-the-trace',
+      ),
+  )
+  auth_config = AuthConfig(
+      auth_scheme=auth_scheme,
+      raw_auth_credential=credential,
+      credential_key='my_tool:oauth2:abcd1234',
+  )
+  # Built exactly as build_auth_request_event does, in
+  # flows/llm_flows/functions.py.
+  args = AuthToolArguments(
+      function_call_id='adk-original-fc-id', auth_config=auth_config
+  ).model_dump(mode='json', exclude_none=True, by_alias=True)
+  credential_request_content = types.Content(
+      role='user',
+      parts=[
+          types.Part(
+              function_call=types.FunctionCall(
+                  name='adk_request_credential', id='adk-req-cred-id', args=args
+              )
+          )
+      ],
+  )
+
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest(
+      model='gemini-pro',
+      contents=[
+          credential_request_content,
+          types.Content(role='user', parts=[types.Part(text='continue')]),
+      ],
+  )
+  llm_response = LlmResponse(turn_complete=True)
+
+  trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
+
+  llm_request_calls = [
+      call
+      for call in mock_span_fixture.set_attribute.call_args_list
+      if call.args[0] == 'gcp.vertex.agent.llm_request'
+  ]
+  assert len(llm_request_calls) == 1
+  serialized = llm_request_calls[0].args[1]
+  assert 'should-never-reach-the-trace' not in serialized
+  assert 'public-client-id' in serialized
+  assert 'my_tool:oauth2:abcd1234' in serialized
 
 
 @pytest.mark.asyncio
@@ -1071,6 +1168,74 @@ def test_trace_merged_tool_calls_sets_correct_attributes(
   parsed = json.loads(recorded_response)
   assert parsed['id'] == 'test_event_id'
   assert 'merged_details' in recorded_response
+
+
+def test_trace_merged_tool_calls_redacts_credential_in_state_delta(
+    monkeypatch, mock_span_fixture
+):
+  """The merged-event span this function builds dumps the whole event,
+  including actions.state_delta -- exactly where
+  SessionStateCredentialService.save_credential parks an exchanged
+  AuthCredential under an app-chosen key (see redact_credential_secrets'
+  docstring). Unlike the other spans this function's own docstring says
+  it exists to unblock (dev-UI /debug/trace requests), this one was not
+  covered by the earlier redaction work in this file.
+  """
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  credential = AuthCredential(
+      auth_type='oauth2',
+      oauth2=OAuth2Auth(
+          client_id='public-client-id',
+          client_secret='should-never-reach-the-trace',
+      ),
+  )
+  merged_event = Event(
+      invocation_id='inv-1',
+      author='root_agent',
+      id='merged-event-id',
+      content=types.Content(
+          role='user',
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      id='fc-1',
+                      name='connect_calendar',
+                      response={'status': 'connected'},
+                  )
+              )
+          ],
+      ),
+      actions=EventActions(
+          state_delta={
+              'my_tool:oauth2:abcd1234': credential.model_dump(
+                  by_alias=True, exclude_none=True, mode='json'
+              )
+          }
+      ),
+  )
+
+  trace_merged_tool_calls(
+      response_event_id=merged_event.id,
+      function_response_event=merged_event,
+  )
+
+  calls = [
+      call_obj
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
+      if call_obj.args[0] == 'gcp.vertex.agent.tool_response'
+  ]
+  assert len(calls) == 1
+  serialized = calls[0].args[1]
+
+  assert 'should-never-reach-the-trace' not in serialized
+  # Must not "redact" by blanking the whole attribute the UI renders --
+  # everything else the merged event carries should still be there.
+  assert 'public-client-id' in serialized
+  assert 'connect_calendar' in serialized
+  assert 'my_tool:oauth2:abcd1234' in serialized
 
 
 def test_trace_tool_call_skips_non_recording_span(
