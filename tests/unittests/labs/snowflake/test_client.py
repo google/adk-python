@@ -437,6 +437,20 @@ async def test_cancel_run_posts_to_the_cancel_endpoint():
   assert request.headers['authorization'] == f'Bearer {_TOKEN}'
 
 
+async def test_cancel_of_a_finished_run_is_reported_not_raised():
+  """Snowflake answering 409 for a run that already ended is not an error."""
+  client, requests = _make_client(
+      lambda request: httpx.Response(
+          409, json={'code': '390201', 'message': 'run already completed'}
+      )
+  )
+
+  cancelled = await client.cancel_run(_ctx(), '123-455')
+
+  assert cancelled is False
+  assert len(requests) == 1
+
+
 async def test_cancel_run_failure_is_reported_not_raised():
   """Cancel is best effort: an error status or a dead network is `False`."""
   client, _ = _make_client(

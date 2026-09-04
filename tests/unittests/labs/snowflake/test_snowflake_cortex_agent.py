@@ -157,9 +157,11 @@ class _FakeSnowflake:
       run_body: bytes | None = None,
       thread_id: int = 123,
       run_status: int = 200,
+      cancel_status: int = 200,
   ):
     self.thread_id = thread_id
     self.run_status = run_status
+    self.cancel_status = cancel_status
     self.run_bodies = [run_body if run_body is not None else _run_stream()]
     self.streams: list[_Chunks] = []
     self.requests: list[httpx.Request] = []
@@ -186,7 +188,7 @@ class _FakeSnowflake:
           200, stream=stream, headers={'content-type': 'text/event-stream'}
       )
     if path.endswith('/cancel'):
-      return httpx.Response(200)
+      return httpx.Response(self.cancel_status)
     return httpx.Response(404)
 
   def paths(self, suffix: str) -> list[httpx.Request]:
@@ -727,6 +729,35 @@ async def test_disconnect_without_the_option_does_not_cancel():
 
   assert snowflake.streams[0].closed
   assert snowflake.paths('/cancel') == []
+
+
+async def test_disconnect_before_the_user_message_is_acknowledged_does_not_cancel():
+  """Without a user message id there is no run id, so nothing is cancelled."""
+  body = _sse(('response.status', {'status': 'planning', 'sequence_number': 1}))
+  body += _run_stream()
+  snowflake = _FakeSnowflake(run_body=body)
+  agent = _make_agent(http_client=snowflake.http_client())
+  generator = agent.run_async(await _invocation_context(agent))
+
+  first = await generator.__anext__()
+  await generator.aclose()
+
+  assert first.custom_metadata['snowflake_cortex']['event'] == 'response.status'
+  assert snowflake.streams[0].closed
+  assert snowflake.paths('/cancel') == []
+
+
+async def test_disconnect_cancel_rejected_by_snowflake_is_swallowed():
+  """A 409 from the cancel endpoint (run already over) does not surface."""
+  snowflake = _FakeSnowflake(cancel_status=409)
+  agent = _make_agent(http_client=snowflake.http_client())
+  generator = agent.run_async(await _invocation_context(agent))
+
+  await generator.__anext__()
+  await generator.aclose()
+
+  assert len(snowflake.paths('/cancel')) == 1
+  assert snowflake.streams[0].closed
 
 
 async def test_disconnect_after_done_does_not_cancel():

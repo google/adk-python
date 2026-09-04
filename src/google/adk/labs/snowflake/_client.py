@@ -299,9 +299,11 @@ class SnowflakeCortexClient:
           operation='cancel',
       )
     except CortexClientError as e:
+      status = getattr(e, 'status_code', None)
       logger.debug(
-          'Best-effort cancel of a Snowflake Cortex run failed: %s',
+          'Best-effort cancel of a Snowflake Cortex run was refused: %s%s',
           type(e).__name__,
+          f' (HTTP {status})' if status is not None else '',
       )
       return False
     await response.aclose()
