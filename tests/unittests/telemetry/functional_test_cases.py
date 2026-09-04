@@ -43,9 +43,9 @@ from typing import Sequence
 from google.genai import errors as genai_errors
 
 from .functional._recording import FunctionalTestCase
-from .functional._scenarios import EXPERIMENTAL_OPT_IN
-from .functional._scenarios import Scenario
-from .functional._scenarios import TOOL_ERROR
+from .functional.scenarios import Scenario
+from .functional.scenarios.conversation import TOOL_ERROR
+from .functional.scenarios.telemetry_setup import EXPERIMENTAL_OPT_IN
 
 
 @dataclass(frozen=True)
