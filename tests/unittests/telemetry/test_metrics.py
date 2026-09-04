@@ -503,13 +503,13 @@ def test_record_invoke_agent_token_usage(mock_meter_setup):
   """Each token bucket is recorded once, keyed by agent, zeros included."""
   # Recording genuine zeros is what keeps "what share of invocations read
   # nothing from cache" answerable. An invocation that called no model is kept
-  # out by its caller, which never builds an `InvocationTokenTotals` at all.
+  # out by its caller, which never builds a `TokenUsage` at all.
   input_tokens = 1000
   output_tokens = 200
   cache_read_input_tokens = 750
   _metrics.record_invoke_agent_token_usage(
       "sub_agent",
-      _token_usage.InvocationTokenTotals(
+      _token_usage.TokenUsage(
           input_tokens=input_tokens,
           output_tokens=output_tokens,
           cache_read_input_tokens=cache_read_input_tokens,
@@ -548,7 +548,7 @@ def test_record_invoke_workflow_token_usage(mock_meter_setup):
   _metrics.record_invoke_workflow_token_usage(
       root_agent_name="root_agent",
       workflow_name="specialist",
-      totals=_token_usage.InvocationTokenTotals(
+      totals=_token_usage.TokenUsage(
           input_tokens=input_tokens,
           output_tokens=output_tokens,
           cache_read_input_tokens=cache_read_input_tokens,
@@ -585,9 +585,7 @@ def test_record_invoke_workflow_token_usage_omits_unset_workflow_name(
   _metrics.record_invoke_workflow_token_usage(
       root_agent_name="root_agent",
       workflow_name=None,
-      totals=_token_usage.InvocationTokenTotals(
-          input_tokens=10, output_tokens=5
-      ),
+      totals=_token_usage.TokenUsage(input_tokens=10, output_tokens=5),
       nested=False,
   )
 
