@@ -1238,6 +1238,150 @@ def test_trace_merged_tool_calls_redacts_credential_in_state_delta(
   assert 'my_tool:oauth2:abcd1234' in serialized
 
 
+@pytest.mark.parametrize(
+    'case_name,value',
+    [
+        ('control_no_float', 'no float here'),
+        ('exp_minus_9', 1e-9),
+        ('exp_minus_8', 1e-8),
+        ('exp_minus_7', 1e-7),
+        ('exp_minus_6', 1e-6),
+        ('exp_minus_5', 1e-5),
+        ('mantissa_exp_minus_7', 1.23e-7),
+        ('negative_exp_minus_7', -1e-7),
+    ],
+)
+def test_trace_merged_tool_calls_matches_model_dump_json_byte_for_byte(
+    monkeypatch, mock_span_fixture, case_name, value
+):
+  """A tool's own return value reaches this attribute unredacted (no
+  credential involved at all here), so whatever serializes it has to
+  match model_dump_json's exact bytes for every payload shape a tool can
+  return, not just credential-shaped ones -- a small-magnitude float
+  (a latency in seconds, a p-value, a score) is exactly as real a shape
+  as a credential is.
+
+  json.dumps and pydantic-core's float formatting disagree for a narrow
+  band of small negative exponents (repr()'s two-digit-minimum exponent
+  padding is not pydantic-core's), which a fix using json.dumps would
+  silently reproduce for these exact cases while passing every other
+  payload shape.
+  """
+  merged_event = Event(
+      invocation_id='inv-1',
+      author='root_agent',
+      id='test_event_id',
+      content=types.Content(
+          role='user',
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      id='fc-1',
+                      name='measure',
+                      response={'value': value},
+                  )
+              )
+          ],
+      ),
+  )
+  expected = merged_event.model_dump_json(exclude_none=True)
+
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+  trace_merged_tool_calls(
+      response_event_id=merged_event.id,
+      function_response_event=merged_event,
+  )
+  calls = [
+      call_obj
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
+      if call_obj.args[0] == 'gcp.vertex.agent.tool_response'
+  ]
+  assert len(calls) == 1
+  assert calls[0].args[1] == expected
+
+
+@pytest.mark.parametrize(
+    'secret_key',
+    [
+        # Hardcoded rather than sourced from CREDENTIAL_SECRET_KEYS itself:
+        # parametrizing off the live constant would mean a mutant that
+        # narrows the constant also narrows this test's own case list,
+        # so it could never fail no matter how much the constant shrank.
+        # This list is the thing pinning what CREDENTIAL_SECRET_KEYS is
+        # supposed to contain.
+        'password',
+        'token',
+        'additionalHeaders',
+        'clientSecret',
+        'authResponseUri',
+        'authCode',
+        'accessToken',
+        'refreshToken',
+        'idToken',
+        'codeVerifier',
+        'privateKeyId',
+        'privateKey',
+        'apiKey',
+    ],
+)
+def test_trace_merged_tool_calls_strips_every_credential_secret_key(
+    monkeypatch, mock_span_fixture, secret_key
+):
+  """Each of the 13 names in CREDENTIAL_SECRET_KEYS individually, not just
+  the subset (clientSecret, accessToken) the other tests in this file
+  happen to exercise through a real AuthCredential's own fields.
+  Narrowing the strip set to only the tested 6 was invisible to the
+  suite before this: additionalHeaders, authResponseUri, authCode,
+  refreshToken, idToken, privateKeyId, and privateKey appeared in no
+  test in this file, auth's own tests, or test_fast_api.py's.
+  """
+  secret_value = f'should-never-reach-the-trace-{secret_key}'
+  merged_event = Event(
+      invocation_id='inv-1',
+      author='root_agent',
+      id='test_event_id',
+      content=types.Content(
+          role='user',
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      id='fc-1',
+                      name='connect_calendar',
+                      response={'status': 'connected'},
+                  )
+              )
+          ],
+      ),
+      actions=EventActions(
+          state_delta={
+              'my_tool:oauth2:abcd1234': {
+                  'authType': 'oauth2',
+                  secret_key: secret_value,
+              }
+          }
+      ),
+  )
+
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+  trace_merged_tool_calls(
+      response_event_id=merged_event.id,
+      function_response_event=merged_event,
+  )
+  calls = [
+      call_obj
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
+      if call_obj.args[0] == 'gcp.vertex.agent.tool_response'
+  ]
+  assert len(calls) == 1
+  serialized = calls[0].args[1]
+  assert secret_value not in serialized
+  assert 'oauth2' in serialized
+
+
 def test_trace_tool_call_skips_non_recording_span(
     monkeypatch, mock_tool_fixture, mock_event_fixture
 ):

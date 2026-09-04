@@ -1694,6 +1694,23 @@ def merge_parallel_function_response_events(
         aggregated_ui_widgets.extend(ui_widgets)
 
       # Use `by_alias=True` because it converts the model to a dictionary while respecting field aliases, ensuring that the enum fields are correctly handled without creating a duplicate.
+      #
+      # This by_alias=True is also, separately, load-bearing for credential
+      # redaction: SessionStateCredentialService.save_credential parks a raw
+      # AuthCredential object (not a dump) in state_delta, whose snake_case
+      # fields (auth_type, client_secret) would NOT be recognized as
+      # credential-shaped by redact_credential_secrets, which keys on the
+      # aliased spelling (authType) -- see that function's docstring. The
+      # merged event only reaches trace_merged_tool_calls (telemetry/tracing.py)
+      # after passing through this by-alias re-validation, which is what
+      # actually puts authType there and lets the credential get stripped
+      # before it reaches an exported trace attribute. If this ever changes
+      # to skip re-aliasing (or to merge a raw AuthCredential object through
+      # some other path), a credential parked in state_delta would reach a
+      # trace attribute intact. The one test that would catch that today is
+      # tests/unittests/flows/llm_flows/test_functions_request_euc.py::test_function_request_euc,
+      # which is about EUC request semantics and gives no hint that its
+      # failure means a credential leak reopened.
       merged_actions_data = deep_merge_dicts(
           merged_actions_data,
           actions_dict,

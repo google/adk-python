@@ -29,7 +29,6 @@ from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from contextlib import contextmanager
 from contextlib import ExitStack
-import json
 import logging
 import os
 import re
@@ -69,6 +68,7 @@ from opentelemetry.trace import Span
 from opentelemetry.trace import Status
 from opentelemetry.trace import StatusCode
 from opentelemetry.util.types import AttributeValue
+from pydantic_core import to_json
 from typing_extensions import deprecated
 
 from .. import version
@@ -542,19 +542,21 @@ def trace_merged_tool_calls(
       # that credential dict unredacted; redacting the dict before
       # serializing it to a string is required, same as elsewhere in
       # this file, since redaction can't reach inside an already-built
-      # string. separators=(",", ":") matches model_dump_json's default,
-      # compact output -- json.dumps's own default inserts a space after
-      # each separator, which would change this attribute's bytes for
-      # every event, not just ones carrying a credential.
-      function_response_event_json = json.dumps(
+      # string. pydantic_core.to_json is the exact serializer
+      # model_dump_json calls internally, so redacting the dict first and
+      # serializing with it keeps this attribute's bytes identical to the
+      # old model_dump_json call's for every payload shape -- json.dumps
+      # does not: it and pydantic-core's float formatting disagree for a
+      # narrow band of small-magnitude exponents (1e-9 vs 1e-09), a real
+      # value shape a tool's own return data can carry (a latency, a
+      # p-value, a small score), not just a hypothetical one.
+      function_response_event_json = to_json(
           redact_credential_secrets(
               function_response_event.model_dump(
                   exclude_none=True, mode="json"
               )
-          ),
-          ensure_ascii=False,
-          separators=(",", ":"),
-      )
+          )
+      ).decode()
     except Exception:  # pylint: disable=broad-exception-caught
       function_response_event_json = "<not serializable>"
 
