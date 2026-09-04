@@ -22,6 +22,7 @@ from .plugin_manager import PluginManager
 
 if TYPE_CHECKING:
   from ._reflect_retry_model_plugin import ReflectAndRetryModelPlugin
+  from ._tealtiger_plugin import TealTigerPlugin
   from .debug_logging_plugin import DebugLoggingPlugin
   from .logging_plugin import LoggingPlugin
   from .reflect_retry_tool_plugin import ReflectAndRetryToolPlugin
@@ -33,6 +34,7 @@ __all__ = [
     "PluginManager",
     "ReflectAndRetryModelPlugin",
     "ReflectAndRetryToolPlugin",
+    "TealTigerPlugin",
 ]
 
 _LAZY_MEMBERS: dict[str, str] = {
@@ -40,6 +42,7 @@ _LAZY_MEMBERS: dict[str, str] = {
     "LoggingPlugin": "logging_plugin",
     "ReflectAndRetryModelPlugin": "_reflect_retry_model_plugin",
     "ReflectAndRetryToolPlugin": "reflect_retry_tool_plugin",
+    "TealTigerPlugin": "_tealtiger_plugin",
 }
 
 
