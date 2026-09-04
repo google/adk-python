@@ -560,7 +560,9 @@ def _set_usage_metadata_attributes(
   """Records usage metadata attributes on the given span."""
   if usage_metadata is None:
     return
-  span.set_attributes(TokenUsage(usage_metadata).to_attributes())
+  span.set_attributes(
+      TokenUsage.from_usage_metadata(usage_metadata).to_attributes()
+  )
 
 
 def _set_context_cache_attributes(

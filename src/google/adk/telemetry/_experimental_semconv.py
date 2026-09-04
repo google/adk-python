@@ -601,7 +601,11 @@ def _build_response_common_attributes(
   if finish_reason := _to_finish_reason(llm_response.finish_reason):
     attributes[GEN_AI_RESPONSE_FINISH_REASONS] = [finish_reason]
   if llm_response.usage_metadata:
-    attributes.update(TokenUsage(llm_response.usage_metadata).to_attributes())
+    attributes.update(
+        TokenUsage.from_usage_metadata(
+            llm_response.usage_metadata
+        ).to_attributes()
+    )
   return attributes
 
 

@@ -2077,8 +2077,8 @@ def test_message_to_generate_content_response_thinking_tokens_not_double_counted
   # total nor the downstream output aggregation may count those 60 twice.
   assert usage_metadata.thoughts_token_count == 60
   assert usage_metadata.total_token_count == 110
-  assert TokenUsage(usage_metadata).output_token_count == 100
-  assert TokenUsage(usage_metadata).input_token_count == 10
+  assert TokenUsage.from_usage_metadata(usage_metadata).output_tokens == 100
+  assert TokenUsage.from_usage_metadata(usage_metadata).input_tokens == 10
 
 
 def test_message_to_generate_content_response_prompt_count_includes_cache_tokens():
