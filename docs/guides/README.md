@@ -35,6 +35,7 @@ This directory contains specific developer guides for the ADK Python implementat
 
 ### Labs
 * [AntigravityAgent](labs/antigravity/index.md) - Runs a Google Antigravity SDK agent as an ADK agent node.
+* [SnowflakeCortexAgent](labs/snowflake/snowflake_cortex_agent/index.md) - Runs a Snowflake Cortex Agent as an ADK root agent, streaming its run as ADK events.
 
 ### Live
 * [LiveRequestQueue](live/live_request_queue/index.md) - Streaming content, realtime audio, and stream control signals to live agents.
