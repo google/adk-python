@@ -116,10 +116,10 @@ request id. The next turn continues from the last good message.
 
 If the consumer stops reading, for example when a browser tab closes, the
 agent closes the connection to Snowflake and, with `cancel_on_disconnect`
-enabled, asks Snowflake once to cancel the run. In live tests Snowflake had
-already marked the run completed by the time the cancel arrived, answering
-`409 Agent run was already completed`: closing the stream is what ends a
-foreground run. Snowflake keeps whatever it had already produced in the
+enabled, asks Snowflake once to cancel the run. In live tests the cancel request was answered with
+`409 Agent run was already completed`, both right after closing the stream
+and for a run that had finished on its own, so the agent treats that answer
+as a benign outcome. Snowflake keeps whatever it had already produced in the
 thread either way.
 
 ## Configuration options
@@ -163,10 +163,10 @@ when your Cortex Agent answers quickly and you would rather fail fast.
 `cancel_on_disconnect` decides whether the agent also sends a cancel request
 for the run when the ADK consumer goes away mid-turn. The cancel is best
 effort and its failure is not raised, because nobody is left to read the
-error; a refusal is logged at debug level with its HTTP status. Observed
-behaviour is that Snowflake ends a foreground run as soon as the stream is
-closed and answers the cancel with 409, so the request is a safeguard rather
-than the mechanism that stops the run. Disable it to skip that extra request.
+error; a refusal is logged at debug level with its HTTP status. In live tests the
+cancel was answered with 409 (run already completed) right after the stream
+was closed, so treat the request as a safeguard rather than as the mechanism
+that stops the run. Disable it to skip that extra request.
 
 `max_tool_result_bytes` protects the session store. Tool results are persisted
 as `FunctionResponse` events and can be large, so a result above the bound is
@@ -347,8 +347,8 @@ Snowflake's error code, message and request id but never the request body.
   or one that asks for a permission decision cannot be run: the turn fails
   with `UnsupportedCortexEventError`.
 - **No reconnection.** If the connection drops mid-run, the turn fails and the
-  run is not resumed. Snowflake ends a foreground run when its stream closes,
-  keeps the partial output in the thread, and bills the work it did.
+  run is not resumed. Snowflake keeps the partial output of an abandoned run in
+  the thread and bills the work it did.
 - **One turn per session at a time.** Two concurrent turns on one session
   would both continue from the same message and fork the thread. Serialize
   turns per session in the application before calling the `Runner`.
