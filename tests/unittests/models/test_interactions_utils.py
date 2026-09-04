@@ -22,6 +22,7 @@ from datetime import datetime
 from datetime import timezone
 import json
 import logging
+import typing
 from unittest.mock import MagicMock
 
 from google.adk.models import interactions_utils
@@ -1290,8 +1291,15 @@ class TestConvertInteractionToLlmResponse:
 class TestBuildGenerationConfig:
   """Tests for build_generation_config."""
 
+  @pytest.fixture(autouse=True)
+  def _forget_warned_parameters(self):
+    """Each test starts with nothing warned about yet."""
+    interactions_utils._WARNED_SAMPLING_PARAMS.clear()
+    yield
+    interactions_utils._WARNED_SAMPLING_PARAMS.clear()
+
   def test_all_parameters(self):
-    """Test building config with all parameters."""
+    """Test that only parameters that reach the interactions API are sent."""
     config = types.GenerateContentConfig(
         temperature=0.7,
         top_p=0.9,
@@ -1300,16 +1308,13 @@ class TestBuildGenerationConfig:
         stop_sequences=['END'],
         presence_penalty=0.5,
         frequency_penalty=0.3,
+        seed=7,
     )
     result = interactions_utils.build_generation_config(config)
     assert result == {
-        'temperature': 0.7,
-        'top_p': 0.9,
-        'top_k': 40,
         'max_output_tokens': 100,
         'stop_sequences': ['END'],
-        'presence_penalty': 0.5,
-        'frequency_penalty': 0.3,
+        'seed': 7,
     }
 
   def test_partial_parameters(self):
@@ -1319,16 +1324,119 @@ class TestBuildGenerationConfig:
         max_output_tokens=50,
     )
     result = interactions_utils.build_generation_config(config)
-    assert result == {
-        'temperature': 0.5,
-        'max_output_tokens': 50,
-    }
+    assert result == {'max_output_tokens': 50}
 
   def test_empty_config(self):
     """Test building config with no parameters."""
     config = types.GenerateContentConfig()
     result = interactions_utils.build_generation_config(config)
     assert result == {}
+
+  def test_every_key_is_a_real_generation_config_field(self):
+    """Keys absent from GenerationConfigParam are dropped before the wire."""
+    config = types.GenerateContentConfig(
+        temperature=0.7,
+        top_p=0.9,
+        top_k=40,
+        max_output_tokens=100,
+        stop_sequences=['END'],
+        presence_penalty=0.5,
+        frequency_penalty=0.3,
+        seed=7,
+    )
+    result = interactions_utils.build_generation_config(config)
+    supported = set(typing.get_type_hints(interactions.GenerationConfigParam))
+    assert set(result) == {'max_output_tokens', 'stop_sequences', 'seed'}
+    assert set(result) <= supported
+
+  def test_dropped_parameters_are_the_ones_the_request_cannot_carry(self):
+    """The parameters left out are exactly those with no request field."""
+    dropped = set(interactions_utils._UNDECLARED_SAMPLING_PARAMS) | set(
+        interactions_utils._UNSUPPORTED_SAMPLING_PARAMS
+    )
+    supported = set(typing.get_type_hints(interactions.GenerationConfigParam))
+    assert dropped.isdisjoint(supported)
+
+  def test_undeclared_parameters_point_at_the_client(self, caplog):
+    """A parameter the API applies but the client cannot send blames genai."""
+    config = types.GenerateContentConfig(temperature=0.7, top_p=0.9, top_k=40)
+
+    with caplog.at_level(
+        logging.WARNING, logger=interactions_utils.logger.name
+    ):
+      interactions_utils.build_generation_config(config)
+
+    warnings = [
+        r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+    ]
+    assert len(warnings) == 1
+    assert 'temperature' in warnings[0]
+    assert 'top_p' in warnings[0]
+    assert 'top_k' in warnings[0]
+    assert 'google-genai' in warnings[0]
+    assert 'use_interactions_api' not in warnings[0]
+
+  def test_unsupported_parameters_point_at_the_api(self, caplog):
+    """A parameter the API rejects tells the caller to unset it instead."""
+    config = types.GenerateContentConfig(
+        presence_penalty=0.5, frequency_penalty=0.3
+    )
+
+    with caplog.at_level(
+        logging.WARNING, logger=interactions_utils.logger.name
+    ):
+      interactions_utils.build_generation_config(config)
+
+    warnings = [
+        r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+    ]
+    assert len(warnings) == 1
+    assert 'presence_penalty' in warnings[0]
+    assert 'frequency_penalty' in warnings[0]
+    assert 'use_interactions_api' in warnings[0]
+
+  def test_the_two_causes_are_reported_separately(self, caplog):
+    """Test that one cause is not folded into the other's remedy."""
+    config = types.GenerateContentConfig(temperature=0.7, presence_penalty=0.5)
+
+    with caplog.at_level(
+        logging.WARNING, logger=interactions_utils.logger.name
+    ):
+      interactions_utils.build_generation_config(config)
+
+    warnings = [
+        r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+    ]
+    assert len(warnings) == 2
+    client, api = sorted(warnings, key=lambda w: 'use_interactions_api' in w)
+    assert 'temperature' in client and 'presence_penalty' not in client
+    assert 'presence_penalty' in api and 'temperature' not in api
+
+  def test_dropped_parameters_are_logged_once(self, caplog):
+    """Test that a parameter is reported once, not on every model turn."""
+    config = types.GenerateContentConfig(temperature=0.7)
+
+    with caplog.at_level(
+        logging.WARNING, logger=interactions_utils.logger.name
+    ):
+      interactions_utils.build_generation_config(config)
+      interactions_utils.build_generation_config(config)
+
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+
+  def test_supported_parameters_only_do_not_warn(self, caplog):
+    """Test that a config the API can honor logs nothing."""
+    config = types.GenerateContentConfig(
+        max_output_tokens=100, stop_sequences=['END'], seed=7
+    )
+
+    with caplog.at_level(
+        logging.WARNING, logger=interactions_utils.logger.name
+    ):
+      interactions_utils.build_generation_config(config)
+
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
 class TestExtractSystemInstruction:
@@ -2320,6 +2428,260 @@ class TestConvertInteractionEventToLlmResponse:
 
     # The logging check can remain to ensure the raw exception is still logged.
     assert 'Failed to parse function call args' in caplog.text
+
+  def test_interleaved_function_call_streaming_routes_by_index(self):
+    """Interleaved function-call steps route deltas/stops by their index.
+
+    Two calls start at indexes 0 and 1, then arguments for both arrive before
+    either stops. Without index-based routing, both deltas would be appended to
+    the most recently started call (index 1), so the first call ends up with no
+    arguments while the second receives two concatenated JSON objects.
+    """
+    state = interactions_utils._StreamState()
+
+    # Start two function calls at different indexes.
+    for idx, (call_id, name) in enumerate(
+        [('call_0', 'get_weather'), ('call_1', 'get_time')]
+    ):
+      interactions_utils.convert_interaction_event_to_llm_response(
+          StepStart(
+              event_type='step.start',
+              index=idx,
+              step=FunctionCallStep(
+                  type='function_call', id=call_id, name=name, arguments={}
+              ),
+          ),
+          state,
+          interaction_id='int_multi',
+      )
+
+    # Interleave argument deltas: index 0 first, then index 1.
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'arguments_delta', 'arguments': '{"city": "Paris"}'},
+        ),
+        state,
+        interaction_id='int_multi',
+    )
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=1,
+            delta={'type': 'arguments_delta', 'arguments': '{"zone": "UTC"}'},
+        ),
+        state,
+        interaction_id='int_multi',
+    )
+
+    # Stop both steps.
+    for idx in (0, 1):
+      interactions_utils.convert_interaction_event_to_llm_response(
+          StepStop(event_type='step.stop', index=idx),
+          state,
+          interaction_id='int_multi',
+      )
+
+    assert state.parts[0].function_call.name == 'get_weather'
+    assert state.parts[0].function_call.args == {'city': 'Paris'}
+    assert state.parts[1].function_call.name == 'get_time'
+    assert state.parts[1].function_call.args == {'zone': 'UTC'}
+
+  def test_step_stop_with_unmatched_index_does_not_finalize_active_function_call(
+      self,
+  ):
+    """An event with an unmatched step index must not resolve to the last function call."""
+    state = interactions_utils._StreamState()
+
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepStart(
+            event_type='step.start',
+            index=0,
+            step=FunctionCallStep(
+                type='function_call',
+                id='call_0',
+                name='get_weather',
+                arguments={},
+            ),
+        ),
+        state,
+        interaction_id='int_multi',
+    )
+
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'arguments_delta', 'arguments': '{"city": '},
+        ),
+        state,
+        interaction_id='int_multi',
+    )
+
+    # StepStop for an unrelated step (index 1). It must not finalize step 0's call.
+    res = interactions_utils.convert_interaction_event_to_llm_response(
+        StepStop(event_type='step.stop', index=1),
+        state,
+        interaction_id='int_multi',
+    )
+    assert res is None
+
+    # Step 0 receives the rest of its arguments and stops cleanly.
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'arguments_delta', 'arguments': '"Paris"}'},
+        ),
+        state,
+        interaction_id='int_multi',
+    )
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepStop(event_type='step.stop', index=0),
+        state,
+        interaction_id='int_multi',
+    )
+
+    assert state.parts[0].function_call.name == 'get_weather'
+    assert state.parts[0].function_call.args == {'city': 'Paris'}
+
+  def test_arguments_delta_with_unmatched_index_does_not_alter_active_function_call(
+      self, caplog
+  ):
+    """An arguments delta with an unmatched step index must not resolve to an active function call."""
+    state = interactions_utils._StreamState()
+
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepStart(
+            event_type='step.start',
+            index=0,
+            step=FunctionCallStep(
+                type='function_call',
+                id='call_0',
+                name='get_weather',
+                arguments={},
+            ),
+        ),
+        state,
+        interaction_id='int_multi',
+    )
+
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'arguments_delta', 'arguments': '{"city": '},
+        ),
+        state,
+        interaction_id='int_multi',
+    )
+
+    # ArgumentsDelta for an unrelated step (index 1). It must return None, log a
+    # warning, and not be appended to step 0's call.
+    with caplog.at_level(logging.WARNING):
+      res = interactions_utils.convert_interaction_event_to_llm_response(
+          StepDelta(
+              event_type='step.delta',
+              index=1,
+              delta={'type': 'arguments_delta', 'arguments': '{"extra": 1}'},
+          ),
+          state,
+          interaction_id='int_multi',
+      )
+    assert res is None
+    assert (
+        'Interactions streaming converter dropped an arguments delta: step'
+        ' index 1 has no function-call part; skipping.'
+        in caplog.text
+    )
+
+    # Step 0 receives the rest of its arguments and stops cleanly.
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'arguments_delta', 'arguments': '"Paris"}'},
+        ),
+        state,
+        interaction_id='int_multi',
+    )
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepStop(event_type='step.stop', index=0),
+        state,
+        interaction_id='int_multi',
+    )
+
+    assert state.parts[0].function_call.name == 'get_weather'
+    assert state.parts[0].function_call.args == {'city': 'Paris'}
+
+  def test_arguments_delta_for_finalized_call_logs_warning(self, caplog):
+    """An arguments delta arriving after StepStop must log a warning and return None."""
+    state = interactions_utils._StreamState()
+
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepStart(
+            event_type='step.start',
+            index=0,
+            step=FunctionCallStep(
+                type='function_call',
+                id='call_0',
+                name='get_weather',
+                arguments={},
+            ),
+        ),
+        state,
+        interaction_id='int_multi',
+    )
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'arguments_delta', 'arguments': '{"city": "Paris"}'},
+        ),
+        state,
+        interaction_id='int_multi',
+    )
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepStop(event_type='step.stop', index=0),
+        state,
+        interaction_id='int_multi',
+    )
+    assert state.parts[0].function_call.partial_args is None
+    assert state.parts[0].function_call.args == {'city': 'Paris'}
+
+    # A routine delta with None arguments should be a silent no-op.
+    with caplog.at_level(logging.WARNING):
+      res_none = interactions_utils.convert_interaction_event_to_llm_response(
+          StepDelta(
+              event_type='step.delta',
+              index=0,
+              delta={'type': 'arguments_delta', 'arguments': None},
+          ),
+          state,
+          interaction_id='int_multi',
+      )
+    assert res_none is None
+    assert 'was already finalized' not in caplog.text
+
+    # A late arguments delta for the finalized call must warn and return None.
+    with caplog.at_level(logging.WARNING):
+      res_late = interactions_utils.convert_interaction_event_to_llm_response(
+          StepDelta(
+              event_type='step.delta',
+              index=0,
+              delta={'type': 'arguments_delta', 'arguments': '{"extra": 1}'},
+          ),
+          state,
+          interaction_id='int_multi',
+      )
+    assert res_late is None
+    assert (
+        'Interactions streaming converter dropped an arguments delta: step'
+        ' index 0 was already finalized; skipping.'
+        in caplog.text
+    )
+    assert state.parts[0].function_call.args == {'city': 'Paris'}
 
 
 @pytest.mark.parametrize(

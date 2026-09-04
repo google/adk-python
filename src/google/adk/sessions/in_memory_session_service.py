@@ -24,6 +24,7 @@ from typing_extensions import override
 
 from . import _session_util
 from ..errors.already_exists_error import AlreadyExistsError
+from ..errors.session_not_found_error import SessionNotFoundError
 from ..events.event import Event
 from ..features import FeatureName
 from ..features import is_feature_enabled
@@ -328,20 +329,8 @@ class InMemorySessionService(BaseSessionService):
     user_id = session.user_id
     session_id = session.id
 
-    def _warning(message: str) -> None:
-      logger.warning(
-          f'Failed to append event to session {session_id}: {message}'
-      )
-
-    if app_name not in self.sessions:
-      _warning(f'app_name {app_name} not in sessions')
-      return event
-    if user_id not in self.sessions[app_name]:
-      _warning(f'user_id {user_id} not in sessions[app_name]')
-      return event
-    if session_id not in self.sessions[app_name][user_id]:
-      _warning(f'session_id {session_id} not in sessions[app_name][user_id]')
-      return event
+    if session_id not in self.sessions.get(app_name, {}).get(user_id, {}):
+      raise SessionNotFoundError(f'Session {session_id} not found.')
 
     # Fetch the canonical storage session early so we can drop a re-delivered
     # event before modifying any state. The same event can be delivered more

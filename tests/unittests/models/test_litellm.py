@@ -2903,6 +2903,88 @@ def test_message_to_generate_content_response_tool_call_accepts_unquoted_json_ke
   }
 
 
+def test_message_to_generate_content_response_tool_call_malformed_arguments_returns_empty():
+  """Unparseable tool-call argument JSON degrades to empty args, not a crash."""
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id="test_tool_call_id",
+              function=Function(
+                  name="test_function",
+                  arguments='{"city":"unterminated',
+              ),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+
+  function_call = response.content.parts[0].function_call
+  assert response.content.role == "model"
+  assert function_call.name == "test_function"
+  assert isinstance(function_call.args, dict)
+  assert not function_call.args
+  assert function_call.id == "test_tool_call_id"
+
+
+def test_message_to_generate_content_response_tool_call_malformed_arguments_logs_warning(
+    caplog,
+):
+  """The warning names the function but keeps the raw arguments out of it."""
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id="test_tool_call_id",
+              function=Function(
+                  name="test_function",
+                  arguments='{"city":"unterminated',
+              ),
+          )
+      ],
+  )
+
+  with caplog.at_level(
+      logging.WARNING, logger="google_adk.google.adk.models.lite_llm"
+  ):
+    _message_to_generate_content_response(message)
+
+  assert "test_function" in caplog.text
+  assert '{"city":"unterminated' not in caplog.text
+
+
+def test_message_to_generate_content_response_tool_call_malformed_arguments_logs_raw_at_debug(
+    caplog,
+):
+  """The raw arguments are only logged at DEBUG."""
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id="test_tool_call_id",
+              function=Function(
+                  name="test_function",
+                  arguments='{"city":"unterminated',
+              ),
+          )
+      ],
+  )
+
+  with caplog.at_level(
+      logging.DEBUG, logger="google_adk.google.adk.models.lite_llm"
+  ):
+    _message_to_generate_content_response(message)
+
+  assert '{"city":"unterminated' in caplog.text
+
+
 def test_message_to_generate_content_response_inline_tool_call_text():
   message = ChatCompletionAssistantMessage(
       role="assistant",
@@ -5282,6 +5364,57 @@ async def test_streaming_tool_call_complete_with_length_finish_reason(
   assert function_call.args == {"test_arg": "value"}
   assert final_response.finish_reason == types.FinishReason.MAX_TOKENS
   assert final_response.error_code == types.FinishReason.MAX_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_malformed_arguments_returns_empty(
+    mock_completion, lite_llm_instance
+):
+  """Malformed streamed tool-call args (finish_reason='tool_calls') degrade to empty args."""
+  stream_chunks = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_789",
+                              function=Function(
+                                  name="test_function",
+                                  arguments='{"city":"unterminated',
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+      ModelResponseStream(
+          choices=[StreamingChoices(finish_reason="tool_calls", delta=Delta())]
+      ),
+  ]
+  mock_completion.return_value = iter(stream_chunks)
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert len(responses) == 1
+  final_response = responses[0]
+  assert final_response.content.role == "model"
+  function_call = final_response.content.parts[0].function_call
+  assert function_call.name == "test_function"
+  assert function_call.id == "call_789"
+  assert isinstance(function_call.args, dict)
+  assert not function_call.args
+  assert final_response.error_code != types.FinishReason.MAX_TOKENS
 
 
 @pytest.mark.asyncio

@@ -24,6 +24,7 @@ already active.
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from collections.abc import Iterator
 from contextlib import aclosing
 from contextlib import contextmanager
@@ -36,6 +37,8 @@ from typing import Sequence
 from typing import TYPE_CHECKING
 
 from google.adk.agents.llm_agent import Agent
+from google.adk.agents.run_config import RunConfig
+from google.adk.agents.run_config import StreamingMode
 from google.adk.code_executors import UnsafeLocalCodeExecutor
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.google_llm import Gemini
@@ -115,6 +118,7 @@ Scenario = Literal[
     "multi_agent",
     "agent_tool",
     "nested_agents_in_workflow",
+    "streaming",
 ]
 
 # The type of skill being used in a test case.
@@ -498,6 +502,31 @@ NESTED_WORKFLOW_TURNS: tuple[Turn, ...] = (
     (Part.from_text(text=NODE_RESULT), NESTED_TURN_USAGE),
 ) + TOOL_CALLING_TURNS
 
+# One streamed model turn: the chunks it arrives in.
+StreamedTurn = tuple[Turn, ...]
+
+# The answer, split over the chunks it is streamed in.
+STREAMED_TEXT_CHUNKS = ("text ", "response")
+assert "".join(STREAMED_TEXT_CHUNKS) == FINAL_TEXT
+
+# The canonical conversation, streamed: the tool call arrives whole, the answer
+# in two chunks, each carrying the turn's usage as a real backend repeats it.
+# Both instrumentations serve it over the same mocked SDK, so what the two
+# recordings disagree about is how each reports a streamed turn, not what the
+# aggregation in front of them did with it.
+STREAMING_TURNS: tuple[StreamedTurn, ...] = (
+    (
+        (
+            Part.from_function_call(name=TOOL_NAME, args=TOOL_ARGS),
+            FIRST_TURN_USAGE,
+        ),
+    ),
+    tuple(
+        (Part.from_text(text=chunk), SECOND_TURN_USAGE)
+        for chunk in STREAMED_TEXT_CHUNKS
+    ),
+)
+
 
 def mock_test_model(
     *,
@@ -731,6 +760,34 @@ async def run_nested_agents_scenario(
   )
 
 
+async def run_streaming_agent_scenario(
+    runner: TestInMemoryRunner, *, event_sink: list[Event] | None = None
+) -> list[Event]:
+  """Runs the canonical agent with SSE streaming turned on.
+
+  Drives the runner directly rather than through the shared helper, which
+  offers no way to ask for a streaming run.
+  """
+  collected_events: list[Event] = event_sink if event_sink is not None else []
+  session = await runner.session_service.create_session(
+      app_name="InMemoryRunner", user_id="test_user"
+  )
+  agen = runner.run_async(
+      user_id=session.user_id,
+      session_id=session.id,
+      new_message=Content(
+          parts=[Part.from_text(text=USER_PROMPT)], role="user"
+      ),
+      run_config=RunConfig(streaming_mode=StreamingMode.SSE),
+  )
+
+  async with aclosing(agen):
+    async for event in agen:
+      collected_events.append(event)
+
+  return collected_events
+
+
 async def run_agent_scenario(
     runner: TestInMemoryRunner, *, event_sink: list[Event] | None = None
 ) -> list[Event]:
@@ -806,6 +863,51 @@ def gemini_test_model(
   return Gemini(model=MODEL_NAME)
 
 
+def streaming_gemini_test_model(
+    monkeypatch: pytest.MonkeyPatch,
+    turns: tuple[StreamedTurn, ...],
+) -> Gemini:
+  """The streamed conversation as a real `Gemini` over a mocked-out SDK.
+
+  Mocks the streaming SDK entrypoint, so it is the one the instrumentor wraps
+  and the one the chunks are counted through. Only the chunk that ends a turn
+  reports why generation stopped; the ones before it leave the field at its
+  proto3 zero value, as a real stream does.
+  """
+  streamed = iter(turns)
+
+  async def mock_generate_content_stream(
+      self: AsyncModels, **kwargs: object
+  ) -> AsyncGenerator[GenerateContentResponse, None]:
+    del self, kwargs
+
+    async def chunks() -> AsyncGenerator[GenerateContentResponse, None]:
+      turn = next(streamed)
+      for index, (part, usage) in enumerate(turn):
+        yield GenerateContentResponse(
+            candidates=[
+                Candidate(
+                    content=Content(role="model", parts=[copy.deepcopy(part)]),
+                    finish_reason=(
+                        FinishReason.STOP
+                        if index == len(turn) - 1
+                        else FinishReason.FINISH_REASON_UNSPECIFIED
+                    ),
+                )
+            ],
+            usage_metadata=usage,
+        )
+
+    return chunks()
+
+  monkeypatch.setattr(
+      AsyncModels, "generate_content_stream", mock_generate_content_stream
+  )
+  monkeypatch.setenv("GOOGLE_API_KEY", "fake-api-key-for-tests")
+
+  return Gemini(model=MODEL_NAME)
+
+
 @contextmanager
 def otel_instrumentor(
     monkeypatch: pytest.MonkeyPatch, providers: TelemetryProviders
@@ -847,6 +949,7 @@ def inference_under_test(
     providers: TelemetryProviders,
     *,
     turns: tuple[Turn, ...] = TOOL_CALLING_TURNS,
+    streamed_turns: tuple[StreamedTurn, ...] | None = None,
     model_exception: Exception | None = None,
 ) -> Iterator[BaseLlm]:
   """Yields the model to run a scenario with, its instrumentation active.
@@ -861,12 +964,27 @@ def inference_under_test(
   instrumentor wrapping it -- mocked FIRST so that what the instrumentor
   wraps is the mock. ADK sees the wrapped SDK and stands down for a Gemini
   agent, so the inference telemetry recorded is entirely OTel's.
+
+  ``streamed_turns`` replaces ``turns`` with a conversation delivered in
+  chunks. Both sides then run the same mocked-out SDK, so that what the
+  recordings differ over is still only the instrumentation.
   """
+  assert (
+      streamed_turns is None or model_exception is None
+  ), "No streamed failure case yet; the streaming model would swallow it."
   if instrumentation == "native":
-    yield mock_test_model(turns=turns, model_exception=model_exception)
+    yield (
+        streaming_gemini_test_model(monkeypatch, streamed_turns)
+        if streamed_turns is not None
+        else mock_test_model(turns=turns, model_exception=model_exception)
+    )
   elif instrumentation == "otel":
-    model = gemini_test_model(
-        monkeypatch, turns=turns, model_exception=model_exception
+    model = (
+        streaming_gemini_test_model(monkeypatch, streamed_turns)
+        if streamed_turns is not None
+        else gemini_test_model(
+            monkeypatch, turns=turns, model_exception=model_exception
+        )
     )
     with otel_instrumentor(monkeypatch, providers):
       yield model

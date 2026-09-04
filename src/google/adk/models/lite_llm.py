@@ -2528,9 +2528,24 @@ def _message_to_generate_content_response(
     for tool_call in tool_calls:
       if tool_call.type == "function":
         thought_signature = _extract_thought_signature_from_tool_call(tool_call)
+        try:
+          args = _parse_tool_call_arguments(tool_call.function.arguments)
+        except json.JSONDecodeError:
+          logger.warning(
+              "Malformed JSON in tool call arguments for function '%s';"
+              " dispatching with empty arguments so the tool can return a"
+              " structured error and the model can retry.",
+              tool_call.function.name,
+          )
+          logger.debug(
+              "Malformed tool call arguments for function '%s': %s",
+              tool_call.function.name,
+              tool_call.function.arguments,
+          )
+          args = {}
         part = types.Part.from_function_call(
             name=tool_call.function.name,
-            args=_parse_tool_call_arguments(tool_call.function.arguments),
+            args=args,
         )
         function_call = part.function_call
         if function_call is None:

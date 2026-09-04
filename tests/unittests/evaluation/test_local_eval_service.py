@@ -1180,3 +1180,67 @@ async def test_perform_inference_live_forwards_app(
 
   mock_generate_live.assert_awaited_once()
   assert mock_generate_live.await_args.kwargs["app"] is app
+
+
+@pytest.mark.asyncio
+async def test_evaluate_single_inference_result_failed_inference_with_conversation(
+    eval_service, mock_eval_sets_manager
+):
+  eval_case = EvalCase(
+      eval_id="case1",
+      conversation=[
+          Invocation(
+              user_content=genai_types.Content(
+                  parts=[genai_types.Part(text="hello")]
+              ),
+              final_response=genai_types.Content(
+                  parts=[genai_types.Part(text="world")]
+              ),
+          )
+      ],
+      session_input=None,
+  )
+  mock_eval_sets_manager.get_eval_case.return_value = eval_case
+
+  inference_result = InferenceResult(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      eval_case_id="case1",
+      inferences=[],
+      session_id="session1",
+      status=InferenceStatus.FAILURE,
+      error_message="model crashed",
+  )
+  eval_metric = EvalMetric(metric_name="fake_metric", threshold=0.5)
+  evaluate_config = EvaluateConfig(eval_metrics=[eval_metric], parallelism=1)
+
+  _, result = await eval_service._evaluate_single_inference_result(
+      inference_result=inference_result, evaluate_config=evaluate_config
+  )
+
+  assert result.eval_id == "case1"
+  assert result.final_eval_status == EvalStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_perform_inference_single_eval_item_failure(
+    eval_service, dummy_agent, mocker
+):
+  eval_case = EvalCase(eval_id="case1", conversation=[], session_input=None)
+  mocker.patch(
+      "google.adk.evaluation.evaluation_generator.EvaluationGenerator._generate_inferences_from_root_agent",
+      side_effect=RuntimeError("model crashed"),
+  )
+
+  result = await eval_service._perform_inference_single_eval_item(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      eval_case=eval_case,
+      root_agent=dummy_agent,
+      use_live=False,
+      live_timeout_seconds=300,
+  )
+
+  assert result.status == InferenceStatus.FAILURE
+  assert result.error_message == "model crashed"
+  assert result.inferences is None

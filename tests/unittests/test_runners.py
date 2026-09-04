@@ -2110,6 +2110,77 @@ async def test_run_async_teardown_on_aclose():
   assert was_cancelled["value"] is True
 
 
+def test_run_teardown_on_close():
+  """Closing the sync run() generator cancels the running agent task."""
+  session_service = InMemorySessionService()
+
+  was_cancelled = {"value": False}
+
+  class CancellingAgent(BaseAgent):
+
+    async def _run_async_impl(
+        self, invocation_context: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      try:
+        yield Event(
+            invocation_id=invocation_context.invocation_id,
+            author=self.name,
+            content=types.Content(
+                role="model", parts=[types.Part(text="First response")]
+            ),
+        )
+        # Block simulating slow ongoing task
+        await asyncio.sleep(5.0)
+        yield Event(
+            invocation_id=invocation_context.invocation_id,
+            author=self.name,
+            content=types.Content(
+                role="model", parts=[types.Part(text="Second response")]
+            ),
+        )
+      except (asyncio.CancelledError, GeneratorExit):
+        was_cancelled["value"] = True
+        raise
+
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=CancellingAgent(name="cancel_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  # Given a sync run stream
+  stream = runner.run(
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      new_message=types.Content(role="user", parts=[types.Part(text="hello")]),
+  )
+
+  # When the client reads the first event and then calls close()
+  event = next(stream)
+  assert event.content.parts[0].text == "First response"
+
+  stream.close()
+
+  # Then the running agent was cancelled before it could do further work
+  assert was_cancelled["value"] is True
+
+  # And no later event was appended to the session.
+  session = asyncio.run(
+      session_service.get_session(
+          app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+      )
+  )
+  texts = [
+      part.text
+      for session_event in session.events
+      if session_event.content
+      for part in session_event.content.parts
+  ]
+  assert texts == ["hello", "First response"]
+
+
 @pytest.mark.asyncio
 async def test_run_live_passes_get_session_config():
   """run_live should forward RunConfig.get_session_config to get_session."""

@@ -36,6 +36,7 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.schemas.shared import DynamicJSON
 from google.adk.sessions.schemas.v0 import DynamicPickleType
 from google.adk.sessions.schemas.v1 import StorageSession
+from google.adk.sessions.session import Session
 from google.adk.sessions.sqlite_session_service import SqliteSessionService
 from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
 from google.adk.tools.tool_confirmation import ToolConfirmation
@@ -1545,7 +1546,12 @@ async def test_session_last_update_time_updates_on_event(session_service):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'service_type', [SessionServiceType.DATABASE, SessionServiceType.SQLITE]
+    'service_type',
+    [
+        SessionServiceType.IN_MEMORY,
+        SessionServiceType.DATABASE,
+        SessionServiceType.SQLITE,
+    ],
 )
 async def test_append_event_to_deleted_session_raises_session_not_found(
     service_type, tmp_path
@@ -1567,6 +1573,17 @@ async def test_append_event_to_deleted_session_raises_session_not_found(
   finally:
     if isinstance(session_service, DatabaseSessionService):
       await session_service.close()
+
+
+@pytest.mark.asyncio
+async def test_append_event_to_unknown_session_raises_session_not_found(
+    session_service,
+):
+  session = Session(app_name='my_app', user_id='user', id='never_created')
+
+  event = Event(invocation_id='inv1', author='user')
+  with pytest.raises(SessionNotFoundError):
+    await session_service.append_event(session, event)
 
 
 @pytest.mark.asyncio

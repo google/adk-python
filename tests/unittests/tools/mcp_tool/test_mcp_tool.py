@@ -28,6 +28,9 @@ from google.adk.auth.auth_credential import HttpAuth
 from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_credential import ServiceAccount
+from google.adk.dependencies._mcp import IS_MCP_SDK_V2
+from google.adk.dependencies._mcp import McpError
+from google.adk.events.event_actions import EventActions
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.tools.mcp_tool import mcp_tool
@@ -40,9 +43,14 @@ from google.adk.tools.mcp_tool.mcp_tool import ProgressFnT
 from google.adk.tools.tool_context import ToolContext
 from google.genai.types import FunctionDeclaration
 from mcp.types import CallToolResult
+from mcp.types import ImageContent
 from mcp.types import TextContent
 from mcp.types import Tool as McpBaseTool
 import pytest
+
+from ._sdk_compat import expected_tool_result
+from ._sdk_compat import make_mcp_error
+from ._sdk_compat import sdk_progress_fn_t
 
 
 # Mock MCP Tool from mcp.types
@@ -386,7 +394,7 @@ class TestMCPTool:
     )
 
     # Verify the result matches the model_dump output
-    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    assert result == expected_tool_result(mcp_response)
     self.mock_session_manager.create_session.assert_called_once_with(
         headers=None
     )
@@ -486,7 +494,7 @@ class TestMCPTool:
         args=args, tool_context=tool_context, credential=None
     )
 
-    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    assert result == expected_tool_result(mcp_response)
 
     assert tool_context.actions.render_ui_widgets is not None
     assert len(tool_context.actions.render_ui_widgets) == 1
@@ -495,8 +503,55 @@ class TestMCPTool:
     assert widget.id == "test-call-id"
     assert widget.provider == "mcp"
     assert widget.payload["resource_uri"] == "ui://test-app"
+    # A duck-typed tool cannot be dumped, so it rides as it always did.
     assert widget.payload["tool"] == mock_tool
     assert widget.payload["tool_args"] == args
+
+  @pytest.mark.asyncio
+  async def test_run_async_impl_dumps_a_real_tool_into_the_ui_widget(self):
+    """The widget payload is a plain dict, so the tool must not stay a model.
+
+    Left as a model it is dumped later by whichever sink writes the event, and
+    those disagree: the ones passing `by_alias` publish `inputSchema` while the
+    session stores publish `input_schema`. Dumping here is what stops one event
+    carrying two spellings on 2.x.
+
+    The schema doubles as the check that the `meta` pass treats it as opaque. A
+    JSON Schema may legally declare a property called `_meta`, and renaming it
+    would hand the model a schema the server never wrote.
+    """
+    input_schema = {
+        "type": "object",
+        "properties": {"_meta": {"type": "string"}},
+    }
+    real_tool = McpBaseTool.model_validate({
+        "name": "test_tool",
+        "description": "Test tool description",
+        "inputSchema": input_schema,
+        "_meta": {"ui": {"resourceUri": "ui://test-app"}},
+    })
+    tool = MCPTool(
+        mcp_tool=real_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+    self.mock_session.call_tool = AsyncMock(
+        return_value=CallToolResult(
+            content=[TextContent(type="text", text="success")]
+        )
+    )
+    tool_context = ToolContext(invocation_context=Mock())
+    tool_context.function_call_id = "test-call-id"
+
+    await tool._run_async_impl(
+        args={}, tool_context=tool_context, credential=None
+    )
+
+    payload_tool = tool_context.actions.render_ui_widgets[0].payload["tool"]
+
+    assert isinstance(payload_tool, dict)
+    assert payload_tool["inputSchema"] == input_schema
+    assert "input_schema" not in payload_tool
+    assert payload_tool["meta"] == {"ui": {"resourceUri": "ui://test-app"}}
 
   @pytest.mark.asyncio
   async def test_run_async_impl_with_oauth2(self):
@@ -525,7 +580,7 @@ class TestMCPTool:
         args=args, tool_context=tool_context, credential=credential
     )
 
-    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    assert result == expected_tool_result(mcp_response)
     # Check that headers were passed correctly
     self.mock_session_manager.create_session.assert_called_once()
     call_args = self.mock_session_manager.create_session.call_args
@@ -896,7 +951,7 @@ class TestMCPTool:
         args=args, tool_context=tool_context, credential=auth_credential
     )
 
-    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    assert result == expected_tool_result(mcp_response)
     # Check that headers were passed correctly with custom API key header
     self.mock_session_manager.create_session.assert_called_once()
     call_args = self.mock_session_manager.create_session.call_args
@@ -1046,6 +1101,7 @@ class TestMCPTool:
     tool_context = Mock(spec=ToolContext)
     tool_context.tool_confirmation = None
     tool_context.request_confirmation = Mock()
+    tool_context.actions = EventActions()
     args = {"param1": "test_value"}
 
     result = await tool.run_async(args=args, tool_context=tool_context)
@@ -1056,6 +1112,7 @@ class TestMCPTool:
         )
     }
     tool_context.request_confirmation.assert_called_once()
+    assert tool_context.actions.skip_summarization is True
 
   @pytest.mark.asyncio
   async def test_run_async_require_confirmation_true_rejected(self):
@@ -1151,6 +1208,7 @@ class TestMCPTool:
     tool_context = Mock(spec=ToolContext)
     tool_context.tool_confirmation = None
     tool_context.request_confirmation = Mock()
+    tool_context.actions = EventActions()
     args = {"param1": "test_value"}
 
     result = await tool.run_async(args=args, tool_context=tool_context)
@@ -1161,6 +1219,7 @@ class TestMCPTool:
         )
     }
     tool_context.request_confirmation.assert_called_once()
+    assert tool_context.actions.skip_summarization is True
 
   def test_init_validation(self):
     """Test that initialization validates required parameters."""
@@ -1196,7 +1255,7 @@ class TestMCPTool:
         args=args, tool_context=tool_context, credential=None
     )
 
-    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    assert result == expected_tool_result(mcp_response)
     header_provider.assert_called_once()
     self.mock_session_manager.create_session.assert_called_once_with(
         headers=expected_headers
@@ -1232,7 +1291,7 @@ class TestMCPTool:
         args=args, tool_context=tool_context, credential=None
     )
 
-    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    assert result == expected_tool_result(mcp_response)
     self.mock_session_manager.create_session.assert_called_once_with(
         headers=expected_headers
     )
@@ -1270,7 +1329,7 @@ class TestMCPTool:
         args=args, tool_context=tool_context, credential=credential
     )
 
-    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    assert result == expected_tool_result(mcp_response)
     header_provider.assert_called_once()
     self.mock_session_manager.create_session.assert_called_once()
     call_args = self.mock_session_manager.create_session.call_args
@@ -1328,7 +1387,7 @@ class TestMCPTool:
         args=args, tool_context=tool_context, credential=None
     )
 
-    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    assert result == expected_tool_result(mcp_response)
     self.mock_session_manager.create_session.assert_called_once_with(
         headers=None
     )
@@ -1571,7 +1630,7 @@ class TestMCPTool:
 
     result = await tool.run_async(args=args, tool_context=tool_context)
 
-    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    assert result == expected_tool_result(mcp_response)
 
     assert "http_debug_info" in metadata_dict
     debug_info = metadata_dict["http_debug_info"]
@@ -1617,7 +1676,7 @@ class TestMCPTool:
 
     result = await tool.run_async(args=args, tool_context=tool_context)
 
-    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    assert result == expected_tool_result(mcp_response)
     assert "http_debug_info" not in metadata_dict
 
   @pytest.mark.asyncio
@@ -1676,8 +1735,6 @@ class TestMCPTool:
   ):
     """Test that run_async captures HTTP debug info when tool call fails gracefully with McpError."""
     from google.adk.tools.mcp_tool.mcp_session_manager import _http_debug_var
-    from mcp.shared.exceptions import McpError
-    from mcp.types import ErrorData
 
     tool = MCPTool(
         mcp_tool=self.mock_mcp_tool,
@@ -1690,7 +1747,7 @@ class TestMCPTool:
         debug_list.append(
             {"url": "https://example.com/api", "status_code": 403}
         )
-      raise McpError(ErrorData(code=-32000, message="Forbidden"))
+      raise make_mcp_error(-32000, "Forbidden")
 
     self.mock_session.call_tool = mock_call_tool
 
@@ -1736,16 +1793,15 @@ class TestMCPToolGracefulErrorHandling:
   @pytest.mark.asyncio
   async def test_run_async_returns_dict_on_mcp_error_when_flag_on(self):
     """When the flag is on, McpError surfaces as `{"error": "..."}`."""
-    from mcp.shared.exceptions import McpError
-    from mcp.types import ErrorData
 
     tool = MCPTool(
         mcp_tool=self.mock_mcp_tool,
         mcp_session_manager=self.mock_session_manager,
     )
 
-    error_data = ErrorData(code=-32000, message="Client error '403 Forbidden'")
-    tool._run_async_impl = AsyncMock(side_effect=McpError(error_data))
+    tool._run_async_impl = AsyncMock(
+        side_effect=make_mcp_error(-32000, "Client error '403 Forbidden'")
+    )
 
     tool_context = Mock(spec=ToolContext)
     args = {"param1": "test_value"}
@@ -1795,16 +1851,15 @@ class TestMCPToolGracefulErrorHandling:
     This protects downstream consumers that haven't migrated yet from a
     silent behavior change.
     """
-    from mcp.shared.exceptions import McpError
-    from mcp.types import ErrorData
 
     tool = MCPTool(
         mcp_tool=self.mock_mcp_tool,
         mcp_session_manager=self.mock_session_manager,
     )
 
-    error_data = ErrorData(code=-32000, message="Client error '403 Forbidden'")
-    tool._run_async_impl = AsyncMock(side_effect=McpError(error_data))
+    tool._run_async_impl = AsyncMock(
+        side_effect=make_mcp_error(-32000, "Client error '403 Forbidden'")
+    )
 
     tool_context = Mock(spec=ToolContext)
     args = {"param1": "test_value"}
@@ -1865,7 +1920,7 @@ class TestMCPToolGracefulErrorHandling:
           args={"param1": "x"}, tool_context=tool_context, credential=None
       )
 
-    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    assert result == expected_tool_result(mcp_response)
     assert len(stub._run_guarded_called_with) == 1
     # Verify the coro passed in was actually a coroutine (not a Mock).
     assert asyncio.iscoroutine(stub._run_guarded_called_with[0])
@@ -1900,7 +1955,7 @@ class TestMCPToolGracefulErrorHandling:
           args={"param1": "x"}, tool_context=tool_context, credential=None
       )
 
-    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    assert result == expected_tool_result(mcp_response)
 
   @pytest.mark.asyncio
   async def test_run_async_impl_falls_back_when_get_session_context_returns_mock(
@@ -1934,7 +1989,7 @@ class TestMCPToolGracefulErrorHandling:
           args={"param1": "x"}, tool_context=tool_context, credential=None
       )
 
-    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    assert result == expected_tool_result(mcp_response)
 
   @pytest.mark.asyncio
   async def test_run_async_impl_skips_run_guarded_when_flag_off(self):
@@ -1962,16 +2017,16 @@ class TestMCPToolGracefulErrorHandling:
           args={"param1": "x"}, tool_context=tool_context, credential=None
       )
 
-    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    assert result == expected_tool_result(mcp_response)
     self.mock_session_manager._get_session_context.assert_not_called()
 
 
 class TestResultDictKeys:
   """Pins the literal keys of the dict `run_async` hands back to the caller.
 
-  `_run_async_impl` returns `CallToolResult.model_dump(...)` straight through,
-  so the SDK's field names are ADK's response contract. The tests elsewhere in
-  this file all compare the result against `model_dump` of the same object,
+  `_run_async_impl` dumps by alias, which is the 1.x camelCase spelling under
+  both majors, so the contract does not move with the SDK. The tests elsewhere
+  in this file all compare the result against `model_dump` of the same object,
   which holds whatever the SDK calls its fields and so cannot notice a rename.
   These name the keys.
   """
@@ -2036,6 +2091,125 @@ class TestResultDictKeys:
 
     assert "is_error" not in result
 
+  @pytest.mark.asyncio
+  async def test_structured_content_keeps_its_camel_case_key(self):
+    """2.x renames this one too, and a caller reading it just gets nothing.
+
+    Unlike `isError` there is no truthy fallback and nothing else reads it, so
+    a rename here is silent all the way to the caller.
+    """
+    result = await self._run(
+        CallToolResult(
+            content=[TextContent(type="text", text="ok")],
+            structuredContent={"answer": 42},
+        )
+    )
+
+    assert result["structuredContent"] == {"answer": 42}
+    assert "structured_content" not in result
+
+  @pytest.mark.asyncio
+  async def test_nested_content_fields_keep_their_camel_case_keys(self):
+    """The rename reaches inside the content list, not just the top level.
+
+    An image part carries `mimeType`, which 2.x spells `mime_type`. The list
+    goes to the model verbatim, so the nested keys are contractual too.
+    """
+    result = await self._run(
+        CallToolResult(
+            content=[
+                ImageContent(type="image", data="AA==", mimeType="image/png")
+            ]
+        )
+    )
+
+    assert result["content"] == [
+        {"type": "image", "data": "AA==", "mimeType": "image/png"}
+    ]
+
+  @pytest.mark.asyncio
+  async def test_meta_stays_unprefixed(self):
+    """`meta` aliases to `_meta` under *both* majors, so it must not follow.
+
+    Dumping by alias is what fixes the 2.x renames; this is the one field it
+    would move on 1.x as well, changing a key that was never broken.
+    """
+    result = await self._run(
+        CallToolResult(
+            content=[TextContent(type="text", text="ok")], _meta={"trace": "t"}
+        )
+    )
+
+    assert result["meta"] == {"trace": "t"}
+    assert "_meta" not in result
+
+  @pytest.mark.asyncio
+  async def test_nested_meta_stays_unprefixed_too(self):
+    """Content blocks declare `meta` as well, so the top level is not enough.
+
+    Sixty-odd models carry it. Restoring only the outer key would leave the
+    alias on every content block, changing a 1.x payload that was fine.
+    """
+    result = await self._run(
+        CallToolResult(
+            content=[TextContent(type="text", text="ok", _meta={"n": 1})]
+        )
+    )
+
+    assert result["content"] == [
+        {"type": "text", "text": "ok", "meta": {"n": 1}}
+    ]
+
+  @pytest.mark.asyncio
+  async def test_a_vendor_meta_key_inside_meta_is_left_alone(self):
+    """The rename is for model fields, not the opaque payload inside one.
+
+    A server may put a key called `_meta` in its own `_meta` block, and
+    rewriting it would corrupt data ADK is only passing through.
+    """
+    result = await self._run(
+        CallToolResult(
+            content=[TextContent(type="text", text="ok")],
+            _meta={"_meta": "vendor", "other": 1},
+        )
+    )
+
+    assert result["meta"] == {"_meta": "vendor", "other": 1}
+
+  @pytest.mark.asyncio
+  async def test_a_meta_key_inside_structured_content_is_left_alone(self):
+    """`structuredContent` is opaque too: the server fills it, to its own schema.
+
+    Nothing inside it is a model field, and the caller validates the block
+    against the tool's declared output schema. Renaming a key there would fail
+    that validation for a payload ADK is only passing through.
+    """
+    result = await self._run(
+        CallToolResult(
+            content=[TextContent(type="text", text="ok")],
+            structuredContent={"_meta": "vendor", "rows": [{"_meta": 1}]},
+        )
+    )
+
+    assert result["structuredContent"] == {
+        "_meta": "vendor",
+        "rows": [{"_meta": 1}],
+    }
+
+  @pytest.mark.asyncio
+  async def test_result_type_does_not_reach_the_caller(self):
+    """2.x always serializes `resultType`; 1.x has no such field.
+
+    Letting it through would add a key on one major only. Acting on it is a
+    feature and belongs in its own change.
+    """
+    result = await self._run(
+        CallToolResult(content=[TextContent(type="text", text="ok")])
+    )
+
+    assert "resultType" not in result
+    assert "result_type" not in result
+
 
 class TestVendorExtensionFields:
   """Pins what happens to fields the SDK does not declare.
@@ -2073,7 +2247,44 @@ class TestVendorExtensionFields:
 
     result = await self._run(response)
 
-    assert result["acmeTraceId"] == "trace-1"
+    if IS_MCP_SDK_V2:
+      # 2.x closed its models: an undeclared field is discarded at validation,
+      # before ADK ever sees it. Nothing here can recover it. Pinned so the
+      # loss stays visible, and so restoring it upstream shows up as a
+      # failure rather than going unnoticed.
+      assert "acmeTraceId" not in result
+    else:
+      assert result["acmeTraceId"] == "trace-1"
+
+  @pytest.mark.asyncio
+  async def test_a_structured_unknown_field_survives_untouched_on_1x(self):
+    """The scalar case above cannot see the walk descending into an extra.
+
+    1.x models are `extra="allow"`, so a vendor object arrives whole and is
+    not a model: every key in it is the server's. The `meta` pass must not
+    reach inside it, and a vendor key called `resultType` must not be dropped
+    for looking like 2.x's field. The expectation is spelled out literally
+    rather than dumped, so it holds independently of how ADK dumps.
+    """
+    payload = {"_meta": "server-own-key", "nested": {"_meta": 1}}
+    response = CallToolResult.model_validate({
+        "content": [{"type": "text", "text": "hi"}],
+        "vendorPayload": payload,
+        "resultType": "vendor-value",
+    })
+
+    result = await self._run(response)
+
+    if IS_MCP_SDK_V2:
+      # Closed models drop both before ADK sees them; nothing to preserve.
+      assert "vendorPayload" not in result
+      assert "resultType" not in result
+    else:
+      assert result["vendorPayload"] == {
+          "_meta": "server-own-key",
+          "nested": {"_meta": 1},
+      }
+      assert result["resultType"] == "vendor-value"
 
   def test_unknown_tool_field_survives_on_the_raw_tool(self):
     """The same holds for a tool declaration, which callers read directly."""
@@ -2086,7 +2297,8 @@ class TestVendorExtensionFields:
 
     tool = MCPTool(mcp_tool=raw, mcp_session_manager=self.mock_session_manager)
 
-    assert getattr(tool.raw_mcp_tool, "acmeVisibility", None) == "internal"
+    expected = None if IS_MCP_SDK_V2 else "internal"
+    assert getattr(tool.raw_mcp_tool, "acmeVisibility", None) == expected
 
   @pytest.mark.asyncio
   async def test_the_meta_block_reaches_the_caller(self):
@@ -2129,7 +2341,7 @@ class TestProgressFnT:
     positionally. A rename or a changed default here would mislead everyone
     who writes a callback against the annotation.
     """
-    sdk_protocol = pytest.importorskip("mcp.shared.session").ProgressFnT
+    sdk_protocol = sdk_progress_fn_t()
 
     ours = inspect.signature(ProgressFnT.__call__)
     theirs = inspect.signature(sdk_protocol.__call__)

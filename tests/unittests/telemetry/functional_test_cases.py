@@ -185,6 +185,10 @@ ALL_CASES: list[FunctionalTestCase] = semconv_matrix("agent") + [
         schema_version=2,
         tool_exception=TOOL_ERROR,
     ),
+    # The same turn streamed, its answer arriving in two chunks that leave
+    # `partial` unset: one inference span per turn either way, and a completion
+    # log holding the whole answer rather than whichever chunk arrived first.
+    *semconv_matrix("streaming"),
     # Skill telemetry scenarios.
     FunctionalTestCase(
         test_id="skill-telemetry-disabled-schema-v1",

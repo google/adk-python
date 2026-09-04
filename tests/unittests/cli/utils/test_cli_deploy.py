@@ -35,7 +35,6 @@ import click
 from click.testing import CliRunner
 import pytest
 
-from src.google.adk.agents import Agent
 import src.google.adk.cli.cli_deploy as cli_deploy
 import src.google.adk.cli.cli_tools_click as cli_tools_click
 
@@ -769,6 +768,41 @@ class TestValidateAgentImport:
     # Should not raise
     cli_deploy._validate_agent_import(
         str(tmp_path), "app", is_config_agent=False
+    )
+
+  def test_validate_agent_import_with_stale_cache(
+      self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    """Should succeed even when parent dir contents were cached before agent package creation."""
+    import os
+    import sys
+
+    parent_dir = str(tmp_path)
+    # Populate sys.path_importer_cache before agent package directory exists
+    finder = None
+    for hook in sys.path_hooks:
+      try:
+        finder = hook(parent_dir)
+        if finder and hasattr(finder, "find_spec"):
+          finder.find_spec("non_existent_module")
+          break
+      except Exception:
+        pass
+
+    assert finder is not None
+    monkeypatch.setitem(sys.path_importer_cache, parent_dir, finder)
+
+    agent_dir = tmp_path / "new_agent_package"
+    agent_dir.mkdir()
+    (agent_dir / "__init__.py").touch()
+    (agent_dir / "agent.py").write_text("root_agent = 'stale_test'\n")
+
+    # Ensure finder has stale mtime cache so it requires invalidate_caches
+    assert hasattr(finder, "_path_mtime")
+    finder._path_mtime = os.stat(parent_dir).st_mtime
+
+    cli_deploy._validate_agent_import(
+        str(agent_dir), "root_agent", is_config_agent=False
     )
 
   def test_success_with_relative_imports(self, tmp_path: Path) -> None:
@@ -1880,8 +1914,10 @@ def _adk_app_template() -> type:
 def test_agent_engine_class_methods_match_the_template_operations() -> None:
   """The deployed resource advertises the operations the template registers."""
   adk_app_template = _adk_app_template()
-  # register_operations is an instance method, hence the throwaway agent.
-  operations = adk_app_template(agent=Agent(name="tmp")).register_operations()
+  # register_operations reads nothing off the instance, so call it unbound.
+  # Constructing the template would resolve Application Default Credentials,
+  # which a unit test must not depend on.
+  operations = adk_app_template.register_operations(None)
 
   declared = {
       (method["name"], method["api_mode"])
