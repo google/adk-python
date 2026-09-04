@@ -507,9 +507,10 @@ def convert_a2a_task_to_event(
         )
         if not metadata_fields:
           metadata_fields = _extract_all_metadata_fields(artifact.metadata)
-      output_parts, _ = _convert_a2a_parts_to_adk_parts(
+      output_parts, ids = _convert_a2a_parts_to_adk_parts(
           artifact_parts, part_converter
       )
+      long_running_function_ids.update(ids)
     if status_message and (
         a2a_task.status.state == _compat.TS_INPUT_REQUIRED
         or a2a_task.status.state == _compat.TS_AUTH_REQUIRED
