@@ -908,6 +908,19 @@ def test_get_events_current_branch_drops_user_response_to_a_call_elsewhere():
   assert ctx._get_events(current_branch=True) == []
 
 
+def test_get_events_current_branch_drops_user_response_to_a_lookalike_call():
+  """A branch that merely shares a prefix does not count as a sub-branch.
+
+  `agent_10` starts with `agent_1`, so a plain prefix test would read the call
+  as issued in this subtree and let the reply through.
+  """
+  call_on_lookalike = _call_event('agent_10', 'fc_1')
+  reply = _user_response_event('agent_1', 'fc_1')
+  ctx = _ctx_on_branch('agent_1', [call_on_lookalike, reply])
+
+  assert ctx._get_events(current_branch=True) == []
+
+
 def test_get_events_without_a_branch_matches_every_user_event():
   """A context with no branch sees user events wherever they sit.
 

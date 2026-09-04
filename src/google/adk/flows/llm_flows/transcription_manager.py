@@ -14,8 +14,9 @@
 
 """Backward compatibility module for TranscriptionManager.
 
-TranscriptionManager has been moved to
-``google.adk.live.transcription_manager``.
+TranscriptionManager is no longer public; it lives in
+``google.adk.live._transcription_manager`` and this module only keeps
+existing imports working.
 """
 
 from __future__ import annotations

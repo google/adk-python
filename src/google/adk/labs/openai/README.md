@@ -41,4 +41,5 @@ openai_model = OpenAILlm(
 
 `OpenAIResponsesLlm` takes the same `client` field.
 
-> **Tip:** The OpenAI Python client also honors `OPENAI_BASE_URL` for OpenAI-compatible multi-model gateways — for example [DaoXE](https://daoxe.com/?utm_source=github&utm_medium=organic&utm_campaign=adk-python&utm_content=openai-labs) at `https://api.daoxe.com/v1`.
+> **Tip:** To send every request to one compatible host, leave `client` unset
+> and set `OPENAI_BASE_URL` in the environment. The default client reads it.

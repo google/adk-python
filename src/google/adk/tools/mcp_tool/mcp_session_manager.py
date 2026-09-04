@@ -40,7 +40,6 @@ import urllib.parse
 import google.auth
 import google.auth.credentials
 from google.auth.transport.requests import Request
-import httpx
 
 try:
   from google.auth.aio.credentials import Credentials as AsyncCredentials
@@ -60,9 +59,11 @@ except ImportError:
 from pydantic import BaseModel
 from pydantic import ConfigDict
 
+from ...dependencies import _httpx as httpx
 from ...dependencies._mcp import ClientSession
 from ...dependencies._mcp import create_mcp_http_client as _create_mcp_http_client
 from ...dependencies._mcp import ElicitationFnT
+from ...dependencies._mcp import IS_MCP_SDK_V2
 from ...dependencies._mcp import SamplingCapability
 from ...dependencies._mcp import SamplingFnT
 from ...dependencies._mcp import sse_client
@@ -113,8 +114,18 @@ def create_mcp_http_client(
       timeout=timeout,
       auth=auth,
   )
-  if _HAS_HTTPX_INSTRUMENTOR:
+  # The instrumentor is built against httpx 1.x: handed an `httpx2` client it
+  # wraps without complaint, then fails on the first request. Until an httpx2
+  # instrumentor exists, 2.x goes untraced rather than broken.
+  if _HAS_HTTPX_INSTRUMENTOR and not IS_MCP_SDK_V2:
     HTTPXClientInstrumentor.instrument_client(client)
+  elif _HAS_HTTPX_INSTRUMENTOR:
+    # Otherwise the MCP spans just vanish, with nothing pointing back here.
+    logger.debug(
+        'MCP HTTP calls are not traced: the OpenTelemetry httpx instrumentor is'
+        ' built against httpx, and MCP SDK 2.x pairs with httpx2. Tracing'
+        ' returns when an httpx2 instrumentor exists.'
+    )
   return client
 
 

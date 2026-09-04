@@ -704,6 +704,10 @@ class Workflow(BaseNode):
     A resumable session persists these so a later run can see how far the
     workflow progressed. Non-resumable sessions reconstruct the same state
     by replaying prior events, so the snapshot is skipped for them.
+
+    The snapshot omits `resume_inputs`, because for a node guarded by an
+    `auth_config` those hold the credential the user sent. A resume rebuilds
+    them from the function responses already in the session.
     """
     ic = ctx._invocation_context
     if not ic.is_resumable:
@@ -713,7 +717,7 @@ class Workflow(BaseNode):
 
     nodes = {
         name: node_state.model_dump(
-            mode="json", include={"status", "interrupts", "resume_inputs"}
+            mode="json", include={"status", "interrupts"}
         )
         for name, node_state in loop_state.nodes.items()
     }

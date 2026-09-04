@@ -2140,7 +2140,6 @@ tzdata==2026.3
 tzlocal==5.4.4
     # via
     #   -c constraints-3.11.txt.stable.tmp
-    #   google-adk (pyproject.toml)
     #   google-adk
 uc-micro-py==2.0.0
     # via

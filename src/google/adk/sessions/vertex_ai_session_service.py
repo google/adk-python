@@ -477,17 +477,25 @@ class VertexAiSessionService(BaseSessionService):
     async with self._get_api_client() as api_client:
 
       async def _do_append(cfg: dict[str, Any]) -> None:
-        await api_client.agent_engines.sessions.events.append(
-            name=(
-                f'reasoningEngines/{reasoning_engine_id}/sessions/{session.id}'
-            ),
-            author=event.author,
-            invocation_id=event.invocation_id,
-            timestamp=datetime.datetime.fromtimestamp(
-                event.timestamp, tz=datetime.timezone.utc
-            ),
-            config=cfg,
-        )
+        for attempt in range(2):
+          try:
+            await api_client.agent_engines.sessions.events.append(
+                name=(
+                    f'reasoningEngines/{reasoning_engine_id}/sessions/{session.id}'
+                ),
+                author=event.author,
+                invocation_id=event.invocation_id,
+                timestamp=datetime.datetime.fromtimestamp(
+                    event.timestamp, tz=datetime.timezone.utc
+                ),
+                config=cfg,
+            )
+            return
+          except ClientError as e:
+            if e.code == 429 and attempt == 0:
+              await asyncio.sleep(1.0)
+              continue
+            raise
 
       try:
         await _do_append(config)
@@ -568,10 +576,14 @@ def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
     event_dict = copy.deepcopy(raw_event_dict)
     timestamp_obj = getattr(api_event_obj, 'timestamp', None)
     event_dict.update({
-        'id': api_event_obj.name.split('/')[-1],
         'invocation_id': getattr(api_event_obj, 'invocation_id', None),
         'author': getattr(api_event_obj, 'author', None),
     })
+    # Callers correlate a streamed event with its reloaded form by id, so
+    # keep the id the event was created with. The server-assigned resource
+    # id is only a fallback for stored payloads that lack one.
+    if not event_dict.get('id'):
+      event_dict['id'] = api_event_obj.name.split('/')[-1]
     if timestamp_obj:
       event_dict['timestamp'] = timestamp_obj.timestamp()
     return Event.model_validate(event_dict)

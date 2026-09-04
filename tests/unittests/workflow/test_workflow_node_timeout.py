@@ -174,10 +174,6 @@ async def test_nested_workflow_timeout():
   Act: Run the outer workflow.
   Assert: Execution raises NodeTimeoutError referencing inner_wf.
   """
-  import sys
-
-  if sys.version_info < (3, 11):
-    pytest.skip('asyncio.timeout requires Python 3.11+')
 
   # Given an outer workflow containing a slow inner workflow with a timeout
   @node()

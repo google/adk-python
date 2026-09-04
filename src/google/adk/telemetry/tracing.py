@@ -82,6 +82,7 @@ from ._experimental_semconv import maybe_log_completion_details
 from ._experimental_semconv import set_operation_details_attributes_from_request
 from ._experimental_semconv import set_operation_details_attributes_from_response
 from ._experimental_semconv import set_operation_details_common_attributes
+from ._finish_reason import is_reported_finish_reason
 from ._serialization import safe_json_serialize
 from ._stable_semconv import choice_body
 from ._stable_semconv import GEN_AI_CHOICE_EVENT
@@ -679,15 +680,28 @@ def trace_call_llm(
   _set_context_cache_attributes(
       span, getattr(llm_response, "cache_metadata", None), telemetry_config
   )
-  if llm_response.finish_reason:
-    try:
-      finish_reason_str = llm_response.finish_reason.value.lower()
-    except AttributeError:
-      finish_reason_str = str(llm_response.finish_reason).lower()
-    span.set_attribute(
-        "gen_ai.response.finish_reasons",
-        [finish_reason_str],
-    )
+  if is_reported_finish_reason(finish_reason := llm_response.finish_reason):
+    span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, [finish_reason.lower()])
+
+
+def _without_thought_signature(part: types.Part) -> types.Part:
+  """Returns ``part`` with any thought signature removed.
+
+  A thought signature is opaque bytes that the model round-trips through the
+  conversation, so it stays in history and is replayed on every later request.
+  Serializing a part in JSON mode base64-encodes it onto a span attribute,
+  which grows with the history on each call and carries nothing a reader of
+  the trace can act on.
+
+  Args:
+    part: The part to copy.
+
+  Returns:
+    ``part`` itself when it carries no signature, otherwise a copy without one.
+  """
+  if part.thought_signature is None:
+    return part
+  return part.model_copy(update={"thought_signature": None})
 
 
 def _summarize_inline_data(content: types.Content) -> types.Content:
@@ -708,7 +722,7 @@ def _summarize_inline_data(content: types.Content) -> types.Content:
   for part in content.parts or []:
     blob = part.inline_data
     if blob is None:
-      parts.append(part)
+      parts.append(_without_thought_signature(part))
       continue
     parts.append(
         types.Part(
@@ -853,7 +867,11 @@ def _build_llm_request_for_trace(llm_request: LlmRequest) -> dict[str, object]:
   }
   # We do not want to send bytes data to the trace.
   for content in llm_request.contents:
-    parts = [part for part in content.parts if not part.inline_data]
+    parts = [
+        _without_thought_signature(part)
+        for part in content.parts
+        if not part.inline_data
+    ]
     result["contents"].append(
         types.Content(role=content.role, parts=parts).model_dump(
             exclude_none=True, mode="json"
@@ -868,9 +886,16 @@ def _telemetry_config_from_invocation_context(
   """Returns ``invocation_context.run_config.telemetry`` if reachable, else ``None``."""
   if invocation_context is None:
     return TelemetryConfig()
-  if (run_config := invocation_context.run_config) is None:
+  try:
+    if (run_config := invocation_context.run_config) is None:
+      return TelemetryConfig()
+    return run_config.telemetry or TelemetryConfig()
+  except AttributeError:
+    logger.warning(
+        "Failed to access run_config from invocation_context: type is %s",
+        type(invocation_context).__name__,
+    )
     return TelemetryConfig()
-  return run_config.telemetry or TelemetryConfig()
 
 
 @deprecated("Replaced by use_inference_span to support experimental semconv.")
@@ -1065,7 +1090,7 @@ def _use_native_generate_content_span_stable_semconv(
   telemetry_config = telemetry_config or TelemetryConfig()
   system_name = _resolve_gen_ai_system_name(llm_request.model)
   with tracer.start_as_current_span(
-      f"generate_content {llm_request.model or ''}"
+      f"generate_content {llm_request.model or ''}".strip()
   ) as span:
     span.set_attribute(GEN_AI_SYSTEM, system_name)
     _set_common_generate_content_attributes(
@@ -1119,7 +1144,7 @@ def _use_native_generate_content_span(
     return
 
   with tracer.start_as_current_span(
-      f"generate_content {llm_request.model or ''}"
+      f"generate_content {llm_request.model or ''}".strip()
   ) as span:
     _set_common_generate_content_attributes(
         span, llm_request, common_attributes
@@ -1159,10 +1184,12 @@ def trace_generate_content_result(span: Span | None, llm_response: LlmResponse):
   if span is None:
     return
 
+  # This deprecated path has no notion of an inference ending, so it keeps
+  # skipping partials rather than reporting one choice per chunk.
   if llm_response.partial:
     return
 
-  if finish_reason := llm_response.finish_reason:
+  if is_reported_finish_reason(finish_reason := llm_response.finish_reason):
     span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, [finish_reason.lower()])
   _set_usage_metadata_attributes(span, llm_response.usage_metadata)
 
@@ -1173,6 +1200,7 @@ def trace_generate_content_result(span: Span | None, llm_response: LlmResponse):
           attributes={
               GEN_AI_SYSTEM: _inference_system_name(None, llm_response)
           },
+          context=trace.set_span_in_context(span),
       )
   )
 
@@ -1194,10 +1222,11 @@ def trace_inference_result(
   if span is None:
     return
 
-  if llm_response.partial:
-    return
-
-  if finish_reason := llm_response.finish_reason:
+  # No `partial` check: a streamed chunk differs from a whole answer only by
+  # the finish reason it does not carry. The caller stops recording once one
+  # arrives, so the response an aggregator assembles from the chunks it already
+  # reported does not reach here.
+  if is_reported_finish_reason(finish_reason := llm_response.finish_reason):
     span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, [finish_reason.lower()])
   _set_usage_metadata_attributes(span, llm_response.usage_metadata)
   # Callers outside adk pass their own response objects here, which are only
@@ -1227,6 +1256,7 @@ def trace_inference_result(
                     invocation_context, llm_response
                 )
             },
+            context=trace.set_span_in_context(span),
         )
     )
 

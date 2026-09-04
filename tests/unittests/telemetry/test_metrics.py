@@ -702,3 +702,140 @@ def test_record_skill_script_execution_with_unconfirmed_names(
       "adk.experimental.skill.script.path": "<hallucinated>",
       "adk.experimental.skill.script.ended_with_error": False,
   }
+
+
+@pytest.fixture(name="skill_loads_counter")
+def _skill_loads_counter(monkeypatch):
+  """Redirects the skill load counter."""
+  counter = mock.MagicMock(spec=metrics.Counter)
+  counter.name = "skill_loads"
+  monkeypatch.setattr(_metrics, "_skill_loads", counter)
+  return counter
+
+
+def test_record_skill_load(skill_loads_counter):
+  """One count per load, dimensioned by agent and skill."""
+  _metrics.record_skill_load(
+      "test_agent",
+      _hallucination.ConfirmedNotHallucinated("my_skill"),
+  )
+
+  skill_loads_counter.add.assert_called_once()
+  args, kwargs = skill_loads_counter.add.call_args
+  assert args[0] == 1
+  assert kwargs["attributes"] == {
+      "gen_ai.agent.name": "test_agent",
+      "adk.experimental.skill.name": "my_skill",
+  }
+
+
+def test_record_skill_load_that_resolved_nothing(skill_loads_counter):
+  """A load that named no skill is still counted, under its failure.
+
+  The name goes in as the placeholder: a name that named nothing is the
+  model's invention, and inventions come from no bounded set.
+  """
+  _metrics.record_skill_load(
+      "test_agent",
+      _hallucination.MaybeHallucinated("hallucinated_skill_name"),
+      "SKILL_NOT_FOUND",
+  )
+
+  skill_loads_counter.add.assert_called_once()
+  _, kwargs = skill_loads_counter.add.call_args
+  assert kwargs["attributes"] == {
+      "gen_ai.agent.name": "test_agent",
+      "adk.experimental.skill.name": "<hallucinated>",
+      "error.type": "SKILL_NOT_FOUND",
+  }
+
+
+@pytest.fixture(name="invoke_agent_skill_loads")
+def _invoke_agent_skill_loads(monkeypatch):
+  """Redirects the per-invocation skill load histogram."""
+  histogram = mock.MagicMock(spec=metrics.Histogram)
+  monkeypatch.setattr(_metrics, "_invoke_agent_skill_loads", histogram)
+  return histogram
+
+
+@pytest.fixture(name="invoke_workflow_skill_loads")
+def _invoke_workflow_skill_loads(monkeypatch):
+  """Redirects the per-workflow skill load histogram."""
+  histogram = mock.MagicMock(spec=metrics.Histogram)
+  monkeypatch.setattr(_metrics, "_invoke_workflow_skill_loads", histogram)
+  return histogram
+
+
+def _recorded(histogram) -> list[tuple[dict[str, object], int]]:
+  """The points a redirected histogram took, as (attributes, value)."""
+  return [
+      (kwargs["attributes"], args[0])
+      for args, kwargs in histogram.record.call_args_list
+  ]
+
+
+def test_record_invoke_agent_skill_loads(invoke_agent_skill_loads):
+  """The per-invocation total is recorded verbatim, keyed by the agent."""
+  _metrics.record_invoke_agent_skill_loads("test_agent", 5)
+
+  assert _recorded(invoke_agent_skill_loads) == [
+      ({"gen_ai.agent.name": "test_agent"}, 5)
+  ]
+
+
+def test_record_invoke_agent_skill_loads_of_an_invocation_that_loaded_nothing(
+    invoke_agent_skill_loads,
+):
+  """No loads is a zero, not a missing point.
+
+  Dropping it would leave the loads-per-invocation total summed over only the
+  invocations that used skills, so the average would read as though every
+  invocation did.
+  """
+  _metrics.record_invoke_agent_skill_loads("test_agent", 0)
+
+  assert _recorded(invoke_agent_skill_loads) == [
+      ({"gen_ai.agent.name": "test_agent"}, 0)
+  ]
+
+
+def test_record_invoke_workflow_skill_loads(invoke_workflow_skill_loads):
+  """The workflow total carries both names, and no agent dimension.
+
+  The loads it counts were made by whichever agents the turn routed through,
+  so naming one of them would misattribute the rest.
+  """
+  _metrics.record_invoke_workflow_skill_loads(
+      root_agent_name="root_agent",
+      workflow_name="specialist",
+      count=4,
+      nested=False,
+  )
+
+  assert _recorded(invoke_workflow_skill_loads) == [(
+      {
+          "adk.experimental.root_agent.name": "root_agent",
+          "gen_ai.workflow.name": "specialist",
+      },
+      4,
+  )]
+
+
+def test_record_invoke_workflow_skill_loads_of_a_workflow_that_loaded_nothing(
+    invoke_workflow_skill_loads,
+):
+  """Zero is recorded here for the same reason it is per invocation."""
+  _metrics.record_invoke_workflow_skill_loads(
+      root_agent_name="root_agent",
+      workflow_name=None,
+      count=0,
+      nested=True,
+  )
+
+  assert _recorded(invoke_workflow_skill_loads) == [(
+      {
+          "adk.experimental.root_agent.name": "root_agent",
+          "gen_ai.workflow.nested": True,
+      },
+      0,
+  )]

@@ -2578,6 +2578,77 @@ def test_trace_tool_call_no_error_no_error_type(
   assert len(error_type_calls) == 0
 
 
+def test_build_llm_request_for_trace_excludes_thought_signatures():
+  """Opaque signature bytes must not be base64-encoded onto a span attribute.
+
+  A thought signature stays in history and is replayed on every later request,
+  so leaving it in would grow the serialized request on each call of a session.
+  """
+  from google.adk.telemetry.tracing import _build_llm_request_for_trace
+
+  llm_request = LlmRequest(
+      model='gemini-2.0-flash',
+      contents=[
+          types.Content(
+              role='model',
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id='call-1', name='search', args={}
+                      ),
+                      thought_signature=b'opaque-signature-bytes' * 40,
+                  )
+              ],
+          )
+      ],
+  )
+
+  serialized = json.dumps(_build_llm_request_for_trace(llm_request))
+
+  assert 'thoughtSignature' not in serialized
+  assert 'thought_signature' not in serialized
+  # The part itself is still described on the span.
+  assert 'search' in serialized
+
+
+@pytest.mark.asyncio
+async def test_trace_call_llm_excludes_response_thought_signature(
+    monkeypatch, mock_span_fixture
+):
+  """A signature on the model's own response must not reach the span either."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+  invocation_context = await _create_invocation_context(
+      LlmAgent(name='test_agent')
+  )
+  llm_request = LlmRequest(
+      model='gemini-pro', config=types.GenerateContentConfig()
+  )
+  llm_response = LlmResponse(
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(
+                  text='done',
+                  thought_signature=b'opaque-signature-bytes' * 40,
+              )
+          ],
+      )
+  )
+
+  trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
+
+  llm_response_json = next(
+      call_obj.args[1]
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
+      if call_obj.args[0] == 'gcp.vertex.agent.llm_response'
+  )
+  assert 'thoughtSignature' not in llm_response_json
+  assert 'thought_signature' not in llm_response_json
+  assert 'done' in llm_response_json
+
+
 def test_build_llm_request_for_trace_excludes_live_http_clients():
   """Tracing must not crash when config.http_options holds live SDK clients.
 

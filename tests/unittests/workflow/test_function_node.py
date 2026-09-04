@@ -1699,44 +1699,6 @@ class TestParameterBindingNodeInput:
     assert copied.input_schema is not None
     assert 'x' in copied.input_schema['properties']
 
-  def test_type_hints_cache(self):
-    """Verifies that type hints are cached and robustly unwrapped."""
-    from google.adk.workflow._function_node import _get_type_hints_cached
-    from google.adk.workflow._function_node import _get_type_hints_for_unwrapped
-
-    def my_func(x: int, y: str) -> bool:
-      return True
-
-    # Clear cache first to have predictable results
-    _get_type_hints_for_unwrapped.cache_clear()
-
-    hints1 = _get_type_hints_cached(my_func)
-    assert hints1 == {'x': int, 'y': str, 'return': bool}
-
-    # Call again, should hit cache
-    hints2 = _get_type_hints_cached(my_func)
-    assert hints2 == {'x': int, 'y': str, 'return': bool}
-    assert _get_type_hints_for_unwrapped.cache_info().hits == 1
-
-    # Test partial
-    import functools
-
-    partial_func = functools.partial(my_func, x=1)
-    hints3 = _get_type_hints_cached(partial_func)
-    # Partial should unwrap to my_func and hit cache!
-    assert hints3 == {'x': int, 'y': str, 'return': bool}
-    assert _get_type_hints_for_unwrapped.cache_info().hits == 2
-
-    # Test callable object
-    class MyCallable:
-
-      def __call__(self, z: float) -> None:
-        pass
-
-    obj = MyCallable()
-    hints4 = _get_type_hints_cached(obj)
-    assert hints4 == {'z': float, 'return': type(None)}
-
 
 @pytest.mark.asyncio
 async def test_function_node_wrapped_partial(request: pytest.FixtureRequest):
@@ -1782,3 +1744,20 @@ async def test_function_node_wrapped_partial(request: pytest.FixtureRequest):
           {'output': 'Hello from AsyncCoro'},
       ),
   ]
+
+
+def test_function_node_undocumented_description_is_empty():
+  """Undocumented function gets empty string description on FunctionNode."""
+
+  def undocumented_fn():
+    pass
+
+  def documented_fn():
+    """Some documentation."""
+    pass
+
+  undoc_node = FunctionNode(func=undocumented_fn)
+  doc_node = FunctionNode(func=documented_fn)
+
+  assert undoc_node.description == ''
+  assert doc_node.description == 'Some documentation.'

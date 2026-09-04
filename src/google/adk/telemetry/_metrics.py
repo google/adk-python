@@ -48,6 +48,11 @@ logger = logging.getLogger("google_adk." + __name__)
 GEN_AI_AGENT_VERSION = "gen_ai.agent.version"
 GEN_AI_TOOL_VERSION = "gen_ai.tool.version"
 
+# What one datapoint covers, spelled into the description so a reader of the
+# metric catalog can tell the two families apart.
+_PER_INVOCATION = "one agent invocation"
+_PER_WORKFLOW = "one workflow invocation, across every agent that ran in it"
+
 # What the turn was entered at, keying the per-workflow metrics. Named for the
 # common case, but a workflow-rooted runner puts the workflow's name here, not
 # an agent's. Experimental prefix because upstream has three competing unmerged
@@ -146,6 +151,12 @@ _invoke_agent_tool_calls = meter.create_histogram(
     description="Number of tool calls per agent invocation.",
     explicit_bucket_boundaries_advisory=_CALL_COUNT_BUCKET_BOUNDS,
 )
+_invoke_agent_skill_loads = meter.create_histogram(
+    "adk.experimental.invoke_agent.skill.loads",
+    unit="1",
+    description=f"Number of skill loads over {_PER_INVOCATION}.",
+    explicit_bucket_boundaries_advisory=_CALL_COUNT_BUCKET_BOUNDS,
+)
 
 # Bounds are upper inclusive, so the leading 0 buckets exact zeros on their own.
 _INPUT_TOKEN_BUCKET_BOUNDS = [
@@ -181,12 +192,6 @@ _OUTPUT_TOKEN_BUCKET_BOUNDS = [
     65536,
     131072,
 ]
-
-
-# What one datapoint covers, spelled into the description so a reader of the
-# metric catalog can tell the two families apart.
-_PER_INVOCATION = "one agent invocation"
-_PER_WORKFLOW = "one workflow invocation, across every agent that ran in it"
 
 
 def _create_token_histogram(
@@ -291,10 +296,25 @@ _invoke_workflow_tool_calls = meter.create_histogram(
     ),
     explicit_bucket_boundaries_advisory=_CALL_COUNT_BUCKET_BOUNDS,
 )
+_invoke_workflow_skill_loads = meter.create_histogram(
+    "adk.experimental.invoke_workflow.skill.loads",
+    unit="1",
+    description=f"Number of skill loads over {_PER_WORKFLOW}.",
+    explicit_bucket_boundaries_advisory=_CALL_COUNT_BUCKET_BOUNDS,
+)
 _skill_script_executions = meter.create_counter(
     "adk.experimental.skill.script.executions",
     unit="1",
     description="Number of skill script executions.",
+)
+_skill_loads = meter.create_counter(
+    "adk.experimental.skill.loads",
+    unit="1",
+    description=(
+        "Number of times a skill was loaded. Counts the attempt,"
+        " so a load that resolved no skill is counted too, under its"
+        " `error.type`."
+    ),
 )
 
 
@@ -637,3 +657,53 @@ def record_skill_script_execution(
     )
 
   _skill_script_executions.add(1, attributes=attrs)
+
+
+def record_skill_load(
+    agent_name: str,
+    skill_name: _hallucination.MaybeHallucinated[str],
+    error_type: str | None = None,
+) -> None:
+  """Records one skill load, whether or not it resolved a skill."""
+  attrs: dict[str, AttributeValue] = {
+      gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name,
+      _adk_attributes.ADK_EXPERIMENTAL_SKILL_NAME: skill_name.bounded(),
+  }
+  if error_type is not None:
+    attrs[error_attributes.ERROR_TYPE] = error_type
+
+  _skill_loads.add(1, attributes=attrs)
+
+
+def record_invoke_agent_skill_loads(
+    agent_name: str,
+    count: int,
+) -> None:
+  """Records the number of skill loads in an agent invocation.
+
+  Args:
+    agent_name: The agent the invocation ran.
+    count: Loads made anywhere inside it, whether or not they resolved a skill.
+      An invocation that loaded nothing is recorded as the zero it measured.
+  """
+  attrs = {gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name}
+  _invoke_agent_skill_loads.record(count, attributes=attrs)
+
+
+def record_invoke_workflow_skill_loads(
+    *,
+    root_agent_name: str,
+    workflow_name: str | None,
+    count: int,
+    nested: bool,
+) -> None:
+  """Records the skill loads made across one workflow.
+
+  Args:
+    root_agent_name: The runner's agent.
+    workflow_name: The workflow this datapoint covers.
+    count: Loads made by every agent that ran inside it.
+    nested: Whether another workflow enclosed this one.
+  """
+  attrs = _invoke_workflow_attrs(root_agent_name, workflow_name, nested)
+  _invoke_workflow_skill_loads.record(count, attributes=attrs)

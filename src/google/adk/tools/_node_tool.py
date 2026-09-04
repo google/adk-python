@@ -66,7 +66,11 @@ class NodeTool(BaseTool):
       if orig_output_schema is not None:
         node.output_schema = orig_output_schema
 
-    if not getattr(node, 'input_schema', None):
+    # A FunctionNode has already inferred its schema by here, and that yields
+    # None only when the function has nothing to bind.
+    if not isinstance(node, FunctionNode) and not getattr(
+        node, 'input_schema', None
+    ):
       raise ValueError(
           f"Node '{node.name}' does not have an input_schema defined."
           ' NodeTool requires an explicit Pydantic input_schema on the wrapped'
@@ -84,25 +88,26 @@ class NodeTool(BaseTool):
 
   @override
   def _get_declaration(self) -> types.FunctionDeclaration:
-    schema = schema_to_json_schema(self.node.input_schema)
-
-    # The GenAI API strictly requires parameters_json_schema to be an 'object'
-    # type schema. If the node has a primitive input schema (e.g., str, int),
-    # we wrap it into an object schema with a 'request' property.
-    if isinstance(schema, dict) and schema.get('type') != 'object':
-      schema = {
-          'type': 'object',
-          'properties': {
-              'request': schema,
-          },
-          'required': ['request'],
-      }
-
     decl = types.FunctionDeclaration(
         name=self.name,
         description=self.description,
-        parameters_json_schema=schema,
     )
+
+    input_schema = getattr(self.node, 'input_schema', None)
+    if input_schema is not None:
+      schema = schema_to_json_schema(input_schema)
+      # The GenAI API strictly requires parameters_json_schema to be an 'object'
+      # type schema. If the node has a primitive input schema (e.g., str, int),
+      # we wrap it into an object schema with a 'request' property.
+      if isinstance(schema, dict) and schema.get('type') != 'object':
+        schema = {
+            'type': 'object',
+            'properties': {
+                'request': schema,
+            },
+            'required': ['request'],
+        }
+      decl.parameters_json_schema = schema
 
     output_schema = getattr(self.node, 'output_schema', None)
     if output_schema:
@@ -121,7 +126,7 @@ class NodeTool(BaseTool):
 
     from pydantic import BaseModel
 
-    input_schema = self.node.input_schema
+    input_schema = getattr(self.node, 'input_schema', None)
     node_input: Any
     if inspect.isclass(input_schema) and issubclass(input_schema, BaseModel):
       try:
@@ -130,7 +135,11 @@ class NodeTool(BaseTool):
       except Exception as e:
         return f'Error validating input for node: {e}'
     else:
-      schema = schema_to_json_schema(input_schema)
+      schema = (
+          schema_to_json_schema(input_schema)
+          if input_schema is not None
+          else None
+      )
       if isinstance(schema, dict) and schema.get('type') != 'object':
         node_input = args.get('request')
       else:

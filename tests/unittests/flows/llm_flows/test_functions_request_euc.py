@@ -20,6 +20,7 @@ from fastapi.openapi.models import OAuth2
 from fastapi.openapi.models import OAuthFlowAuthorizationCode
 from fastapi.openapi.models import OAuthFlows
 from google.adk.agents.llm_agent import Agent
+from google.adk.auth import oauth2_credential_util
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
@@ -118,8 +119,13 @@ def test_function_request_euc():
   exchanged_auth_config2 = auth_configs[1]
   assert exchanged_auth_config1.auth_scheme == auth_config1.auth_scheme
   assert (
-      exchanged_auth_config1.raw_auth_credential
-      == auth_config1.raw_auth_credential
+      exchanged_auth_config1.raw_auth_credential.oauth2.client_id
+      == 'oauth_client_id_1'
+  )
+  assert exchanged_auth_config1.raw_auth_credential.oauth2.client_secret is None
+  assert (
+      exchanged_auth_config1.exchanged_auth_credential.oauth2.client_secret
+      is None
   )
   assert (
       exchanged_auth_config1.exchanged_auth_credential.oauth2.auth_uri
@@ -127,9 +133,10 @@ def test_function_request_euc():
   )
   assert exchanged_auth_config2.auth_scheme == auth_config2.auth_scheme
   assert (
-      exchanged_auth_config2.raw_auth_credential
-      == auth_config2.raw_auth_credential
+      exchanged_auth_config2.raw_auth_credential.oauth2.client_id
+      == 'oauth_client_id_2'
   )
+  assert exchanged_auth_config2.raw_auth_credential.oauth2.client_secret is None
   assert (
       exchanged_auth_config2.exchanged_auth_credential.oauth2.auth_uri
       is not None
@@ -151,6 +158,9 @@ def test_function_request_euc():
     assert (
         args.auth_config.raw_auth_credential
         == auth_configs[idx].raw_auth_credential
+    )
+    assert 'oauth_client_secret' not in json.dumps(
+        request_euc_function_call.args
     )
 
   assert len(mock_model.requests) == 1
@@ -622,3 +632,138 @@ def test_function_get_auth_response_partial():
   assert parts[0].function_response.response == {'result': 1}
   assert parts[1].function_response.name == 'call_external_api2'
   assert parts[1].function_response.response == {'result': 2}
+
+
+def _oauth2_scheme(token_url: str) -> OAuth2:
+  return OAuth2(
+      flows=OAuthFlows(
+          authorizationCode=OAuthFlowAuthorizationCode(
+              authorizationUrl='https://accounts.google.com/o/oauth2/auth',
+              tokenUrl=token_url,
+              scopes={'https://www.googleapis.com/auth/calendar': 'Calendar'},
+          )
+      )
+  )
+
+
+def test_function_request_euc_omits_client_secret_from_session():
+  responses = [
+      [types.Part.from_function_call(name='call_external_api', args={})],
+      [types.Part.from_text(text='response1')],
+  ]
+  auth_config = AuthConfig(
+      auth_scheme=_oauth2_scheme('https://example.com/oauth2/token'),
+      raw_auth_credential=AuthCredential(
+          auth_type=AuthCredentialTypes.OAUTH2,
+          oauth2=OAuth2Auth(
+              client_id='oauth_client_id_1',
+              client_secret='oauth_client_secret1',
+          ),
+      ),
+  )
+
+  def call_external_api(tool_context: ToolContext) -> Optional[int]:
+    tool_context.request_credential(auth_config)
+
+  agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(responses=responses),
+      tools=[call_external_api],
+  )
+  runner = testing_utils.InMemoryRunner(agent)
+  runner.run('test')
+
+  for event in runner.session.events:
+    assert 'oauth_client_secret1' not in event.model_dump_json()
+
+
+def test_function_get_auth_response_ignores_client_supplied_oauth_client(
+    monkeypatch,
+):
+  """The token exchange must use the configured client, not the echoed one."""
+  captured = {}
+
+  class _RecordingOAuth2Session:
+
+    def __init__(self, client_id=None, client_secret=None, **kwargs):
+      captured['client_id'] = client_id
+      captured['client_secret'] = client_secret
+
+    def fetch_token(self, token_endpoint, **kwargs):
+      captured['token_endpoint'] = token_endpoint
+      return {'access_token': 'exchanged_token', 'expires_in': 3600}
+
+  monkeypatch.setattr(
+      oauth2_credential_util, 'OAuth2Session', _RecordingOAuth2Session
+  )
+
+  responses = [
+      [function_call('id_1', 'call_external_api', {})],
+      [types.Part.from_text(text='response1')],
+      [types.Part.from_text(text='response2')],
+  ]
+  auth_config = AuthConfig(
+      auth_scheme=_oauth2_scheme('https://example.com/oauth2/token'),
+      raw_auth_credential=AuthCredential(
+          auth_type=AuthCredentialTypes.OAUTH2,
+          oauth2=OAuth2Auth(
+              client_id='oauth_client_id_1',
+              client_secret='oauth_client_secret1',
+          ),
+      ),
+  )
+  tampered_response = AuthConfig(
+      auth_scheme=_oauth2_scheme('https://attacker.example.com/token'),
+      raw_auth_credential=AuthCredential(
+          auth_type=AuthCredentialTypes.OAUTH2,
+          oauth2=OAuth2Auth(
+              client_id='attacker_client_id',
+              client_secret='attacker_client_secret',
+          ),
+      ),
+      exchanged_auth_credential=AuthCredential(
+          auth_type=AuthCredentialTypes.OAUTH2,
+          oauth2=OAuth2Auth(
+              client_id='attacker_client_id',
+              client_secret='attacker_client_secret',
+              auth_response_uri='https://example.com/callback?code=code1',
+          ),
+      ),
+  )
+  seen_tokens = []
+
+  def call_external_api(tool_context: ToolContext) -> Optional[int]:
+    auth_response = tool_context.get_auth_response(auth_config)
+    if not auth_response:
+      tool_context.request_credential(auth_config)
+      return None
+    seen_tokens.append(auth_response.oauth2.access_token)
+    return 1
+
+  agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(responses=responses),
+      tools=[call_external_api],
+  )
+  runner = testing_utils.InMemoryRunner(agent)
+  runner.run('test')
+
+  request_euc_function_call = (
+      runner.session.events[-2].content.parts[0].function_call
+  )
+  function_response = types.FunctionResponse(
+      name=request_euc_function_call.name,
+      response=tampered_response.model_dump(),
+  )
+  function_response.id = request_euc_function_call.id
+  runner.run(
+      new_message=types.Content(
+          role='user',
+          parts=[types.Part(function_response=function_response)],
+      ),
+  )
+
+  assert seen_tokens == ['exchanged_token']
+  assert captured['client_id'] == 'oauth_client_id_1'
+  assert captured['client_secret'] == 'oauth_client_secret1'
+  assert captured['token_endpoint'] == 'https://example.com/oauth2/token'

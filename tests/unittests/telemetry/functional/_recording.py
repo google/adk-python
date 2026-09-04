@@ -60,10 +60,13 @@ from ._scenarios import run_agent_scenario
 from ._scenarios import run_agent_tool_scenario
 from ._scenarios import run_nested_agents_scenario
 from ._scenarios import run_node_scenario
+from ._scenarios import run_streaming_agent_scenario
 from ._scenarios import Scenario
 from ._scenarios import skill_turns
 from ._scenarios import SkillResourceType
 from ._scenarios import SkillType
+from ._scenarios import StreamedTurn
+from ._scenarios import STREAMING_TURNS
 from ._scenarios import TelemetryProviders
 from ._scenarios import TOOL_CALLING_TURNS
 from ._scenarios import Turn
@@ -238,6 +241,13 @@ async def _record(
     )
 
 
+def _streamed_turns(
+    case: FunctionalTestCase,
+) -> tuple[StreamedTurn, ...] | None:
+  """The chunked conversation, for a scenario whose model streams."""
+  return STREAMING_TURNS if case.scenario == "streaming" else None
+
+
 def _turns(case: FunctionalTestCase) -> tuple[Turn, ...]:
   """The canned conversation the case's scenario is driven with."""
   match case.scenario:
@@ -274,6 +284,7 @@ async def _run_scenario(
       monkeypatch,
       providers,
       turns=_turns(case),
+      streamed_turns=_streamed_turns(case),
       model_exception=case.model_exception,
   ) as model:
     match case.scenario:
@@ -302,6 +313,10 @@ async def _run_scenario(
       case "node":
         await run_node_scenario(
             model, tool_exception=case.tool_exception, event_sink=event_sink
+        )
+      case "streaming":
+        await run_streaming_agent_scenario(
+            build_test_runner(model), event_sink=event_sink
         )
       case "agent_tool":
         await run_agent_tool_scenario(model, event_sink=event_sink)
