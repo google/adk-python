@@ -226,6 +226,14 @@ class CortexEventConverter:
     return self._final_response is not None
 
   @property
+  def final_status(self) -> str | None:
+    """The ``status`` of the final ``response``, if it has been seen."""
+    if self._final_response is None:
+      return None
+    status = self._final_response.get('status')
+    return str(status) if status is not None else None
+
+  @property
   def failed(self) -> bool:
     """Whether a terminal ``error`` event has been seen."""
     return self._error is not None

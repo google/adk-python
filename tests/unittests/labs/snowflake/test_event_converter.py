@@ -646,6 +646,15 @@ def test_run_id_is_derived_when_the_payload_lacks_one():
   assert _cortex(converter.final_event())['run_id'] == '123-455'
 
 
+def test_final_status_is_exposed_once_the_final_response_arrives():
+  """The run's terminal status is readable so callers can gate the cursor."""
+  converter = _make_converter()
+
+  assert converter.final_status is None
+  converter.convert(_final_response(status='cancelled'))
+  assert converter.final_status == 'cancelled'
+
+
 def test_final_response_backfills_ids():
   """Ids missing from `metadata` events are taken from the final payload."""
   converter = _make_converter()

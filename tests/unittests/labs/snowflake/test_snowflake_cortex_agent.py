@@ -77,7 +77,11 @@ _DONE = b'event: done\ndata: [DONE]\n\n'
 
 
 def _run_stream(
-    *, assistant_message_id: int | None = 456, answer: str = 'Hello'
+    *,
+    assistant_message_id: int | None = 456,
+    answer: str = 'Hello',
+    status: str = 'completed',
+    done: bool = True,
 ) -> bytes:
   """A complete run: status, two text deltas, one SQL tool call, the answer."""
   events: list[tuple[str, Any]] = [
@@ -124,10 +128,10 @@ def _run_stream(
       {
           'content': [{'text': answer, 'type': 'text'}],
           'metadata': metadata,
-          'status': 'completed',
+          'status': status,
       },
   ))
-  return _sse(*events) + _DONE
+  return _sse(*events) + (_DONE if done else b'')
 
 
 class _Chunks(httpx.AsyncByteStream):
@@ -579,12 +583,12 @@ async def test_error_event_ends_the_turn_without_a_cursor_update():
   assert all(not e.actions.state_delta for e in events)
 
 
-async def test_stream_cut_before_done_fails_and_keeps_the_cursor():
+async def test_stream_cut_before_the_final_response_fails_and_keeps_the_cursor():
   """A stream that ends early is a failure, not a truncated answer."""
   body = _run_stream()[: _run_stream().index(b'event: response\n')]
   agent = _make_agent(http_client=_FakeSnowflake(run_body=body).http_client())
 
-  with pytest.raises(CortexTransportError, match='before the run finished'):
+  with pytest.raises(CortexTransportError, match='before the final response'):
     await _run(agent, await _invocation_context(agent))
 
 
@@ -596,6 +600,32 @@ async def test_http_error_on_run_is_raised():
     await _run(agent, await _invocation_context(agent))
 
   assert info.value.status_code == 401
+
+
+async def test_final_response_without_done_still_completes_the_turn():
+  """`[DONE]` is a compatibility sentinel; the final `response` closes the turn."""
+  body = _run_stream(done=False)
+  agent = _make_agent(http_client=_FakeSnowflake(run_body=body).http_client())
+
+  events = await _run(agent, await _invocation_context(agent))
+
+  final = _final(events)
+  assert final.content.parts[0].text == 'Hello'
+  cursor = final.actions.state_delta['_snowflake_cortex_cortex']
+  assert cursor['parent_message_id'] == '456'
+
+
+@pytest.mark.parametrize('status', ['cancelled', 'timed_out'])
+async def test_non_completed_final_status_does_not_commit_the_cursor(status):
+  """Only a `completed` run may become the parent of the next turn."""
+  body = _run_stream(status=status)
+  agent = _make_agent(http_client=_FakeSnowflake(run_body=body).http_client())
+
+  events = await _run(agent, await _invocation_context(agent))
+
+  final = _final(events)
+  assert final.custom_metadata['snowflake_cortex']['status'] == status
+  assert final.actions.state_delta == {}
 
 
 async def test_missing_assistant_id_skips_the_cursor_update():

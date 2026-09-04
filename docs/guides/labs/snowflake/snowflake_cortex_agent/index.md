@@ -89,14 +89,17 @@ ADK events:
   stages: first the SQL rows are dropped while the query id and column
   metadata stay, then each content block is reduced to its type and the size
   of each of its keys, so the record still says what came back.
-- When Snowflake sends its final `response` and the stream terminator, the
+- When Snowflake sends its final `response`, the
   agent yields one non-partial event with the answer text. Citations,
   warnings, suggested follow-up queries, token usage, tables and charts sit in
   `custom_metadata["snowflake_cortex"]` on that event. The final `response`
   is authoritative, so the answer comes from it rather than from the deltas.
 
 The final event also carries the new cursor, the thread id and the assistant
-message id, as `state_delta`. The ADK `Runner` applies it to the session, which
+message id, as `state_delta`, but only when the final `response` reports
+`status` `completed`; a `cancelled` or `timed_out` run leaves the cursor where
+it was. The `[DONE]` terminator is optional: the final `response` is what
+closes the turn. The ADK `Runner` applies it to the session, which
 is why thread continuity needs the `Runner` rather than a direct
 `run_async` loop. Only an assistant message id ever becomes the next parent;
 using the user message id would fork the thread. The cursor also records the
@@ -106,7 +109,8 @@ silently mixing two conversations.
 
 Failures leave the cursor alone. A terminal `error` from Snowflake becomes a
 non-partial event with `error_code` and `error_message`. A stream that ends
-before the run finished raises `CortexTransportError`, and a rejected request
+before the final `response` arrived raises `CortexTransportError`, and a
+rejected request
 raises `CortexApiError` with the HTTP status, Snowflake's error code and its
 request id. The next turn continues from the last good message.
 

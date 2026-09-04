@@ -371,17 +371,26 @@ class SnowflakeCortexAgent(BaseAgent):
       # The terminal error event has been yielded; the cursor stays where it
       # was so the next turn continues from the last good message.
       return
-    if not (converter.is_done and converter.has_final_response):
+    if not converter.has_final_response:
       raise CortexTransportError(
-          'The Snowflake stream ended before the run finished, so the answer'
-          ' is incomplete. The conversation cursor was left unchanged.',
+          'The Snowflake stream ended before the final response arrived, so'
+          ' the answer is incomplete. The conversation cursor was left'
+          ' unchanged.',
           timed_out=False,
       )
+    if not converter.is_done:
+      # `[DONE]` is a compatibility sentinel; the final `response` is what
+      # closes a run, so a stream that ends right after it is complete.
+      logger.debug('Snowflake closed the run stream without a [DONE] event.')
 
     state_delta: dict[str, Any] | None = None
-    if converter.assistant_message_id is not None:
-      # Only the assistant id may become the parent of the next turn; the
-      # user id would fork the thread.
+    if (
+        converter.final_status == 'completed'
+        and converter.assistant_message_id is not None
+    ):
+      # Only a completed run's assistant message may become the parent of the
+      # next turn: a cancelled or timed-out run can still store a partial
+      # assistant message, and the user id would fork the thread.
       state_delta = {
           self._state_key(): (
               _Cursor(
@@ -398,7 +407,12 @@ class SnowflakeCortexAgent(BaseAgent):
       client: SnowflakeCortexClient,
       converter: CortexEventConverter,
   ) -> None:
-    if not self.cancel_on_disconnect or converter.is_done or converter.failed:
+    if (
+        not self.cancel_on_disconnect
+        or converter.is_done
+        or converter.failed
+        or converter.has_final_response
+    ):
       return
     if converter.thread_id is None or converter.user_message_id is None:
       # Snowflake names a run `{thread_id}-{user_message_id}`, so until the
