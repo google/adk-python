@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import copy
 import dataclasses
@@ -46,6 +47,7 @@ from google.genai import types
 from pydantic import BaseModel
 from pydantic import Field
 from pydantic import model_validator
+from pydantic import PrivateAttr
 from typing_extensions import override
 
 from . import _prompt_cache
@@ -882,6 +884,9 @@ class AnthropicLlm(BaseLlm):
   )
   """An optional pre-configured Anthropic client."""
 
+  # Coordinates concurrent coroutines initializing the client.
+  _client_init_task: asyncio.Task | None = PrivateAttr(default=None)
+
   @classmethod
   @override
   def supported_models(cls) -> list[str]:
@@ -1015,11 +1020,12 @@ class AnthropicLlm(BaseLlm):
     thinking = _build_anthropic_thinking_param(llm_request.config)
 
     try:
+      client = await self._get_anthropic_client()
       if not stream:
         kwargs = self._build_anthropic_kwargs(
             llm_request, messages, tools, tool_choice, thinking
         )
-        message = await self._anthropic_client.messages.create(**kwargs)
+        message = await client.messages.create(**kwargs)
         yield message_to_generate_content_response(message)
       else:
         async for response in self._generate_content_streaming(
@@ -1058,7 +1064,8 @@ class AnthropicLlm(BaseLlm):
     kwargs = self._build_anthropic_kwargs(
         llm_request, messages, tools, tool_choice, thinking
     )
-    raw_stream = await self._anthropic_client.messages.create(
+    client = await self._get_anthropic_client()
+    raw_stream = await client.messages.create(
         stream=True,
         **kwargs,
     )
@@ -1221,6 +1228,31 @@ class AnthropicLlm(BaseLlm):
         model_version=model_version,
         partial=False,
     )
+
+  async def _get_anthropic_client(
+      self,
+  ) -> AsyncAnthropic | AsyncAnthropicVertex:
+    """Returns the client without blocking the caller's event loop."""
+    cached_client = self.__dict__.get("_anthropic_client")
+    if cached_client is not None:
+      return cast(AsyncAnthropic | AsyncAnthropicVertex, cached_client)
+
+    task = self._client_init_task
+    if task is None:
+      task = asyncio.create_task(
+          asyncio.to_thread(lambda: self._anthropic_client)
+      )
+
+      def _on_done(t: asyncio.Task) -> None:
+        if self._client_init_task is t:
+          self._client_init_task = None
+        if not t.cancelled():
+          t.exception()
+
+      task.add_done_callback(_on_done)
+      self._client_init_task = task
+
+    return await asyncio.shield(task)
 
   @cached_property
   def _anthropic_client(self) -> AsyncAnthropic | AsyncAnthropicVertex:

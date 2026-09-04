@@ -12,11 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import base64
 import json
 import os
 import re
-import sys
+import threading
 from unittest import mock
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
@@ -39,7 +40,6 @@ from google.adk.models.anthropic_llm import to_google_genai_finish_reason
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
-from google.genai import version as genai_version
 from google.genai.types import Content
 from google.genai.types import Part
 import httpx
@@ -150,6 +150,123 @@ def test_claude_anthropic_client_creation_with_full_resource_name():
     _, kwargs = mock_client_class.call_args
     assert kwargs["project_id"] == "test-project"
     assert kwargs["region"] == "test-location"
+
+
+@pytest.mark.asyncio
+async def test_claude_anthropic_client_creation_runs_off_event_loop():
+  model = Claude(
+      model="projects/test-project/locations/test-location/publishers/anthropic/models/claude-3-5-sonnet-v2@20241022"
+  )
+  event_loop_thread = threading.get_ident()
+  construction_threads = []
+  client = MagicMock()
+
+  def create_client(**kwargs):
+    del kwargs
+    construction_threads.append(threading.get_ident())
+    return client
+
+  with mock.patch(
+      "google.adk.models.anthropic_llm.AsyncAnthropicVertex",
+      side_effect=create_client,
+  ) as mock_client_class:
+    clients = await asyncio.gather(
+        model._get_anthropic_client(),
+        model._get_anthropic_client(),
+    )
+    cached_client = await model._get_anthropic_client()
+
+  assert clients == [client, client]
+  assert cached_client is client
+  mock_client_class.assert_called_once()
+  assert construction_threads[0] != event_loop_thread
+
+
+@pytest.mark.asyncio
+async def test_anthropic_llm_client_creation_runs_off_event_loop():
+  model = AnthropicLlm(model="claude-sonnet-4-20250514")
+  event_loop_thread = threading.get_ident()
+  construction_threads = []
+  client = MagicMock()
+
+  def create_client(**kwargs):
+    del kwargs
+    construction_threads.append(threading.get_ident())
+    return client
+
+  with mock.patch(
+      "google.adk.models.anthropic_llm.AsyncAnthropic",
+      side_effect=create_client,
+  ) as mock_client_class:
+    clients = await asyncio.gather(
+        model._get_anthropic_client(),
+        model._get_anthropic_client(),
+    )
+    cached_client = await model._get_anthropic_client()
+
+  assert clients == [client, client]
+  assert cached_client is client
+  mock_client_class.assert_called_once()
+  assert construction_threads[0] != event_loop_thread
+
+
+@pytest.mark.asyncio
+async def test_anthropic_client_creation_cancelled_does_not_recreate():
+  model = AnthropicLlm(model="claude-sonnet-4-20250514")
+  init_started = threading.Event()
+  allow_finish = threading.Event()
+  client = MagicMock()
+
+  def create_client(**kwargs):
+    del kwargs
+    init_started.set()
+    allow_finish.wait(timeout=2.0)
+    return client
+
+  with mock.patch(
+      "google.adk.models.anthropic_llm.AsyncAnthropic",
+      side_effect=create_client,
+  ) as mock_client_class:
+    task1 = asyncio.create_task(model._get_anthropic_client())
+    await asyncio.to_thread(init_started.wait, 2.0)
+    task1.cancel()
+    with pytest.raises(asyncio.CancelledError):
+      await task1
+
+    task2 = asyncio.create_task(model._get_anthropic_client())
+    await asyncio.sleep(0.01)
+    allow_finish.set()
+    res2 = await task2
+
+  assert res2 is client
+  mock_client_class.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_streaming_warms_client_before_subclass():
+  class SubclassAnthropic(AnthropicLlm):
+    streaming_client_cached: bool = False
+
+    async def _generate_content_streaming(self, *args, **kwargs):
+      self.streaming_client_cached = "_anthropic_client" in self.__dict__
+      async for res in super()._generate_content_streaming(*args, **kwargs):
+        yield res
+
+  mock_client = MagicMock()
+  mock_stream = AsyncMock()
+  mock_stream.__aiter__.return_value = []
+  mock_client.messages.create = AsyncMock(return_value=mock_stream)
+  model = SubclassAnthropic(model="claude-sonnet-4-20250514")
+
+  with mock.patch(
+      "google.adk.models.anthropic_llm.AsyncAnthropic",
+      return_value=mock_client,
+  ):
+    llm_req = LlmRequest(model="claude-sonnet-4-20250514")
+    async for _ in model.generate_content_async(llm_req, stream=True):
+      pass
+
+  assert model.streaming_client_cached is True
 
 
 def test_supported_models():
