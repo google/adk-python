@@ -659,6 +659,7 @@ def _validate_agent_import(
     # Add parent directory to path so imports work correctly
     if parent_dir not in sys.path:
       sys.path.insert(0, parent_dir)
+    importlib.invalidate_caches()
     try:
       module = importlib.import_module(f'{module_name}.agent')
     except ImportError as e:
