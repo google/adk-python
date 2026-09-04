@@ -616,6 +616,9 @@ class _PreparedFunctionCall:
     tool: The tool it names, or a placeholder tool when the name is unknown.
     tool_context: The context the tool and all of its callbacks share.
     function_args: The deep copy of the call arguments handed to the tool.
+    contextvars_snapshot: The `contextvars` context as the before-tool callbacks
+      left it. The execute phase runs the tool in this context, so a contextvar
+      one of those callbacks set is still set when the tool reads it.
     override_response: A response that already answers the call, so the tool
       does not run: either what a before-tool callback returned, or the
       not-found payload for a tool name the model invented. None means the tool
@@ -630,6 +633,7 @@ class _PreparedFunctionCall:
   tool: BaseTool
   tool_context: ToolContext
   function_args: dict[str, Any]
+  contextvars_snapshot: contextvars.Context
   override_response: Optional[object] = None
   tool_lookup_error: Optional[Exception] = None
   is_tool_lookup_failure: bool = False
@@ -711,6 +715,9 @@ async def _prepare_single(
       tool=tool,
       tool_context=tool_context,
       function_args=function_args,
+      # Taken here, at the end of the prepare phase, so it carries whatever the
+      # before-tool callbacks just set.
+      contextvars_snapshot=contextvars.copy_context(),
       override_response=override_response,
       tool_lookup_error=tool_lookup_error,
       is_tool_lookup_failure=is_tool_lookup_failure,

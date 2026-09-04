@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import contextvars
 from typing import Any
 from unittest import mock
 
@@ -70,6 +71,7 @@ async def test_execute_single_prepared_call_runs_tool_runner() -> None:
       tool=tool,
       tool_context=tool_context,
       function_args={'val': 42},
+      contextvars_snapshot=contextvars.copy_context(),
   )
 
   invocation_context = mock.create_autospec(InvocationContext, instance=True)
@@ -120,6 +122,7 @@ async def test_execute_single_prepared_call_lookup_failure() -> None:
       tool=tool,
       tool_context=tool_context,
       function_args={},
+      contextvars_snapshot=contextvars.copy_context(),
       override_response={'error': 'Tool not found'},
       tool_lookup_error=ValueError('Tool missing_tool not found'),
       is_tool_lookup_failure=True,
