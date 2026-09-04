@@ -199,10 +199,12 @@ class FunctionTool(BaseTool):
   ) -> bool:
     if callable(self._require_confirmation):
       args_to_call = self._prepare_invocation_args(args, tool_context)
-      return cast(
-          bool,
-          await self._invoke_callable(self._require_confirmation, args_to_call),
+      result = await self._invoke_callable(
+          self._require_confirmation, args_to_call
       )
+      if isinstance(result, bool):
+        return result
+      return True
     return bool(self._require_confirmation)
 
   def _is_invocation_type_error(
