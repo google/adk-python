@@ -1221,6 +1221,82 @@ class TestMCPTool:
     tool_context.request_confirmation.assert_called_once()
     assert tool_context.actions.skip_summarization is True
 
+  @pytest.mark.asyncio
+  async def test_check_require_confirmation_callable_returns_none_fails_closed(
+      self,
+  ):
+    """A predicate that falls off a branch (implicit None) must fail closed
+    and require confirmation, not silently skip it.
+
+    Regression test for #7010: `cast(bool, ...)` is a no-op at runtime, so a
+    predicate returning None used to be treated as falsy and the tool would
+    run unconfirmed.
+    """
+
+    def forgot_a_branch(param1: str):
+      if param1 == "never":
+        return True
+      # Falls through here and implicitly returns None.
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        require_confirmation=forgot_a_branch,
+    )
+    tool_context = Mock(spec=ToolContext)
+
+    result = await tool.check_require_confirmation(
+        {"param1": "test_value"}, tool_context
+    )
+
+    assert result is True
+
+  @pytest.mark.asyncio
+  async def test_check_require_confirmation_callable_returns_truthy_non_bool(
+      self,
+  ):
+    """A truthy non-bool 'reason' return should still mean 'confirm' (no
+    regression for this already-working pattern)."""
+
+    def returns_reason(param1: str):
+      return "amount over limit"
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        require_confirmation=returns_reason,
+    )
+    tool_context = Mock(spec=ToolContext)
+
+    result = await tool.check_require_confirmation(
+        {"param1": "test_value"}, tool_context
+    )
+
+    assert result is True
+
+  @pytest.mark.asyncio
+  async def test_check_require_confirmation_callable_returns_bool_false(
+      self,
+  ):
+    """A predicate explicitly returning False must still allow the tool to
+    run without confirmation (no regression for the ordinary bool path)."""
+
+    def returns_false(param1: str):
+      return False
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        require_confirmation=returns_false,
+    )
+    tool_context = Mock(spec=ToolContext)
+
+    result = await tool.check_require_confirmation(
+        {"param1": "test_value"}, tool_context
+    )
+
+    assert result is False
+
   def test_init_validation(self):
     """Test that initialization validates required parameters."""
     # This test ensures that the MCPTool properly handles its dependencies

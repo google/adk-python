@@ -351,6 +351,73 @@ async def test_run_async_with_unexpected_argument():
 
 
 @pytest.mark.asyncio
+async def test_check_require_confirmation_callable_returns_none_fails_closed(
+    mock_tool_context,
+):
+  """A predicate that falls off a branch (implicit None) must fail closed
+  and require confirmation, not silently skip it.
+
+  Regression test for #7010: `cast(bool, ...)` is a no-op at runtime, so a
+  predicate returning None used to be treated as falsy and the tool would
+  run unconfirmed.
+  """
+
+  def forgot_a_branch(arg1: str):
+    if arg1 == "never":
+      return True
+    # Falls through here and implicitly returns None.
+
+  tool = FunctionTool(
+      lambda arg1: {"received_arg": arg1},
+      require_confirmation=forgot_a_branch,
+  )
+  result = await tool.check_require_confirmation(
+      {"arg1": "hello"}, mock_tool_context
+  )
+  assert result is True
+
+
+@pytest.mark.asyncio
+async def test_check_require_confirmation_callable_returns_truthy_non_bool(
+    mock_tool_context,
+):
+  """A truthy non-bool 'reason' return should still mean 'confirm' (no
+  regression for this already-working pattern)."""
+
+  def returns_reason(arg1: str):
+    return "amount over limit"
+
+  tool = FunctionTool(
+      lambda arg1: {"received_arg": arg1},
+      require_confirmation=returns_reason,
+  )
+  result = await tool.check_require_confirmation(
+      {"arg1": "hello"}, mock_tool_context
+  )
+  assert result is True
+
+
+@pytest.mark.asyncio
+async def test_check_require_confirmation_callable_returns_bool_false(
+    mock_tool_context,
+):
+  """A predicate explicitly returning False must still allow the tool to
+  run without confirmation (no regression for the ordinary bool path)."""
+
+  def returns_false(arg1: str):
+    return False
+
+  tool = FunctionTool(
+      lambda arg1: {"received_arg": arg1},
+      require_confirmation=returns_false,
+  )
+  result = await tool.check_require_confirmation(
+      {"arg1": "hello"}, mock_tool_context
+  )
+  assert result is False
+
+
+@pytest.mark.asyncio
 async def test_run_async_with_tool_context_and_unexpected_argument():
   """Test that run_async handles tool_context and filters out unexpected arguments."""
 
