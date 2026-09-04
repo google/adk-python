@@ -61,7 +61,6 @@ async def run_node_async(
     session: Optional[Session] = None,
 ) -> AsyncGenerator[Event, None]:
   """Runs a BaseNode or Workflow in async mode."""
-  from ..runners import _apply_run_config_custom_metadata
   from ..runners import _find_active_task_scope
 
   caller_ctx = context.get_current()
@@ -187,15 +186,18 @@ async def run_node_async(
                 author="model",
                 content=early_exit_result,
             )
-            _apply_run_config_custom_metadata(early_exit_event, ic.run_config)
+            output_event = await runner._process_event_with_plugin_callbacks(  # pylint: disable=protected-access
+                invocation_context=ic,
+                event=early_exit_event,
+            )
             if runner._should_append_event(  # pylint: disable=protected-access
                 early_exit_event, is_live_call=False
             ):
               await runner.session_service.append_event(
                   session=ic.session,
-                  event=early_exit_event,
+                  event=output_event,
               )
-            yield early_exit_event
+            yield output_event
           else:
             # 3. Start root node in background
             root_ctx = Context(ic)
