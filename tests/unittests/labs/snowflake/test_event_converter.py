@@ -430,8 +430,38 @@ def test_oversized_result_rows_are_dropped_but_shape_is_kept():
   assert response['content'][0]['json']['query_id'] == 'q1'
 
 
-def test_result_still_too_large_after_dropping_rows_loses_its_content():
-  """When even the shape does not fit, the content is emptied, not stored."""
+def test_oversized_result_without_rows_keeps_its_key_sizes():
+  """A big non-SQL result is reduced to block types and per-key sizes."""
+  converter = _make_converter(max_tool_result_bytes=300)
+  semantic_context = {
+      'semantic_model_name': 'sv_overview',
+      'tables': [
+          {'name': f't{i}', 'columns': ['a', 'b', 'c']} for i in range(40)
+      ],
+      'verified_queries': [{'sql': 'SELECT 1'}] * 20,
+  }
+
+  (event,) = converter.convert(
+      _tool_result(content=[{'json': semantic_context, 'type': 'json'}])
+  )
+
+  response = event.content.parts[0].function_response.response
+  (block,) = response['content']
+  assert response['truncated'] is True
+  assert block['type'] == 'json'
+  assert set(block['json_keys']) == {
+      'semantic_model_name',
+      'tables',
+      'verified_queries',
+  }
+  assert (
+      block['json_keys']['tables'] > block['json_keys']['semantic_model_name']
+  )
+  assert 'sv_overview' not in json.dumps(response)
+
+
+def test_result_still_too_large_after_shaping_loses_its_content():
+  """When even the key sizes do not fit, the content is emptied, not stored."""
   converter = _make_converter(max_tool_result_bytes=64)
 
   (event,) = converter.convert(

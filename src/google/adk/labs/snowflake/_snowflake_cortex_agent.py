@@ -198,10 +198,10 @@ class SnowflakeCortexAgent(BaseAgent):
   max_tool_result_bytes: int = Field(default=32 * 1024, gt=0)
   """Upper bound on the serialized size of one recorded tool result.
 
-  A server-side tool result larger than this is truncated to its metadata
-  before it is recorded in a ``FunctionResponse`` event. Tool results are
-  persisted with the session, so this bounds how much a single SQL result set
-  can grow it.
+  A server-side tool result larger than this is cut down before it is
+  recorded in a ``FunctionResponse`` event: SQL rows go first, then each
+  block is reduced to its type and key sizes. Tool results are persisted
+  with the session, so this bounds how much a single result can grow it.
   """
 
   include_thinking_in_final_event: bool = False

@@ -85,8 +85,10 @@ ADK events:
   tool name, paired by Snowflake's `tool_use_id`. These are real ADK tool
   events: `adk web` renders them as tool calls, and ADK does not execute them
   again, because tool execution only happens for calls an `LlmAgent` model
-  makes. Tool results larger than `max_tool_result_bytes` are reduced to their
-  shape, keeping the query id and column metadata but not the rows.
+  makes. Tool results larger than `max_tool_result_bytes` are reduced in
+  stages: first the SQL rows are dropped while the query id and column
+  metadata stay, then each content block is reduced to its type and the size
+  of each of its keys, so the record still says what came back.
 - When Snowflake sends its final `response` and the stream terminator, the
   agent yields one non-partial event with the answer text. Citations,
   warnings, suggested follow-up queries, token usage, tables and charts sit in
@@ -158,10 +160,14 @@ nobody is left to read the error. Disable it if you want abandoned runs to
 finish and land in the thread anyway.
 
 `max_tool_result_bytes` protects the session store. Tool results are persisted
-as `FunctionResponse` events and a SQL result set can be large, so a result
-above the bound keeps its query id and column metadata and drops the rows;
-tables and charts on the final event are bounded the same way. Raise it if your
-application reads rows from the recorded events, lower it if session size
+as `FunctionResponse` events and can be large, so a result above the bound is
+cut down in stages: a SQL result keeps its query id and column metadata and
+drops the rows; a result that is still too large, such as a semantic view
+context, keeps each block's type and the byte size of each of its keys; only
+if even that does not fit is the content emptied. `truncated` and
+`original_bytes` on the response say when this happened. Tables and charts on
+the final event are bounded the same way. Raise it if your application reads
+rows or tool payloads from the recorded events, lower it if session size
 matters more.
 
 `include_thinking_in_final_event` controls whether the completed reasoning text

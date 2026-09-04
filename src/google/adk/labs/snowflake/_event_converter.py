@@ -99,6 +99,25 @@ def _without_result_rows(item: Any) -> Any:
   return {**item, 'json': {**body, 'result_set': result_set}}
 
 
+def _content_shape(item: Any) -> dict[str, JsonValue]:
+  """Reduces one tool-result content block to its type and key sizes."""
+  if not isinstance(item, dict):
+    return {'type': type(item).__name__, 'bytes': _json_size(item)}
+  shape: dict[str, JsonValue] = {'type': item.get('type')}
+  body = item.get('json')
+  if isinstance(body, dict):
+    shape['json_keys'] = {
+        str(key): _json_size(value) for key, value in body.items()
+    }
+  else:
+    shape['keys'] = {
+        str(key): _json_size(value)
+        for key, value in item.items()
+        if key != 'type'
+    }
+  return shape
+
+
 def _tool_error(content: list[Any]) -> JsonValue:
   for item in content:
     body = _as_dict(item).get('json')
@@ -485,8 +504,10 @@ class CortexEventConverter:
   def _bound_tool_result(
       self, response: dict[str, JsonValue]
   ) -> dict[str, JsonValue]:
-    # The response is persisted with the session, so a SQL result set is cut
-    # down to its shape (query id, column metadata) rather than stored whole.
+    # The response is persisted with the session, so it is cut down in stages
+    # rather than stored whole: first the SQL rows go (query id and column
+    # metadata stay), then each block is reduced to its type and the sizes of
+    # its keys, so the record still says what the tool returned.
     size = _json_size(response)
     if size <= self._max_bytes:
       return response
@@ -501,6 +522,12 @@ class CortexEventConverter:
     }
     if _json_size(bounded) <= self._max_bytes:
       return bounded
+    shaped: dict[str, JsonValue] = {
+        **bounded,
+        'content': [_content_shape(item) for item in content],
+    }
+    if _json_size(shaped) <= self._max_bytes:
+      return shaped
     return {**bounded, 'content': []}
 
   def _on_annotation(self, name: str, payload: dict[str, Any]) -> list[Event]:
