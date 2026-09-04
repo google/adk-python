@@ -42,31 +42,34 @@ from ._divergences import DivergenceGroup
 from ._divergences import divergences
 from ._divergences import INFERENCE_INSTRUMENTATIONS
 from ._divergences import InferenceInstrumentation
-from ._scenarios import ADK_EXPERIMENTAL_TELEMETRY
-from ._scenarios import ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN
-from ._scenarios import AGENT_TOOL_TURNS
-from ._scenarios import build_mcp_test_runner
-from ._scenarios import build_multi_agent_test_runner
-from ._scenarios import build_skill_test_runner
-from ._scenarios import build_test_runner
-from ._scenarios import CAPTURE_CONTENT
-from ._scenarios import FakeMcpSession
-from ._scenarios import inference_under_test
-from ._scenarios import install_telemetry
-from ._scenarios import MULTI_AGENT_TURNS
-from ._scenarios import NESTED_WORKFLOW_TURNS
-from ._scenarios import OTEL_OPT_IN
-from ._scenarios import run_agent_scenario
-from ._scenarios import run_agent_tool_scenario
-from ._scenarios import run_nested_agents_scenario
-from ._scenarios import run_node_scenario
-from ._scenarios import Scenario
-from ._scenarios import skill_turns
-from ._scenarios import SkillResourceType
-from ._scenarios import SkillType
-from ._scenarios import TelemetryProviders
-from ._scenarios import TOOL_CALLING_TURNS
-from ._scenarios import Turn
+from .scenarios import Scenario
+from .scenarios.agent import build_multi_agent_test_runner
+from .scenarios.agent import build_test_runner
+from .scenarios.agent import run_agent_scenario
+from .scenarios.agent import run_agent_tool_scenario
+from .scenarios.agent import run_nested_agents_scenario
+from .scenarios.agent import run_node_scenario
+from .scenarios.agent import run_streaming_agent_scenario
+from .scenarios.conversation import AGENT_TOOL_TURNS
+from .scenarios.conversation import MULTI_AGENT_TURNS
+from .scenarios.conversation import NESTED_WORKFLOW_TURNS
+from .scenarios.conversation import StreamedTurn
+from .scenarios.conversation import STREAMING_TURNS
+from .scenarios.conversation import TOOL_CALLING_TURNS
+from .scenarios.conversation import Turn
+from .scenarios.inference import inference_under_test
+from .scenarios.mcp import build_mcp_test_runner
+from .scenarios.mcp import FakeMcpSession
+from .scenarios.skill import build_skill_test_runner
+from .scenarios.skill import skill_turns
+from .scenarios.skill import SkillResourceType
+from .scenarios.skill import SkillType
+from .scenarios.telemetry_setup import ADK_EXPERIMENTAL_TELEMETRY
+from .scenarios.telemetry_setup import ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN
+from .scenarios.telemetry_setup import CAPTURE_CONTENT
+from .scenarios.telemetry_setup import install_telemetry
+from .scenarios.telemetry_setup import OTEL_OPT_IN
+from .scenarios.telemetry_setup import TelemetryProviders
 
 if TYPE_CHECKING:
   from google.adk.events.event import Event
@@ -238,6 +241,13 @@ async def _record(
     )
 
 
+def _streamed_turns(
+    case: FunctionalTestCase,
+) -> tuple[StreamedTurn, ...] | None:
+  """The chunked conversation, for a scenario whose model streams."""
+  return STREAMING_TURNS if case.scenario == "streaming" else None
+
+
 def _turns(case: FunctionalTestCase) -> tuple[Turn, ...]:
   """The canned conversation the case's scenario is driven with."""
   match case.scenario:
@@ -274,6 +284,7 @@ async def _run_scenario(
       monkeypatch,
       providers,
       turns=_turns(case),
+      streamed_turns=_streamed_turns(case),
       model_exception=case.model_exception,
   ) as model:
     match case.scenario:
@@ -302,6 +313,10 @@ async def _run_scenario(
       case "node":
         await run_node_scenario(
             model, tool_exception=case.tool_exception, event_sink=event_sink
+        )
+      case "streaming":
+        await run_streaming_agent_scenario(
+            build_test_runner(model), event_sink=event_sink
         )
       case "agent_tool":
         await run_agent_tool_scenario(model, event_sink=event_sink)

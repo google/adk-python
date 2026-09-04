@@ -246,6 +246,14 @@
         "value": 20
       }
     ],
+    "adk.experimental.invoke_agent.skill.loads": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 1
+      }
+    ],
     "adk.experimental.invoke_agent.tool.input_tokens": [
       {
         "attributes": {
@@ -307,6 +315,15 @@
         "value": 20
       }
     ],
+    "adk.experimental.invoke_workflow.skill.loads": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "some_root_agent",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": 1
+      }
+    ],
     "adk.experimental.invoke_workflow.tool.input_tokens": [
       {
         "attributes": {
@@ -332,6 +349,16 @@
           "gen_ai.workflow.name": "some_root_agent"
         },
         "value": 325
+      }
+    ],
+    "adk.experimental.skill.loads": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent",
+          "adk.experimental.skill.name": "<hallucinated>",
+          "error.type": "REGISTRY_ERROR"
+        },
+        "value": 1
       }
     ],
     "gen_ai.client.operation.duration": [

@@ -159,8 +159,14 @@ before answering questions related to the resources.
     elif hasattr(content, "blob") and content.blob is not None:
       try:
         data = base64.b64decode(content.blob)
-        # Basic check for mime type or default
-        mime_type = content.mimeType or "application/octet-stream"
+        # MCP SDK 1.x spells this `mimeType`, 2.x `mime_type`. Reading only one
+        # raises an AttributeError that the except below turns into the
+        # placeholder text, so every binary resource would look undecodable.
+        mime_type = (
+            getattr(content, "mimeType", None)
+            or getattr(content, "mime_type", None)
+            or "application/octet-stream"
+        )
         return types.Part.from_bytes(data=data, mime_type=mime_type)
       except Exception:
         return types.Part.from_text(

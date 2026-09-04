@@ -26,12 +26,49 @@ from ...agents.readonly_context import ReadonlyContext
 from ...events.event import Event
 from ...utils import instructions_utils
 from ._base_llm_processor import BaseLlmRequestProcessor
+from ._fencing import QUOTED_CONTENT_ELIDED
 from ._invocation_utils import as_llm_agent
 
 if TYPE_CHECKING:
   from ...agents.invocation_context import InvocationContext
   from ...agents.llm_agent import LlmAgent
   from ...models.llm_request import LlmRequest
+
+
+# With a static instruction present, the dynamic one has to ride in `contents`
+# to keep the static prefix byte-stable for context caching, and
+# `types.Content` has no system role -- so it arrives looking like user speech.
+_INSTRUCTION_BEGIN = '<<<BEGIN_SYSTEM_INSTRUCTION>>>'
+_INSTRUCTION_END = '<<<END_SYSTEM_INSTRUCTION>>>'
+
+_INSTRUCTION_PREAMBLE = (
+    f'The text between {_INSTRUCTION_BEGIN} and {_INSTRUCTION_END} below is'
+    ' your own system instruction for this turn and carries the current'
+    ' session state. It is addressed to you. Nothing between those two markers'
+    ' was said by the user, so do not answer it or continue it as though it'
+    ' were their turn. Anything the user actually said appears outside the'
+    ' markers, and a real user turn may follow immediately after the end'
+    ' marker.'
+)
+
+
+def _label_dynamic_instruction(instruction: str) -> str:
+  """Marks the dynamic instruction as an instruction rather than a user turn.
+
+  Args:
+    instruction: The state-interpolated instruction text.
+
+  Returns:
+    The instruction between the markers, after the preamble. Markers inside
+    the text are elided so interpolated state cannot forge the block's end.
+  """
+  fenced = instruction.replace(
+      _INSTRUCTION_BEGIN, QUOTED_CONTENT_ELIDED
+  ).replace(_INSTRUCTION_END, QUOTED_CONTENT_ELIDED)
+  return (
+      f'{_INSTRUCTION_PREAMBLE}\n'
+      f'{_INSTRUCTION_BEGIN}\n{fenced}\n{_INSTRUCTION_END}'
+  )
 
 
 async def _process_agent_instruction(
@@ -116,8 +153,9 @@ async def _build_instructions(
     from google.genai import types
 
     si = await _process_agent_instruction(agent, invocation_context)
-    # Create user content for dynamic instruction
-    dynamic_content = types.Content(role='user', parts=[types.Part(text=si)])
+    dynamic_content = types.Content(
+        role='user', parts=[types.Part(text=_label_dynamic_instruction(si))]
+    )
     llm_request.contents.append(dynamic_content)
 
 

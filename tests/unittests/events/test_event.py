@@ -104,6 +104,42 @@ def test_is_final_response_long_running_tool_ids_overrides_function_call():
   assert event.is_final_response() is True
 
 
+def test_is_final_response_error_event_is_final():
+  event = _event(
+      parts=[_text_part()],
+      error_code='SOME_ERROR',
+      error_message='Something went wrong',
+  )
+  assert event.is_final_response() is True
+
+
+def test_is_final_response_error_event_with_function_response_is_final():
+  event = _event(
+      parts=[_function_response_part()],
+      error_code='SOME_ERROR',
+      error_message='Something went wrong',
+  )
+  assert event.is_final_response() is True
+
+
+def test_is_final_response_error_event_with_function_call_is_not_final():
+  event = _event(
+      parts=[_function_call_part()],
+      error_code='SOME_ERROR',
+      error_message='Something went wrong',
+  )
+  assert event.is_final_response() is False
+
+
+def test_is_final_response_partial_error_event_is_not_final():
+  event = _event(
+      parts=[_text_part()],
+      error_code='SOME_ERROR',
+      partial=True,
+  )
+  assert event.is_final_response() is False
+
+
 # --- get_function_calls ------------------------------------------------------
 
 

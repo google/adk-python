@@ -72,7 +72,7 @@ class ReplayManager:
         self._index_events(events[self._indexed_event_count :])
         self._record_indexed_through(events)
     else:
-      self._build_event_index(events, ic.invocation_id)
+      self._build_event_index(events)
 
   def _indexed_prefix_is_intact(self, events: list[Event]) -> bool:
     """Whether the already-indexed events are still a prefix of `events`.
@@ -94,12 +94,13 @@ class ReplayManager:
     self._indexed_event_count = len(events)
     self._indexed_last_event = events[-1] if events else None
 
-  def _build_event_index(self, events: list[Event], invocation_id: str) -> None:
+  def _build_event_index(self, events: list[Event]) -> None:
     """Builds index of events grouped by parent path (both direct and transitive).
 
     The index intentionally spans every invocation in the session so multi-turn
     conversation context stays visible during rehydration. Consumers that need
-    a single invocation must therefore filter by `invocation_id` themselves.
+    a single invocation must therefore filter by `invocation_id` themselves,
+    which is why this method takes no invocation id of its own.
     """
     self._events_by_parent = {}
     self._transitive_events_by_parent = {}
@@ -277,7 +278,7 @@ class ReplayManager:
     ic = ctx._invocation_context
 
     # Build the index
-    self._build_event_index(ic.session.events, ic.invocation_id)
+    self._build_event_index(ic.session.events)
 
     # Use transitive parent events for static child nodes so deeper descendant events (e.g. delegated outputs/interrupts) are recovered
     filtered_events = self._transitive_events_by_parent.get(ctx.node_path, [])

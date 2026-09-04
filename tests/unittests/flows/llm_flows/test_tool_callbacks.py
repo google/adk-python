@@ -476,3 +476,24 @@ def test_on_tool_error_callback_tool_error_modify_tool_response():
       ),
       ('root_agent', 'response1'),
   ]
+
+
+def test_before_tool_callback_lambda_with_arbitrary_param_names():
+  """Test that before_tool_callback works with lambda having non-matching param names."""
+  captured = []
+  responses = [
+      types.Part.from_function_call(name='simple_function', args={}),
+      'response1',
+  ]
+  mock_model = testing_utils.MockModel.create(responses=responses)
+  agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      before_tool_callback=lambda t, a, tc: captured.append((t.name, a)),
+      tools=[simple_function],
+  )
+
+  runner = testing_utils.InMemoryRunner(agent)
+  runner.run('test')
+  assert len(captured) == 1
+  assert captured[0] == ('simple_function', {})

@@ -828,7 +828,12 @@ class AgentEvaluator:
       print_detailed_results: bool,
       agent_module: str,
   ) -> list[str]:
-    """Returns a list of failures based on the score for each invocation."""
+    """Returns a report line for every metric that did not pass.
+
+    A metric that produced no score at all is reported as not evaluated rather
+    than as a score below its threshold, so a judge model that could not run
+    does not read as an agent regression.
+    """
     failures: list[str] = []
     for (
         metric_name,
@@ -858,10 +863,18 @@ class AgentEvaluator:
 
       # Gather all the failures.
       if overall_eval_status != EvalStatus.PASSED:
-        failures.append(
-            f"{metric_name} for {agent_module} Failed. Expected {threshold},"
-            f" but got {overall_score}."
-        )
+        if overall_eval_status == EvalStatus.NOT_EVALUATED:
+          failures.append(
+              f"{metric_name} for {agent_module} was not evaluated. No score"
+              f" was produced, so the threshold of {threshold} was never"
+              " checked and this is not a score regression. See the logs for"
+              " why the metric could not run."
+          )
+        else:
+          failures.append(
+              f"{metric_name} for {agent_module} Failed. Expected {threshold},"
+              f" but got {overall_score}."
+          )
 
       if print_detailed_results:
         AgentEvaluator._print_details(

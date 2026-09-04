@@ -295,20 +295,20 @@ def is_feature_enabled(feature_name: FeatureName) -> bool:
     3. Registry defaults
 
   Args:
-    feature_name: The feature name (e.g., FeatureName.RESUMABILITY).
+    feature_name: The feature name to check.
 
   Returns:
     True if the feature is enabled, False otherwise.
 
   Example:
     ```python
-    def _execute_agent_loop():
-      if is_feature_enabled(FeatureName.RESUMABILITY):
-        # New behavior: save checkpoints for resuming
-        return _execute_with_checkpoints()
+    def _get_declaration():
+      if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+        # New behavior: describe the parameters with a JSON schema
+        return _declaration_with_json_schema()
       else:
-        # Old behavior: run without checkpointing
-        return _execute_standard()
+        # Old behavior: describe the parameters with a Schema object
+        return _declaration_with_schema()
     ```
   """
   config = _get_feature_config(feature_name)
