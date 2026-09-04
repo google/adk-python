@@ -24,22 +24,38 @@ import os
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.labs.snowflake import SnowflakeCortexAgent
 
+_REQUIRED_ENV = (
+    "SNOWFLAKE_ACCOUNT_URL",
+    "SNOWFLAKE_DATABASE",
+    "SNOWFLAKE_SCHEMA",
+    "SNOWFLAKE_CORTEX_AGENT",
+    "SNOWFLAKE_TOKEN",
+)
 
-def _required(name: str) -> str:
-  value = os.environ.get(name)
-  if not value:
+
+def _env(name: str, default: str = "") -> str:
+  return os.environ.get(name, default).strip()
+
+
+def _check_configured() -> None:
+  # Checked when the first request is made, not at import: `adk web` and the
+  # sample tests import every sample, with or without Snowflake credentials.
+  missing = [name for name in _REQUIRED_ENV if not _env(name)]
+  if missing:
     raise RuntimeError(
-        f"Set {name} in the environment or in a .env file next to agent.py."
+        "Snowflake settings are missing:"
+        f" {', '.join(missing)}. Set them in the environment or in a .env"
+        " file next to agent.py."
     )
-  return value
 
 
 def snowflake_headers(ctx: ReadonlyContext) -> dict[str, str]:
   """Reads the token on every request so a rotated token is picked up."""
   del ctx  # One service token for every user; see the guide for per-user auth.
+  _check_configured()
   return {
-      "Authorization": f"Bearer {_required('SNOWFLAKE_TOKEN')}",
-      "X-Snowflake-Authorization-Token-Type": os.environ.get(
+      "Authorization": f"Bearer {_env('SNOWFLAKE_TOKEN')}",
+      "X-Snowflake-Authorization-Token-Type": _env(
           "SNOWFLAKE_TOKEN_TYPE", "PROGRAMMATIC_ACCESS_TOKEN"
       ),
   }
@@ -52,9 +68,9 @@ def snowflake_headers(ctx: ReadonlyContext) -> dict[str, str]:
 root_agent = SnowflakeCortexAgent(
     name="snowflake_cortex_analyst",
     description="Answers data questions by running a Snowflake Cortex Agent.",
-    account_url=_required("SNOWFLAKE_ACCOUNT_URL"),
-    database=_required("SNOWFLAKE_DATABASE"),
-    schema_name=_required("SNOWFLAKE_SCHEMA"),
-    cortex_agent_name=_required("SNOWFLAKE_CORTEX_AGENT"),
+    account_url=_env("SNOWFLAKE_ACCOUNT_URL"),
+    database=_env("SNOWFLAKE_DATABASE"),
+    schema_name=_env("SNOWFLAKE_SCHEMA"),
+    cortex_agent_name=_env("SNOWFLAKE_CORTEX_AGENT"),
     header_provider=snowflake_headers,
 )

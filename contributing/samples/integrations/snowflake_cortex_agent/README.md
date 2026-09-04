@@ -77,10 +77,10 @@ provider:
 root_agent = SnowflakeCortexAgent(
     name="snowflake_cortex_analyst",
     description="Answers data questions by running a Snowflake Cortex Agent.",
-    account_url=_required("SNOWFLAKE_ACCOUNT_URL"),
-    database=_required("SNOWFLAKE_DATABASE"),
-    schema_name=_required("SNOWFLAKE_SCHEMA"),
-    cortex_agent_name=_required("SNOWFLAKE_CORTEX_AGENT"),
+    account_url=_env("SNOWFLAKE_ACCOUNT_URL"),
+    database=_env("SNOWFLAKE_DATABASE"),
+    schema_name=_env("SNOWFLAKE_SCHEMA"),
+    cortex_agent_name=_env("SNOWFLAKE_CORTEX_AGENT"),
     header_provider=snowflake_headers,
 )
 ```
@@ -88,12 +88,15 @@ root_agent = SnowflakeCortexAgent(
 The header provider is a plain function that receives the invocation's
 `ReadonlyContext` and returns the HTTP headers for one Snowflake request. This
 sample reads one service token from the environment on every call, so a rotated
-token is picked up without a restart:
+token is picked up without a restart. Missing settings are reported on the first
+request rather than at import, so the sample can be listed by `adk web` before
+it is configured:
 
 ```python
 def snowflake_headers(ctx: ReadonlyContext) -> dict[str, str]:
+  _check_configured()  # fails the first request, not the import
   return {
-      "Authorization": f"Bearer {_required('SNOWFLAKE_TOKEN')}",
+      "Authorization": f"Bearer {_env('SNOWFLAKE_TOKEN')}",
       "X-Snowflake-Authorization-Token-Type": os.environ.get(
           "SNOWFLAKE_TOKEN_TYPE", "PROGRAMMATIC_ACCESS_TOKEN"
       ),
