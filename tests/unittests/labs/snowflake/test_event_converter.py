@@ -509,6 +509,61 @@ def test_annotations_and_suggested_queries_land_on_the_final_event():
   assert metadata['suggested_queries'] == [{'query': 'And next year?'}]
 
 
+def test_analyst_suggestion_deltas_are_assembled_into_suggested_queries():
+  """Per-index suggestion deltas from Cortex Analyst become follow-ups."""
+  converter = _make_converter(streaming=True)
+  deltas = [
+      {'index': 0, 'delta': 'Which region '},
+      {'index': 0, 'delta': 'sold most?'},
+      {'index': 1, 'delta': 'Compare years'},
+  ]
+
+  streamed = []
+  for delta in deltas:
+    streamed += converter.convert(
+        _sse(
+            'response.tool_result.analyst.delta',
+            {
+                'tool_use_id': _TOOL_USE_ID,
+                'tool_type': 'cortex_analyst_text2sql',
+                'delta': {'suggestions': delta},
+            },
+        )
+    )
+  converter.convert(_final_response())
+
+  assert len(streamed) == 3 and all(e.partial for e in streamed)
+  assert _cortex(converter.final_event())['suggested_queries'] == [
+      {
+          'query': 'Which region sold most?',
+          'source': 'cortex_analyst',
+          'tool_use_id': _TOOL_USE_ID,
+      },
+      {
+          'query': 'Compare years',
+          'source': 'cortex_analyst',
+          'tool_use_id': _TOOL_USE_ID,
+      },
+  ]
+
+
+def test_analyst_text_deltas_do_not_become_suggestions():
+  """Only the `suggestions` delta feeds the list; text and SQL deltas do not."""
+  converter = _make_converter()
+  converter.convert(
+      _sse(
+          'response.tool_result.analyst.delta',
+          {
+              'tool_use_id': _TOOL_USE_ID,
+              'delta': {'text': 'Looking', 'sql': 'SELECT 1'},
+          },
+      )
+  )
+  converter.convert(_final_response())
+
+  assert _cortex(converter.final_event())['suggested_queries'] == []
+
+
 def test_suggested_queries_fall_back_to_the_final_response():
   """Without a dedicated event, the final payload's block is used."""
   converter = _make_converter()

@@ -222,7 +222,10 @@ async def ask(session_id: str, question: str) -> tuple[str, list[dict]]:
 ```
 
 The same dictionary holds `annotations` for citations, `warnings`, `tables`,
-`charts`, `usage` and the Snowflake `run_id`.
+`charts`, `usage` and the Snowflake `run_id`. Entries in `suggested_queries`
+with `source` set to `cortex_analyst` are the questions Cortex Analyst proposed
+when it could not answer the one it was given; the others come from the Cortex
+Agent itself.
 
 ### Authenticating as the end user
 

@@ -177,6 +177,8 @@ class CortexEventConverter:
     self._tables: list[Any] = []
     self._charts: list[Any] = []
     self._suggested_queries: list[Any] = []
+    # (tool_use_id, suggestion index) -> text assembled from deltas.
+    self._analyst_suggestions: dict[tuple[str, int], str] = {}
     self._final_response: dict[str, Any] | None = None
     self._error: dict[str, Any] | None = None
     self._done = False
@@ -189,7 +191,7 @@ class CortexEventConverter:
         'response.text': self._on_text,
         'response.tool_use': self._on_tool_use,
         'response.tool_result.status': self._on_progress,
-        'response.tool_result.analyst.delta': self._on_progress,
+        'response.tool_result.analyst.delta': self._on_analyst_delta,
         'response.tool_result': self._on_tool_result,
         'response.text.annotation': self._on_annotation,
         'response.warning': self._on_warning,
@@ -304,6 +306,14 @@ class CortexEventConverter:
         if _as_dict(block).get('type') == 'suggested_queries'
         for query in _as_list(block.get('suggested_queries'))
     ]
+    # Questions Cortex Analyst proposes when it cannot answer arrive as
+    # per-index text deltas; they are follow-ups too, so they join the list
+    # with their origin marked.
+    suggested = list(suggested) + [
+        {'query': text, 'source': 'cortex_analyst', 'tool_use_id': tool_use_id}
+        for (tool_use_id, _), text in sorted(self._analyst_suggestions.items())
+        if text.strip()
+    ]
     run_id = metadata.get('run_id')
     if run_id is None and self._thread_id and self._user_message_id:
       run_id = f'{self._thread_id}-{self._user_message_id}'
@@ -377,6 +387,19 @@ class CortexEventConverter:
 
   def _on_progress(self, name: str, payload: dict[str, Any]) -> list[Event]:
     return self._partial_metadata({'event': name, 'data': payload})
+
+  def _on_analyst_delta(
+      self, name: str, payload: dict[str, Any]
+  ) -> list[Event]:
+    suggestion = _as_dict(_as_dict(payload.get('delta')).get('suggestions'))
+    text = suggestion.get('delta')
+    index = suggestion.get('index')
+    if isinstance(text, str) and text and isinstance(index, int):
+      key = (str(payload.get('tool_use_id') or ''), index)
+      self._analyst_suggestions[key] = (
+          self._analyst_suggestions.get(key, '') + text
+      )
+    return self._on_progress(name, payload)
 
   def _on_thinking_delta(
       self, name: str, payload: dict[str, Any]
