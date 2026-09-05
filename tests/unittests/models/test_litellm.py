@@ -3053,6 +3053,115 @@ def test_model_response_to_generate_content_response_reasoning_content():
   assert response.content.parts[1].text == "Answer"
 
 
+def test_model_response_to_generate_content_response_uses_first_choice(
+    caplog,
+):
+  """Test LiteLLM conversion follows the single-candidate contract."""
+  model_response = ModelResponse(
+      model="test-model",
+      choices=[
+          {
+              "message": {"role": "assistant", "content": "First"},
+              "finish_reason": "stop",
+          },
+          {
+              "message": {"role": "assistant", "content": "Second"},
+              "finish_reason": "stop",
+          },
+      ],
+  )
+
+  with caplog.at_level(logging.ERROR):
+    response = _model_response_to_generate_content_response(model_response)
+
+  assert len(model_response.choices) == 2
+  assert [
+      part.text for part in response.content.parts if part.text is not None
+  ] == ["First"]
+  errors = [
+      record
+      for record in caplog.records
+      if "Multiple choices found in response" in record.getMessage()
+  ]
+  assert len(errors) == 1
+  assert errors[0].name == "google_adk.google.adk.models.lite_llm"
+
+
+def test_model_response_to_chunk_skips_non_zero_choice_index():
+  """Test a chunk holding only a secondary candidate yields no content."""
+  chunk = ModelResponseStream(
+      model="test-model",
+      choices=[{"index": 1, "delta": {"content": "Second"}}],
+  )
+
+  assert list(_model_response_to_chunk(chunk)) == [(None, None)]
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_multiple_choices_logs_error_once(
+    mock_completion, lite_llm_instance, caplog
+):
+  """Test a multi-candidate stream logs once and keeps the first candidate."""
+  mock_completion.return_value = iter([
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  index=0,
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content="Hello"),
+              ),
+              StreamingChoices(
+                  index=1,
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content="Other"),
+              ),
+          ],
+      ),
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  index=1,
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content=" candidate"),
+              )
+          ],
+      ),
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(index=0, finish_reason="stop", delta=Delta())
+          ],
+      ),
+  ])
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  with caplog.at_level(logging.ERROR):
+    responses = [
+        response
+        async for response in lite_llm_instance.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+
+  assert responses[-1].content.parts[0].text == "Hello"
+  errors = [
+      record
+      for record in caplog.records
+      if "Multiple choices found in streaming response" in record.getMessage()
+  ]
+  assert len(errors) == 1
+  assert errors[0].name == "google_adk.google.adk.models.lite_llm"
+
+
 def test_message_to_generate_content_response_reasoning_field():
   """Test that the 'reasoning' field is supported (LM Studio, vLLM)."""
   message = {

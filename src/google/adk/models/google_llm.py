@@ -300,16 +300,41 @@ class Gemini(BaseLlm):
         # only difference is bidi rely on complete_turn flag to detect end while
         # sse depends on finish_reason.
         aggregator = StreamingResponseAggregator()
+        multiple_candidates_logged = False
+        last_usage_metadata = None
         async with Aclosing(responses) as agen:
           async for response in agen:
             if logger.isEnabledFor(logging.DEBUG):
               logger.debug(_build_response_log(response))
+            if response.usage_metadata:
+              last_usage_metadata = response.usage_metadata
+            if (
+                not multiple_candidates_logged
+                and response.candidates
+                and (
+                    len(response.candidates) > 1
+                    or any(c.index for c in response.candidates)
+                )
+            ):
+              multiple_candidates_logged = True
+              logger.error(
+                  'Multiple candidates found in streaming response but only the'
+                  ' first one will be used.'
+              )
+            if response.candidates:
+              response.candidates = [
+                  c for c in response.candidates if not c.index
+              ]
+              if not response.candidates:
+                continue
             async with Aclosing(
                 aggregator.process_response(response)
             ) as aggregator_gen:
               async for llm_response in aggregator_gen:
                 yield llm_response
         if (close_result := aggregator.close()) is not None:
+          if last_usage_metadata:
+            close_result.usage_metadata = last_usage_metadata
           # Populate cache metadata in the final aggregated response for
           # streaming
           if cache_metadata and cache_manager is not None:
@@ -327,6 +352,12 @@ class Gemini(BaseLlm):
         logger.info('Response received from the model.')
         if logger.isEnabledFor(logging.DEBUG):
           logger.debug(_build_response_log(response))
+
+        if response.candidates and len(response.candidates) > 1:
+          logger.error(
+              'Multiple candidates found in response but only the first one'
+              ' will be used.'
+          )
 
         llm_response = LlmResponse.create(response)
         if cache_metadata and cache_manager is not None:
