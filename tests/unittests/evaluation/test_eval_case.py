@@ -23,6 +23,8 @@ from google.adk.evaluation.eval_case import IntermediateData
 from google.adk.evaluation.eval_case import InvocationEvent
 from google.adk.evaluation.eval_case import InvocationEvents
 from google.adk.evaluation.eval_case import SessionInput
+from google.adk.evaluation.eval_rubrics import Rubric
+from google.adk.evaluation.eval_rubrics import RubricContent
 from google.genai import types as genai_types
 import pytest
 
@@ -60,6 +62,38 @@ def test_invocation_event_content_defaults_to_none():
 
   assert event.content is None
   assert InvocationEvent.model_validate(event.model_dump()).content is None
+
+
+def test_rubric_content_text_property_defaults_to_none():
+  """A RubricContent without text_property round-trips (required-Optional fix)."""
+  content = RubricContent(text_property=None)
+
+  assert content.text_property is None
+  # Simulates the GET(exclude_none=True) -> PUT cycle: an omitted text_property
+  # must still validate (Pydantic v2 treats Optional-without-default as required).
+  assert RubricContent.model_validate(content.model_dump(exclude_none=True)).text_property is None
+
+
+def test_eval_case_with_rubric_missing_text_property_round_trips():
+  """An EvalCase carrying a rubric whose text_property is None survives a
+  GET(exclude_none=True) -> PUT round-trip instead of raising a 422."""
+  rubric = Rubric(
+      rubric_id='r1',
+      rubric_content=RubricContent(text_property=None),
+  )
+  eval_case = EvalCase(
+      eval_id='case_1',
+      conversation=[],
+      rubrics=[rubric],
+  )
+
+  # response_model_exclude_none=True drops text_property=None from the wire.
+  wire = eval_case.model_dump(by_alias=True, exclude_none=True)
+
+  # The PUT re-validates the wire; a required-Optional trap would 422 here.
+  revalidated = EvalCase.model_validate(wire)
+  assert revalidated.rubrics is not None
+  assert revalidated.rubrics[0].rubric_content.text_property is None
 
 
 def test_session_input_accepts_session_id():
