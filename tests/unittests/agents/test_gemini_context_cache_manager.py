@@ -344,6 +344,55 @@ class TestGeminiContextCacheManager:
     assert create_config.contents == [first_user, first_model]
     assert next_request.contents == [next_user]
 
+  async def test_cache_reuse_keeps_final_content_in_request(self):
+    """A cache covering the whole request still leaves a content to send."""
+    only_user = types.Content(
+        role="user", parts=[types.Part(text="Plan the next step")]
+    )
+    existing_cache = self.create_cache_metadata(
+        invocations_used=1, contents_count=1
+    )
+    llm_request = self.create_llm_request(
+        cache_metadata=existing_cache, contents_count=0
+    )
+    llm_request.contents = [only_user]
+
+    with patch.object(self.manager, "_is_cache_valid", return_value=True):
+      await self.manager.handle_context_caching(llm_request)
+
+    assert llm_request.contents == [only_user]
+    assert llm_request.config.cached_content == existing_cache.cache_name
+
+  async def test_cache_creation_keeps_final_content_in_request(self):
+    """A prefix covering the whole request still leaves a content to send."""
+    user_msg = types.Content(
+        role="user", parts=[types.Part(text="First question")]
+    )
+    model_msg = types.Content(
+        role="model", parts=[types.Part(text="First answer")]
+    )
+    first_request = self.create_llm_request(contents_count=0)
+    first_request.contents = [user_msg]
+
+    first_metadata = await self.manager.handle_context_caching(first_request)
+
+    next_request = self.create_llm_request(
+        cache_metadata=first_metadata, contents_count=0
+    )
+    next_request.contents = [user_msg, model_msg]
+    next_request.cacheable_contents_token_count = 30_000
+    cached_content = AsyncMock()
+    cached_content.name = "cachedContents/full-prefix"
+    self.manager.genai_client.aio.caches.create = AsyncMock(
+        return_value=cached_content
+    )
+
+    next_metadata = await self.manager.handle_context_caching(next_request)
+
+    assert next_metadata is not None
+    assert next_metadata.contents_count == 2
+    assert next_request.contents == [model_msg]
+
   async def test_gemini_25_creates_cache_above_2048_token_minimum(self):
     """Gemini 2.5 creates an explicit cache above its 2,048-token floor."""
     llm_request = self.create_llm_request(contents_count=0)

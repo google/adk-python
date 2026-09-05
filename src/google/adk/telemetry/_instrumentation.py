@@ -33,6 +33,7 @@ from . import _hallucination
 from . import _metrics
 from . import _token_usage
 from . import tracing
+from ._finish_reason import is_reported_finish_reason
 from ._schema_version import resolve_schema_version
 from ._schema_version import SCHEMA_VERSION_SEMCONV_ALIGNED
 from .context import TelemetryConfig
@@ -53,15 +54,46 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("google_adk." + __name__)
 
-_INVOKE_AGENT_TELEMETRY_KEY = context_api.create_key("invoke_agent_telemetry")
+_AGENT_INVOCATION_SCOPE_KEY = context_api.create_key("agent_invocation_scope")
 _TOOL_EXECUTION_TELEMETRY_KEY = context_api.create_key(
     "tool_execution_telemetry"
 )
 _WORKFLOW_SCOPE_KEY = context_api.create_key("adk_workflow_scope")
 
 
-@dataclasses.dataclass
-class _WorkflowScope:
+@dataclasses.dataclass(kw_only=True)
+class _Accumulator:
+  """Accumulates telemetry data for one active scope (e.g. a workflow).
+
+  Inherited by every scope that accumulates, whether its totals cover only its
+  own work or everything nested inside it too. Keyword-only so a subclass can
+  still declare fields of its own without a default.
+  """
+
+  token_totals: _token_usage.TokenUsage | None = None
+  """Token spend, None until a model call reports usage."""
+
+  inference_call_count: int = 0
+  """Model calls counted against this scope."""
+
+  tool_call_count: int = 0
+  """Tool calls counted against this scope, including the `transfer_to_agent`
+  calls that route between agents."""
+
+  skill_load_count: int = 0
+  """Skill loads counted against this scope."""
+
+
+@dataclasses.dataclass(kw_only=True)
+class _AgentInvocationScope(_Accumulator):
+  """State accumulated across one agent invocation."""
+
+  agent_name: str
+  """The agent these totals are exclusive to."""
+
+
+@dataclasses.dataclass(kw_only=True)
+class _WorkflowScope(_Accumulator):
   """State accumulated across one `invoke_workflow`, root or nested.
 
   Exactly one `invoke_workflow` per turn is unnested, so the root instance is
@@ -84,16 +116,6 @@ class _WorkflowScope:
   parent: _WorkflowScope | None
   """The enclosing scope, None on the root. Its presence is what
   `gen_ai.workflow.nested` reports."""
-
-  token_totals: _token_usage.InvocationTokenTotals | None = None
-  """The accumulator, empty to begin with unlike the fields above."""
-
-  inference_call_count: int = 0
-  """Model calls made anywhere inside this workflow."""
-
-  tool_call_count: int = 0
-  """Tool calls made anywhere inside this workflow, including the
-  `transfer_to_agent` calls that route between its agents."""
 
   def self_and_enclosing(self) -> Iterator[_WorkflowScope]:
     """Yields this scope, then each one enclosing it, outermost last.
@@ -161,9 +183,7 @@ class _SkillTelemetryCommon:
   which is what turns it into attributes on the skill related spans.
 
   Attributes:
-    skill_name: The name of the skill as the model wrote it, confirmed only once
-      :func:`confirm_skill` has a loaded skill to back it. See
-      :mod:`._hallucination`.
+    skill_name: The name of the skill, possibly hallucinated.
     skill: The loaded skill, or None if the load did not produce one (unknown
       skill name, registry failure). Nothing is recorded in that case; the
       failure itself is already reported as the span's ``error.type``.
@@ -171,20 +191,6 @@ class _SkillTelemetryCommon:
 
   skill_name: _hallucination.MaybeHallucinated[str]
   skill: Skill | None = dataclasses.field(default=None, init=False)
-
-  def confirm_skill(self, skill: Skill) -> None:
-    """Records the skill the name resolved to.
-
-    Loading the skill is what proves the name real, so the two are set together
-    rather than left for a caller to keep in step.
-
-    Args:
-      skill: The skill that ``skill_name`` named.
-    """
-    self.skill = skill
-    self.skill_name = _hallucination.ConfirmedNotHallucinated(
-        self.skill_name.maybe_hallucinated_value
-    )
 
 
 @dataclasses.dataclass
@@ -209,17 +215,11 @@ class SkillResourceLoadTelemetry(_SkillTelemetryCommon):
   See :class:`_SkillTelemetryCommon`, for more information.
 
   Attributes:
-    resource_path: Path of resource being loaded from skill, confirmed only once
-      :func:`confirm_resource_path` reports the resource was found.
+    resource_path: Path of resource being loaded from skill, possibly
+      hallucinated.
   """
 
   resource_path: _hallucination.MaybeHallucinated[str]
-
-  def confirm_resource_path(self) -> None:
-    """Marks the path as one the skill turned out to hold a resource at."""
-    self.resource_path = _hallucination.ConfirmedNotHallucinated(
-        self.resource_path.maybe_hallucinated_value
-    )
 
 
 @dataclasses.dataclass
@@ -230,18 +230,11 @@ class SkillScriptExecutionTelemetry(_SkillTelemetryCommon):
 
   Attributes:
     script_exit_code: The exit code of the skill script.
-    script_path: The path of the skill script, confirmed only once
-      :func:`confirm_script_path` reports the script was found.
+    script_path: The path of the skill script, possibly hallucinated.
   """
 
   script_path: _hallucination.MaybeHallucinated[str]
   script_exit_code: int | None = dataclasses.field(default=None, init=False)
-
-  def confirm_script_path(self) -> None:
-    """Marks the path as one the skill turned out to hold a script at."""
-    self.script_path = _hallucination.ConfirmedNotHallucinated(
-        self.script_path.maybe_hallucinated_value
-    )
 
 
 SkillTelemetry = (
@@ -252,33 +245,26 @@ SkillTelemetry = (
 
 
 @dataclasses.dataclass
-class TelemetryContext:
-  """Stores all telemetry related state."""
+class ToolScope:
+  """What one tool call reports back while its `execute_tool` span is open.
 
-  otel_context: context_api.Context | None = None
+  Handed to its caller by yield and also published on the OTel context, so a
+  tool running underneath can report back without reaching for the ambient
+  span. Read back in the `finally` that closes the span.
+  """
+
   function_response_event: event_lib.Event | None = None
   error_type: str | None = None
-  span: tracing.GenerateContentSpan | trace.Span | None = None
   skill_telemetry: SkillTelemetry | None = None
-  token_totals: _token_usage.InvocationTokenTotals | None = None
+
+
+@dataclasses.dataclass
+class InferenceScope:
+  """What one model call collects while its inference span is open."""
+
+  span: tracing.GenerateContentSpan | trace.Span | None = None
   _llm_responses: list[LlmResponse] = dataclasses.field(default_factory=list)
   _inference_span_ended: bool = False
-  _inference_call_count: int = 0
-  _tool_call_count: int = 0
-
-  @property
-  def inference_call_count(self) -> int:
-    return self._inference_call_count
-
-  def increment_inference_calls(self) -> None:
-    self._inference_call_count += 1
-
-  @property
-  def tool_call_count(self) -> int:
-    return self._tool_call_count
-
-  def increment_tool_calls(self) -> None:
-    self._tool_call_count += 1
 
   @property
   def llm_responses(self) -> list[LlmResponse]:
@@ -294,12 +280,17 @@ class TelemetryContext:
       return
 
     tracing.trace_inference_result(invocation_context, self.span, response)
-    # A non-partial response is the end of the inference: end the span before
-    # the response is handed back to the caller, so what the caller does with
-    # it (running the tool the model asked for) is not nested inside the
-    # inference span. Partial chunks keep it open until the final one arrives.
+    # The inference ends at the response that says why generation stopped. End
+    # the span there, before the response is handed back to the caller, so what
+    # the caller does with it (running the tool the model asked for) is not
+    # nested inside the inference span.
+    #
+    # `response.partial` is deliberately not consulted. It is set within ADK
+    # rather than by the model, and a `BaseLlm` implementation is free to leave
+    # it out, which made chunk one look like the end of the turn. The finish
+    # reason comes from the model and marks the last response reliably.
     if (
-        not response.partial
+        is_reported_finish_reason(response.finish_reason)
         and isinstance(self.span, tracing.GenerateContentSpan)
         and (exit_stack := self.span._exit_stack) is not None  # pylint: disable=protected-access
     ):
@@ -323,15 +314,29 @@ def _record_agent_metrics(
 
 
 def _flush_invoke_agent_metrics(
-    tel_ctx: TelemetryContext, agent_name: str
+    scope: _AgentInvocationScope, tel_cfg: TelemetryConfig
 ) -> None:
-  """Flushes this span's accumulated inference/tool-call and token metrics."""
-  if tel_ctx.token_totals is not None:
-    _metrics.record_invoke_agent_token_usage(agent_name, tel_ctx.token_totals)
+  """Flushes one agent invocation's accumulated metrics.
+
+  Args:
+    scope: The invocation's totals.
+    tel_cfg: The config the invocation ran under, for the experimental gate.
+  """
+  # `token_totals` is only set under opt-in, so it carries the gate already.
+  if scope.token_totals is not None:
+    _metrics.record_invoke_agent_token_usage(
+        scope.agent_name, scope.token_totals
+    )
   _metrics.record_invoke_agent_inference_calls(
-      agent_name, tel_ctx.inference_call_count
+      scope.agent_name, scope.inference_call_count
   )
-  _metrics.record_invoke_agent_tool_calls(agent_name, tel_ctx.tool_call_count)
+  _metrics.record_invoke_agent_tool_calls(
+      scope.agent_name, scope.tool_call_count
+  )
+  if tel_cfg.should_emit_experimental_telemetry:
+    _metrics.record_invoke_agent_skill_loads(
+        scope.agent_name, scope.skill_load_count
+    )
 
 
 def _flush_workflow_metrics(scope: _WorkflowScope) -> None:
@@ -340,9 +345,8 @@ def _flush_workflow_metrics(scope: _WorkflowScope) -> None:
     return
   nested = scope.parent is not None
   # We always record call counts because a count of 0 is a valid, accurate
-  # measurement. For tokens, `None` means usage just wasn't reported, which
-  # isn't the same as knowing the spend was exactly zero. So we skip tokens if
-  # they are `None`.
+  # measurement. For tokens, nothing having reported usage isn't the same as
+  # knowing the spend was exactly zero. So we skip tokens in that case.
   if scope.token_totals is not None:
     _metrics.record_invoke_workflow_token_usage(
         root_agent_name=scope.root_agent_name,
@@ -362,12 +366,18 @@ def _flush_workflow_metrics(scope: _WorkflowScope) -> None:
       count=scope.tool_call_count,
       nested=nested,
   )
+  _metrics.record_invoke_workflow_skill_loads(
+      root_agent_name=scope.root_agent_name,
+      workflow_name=scope.workflow_name,
+      count=scope.skill_load_count,
+      nested=nested,
+  )
 
 
-def _invoke_agent_tel_ctx() -> TelemetryContext | None:
-  """Returns the invoke_agent span's TelemetryContext."""
-  value = context_api.get_value(_INVOKE_AGENT_TELEMETRY_KEY)
-  return value if isinstance(value, TelemetryContext) else None
+def _agent_invocation_scope() -> _AgentInvocationScope | None:
+  """Returns the agent invocation's scope."""
+  value = context_api.get_value(_AGENT_INVOCATION_SCOPE_KEY)
+  return value if isinstance(value, _AgentInvocationScope) else None
 
 
 def _workflow_scope(
@@ -382,80 +392,98 @@ def _workflow_scope(
   return value if isinstance(value, _WorkflowScope) else None
 
 
-def _accumulate_invoke_agent_tool_call() -> None:
-  """Counts one tool call against the invoke_agent span."""
-  span_tel_ctx = _invoke_agent_tel_ctx()
-  if span_tel_ctx is not None:
-    span_tel_ctx.increment_tool_calls()
+def _accumulating_scopes(
+    workflow_scope: _WorkflowScope | None,
+) -> tuple[_Accumulator, ...]:
+  """Returns every accumulating scope this call belongs to, outermost last.
 
+  One call belongs to all of them at once: the per-agent totals are exclusive
+  to that agent, every workflow total inclusive of what ran inside it. The
+  workflow scopes form a chain, so a call three workflows deep belongs to all
+  three and the turn is the last link.
 
-def _accumulate_invoke_agent_inference_call() -> None:
-  """Counts one model call against the invoke_agent span."""
-  span_tel_ctx = _invoke_agent_tel_ctx()
-  if span_tel_ctx is not None:
-    span_tel_ctx.increment_inference_calls()
-
-
-def _accumulate_invoke_workflow_tool_call(scope: _WorkflowScope | None) -> None:
-  """Counts one tool call against every workflow enclosing it.
+  Every scope is returned even if the invocation has not finished, so that
+  every token spent is recorded.
 
   Args:
-    scope: The workflow the call ran inside.
+    workflow_scope: The innermost workflow the call ran inside, read when the
+      call started rather than here.
   """
-  if scope is None:
-    return
-  for enclosing in scope.self_and_enclosing():
-    enclosing.tool_call_count += 1
+  scopes: list[_Accumulator] = []
+  agent_scope = _agent_invocation_scope()
+  if agent_scope is not None:
+    scopes.append(agent_scope)
+  if workflow_scope is not None:
+    scopes.extend(workflow_scope.self_and_enclosing())
+  return tuple(scopes)
 
 
-def _accumulate_invoke_workflow_inference_call(
-    scope: _WorkflowScope | None,
-) -> None:
-  """Counts one model call against every workflow enclosing it.
+def _accumulate_tool_call(workflow_scope: _WorkflowScope | None) -> None:
+  """Counts one tool call against every scope it belongs to.
 
   Args:
-    scope: The workflow the call ran inside.
+    workflow_scope: The workflow the call ran inside.
   """
-  if scope is None:
-    return
-  for enclosing in scope.self_and_enclosing():
-    enclosing.inference_call_count += 1
+  for scope in _accumulating_scopes(workflow_scope):
+    scope.tool_call_count += 1
 
 
-def _active_tool_execution_tel_ctx() -> TelemetryContext | None:
-  """Returns the TelemetryContext of the active execute_tool span."""
+def _accumulate_inference_call(workflow_scope: _WorkflowScope | None) -> None:
+  """Counts one model call against every scope it belongs to.
+
+  Args:
+    workflow_scope: The workflow the call ran inside.
+  """
+  for scope in _accumulating_scopes(workflow_scope):
+    scope.inference_call_count += 1
+
+
+def _accumulate_skill_load(workflow_scope: _WorkflowScope | None) -> None:
+  """Counts one skill load against every scope it belongs to.
+
+  Args:
+    workflow_scope: The workflow the load ran inside.
+  """
+  for scope in _accumulating_scopes(workflow_scope):
+    scope.skill_load_count += 1
+
+
+def _active_tool_execution_tel_ctx() -> ToolScope | None:
+  """Returns the scope of the active execute_tool span."""
   value = context_api.get_value(_TOOL_EXECUTION_TELEMETRY_KEY)
-  return value if isinstance(value, TelemetryContext) else None
+  return value if isinstance(value, ToolScope) else None
 
 
-def track_skill_load(skill_name: str) -> SkillLoadTelemetry:
+def track_skill_load(
+    skill_name: _hallucination.MaybeHallucinated[str],
+) -> SkillLoadTelemetry:
   """Creates a SkillLoadTelemetry for the given skill name, and attaches it to the enclosing tool execution span."""
-  skill_telemetry = SkillLoadTelemetry(
-      skill_name=_hallucination.MaybeHallucinated(skill_name)
-  )
+  skill_telemetry = SkillLoadTelemetry(skill_name)
   attach_skill_telemetry(skill_telemetry)
   return skill_telemetry
 
 
 def track_skill_resource_load(
-    skill_name: str, resource_path: str
+    skill_name: _hallucination.MaybeHallucinated[str],
+    resource_path: _hallucination.MaybeHallucinated[str],
 ) -> SkillResourceLoadTelemetry:
   """Creates a SkillResourceLoadTelemetry for the given skill name and resource path, and attaches it to the enclosing tool execution span."""
   skill_telemetry = SkillResourceLoadTelemetry(
-      skill_name=_hallucination.MaybeHallucinated(skill_name),
-      resource_path=_hallucination.MaybeHallucinated(resource_path),
+      skill_name,
+      resource_path,
   )
   attach_skill_telemetry(skill_telemetry)
   return skill_telemetry
 
 
 def track_skill_script_execution(
-    skill_name: str, script_path: str
+    skill_name: _hallucination.MaybeHallucinated[str],
+    script_path: _hallucination.MaybeHallucinated[str],
 ) -> SkillScriptExecutionTelemetry:
   """Creates a SkillScriptExecutionTelemetry for the given skill name and script path, and attaches it to the enclosing tool execution span."""
   skill_telemetry = SkillScriptExecutionTelemetry(
-      skill_name=_hallucination.MaybeHallucinated(skill_name),
-      script_path=_hallucination.MaybeHallucinated(script_path),
+      skill_name,
+      script_path,
   )
   attach_skill_telemetry(skill_telemetry)
   return skill_telemetry
@@ -492,21 +520,11 @@ def attach_skill_telemetry(
   tel_ctx.skill_telemetry = skill_telemetry
 
 
-def _accumulate_invoke_agent_tokens(usage: _token_usage.TokenUsage) -> None:
-  """Adds one model call's token usage to the active invoke_agent span."""
-  span_tel_ctx = _invoke_agent_tel_ctx()
-  if span_tel_ctx is None:
-    return
-  if span_tel_ctx.token_totals is None:
-    span_tel_ctx.token_totals = _token_usage.InvocationTokenTotals()
-  span_tel_ctx.token_totals.add(usage)
-
-
-def _accumulate_invoke_workflow_tokens(
+def _accumulate_tokens(
     usage: _token_usage.TokenUsage,
-    scope: _WorkflowScope | None,
+    workflow_scope: _WorkflowScope | None,
 ) -> None:
-  """Adds one model call's token usage to every workflow enclosing the call.
+  """Adds one model call's token usage to every scope it belongs to.
 
   The turn included: several aggregations of one call, not double counting.
   Where an agent's total is exclusive to that agent, a workflow's is inclusive
@@ -514,35 +532,32 @@ def _accumulate_invoke_workflow_tokens(
 
   Args:
     usage: What the call spent.
-    scope: The workflow the call ran inside.
+    workflow_scope: The workflow the call ran inside.
   """
-  if scope is None:
-    return
-  for enclosing in scope.self_and_enclosing():
-    if enclosing.token_totals is None:
-      enclosing.token_totals = _token_usage.InvocationTokenTotals()
-    enclosing.token_totals.add(usage)
+  for scope in _accumulating_scopes(workflow_scope):
+    if scope.token_totals is None:
+      scope.token_totals = _token_usage.TokenUsage()
+    scope.token_totals.add(usage)
 
 
 @contextlib.asynccontextmanager
 async def record_agent_invocation(
     ctx: InvocationContext, agent: BaseAgent
-) -> AsyncIterator[TelemetryContext]:
+) -> AsyncIterator[_AgentInvocationScope]:
   """Unified context manager for consolidated agent invocation telemetry."""
   start_time = time.monotonic()
   caught_error: Exception | None = None
   span: trace.Span | None = None
   span_name = f"invoke_agent {agent.name}"
-  tel_ctx = TelemetryContext()
+  scope = _AgentInvocationScope(agent_name=agent.name)
   token = context_api.attach(
-      context_api.set_value(_INVOKE_AGENT_TELEMETRY_KEY, tel_ctx)
+      context_api.set_value(_AGENT_INVOCATION_SCOPE_KEY, scope)
   )
   try:
     with tracing.tracer.start_as_current_span(span_name) as s:
       span = s
       tracing.trace_agent_invocation(span, agent, ctx)
-      tel_ctx.otel_context = context_api.get_current()
-      yield tel_ctx
+      yield scope
   except Exception as e:
     caught_error = e
     raise
@@ -553,7 +568,8 @@ async def record_agent_invocation(
         _metrics.get_elapsed_s(span, start_time),
         caught_error,
     )
-    _flush_invoke_agent_metrics(tel_ctx, agent.name)
+    tel_cfg = tracing._telemetry_config_from_invocation_context(ctx)
+    _flush_invoke_agent_metrics(scope, tel_cfg)
 
 
 @contextlib.asynccontextmanager
@@ -562,7 +578,7 @@ async def record_tool_execution(
     agent: BaseAgent,
     function_args: dict[str, object],
     invocation_context: InvocationContext,
-) -> AsyncIterator[TelemetryContext]:
+) -> AsyncIterator[ToolScope]:
   """Unified context manager for consolidated tool execution telemetry."""
   start_time = time.monotonic()
   workflow_scope = _workflow_scope()
@@ -573,10 +589,10 @@ async def record_tool_execution(
   try:
     with tracing.tracer.start_as_current_span(span_name) as s:
       span = s
-      tel_ctx = TelemetryContext(otel_context=context_api.get_current())
-      # Published so the running tool can report telemetry back to this span
-      # (see `record_skill_telemetry`) without reaching for the ambient span
-      # itself.
+      tel_ctx = ToolScope()
+      # Published so the running tool can report telemetry back to this
+      # span (see `record_skill_telemetry`) without reaching for the
+      # ambient span itself.
       token = context_api.attach(
           context_api.set_value(_TOOL_EXECUTION_TELEMETRY_KEY, tel_ctx)
       )
@@ -601,15 +617,15 @@ async def record_tool_execution(
         )
         if tel_ctx.skill_telemetry is not None:
           _dispatch_skill_telemetry(
-              span, tel_ctx.skill_telemetry, invocation_context
+              span,
+              tel_ctx.skill_telemetry,
+              invocation_context,
+              workflow_scope,
+              error=caught_error,
+              error_type=tel_ctx.error_type,
           )
   finally:
-    _accumulate_invoke_agent_tool_call()
-    # Workflow-grain metrics are experimental, skip counting if not opted-in.
-    if tracing._telemetry_config_from_invocation_context(
-        invocation_context
-    ).should_emit_experimental_telemetry:
-      _accumulate_invoke_workflow_tool_call(workflow_scope)
+    _accumulate_tool_call(workflow_scope)
     try:
       _metrics.record_tool_execution_duration(
           tool_name=tool.name,
@@ -630,11 +646,11 @@ async def record_inference_telemetry(
     llm_request: LlmRequest,
     invocation_context: InvocationContext,
     model_response_event: event_lib.Event,
-) -> AsyncIterator[TelemetryContext]:
+) -> AsyncIterator[InferenceScope]:
   """Unified async context manager for consolidated inference metrics."""
   start_time = time.monotonic()
   workflow_scope = _workflow_scope()
-  tel_ctx: TelemetryContext = TelemetryContext()
+  tel_ctx = InferenceScope()
   try:
     async with tracing.use_inference_span(
         llm_request,
@@ -645,17 +661,16 @@ async def record_inference_telemetry(
       yield tel_ctx
   finally:
     inference_error = sys.exc_info()[1]
-    _accumulate_invoke_agent_inference_call()
-    # Skipped when not opted in: the token metrics keyed on it are experimental,
-    # so a run without the opt-in does no bookkeeping and flushes nothing.
+    _accumulate_inference_call(workflow_scope)
+    # Tokens only: the metrics keyed on them are experimental, so a run without
+    # the opt-in never builds the totals. The counts above accumulate either
+    # way, and each flush gates what it emits.
     if tracing._telemetry_config_from_invocation_context(
         invocation_context
     ).should_emit_experimental_telemetry:
-      _accumulate_invoke_workflow_inference_call(workflow_scope)
       usage = _token_usage.TokenUsage.from_llm_responses(tel_ctx.llm_responses)
       if usage is not None:
-        _accumulate_invoke_agent_tokens(usage)
-        _accumulate_invoke_workflow_tokens(usage, workflow_scope)
+        _accumulate_tokens(usage, workflow_scope)
     agent = invocation_context.agent
     elapsed_s = _metrics.get_elapsed_s(tel_ctx.span, start_time)
     try:
@@ -687,35 +702,54 @@ def _dispatch_skill_telemetry(
     span: trace.Span,
     skill_telemetry: SkillTelemetry,
     invocation_context: InvocationContext,
+    workflow_scope: _WorkflowScope | None,
+    error: Exception | None = None,
+    error_type: str | None = None,
 ) -> None:
-  """Selects and attaches the correct skill telemetry to the enclosing tool execution span."""
+  """Selects and attaches the correct skill telemetry to the enclosing tool execution span.
+
+  Args:
+    span: The ``execute_tool`` span the skill work ran under.
+    skill_telemetry: What the tool reported about the skill it touched.
+    invocation_context: The invocation the tool call belongs to.
+    workflow_scope: The workflow scope of the tool call.
+    error: The exception the tool raised, if any.
+    error_type: An error type the tool reported without raising. Ignored when
+      `error` is also set.
+  """
   telemetry_config = tracing._telemetry_config_from_invocation_context(
       invocation_context
   )
   if not telemetry_config.should_emit_experimental_telemetry:
     return
 
+  error_type = (
+      tracing.resolve_error_type(error) if error is not None else error_type
+  )
+
   match skill_telemetry:
     case SkillLoadTelemetry():
+      _accumulate_skill_load(workflow_scope)
       _trace_skill_load(span, skill_telemetry)
+      if invocation_context.agent is None:
+        return
+      _metrics.record_skill_load(
+          invocation_context.agent.name,
+          skill_telemetry.skill_name,
+          error_type,
+      )
     case SkillResourceLoadTelemetry():
       _trace_skill_resource_load(span, skill_telemetry)
     case SkillScriptExecutionTelemetry():
       _trace_skill_script_execution(span, skill_telemetry)
       if invocation_context.agent is None:
         return
-      try:
-        _metrics.record_skill_script_execution(
-            invocation_context.agent.name,
-            skill_telemetry.skill_name,
-            skill_telemetry.script_path,
-            skill_telemetry.script_exit_code,
-        )
-      except Exception:  # pylint: disable=broad-exception-caught
-        logger.exception(
-            "Failed to record skill script execution metrics for agent %s",
-            invocation_context.agent.name,
-        )
+      _metrics.record_skill_script_execution(
+          invocation_context.agent.name,
+          skill_telemetry.skill_name,
+          skill_telemetry.script_path,
+          skill_telemetry.script_exit_code,
+      )
     case _:
       assert_never(skill_telemetry)
 

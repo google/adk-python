@@ -163,6 +163,38 @@ def test_adapter_evaluate_validation(
   )
 
 
+def test_adapter_evaluate_missing_example_id_in_scores(
+    mocker, mock_gepa, mock_sampler, mock_agent, caplog
+):
+  del mock_gepa  # only needed to mock gepa in background
+  loop = mocker.MagicMock(spec=asyncio.AbstractEventLoop)
+  _AdapterClass = _create_agent_gepa_adapter_class()
+  adapter = _AdapterClass(mock_agent, mock_sampler, loop)
+
+  candidate = {"agent_prompt": "New prompt"}
+  batch = ["train1", "train2"]
+
+  mock_future = mocker.MagicMock()
+  expected_result = UnstructuredSamplingResult(
+      scores={"train1": 0.8},
+      data={"train1": {"output": "result"}},
+  )
+  mock_future.result.return_value = expected_result
+
+  mocker.patch("asyncio.run_coroutine_threadsafe", return_value=mock_future)
+  with caplog.at_level("WARNING"):
+    eval_batch = adapter.evaluate(batch, candidate, capture_traces=True)
+
+  assert isinstance(eval_batch, MockEvaluationBatch)
+  assert eval_batch.scores == [0.8, 0.0]
+  assert eval_batch.outputs == [{"output": "result"}, {}]
+  assert eval_batch.trajectories == [{"output": "result"}, {}]
+  assert (
+      "Example train2 missing from sampling result; scoring it 0.0."
+      in caplog.text
+  )
+
+
 def test_adapter_make_reflective_dataset(
     mocker, mock_gepa, mock_sampler, mock_agent
 ):

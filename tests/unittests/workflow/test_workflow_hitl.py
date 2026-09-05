@@ -16,6 +16,7 @@
 
 import asyncio
 import copy
+import json
 from typing import Any
 from typing import AsyncGenerator
 from unittest import mock
@@ -198,7 +199,6 @@ async def test_workflow_pause_and_resume(
   simplified_events2 = (
       workflow_testing_utils.simplify_events_with_node_and_agent_state(
           copy.deepcopy(events2),
-          include_resume_inputs=True,
       )
   )
 
@@ -690,7 +690,6 @@ async def test_workflow_rerun_on_resume(
   simplified_events2 = (
       workflow_testing_utils.simplify_events_with_node_and_agent_state(
           copy.deepcopy(events2),
-          include_resume_inputs=True,
       )
   )
 
@@ -701,7 +700,6 @@ async def test_workflow_rerun_on_resume(
               'nodes': {
                   'NodeA': {
                       'status': NodeStatus.RUNNING.value,
-                      'resume_inputs': {interrupt_id1: {'approved': True}},
                   },
               }
           },
@@ -829,7 +827,6 @@ async def test_workflow_rerun_with_multiple_inputs(
   simplified_events2 = (
       workflow_testing_utils.simplify_events_with_node_and_agent_state(
           copy.deepcopy(events2),
-          include_resume_inputs=True,
       )
   )
   req_events2 = workflow_testing_utils.get_request_input_events(events2)
@@ -844,7 +841,6 @@ async def test_workflow_rerun_with_multiple_inputs(
               'nodes': {
                   'NodeA': {
                       'status': NodeStatus.RUNNING.value,
-                      'resume_inputs': {interrupt_id1: {'text': 'response 1'}},
                   },
               }
           },
@@ -870,7 +866,6 @@ async def test_workflow_rerun_with_multiple_inputs(
                   'NodeA': {
                       'status': NodeStatus.WAITING.value,
                       'interrupts': [interrupt_id2],
-                      'resume_inputs': {interrupt_id1: {'text': 'response 1'}},
                   },
               },
           },
@@ -896,7 +891,6 @@ async def test_workflow_rerun_with_multiple_inputs(
   simplified_events3 = (
       workflow_testing_utils.simplify_events_with_node_and_agent_state(
           copy.deepcopy(events3),
-          include_resume_inputs=True,
       )
   )
 
@@ -907,10 +901,6 @@ async def test_workflow_rerun_with_multiple_inputs(
               'nodes': {
                   'NodeA': {
                       'status': NodeStatus.RUNNING.value,
-                      'resume_inputs': {
-                          interrupt_id1: {'text': 'response 1'},
-                          interrupt_id2: {'text': 'response 2'},
-                      },
                   },
               }
           },
@@ -1150,7 +1140,6 @@ async def test_rerun_on_resume_waits_for_all_interrupts(
   simplified1 = (
       workflow_testing_utils.simplify_events_with_node_and_agent_state(
           copy.deepcopy(events1),
-          include_resume_inputs=True,
       )
   )
   req_events1 = workflow_testing_utils.get_request_input_events(events1)
@@ -1182,21 +1171,16 @@ async def test_rerun_on_resume_waits_for_all_interrupts(
   simplified2 = (
       workflow_testing_utils.simplify_events_with_node_and_agent_state(
           copy.deepcopy(events2),
-          include_resume_inputs=True,
       )
   )
 
   # Node should remain WAITING with req2 still pending.
-  # resume_inputs should accumulate req1's response.
   if resumable:
     final_state2 = simplified2[-1][1]
     assert final_state2['nodes']['NodeA']['status'] == (
         NodeStatus.WAITING.value
     )
     assert final_state2['nodes']['NodeA']['interrupts'] == ['req2']
-    assert final_state2['nodes']['NodeA']['resume_inputs'] == {
-        'req1': {'text': 'response 1'},
-    }
 
   # The node should NOT have produced any RequestInput or data output in resumable mode.
   # In non-resumable mode, it re-yields the pending interrupt 'req2'.
@@ -1217,7 +1201,6 @@ async def test_rerun_on_resume_waits_for_all_interrupts(
   simplified3 = (
       workflow_testing_utils.simplify_events_with_node_and_agent_state(
           copy.deepcopy(events3),
-          include_resume_inputs=True,
       )
   )
 
@@ -1507,6 +1490,75 @@ async def test_function_node_auth_config(
   assert received_cred is not None
   assert received_cred.api_key == 'real_api_key_123'
   assert node_b.received_inputs == [{'result': 'authed'}]
+
+
+@pytest.mark.asyncio
+async def test_auth_credential_is_not_copied_into_checkpoint(
+    request: pytest.FixtureRequest,
+):
+  """The resume checkpoint must not carry the credential the user supplied."""
+  from fastapi.openapi.models import APIKey
+  from fastapi.openapi.models import APIKeyIn
+  from google.adk.auth.auth_credential import AuthCredential
+  from google.adk.auth.auth_credential import AuthCredentialTypes
+  from google.adk.auth.auth_tool import AuthConfig
+  from google.adk.workflow import FunctionNode
+
+  auth_config = AuthConfig(
+      auth_scheme=APIKey(**{'in': APIKeyIn.header, 'name': 'X-Api-Key'}),
+      raw_auth_credential=AuthCredential(
+          auth_type=AuthCredentialTypes.API_KEY,
+          api_key='placeholder',
+      ),
+      credential_key='test_api_key',
+  )
+
+  def do_work():
+    return {'result': 'authed'}
+
+  node_a = FunctionNode(
+      func=do_work, auth_config=auth_config, rerun_on_resume=True
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=Workflow(name='test_agent', edges=[(START, node_a)]),
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events1 = await runner.run_async(testing_utils.get_user_content('go'))
+  auth_fc_events = workflow_testing_utils.get_auth_request_events(events1)
+  auth_fc_id = auth_fc_events[0].content.parts[0].function_call.id
+  invocation_id = events1[0].invocation_id
+
+  auth_response = AuthConfig(
+      auth_scheme=auth_config.auth_scheme,
+      raw_auth_credential=auth_config.raw_auth_credential,
+      exchanged_auth_credential=AuthCredential(
+          auth_type=AuthCredentialTypes.API_KEY,
+          api_key='real_api_key_123',
+      ),
+      credential_key='test_api_key',
+  )
+  resume_part = types.Part(
+      function_response=types.FunctionResponse(
+          id=auth_fc_id,
+          name=REQUEST_CREDENTIAL_FUNCTION_CALL_NAME,
+          response=auth_response.model_dump(exclude_none=True, by_alias=True),
+      )
+  )
+  await runner.run_async(
+      new_message=testing_utils.UserContent(resume_part),
+      invocation_id=invocation_id,
+  )
+
+  checkpoints = [
+      e.actions.agent_state
+      for e in runner.session.events
+      if e.actions.agent_state
+  ]
+  assert checkpoints, 'expected the resumable run to persist a checkpoint'
+  assert 'real_api_key_123' not in json.dumps(checkpoints)
 
 
 @pytest.mark.parametrize('resumable', [False, True])

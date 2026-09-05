@@ -24,21 +24,48 @@ import pytest
 from .functional._aclosing import aclosing_wrapping_assertions
 from .functional._recording import check_case
 from .functional._recording import FunctionalTestCase
-from .functional._scenarios import build_mcp_test_runner
-from .functional._scenarios import build_test_runner
-from .functional._scenarios import CAPTURE_CONTENT
-from .functional._scenarios import EXPERIMENTAL_OPT_IN
-from .functional._scenarios import FakeMcpSession
-from .functional._scenarios import install_telemetry
-from .functional._scenarios import mock_test_model
-from .functional._scenarios import OTEL_OPT_IN
-from .functional._scenarios import run_agent_scenario
-from .functional._scenarios import TOOL_ERROR
+from .functional.scenarios.agent import build_test_runner
+from .functional.scenarios.agent import run_agent_scenario
+from .functional.scenarios.conversation import TOOL_ERROR
+from .functional.scenarios.inference import mock_test_model
+from .functional.scenarios.mcp import build_mcp_test_runner
+from .functional.scenarios.mcp import FakeMcpSession
+from .functional.scenarios.telemetry_setup import _PATCHED_COUNTERS
+from .functional.scenarios.telemetry_setup import _PATCHED_HISTOGRAMS
+from .functional.scenarios.telemetry_setup import CAPTURE_CONTENT
+from .functional.scenarios.telemetry_setup import CounterSpec
+from .functional.scenarios.telemetry_setup import EXPERIMENTAL_OPT_IN
+from .functional.scenarios.telemetry_setup import HistogramSpec
+from .functional.scenarios.telemetry_setup import install_telemetry
+from .functional.scenarios.telemetry_setup import OTEL_OPT_IN
 from .functional_test_cases import ALL_CASES
 from .functional_test_cases import MCP_CASE
 from .functional_test_cases import MCP_HTTP_CASE
 
 CASES = [*ALL_CASES, MCP_CASE, MCP_HTTP_CASE]
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [*_PATCHED_HISTOGRAMS, *_PATCHED_COUNTERS],
+    ids=lambda spec: spec.attr,
+)
+def test_patched_instrument_keeps_its_production_name(
+    spec: HistogramSpec | CounterSpec,
+) -> None:
+  """The harness re-creates each instrument under the name ADK ships it as.
+
+  ``install_telemetry`` swaps the instruments out by attribute and names the
+  replacements itself, so a metric renamed in ``_metrics`` would otherwise go
+  on being recorded -- and asserted -- under its old name, in the goldens and
+  in every test that reads a point by name.
+  """
+  instrument = getattr(spec.module, spec.attr)
+  # ADK builds its instruments before a meter provider is set, so they are
+  # proxies, which keep the name privately rather than as a property.
+  name = getattr(instrument, "name", None) or instrument._name
+
+  assert name == spec.metric_name
 
 
 @pytest.mark.parametrize(

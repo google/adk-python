@@ -36,6 +36,7 @@ from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
 from ...auth.auth_tool import AuthConfig
 from ...dependencies._mcp import ClientSession
+from ...dependencies._mcp import IS_MCP_SDK_V2
 from ...dependencies._mcp import McpError
 from ...dependencies._mcp import Tool as McpBaseTool
 from ...events.ui_widget import UiWidget
@@ -73,6 +74,72 @@ _RESERVED_TOOL_NAMES = frozenset({
 })
 
 _UNSET = object()
+
+
+# Values the server owns: free-form JSON, not model fields. A `_meta` inside
+# one is the server's own -- a JSON Schema may even declare a property by that
+# name -- so the walk below must not descend into them.
+_OPAQUE_KEYS = frozenset({
+    "_meta",
+    "inputSchema",
+    "outputSchema",
+    "structuredContent",
+})
+
+
+def _restore_meta_keys(value: Any) -> Any:
+  """Renames ``_meta`` back to ``meta`` throughout a dumped model.
+
+  ``meta`` is the field name under both majors and ``_meta`` its alias under
+  both, so it is the one key the aliased dump moves the wrong way. Sixty-odd
+  models declare it, content blocks included, hence the walk over the tree.
+  :const:`_OPAQUE_KEYS` keeps that walk out of server-authored data.
+
+  Args:
+    value: A node of the dumped structure.
+
+  Returns:
+    The node with every model-level ``_meta`` key renamed to ``meta``.
+  """
+  if isinstance(value, dict):
+    restored = {}
+    for key, item in value.items():
+      if key in _OPAQUE_KEYS:
+        restored["meta" if key == "_meta" else key] = item
+      else:
+        restored[key] = _restore_meta_keys(item)
+    return restored
+  if isinstance(value, list):
+    return [_restore_meta_keys(item) for item in value]
+  return value
+
+
+def _dump_mcp_model(model: Any) -> dict[str, Any]:
+  """Dumps an MCP model to the key names callers have read since 1.x.
+
+  2.x renames the wire fields to snake_case -- ``isError``,
+  ``structuredContent``, ``mimeType``. Both majors alias them to the 1.x
+  camelCase spelling, so one aliased dump restores the whole tree;
+  :func:`_restore_meta_keys` fixes the one key that moves the wrong way.
+
+  The gate matters. 1.x models are ``extra="allow"``, so a server's vendor
+  field arrives as an extra and the walk would rename keys inside it. 2.x
+  models are closed, so every key the walk sees is a declared field. On 1.x
+  this stays the plain dump ADK always made.
+
+  Every dump that reaches a caller goes through here.
+
+  Args:
+    model: The MCP model to dump.
+
+  Returns:
+    The dumped model, keyed the way 1.x keyed it.
+  """
+  if not IS_MCP_SDK_V2:
+    unaliased: dict[str, Any] = model.model_dump(exclude_none=True, mode="json")
+    return unaliased
+  aliased = model.model_dump(exclude_none=True, mode="json", by_alias=True)
+  return cast(dict[str, Any], _restore_meta_keys(aliased))
 
 
 def _read_field(model: Any, *names: str) -> Any:
@@ -430,6 +497,9 @@ class McpTool(BaseAuthenticatedTool):
                   " ToolConfirmation payload."
               ),
           )
+          # The pause is not a tool result for the model to summarize; without
+          # this the flow re-invokes the model, which calls the tool again.
+          tool_context.actions.skip_summarization = True
           return {
               "error": (
                   "This tool call requires confirmation, please approve or"
@@ -562,17 +632,32 @@ class McpTool(BaseAuthenticatedTool):
     finally:
       self._mcp_session_manager._end_session_use(final_headers)  # pylint: disable=protected-access
 
-    result = response.model_dump(exclude_none=True, mode="json")
+    # Keep the caller's key names off the installed SDK's field naming.
+    result = _dump_mcp_model(response)
 
-    # Push UI widget to the event actions if the tool supports it.
+    # 2.x-only field. Acting on it (`input_required` drives elicitation) is a
+    # feature, not compatibility. Not dropped on 1.x, where a key of that name
+    # could only be a server extra.
+    if IS_MCP_SDK_V2:
+      result.pop("resultType", None)
+
+    # Push UI widget to the event actions if the tool supports it. Dump the
+    # tool: `payload` is a plain dict, so a model left in it gets serialized by
+    # whichever sink writes the event, and the sinks disagree -- `inputSchema`
+    # from those passing `by_alias`, `input_schema` from the session stores.
     if self.mcp_app_resource_uri:
+      # Tests and external subclasses pass duck-typed tools that cannot be
+      # dumped. Pass those through rather than fail a call that succeeded.
+      tool_payload: Any = self._mcp_tool
+      if hasattr(tool_payload, "model_dump"):
+        tool_payload = _dump_mcp_model(tool_payload)
       tool_context.render_ui_widget(
           UiWidget(
               id=tool_context.function_call_id,
               provider="mcp",
               payload={
                   "resource_uri": self.mcp_app_resource_uri,
-                  "tool": self._mcp_tool,
+                  "tool": tool_payload,
                   "tool_args": args,
               },
           )
@@ -581,9 +666,10 @@ class McpTool(BaseAuthenticatedTool):
 
   def _detect_error_in_response(self, response: Any) -> str | None:
     """Telemetry hook: returns an error type if the response indicates an error."""
-    # `response` is a dumped CallToolResult. MCP SDK 1.x names the field
-    # `isError`; 2.x names it `is_error`, so `model_dump` emits the snake_case
-    # key and a lookup of `isError` alone silently stops reporting tool errors.
+    # `response` is a dumped CallToolResult. `_run_async_impl` restores
+    # `isError`, but this hook also sees dumps made elsewhere, which keep
+    # whichever spelling their SDK used. Missing one silently stops reporting
+    # tool errors, so read both.
     if isinstance(response, dict) and (
         response.get("isError") or response.get("is_error")
     ):

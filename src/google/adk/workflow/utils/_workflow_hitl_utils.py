@@ -163,6 +163,27 @@ def _build_auth_message(auth_config: AuthConfig) -> str:
   return 'Please provide your authentication credentials.'
 
 
+def _without_client_secret(auth_config: AuthConfig) -> AuthConfig:
+  """Returns a copy of the auth config with the OAuth client secret removed.
+
+  The auth request is handed to the caller, which needs the authorization uri
+  and the state to complete the flow but never the developer's client secret.
+  The secret stays on this side and is supplied again when the response comes
+  back.
+
+  Args:
+    auth_config: The auth configuration for the node.
+  """
+  without_secret = auth_config.model_copy(deep=True)
+  for credential in (
+      without_secret.raw_auth_credential,
+      without_secret.exchanged_auth_credential,
+  ):
+    if credential and credential.oauth2:
+      credential.oauth2.client_secret = None
+  return without_secret
+
+
 def create_auth_request_event(
     auth_config: AuthConfig,
     interrupt_id: str,
@@ -190,7 +211,7 @@ def create_auth_request_event(
     state[_oauth_state_key(interrupt_id)] = generated_credential.oauth2.state
   args = AuthToolArguments(
       function_call_id=interrupt_id,
-      auth_config=auth_request,
+      auth_config=_without_client_secret(auth_request),
   ).model_dump(mode='json', exclude_none=True, by_alias=True)
 
   # Add message so the UI / CLI knows what to display.
@@ -291,6 +312,23 @@ async def process_auth_resume(
 
   resumed_config = auth_config.model_copy(deep=True)
   resumed_config.exchanged_auth_credential = exchanged_credential
+
+  # The client secret is never handed out with the request, so the response
+  # cannot carry it back; the node's own credential supplies it for the token
+  # exchange.
+  raw_oauth2 = (
+      resumed_config.raw_auth_credential.oauth2
+      if resumed_config.raw_auth_credential
+      else None
+  )
+  exchanged_oauth2 = (
+      resumed_config.exchanged_auth_credential.oauth2
+      if resumed_config.exchanged_auth_credential
+      else None
+  )
+  if raw_oauth2 and raw_oauth2.client_secret and exchanged_oauth2:
+    exchanged_oauth2.client_secret = raw_oauth2.client_secret
+
   await AuthHandler(auth_config=resumed_config).parse_and_store_auth_response(
       state=state
   )
@@ -301,4 +339,4 @@ def has_auth_credential(
     state: State,
 ) -> bool:
   """Returns True if a credential for the given auth config exists in state."""
-  return AuthHandler(auth_config).get_auth_response(state) is not None
+  return AuthHandler(auth_config).has_auth_response(state)

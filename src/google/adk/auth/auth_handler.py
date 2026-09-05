@@ -47,6 +47,36 @@ def _normalize_oauth_scopes(
   return list(scopes)
 
 
+def _credential_without_client_secret(
+    credential: AuthCredential | None,
+) -> AuthCredential | None:
+  """Returns a copy of credential with the OAuth2 client secret removed."""
+  if credential is None:
+    return None
+  redacted = credential.model_copy(deep=True)
+  if redacted.oauth2 is not None:
+    redacted.oauth2.client_secret = None
+  return redacted
+
+
+def _without_client_secret(auth_config: AuthConfig) -> AuthConfig:
+  """Returns a copy of auth_config with OAuth2 client secrets removed.
+
+  The auth request travels to, and is echoed back by, the client, and is
+  persisted in the session. The client secret belongs to the agent, never to
+  the end user, so it is stripped here and re-attached from the tool's own
+  configuration when the token exchange happens.
+  """
+  redacted = auth_config.model_copy(deep=True)
+  redacted.raw_auth_credential = _credential_without_client_secret(
+      redacted.raw_auth_credential
+  )
+  redacted.exchanged_auth_credential = _credential_without_client_secret(
+      redacted.exchanged_auth_credential
+  )
+  return redacted
+
+
 class AuthHandler:
   """A handler that handles the auth flow in Agent Development Kit to help
   orchestrate the credential request and response flow (e.g. OAuth flow)
@@ -72,48 +102,109 @@ class AuthHandler:
 
     temp_credential_key = "temp:" + credential_key
 
-    state[temp_credential_key] = self.auth_config.exchanged_auth_credential
+    self.auth_config.exchanged_auth_credential = self._with_configured_client(
+        self.auth_config.exchanged_auth_credential
+    )
+    credential = self.auth_config.exchanged_auth_credential
+    if self._is_exchangeable(credential):
+      credential = await self.exchange_auth_token()
+
+    # Session state is readable by the client, so the secret does not go in it.
+    state[temp_credential_key] = _credential_without_client_secret(credential)
+
+  def _validate(self) -> None:
+    if not self.auth_config.auth_scheme:
+      raise ValueError("auth_scheme is empty.")
+
+  def _with_configured_client(
+      self, credential: AuthCredential | None
+  ) -> AuthCredential | None:
+    """Returns credential with the configured OAuth2 client identity restored.
+
+    The credential comes back from the client, which must not be able to
+    choose which OAuth2 client the token is exchanged for. The original is
+    left untouched, so the copy held in session state keeps no secret.
+    """
+    raw_credential = self.auth_config.raw_auth_credential
+    if (
+        credential is None
+        or credential.oauth2 is None
+        or raw_credential is None
+        or raw_credential.oauth2 is None
+    ):
+      return credential
+    restored = credential.model_copy(deep=True)
+    restored.oauth2.client_id = raw_credential.oauth2.client_id
+    restored.oauth2.client_secret = raw_credential.oauth2.client_secret
+    return restored
+
+  def _is_exchangeable(self, credential: AuthCredential | None) -> bool:
+    """Returns whether credential still needs, and can do, a token exchange."""
     if not isinstance(
         self.auth_config.auth_scheme, SecurityBase
     ) or self.auth_config.auth_scheme.type_ not in (
         AuthSchemeType.oauth2,
         AuthSchemeType.openIdConnect,
     ):
-      return
+      return False
+    oauth2 = credential.oauth2 if credential else None
+    return bool(
+        oauth2
+        and not oauth2.access_token
+        and oauth2.client_id
+        and oauth2.client_secret
+    )
 
-    state[temp_credential_key] = await self.exchange_auth_token()
-
-  def _validate(self) -> None:
-    if not self.auth_config.auth_scheme:
-      raise ValueError("auth_scheme is empty.")
-
-  def get_auth_response(self, state: State) -> AuthCredential | None:
-    # 1. Try reading the temp credential key (standard ADK flow)
+  def _read_stored_credential(
+      self, state: State
+  ) -> tuple[str, AuthCredential] | None:
+    """Returns the state key and credential stored for this auth config."""
     credential_key = self.auth_config.credential_key
     if not credential_key:
       return None
 
-    temp_credential_key = "temp:" + credential_key
-    val = state.get(temp_credential_key, None)
-    if val is not None:
+    # The temp credential key is the standard ADK flow; the key without the
+    # 'temp:' prefix is the fallback.
+    for key in ("temp:" + credential_key, credential_key):
+      val = state.get(key, None)
       if isinstance(val, AuthCredential):
-        return val
+        return key, val
       if isinstance(val, dict):
-        return AuthCredential.model_validate(val)
+        return key, AuthCredential.model_validate(val)
       if isinstance(val, str) and val:
-        return self._build_credential_from_string(val)
-
-    # 2. Try reading the credential key without the 'temp:' prefix
-    val = state.get(credential_key, None)
-    if val is not None:
-      if isinstance(val, AuthCredential):
-        return val
-      if isinstance(val, dict):
-        return AuthCredential.model_validate(val)
-      if isinstance(val, str) and val:
-        return self._build_credential_from_string(val)
+        return key, self._build_credential_from_string(val)
 
     return None
+
+  def has_auth_response(self, state: State) -> bool:
+    """Returns whether an auth response is stored, without exchanging it."""
+    return self._read_stored_credential(state) is not None
+
+  def get_auth_response(self, state: State) -> AuthCredential | None:
+    """Returns the stored auth response, exchanging it for a token if needed.
+
+    The stored response carries no client secret, since the auth request went
+    through the client. The secret configured on this handler's auth config is
+    re-attached here so the exchange can happen without ever trusting the
+    client's copy, and is dropped again from what goes back into the session.
+
+    The token request blocks the calling thread. Callers that can await should
+    let `CredentialManager` do the exchange instead.
+    """
+    stored = self._read_stored_credential(state)
+    if stored is None:
+      return None
+
+    key, credential = stored
+    credential = self._with_configured_client(credential)
+    if not self._is_exchangeable(credential):
+      return credential
+
+    exchange_result = OAuth2CredentialExchanger()._exchange_sync(
+        credential, self.auth_config.auth_scheme
+    )
+    state[key] = _credential_without_client_secret(exchange_result.credential)
+    return exchange_result.credential
 
   def _build_credential_from_string(self, val: str) -> AuthCredential:
     from .auth_credential import AuthCredentialTypes
@@ -155,6 +246,9 @@ class AuthHandler:
       )
 
   def generate_auth_request(self) -> AuthConfig:
+    return _without_client_secret(self._generate_auth_request())
+
+  def _generate_auth_request(self) -> AuthConfig:
     if not isinstance(
         self.auth_config.auth_scheme, SecurityBase
     ) or self.auth_config.auth_scheme.type_ not in (

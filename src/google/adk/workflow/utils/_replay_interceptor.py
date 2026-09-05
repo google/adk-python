@@ -133,8 +133,8 @@ def check_interception(
     # otherwise fall through.
     if (
         isinstance(node, Workflow)
-        or getattr(node, "wait_for_output", False)
-        or getattr(node, "rerun_on_resume", False)
+        or node.wait_for_output
+        or node.rerun_on_resume
     ) and recovered.output is None:
       should_run = True
       resume_inputs = recovered.resolved_responses

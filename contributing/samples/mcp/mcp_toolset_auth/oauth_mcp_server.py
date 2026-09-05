@@ -30,8 +30,16 @@ import logging
 from fastapi import FastAPI
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from mcp.server.fastmcp import Context
-from mcp.server.fastmcp import FastMCP
+
+# MCP 2.0 renamed this server class. ADK supports both majors, so this sample
+# does too.
+try:
+  from mcp.server.mcpserver import Context
+  from mcp.server.mcpserver import MCPServer as FastMCP
+except ImportError:
+  from mcp.server.fastmcp import Context
+  from mcp.server.fastmcp import FastMCP
+
 import uvicorn
 
 logging.basicConfig(level=logging.INFO)
@@ -40,8 +48,12 @@ logger = logging.getLogger('google_adk.' + __name__)
 # Expected OAuth token for testing
 VALID_TOKEN = 'test_access_token_12345'
 
-# Create FastMCP server
-mcp = FastMCP('OAuth Protected MCP Server', host='localhost', port=3001)
+HOST = 'localhost'
+PORT = 3001
+
+# This sample serves through uvicorn at the bottom of the file rather than
+# mcp.run(), so the bind address goes there. 2.0 moved it off the constructor.
+mcp = FastMCP('OAuth Protected MCP Server')
 
 
 def validate_auth_header(request: Request) -> bool:
@@ -131,10 +143,10 @@ app.mount('/', mcp_app)
 
 
 if __name__ == '__main__':
-  print('Starting OAuth Protected MCP server on http://localhost:3001')
+  print(f'Starting OAuth Protected MCP server on http://{HOST}:{PORT}')
   print(f'Expected token: Bearer {VALID_TOKEN}')
   print(
       'This server requires authentication for both tool listing and calling.'
   )
 
-  uvicorn.run(app, host='localhost', port=3001)
+  uvicorn.run(app, host=HOST, port=PORT)

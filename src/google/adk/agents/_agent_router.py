@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 from ..events._branch_path import _BranchPath
 from ..events._node_path_builder import _NodePathBuilder
+from ..events._rewind_events import _apply_rewinds
 from ..events.event import Event
 from ..flows.llm_flows.agent_transfer import _get_transfer_targets
 from ..flows.llm_flows.functions import _collect_function_call_ids
@@ -114,7 +115,8 @@ def find_agent_to_run(
   # the agent that returned the corresponding function call regardless the
   # type of the agent. e.g. a remote a2a agent may surface a credential
   # request as a special long-running function tool call.
-  event = find_matching_function_call(session.events)
+  filtered_events = _apply_rewinds(session.events)
+  event = find_matching_function_call(filtered_events)
   is_resumable = resumability_config and resumability_config.is_resumable
   # Only route based on a past function response if resumability is enabled.
   # In non-resumable scenarios, a turn ending with function call response
@@ -139,7 +141,7 @@ def find_agent_to_run(
       return False
     return True
 
-  for event in filter(_event_filter, reversed(session.events)):
+  for event in filter(_event_filter, reversed(filtered_events)):
     if event.author == root_agent.name:
       # Found root agent.
       return root_agent

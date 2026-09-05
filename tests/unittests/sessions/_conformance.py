@@ -144,14 +144,17 @@ BACKENDS = [
                 ' padded id keeps its whitespace instead of being normalized'
                 ' the way the in-memory and sqlite services normalize it.'
             ),
+            'test_create_session_with_padded_duplicate_id_raises_error': (
+                'DatabaseSessionService stores the session id verbatim, so a'
+                ' padded copy of an existing id is stored as a second session'
+                ' instead of colliding with the first one.'
+            ),
         },
     ),
     _Backend('sqlite', _make_sqlite),
-    # Two more Redis divergences have no contract test to hang an xfail on
-    # yet: it builds its key scan pattern from a truthiness check on the user
-    # id, so an empty one lists every user's sessions, and it writes the
-    # session key unconditionally on append, so appending to a session it has
-    # never stored creates one instead of raising.
+    # One more Redis divergence has no contract test to hang an xfail on yet:
+    # it builds its key scan pattern from a truthiness check on the user id, so
+    # an empty one lists every user's sessions.
     _Backend(
         'redis',
         _make_redis,
@@ -168,6 +171,16 @@ BACKENDS = [
                 'RedisSessionService stores the session id verbatim, so a'
                 ' padded id keeps its whitespace instead of being normalized'
                 ' the way the in-memory and sqlite services normalize it.'
+            ),
+            'test_create_session_with_padded_duplicate_id_raises_error': (
+                'RedisSessionService stores the session id verbatim, so a'
+                ' padded copy of an existing id is stored as a second session'
+                ' instead of colliding with the first one.'
+            ),
+            'test_append_event_to_unknown_session_raises_session_not_found': (
+                'Redis writes the session key unconditionally on append, so'
+                ' appending to a session it has never stored creates one'
+                ' instead of raising.'
             ),
         },
     ),

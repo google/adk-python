@@ -17,6 +17,7 @@ from __future__ import annotations
 from abc import ABC
 from abc import abstractmethod
 import copy
+from typing import Callable
 from typing import final
 from typing import List
 from typing import Optional
@@ -26,6 +27,8 @@ from typing import Type
 from typing import TYPE_CHECKING
 from typing import TypeVar
 from typing import Union
+
+from google.genai import types
 
 from ..agents.readonly_context import ReadonlyContext
 from ..auth.auth_tool import AuthConfig
@@ -91,6 +94,22 @@ class BaseToolset(ABC):
   ) -> list[BaseTool]:
     """Return all tools in the toolset based on the provided context.
 
+    A toolset that must stay usable when listing fails handles that here. The
+    framework isolates a raised exception by dropping the whole toolset from the
+    agent, so override this method to catch it and contribute placeholder tools
+    instead. Replacement tools returned directly from the error branch bypass
+    tool_filter. The exception type is toolset-specific, so catch whatever the
+    base toolset actually raises. For example, to prompt the user to authorize an
+    MCP server that answered HTTP 401:
+
+        class OAuthPromptingMcpToolset(McpToolset):
+
+          async def get_tools(self, readonly_context=None):
+            try:
+              return await super().get_tools(readonly_context)
+            except ConnectionError as e:
+              return [ConnectMcpServerTool(e)]
+
     Args:
       readonly_context (ReadonlyContext, optional): Context used to filter tools
         available to the agent. If None, all tools in the toolset are returned.
@@ -146,10 +165,12 @@ class BaseToolset(ABC):
       # Also update the function declaration name if the tool has one
       # Use default parameters to capture the current values in the closure
       def _create_prefixed_declaration(
-          original_get_declaration=tool._get_declaration,
-          prefixed_name=prefixed_name,
-      ):
-        def _get_prefixed_declaration():
+          original_get_declaration: Callable[
+              [], Optional[types.FunctionDeclaration]
+          ] = tool._get_declaration,
+          prefixed_name: str = prefixed_name,
+      ) -> Callable[[], Optional[types.FunctionDeclaration]]:
+        def _get_prefixed_declaration() -> Optional[types.FunctionDeclaration]:
           declaration = original_get_declaration()
           if declaration is not None:
             declaration.name = prefixed_name
@@ -158,7 +179,9 @@ class BaseToolset(ABC):
 
         return _get_prefixed_declaration
 
-      tool_copy._get_declaration = _create_prefixed_declaration()
+      tool_copy._get_declaration = (  # type: ignore[method-assign]
+          _create_prefixed_declaration()
+      )
       prefixed_tools.append(tool_copy)
 
     self._cached_invocation_id = invocation_id
