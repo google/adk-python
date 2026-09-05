@@ -241,6 +241,7 @@ class ReplayManager:
     """Extract chronological child completion sequence under base_path."""
     base_path_builder = _NodePathBuilder.from_string(base_path)
     sequence: list[str] = []
+    completed: set[str] = set()
     invocation_id = ctx._invocation_context.invocation_id
 
     for event in events:
@@ -265,9 +266,24 @@ class ReplayManager:
       segment: str = child_path.leaf_segment
 
       if is_terminal_event(event):
+        # Once a child has genuinely completed (output, route, or error), its
+        # run id cannot complete again: a further terminal event for the same
+        # segment is a resurfaced echo of that completion (see
+        # Workflow._maybe_reemit_replayed_output), not a new one. Repositioning
+        # the segment for that echo can shift it past a sibling that
+        # legitimately completed in between, corrupting the barrier order and
+        # deadlocking a resumed loop on itself.
+        if segment in completed:
+          continue
         if segment in sequence:
           sequence.remove(segment)
         sequence.append(segment)
+        if (
+            event.output is not None
+            or (event.actions and event.actions.route is not None)
+            or event.error_code is not None
+        ):
+          completed.add(segment)
 
     return sequence
 
