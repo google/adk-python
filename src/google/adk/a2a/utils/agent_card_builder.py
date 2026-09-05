@@ -69,7 +69,7 @@ class AgentCardBuilder:
 
     self._agent = agent
     self._rpc_url = rpc_url or 'http://localhost:80/a2a'
-    self._capabilities = capabilities or AgentCapabilities()
+    self._capabilities = capabilities or AgentCapabilities(streaming=True)
     self._doc_url = doc_url
     self._provider = provider
     self._security_schemes = security_schemes
