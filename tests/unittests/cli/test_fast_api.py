@@ -3435,6 +3435,37 @@ def test_telemetry_post_endpoint_missing_header(test_app):
   assert "Forbidden: missing required security header" in response.text
 
 
+def test_setup_gcp_telemetry_requests_cloud_platform_scope(monkeypatch):
+  """A service-account key file ADC has requires_scopes=True and no scopes,
+  so google.auth.default() must be asked for the cloud-platform scope or the
+  OTLP exporters' token refresh fails with invalid_scope (issue #7024)."""
+  from google.adk.cli.api_server import _setup_gcp_telemetry
+  from google.adk.telemetry.google_cloud import CLOUD_PLATFORM_SCOPE
+
+  auth_default = MagicMock(return_value=("creds", "project-id"))
+  monkeypatch.setattr("google.auth.default", auth_default)
+  monkeypatch.setattr(
+      "google.adk.telemetry.google_cloud.get_gcp_exporters",
+      lambda **kwargs: MagicMock(),
+  )
+  monkeypatch.setattr(
+      "google.adk.telemetry.google_cloud.get_gcp_resource",
+      lambda project_id: MagicMock(),
+  )
+  monkeypatch.setattr(
+      "google.adk.telemetry.setup.maybe_set_otel_providers",
+      lambda **kwargs: None,
+  )
+  monkeypatch.setattr(
+      "google.adk.cli.api_server._setup_instrumentation_lib_if_installed",
+      lambda: None,
+  )
+
+  _setup_gcp_telemetry()
+
+  auth_default.assert_called_once_with(scopes=[CLOUD_PLATFORM_SCOPE])
+
+
 @pytest.fixture
 def test_app_auto_session(
     mock_session_service,
