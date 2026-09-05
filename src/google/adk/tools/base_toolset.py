@@ -94,6 +94,22 @@ class BaseToolset(ABC):
   ) -> list[BaseTool]:
     """Return all tools in the toolset based on the provided context.
 
+    A toolset that must stay usable when listing fails handles that here. The
+    framework isolates a raised exception by dropping the whole toolset from the
+    agent, so override this method to catch it and contribute placeholder tools
+    instead. Replacement tools returned directly from the error branch bypass
+    tool_filter. The exception type is toolset-specific, so catch whatever the
+    base toolset actually raises. For example, to prompt the user to authorize an
+    MCP server that answered HTTP 401:
+
+        class OAuthPromptingMcpToolset(McpToolset):
+
+          async def get_tools(self, readonly_context=None):
+            try:
+              return await super().get_tools(readonly_context)
+            except ConnectionError as e:
+              return [ConnectMcpServerTool(e)]
+
     Args:
       readonly_context (ReadonlyContext, optional): Context used to filter tools
         available to the agent. If None, all tools in the toolset are returned.
