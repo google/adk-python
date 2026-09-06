@@ -31,6 +31,17 @@ from .eval_metrics import EvalMetric
 from .eval_result import EvalCaseResult
 
 
+class AggregationStrategy(Enum):
+  """Strategy for aggregating EvalCaseResults of the same case across runs."""
+
+  MEAN_OVER_INVOCATIONS = "mean_over_invocations"
+  """Pools per-invocation metric scores across all runs and takes their mean.
+
+  This matches the aggregation performed by `AgentEvaluator` (the pytest eval
+  entrypoint), keeping multi-run summaries consistent across entrypoints.
+  """
+
+
 class EvaluateConfig(BaseModel):
   """Contains configurations needed to run evaluations."""
 
@@ -54,6 +65,12 @@ a larger value could result in the eval quickly consuming the quota.
 """,
   )
 
+  aggregation_strategy: AggregationStrategy = Field(
+      default=AggregationStrategy.MEAN_OVER_INVOCATIONS,
+      description="""Strategy used to aggregate the per-run EvalCaseResults of an
+eval case when it is run more than once (see `InferenceConfig.num_runs`).""",
+  )
+
 
 class InferenceConfig(BaseModel):
   """Contains configurations need to run inferences."""
@@ -67,6 +84,14 @@ class InferenceConfig(BaseModel):
       default=None,
       description="""Labels with user-defined metadata to break down billed
 charges.""",
+  )
+
+  num_runs: int = Field(
+      default=1,
+      ge=1,
+      description="""Number of times each eval case should be run. Values greater
+than 1 reduce nondeterminism: the eval case is inferenced `num_runs` times
+(through the same parallelism pool) and the per-run results are aggregated.""",
   )
 
   parallelism: int = Field(
