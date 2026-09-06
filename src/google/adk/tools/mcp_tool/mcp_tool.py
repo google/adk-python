@@ -467,10 +467,12 @@ class McpTool(BaseAuthenticatedTool):
       args_to_call = self._prepare_callable_args(
           self._require_confirmation, args, tool_context
       )
-      return cast(
-          bool,
-          await self._invoke_callable(self._require_confirmation, args_to_call),
+      result = await self._invoke_callable(
+          self._require_confirmation, args_to_call
       )
+      if isinstance(result, bool):
+        return result
+      return True
     return bool(self._require_confirmation)
 
   @override
