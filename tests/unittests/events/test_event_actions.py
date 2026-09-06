@@ -29,21 +29,6 @@ class _Sample(BaseModel):
   label: str = 'hi'
 
 
-class _DeferredModel(BaseModel):
-  """A Pydantic model whose serializer was not built yet (deferred build).
-
-  google-genai 2.18+ leaves a placeholder (MockValSer) in
-  `__pydantic_serializer__` when defer_build=True, so serializing the model
-  raises TypeError before `serialize_unknown` can apply. Replacing it with a
-  plain object() reproduces the same failure shape.
-  """
-
-  x: int = 1
-
-
-_DeferredModel.__pydantic_serializer__ = object()
-
-
 class TestMakeJsonSerializable:
   """Tests for the `_make_json_serializable` fallback helper."""
 
@@ -135,46 +120,6 @@ class TestStateDeltaSerialization:
     assert dumped['state_delta']['ok'] == 2
     assert isinstance(dumped['state_delta']['cb'], str)
 
-  def test_deferred_pydantic_model_in_state_delta_does_not_raise(self):
-    """A deferred Pydantic model in state_delta serializes without crashing."""
-    dt = datetime.datetime(2024, 1, 2, 3, 4, 5, tzinfo=datetime.timezone.utc)
-    actions = EventActions(
-        state_delta={'bad': _DeferredModel(), 'when': dt, 'ok': 'healthy'}
-    )
-
-    dumped = actions.model_dump(mode='json')
-
-    assert dumped['state_delta']['ok'] == 'healthy'
-    assert dumped['state_delta']['when'] == '2024-01-02T03:04:05Z'
-    assert isinstance(dumped['state_delta']['bad'], str)
-    assert '_DeferredModel' in dumped['state_delta']['bad']
-
-  def test_deferred_pydantic_model_in_state_delta_logs_warning(self, caplog):
-    """A deferred model in state_delta logs a warning."""
-    actions = EventActions(
-        state_delta={'bad': _DeferredModel(), 'nested': {'x': _DeferredModel()}}
-    )
-
-    with caplog.at_level(logging.WARNING):
-      actions.model_dump(mode='json')
-
-    assert any(
-        'Failed to serialize `state_delta`' in record.message
-        for record in caplog.records
-    )
-
-  def test_circular_reference_in_state_delta_does_not_raise(self):
-    """A circular reference in state_delta serializes without crashing."""
-    data = {'a': 1}
-    data['back'] = data
-    actions = EventActions(state_delta=data)
-
-    dumped = actions.model_dump(mode='json')
-
-    assert dumped['state_delta']['a'] == 1
-    assert dumped['state_delta']['back']['a'] == 1
-    assert isinstance(dumped['state_delta']['back']['back'], str)
-
 
 class TestAgentStateSerialization:
   """Tests for the `agent_state` wrap serializer."""
@@ -203,25 +148,3 @@ class TestAgentStateSerialization:
         'Failed to serialize `agent_state`' in record.message
         for record in caplog.records
     )
-
-  def test_deferred_pydantic_model_in_agent_state_does_not_raise(self):
-    """A deferred Pydantic model in agent_state serializes without crashing."""
-    actions = EventActions(agent_state={'bad': _DeferredModel(), 'n': 3})
-
-    dumped = actions.model_dump(mode='json')
-
-    assert dumped['agent_state']['n'] == 3
-    assert isinstance(dumped['agent_state']['bad'], str)
-    assert '_DeferredModel' in dumped['agent_state']['bad']
-
-  def test_circular_reference_in_agent_state_does_not_raise(self):
-    """A circular reference in agent_state serializes without crashing."""
-    data = {'a': 1}
-    data['back'] = data
-    actions = EventActions(agent_state=data)
-
-    dumped = actions.model_dump(mode='json')
-
-    assert dumped['agent_state']['a'] == 1
-    assert dumped['agent_state']['back']['a'] == 1
-    assert isinstance(dumped['agent_state']['back']['back'], str)

@@ -29,9 +29,9 @@ from pydantic import Field
 from pydantic import field_serializer
 from pydantic import field_validator
 from pydantic import SerializerFunctionWrapHandler
+from pydantic_core import to_jsonable_python
 
 from ..tools.tool_confirmation import ToolConfirmation
-from ..utils._serialization import safe_serialize
 from .ui_widget import UiWidget
 
 if TYPE_CHECKING:
@@ -45,10 +45,14 @@ logger = logging.getLogger('google_adk.' + __name__)
 def _make_json_serializable(obj: Any) -> Any:
   """Converts an object into a JSON-serializable form.
 
-  Used as a fallback when the default Pydantic serialization fails.
-  Delegates to `safe_serialize`.
+  Used as a fallback when the default Pydantic serialization fails. Delegates to
+  `pydantic_core.to_jsonable_python` so rich types (e.g. datetimes, Pydantic
+  models) are serialized faithfully instead of being discarded. Values that
+  pydantic-core cannot serialize (e.g. Python callables stored in session state)
+  are replaced with their `repr` via `serialize_unknown=True` so the overall
+  structure can still be persisted without crashing.
   """
-  return safe_serialize(obj)
+  return to_jsonable_python(obj, serialize_unknown=True)
 
 
 class EventCompaction(BaseModel):  # type: ignore[misc]
@@ -109,7 +113,7 @@ class EventActions(BaseModel):  # type: ignore[misc]
       )
       # Re-run the handler on the sanitized value so that caller `exclude` /
       # `include` directives are still applied to the fallback output.
-      return cast(dict[str, Any], handler(safe_serialize(value)))
+      return cast(dict[str, Any], handler(_make_json_serializable(value)))
 
   artifact_delta: dict[str, int] = Field(default_factory=dict)
   """Indicates that the event is updating an artifact. key is the filename,
@@ -186,7 +190,7 @@ class EventActions(BaseModel):  # type: ignore[misc]
       )
       # Re-run the handler on the sanitized value so that caller `exclude` /
       # `include` directives are still applied to the fallback output.
-      return cast(dict[str, Any], handler(safe_serialize(value)))
+      return cast(dict[str, Any], handler(_make_json_serializable(value)))
 
   rewind_before_invocation_id: Optional[str] = None
   """The invocation id to rewind to. This is only set for rewind event."""
