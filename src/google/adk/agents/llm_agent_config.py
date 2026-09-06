@@ -111,8 +111,14 @@ class LlmAgentConfig(BaseAgentConfig):
       description='Optional. LlmAgent.disallow_transfer_to_parent.',
   )
 
-  disallow_transfer_to_peers: Optional[bool] = Field(
-      default=None, description='Optional. LlmAgent.disallow_transfer_to_peers.'
+  allow_elicitation: Optional[bool] = Field(
+      default=False,
+      description='Optional. Whether the agent is allowed to perform elicitation to resolve ambiguity.',
+  )
+
+  elicitation_max_turns: Optional[int] = Field(
+      default=3,
+      description='Optional. The maximum number of elicitation turns allowed before failing.',
   )
 
   input_schema: Optional[CodeConfig] = Field(

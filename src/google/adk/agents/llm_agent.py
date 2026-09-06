@@ -306,6 +306,15 @@ class LlmAgent(BaseAgent, abc.ABC):
   version, along with the AgentConfig YAML loader.
   """
 
+  config_type: ClassVar[Type[BaseAgentConfig]] = LlmAgentConfig
+  """The config type for this agent."""
+
+  allow_elicitation: bool = False
+  """Whether the agent is allowed to perform elicitation to resolve ambiguity."""
+
+  elicitation_max_turns: int = 3
+  """The maximum number of elicitation turns allowed before failing."""
+
   instruction: Union[str, InstructionProvider] = ''
   """Dynamic instructions for the LLM model, guiding the agent's behavior.
 
