@@ -871,13 +871,20 @@ def _sanitize_free_text(
   closed; a quoted fragment is walked through the full blob sanitizer
   from the first quote. A stray
   escape in the prose gap could shift a consumer's parse boundaries and
-  also fails closed. Quote-free, container-free prose passes through.
+  also fails closed. Quote-free, container-free prose still gets the
+  plain-text credential-pattern pass: this function is the fallback for
+  every non-container-shaped string reaching the recursive sanitizer
+  (tool args/results, state deltas, usage metadata, A2A payloads,
+  schemas), so an unkeyed "Authorization: Bearer ..."-shaped value must
+  not pass through unredacted just because it never picked up a JSON
+  container token or quote.
   """
   if "{" in text or "[" in text:
     return "[UNPARSEABLE_JSON_BLOB]", True, True
   quote_idx = text.find('"')
   if quote_idx == -1:
-    return text, False, False
+    redacted, changed = _redact_sensitive_patterns(text)
+    return redacted, changed, changed
   gap = text[:quote_idx]
   if "\\" in gap:
     return "[UNPARSEABLE_JSON_BLOB]", True, True
@@ -885,9 +892,10 @@ def _sanitize_free_text(
   t_sanitized, changed, truncated = _sanitize_json_blob(
       tail, seen, depth + 1, max_len, budget
   )
-  if not changed:
+  gap_sanitized, gap_changed = _redact_sensitive_patterns(gap)
+  if not changed and not gap_changed:
     return text, False, False
-  return gap + t_sanitized, True, truncated
+  return gap_sanitized + t_sanitized, True, truncated
 
 
 def _sanitize_json_blob(
@@ -1007,7 +1015,16 @@ def _sanitize_json_blob(
     suffix_text = suffix if not s_changed else s_sanitized
     return prefix_text + suffix_text, True, p_truncated or s_truncated
   if not stripped.startswith(("{", "[")):
-    return value, False, False
+    # Plain prose is the common case for tool args/results, state deltas,
+    # usage metadata, A2A payloads, and schemas — none of which are
+    # container-shaped, so without this pass a value like
+    # "Authorization: Bearer sk-..." embedded under an unrecognized key
+    # (e.g. a tool's own error/status message) would reach BigQuery
+    # completely unredacted. This mirrors the pattern-based pass already
+    # applied to URI segments, Part-content text, and error/traceback
+    # text elsewhere in this file.
+    redacted, changed = _redact_sensitive_patterns(value)
+    return redacted, changed, changed
 
   # Enforce the inspection limit BEFORE materializing: json.loads runs
   # synchronously on the callback path and can allocate far beyond the
