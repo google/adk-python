@@ -52,6 +52,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.websockets import WebSocket
 from fastapi.websockets import WebSocketDisconnect
 from google.genai import types
+import nh3
 from opentelemetry import trace
 import opentelemetry.sdk.environment_variables as otel_env
 from opentelemetry.sdk.trace import export as export_lib
@@ -104,6 +105,94 @@ from .utils.shared_value import SharedValue
 logger = logging.getLogger("google_adk." + __name__)
 
 _REGEX_PREFIX = "regex:"
+_SAFE_SVG_TAGS = {
+    "circle",
+    "clipPath",
+    "defs",
+    "desc",
+    "ellipse",
+    "g",
+    "image",
+    "line",
+    "linearGradient",
+    "marker",
+    "mask",
+    "path",
+    "polygon",
+    "polyline",
+    "radialGradient",
+    "rect",
+    "stop",
+    "svg",
+    "symbol",
+    "text",
+    "title",
+    "tspan",
+    "use",
+}
+_SAFE_SVG_ATTRIBUTES = {
+    "class",
+    "clip-path",
+    "cx",
+    "cy",
+    "d",
+    "fill",
+    "fill-opacity",
+    "font-family",
+    "font-size",
+    "font-weight",
+    "height",
+    "href",
+    "id",
+    "marker-end",
+    "marker-mid",
+    "marker-start",
+    "offset",
+    "opacity",
+    "points",
+    "preserveAspectRatio",
+    "r",
+    "rx",
+    "ry",
+    "stop-color",
+    "stop-opacity",
+    "stroke",
+    "stroke-dasharray",
+    "stroke-linecap",
+    "stroke-linejoin",
+    "stroke-opacity",
+    "stroke-width",
+    "text-anchor",
+    "transform",
+    "viewBox",
+    "width",
+    "x",
+    "x1",
+    "x2",
+    "xlink:href",
+    "y",
+    "y1",
+    "y2",
+}
+
+
+def _sanitize_svg_artifact(artifact: types.Part) -> types.Part:
+  """Sanitize SVG artifact data before returning it to a browser."""
+  inline_data = artifact.inline_data
+  if not inline_data or inline_data.mime_type != "image/svg+xml":
+    return artifact
+
+  try:
+    svg = inline_data.data.decode("utf-8")
+  except UnicodeDecodeError as exc:
+    raise HTTPException(status_code=422, detail="Invalid SVG encoding") from exc
+
+  inline_data.data = nh3.clean(
+      svg,
+      tags=_SAFE_SVG_TAGS,
+      attributes={"*": _SAFE_SVG_ATTRIBUTES},
+  ).encode("utf-8")
+  return artifact
 
 
 def _parse_cors_origins(
@@ -1714,7 +1803,7 @@ class ApiServer:
       )
       if not artifact:
         raise HTTPException(status_code=404, detail="Artifact not found")
-      return artifact
+      return _sanitize_svg_artifact(artifact)
 
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts",
@@ -1764,7 +1853,7 @@ class ApiServer:
       )
       if not artifact:
         raise HTTPException(status_code=404, detail="Artifact not found")
-      return artifact
+      return _sanitize_svg_artifact(artifact)
 
     @app.delete(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name:path}",
