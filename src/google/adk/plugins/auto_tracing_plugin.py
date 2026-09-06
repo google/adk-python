@@ -167,13 +167,17 @@ class AutoTracingPlugin(BasePlugin):
     if getattr(fn, auto_tracing_helpers.WRAPPED_ATTR, False):
       return
     try:
-      setattr(
-          owner,
-          name,
-          auto_tracing_helpers.build_tracing_wrapper(
-              fn, self._tracer, self._caps
-          ),
+      wrapper = auto_tracing_helpers.build_tracing_wrapper(
+          fn, self._tracer, self._caps
       )
+      # inspect.getmembers unwraps staticmethod to a plain function.
+      # Reapply the descriptor so instance access does not bind self.
+      raw = getattr(owner, "__dict__", {}).get(name)
+      if isinstance(raw, staticmethod):
+        wrapper = staticmethod(wrapper)
+      elif isinstance(raw, classmethod):
+        wrapper = classmethod(wrapper)
+      setattr(owner, name, wrapper)
     except (AttributeError, TypeError) as exc:
       logger.info(
           "AutoTracingPlugin: cannot rebind %s.%s: %s",
