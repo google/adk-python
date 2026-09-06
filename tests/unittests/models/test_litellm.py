@@ -2985,6 +2985,43 @@ def test_message_to_generate_content_response_tool_call_malformed_arguments_logs
   assert '{"city":"unterminated' in caplog.text
 
 
+def test_message_to_generate_content_response_tool_call_without_arguments(
+    caplog,
+):
+  """A tool call carrying no arguments is dispatched, and is not malformed."""
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id="test_tool_call_id",
+              function=Function(
+                  name="test_function",
+                  arguments="",
+              ),
+          )
+      ],
+  )
+
+  with caplog.at_level(
+      logging.WARNING, logger="google_adk.google.adk.models.lite_llm"
+  ):
+    response = _message_to_generate_content_response(message)
+
+  function_calls = [
+      part.function_call
+      for part in response.content.parts
+      if part.function_call is not None
+  ]
+  assert len(function_calls) == 1
+  assert function_calls[0].name == "test_function"
+  assert function_calls[0].id == "test_tool_call_id"
+  assert isinstance(function_calls[0].args, dict)
+  assert not function_calls[0].args
+  assert "Malformed" not in caplog.text
+
+
 def test_message_to_generate_content_response_inline_tool_call_text():
   message = ChatCompletionAssistantMessage(
       role="assistant",
