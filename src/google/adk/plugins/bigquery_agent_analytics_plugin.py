@@ -4279,6 +4279,14 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self.offloader: Optional[GCSOffloader] = None
     self.parser: Optional[HybridContentParser] = None
     self._schema: list[bq_schema.SchemaField] | None = None
+    # Remembers that the table-readiness pass (existence check + view DDL)
+    # has succeeded at least once. Like _schema it is pure data and
+    # survives close()/shutdown(), so a plugin that is closed and reused
+    # (Runner.close() -> PluginManager.close() -> plugin.close()) does not
+    # re-issue the CREATE OR REPLACE VIEW statements on every request. Only
+    # a *successful* pass sets it; a failed attempt raises before it is set
+    # and is therefore retried on the next setup.
+    self._schema_ready = False
     self.arrow_schema: pa.Schema | None = None
     self._init_pid = os.getpid()
     _LIVE_PLUGINS.add(self)
@@ -4778,12 +4786,20 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       # Project out denied payload columns schema-first, so the table
       # schema, Arrow schema, row dict, and views all stay consistent.
       self._schema = _project_schema(_get_events_schema(), self._denied_columns)
-    # Run table readiness on EVERY setup attempt until one succeeds: the
-    # cached _schema must not gate it, or a failed first attempt would skip
-    # the table check on retry and mark the plugin started against a
-    # missing/unready table. Once _started is True,
-    # _lazy_setup returns early above, so the steady state pays no extra RPC.
-    await loop.run_in_executor(executor, self._ensure_schema_exists)
+    # Run table readiness until it first succeeds, then remember that in a
+    # flag that survives close()/shutdown(). A *failed* attempt raises out
+    # of _ensure_schema_exists before the flag is set and is retried on the
+    # next setup (the 2.8.0 intent — a failed first attempt must not be
+    # skipped, or the plugin would be marked started against a
+    # missing/unready table). A *successful* pass is memoised so a plugin
+    # that is closed and re-initialised per request does not re-issue the
+    # per-view CREATE OR REPLACE VIEW DDL every time (the 2.3.0 cost
+    # profile). _schema alone cannot gate this: it also survives close()
+    # but is populated before the readiness RPC, so it would skip a table
+    # check that had never succeeded.
+    if not self._schema_ready:
+      await loop.run_in_executor(executor, self._ensure_schema_exists)
+      self._schema_ready = True
 
     if not self.parser:
       self.arrow_schema = to_arrow_schema(self._require_schema())
@@ -5527,6 +5543,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state.setdefault("_local_drop_counts", {})
     state.setdefault("_setup_failures", 0)
     state.setdefault("_setup_retry_at", 0.0)
+    state.setdefault("_schema_ready", False)
     state.pop("_setup_lock", None)  # replaced by cross-loop future
     state.pop("_setup_locks", None)
     state.pop("_setup_locks_guard", None)
@@ -5819,6 +5836,18 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       # created outlives a shutdown that already returned — release it,
       # holding the rendezvous until the
       # teardown completes.
+      #
+      # Emit exactly one diagnostic: without it a plugin that is closed and
+      # re-initialised in a tight loop drives full setups that abort here
+      # silently, so there is no signal it is churning until an unrelated
+      # symptom (e.g. quota exhaustion) surfaces.
+      logger.warning(
+          "BigQuery plugin setup completed but was aborted by a concurrent"
+          " shutdown (generation %d != claimed %d); releasing the resources"
+          " it created.",
+          self._generation,
+          claimed_generation,
+      )
       try:
         await self._teardown_aborted_setup()
       finally:
