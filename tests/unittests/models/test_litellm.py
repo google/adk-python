@@ -2121,6 +2121,7 @@ async def test_generate_content_async_with_bedrock_cache_tokens(
     assert response.usage_metadata.total_token_count == 15
     assert response.usage_metadata.cached_content_token_count == 8
     assert response.usage_metadata.cache_creation_input_tokens == 4
+    assert response.cache_creation_token_count == 4
 
   mock_acompletion.assert_called_once()
 
@@ -5197,6 +5198,7 @@ async def test_generate_content_async_stream_with_bedrock_cache_tokens(
   assert responses[3].usage_metadata.total_token_count == 15
   assert responses[3].usage_metadata.cached_content_token_count == 8
   assert responses[3].usage_metadata.cache_creation_input_tokens == 4
+  assert responses[3].cache_creation_token_count == 4
 
 
 @pytest.mark.asyncio

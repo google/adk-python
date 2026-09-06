@@ -2165,6 +2165,16 @@ def test_message_to_generate_content_response_reports_cache_creation_tokens():
   response = message_to_generate_content_response(message)
 
   assert response.usage_metadata.cache_creation_input_tokens == 50
+  # Serializable mirror: the usage_metadata attribute above is dropped by
+  # model_dump (google.genai forbids extra fields), so the count is also
+  # exposed on LlmResponse.cache_creation_token_count for event consumers.
+  assert response.cache_creation_token_count == 50
+  assert (
+      response.model_dump(by_alias=True, exclude_none=True)[
+          "cacheCreationTokenCount"
+      ]
+      == 50
+  )
   dumped = response.model_dump()
   assert "usage_metadata" in dumped
 
@@ -2196,6 +2206,7 @@ def test_message_to_generate_content_response_no_cache_creation_tokens():
   response = message_to_generate_content_response(message)
 
   assert not hasattr(response.usage_metadata, "cache_creation_input_tokens")
+  assert response.cache_creation_token_count is None
 
 
 @pytest.mark.asyncio
@@ -2253,6 +2264,7 @@ async def test_streaming_reports_cache_creation_tokens():
   assert len(responses) == 2
   final_response = responses[-1]
   assert final_response.usage_metadata.cache_creation_input_tokens == 50
+  assert final_response.cache_creation_token_count == 50
   dumped = final_response.model_dump()
   assert "usage_metadata" in dumped
 
