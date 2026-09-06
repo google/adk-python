@@ -195,6 +195,36 @@ def test_get_test_content_not_found(test_client):
   assert response.status_code == 404
 
 
+def test_delete_test_rejects_path_traversal(test_client, tmp_path):
+  """GET/DELETE must use the same basename rule as create_test."""
+  agent_dir = tmp_path / "test_app"
+  tests_dir = agent_dir / "tests"
+  tests_dir.mkdir(parents=True)
+  outside = agent_dir / "outside.json"
+  outside.write_text('{"secret": true}')
+
+  encoded = "%2e%2e%2foutside.json"
+  delete = test_client.delete(f"/dev/apps/test_app/tests/{encoded}")
+  get = test_client.get(f"/dev/apps/test_app/tests/{encoded}")
+
+  assert delete.status_code == 404
+  assert get.status_code == 404
+  assert outside.exists()
+  assert outside.read_text() == '{"secret": true}'
+
+
+def test_rebuild_single_test_rejects_path_traversal(test_client, tmp_path):
+  with patch("google.adk.cli.dev_server.asyncio.to_thread") as mock_to_thread:
+    mock_to_thread.return_value = None
+    response = test_client.post(
+        "/dev/apps/test_app/tests/rebuild?test_name=../outside.json", json={}
+    )
+    assert response.status_code == 200
+    args, _kwargs = mock_to_thread.call_args
+    test_dir, test_name = os.path.split(args[1])
+    assert (os.path.basename(test_dir), test_name) == ("tests", "outside.json")
+
+
 def test_rebuild_tests(test_client):
   with patch("google.adk.cli.dev_server.asyncio.to_thread") as mock_to_thread:
     mock_to_thread.return_value = None
