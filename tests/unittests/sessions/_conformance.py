@@ -135,7 +135,22 @@ async def _make_per_agent_database(
 BACKENDS = [
     _Backend('in_memory', _make_in_memory),
     _Backend('in_memory_light_copy', _make_in_memory_light_copy),
-    _Backend('database', _make_database),
+    _Backend(
+        'database',
+        _make_database,
+        divergences={
+            'test_padded_session_id_reads_and_deletes': (
+                'DatabaseSessionService stores the session id verbatim, so a'
+                ' padded id keeps its whitespace instead of being normalized'
+                ' the way the in-memory and sqlite services normalize it.'
+            ),
+            'test_create_session_with_padded_duplicate_id_raises_error': (
+                'DatabaseSessionService stores the session id verbatim, so a'
+                ' padded copy of an existing id is stored as a second session'
+                ' instead of colliding with the first one.'
+            ),
+        },
+    ),
     _Backend('sqlite', _make_sqlite),
     # One more Redis divergence has no contract test to hang an xfail on yet:
     # it builds its key scan pattern from a truthiness check on the user id, so
@@ -151,6 +166,16 @@ BACKENDS = [
             'test_session_last_update_time_updates_on_event': (
                 'Redis stamps the session with the wall clock instead of the'
                 " appended event's timestamp."
+            ),
+            'test_padded_session_id_reads_and_deletes': (
+                'RedisSessionService stores the session id verbatim, so a'
+                ' padded id keeps its whitespace instead of being normalized'
+                ' the way the in-memory and sqlite services normalize it.'
+            ),
+            'test_create_session_with_padded_duplicate_id_raises_error': (
+                'RedisSessionService stores the session id verbatim, so a'
+                ' padded copy of an existing id is stored as a second session'
+                ' instead of colliding with the first one.'
             ),
             'test_append_event_to_unknown_session_raises_session_not_found': (
                 'Redis writes the session key unconditionally on append, so'
