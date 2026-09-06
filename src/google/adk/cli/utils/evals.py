@@ -82,7 +82,7 @@ def create_gcs_eval_managers_from_uri(
           ' google-adk[gcp]\nOr: pip install google-cloud-storage>=2.18'
       ) from e
 
-    gcs_bucket = eval_storage_uri.split('://')[1]
+    gcs_bucket = eval_storage_uri.split('://')[1].split('/')[0]
     eval_sets_manager = GcsEvalSetsManager(
         bucket_name=gcs_bucket, project=os.environ['GOOGLE_CLOUD_PROJECT']
     )
