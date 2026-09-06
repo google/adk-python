@@ -629,16 +629,35 @@ def _reasoning_parts(
 
 def _function_call_part(
     item: ResponseFunctionToolCall | Mapping[str, Any],
-) -> types.Part:
+) -> types.Part | None:
   name = _get_value(item, 'name')
   if not name:
     logger.warning('OpenAI Responses function call is missing a name.')
+    return None
   arguments = _get_value(item, 'arguments')
+  if arguments:
+    try:
+      parsed_arguments = json.loads(arguments)
+    except json.JSONDecodeError:
+      logger.warning(
+          'Dropping OpenAI Responses function call with invalid arguments.'
+      )
+      return None
+    if not isinstance(parsed_arguments, dict):
+      logger.warning(
+          'Dropping OpenAI Responses function call with non-object arguments.'
+      )
+      return None
+  else:
+    parsed_arguments = {}
   part = types.Part.from_function_call(
       name=name or '',
-      args=_loads_json_object(arguments),
+      args=parsed_arguments,
   )
-  part.function_call.id = _get_value(item, 'call_id') or _get_value(item, 'id')
+  if part.function_call:
+    part.function_call.id = _get_value(item, 'call_id') or _get_value(
+        item, 'id'
+    )
   return part
 
 
@@ -652,13 +671,19 @@ def _response_to_llm_response(
   output_metadata = []
   reasoning_metadata = []
   unmapped_output = []
+  has_invalid_function_call = False
 
   for item in _get_value(response, 'output', []) or []:
+    item_type: str | None = None
     if isinstance(item, ResponseOutputMessage):
       parts.extend(_message_content_parts(item))
       item_type = item.type
     elif isinstance(item, ResponseFunctionToolCall):
-      parts.append(_function_call_part(item))
+      function_call_part = _function_call_part(item)
+      if function_call_part:
+        parts.append(function_call_part)
+      else:
+        has_invalid_function_call = True
       item_type = item.type
     elif isinstance(item, ResponseReasoningItem):
       reasoning, metadata = _reasoning_parts(item)
@@ -671,7 +696,11 @@ def _response_to_llm_response(
       if item_type == 'message':
         parts.extend(_message_content_parts(cast(Mapping[str, Any], item)))
       elif item_type == 'function_call':
-        parts.append(_function_call_part(cast(Mapping[str, Any], item)))
+        function_call_part = _function_call_part(cast(Mapping[str, Any], item))
+        if function_call_part:
+          parts.append(function_call_part)
+        else:
+          has_invalid_function_call = True
       elif item_type == 'reasoning':
         reasoning, metadata = _reasoning_parts(cast(Mapping[str, Any], item))
         parts.extend(reasoning)
@@ -700,7 +729,11 @@ def _response_to_llm_response(
     if unmapped_output:
       custom_metadata['openai_response']['unmapped_output'] = unmapped_output
 
-  finish_reason = _map_finish_reason(response)
+  finish_reason = (
+      types.FinishReason.MAX_TOKENS
+      if has_invalid_function_call
+      else _map_finish_reason(response)
+  )
   llm_response = LlmResponse(
       content=types.Content(role='model', parts=parts) if parts else None,
       usage_metadata=_usage_metadata(usage),
@@ -709,7 +742,13 @@ def _response_to_llm_response(
       interaction_id=_get_value(response, 'id'),
       custom_metadata=custom_metadata,
   )
-  if finish_reason and finish_reason != types.FinishReason.STOP:
+  if has_invalid_function_call:
+    llm_response.error_code = types.FinishReason.MAX_TOKENS
+    llm_response.error_message = (
+        'A Responses function call had invalid, incomplete, or missing '
+        'arguments or name.'
+    )
+  elif finish_reason and finish_reason != types.FinishReason.STOP:
     error = _get_value(response, 'error') or _get_value(
         response, 'incomplete_details'
     )
@@ -789,6 +828,8 @@ class _StreamAccumulator:
       self._ensure_output_item(key, item_type)
       if item_type == 'function_call':
         self._track_function_call_item(key, item)
+        call = self.function_calls[key]
+        responses.append(self._partial_function_call_response(call))
     elif event_type in (
         'response.content_part.done',
         'response.output_text.done',
@@ -822,9 +863,21 @@ class _StreamAccumulator:
               'name': _get_value(event, 'name') or '',
               'call_id': _get_value(event, 'call_id'),
               'arguments': '',
+              'argument_deltas_emitted': False,
           },
       )
-      call['arguments'] += _get_value(event, 'delta') or ''
+      call['name'] = _get_value(event, 'name') or call.get('name') or ''
+      if not call.get('call_id'):
+        call['call_id'] = _get_value(event, 'call_id') or str(key)
+      argument_delta = _get_value(event, 'delta') or ''
+      call['arguments'] += argument_delta
+      if argument_delta:
+        call['argument_deltas_emitted'] = True
+        responses.append(
+            self._partial_function_call_response(
+                call, argument_delta=argument_delta
+            )
+        )
     elif event_type == 'response.function_call_arguments.done':
       responses.extend(self._close_reasoning_stream(event))
       key = self._stream_output_key(event, _get_value(event, 'call_id'))
@@ -835,11 +888,22 @@ class _StreamAccumulator:
               'name': _get_value(event, 'name') or '',
               'call_id': _get_value(event, 'call_id'),
               'arguments': '',
+              'argument_deltas_emitted': False,
           },
       )
+      call['name'] = _get_value(event, 'name') or call.get('name') or ''
+      if not call.get('call_id'):
+        call['call_id'] = _get_value(event, 'call_id') or str(key)
       arguments = _get_value(event, 'arguments')
       if arguments is not None:
         call['arguments'] = arguments
+      if call['arguments'] and not call['argument_deltas_emitted']:
+        responses.append(
+            self._partial_function_call_response(
+                call, argument_delta=call['arguments']
+            )
+        )
+        call['argument_deltas_emitted'] = True
     elif event_type == 'response.output_item.done':
       item = _get_value(event, 'item')
       item_type = _get_value(item, 'type')
@@ -850,6 +914,14 @@ class _StreamAccumulator:
       output_item['done_item'] = item
       if item_type == 'function_call':
         self._track_function_call_item(key, item)
+        call = self.function_calls[key]
+        if call['arguments'] and not call['argument_deltas_emitted']:
+          responses.append(
+              self._partial_function_call_response(
+                  call, argument_delta=call['arguments']
+              )
+          )
+          call['argument_deltas_emitted'] = True
     elif event_type in ('response.completed', 'response.incomplete'):
       self.response = _get_value(event, 'response')
       response_usage = _get_value(self.response, 'usage')
@@ -866,6 +938,33 @@ class _StreamAccumulator:
           )
       )
     return responses
+
+  def _partial_function_call_response(
+      self, call: dict[str, Any], argument_delta: str | None = None
+  ) -> LlmResponse:
+    partial_args = (
+        [types.PartialArg(string_value=argument_delta)]
+        if argument_delta
+        else []
+    )
+    return LlmResponse(
+        content=types.Content(
+            role='model',
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(
+                        id=call.get('call_id'),
+                        name=call.get('name') or '',
+                        partial_args=partial_args,
+                        will_continue=True,
+                    )
+                )
+            ],
+        ),
+        partial=True,
+        model_version=self.model,
+        interaction_id=self.response_id,
+    )
 
   def _close_reasoning_stream(
       self, event: ResponseStreamEvent | Mapping[str, Any]
@@ -959,14 +1058,19 @@ class _StreamAccumulator:
     # A done item may omit fields already streamed via deltas; preserve them.
     existing = self.function_calls.get(key, {})
     arguments = _get_value(item, 'arguments')
+    call_id = (
+        _get_value(item, 'call_id')
+        or _get_value(item, 'id')
+        or existing.get('call_id')
+        or str(key)
+    )
     self.function_calls[key] = {
         'name': _get_value(item, 'name') or existing.get('name') or '',
-        'call_id': (
-            _get_value(item, 'call_id')
-            or _get_value(item, 'id')
-            or existing.get('call_id')
-        ),
+        'call_id': call_id,
         'arguments': arguments if arguments else existing.get('arguments', ''),
+        'argument_deltas_emitted': existing.get(
+            'argument_deltas_emitted', False
+        ),
     }
 
   def final_response(self) -> LlmResponse | None:
@@ -979,6 +1083,7 @@ class _StreamAccumulator:
       )
 
     parts = []
+    has_invalid_function_call = False
     for key in self.output_order:
       item = self.output_items[key]
       done_item = item.get('done_item')
@@ -1004,28 +1109,73 @@ class _StreamAccumulator:
         if text:
           parts.append(types.Part.from_text(text=text))
       elif item_type == 'function_call' and key in self.function_calls:
-        parts.append(self._function_call_part_from_accumulator(key))
+        function_call_part = self._function_call_part_from_accumulator(key)
+        if function_call_part:
+          parts.append(function_call_part)
+        else:
+          has_invalid_function_call = True
     for key in self.function_calls:
       if key not in self.output_items:
-        parts.append(self._function_call_part_from_accumulator(key))
-    if not parts:
+        function_call_part = self._function_call_part_from_accumulator(key)
+        if function_call_part:
+          parts.append(function_call_part)
+        else:
+          has_invalid_function_call = True
+    if not parts and not has_invalid_function_call:
       return None
+    finish_reason = (
+        types.FinishReason.MAX_TOKENS
+        if has_invalid_function_call
+        else types.FinishReason.STOP
+    )
     return LlmResponse(
-        content=types.Content(role='model', parts=parts),
+        content=types.Content(role='model', parts=parts) if parts else None,
         partial=False,
-        finish_reason=types.FinishReason.STOP,
+        finish_reason=finish_reason,
+        error_code=finish_reason if has_invalid_function_call else None,
+        error_message=(
+            'A streamed Responses function call had invalid, incomplete, or '
+            'missing arguments or name.'
+            if has_invalid_function_call
+            else None
+        ),
         interaction_id=self.response_id,
         model_version=self.model,
         usage_metadata=_usage_metadata(self.usage),
     )
 
-  def _function_call_part_from_accumulator(self, key: int | str) -> types.Part:
+  def _function_call_part_from_accumulator(
+      self, key: int | str
+  ) -> types.Part | None:
     call = self.function_calls[key]
+    if not call.get('name'):
+      logger.warning(
+          'Dropping streamed Responses function call without a name.'
+      )
+      return None
+    arguments = call.get('arguments')
+    if arguments:
+      try:
+        parsed_arguments = json.loads(arguments)
+      except json.JSONDecodeError:
+        logger.warning(
+            'Dropping streamed Responses function call with invalid arguments.'
+        )
+        return None
+      if not isinstance(parsed_arguments, dict):
+        logger.warning(
+            'Dropping streamed Responses function call with non-object'
+            ' arguments.'
+        )
+        return None
+    else:
+      parsed_arguments = {}
     part = types.Part.from_function_call(
-        name=call.get('name'),
-        args=_loads_json_object(call.get('arguments')),
+        name=call.get('name') or '',
+        args=parsed_arguments,
     )
-    part.function_call.id = call.get('call_id')
+    if part.function_call:
+      part.function_call.id = call.get('call_id')
     return part
 
 
@@ -1139,6 +1289,8 @@ class OpenAIResponsesLlm(BaseLlm):
       kwargs['reasoning'] = reasoning
     tools: list[ToolParam] = []
     for tool in config.tools or []:
+      if not isinstance(tool, types.Tool):
+        continue
       for function_declaration in tool.function_declarations or []:
         tools.append(
             _function_declaration_to_response_tool(function_declaration)
@@ -1187,13 +1339,27 @@ class AzureOpenAIResponsesLlm(OpenAIResponsesLlm):
   azure_endpoint: str | None = None
 
   def _resolve_api_key(self) -> str | None:
-    return super()._resolve_api_key() or os.environ.get('AZURE_OPENAI_API_KEY')
+    return (
+        super()._resolve_api_key()
+        or os.environ.get('AZURE_OPENAI_API_KEY')
+        or os.environ.get('AZURE_API_KEY')
+    )
+
+  def _resolve_azure_endpoint(self) -> str | None:
+    if self.azure_endpoint:
+      return self.azure_endpoint
+    if endpoint := os.environ.get('AZURE_OPENAI_ENDPOINT'):
+      return endpoint
+    if resource_name := os.environ.get('AZURE_RESOURCE_NAME'):
+      return f'https://{resource_name}.openai.azure.com'
+    return None
 
   @cached_property
   def _openai_client(self) -> AsyncOpenAI:
     if self.client is not None:
       return self.client
     kwargs: dict[str, Any] = {'api_key': self._resolve_api_key()}
-    if self.azure_endpoint:
-      kwargs['base_url'] = self.azure_endpoint.rstrip('/') + '/openai/v1/'
+    endpoint = self._resolve_azure_endpoint()
+    if endpoint:
+      kwargs['base_url'] = endpoint.rstrip('/') + '/openai/v1/'
     return AsyncOpenAI(**kwargs)
