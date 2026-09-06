@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from enum import Enum
+from typing import Annotated
 from typing import Any
 
 from google.adk.features import FeatureName
@@ -25,6 +26,7 @@ from google.genai import types
 # TODO: crewai requires python 3.10 as minimum
 # from crewai_tools import FileReadTool
 from pydantic import BaseModel
+from pydantic import Field
 import pytest
 
 
@@ -648,6 +650,22 @@ class TestBuildFunctionDeclarationLegacy:
     assert function_decl.name == 'Calc'
     assert function_decl.response is not None
 
+  def test_annotated_field_metadata_preserved(self):
+    """Test Annotated[T, Field(...)] metadata reaches the schema."""
+
+    def legacy_annotated_function(
+        count: Annotated[int, Field(description='How many widgets', ge=1)],
+    ) -> str:
+      return str(count)
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=legacy_annotated_function
+    )
+
+    count_schema = function_decl.parameters.properties['count']
+    assert count_schema.description == 'How many widgets'
+    assert count_schema.minimum == 1
+
 
 class TestBuildFunctionDeclarationWithJsonSchema:
   """Tests for build_function_declaration when JSON_SCHEMA_FOR_FUNC_DECL is enabled."""
@@ -917,6 +935,22 @@ class TestBuildFunctionDeclarationWithJsonSchema:
     schema = decl.parameters_json_schema
     assert schema['properties']['name']['default'] == 'World'
     assert 'name' not in schema.get('required', [])
+
+  def test_annotated_field_metadata_preserved(self):
+    """Test Annotated[T, Field(...)] metadata reaches the schema."""
+
+    def json_schema_annotated_function(
+        count: Annotated[int, Field(description='How many widgets', ge=1)],
+    ) -> str:
+      return str(count)
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=json_schema_annotated_function
+    )
+
+    count_schema = function_decl.parameters_json_schema['properties']['count']
+    assert count_schema['description'] == 'How many widgets'
+    assert count_schema['minimum'] == 1
 
 
 class TestBuildFunctionDeclarationFromSchemaDict:
