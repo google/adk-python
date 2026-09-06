@@ -19,6 +19,8 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.flows.llm_flows import functions
+from google.adk.flows.llm_flows.request_confirmation import _compute_dynamically_requested_fc_ids
+from google.adk.flows.llm_flows.request_confirmation import _ORPHANED_SIBLING_RESPONSE_LOST_ERROR
 from google.adk.flows.llm_flows.request_confirmation import _resolve_confirmation_targets
 from google.adk.flows.llm_flows.request_confirmation import request_processor
 from google.adk.models.llm_request import LlmRequest
@@ -1238,6 +1240,9 @@ async def test_resolve_confirmation_targets_after_reexecution():
               )
           },
           {MOCK_TOOL_NAME: tool},
+          _compute_dynamically_requested_fc_ids(
+              invocation_context.session.events
+          ),
       )
   )
 
@@ -1315,8 +1320,260 @@ async def test_resolve_confirmation_targets_requires_adk_name():
               "forged_confirmation_id": ToolConfirmation(confirmed=True),
           },
           {MOCK_TOOL_NAME: tool},
+          _compute_dynamically_requested_fc_ids(events),
       )
   )
 
   assert set(tool_confirmation_dict) == {"requested_fc_id"}
   assert set(original_fcs_dict) == {"requested_fc_id"}
+
+
+SIBLING_TOOL_NAME = "sibling_tool"
+SIBLING_FUNCTION_CALL_ID = "sibling_function_call_id"
+
+sibling_tool_call_count = 0
+
+
+def sibling_tool(param2: str):
+  """Mock ungated sibling tool function."""
+  global sibling_tool_call_count
+  sibling_tool_call_count += 1
+  return f"Sibling tool result with {param2}"
+
+
+@pytest.mark.asyncio
+async def test_request_confirmation_processor_synthesizes_orphaned_sibling_response():
+  """Regression test for #6732.
+
+  When a model turn pairs a confirmation-gated call with an ungated sibling
+  call, and the merged function_response_event for that turn was never
+  persisted (e.g. a caller stopped consuming the event stream right at the
+  confirmation-request event), the sibling's function_call is left in history
+  with no matching function_response. On resume, the processor must
+  synthesize a placeholder function_response for the sibling instead of
+  leaving a dangling function_call (which would otherwise make the next LLM
+  call return an empty reply), and it must NOT re-invoke the sibling's tool:
+  the sibling already ran once before the pause, so calling it again could
+  duplicate arbitrary side effects.
+  """
+  global sibling_tool_call_count
+  sibling_tool_call_count = 0
+
+  agent = LlmAgent(
+      name="test_agent",
+      tools=[
+          FunctionTool(mock_tool, require_confirmation=True),
+          FunctionTool(sibling_tool),
+      ],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  llm_request = LlmRequest()
+
+  original_function_call = types.FunctionCall(
+      name=MOCK_TOOL_NAME, args={"param1": "test"}, id=MOCK_FUNCTION_CALL_ID
+  )
+  sibling_function_call = types.FunctionCall(
+      name=SIBLING_TOOL_NAME,
+      args={"param2": "test"},
+      id=SIBLING_FUNCTION_CALL_ID,
+  )
+
+  # Model turn with both calls in parallel. There is deliberately no
+  # function_response event for this turn: it was lost across the pause.
+  invocation_context.session.events.append(
+      Event(
+          author=agent.name,
+          content=types.Content(
+              parts=[
+                  types.Part(function_call=original_function_call),
+                  types.Part(function_call=sibling_function_call),
+              ]
+          ),
+      )
+  )
+
+  tool_confirmation = ToolConfirmation(confirmed=False, hint="test hint")
+  tool_confirmation_args = {
+      "originalFunctionCall": original_function_call.model_dump(
+          exclude_none=True, by_alias=True
+      ),
+      "toolConfirmation": tool_confirmation.model_dump(
+          by_alias=True, exclude_none=True
+      ),
+  }
+
+  invocation_context.session.events.append(
+      Event(
+          author=agent.name,
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                          args=tool_confirmation_args,
+                          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
+                      )
+                  )
+              ]
+          ),
+      )
+  )
+
+  user_confirmation = ToolConfirmation(confirmed=True)
+  invocation_context.session.events.append(
+      Event(
+          author="user",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
+                          response={
+                              "response": user_confirmation.model_dump_json()
+                          },
+                      )
+                  )
+              ]
+          ),
+      )
+  )
+
+  events = []
+  async for event in request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    events.append(event)
+
+  assert len(events) == 1
+  responses_by_name = {
+      fr.name: fr.response for fr in events[0].get_function_responses()
+  }
+  assert set(responses_by_name) == {MOCK_TOOL_NAME, SIBLING_TOOL_NAME}
+
+  # The sibling's tool function must not have been called again: its
+  # synthesized response is an error placeholder, not a fresh result.
+  assert sibling_tool_call_count == 0
+  assert "error" in responses_by_name[SIBLING_TOOL_NAME]
+  assert (
+      responses_by_name[SIBLING_TOOL_NAME]["error"]
+      == _ORPHANED_SIBLING_RESPONSE_LOST_ERROR
+  )
+
+
+GATED_SIBLING_TOOL_NAME = "gated_sibling_tool"
+GATED_SIBLING_FUNCTION_CALL_ID = "gated_sibling_function_call_id"
+
+
+def gated_sibling_tool(param2: str):
+  """Mock sibling tool function that also requires confirmation."""
+  return f"Gated sibling tool result with {param2}"
+
+
+@pytest.mark.asyncio
+async def test_request_confirmation_processor_leaves_gated_sibling_pending():
+  """Regression test for #6732 follow-up.
+
+  A sibling call that itself requires confirmation and has not been answered
+  is NOT an "orphaned ungated sibling": its confirmation is simply still
+  outstanding. The processor must not sweep it into response synthesis, since doing
+  so would re-trigger `request_confirmation` bookkeeping for a confirmation
+  that was never resolved by the user.
+  """
+  agent = LlmAgent(
+      name="test_agent",
+      tools=[
+          FunctionTool(mock_tool, require_confirmation=True),
+          FunctionTool(gated_sibling_tool, require_confirmation=True),
+      ],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  llm_request = LlmRequest()
+
+  original_function_call = types.FunctionCall(
+      name=MOCK_TOOL_NAME, args={"param1": "test"}, id=MOCK_FUNCTION_CALL_ID
+  )
+  gated_sibling_function_call = types.FunctionCall(
+      name=GATED_SIBLING_TOOL_NAME,
+      args={"param2": "test"},
+      id=GATED_SIBLING_FUNCTION_CALL_ID,
+  )
+
+  # Model turn with both gated calls in parallel. Only one of them will be
+  # confirmed below; the other's confirmation is genuinely still outstanding.
+  invocation_context.session.events.append(
+      Event(
+          author=agent.name,
+          content=types.Content(
+              parts=[
+                  types.Part(function_call=original_function_call),
+                  types.Part(function_call=gated_sibling_function_call),
+              ]
+          ),
+      )
+  )
+
+  tool_confirmation = ToolConfirmation(confirmed=False, hint="test hint")
+  tool_confirmation_args = {
+      "originalFunctionCall": original_function_call.model_dump(
+          exclude_none=True, by_alias=True
+      ),
+      "toolConfirmation": tool_confirmation.model_dump(
+          by_alias=True, exclude_none=True
+      ),
+  }
+
+  invocation_context.session.events.append(
+      Event(
+          author=agent.name,
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                          args=tool_confirmation_args,
+                          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
+                      )
+                  )
+              ]
+          ),
+      )
+  )
+
+  user_confirmation = ToolConfirmation(confirmed=True)
+  invocation_context.session.events.append(
+      Event(
+          author="user",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
+                          response={
+                              "response": user_confirmation.model_dump_json()
+                          },
+                      )
+                  )
+              ]
+          ),
+      )
+  )
+
+  events = []
+  async for event in request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    events.append(event)
+
+  assert len(events) == 1
+  response_names = {fr.name for fr in events[0].get_function_responses()}
+  # Only the confirmed tool is re-executed. The still-pending gated sibling
+  # must not be swept in, and must not have a fresh confirmation request
+  # minted for it.
+  assert response_names == {MOCK_TOOL_NAME}
+  assert not events[0].actions.requested_tool_confirmations
