@@ -21,6 +21,7 @@ import logging
 import sys
 from typing import AsyncGenerator
 from typing import ClassVar
+import warnings
 
 from typing_extensions import deprecated
 from typing_extensions import override
@@ -32,7 +33,13 @@ from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
 from .base_agent_config import BaseAgentConfig
 from .invocation_context import InvocationContext
-from .parallel_agent_config import ParallelAgentConfig
+
+with warnings.catch_warnings():
+  # ParallelAgentConfig subclasses the deprecated BaseAgentConfig purely as
+  # an internal implementation detail, so this import alone should not warn
+  # applications that never touch the deprecated Agent Config APIs.
+  warnings.simplefilter('ignore', DeprecationWarning)
+  from .parallel_agent_config import ParallelAgentConfig
 
 logger = logging.getLogger('google_adk.' + __name__)
 
