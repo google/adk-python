@@ -111,7 +111,8 @@ logger = logging.getLogger("google_adk." + __name__)
 
 
 # Function call names whose pause is resolved locally (ADK request-* tools or a
-# workflow HITL node); their response is flattened to text before forwarding.
+# workflow HITL node). Flatten those answers to text before forwarding, unless
+# the matching function call was raised by the remote peer itself.
 _HUMAN_INPUT_FUNCTION_CALL_NAMES = frozenset({
     MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT,
     MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH,
@@ -293,8 +294,14 @@ def _sanitize_user_function_response_event(
     event: Event,
     trusted_call_names_by_id: dict[Optional[str], set[str]],
     id_less_call_is_ambiguous: bool,
+    flatten_human_input: bool = True,
 ) -> Event:
-  """Returns a copy of ``event`` with its parts sanitized for forwarding."""
+  """Returns a copy of ``event`` with its parts sanitized for forwarding.
+
+  When ``flatten_human_input`` is false the matching pause was raised by the
+  remote peer, so confirmation and request-input answers stay function
+  responses and the peer can resume. Credential answers are still dropped.
+  """
   if event.content is None:
     return event
   new_event = event.model_copy(deep=True)
@@ -305,6 +312,8 @@ def _sanitize_user_function_response_event(
   parts = new_content.parts or []
 
   def _is_human_input(fr: genai_types.FunctionResponse) -> bool:
+    if not flatten_human_input:
+      return False
     names = trusted_call_names_by_id.get(fr.id)
     if not names or names.isdisjoint(_HUMAN_INPUT_FUNCTION_CALL_NAMES):
       return False
@@ -1105,8 +1114,14 @@ class RemoteA2aAgent(BaseAgent):
       if fc.id is None and fc.name not in _HUMAN_INPUT_FUNCTION_CALL_NAMES:
         id_less_call_is_ambiguous = True
 
+    # Relayed HITL uses the same adk_request_* names as a local workflow
+    # pause. Flatten by origin so the remote peer still receives a
+    # FunctionResponse and can resume. Credentials still drop (aec7aa3).
     event = _sanitize_user_function_response_event(
-        event, trusted_call_names_by_id, id_less_call_is_ambiguous
+        event,
+        trusted_call_names_by_id,
+        id_less_call_is_ambiguous,
+        flatten_human_input=not self._is_relayed_pause(function_call_event),
     )
 
     a2a_message = convert_event_to_a2a_message(
@@ -1145,6 +1160,18 @@ class RemoteA2aAgent(BaseAgent):
           return True
 
     return False
+
+  def _is_relayed_pause(self, event: Event) -> bool:
+    """Whether ``event`` is a pause this remote peer raised.
+
+    Production events carry ``a2a:response`` and match
+    ``_is_remote_response``. Nested A2A relays also author the pause as
+    this agent, which is enough to tell them apart from a local workflow
+    HITL pause (those are authored by the caller, not ``self.name``).
+    """
+    if self._is_remote_response(event):
+      return True
+    return event.author == self.name
 
   def _construct_message_parts_from_session(
       self, ctx: InvocationContext
