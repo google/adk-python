@@ -49,7 +49,7 @@ class _TestingToolset(BaseToolset):
     return self._tools
 
   async def close(self) -> None:
-    pass
+    await super().close()
 
 
 @pytest.mark.asyncio
@@ -439,6 +439,19 @@ async def test_get_tools_with_prefix_caching():
   assert len(tools3) == 1
   assert tools3 is not tools1  # Should be a new list instance
   assert tools3[0].name == 'test_tool1'
+
+  # Fourth call with first invocation_id again (should hit cache)
+  tools1_again = await toolset.get_tools_with_prefix(
+      readonly_context=readonly_context1
+  )
+  assert tools1_again is tools1
+
+  # Test close() clears the cache
+  await toolset.close()
+  tools1_after_close = await toolset.get_tools_with_prefix(
+      readonly_context=readonly_context1
+  )
+  assert tools1_after_close is not tools1
 
   # Test disabling caching
   toolset._use_invocation_cache = False
