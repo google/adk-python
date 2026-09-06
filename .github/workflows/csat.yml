@@ -1,0 +1,43 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: 'CSAT survey for ADK-Python'
+on:
+  issues:
+    types:
+      - closed
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  welcome:
+    name: Run CSAT survey script
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write # Required for csat script to comment on closed issues
+    steps:
+      - uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3
+        with:
+          persist-credentials: false
+      - uses: actions/github-script@00f12e3e20659f42342b1c0226afda7f7c042325 # v6
+        with:
+          script: |
+            const script = require('./.github/scripts/csat.js')
+            script({github, context})
