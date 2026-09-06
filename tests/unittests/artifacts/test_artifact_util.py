@@ -150,9 +150,6 @@ def test_is_artifact_ref_false(part):
         "user123",
         "myapp",
         "sess123",
-        "group/user123",
-        "has/slash",
-        "back\\slash",
         mock.MagicMock(),
     ],
 )
@@ -184,6 +181,10 @@ def test_validate_path_segment_valid(value, field_name):
         "C:\\absolute",
         "C:/absolute",
         "C:drive-relative",
+        "group/user123",
+        "has/slash",
+        "back\\slash",
+        "victim/sessions/s1",
     ],
 )
 def test_validate_path_segment_invalid(value, field_name):

@@ -1418,22 +1418,53 @@ async def test_file_save_artifact_rejects_out_of_scope_paths(
     )
 
 
+@pytest.mark.asyncio
+async def test_file_rejects_user_id_that_collides_with_session_scope(
+    tmp_path,
+):
+  """A user_id embedding "/sessions/<id>" must not resolve into another
+  caller's session-scoped directory.
+  """
+  artifact_service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  await artifact_service.save_artifact(
+      app_name="app",
+      user_id="victim",
+      session_id="s1",
+      filename="notes.txt",
+      artifact=types.Part(text="victim data"),
+  )
+  with pytest.raises(InputValidationError):
+    await artifact_service.save_artifact(
+        app_name="app",
+        user_id="victim/sessions/s1",
+        filename="user:notes.txt",
+        artifact=types.Part(text="attacker data"),
+    )
+  loaded = await artifact_service.load_artifact(
+      app_name="app",
+      user_id="victim",
+      session_id="s1",
+      filename="notes.txt",
+  )
+  assert loaded.text == "victim data"
+
+
 INVALID_PATH_SEGMENT_CASES = (
-    ("../escape", "must not contain traversal segments"),
-    ("../../etc", "must not contain traversal segments"),
-    ("foo/../../bar", "must not contain traversal segments"),
+    ("../escape", "must not contain path separators"),
+    ("../../etc", "must not contain path separators"),
+    ("foo/../../bar", "must not contain path separators"),
     ("..", "must not contain traversal segments"),
     (".", "must not contain traversal segments"),
     ("null\x00byte", "must not contain null bytes"),
     ("", "must not be empty"),
-    ("/etc/passwd", "must not be an absolute path or start with a slash"),
-    ("/leading/slash", "must not be an absolute path or start with a slash"),
+    ("/etc/passwd", "must not contain path separators"),
+    ("/leading/slash", "must not contain path separators"),
     (
         "\\leading\\backslash",
-        "must not be an absolute path or start with a slash",
+        "must not contain path separators",
     ),
-    (r"C:\absolute", "must not be drive-qualified"),
-    ("C:/absolute", "must not be drive-qualified"),
+    (r"C:\absolute", "must not contain path separators"),
+    ("C:/absolute", "must not contain path separators"),
     ("C:drive-relative", "must not be drive-qualified"),
 )
 
@@ -1447,26 +1478,25 @@ INVALID_PATH_SEGMENT_CASES = (
         ArtifactServiceType.FILE,
     ],
 )
-async def test_save_and_load_namespaced_user_id_succeeds(
+async def test_save_artifact_rejects_slash_in_user_id(
     service_type, artifact_service_factory
 ):
-  """ArtifactService implementations permit namespaced user IDs."""
+  """A user_id containing a path separator must be rejected.
+
+  A value like "victim/sessions/s1" would otherwise let a caller's
+  user-scoped storage collide with another user's session-scoped storage
+  (see the FileArtifactService directory layout).
+  """
   service = artifact_service_factory(service_type)
   artifact = types.Part.from_bytes(data=b"data", mime_type="text/plain")
-  await service.save_artifact(
-      app_name="myapp",
-      user_id="group/user123",
-      session_id="sess123",
-      filename="safe.txt",
-      artifact=artifact,
-  )
-  loaded = await service.load_artifact(
-      app_name="myapp",
-      user_id="group/user123",
-      session_id="sess123",
-      filename="safe.txt",
-  )
-  assert loaded.inline_data.data == b"data"
+  with pytest.raises(InputValidationError):
+    await service.save_artifact(
+        app_name="myapp",
+        user_id="group/user123",
+        session_id="sess123",
+        filename="safe.txt",
+        artifact=artifact,
+    )
 
 
 @pytest.mark.asyncio
