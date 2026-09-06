@@ -1747,7 +1747,14 @@ def test_cli_eval_with_eval_set_file_path(
       [str(agent_path), str(eval_set_file)],
   )
 
-  assert result.exit_code == 0
+  # This eval case has no invocations and no configured criteria, so it
+  # never produces a PASSED verdict ("Tests failed: 1" in the printed
+  # summary, unchanged by this assertion) -- exit_code == 1 is the correct,
+  # honest reflection of that. This assertion used to read `== 0`, which
+  # was only ever true because `cli_eval`'s exit code carried no real
+  # signal at all prior to this fix; it was not a deliberate claim that
+  # this specific eval run passed.
+  assert result.exit_code == 1
   # Assert that we wrote eval set results
   eval_set_results_manager = LocalEvalSetResultsManager(
       agents_dir=str(tmp_path)
@@ -1786,7 +1793,11 @@ def test_cli_eval_with_eval_set_id(
       [str(agent_path), "test_eval_set_id:case1,case2"],
   )
 
-  assert result.exit_code == 0
+  # Same reasoning as test_cli_eval_with_eval_set_file_path above: both
+  # cases have no invocations and no configured criteria, so neither
+  # produces a PASSED verdict -- exit_code == 1 is what this run actually
+  # produces, now that the exit code reflects the real verdict.
+  assert result.exit_code == 1
   # Assert that we wrote eval set results
   eval_set_results_manager = LocalEvalSetResultsManager(
       agents_dir=str(tmp_path)
@@ -1795,6 +1806,120 @@ def test_cli_eval_with_eval_set_id(
       app_name=app_name
   )
   assert len(eval_set_results) == 1
+
+
+@pytest.mark.parametrize(
+    "final_eval_status, expected_exit_code",
+    [
+        (pytest.param("PASSED", 0, id="all_passed_exits_zero")),
+        (pytest.param("FAILED", 1, id="any_failed_exits_nonzero")),
+    ],
+)
+def test_cli_eval_exit_code_reflects_final_eval_status(
+    mock_load_eval_set_from_file,
+    mock_get_root_agent,
+    tmp_path,
+    final_eval_status,
+    expected_exit_code,
+):
+  """`cli_eval`'s process exit code must reflect PASSED/FAILED.
+
+  Before this fix, `cli_eval` never called `sys.exit` at all, so the
+  process always exited 0 regardless of the printed "Tests failed" count
+  -- indistinguishable from every test genuinely passing, which made the
+  command unusable as a CI gate on its own exit code.
+  """
+  from google.adk.evaluation.eval_result import EvalCaseResult
+  from google.adk.evaluation.evaluator import EvalStatus
+
+  agent_path = tmp_path / "my_agent"
+  agent_path.mkdir()
+  (agent_path / "__init__.py").touch()
+
+  eval_set_file = tmp_path / "my_evals.json"
+  eval_set_file.write_text("{}")
+
+  mock_load_eval_set_from_file.return_value = EvalSet(
+      eval_set_id="my_evals",
+      eval_cases=[EvalCase(eval_id="case1", conversation=[])],
+  )
+
+  canned_result = EvalCaseResult(
+      eval_set_file="my_evals",
+      eval_set_id="my_evals",
+      eval_id="case1",
+      final_eval_status=getattr(EvalStatus, final_eval_status),
+      overall_eval_metric_results=[],
+      eval_metric_result_per_invocation=[],
+      session_id="",
+  )
+
+  with (
+      mock.patch(
+          "google.adk.cli.cli_eval._collect_inferences",
+          new_callable=mock.AsyncMock,
+          return_value=[],
+      ),
+      mock.patch(
+          "google.adk.cli.cli_eval._collect_eval_results",
+          new_callable=mock.AsyncMock,
+          return_value=[canned_result],
+      ),
+  ):
+    result = CliRunner().invoke(
+        cli_tools_click.cli_eval,
+        [str(agent_path), str(eval_set_file)],
+    )
+
+  assert result.exit_code == expected_exit_code, (
+      result.output,
+      result.exception,
+  )
+
+
+def test_cli_eval_empty_summary_does_not_exit_zero(
+    mock_load_eval_set_from_file,
+    mock_get_root_agent,
+    tmp_path,
+):
+  """An empty eval_run_summary must not be reported as a pass.
+
+  With zero eval_results (no evals ran at all -- e.g. an empty eval set),
+  eval_run_summary is {}. "Nothing was evaluated" is not the same claim as
+  "everything passed" and must not take the same exit(0) path -- same
+  fail-loud-not-silently-succeed shape as
+  AgentEvaluator.evaluate_eval_set (see google/adk-python#6952).
+  """
+  agent_path = tmp_path / "my_agent"
+  agent_path.mkdir()
+  (agent_path / "__init__.py").touch()
+
+  eval_set_file = tmp_path / "my_evals.json"
+  eval_set_file.write_text("{}")
+
+  mock_load_eval_set_from_file.return_value = EvalSet(
+      eval_set_id="my_evals",
+      eval_cases=[],
+  )
+
+  with (
+      mock.patch(
+          "google.adk.cli.cli_eval._collect_inferences",
+          new_callable=mock.AsyncMock,
+          return_value=[],
+      ),
+      mock.patch(
+          "google.adk.cli.cli_eval._collect_eval_results",
+          new_callable=mock.AsyncMock,
+          return_value=[],
+      ),
+  ):
+    result = CliRunner().invoke(
+        cli_tools_click.cli_eval,
+        [str(agent_path), str(eval_set_file)],
+    )
+
+  assert result.exit_code != 0, (result.output, result.exception)
 
 
 def test_cli_create_eval_set(tmp_path: Path):
