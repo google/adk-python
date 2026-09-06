@@ -82,6 +82,12 @@ _DEFAULT_MTLS_TELEMETRY_LOGS_ENDPOINT = (
     "https://telemetry.mtls.googleapis.com/v1/logs"
 )
 
+# A service-account key file (unlike GCE/GKE/Cloud Run metadata-server
+# credentials) has requires_scopes=True and no scopes, so google.auth.default()
+# must be given a scope explicitly or the resulting credentials fail the OTLP
+# exporters' token refresh with invalid_scope.
+CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
+
 _GCP_LOG_NAME = "gcp.log_name"
 _EVENT_NAME = "event.name"
 _GCP_RESOURCE_TYPE = "gcp.resource_type"
@@ -115,7 +121,9 @@ def get_gcp_exporters(
   """
 
   credentials, project_id = (
-      google_auth if google_auth is not None else google.auth.default()
+      google_auth
+      if google_auth is not None
+      else google.auth.default(scopes=[CLOUD_PLATFORM_SCOPE])
   )
   if os.environ.get("GOOGLE_CLOUD_AGENT_ENGINE_ID"):
     # Try to convert project number to project ID to associate logs with traces.
@@ -218,7 +226,9 @@ def _get_gcp_otlp_metric_exporter(
   from google.auth.transport.requests import AuthorizedSession
 
   credentials, _ = (
-      google_auth if google_auth is not None else google.auth.default()
+      google_auth
+      if google_auth is not None
+      else google.auth.default(scopes=[CLOUD_PLATFORM_SCOPE])
   )
   session = AuthorizedSession(credentials=credentials)
   endpoint = _get_telemetry_endpoint(
