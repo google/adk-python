@@ -14,11 +14,13 @@
 
 from __future__ import annotations
 
-from google.genai import types
+from typing import TYPE_CHECKING
+
 from typing_extensions import override
 
-from ..agents.invocation_context import InvocationContext
-from ..models.llm_request import LlmRequest
+if TYPE_CHECKING:
+  from ..agents.invocation_context import InvocationContext
+  from ..models.llm_request import LlmRequest
 from ..utils.model_name_utils import is_gemini_model
 from ..utils.model_name_utils import is_gemini_model_id_check_disabled
 from .base_code_executor import BaseCodeExecutor
@@ -45,6 +47,8 @@ class BuiltInCodeExecutor(BaseCodeExecutor):
 
   def process_llm_request(self, llm_request: LlmRequest) -> None:
     """Pre-process the LLM request for Gemini models to use the code execution tool."""
+    from google.genai import types
+
     model_check_disabled = is_gemini_model_id_check_disabled()
     if is_gemini_model(llm_request.model) or model_check_disabled:
       llm_request.config = llm_request.config or types.GenerateContentConfig()

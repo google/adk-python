@@ -55,9 +55,21 @@ def _create_branch_ctx_for_sub_agent(
   return invocation_context
 
 
-def _has_escalate_action(event: Event) -> bool:
-  """Returns whether the event asks the parent workflow to exit early."""
-  return bool(event.actions.escalate)
+def _asks_this_agent_to_exit(event: Event, sub_agent_names: set[str]) -> bool:
+  """Returns whether the event asks this parallel agent to exit early.
+
+  An escalation ends the workflow that directly encloses the escalating agent,
+  and that workflow re-yields the event while unwinding, so only an escalation
+  authored by a direct sub-agent is addressed to this one.
+
+  Args:
+      event: The event to inspect.
+      sub_agent_names: Names of this agent's direct sub-agents.
+
+  Returns:
+      Whether this parallel agent should stop its remaining branches.
+  """
+  return bool(event.actions.escalate) and event.author in sub_agent_names
 
 
 def _cancel_tasks(tasks: list[asyncio.Task[None]]) -> None:
@@ -69,11 +81,12 @@ def _cancel_tasks(tasks: list[asyncio.Task[None]]) -> None:
 
 async def _merge_agent_run(
     agent_runs: list[AsyncGenerator[Event, None]],
+    sub_agent_names: set[str],
 ) -> AsyncGenerator[Event, None]:
   """Merges agent runs using asyncio.TaskGroup on Python 3.11+."""
   sentinel = _AgentRunComplete()
   queue: asyncio.Queue[
-      tuple[Event | _AgentRunComplete, asyncio.Event | None]
+      tuple[Event | _AgentRunComplete, asyncio.Event | BaseException | None]
   ] = asyncio.Queue()
   tasks: list[asyncio.Task[None]] = []
 
@@ -82,6 +95,7 @@ async def _merge_agent_run(
   async def process_an_agent(
       events_for_one_agent: AsyncGenerator[Event, None],
   ) -> None:
+    error: BaseException | None = None
     try:
       async with Aclosing(events_for_one_agent):
         async for event in events_for_one_agent:
@@ -92,40 +106,58 @@ async def _merge_agent_run(
     except asyncio.CancelledError:
       logger.info('Agent run cancelled.')
       raise
+    except Exception as e:
+      # Reported through the queue rather than by failing the task: this
+      # generator stays suspended at `yield` for as long as the caller is busy,
+      # and a task group aborting around a suspended frame cancels the caller
+      # instead of handing it the error.
+      error = e
     finally:
-      # Mark agent as finished.
+      # Mark agent as finished, carrying the failure that ended it, if any.
       try:
-        await queue.put((sentinel, None))
+        await queue.put((sentinel, error))
       except Exception as e:
         logger.warning('Failed to put sentinel on queue: %s', e)
 
-  async with asyncio.TaskGroup() as tg:
-    for events_for_one_agent in agent_runs:
-      tasks.append(tg.create_task(process_an_agent(events_for_one_agent)))
+  try:
+    async with asyncio.TaskGroup() as tg:
+      for events_for_one_agent in agent_runs:
+        tasks.append(tg.create_task(process_an_agent(events_for_one_agent)))
 
-    sentinel_count = 0
-    # Run until all agents finished processing.
-    while sentinel_count < len(agent_runs):
-      event, resume_signal = await queue.get()
-      # Agent finished processing.
-      if isinstance(event, _AgentRunComplete):
-        sentinel_count += 1
-      else:
-        yield event
-        if _has_escalate_action(event):
-          _cancel_tasks(tasks)
-          return
-        # Signal to agent that it should generate next event.
-        if resume_signal is None:
-          raise RuntimeError(
-              'Parallel-agent event is missing its resume signal.'
-          )
-        resume_signal.set()
+      sentinel_count = 0
+      # Run until all agents finished processing.
+      while sentinel_count < len(agent_runs):
+        event, payload = await queue.get()
+        # Agent finished processing.
+        if isinstance(event, _AgentRunComplete):
+          sentinel_count += 1
+          if isinstance(payload, BaseException):
+            raise payload
+        else:
+          yield event
+          if _asks_this_agent_to_exit(event, sub_agent_names):
+            _cancel_tasks(tasks)
+            return
+          # Signal to agent that it should generate next event.
+          if not isinstance(payload, asyncio.Event):
+            raise RuntimeError(
+                'Parallel-agent event is missing its resume signal.'
+            )
+          payload.set()
+  except BaseExceptionGroup as eg:
+    # A branch failure travels back on the queue and is re-raised above, so the
+    # group wraps that one error. Hand the caller the error itself, so that
+    # catching what a sub-agent raises works the same on every supported
+    # interpreter. A group holding more than one error is not ours to reshape.
+    if len(eg.exceptions) == 1:
+      raise eg.exceptions[0] from None
+    raise
 
 
 # TODO - remove once Python <3.11 is no longer supported.
 async def _merge_agent_run_pre_3_11(
     agent_runs: list[AsyncGenerator[Event, None]],
+    sub_agent_names: set[str],
 ) -> AsyncGenerator[Event, None]:
   """Merges agent runs for Python 3.10 without asyncio.TaskGroup.
 
@@ -134,28 +166,22 @@ async def _merge_agent_run_pre_3_11(
 
   Args:
       agent_runs: Async generators that yield events from each agent.
+      sub_agent_names: Names of the parallel agent's direct sub-agents.
 
   Yields:
       Event: The next event from the merged generator.
   """
   sentinel = _AgentRunComplete()
   queue: asyncio.Queue[
-      tuple[Event | _AgentRunComplete, asyncio.Event | None]
+      tuple[Event | _AgentRunComplete, asyncio.Event | BaseException | None]
   ] = asyncio.Queue()
-
-  def propagate_exceptions(tasks: list[asyncio.Task[None]]) -> None:
-    # Propagate exceptions and errors from tasks.
-    for task in tasks:
-      if task.done():
-        # Ignore the result (None) of correctly finished tasks and re-raise
-        # exceptions and errors.
-        task.result()
 
   # Agents are processed in parallel.
   # Events for each agent are put on queue sequentially.
   async def process_an_agent(
       events_for_one_agent: AsyncGenerator[Event, None],
   ) -> None:
+    error: BaseException | None = None
     try:
       async with Aclosing(events_for_one_agent):
         async for event in events_for_one_agent:
@@ -163,9 +189,14 @@ async def _merge_agent_run_pre_3_11(
           await queue.put((event, resume_signal))
           # Wait for upstream to consume event before generating new events.
           await resume_signal.wait()
+    except asyncio.CancelledError:
+      # Cancellation is not a branch failure; keep it off the queue.
+      raise
+    except Exception as e:
+      error = e
     finally:
-      # Mark agent as finished.
-      await queue.put((sentinel, None))
+      # Mark agent as finished, carrying the failure that ended it, if any.
+      await queue.put((sentinel, error))
 
   tasks: list[asyncio.Task[None]] = []
   try:
@@ -175,23 +206,24 @@ async def _merge_agent_run_pre_3_11(
     sentinel_count = 0
     # Run until all agents finished processing.
     while sentinel_count < len(agent_runs):
-      propagate_exceptions(tasks)
-      event, resume_signal = await queue.get()
+      event, payload = await queue.get()
       # Agent finished processing.
       if isinstance(event, _AgentRunComplete):
         sentinel_count += 1
+        if isinstance(payload, BaseException):
+          raise payload
       else:
         yield event
-        if _has_escalate_action(event):
+        if _asks_this_agent_to_exit(event, sub_agent_names):
           _cancel_tasks(tasks)
           return
         # Signal to agent that event has been processed by runner and it can
         # continue now.
-        if resume_signal is None:
+        if not isinstance(payload, asyncio.Event):
           raise RuntimeError(
               'Parallel-agent event is missing its resume signal.'
           )
-        resume_signal.set()
+        payload.set()
   finally:
     _cancel_tasks(tasks)
     if tasks:
@@ -205,13 +237,18 @@ async def _merge_agent_run_pre_3_11(
     ' a future version. Workflow cannot yet be used as an LlmAgent sub-agent.'
 )
 class ParallelAgent(BaseAgent):
-  """A shell agent that runs its sub-agents in parallel in an isolated manner.
+  """A shell agent that runs its sub-agents in parallel on separate branches.
 
   This approach is beneficial for scenarios requiring multiple perspectives or
   attempts on a single task, such as:
 
   - Running different algorithms simultaneously.
   - Generating multiple responses for review by a subsequent evaluation agent.
+
+  Only conversation history is isolated between branches: a sub-agent sees the
+  events that led to the fan-out and its own, but not those of a sibling.
+  Session state is shared by every branch, so branches writing the same key
+  leave only the value written last.
 
   .. deprecated::
     ParallelAgent is deprecated in favor of Workflow and will be removed in a
@@ -238,6 +275,7 @@ class ParallelAgent(BaseAgent):
       yield self._create_agent_state_event(ctx)
 
     agent_runs = []
+    sub_agent_names = {sub_agent.name for sub_agent in self.sub_agents}
     # Prepare and collect async generators for each sub-agent.
     for sub_agent in self.sub_agents:
       sub_agent_ctx = _create_branch_ctx_for_sub_agent(self, sub_agent, ctx)
@@ -253,10 +291,10 @@ class ParallelAgent(BaseAgent):
         if sys.version_info >= (3, 11)
         else _merge_agent_run_pre_3_11
     )
-    async with Aclosing(merge_func(agent_runs)) as agen:
+    async with Aclosing(merge_func(agent_runs, sub_agent_names)) as agen:
       async for event in agen:
         yield event
-        if _has_escalate_action(event):
+        if _asks_this_agent_to_exit(event, sub_agent_names):
           escalated = True
         if ctx.should_pause_invocation(event):
           pause_invocation = True

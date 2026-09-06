@@ -37,6 +37,8 @@ from google.genai.errors import ClientError
 from pydantic import Field
 from typing_extensions import override
 
+from google import genai
+
 from ..utils._google_client_headers import get_tracking_headers
 from ..utils._google_client_headers import merge_tracking_headers
 from ..utils.context_utils import Aclosing
@@ -120,6 +122,13 @@ class Gemini(BaseLlm):
   """
 
   model: str = 'gemini-2.5-flash'
+
+  client: Optional[genai.Client] = Field(default=None, exclude=True)
+  """An optional pre-configured google-genai Client.
+
+  When provided, this client will be used for all API calls instead of
+  constructing a new one from environment variables or other attributes.
+  """
 
   client_kwargs: Optional[dict[str, Any]] = Field(
       default=None, exclude=True, repr=False
@@ -291,16 +300,41 @@ class Gemini(BaseLlm):
         # only difference is bidi rely on complete_turn flag to detect end while
         # sse depends on finish_reason.
         aggregator = StreamingResponseAggregator()
+        multiple_candidates_logged = False
+        last_usage_metadata = None
         async with Aclosing(responses) as agen:
           async for response in agen:
             if logger.isEnabledFor(logging.DEBUG):
               logger.debug(_build_response_log(response))
+            if response.usage_metadata:
+              last_usage_metadata = response.usage_metadata
+            if (
+                not multiple_candidates_logged
+                and response.candidates
+                and (
+                    len(response.candidates) > 1
+                    or any(c.index for c in response.candidates)
+                )
+            ):
+              multiple_candidates_logged = True
+              logger.error(
+                  'Multiple candidates found in streaming response but only the'
+                  ' first one will be used.'
+              )
+            if response.candidates:
+              response.candidates = [
+                  c for c in response.candidates if not c.index
+              ]
+              if not response.candidates:
+                continue
             async with Aclosing(
                 aggregator.process_response(response)
             ) as aggregator_gen:
               async for llm_response in aggregator_gen:
                 yield llm_response
         if (close_result := aggregator.close()) is not None:
+          if last_usage_metadata:
+            close_result.usage_metadata = last_usage_metadata
           # Populate cache metadata in the final aggregated response for
           # streaming
           if cache_metadata and cache_manager is not None:
@@ -318,6 +352,12 @@ class Gemini(BaseLlm):
         logger.info('Response received from the model.')
         if logger.isEnabledFor(logging.DEBUG):
           logger.debug(_build_response_log(response))
+
+        if response.candidates and len(response.candidates) > 1:
+          logger.error(
+              'Multiple candidates found in response but only the first one'
+              ' will be used.'
+          )
 
         llm_response = LlmResponse.create(response)
         if cache_metadata and cache_manager is not None:
@@ -381,6 +421,9 @@ class Gemini(BaseLlm):
     Returns:
       The api client.
     """
+    if self.client:
+      return self.client
+
     from google.genai import Client
 
     base_url, api_version = self._base_url_and_api_version
@@ -450,6 +493,9 @@ class Gemini(BaseLlm):
 
   @cached_property
   def _live_api_client(self) -> Client:
+    if self.client:
+      return self.client
+
     from google.genai import Client
 
     base_url, _ = self._base_url_and_api_version
@@ -717,21 +763,17 @@ def _build_request_log(req: LlmRequest) -> str:
             exclude={
                 'system_instruction': True,
                 'tools': tools_exclusion if req.config.tools else True,
-                # `http_options` carries caller-supplied credentials:
+                # `http_options` is excluded whole, not field by field.
                 # `headers` commonly holds an Authorization bearer token,
-                # and `extra_body` / `*client_args` are free-form
-                # passthroughs that can hold auth material too. None of
-                # it may reach a debug log. Mirrors the same exclusion
-                # applied to trace spans in telemetry/tracing.py.
-                'http_options': {
-                    'httpx_client': True,
-                    'httpx_async_client': True,
-                    'aiohttp_client': True,
-                    'headers': True,
-                    'extra_body': True,
-                    'client_args': True,
-                    'async_client_args': True,
-                },
+                # `extra_body` and the `*client_args` passthroughs can hold
+                # auth material, and `base_url` carries the credential
+                # itself when the caller points at a signed endpoint or an
+                # authenticating proxy. Naming the sensitive fields instead
+                # would also start logging every field the genai SDK adds
+                # later. The live path excludes it the same way; the trace
+                # spans built in telemetry/tracing.py still name the fields
+                # one by one.
+                'http_options': True,
             },
         )
     )

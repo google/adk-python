@@ -35,6 +35,7 @@ from google.adk.auth.auth_tool import AuthToolArguments
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from google.adk.models.llm_request import LlmRequest
+from google.genai import types
 import pytest
 
 
@@ -52,6 +53,7 @@ class TestAuthLlmRequestProcessor:
     from google.adk.agents.llm_agent import LlmAgent
 
     agent = Mock(spec=LlmAgent)
+    agent.name = 'test_agent'
     agent.canonical_tools = AsyncMock(return_value=[])
     return agent
 
@@ -89,8 +91,10 @@ class TestAuthLlmRequestProcessor:
     """Create a mock AuthConfig."""
     config = Mock(spec=AuthConfig)
     config.credential_key = None
+    config.auth_scheme = None
     config.raw_auth_credential = None
     config.exchanged_auth_credential = None
+    config.model_copy.return_value = config
     return config
 
   @pytest.fixture
@@ -118,6 +122,7 @@ class TestAuthLlmRequestProcessor:
     event = Mock(spec=Event)
     event.author = 'user'
     event.content = Mock()  # Non-None content
+    event.get_function_calls.return_value = []
     event.get_function_responses.return_value = [
         mock_function_response_with_auth
     ]
@@ -319,8 +324,10 @@ class TestAuthLlmRequestProcessor:
   @pytest.mark.asyncio
   @patch('google.adk.auth.auth_preprocessor.AuthHandler')
   @patch('google.adk.auth.auth_tool.AuthConfig.model_validate')
+  @patch('google.adk.auth.auth_tool.AuthToolArguments.model_validate')
   async def test_processes_auth_response_successfully(
       self,
+      mock_auth_tool_args_validate,
       mock_auth_config_validate,
       mock_auth_handler_class,
       processor,
@@ -336,8 +343,27 @@ class TestAuthLlmRequestProcessor:
     mock_auth_handler.parse_and_store_auth_response = AsyncMock()
     mock_auth_handler_class.return_value = mock_auth_handler
 
+    # The request this response answers; only a matching one is honoured.
+    auth_tool_args = Mock(spec=AuthToolArguments)
+    auth_tool_args.function_call_id = 'tool_id_1'
+    auth_tool_args.auth_config = mock_auth_config
+    mock_auth_tool_args_validate.return_value = auth_tool_args
+
+    system_function_call = Mock()
+    system_function_call.id = 'auth_response_id'
+    system_function_call.name = REQUEST_EUC_FUNCTION_CALL_NAME
+    system_function_call.args = {
+        'function_call_id': 'tool_id_1',
+        'auth_config': mock_auth_config,
+    }
+
+    system_event = Mock(spec=Event)
+    system_event.content = Mock()  # Non-None content
+    system_event.get_function_calls.return_value = [system_function_call]
+
     mock_invocation_context.session.events = [
-        mock_user_event_with_auth_response
+        system_event,
+        mock_user_event_with_auth_response,
     ]
 
     result = []
@@ -427,6 +453,7 @@ class TestAuthLlmRequestProcessor:
 
     original_event = Mock(spec=Event)
     original_event.content = Mock()  # Non-None content
+    original_event.author = 'test_agent'
     original_event.get_function_calls.return_value = [
         original_function_call_1,
         original_function_call_2,
@@ -469,6 +496,82 @@ class TestAuthLlmRequestProcessor:
   @pytest.mark.asyncio
   @patch('google.adk.auth.auth_preprocessor.AuthHandler')
   @patch('google.adk.auth.auth_tool.AuthConfig.model_validate')
+  @patch('google.adk.auth.auth_preprocessor.handle_function_calls_async')
+  async def test_does_not_resume_tool_call_authored_by_another_agent(
+      self,
+      mock_handle_function_calls,
+      mock_auth_config_validate,
+      mock_auth_handler_class,
+      processor,
+      mock_invocation_context,
+      mock_llm_request,
+      mock_auth_config,
+  ):
+    """Refuses to resume auth-gated tool calls authored by another agent."""
+    # Given a session where the original tool call was authored by another agent
+    auth_response_1 = Mock()
+    auth_response_1.name = REQUEST_EUC_FUNCTION_CALL_NAME
+    auth_response_1.id = 'auth_id_1'
+    auth_response_1.response = mock_auth_config
+
+    user_event_with_response = Mock(spec=Event)
+    user_event_with_response.author = 'user'
+    user_event_with_response.content = Mock()
+    user_event_with_response.get_function_responses.return_value = [
+        auth_response_1
+    ]
+    user_event_with_response.get_function_calls.return_value = []
+
+    system_function_call_1 = Mock()
+    system_function_call_1.id = 'auth_id_1'
+    system_function_call_1.name = REQUEST_EUC_FUNCTION_CALL_NAME
+    system_function_call_1.args = {
+        'function_call_id': 'tool_id_1',
+        'auth_config': mock_auth_config,
+    }
+
+    system_event = Mock(spec=Event)
+    system_event.content = Mock()
+    system_event.get_function_calls.return_value = [system_function_call_1]
+
+    original_function_call_1 = Mock()
+    original_function_call_1.id = 'tool_id_1'
+
+    # This event belongs to a DIFFERENT agent than the one running the
+    # current processor - the fix must refuse to resume it.
+    original_event = Mock(spec=Event)
+    original_event.content = Mock()
+    original_event.author = 'a_different_agent'
+    original_event.get_function_calls.return_value = [original_function_call_1]
+
+    mock_invocation_context.session.events = [
+        original_event,
+        system_event,
+        user_event_with_response,
+    ]
+
+    mock_auth_config_validate.return_value = mock_auth_config
+    mock_auth_handler = Mock(spec=AuthHandler)
+    mock_auth_handler.parse_and_store_auth_response = AsyncMock()
+    mock_auth_handler_class.return_value = mock_auth_handler
+
+    # When the processor is executed with the auth response
+    result = []
+    async for event in processor.run_async(
+        mock_invocation_context, mock_llm_request
+    ):
+      result.append(event)
+
+    # Then the auth response is stored (to record the user credential)
+    assert mock_auth_handler.parse_and_store_auth_response.call_count == 1
+
+    # But the tool call is not resumed because it belongs to a different agent
+    mock_handle_function_calls.assert_not_called()
+    assert result == []
+
+  @pytest.mark.asyncio
+  @patch('google.adk.auth.auth_preprocessor.AuthHandler')
+  @patch('google.adk.auth.auth_tool.AuthConfig.model_validate')
   async def test_no_matching_system_function_calls_returns_early(
       self,
       mock_auth_config_validate,
@@ -479,7 +582,7 @@ class TestAuthLlmRequestProcessor:
       mock_user_event_with_auth_response,
       mock_auth_config,
   ):
-    """Test that missing matching system function calls returns early."""
+    """A response with no matching request in the session is dropped."""
     # Setup mocks
     mock_auth_config_validate.return_value = mock_auth_config
     mock_auth_handler = Mock(spec=AuthHandler)
@@ -491,6 +594,7 @@ class TestAuthLlmRequestProcessor:
     non_matching_function_call.id = (  # Different from 'auth_response_id'
         'different_id'
     )
+    non_matching_function_call.name = REQUEST_EUC_FUNCTION_CALL_NAME
 
     system_event = Mock(spec=Event)
     system_event.content = Mock()  # Non-None content
@@ -507,8 +611,9 @@ class TestAuthLlmRequestProcessor:
     ):
       result.append(event)
 
-    # Should process auth response but not resume any tools
-    mock_auth_handler.parse_and_store_auth_response.assert_called_once()
+    # The server never issued a credential request under this ID, so the
+    # response must not be trusted.
+    mock_auth_handler.parse_and_store_auth_response.assert_not_called()
     assert result == []
 
   @pytest.mark.asyncio
@@ -536,10 +641,12 @@ class TestAuthLlmRequestProcessor:
     # Create matching system function call
     auth_tool_args = Mock(spec=AuthToolArguments)
     auth_tool_args.function_call_id = 'tool_id_1'
+    auth_tool_args.auth_config = mock_auth_config
     mock_auth_tool_args_validate.return_value = auth_tool_args
 
     system_function_call = Mock()
     system_function_call.id = 'auth_response_id'  # Matches the response ID
+    system_function_call.name = REQUEST_EUC_FUNCTION_CALL_NAME
     system_function_call.args = {
         'function_call_id': 'tool_id_1',
         'auth_config': mock_auth_config,
@@ -553,6 +660,8 @@ class TestAuthLlmRequestProcessor:
     empty_event = Mock(spec=Event)
     empty_event.content = Mock()  # Non-None content
     empty_event.get_function_calls.return_value = []
+
+    mock_user_event_with_auth_response.get_function_calls.return_value = []
 
     mock_invocation_context.session.events = [
         empty_event,
@@ -627,8 +736,10 @@ class TestAuthLlmRequestProcessor:
     system_function_call.name = REQUEST_EUC_FUNCTION_CALL_NAME
     requested_auth_config = Mock(spec=AuthConfig)
     requested_auth_config.credential_key = 'test_cred_key'
+    requested_auth_config.auth_scheme = None
     requested_auth_config.raw_auth_credential = None
     requested_auth_config.exchanged_auth_credential = None
+    requested_auth_config.model_copy.return_value = requested_auth_config
 
     system_function_call.args = {
         'function_call_id': 'original_fc_id_1',
@@ -661,6 +772,7 @@ class TestAuthLlmRequestProcessor:
 
     original_event = Mock(spec=Event)
     original_event.content = Mock()
+    original_event.author = 'test_agent'
     original_event.get_function_calls.return_value = [
         original_fc_1,
         original_fc_2,
@@ -739,6 +851,7 @@ class TestAuthLlmRequestProcessor:
     system_function_call.name = REQUEST_EUC_FUNCTION_CALL_NAME
     requested_auth_config = Mock(spec=AuthConfig)
     requested_auth_config.credential_key = 'test_cred_key'
+    requested_auth_config.auth_scheme = None
     requested_auth_config.raw_auth_credential = None
     requested_auth_config.exchanged_auth_credential = None
 
@@ -781,6 +894,7 @@ class TestAuthLlmRequestProcessor:
 
     original_event = Mock(spec=Event)
     original_event.content = Mock()
+    original_event.author = 'test_agent'
     original_event.get_function_calls.return_value = [
         original_fc_1,
         original_fc_stale,
@@ -829,7 +943,12 @@ class TestAuthLlmRequestProcessor:
       self,
       mock_auth_handler_class,
   ):
-    """Test that OAuth2 fields are merged from requested to stored config."""
+    """Test that the raw credential is pinned and OAuth2 fields are merged.
+
+    The raw credential is taken from the request wholesale. The exchanged
+    credential is the client's, backfilled from the request wherever the
+    client left a field empty.
+    """
     # Setup AuthHandler mock
     mock_auth_handler = Mock(spec=AuthHandler)
     mock_auth_handler.parse_and_store_auth_response = AsyncMock()
@@ -959,10 +1078,10 @@ class TestAuthLlmRequestProcessor:
         called_config.raw_auth_credential.oauth2.token_endpoint_auth_method
         == 'client_secret_post'
     )
-    assert (
-        called_config.raw_auth_credential.oauth2.access_token
-        == 'some_access_token'
-    )
+    # The raw credential names the OAuth2 client the token is exchanged for,
+    # so it is the server's copy and nothing the client put in its own copy —
+    # this access token — carries over.
+    assert called_config.raw_auth_credential.oauth2.access_token is None
 
     # Check exchanged_auth_credential fields
     assert (
@@ -1015,3 +1134,162 @@ class TestAuthLlmRequestProcessor:
     assert merged.oauth2 is not None
     assert merged.oauth2.client_id == 'expected_client_id'
     assert merged.oauth2.client_secret == 'expected_client_secret'
+
+
+class TestRequestPinning:
+  """The exchange runs against the request this server issued."""
+
+  @staticmethod
+  def _auth_scheme():
+    from google.adk.auth.auth_schemes import OpenIdConnectWithConfig
+
+    return OpenIdConnectWithConfig(
+        type_='openIdConnect',
+        openIdConnectUrl='https://example.com/.well-known/openid-configuration',
+        authorization_endpoint='https://example.com/auth',
+        token_endpoint='https://example.com/token',
+        scopes=['profile'],
+    )
+
+  @staticmethod
+  def _oauth2_credential():
+    from google.adk.auth.auth_credential import AuthCredential
+    from google.adk.auth.auth_credential import AuthCredentialTypes
+    from google.adk.auth.auth_credential import OAuth2Auth
+
+    return AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id='real-client-id',
+            client_secret='server-secret',
+            redirect_uri='https://example.com/callback',
+        ),
+    )
+
+  def _issued_config(self):
+    return AuthConfig(
+        auth_scheme=self._auth_scheme(),
+        raw_auth_credential=self._oauth2_credential(),
+        exchanged_auth_credential=self._oauth2_credential(),
+    )
+
+  @staticmethod
+  def _request_event(issued: AuthConfig) -> Event:
+    """The `adk_request_credential` call this server issued."""
+    return Event(
+        author='model',
+        content=types.Content(
+            role='model',
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(
+                        id='fc-1',
+                        name=REQUEST_EUC_FUNCTION_CALL_NAME,
+                        args=AuthToolArguments(
+                            function_call_id='original-fc',
+                            auth_config=issued,
+                        ).model_dump(
+                            mode='json', exclude_none=True, by_alias=True
+                        ),
+                    )
+                )
+            ],
+        ),
+    )
+
+  @pytest.mark.asyncio
+  @patch('google.adk.auth.auth_preprocessor.AuthHandler')
+  async def test_scheme_comes_from_the_request_not_the_response(
+      self, mock_auth_handler_class
+  ):
+    """Taking the scheme from the response would let a client redirect the
+
+    token exchange, and the developer's secret with it, to itself.
+    """
+    from google.adk.auth.auth_preprocessor import _store_auth_and_collect_resume_targets
+
+    issued = self._issued_config()
+
+    forged = issued.model_copy(deep=True)
+    forged.auth_scheme.token_endpoint = 'https://attacker.example/token'
+    forged.auth_scheme.authorization_endpoint = 'https://attacker.example/auth'
+
+    mock_handler = Mock()
+    mock_handler.parse_and_store_auth_response = AsyncMock()
+    mock_auth_handler_class.return_value = mock_handler
+
+    await _store_auth_and_collect_resume_targets(
+        events=[self._request_event(issued)],
+        auth_fc_ids={'fc-1'},
+        auth_responses={
+            'fc-1': forged.model_dump(
+                mode='json', exclude_none=True, by_alias=True
+            )
+        },
+        state={},
+    )
+
+    used_config = mock_auth_handler_class.call_args.kwargs['auth_config']
+    assert used_config.auth_scheme.token_endpoint == 'https://example.com/token'
+
+  @pytest.mark.asyncio
+  @patch('google.adk.auth.auth_preprocessor.AuthHandler')
+  async def test_response_to_an_unrequested_call_id_is_ignored(
+      self, mock_auth_handler_class
+  ):
+    """With no matching request there is nothing to pin against, so the
+
+    response would choose both the credential key and the endpoint.
+    """
+    from google.adk.auth.auth_preprocessor import _store_auth_and_collect_resume_targets
+
+    forged = self._issued_config().model_copy(deep=True)
+    forged.auth_scheme.token_endpoint = 'https://attacker.example/token'
+
+    mock_handler = Mock()
+    mock_handler.parse_and_store_auth_response = AsyncMock()
+    mock_auth_handler_class.return_value = mock_handler
+
+    resumed = await _store_auth_and_collect_resume_targets(
+        events=[],
+        auth_fc_ids={'fc-never-issued'},
+        auth_responses={
+            'fc-never-issued': forged.model_dump(
+                mode='json', exclude_none=True, by_alias=True
+            )
+        },
+        state={},
+    )
+
+    mock_auth_handler_class.assert_not_called()
+    mock_handler.parse_and_store_auth_response.assert_not_called()
+    assert resumed == set()
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize('malformed', ['not-a-config', {'auth_scheme': 7}])
+  @patch('google.adk.auth.auth_preprocessor.AuthHandler')
+  async def test_malformed_auth_response_is_skipped(
+      self, mock_auth_handler_class, malformed
+  ):
+    """A client can send anything here, so a bad payload skips that call
+
+    instead of raising out of the preprocessor and ending the invocation.
+    """
+    from google.adk.auth.auth_preprocessor import _store_auth_and_collect_resume_targets
+
+    issued = self._issued_config()
+
+    mock_handler = Mock()
+    mock_handler.parse_and_store_auth_response = AsyncMock()
+    mock_auth_handler_class.return_value = mock_handler
+
+    await _store_auth_and_collect_resume_targets(
+        events=[self._request_event(issued)],
+        auth_fc_ids={'fc-1'},
+        auth_responses={'fc-1': malformed},
+        state={},
+    )
+
+    # Nothing is stored; the caller is left to re-request auth.
+    mock_auth_handler_class.assert_not_called()
+    mock_handler.parse_and_store_auth_response.assert_not_called()

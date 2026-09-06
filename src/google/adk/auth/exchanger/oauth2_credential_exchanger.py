@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 from typing import Optional
 
@@ -101,6 +102,21 @@ class OAuth2CredentialExchanger(BaseCredentialExchanger):
     else:
       logger.warning("Unsupported OAuth2 grant type: %s", grant_type)
       return ExchangeResult(auth_credential, False)
+
+  def _exchange_sync(
+      self,
+      auth_credential: AuthCredential,
+      auth_scheme: Optional[AuthScheme] = None,
+  ) -> ExchangeResult:
+    """Same as `exchange`, for framework callers that cannot await.
+
+    The exchange runs on a worker thread with its own event loop, so a loop
+    already running on the calling thread is never reentered.
+    """
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+      return executor.submit(
+          asyncio.run, self.exchange(auth_credential, auth_scheme)
+      ).result()
 
   def _determine_grant_type(
       self, auth_scheme: AuthScheme

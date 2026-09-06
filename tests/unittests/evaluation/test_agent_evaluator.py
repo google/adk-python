@@ -238,6 +238,55 @@ async def test_evaluate_eval_set_keeps_metric_detail_for_failed_metric(mocker):
 
 
 @pytest.mark.asyncio
+async def test_evaluate_eval_set_reports_not_evaluated_metric_separately(
+    mocker,
+):
+  """A metric that never ran is not reported as a score regression.
+
+  This is the shape recorded when a judge model is unreachable: the metric
+  produces no score, so there is nothing to compare against the threshold.
+  """
+  not_evaluated_result = EvalCaseResult(
+      eval_set_id="test_eval_set",
+      eval_id="case1",
+      final_eval_status=EvalStatus.NOT_EVALUATED,
+      overall_eval_metric_results=[],
+      eval_metric_result_per_invocation=[
+          EvalMetricResultPerInvocation(
+              actual_invocation=Invocation(
+                  user_content=_content("What is 2 + 2?"),
+                  final_response=_content("4"),
+              ),
+              expected_invocation=Invocation(
+                  user_content=_content("What is 2 + 2?"),
+                  final_response=_content("4"),
+              ),
+              eval_metric_results=[
+                  EvalMetricResult(
+                      metric_name="final_response_match_v2",
+                      threshold=0.8,
+                      score=None,
+                      eval_status=EvalStatus.NOT_EVALUATED,
+                  )
+              ],
+          )
+      ],
+      session_id="",
+  )
+
+  with pytest.raises(AssertionError) as exc_info:
+    await _mock_evaluate_eval_set(mocker, not_evaluated_result)
+
+  message = str(exc_info.value)
+  assert "final_response_match_v2 for my.agent.module was not evaluated" in (
+      message
+  )
+  # The wording used for a metric that scored below its threshold.
+  assert "Failed. Expected" not in message
+  assert "but got None" not in message
+
+
+@pytest.mark.asyncio
 async def test_evaluate_eval_set_passes_when_metrics_pass(mocker):
   """A passing eval case is not turned into a failure."""
   passing_result = EvalCaseResult(
@@ -1095,6 +1144,52 @@ async def test_evaluate_keeps_positional_initial_session_file_and_print_flag(
       evaluate_eval_set_mock.await_args.kwargs["print_detailed_results"]
       is False
   )
+
+
+@pytest.mark.parametrize(
+    "print_detailed_results, score, threshold, expect_print, expected_status",
+    [
+        # Case 1: print_detailed_results is False. No printing should happen.
+        (False, 0.9, 0.8, False, EvalStatus.PASSED),
+        (False, 0.7, 0.8, False, EvalStatus.FAILED),
+        # Case 2: print_detailed_results is True. Printing should happen.
+        (True, 0.9, 0.8, True, EvalStatus.PASSED),
+        (True, 0.7, 0.8, True, EvalStatus.FAILED),
+    ],
+)
+def test_process_metrics_and_get_failures_printing(
+    print_detailed_results,
+    score,
+    threshold,
+    expect_print,
+    expected_status,
+    mocker,
+):
+  mock_metric_result = mocker.MagicMock()
+  mock_metric_result.eval_metric_result.criterion = None
+  mock_metric_result.eval_metric_result.threshold = threshold
+  mock_metric_result.eval_metric_result.score = score
+
+  eval_metric_results = {"dummy_metric": [mock_metric_result]}
+
+  mock_print_details = mocker.patch.object(AgentEvaluator, "_print_details")
+
+  AgentEvaluator._process_metrics_and_get_failures(
+      eval_metric_results=eval_metric_results,
+      print_detailed_results=print_detailed_results,
+      agent_module="dummy_agent",
+  )
+
+  if expect_print:
+    mock_print_details.assert_called_once_with(
+        eval_metric_result_with_invocations=[mock_metric_result],
+        overall_eval_status=expected_status,
+        overall_score=score,
+        metric_name="dummy_metric",
+        threshold=threshold,
+    )
+  else:
+    mock_print_details.assert_not_called()
 
 
 def _non_utf8_default_open(file, mode="r", *args, **kwargs):

@@ -69,7 +69,7 @@ ______________________________________________________________________
 - **Agent Config**: Build agents without code. Check out the
   [Agent Config](https://google.github.io/adk-docs/agents/config/) feature.
 
-- **Tool Confirmation**: A [tool confirmation flow(HITL)](https://google.github.io/adk-docs/tools/confirmation/) that can guard tool execution with explicit confirmation and custom input.
+- **Tool Confirmation**: A [tool confirmation flow (HITL)](https://google.github.io/adk-docs/tools/confirmation/) that can guard tool execution with explicit confirmation and custom input.
 
 - **Deploy Anywhere**: Easily containerize and deploy agents on Cloud Run or
   scale seamlessly with Vertex AI Agent Engine.
@@ -201,13 +201,13 @@ We welcome contributions from the community! Whether it's bug reports, feature r
 
 ## Community Repo
 
-We have [adk-python-community repo](https://github.com/google/adk-python-community) that is home to a growing ecosystem of community-contributed tools, third-party
+We have the [adk-python-community repo](https://github.com/google/adk-python-community) that is home to a growing ecosystem of community-contributed tools, third-party
 service integrations, and deployment scripts that extend the core capabilities
 of the ADK.
 
 ## Vibe Coding
 
-If you want to develop agent via vibe coding the [llms.txt](./llms.txt) and the [llms-full.txt](./llms-full.txt) can be used as context to LLM. While the former one is a summarized one and the later one has the full information in case your LLM has big enough context window.
+If you want to develop an agent via vibe coding the [llms.txt](./llms.txt) and the [llms-full.txt](./llms-full.txt) can be used as context to an LLM. While the former one is a summarized one and the latter one has the full information in case your LLM has a big enough context window.
 
 ## Community Events
 

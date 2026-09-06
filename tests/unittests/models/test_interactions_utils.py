@@ -22,6 +22,7 @@ from datetime import datetime
 from datetime import timezone
 import json
 import logging
+import typing
 from unittest.mock import MagicMock
 
 from google.adk.models import interactions_utils
@@ -1094,11 +1095,56 @@ class TestConvertInteractionOutputToParts:
     assert result.code_execution_result.output == 'Error: division by zero'
     assert result.code_execution_result.outcome == types.Outcome.OUTCOME_FAILED
 
-  def test_thought_output_returns_empty(self):
-    """Test that thought output returns empty list (not exposed as Part)."""
-    output = ThoughtStep(type='thought', signature='thinking...')
+  def test_thought_output_without_signature_returns_empty(self):
+    """A thought step with no signature contributes no parts."""
+    output = ThoughtStep(type='thought')
     result = interactions_utils._convert_interaction_step_to_parts(output)
     assert result == []
+
+  def test_thought_output_with_signature_becomes_thought_part(self):
+    """A thought step's signature is decoded onto a thought part."""
+    output = ThoughtStep(
+        type='thought',
+        signature=base64.b64encode(b'sig-bytes').decode('utf-8'),
+    )
+
+    result = interactions_utils._convert_interaction_step_to_parts(output)
+
+    assert len(result) == 1
+    assert result[0].thought is True
+    assert result[0].thought_signature == b'sig-bytes'
+
+  def test_thought_output_signature_survives_the_round_trip_back(self):
+    """The signature part re-encodes as a thought step carrying the signature.
+
+    Gemini 3 only accepts the follow-up request if the signature comes back
+    verbatim, so the part has to convert back to a step that still has one.
+    """
+    signature = base64.b64encode(b'sig-bytes').decode('utf-8')
+    output = ThoughtStep(type='thought', signature=signature)
+
+    part = interactions_utils._convert_interaction_step_to_parts(output)[0]
+
+    assert interactions_utils._convert_part_to_interaction_content(part) == {
+        'type': 'thought',
+        'signature': signature,
+    }
+
+  def test_thought_output_summary_is_not_carried_onto_the_part(self):
+    """The signature part stays text-free.
+
+    A part that also carries text converts back to a text step, which has no
+    signature field, so the signature would be dropped on the next request.
+    """
+    output = ThoughtStep(
+        type='thought',
+        signature=base64.b64encode(b'sig-bytes').decode('utf-8'),
+        summary=[TextContent(type='text', text='Let me think...')],
+    )
+
+    result = interactions_utils._convert_interaction_step_to_parts(output)
+
+    assert result[0].text is None
 
   def test_no_type_attribute(self):
     """Test handling output without type attribute."""
@@ -1245,8 +1291,15 @@ class TestConvertInteractionToLlmResponse:
 class TestBuildGenerationConfig:
   """Tests for build_generation_config."""
 
+  @pytest.fixture(autouse=True)
+  def _forget_warned_parameters(self):
+    """Each test starts with nothing warned about yet."""
+    interactions_utils._WARNED_SAMPLING_PARAMS.clear()
+    yield
+    interactions_utils._WARNED_SAMPLING_PARAMS.clear()
+
   def test_all_parameters(self):
-    """Test building config with all parameters."""
+    """Test that only parameters that reach the interactions API are sent."""
     config = types.GenerateContentConfig(
         temperature=0.7,
         top_p=0.9,
@@ -1255,16 +1308,13 @@ class TestBuildGenerationConfig:
         stop_sequences=['END'],
         presence_penalty=0.5,
         frequency_penalty=0.3,
+        seed=7,
     )
     result = interactions_utils.build_generation_config(config)
     assert result == {
-        'temperature': 0.7,
-        'top_p': 0.9,
-        'top_k': 40,
         'max_output_tokens': 100,
         'stop_sequences': ['END'],
-        'presence_penalty': 0.5,
-        'frequency_penalty': 0.3,
+        'seed': 7,
     }
 
   def test_partial_parameters(self):
@@ -1274,16 +1324,119 @@ class TestBuildGenerationConfig:
         max_output_tokens=50,
     )
     result = interactions_utils.build_generation_config(config)
-    assert result == {
-        'temperature': 0.5,
-        'max_output_tokens': 50,
-    }
+    assert result == {'max_output_tokens': 50}
 
   def test_empty_config(self):
     """Test building config with no parameters."""
     config = types.GenerateContentConfig()
     result = interactions_utils.build_generation_config(config)
     assert result == {}
+
+  def test_every_key_is_a_real_generation_config_field(self):
+    """Keys absent from GenerationConfigParam are dropped before the wire."""
+    config = types.GenerateContentConfig(
+        temperature=0.7,
+        top_p=0.9,
+        top_k=40,
+        max_output_tokens=100,
+        stop_sequences=['END'],
+        presence_penalty=0.5,
+        frequency_penalty=0.3,
+        seed=7,
+    )
+    result = interactions_utils.build_generation_config(config)
+    supported = set(typing.get_type_hints(interactions.GenerationConfigParam))
+    assert set(result) == {'max_output_tokens', 'stop_sequences', 'seed'}
+    assert set(result) <= supported
+
+  def test_dropped_parameters_are_the_ones_the_request_cannot_carry(self):
+    """The parameters left out are exactly those with no request field."""
+    dropped = set(interactions_utils._UNDECLARED_SAMPLING_PARAMS) | set(
+        interactions_utils._UNSUPPORTED_SAMPLING_PARAMS
+    )
+    supported = set(typing.get_type_hints(interactions.GenerationConfigParam))
+    assert dropped.isdisjoint(supported)
+
+  def test_undeclared_parameters_point_at_the_client(self, caplog):
+    """A parameter the API applies but the client cannot send blames genai."""
+    config = types.GenerateContentConfig(temperature=0.7, top_p=0.9, top_k=40)
+
+    with caplog.at_level(
+        logging.WARNING, logger=interactions_utils.logger.name
+    ):
+      interactions_utils.build_generation_config(config)
+
+    warnings = [
+        r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+    ]
+    assert len(warnings) == 1
+    assert 'temperature' in warnings[0]
+    assert 'top_p' in warnings[0]
+    assert 'top_k' in warnings[0]
+    assert 'google-genai' in warnings[0]
+    assert 'use_interactions_api' not in warnings[0]
+
+  def test_unsupported_parameters_point_at_the_api(self, caplog):
+    """A parameter the API rejects tells the caller to unset it instead."""
+    config = types.GenerateContentConfig(
+        presence_penalty=0.5, frequency_penalty=0.3
+    )
+
+    with caplog.at_level(
+        logging.WARNING, logger=interactions_utils.logger.name
+    ):
+      interactions_utils.build_generation_config(config)
+
+    warnings = [
+        r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+    ]
+    assert len(warnings) == 1
+    assert 'presence_penalty' in warnings[0]
+    assert 'frequency_penalty' in warnings[0]
+    assert 'use_interactions_api' in warnings[0]
+
+  def test_the_two_causes_are_reported_separately(self, caplog):
+    """Test that one cause is not folded into the other's remedy."""
+    config = types.GenerateContentConfig(temperature=0.7, presence_penalty=0.5)
+
+    with caplog.at_level(
+        logging.WARNING, logger=interactions_utils.logger.name
+    ):
+      interactions_utils.build_generation_config(config)
+
+    warnings = [
+        r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+    ]
+    assert len(warnings) == 2
+    client, api = sorted(warnings, key=lambda w: 'use_interactions_api' in w)
+    assert 'temperature' in client and 'presence_penalty' not in client
+    assert 'presence_penalty' in api and 'temperature' not in api
+
+  def test_dropped_parameters_are_logged_once(self, caplog):
+    """Test that a parameter is reported once, not on every model turn."""
+    config = types.GenerateContentConfig(temperature=0.7)
+
+    with caplog.at_level(
+        logging.WARNING, logger=interactions_utils.logger.name
+    ):
+      interactions_utils.build_generation_config(config)
+      interactions_utils.build_generation_config(config)
+
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+
+  def test_supported_parameters_only_do_not_warn(self, caplog):
+    """Test that a config the API can honor logs nothing."""
+    config = types.GenerateContentConfig(
+        max_output_tokens=100, stop_sequences=['END'], seed=7
+    )
+
+    with caplog.at_level(
+        logging.WARNING, logger=interactions_utils.logger.name
+    ):
+      interactions_utils.build_generation_config(config)
+
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
 class TestExtractSystemInstruction:
@@ -1422,6 +1575,93 @@ class TestGetLatestUserContents:
     assert result[0].parts[0].text == 'Great'
     assert result[1].parts[0].text == 'Tell me more'
 
+  def test_signature_from_preceding_model_turn_is_carried_over(self):
+    """A tool call's thought signature leads the returned contents.
+
+    The signature sits on the model turn that requested the tool call, one
+    step outside the trailing user window, but Gemini 3 rejects the request
+    that carries the tool result unless the signature comes back with it.
+    """
+    contents = [
+        types.Content(role='user', parts=[types.Part(text='Weather?')]),
+        types.Content(
+            role='model',
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(name='get_weather'),
+                    thought_signature=b'sig-bytes',
+                )
+            ],
+        ),
+        types.Content(
+            role='user',
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        name='get_weather', response={'temp': 20}
+                    )
+                )
+            ],
+        ),
+    ]
+
+    result = interactions_utils._get_latest_user_contents(contents)
+
+    assert len(result) == 2
+    assert result[0].role == 'model'
+    assert result[0].parts[0].thought_signature == b'sig-bytes'
+    assert result[1].role == 'user'
+
+  def test_signature_free_parts_of_that_turn_are_left_behind(self):
+    """Only the signature-bearing parts of the model turn come across.
+
+    The rest of that turn is already server-side under
+    previous_interaction_id, so re-sending it would duplicate it.
+    """
+    contents = [
+        types.Content(
+            role='model',
+            parts=[
+                types.Part(text='Let me check the forecast.'),
+                types.Part(thought=True, thought_signature=b'sig-bytes'),
+            ],
+        ),
+        types.Content(role='user', parts=[types.Part(text='Thanks')]),
+    ]
+
+    result = interactions_utils._get_latest_user_contents(contents)
+
+    assert len(result[0].parts) == 1
+    assert result[0].parts[0].thought_signature == b'sig-bytes'
+
+  def test_signature_carried_across_several_trailing_user_messages(self):
+    """The signature part stays ahead of every message in the user window."""
+    contents = [
+        types.Content(
+            role='model',
+            parts=[types.Part(thought=True, thought_signature=b'sig-bytes')],
+        ),
+        types.Content(role='user', parts=[types.Part(text='First')]),
+        types.Content(role='user', parts=[types.Part(text='Second')]),
+    ]
+
+    result = interactions_utils._get_latest_user_contents(contents)
+
+    assert [content.role for content in result] == ['model', 'user', 'user']
+    assert result[0].parts[0].thought_signature == b'sig-bytes'
+
+  def test_partless_preceding_model_turn_is_skipped(self):
+    """A model turn with no parts contributes nothing and does not raise."""
+    contents = [
+        types.Content(role='model'),
+        types.Content(role='user', parts=[types.Part(text='Hello')]),
+    ]
+
+    result = interactions_utils._get_latest_user_contents(contents)
+
+    assert len(result) == 1
+    assert result[0].parts[0].text == 'Hello'
+
 
 class TestConvertInteractionEventToLlmResponse:
   """Tests for convert_interaction_event_to_llm_response."""
@@ -1486,6 +1726,27 @@ class TestConvertInteractionEventToLlmResponse:
     assert part.thought is True
     assert len(state.parts) == 1
 
+  def test_thought_summary_delta_ignores_non_text_content(self):
+    """A thought summary carrying non-text content emits nothing."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={
+            'type': 'thought_summary',
+            'content': {
+                'type': 'image',
+                'data': 'aW1n',
+                'mime_type': 'image/png',
+            },
+        },
+    )
+    state = interactions_utils._StreamState()
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, state, interaction_id='int_t'
+    )
+    assert result is None
+    assert state.parts == []
+
   def test_thought_signature_delta_attaches_to_last_thought(self):
     """thought_signature mutates the last thought part and emits no event."""
     state = interactions_utils._StreamState()
@@ -1513,6 +1774,79 @@ class TestConvertInteractionEventToLlmResponse:
     )
     assert result is None
     assert state.parts[-1].thought_signature == b'sig-bytes'
+
+  def test_thought_signature_delta_alone_becomes_its_own_part(self):
+    """A signature with no preceding thought summary still reaches the stream.
+
+    The model routinely emits a signature without a summary, and dropping it
+    would make the next request fail.
+    """
+    state = interactions_utils._StreamState()
+
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={
+                'type': 'thought_signature',
+                'signature': base64.b64encode(b'lone-sig').decode('utf-8'),
+            },
+        ),
+        state,
+        interaction_id='int_ts',
+    )
+
+    assert result is None
+    assert len(state.parts) == 1
+    assert state.parts[0].thought is True
+    assert state.parts[0].thought_signature == b'lone-sig'
+
+  def test_thought_signature_delta_does_not_attach_to_a_text_part(self):
+    """A signature never lands on a text part, which cannot carry one."""
+    state = interactions_utils._StreamState()
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'text', 'text': 'The weather is sunny.'},
+        ),
+        state,
+        interaction_id='int_ts',
+    )
+
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={
+                'type': 'thought_signature',
+                'signature': base64.b64encode(b'sig-bytes').decode('utf-8'),
+            },
+        ),
+        state,
+        interaction_id='int_ts',
+    )
+
+    assert state.parts[0].text == 'The weather is sunny.'
+    assert state.parts[0].thought_signature is None
+    assert state.parts[1].thought_signature == b'sig-bytes'
+
+  def test_thought_signature_delta_without_signature_adds_no_part(self):
+    """An empty signature delta leaves the stream state untouched."""
+    state = interactions_utils._StreamState()
+
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'thought_signature', 'signature': ''},
+        ),
+        state,
+        interaction_id='int_ts',
+    )
+
+    assert result is None
+    assert state.parts == []
 
   def test_audio_delta_with_data(self):
     """audio delta becomes an inline_data part via the shared media handler."""
@@ -1675,6 +2009,27 @@ class TestConvertInteractionEventToLlmResponse:
     assert support.segment.end_index == 5
     assert len(state.grounding_chunks) == 1
     assert len(state.grounding_supports) == 1
+
+  def test_text_annotation_delta_skips_non_url_citations(self):
+    """Annotations that are not url_citations contribute no grounding."""
+    event = StepDelta(
+        event_type='step.delta',
+        index=0,
+        delta={
+            'type': 'text_annotation_delta',
+            'annotations': [
+                {'type': 'file_citation', 'file_id': 'f1'},
+                {'type': 'word_info', 'word': 'hello'},
+            ],
+        },
+    )
+    state = interactions_utils._StreamState()
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, state, interaction_id='int_an'
+    )
+    assert result is None
+    assert state.grounding_chunks == []
+    assert state.grounding_supports == []
 
   def test_function_result_delta(self):
     """function_result delta becomes a function_response part."""
@@ -2073,6 +2428,260 @@ class TestConvertInteractionEventToLlmResponse:
 
     # The logging check can remain to ensure the raw exception is still logged.
     assert 'Failed to parse function call args' in caplog.text
+
+  def test_interleaved_function_call_streaming_routes_by_index(self):
+    """Interleaved function-call steps route deltas/stops by their index.
+
+    Two calls start at indexes 0 and 1, then arguments for both arrive before
+    either stops. Without index-based routing, both deltas would be appended to
+    the most recently started call (index 1), so the first call ends up with no
+    arguments while the second receives two concatenated JSON objects.
+    """
+    state = interactions_utils._StreamState()
+
+    # Start two function calls at different indexes.
+    for idx, (call_id, name) in enumerate(
+        [('call_0', 'get_weather'), ('call_1', 'get_time')]
+    ):
+      interactions_utils.convert_interaction_event_to_llm_response(
+          StepStart(
+              event_type='step.start',
+              index=idx,
+              step=FunctionCallStep(
+                  type='function_call', id=call_id, name=name, arguments={}
+              ),
+          ),
+          state,
+          interaction_id='int_multi',
+      )
+
+    # Interleave argument deltas: index 0 first, then index 1.
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'arguments_delta', 'arguments': '{"city": "Paris"}'},
+        ),
+        state,
+        interaction_id='int_multi',
+    )
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=1,
+            delta={'type': 'arguments_delta', 'arguments': '{"zone": "UTC"}'},
+        ),
+        state,
+        interaction_id='int_multi',
+    )
+
+    # Stop both steps.
+    for idx in (0, 1):
+      interactions_utils.convert_interaction_event_to_llm_response(
+          StepStop(event_type='step.stop', index=idx),
+          state,
+          interaction_id='int_multi',
+      )
+
+    assert state.parts[0].function_call.name == 'get_weather'
+    assert state.parts[0].function_call.args == {'city': 'Paris'}
+    assert state.parts[1].function_call.name == 'get_time'
+    assert state.parts[1].function_call.args == {'zone': 'UTC'}
+
+  def test_step_stop_with_unmatched_index_does_not_finalize_active_function_call(
+      self,
+  ):
+    """An event with an unmatched step index must not resolve to the last function call."""
+    state = interactions_utils._StreamState()
+
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepStart(
+            event_type='step.start',
+            index=0,
+            step=FunctionCallStep(
+                type='function_call',
+                id='call_0',
+                name='get_weather',
+                arguments={},
+            ),
+        ),
+        state,
+        interaction_id='int_multi',
+    )
+
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'arguments_delta', 'arguments': '{"city": '},
+        ),
+        state,
+        interaction_id='int_multi',
+    )
+
+    # StepStop for an unrelated step (index 1). It must not finalize step 0's call.
+    res = interactions_utils.convert_interaction_event_to_llm_response(
+        StepStop(event_type='step.stop', index=1),
+        state,
+        interaction_id='int_multi',
+    )
+    assert res is None
+
+    # Step 0 receives the rest of its arguments and stops cleanly.
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'arguments_delta', 'arguments': '"Paris"}'},
+        ),
+        state,
+        interaction_id='int_multi',
+    )
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepStop(event_type='step.stop', index=0),
+        state,
+        interaction_id='int_multi',
+    )
+
+    assert state.parts[0].function_call.name == 'get_weather'
+    assert state.parts[0].function_call.args == {'city': 'Paris'}
+
+  def test_arguments_delta_with_unmatched_index_does_not_alter_active_function_call(
+      self, caplog
+  ):
+    """An arguments delta with an unmatched step index must not resolve to an active function call."""
+    state = interactions_utils._StreamState()
+
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepStart(
+            event_type='step.start',
+            index=0,
+            step=FunctionCallStep(
+                type='function_call',
+                id='call_0',
+                name='get_weather',
+                arguments={},
+            ),
+        ),
+        state,
+        interaction_id='int_multi',
+    )
+
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'arguments_delta', 'arguments': '{"city": '},
+        ),
+        state,
+        interaction_id='int_multi',
+    )
+
+    # ArgumentsDelta for an unrelated step (index 1). It must return None, log a
+    # warning, and not be appended to step 0's call.
+    with caplog.at_level(logging.WARNING):
+      res = interactions_utils.convert_interaction_event_to_llm_response(
+          StepDelta(
+              event_type='step.delta',
+              index=1,
+              delta={'type': 'arguments_delta', 'arguments': '{"extra": 1}'},
+          ),
+          state,
+          interaction_id='int_multi',
+      )
+    assert res is None
+    assert (
+        'Interactions streaming converter dropped an arguments delta: step'
+        ' index 1 has no function-call part; skipping.'
+        in caplog.text
+    )
+
+    # Step 0 receives the rest of its arguments and stops cleanly.
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'arguments_delta', 'arguments': '"Paris"}'},
+        ),
+        state,
+        interaction_id='int_multi',
+    )
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepStop(event_type='step.stop', index=0),
+        state,
+        interaction_id='int_multi',
+    )
+
+    assert state.parts[0].function_call.name == 'get_weather'
+    assert state.parts[0].function_call.args == {'city': 'Paris'}
+
+  def test_arguments_delta_for_finalized_call_logs_warning(self, caplog):
+    """An arguments delta arriving after StepStop must log a warning and return None."""
+    state = interactions_utils._StreamState()
+
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepStart(
+            event_type='step.start',
+            index=0,
+            step=FunctionCallStep(
+                type='function_call',
+                id='call_0',
+                name='get_weather',
+                arguments={},
+            ),
+        ),
+        state,
+        interaction_id='int_multi',
+    )
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'arguments_delta', 'arguments': '{"city": "Paris"}'},
+        ),
+        state,
+        interaction_id='int_multi',
+    )
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepStop(event_type='step.stop', index=0),
+        state,
+        interaction_id='int_multi',
+    )
+    assert state.parts[0].function_call.partial_args is None
+    assert state.parts[0].function_call.args == {'city': 'Paris'}
+
+    # A routine delta with None arguments should be a silent no-op.
+    with caplog.at_level(logging.WARNING):
+      res_none = interactions_utils.convert_interaction_event_to_llm_response(
+          StepDelta(
+              event_type='step.delta',
+              index=0,
+              delta={'type': 'arguments_delta', 'arguments': None},
+          ),
+          state,
+          interaction_id='int_multi',
+      )
+    assert res_none is None
+    assert 'was already finalized' not in caplog.text
+
+    # A late arguments delta for the finalized call must warn and return None.
+    with caplog.at_level(logging.WARNING):
+      res_late = interactions_utils.convert_interaction_event_to_llm_response(
+          StepDelta(
+              event_type='step.delta',
+              index=0,
+              delta={'type': 'arguments_delta', 'arguments': '{"extra": 1}'},
+          ),
+          state,
+          interaction_id='int_multi',
+      )
+    assert res_late is None
+    assert (
+        'Interactions streaming converter dropped an arguments delta: step'
+        ' index 0 was already finalized; skipping.'
+        in caplog.text
+    )
+    assert state.parts[0].function_call.args == {'city': 'Paris'}
 
 
 @pytest.mark.parametrize(

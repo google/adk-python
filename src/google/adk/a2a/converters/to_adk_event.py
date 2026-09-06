@@ -533,6 +533,16 @@ def convert_a2a_task_to_event(
             a2a_task.status.state, output_parts, long_running_function_ids
         )
     )
+    if (
+        getattr(a2a_task.status, "state", None)
+        in (
+            _compat.TS_COMPLETED,
+            _compat.TS_FAILED,
+            _compat.TS_CANCELED,
+        )
+        and output_parts
+    ):
+      event_actions.skip_summarization = True
 
     return _create_event(
         output_parts,

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextvars
 from enum import Enum
 from functools import partial
 from typing import Any
@@ -183,12 +184,12 @@ CALLBACK_PARAMS = [
     ([({}, CallbackType.SYNC)], {}, [1]),
     # Test single async callback returning response (should skip tool execution)
     ([({}, CallbackType.ASYNC)], {}, [1]),
-    # Test callback chain where an empty dict from the first callback doesn't
-    # stop the chain, allowing the second callback to execute.
+    # An empty dict is a response, so it ends the chain and the second
+    # callback never runs.
     (
         [({}, CallbackType.SYNC), ({"second": "callback"}, CallbackType.ASYNC)],
-        {"second": "callback"},
-        [1, 1],
+        {},
+        [1, 0],
     ),
     # Test callback chain where first returns None, second returns response
     (
@@ -390,7 +391,7 @@ async def test_live_callback_compatibility_with_async():
 
 @pytest.mark.asyncio
 async def test_live_on_tool_error_callback_tool_not_found_noop():
-  """Test that on_tool_error_callback is a no-op when the tool is not found."""
+  """Test that a no-op on_tool_error_callback keeps the default error response."""
 
   def noop_on_tool_error_callback(tool, args, tool_context, error):
     return None
@@ -418,8 +419,13 @@ async def test_live_on_tool_error_callback_tool_not_found_noop():
   )
   tools_dict = {tool.name: tool}
 
-  with pytest.raises(ValueError):
-    await handle_function_calls_live(invocation_context, event, tools_dict)
+  result = await handle_function_calls_live(
+      invocation_context, event, tools_dict
+  )
+
+  function_response = result.content.parts[0].function_response
+  assert function_response.name == "nonexistent_function"
+  assert "nonexistent_function" in function_response.response["error"]
 
 
 @pytest.mark.asyncio
@@ -463,3 +469,146 @@ async def test_live_on_tool_error_callback_tool_not_found_modify_tool_response()
   assert part.function_response.response == {
       "result": "on_tool_error_callback_response"
   }
+
+
+@pytest.mark.asyncio
+async def test_live_on_tool_error_callback_stops_on_empty_dict():
+  """Test that an empty error recovery response stops the callback chain."""
+
+  def empty_response_callback(tool, args, tool_context, error):
+    return {}
+
+  unexpected_callback = mock.Mock(
+      side_effect=AssertionError("callback chain should have stopped")
+  )
+  tool = FunctionTool(lambda: {"initial": "response"})
+  agent = Agent(
+      name="agent",
+      model=testing_utils.MockModel.create(responses=[]),
+      tools=[tool],
+      on_tool_error_callback=[empty_response_callback, unexpected_callback],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=""
+  )
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      name="nonexistent_function", args={}
+                  )
+              )
+          ]
+      ),
+  )
+
+  result_event = await handle_function_calls_live(
+      invocation_context, event, {tool.name: tool}
+  )
+
+  assert result_event is not None
+  assert result_event.content.parts[0].function_response.response == {}
+  unexpected_callback.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_live_non_blocking_tool_before_tool_callback_raising_does_not_kill_turn(
+    caplog,
+):
+  """A raising before-tool callback on a non-blocking tool is logged, not fatal."""
+
+  def failing_before_tool_callback(tool, args, tool_context):
+    raise RuntimeError("boom in before_tool_callback")
+
+  def simple_tool():
+    return {"result": "ok"}
+
+  tool = FunctionTool(simple_tool)
+  tool.response_scheduling = types.FunctionResponseScheduling.SILENT
+  agent = Agent(
+      name="agent",
+      model=testing_utils.MockModel.create(responses=[]),
+      tools=[tool],
+      before_tool_callback=[failing_before_tool_callback],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=""
+  )
+  fc = types.FunctionCall(name=tool.name, args={}, id="fc_1")
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=fc)]),
+  )
+
+  result_event = await handle_function_calls_live(
+      invocation_context, event, {tool.name: tool}
+  )
+
+  # Non-blocking tool returns None immediately and runs in the background.
+  assert result_event is None
+
+  # Wait for background task to finish.
+  task = (
+      invocation_context.active_non_blocking_tool_tasks.get(
+          f"{tool.name}_{fc.id}"
+      )
+      if invocation_context.active_non_blocking_tool_tasks
+      else None
+  )
+  if task:
+    await task
+
+  assert "Error running non-blocking tool" in caplog.text
+  assert not (
+      invocation_context.active_non_blocking_tool_tasks
+      and f"{tool.name}_{fc.id}"
+      in invocation_context.active_non_blocking_tool_tasks
+  )
+
+
+_live_ambient_value: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "live_ambient_value", default="unset"
+)
+
+
+@pytest.mark.asyncio
+async def test_live_before_tool_callback_contextvar_reaches_the_tool():
+  """A contextvar set in before_tool_callback is still set when the tool runs."""
+
+  def read_ambient_value() -> Dict[str, Any]:
+    return {"result": _live_ambient_value.get()}
+
+  def before_cb(tool, args, tool_context) -> None:
+    _live_ambient_value.set("set-by-callback")
+    return None
+
+  tool = FunctionTool(read_ambient_value)
+  agent = Agent(
+      name="agent",
+      model=testing_utils.MockModel.create(responses=[]),
+      tools=[tool],
+      before_tool_callback=before_cb,
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=""
+  )
+  fc = types.FunctionCall(name=tool.name, args={}, id="fc_1")
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=fc)]),
+  )
+
+  result_event = await handle_function_calls_live(
+      invocation_context, event, {tool.name: tool}
+  )
+
+  assert result_event is not None
+  assert result_event.content.parts[0].function_response.response == {
+      "result": "set-by-callback"
+  }
+  assert _live_ambient_value.get() == "unset"

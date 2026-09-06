@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 """Errors raised by the workflow framework."""
 
 
@@ -56,4 +58,17 @@ class DynamicNodeFailError(Exception):
   ) -> None:
     self.error = error
     self.error_node_path = error_node_path
+    # Surface the wrapped error's HTTP status/details so they aren't lost as the
+    # error propagates up the execution stack. genai's client exposes `code`;
+    # other libraries use `status_code`.
+    self.status_code: Any | None = getattr(
+        error, "status_code", getattr(error, "code", None)
+    )
+    details = getattr(error, "details", None)
+    if details is None:
+      # Raw httpx-style errors keep the body on the response instead.
+      response = getattr(error, "response", None)
+      if response is not None:
+        details = getattr(response, "text", None)
+    self.details: Any | None = details
     super().__init__(message)

@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.loop_agent import LoopAgentState
@@ -26,6 +28,7 @@ from google.adk.apps.app import ResumabilityConfig
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.exit_loop_tool import exit_loop
+from google.adk.tools.tool_context import ToolContext
 from google.genai.types import Part
 import pytest
 
@@ -42,7 +45,28 @@ TRANSFER_RESPONSE_PART = Part.from_function_response(
     name='transfer_to_agent', response={'result': None}
 )
 
+FORCED_TRANSFER_CALL_PART = Part.from_function_call(
+    name='force_transfer', args={}
+)
+
+FORCED_TRANSFER_RESPONSE_PART = Part.from_function_response(
+    name='force_transfer', response={'status': 'ok'}
+)
+
+
 END_OF_AGENT = testing_utils.END_OF_AGENT
+
+
+def force_transfer_tool(
+    target_name: str,
+) -> Callable[[ToolContext], dict[str, str]]:
+  """Builds a tool that requests a transfer without going through the transfer tool."""
+
+  def force_transfer(tool_context: ToolContext) -> dict[str, str]:
+    tool_context.actions.transfer_to_agent = target_name
+    return {'status': 'ok'}
+
+  return force_transfer
 
 
 @pytest.mark.parametrize('is_resumable', [True, False])
@@ -801,6 +825,139 @@ async def test_transfer_to_unrelated_agent_raises_error():
         new_message=msg,
     ):
       pass
+
+
+@pytest.mark.asyncio
+async def test_tool_driven_transfer_to_parent_refused_when_disallowed():
+  """A tool setting the transfer action cannot reach a disallowed parent."""
+  # Arrange
+  response = [
+      transfer_call_part('sub_agent_1'),
+      FORCED_TRANSFER_CALL_PART,
+  ]
+  mock_model = testing_utils.MockModel.create(responses=response)
+
+  sub_agent_1 = Agent(
+      name='sub_agent_1',
+      model=mock_model,
+      disallow_transfer_to_parent=True,
+      tools=[force_transfer_tool('root_agent')],
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      sub_agents=[sub_agent_1],
+  )
+
+  session_service = InMemorySessionService()
+  await session_service.create_session(
+      app_name='test_app', user_id='test_user', session_id='test_session'
+  )
+  runner = Runner(
+      app_name='test_app',
+      agent=root_agent,
+      session_service=session_service,
+  )
+
+  msg = testing_utils.types.Content(
+      role='user', parts=[testing_utils.types.Part(text='start')]
+  )
+
+  # Act & Assert
+  with pytest.raises(
+      ValueError,
+      match="Cannot transfer from 'sub_agent_1' to parent agent 'root_agent'",
+  ):
+    async for _ in runner.run_async(
+        user_id='test_user',
+        session_id='test_session',
+        new_message=msg,
+    ):
+      pass
+
+
+@pytest.mark.asyncio
+async def test_tool_driven_transfer_to_peer_refused_when_disallowed():
+  """A tool setting the transfer action cannot reach a disallowed peer."""
+  # Arrange
+  response = [
+      transfer_call_part('sub_agent_1'),
+      FORCED_TRANSFER_CALL_PART,
+  ]
+  mock_model = testing_utils.MockModel.create(responses=response)
+
+  sub_agent_1 = Agent(
+      name='sub_agent_1',
+      model=mock_model,
+      disallow_transfer_to_peers=True,
+      tools=[force_transfer_tool('sub_agent_2')],
+  )
+  sub_agent_2 = Agent(name='sub_agent_2', model=mock_model)
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      sub_agents=[sub_agent_1, sub_agent_2],
+  )
+
+  session_service = InMemorySessionService()
+  await session_service.create_session(
+      app_name='test_app', user_id='test_user', session_id='test_session'
+  )
+  runner = Runner(
+      app_name='test_app',
+      agent=root_agent,
+      session_service=session_service,
+  )
+
+  msg = testing_utils.types.Content(
+      role='user', parts=[testing_utils.types.Part(text='start')]
+  )
+
+  # Act & Assert
+  with pytest.raises(
+      ValueError,
+      match="Cannot transfer from 'sub_agent_1' to peer agent 'sub_agent_2'",
+  ):
+    async for _ in runner.run_async(
+        user_id='test_user',
+        session_id='test_session',
+        new_message=msg,
+    ):
+      pass
+
+
+def test_tool_driven_transfer_to_peer_runs_when_allowed():
+  """A tool-driven transfer to a peer still runs when nothing forbids it."""
+  # Arrange
+  response = [
+      transfer_call_part('sub_agent_1'),
+      FORCED_TRANSFER_CALL_PART,
+      'response1',
+  ]
+  mock_model = testing_utils.MockModel.create(responses=response)
+
+  sub_agent_1 = Agent(
+      name='sub_agent_1',
+      model=mock_model,
+      tools=[force_transfer_tool('sub_agent_2')],
+  )
+  sub_agent_2 = Agent(name='sub_agent_2', model=mock_model)
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      sub_agents=[sub_agent_1, sub_agent_2],
+  )
+  app = App(name='test_app', root_agent=root_agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  # Act & Assert
+  assert testing_utils.simplify_events(runner.run('test1')) == [
+      ('root_agent', transfer_call_part('sub_agent_1')),
+      ('root_agent', TRANSFER_RESPONSE_PART),
+      ('sub_agent_1', FORCED_TRANSFER_CALL_PART),
+      ('sub_agent_1', FORCED_TRANSFER_RESPONSE_PART),
+      ('sub_agent_2', 'response1'),
+  ]
 
 
 @pytest.mark.parametrize('is_resumable', [True, False])

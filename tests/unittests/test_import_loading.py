@@ -81,9 +81,10 @@ _ENTRY_POINT_PACKAGE_ALLOWLIST = frozenset({
     'typing_extensions',
     'typing_inspection',
     'zstandard',
-    # google.genai.types annotates optional fields with aiohttp and Pillow
-    # types and imports whichever of the two the environment happens to have.
-    # No ADK module imports either one, so these are absent in some installs.
+    # google.genai.types annotates optional fields with aiohttp, Pillow and
+    # httpx2 types, and imports whichever of them the environment happens to
+    # have. No ADK module imports any of them, so these are absent in some
+    # installs and present in others depending on what else is installed.
     'PIL',
     'aiohappyeyeballs',
     'aiohttp',
@@ -91,6 +92,7 @@ _ENTRY_POINT_PACKAGE_ALLOWLIST = frozenset({
     'attr',
     'defusedxml',
     'frozenlist',
+    'httpx2',
     'multidict',
     'propcache',
     'yarl',
@@ -131,6 +133,14 @@ _ENTRY_POINT_PACKAGE_ALLOWLIST = frozenset({
             ),
         ),
         (
+            'google.adk.code_executors',
+            ('google.genai',),
+        ),
+        (
+            'google.adk.code_executors.built_in_code_executor',
+            ('google.genai',),
+        ),
+        (
             'google.adk.workflow',
             (
                 'google.adk.workflow._function_node',
@@ -152,7 +162,14 @@ _ENTRY_POINT_PACKAGE_ALLOWLIST = frozenset({
             ),
         ),
     ],
-    ids=('root', 'agents', 'workflow', 'cli_commands'),
+    ids=(
+        'root',
+        'agents',
+        'code_executors',
+        'built_in_code_executor',
+        'workflow',
+        'cli_commands',
+    ),
 )
 def test_package_import_defers_unrelated_runtime(
     module_name: str, forbidden: tuple[str, ...]

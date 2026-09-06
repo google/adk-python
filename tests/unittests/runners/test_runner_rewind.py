@@ -25,6 +25,7 @@ from google.adk.events.event import Event
 from google.adk.events.event import EventActions
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.session import Session
 from google.genai import types
 import pytest
 
@@ -361,3 +362,38 @@ class TestRunnerRewindNoFileData:
         filename="f1",
     )
     assert restored == types.Part.from_text(text="f1v0")
+
+  async def test_rewind_async_honors_subclass_delta_override(self):
+    """Subclass overrides of _compute_state_delta_for_rewind are executed by rewind_async."""
+
+    class CustomRunner(Runner):
+
+      async def _compute_state_delta_for_rewind(
+          self, session: Session, rewind_event_index: int
+      ) -> dict[str, Any]:
+        return {"overridden": True}
+
+    runner = CustomRunner(
+        app_name="app",
+        agent=BaseAgent(name="test_agent"),
+        session_service=InMemorySessionService(),
+    )
+    user_id = "u1"
+    session_id = "s1"
+    session = await runner.session_service.create_session(
+        app_name=runner.app_name, user_id=user_id, session_id=session_id
+    )
+    event = Event(invocation_id="inv1", author="user")
+    await runner.session_service.append_event(session=session, event=event)
+
+    await runner.rewind_async(
+        user_id=user_id,
+        session_id=session_id,
+        rewind_before_invocation_id="inv1",
+    )
+
+    rewound_session = await runner.session_service.get_session(
+        app_name=runner.app_name, user_id=user_id, session_id=session_id
+    )
+    last_event = rewound_session.events[-1]
+    assert last_event.actions.state_delta == {"overridden": True}

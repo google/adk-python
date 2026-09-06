@@ -25,6 +25,7 @@ from unittest.mock import patch
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.tools.mcp_tool.session_context import _format_exception
+from google.adk.tools.mcp_tool.session_context import _read_timeout
 from google.adk.tools.mcp_tool.session_context import SessionContext
 import httpx
 from mcp import ClientSession
@@ -421,10 +422,41 @@ class TestSessionContext:
 
       await session_context.start()
 
-      # Verify ClientSession was called with read_timeout_seconds for stdio
+      # _read_timeout, not a literal: TestReadTimeout owns the concrete type.
       call_args = mock_session_class.call_args
       assert 'read_timeout_seconds' in call_args.kwargs
-      assert call_args.kwargs['read_timeout_seconds'] == timedelta(seconds=5.0)
+      assert call_args.kwargs['read_timeout_seconds'] == _read_timeout(5.0)
+
+      await session_context.close()
+
+  @pytest.mark.asyncio
+  async def test_extra_transport_values_are_ignored(self):
+    """Extra transport values are ignored.
+
+    The streamable HTTP client yields a session-id callback after the read
+    and write streams, so the session takes only the first two values.
+    """
+    mock_client = MockClient(
+        transports=('read_stream', 'write_stream', 'get_session_id')
+    )
+    session_context = SessionContext(
+        mock_client, timeout=5.0, sse_read_timeout=None, is_stdio=False
+    )
+
+    mock_session = MockClientSession()
+
+    with patch(
+        'google.adk.tools.mcp_tool.session_context.ClientSession'
+    ) as mock_session_class:
+      mock_session_class.return_value = mock_session
+
+      session = await session_context.start()
+
+      assert session == mock_session
+      assert mock_session_class.call_args.args == (
+          'read_stream',
+          'write_stream',
+      )
 
       await session_context.close()
 
@@ -470,12 +502,10 @@ class TestSessionContext:
 
       await session_context.start()
 
-      # Verify ClientSession was called with sse_read_timeout
+      # _read_timeout again, for the same reason.
       call_args = mock_session_class.call_args
       assert 'read_timeout_seconds' in call_args.kwargs
-      assert call_args.kwargs['read_timeout_seconds'] == timedelta(
-          seconds=300.0
-      )
+      assert call_args.kwargs['read_timeout_seconds'] == _read_timeout(300.0)
 
       await session_context.close()
 
@@ -977,3 +1007,39 @@ class TestFormatException:
     assert '403 Forbidden' in formatted
     assert 'Forbidden access' in formatted
     assert 'another error' in formatted
+
+
+_SDK_FLAG = 'google.adk.tools.mcp_tool.session_context.IS_MCP_SDK_V2'
+
+
+class TestReadTimeout:
+  """ADK carries timeouts as float seconds and converts at the SDK boundary.
+
+  The flag is patched rather than read. Mirroring it in the expectation would
+  make every assertion hold whichever way the production branch went, and the
+  2.x branch would never execute where the lock resolves 1.x.
+  """
+
+  def test_none_stays_none(self):
+    assert _read_timeout(None) is None
+
+  # 0 is here because it is a real timeout, not a missing one, and 0.5 because
+  # sub-second timeouts must not be rounded away.
+  @pytest.mark.parametrize('seconds', [30, 0, 0.5])
+  def test_1x_gets_a_timedelta(self, seconds):
+    with patch(_SDK_FLAG, False):
+      converted = _read_timeout(seconds)
+
+    assert converted == timedelta(seconds=seconds)
+    # The two majors accept disjoint types here, so pin the type itself:
+    # handing a 2.x SDK a `timedelta` fails much later, in its own arithmetic.
+    assert isinstance(converted, timedelta)
+
+  @pytest.mark.parametrize('seconds', [30, 0, 0.5])
+  def test_2x_gets_plain_seconds(self, seconds):
+    with patch(_SDK_FLAG, True):
+      converted = _read_timeout(seconds)
+
+    assert converted == seconds
+    assert isinstance(converted, (int, float))
+    assert not isinstance(converted, timedelta)

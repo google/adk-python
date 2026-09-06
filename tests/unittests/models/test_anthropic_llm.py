@@ -12,11 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import base64
 import json
 import os
 import re
-import sys
+import threading
 from unittest import mock
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
@@ -25,6 +26,7 @@ from anthropic import NOT_GIVEN
 from anthropic import RateLimitError
 from anthropic import types as anthropic_types
 from google.adk import version as adk_version
+from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.models import anthropic_llm
 from google.adk.models import AnthropicGenerateContentConfig
 from google.adk.models.anthropic_llm import _AnthropicRateLimitError
@@ -38,7 +40,6 @@ from google.adk.models.anthropic_llm import to_google_genai_finish_reason
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
-from google.genai import version as genai_version
 from google.genai.types import Content
 from google.genai.types import Part
 import httpx
@@ -151,12 +152,125 @@ def test_claude_anthropic_client_creation_with_full_resource_name():
     assert kwargs["region"] == "test-location"
 
 
+@pytest.mark.asyncio
+async def test_claude_anthropic_client_creation_runs_off_event_loop():
+  model = Claude(
+      model="projects/test-project/locations/test-location/publishers/anthropic/models/claude-3-5-sonnet-v2@20241022"
+  )
+  event_loop_thread = threading.get_ident()
+  construction_threads = []
+  client = MagicMock()
+
+  def create_client(**kwargs):
+    del kwargs
+    construction_threads.append(threading.get_ident())
+    return client
+
+  with mock.patch(
+      "google.adk.models.anthropic_llm.AsyncAnthropicVertex",
+      side_effect=create_client,
+  ) as mock_client_class:
+    clients = await asyncio.gather(
+        model._get_anthropic_client(),
+        model._get_anthropic_client(),
+    )
+    cached_client = await model._get_anthropic_client()
+
+  assert clients == [client, client]
+  assert cached_client is client
+  mock_client_class.assert_called_once()
+  assert construction_threads[0] != event_loop_thread
+
+
+@pytest.mark.asyncio
+async def test_anthropic_llm_client_creation_runs_off_event_loop():
+  model = AnthropicLlm(model="claude-sonnet-4-20250514")
+  event_loop_thread = threading.get_ident()
+  construction_threads = []
+  client = MagicMock()
+
+  def create_client(**kwargs):
+    del kwargs
+    construction_threads.append(threading.get_ident())
+    return client
+
+  with mock.patch(
+      "google.adk.models.anthropic_llm.AsyncAnthropic",
+      side_effect=create_client,
+  ) as mock_client_class:
+    clients = await asyncio.gather(
+        model._get_anthropic_client(),
+        model._get_anthropic_client(),
+    )
+    cached_client = await model._get_anthropic_client()
+
+  assert clients == [client, client]
+  assert cached_client is client
+  mock_client_class.assert_called_once()
+  assert construction_threads[0] != event_loop_thread
+
+
+@pytest.mark.asyncio
+async def test_anthropic_client_creation_cancelled_does_not_recreate():
+  model = AnthropicLlm(model="claude-sonnet-4-20250514")
+  init_started = threading.Event()
+  allow_finish = threading.Event()
+  client = MagicMock()
+
+  def create_client(**kwargs):
+    del kwargs
+    init_started.set()
+    allow_finish.wait(timeout=2.0)
+    return client
+
+  with mock.patch(
+      "google.adk.models.anthropic_llm.AsyncAnthropic",
+      side_effect=create_client,
+  ) as mock_client_class:
+    task1 = asyncio.create_task(model._get_anthropic_client())
+    await asyncio.to_thread(init_started.wait, 2.0)
+    task1.cancel()
+    with pytest.raises(asyncio.CancelledError):
+      await task1
+
+    task2 = asyncio.create_task(model._get_anthropic_client())
+    await asyncio.sleep(0.01)
+    allow_finish.set()
+    res2 = await task2
+
+  assert res2 is client
+  mock_client_class.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_streaming_warms_client_before_subclass():
+  class SubclassAnthropic(AnthropicLlm):
+    streaming_client_cached: bool = False
+
+    async def _generate_content_streaming(self, *args, **kwargs):
+      self.streaming_client_cached = "_anthropic_client" in self.__dict__
+      async for res in super()._generate_content_streaming(*args, **kwargs):
+        yield res
+
+  mock_client = MagicMock()
+  mock_stream = AsyncMock()
+  mock_stream.__aiter__.return_value = []
+  mock_client.messages.create = AsyncMock(return_value=mock_stream)
+  model = SubclassAnthropic(model="claude-sonnet-4-20250514")
+
+  with mock.patch(
+      "google.adk.models.anthropic_llm.AsyncAnthropic",
+      return_value=mock_client,
+  ):
+    llm_req = LlmRequest(model="claude-sonnet-4-20250514")
+    async for _ in model.generate_content_async(llm_req, stream=True):
+      pass
+
+  assert model.streaming_client_cached is True
+
+
 def test_supported_models():
-  models = Claude.supported_models()
-  assert len(models) == 3
-  assert models[0] == r"claude-3-.*"
-  assert models[1] == r"claude-.*-4.*"
-  assert models[2] == r"claude-.*-5.*"
+  assert Claude.supported_models() == [r"claude-.*"]
 
 
 function_declaration_test_cases = [
@@ -1335,7 +1449,10 @@ async def test_streaming_text_yields_partial_and_final():
   events = [
       MagicMock(
           type="message_start",
-          message=MagicMock(usage=MagicMock(input_tokens=10, output_tokens=0)),
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=MagicMock(input_tokens=10, output_tokens=0),
+          ),
       ),
       MagicMock(
           type="content_block_start",
@@ -1400,7 +1517,10 @@ async def test_streaming_tool_use_yields_function_call():
   events = [
       MagicMock(
           type="message_start",
-          message=MagicMock(usage=MagicMock(input_tokens=20, output_tokens=0)),
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=MagicMock(input_tokens=20, output_tokens=0),
+          ),
       ),
       MagicMock(
           type="content_block_start",
@@ -1483,7 +1603,10 @@ async def test_streaming_passes_stream_true_to_create():
   events = [
       MagicMock(
           type="message_start",
-          message=MagicMock(usage=MagicMock(input_tokens=5, output_tokens=0)),
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=MagicMock(input_tokens=5, output_tokens=0),
+          ),
       ),
       MagicMock(
           type="content_block_start",
@@ -1821,6 +1944,38 @@ def test_message_to_generate_content_response_reports_cache_read_tokens():
   assert response.usage_metadata.cached_content_token_count == 75
 
 
+def test_message_to_generate_content_response_sets_model_version():
+  """LlmResponse.model_version reflects the resolved snapshot Anthropic served.
+
+  The requested model can be an alias (e.g. "claude-sonnet-4-5"); the
+  response's `model` field is the concrete snapshot that actually served it,
+  and that is what should end up in model_version.
+  """
+  message = anthropic_types.Message(
+      id="msg_model_version",
+      content=[
+          anthropic_types.TextBlock(text="hi", type="text", citations=None)
+      ],
+      model="claude-sonnet-4-20250514",
+      role="assistant",
+      stop_reason="end_turn",
+      stop_sequence=None,
+      type="message",
+      usage=anthropic_types.Usage(
+          input_tokens=100,
+          output_tokens=20,
+          cache_creation_input_tokens=0,
+          cache_read_input_tokens=0,
+          server_tool_use=None,
+          service_tier=None,
+      ),
+  )
+
+  response = message_to_generate_content_response(message)
+
+  assert response.model_version == "claude-sonnet-4-20250514"
+
+
 def test_message_to_generate_content_response_no_cache_read_tokens():
   """Absent cache_read_input_tokens yields cached_content_token_count=None."""
   from google.adk.models.anthropic_llm import message_to_generate_content_response
@@ -1922,8 +2077,8 @@ def test_message_to_generate_content_response_thinking_tokens_not_double_counted
   # total nor the downstream output aggregation may count those 60 twice.
   assert usage_metadata.thoughts_token_count == 60
   assert usage_metadata.total_token_count == 110
-  assert TokenUsage(usage_metadata).output_token_count == 100
-  assert TokenUsage(usage_metadata).input_token_count == 10
+  assert TokenUsage.from_usage_metadata(usage_metadata).output_tokens == 100
+  assert TokenUsage.from_usage_metadata(usage_metadata).input_tokens == 10
 
 
 def test_message_to_generate_content_response_prompt_count_includes_cache_tokens():
@@ -2052,12 +2207,13 @@ async def test_streaming_reports_cache_creation_tokens():
       MagicMock(
           type="message_start",
           message=MagicMock(
+              model="claude-sonnet-4-20250514",
               usage=MagicMock(
                   input_tokens=100,
                   output_tokens=0,
                   cache_creation_input_tokens=50,
                   cache_read_input_tokens=0,
-              )
+              ),
           ),
       ),
       MagicMock(
@@ -2099,6 +2255,71 @@ async def test_streaming_reports_cache_creation_tokens():
   assert final_response.usage_metadata.cache_creation_input_tokens == 50
   dumped = final_response.model_dump()
   assert "usage_metadata" in dumped
+
+
+async def test_streaming_sets_model_version():
+  """model_version is set on every streamed response, partials included.
+
+  message_start carries the resolved snapshot before any content arrives, so
+  every LlmResponse yielded afterwards -- partial deltas and the final
+  aggregated response alike -- should carry it, matching the parity
+  lite_llm.py already has for its own partial yields.
+  """
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+
+  events = [
+      MagicMock(
+          type="message_start",
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=MagicMock(
+                  input_tokens=100,
+                  output_tokens=0,
+                  cache_creation_input_tokens=0,
+                  cache_read_input_tokens=0,
+              ),
+          ),
+      ),
+      MagicMock(
+          type="content_block_start",
+          index=0,
+          content_block=anthropic_types.TextBlock(text="", type="text"),
+      ),
+      MagicMock(
+          type="content_block_delta",
+          index=0,
+          delta=anthropic_types.TextDelta(text="Hi", type="text_delta"),
+      ),
+      MagicMock(type="content_block_stop", index=0),
+      MagicMock(
+          type="message_delta",
+          delta=MagicMock(stop_reason="end_turn"),
+          usage=MagicMock(output_tokens=20),
+      ),
+      MagicMock(type="message_stop"),
+  ]
+
+  mock_client = MagicMock()
+  mock_client.messages.create = AsyncMock(
+      return_value=_make_mock_stream_events(events)
+  )
+
+  llm_request = LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+  )
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    responses = [
+        r async for r in llm.generate_content_async(llm_request, stream=True)
+    ]
+
+  assert len(responses) == 2
+  partial_response, final_response = responses
+  assert partial_response.partial is True
+  assert partial_response.model_version == "claude-sonnet-4-20250514"
+  assert final_response.partial is False
+  assert final_response.model_version == "claude-sonnet-4-20250514"
 
 
 def test_part_to_message_block_thinking_roundtrip():
@@ -2229,7 +2450,10 @@ async def test_streaming_thinking_yields_partial_and_final():
   events = [
       MagicMock(
           type="message_start",
-          message=MagicMock(usage=MagicMock(input_tokens=15, output_tokens=0)),
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=MagicMock(input_tokens=15, output_tokens=0),
+          ),
       ),
       # Thinking block start
       MagicMock(
@@ -2337,12 +2561,13 @@ async def test_streaming_reports_thinking_tokens_disjoint_from_candidates():
       MagicMock(
           type="message_start",
           message=MagicMock(
+              model="claude-sonnet-4-20250514",
               usage=anthropic_types.Usage(
                   input_tokens=15,
                   output_tokens=0,
                   cache_read_input_tokens=5,
                   cache_creation_input_tokens=0,
-              )
+              ),
           ),
       ),
       MagicMock(
@@ -2423,7 +2648,10 @@ async def test_streaming_thinking_captures_signature_delta():
   events = [
       MagicMock(
           type="message_start",
-          message=MagicMock(usage=MagicMock(input_tokens=15, output_tokens=0)),
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=MagicMock(input_tokens=15, output_tokens=0),
+          ),
       ),
       MagicMock(
           type="content_block_start",
@@ -2495,7 +2723,10 @@ async def test_streaming_passes_thinking_param():
   events = [
       MagicMock(
           type="message_start",
-          message=MagicMock(usage=MagicMock(input_tokens=5, output_tokens=0)),
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=MagicMock(input_tokens=5, output_tokens=0),
+          ),
       ),
       MagicMock(
           type="content_block_start",
@@ -2549,7 +2780,10 @@ async def test_streaming_redacted_thinking_block_preserved_in_final():
   events = [
       MagicMock(
           type="message_start",
-          message=MagicMock(usage=MagicMock(input_tokens=8, output_tokens=0)),
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=MagicMock(input_tokens=8, output_tokens=0),
+          ),
       ),
       MagicMock(
           type="content_block_start",
@@ -2814,7 +3048,10 @@ async def test_streaming_no_system_instruction_passes_not_given():
   events = [
       MagicMock(
           type="message_start",
-          message=MagicMock(usage=MagicMock(input_tokens=1, output_tokens=0)),
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=MagicMock(input_tokens=1, output_tokens=0),
+          ),
       ),
       MagicMock(
           type="content_block_start",
@@ -3212,7 +3449,10 @@ async def test_streaming_sets_finish_reason():
   events = [
       MagicMock(
           type="message_start",
-          message=MagicMock(usage=MagicMock(input_tokens=5, output_tokens=0)),
+          message=MagicMock(
+              model="claude-sonnet-4-20250514",
+              usage=MagicMock(input_tokens=5, output_tokens=0),
+          ),
       ),
       MagicMock(
           type="content_block_start",
@@ -3457,3 +3697,279 @@ def test_anthropic_config_allows_thinking_budget_without_thinking_level():
   assert config.effort == "high"
   assert config.thinking_config.thinking_budget == 2048
   assert config.thinking_config.thinking_level is None
+
+
+_EPHEMERAL = {"type": "ephemeral"}
+
+
+def _cache_test_message():
+  return anthropic_types.Message(
+      id="msg_cache_breakpoints",
+      content=[
+          anthropic_types.TextBlock(text="Hi", type="text", citations=None)
+      ],
+      model="claude-sonnet-4-20250514",
+      role="assistant",
+      stop_reason="end_turn",
+      stop_sequence=None,
+      type="message",
+      usage=anthropic_types.Usage(
+          cache_creation_input_tokens=0,
+          cache_read_input_tokens=0,
+          input_tokens=5,
+          output_tokens=2,
+          server_tool_use=None,
+          service_tier=None,
+      ),
+  )
+
+
+def _cache_test_request(
+    cache_config=ContextCacheConfig(),
+    contents=None,
+):
+  return LlmRequest(
+      model="claude-sonnet-4-20250514",
+      contents=contents
+      or [
+          Content(role="user", parts=[Part.from_text(text="Cache this")]),
+          Content(role="model", parts=[Part.from_text(text="Sure")]),
+          Content(role="user", parts=[Part.from_text(text="And this")]),
+      ],
+      config=types.GenerateContentConfig(
+          system_instruction="You are a helpful assistant",
+          tools=[
+              types.Tool(
+                  function_declarations=[
+                      types.FunctionDeclaration(name="first", description="a"),
+                      types.FunctionDeclaration(name="second", description="b"),
+                  ]
+              )
+          ],
+      ),
+      cache_config=cache_config,
+  )
+
+
+async def _sent_anthropic_kwargs(llm_request, stream=False):
+  """Runs one turn and returns the payload that reached messages.create."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  mock_client = MagicMock()
+  if stream:
+    mock_client.messages.create = AsyncMock(
+        return_value=_make_mock_stream_events([])
+    )
+  else:
+    mock_client.messages.create = AsyncMock(return_value=_cache_test_message())
+
+  with mock.patch.object(llm, "_anthropic_client", mock_client):
+    _ = [
+        response
+        async for response in llm.generate_content_async(
+            llm_request, stream=stream
+        )
+    ]
+
+  _, kwargs = mock_client.messages.create.call_args
+  return kwargs
+
+
+def _breakpoints(kwargs):
+  """Collects every cache breakpoint in the payload, keyed by where it sits."""
+  found = {}
+  system = kwargs["system"]
+  if isinstance(system, list):
+    for index, block in enumerate(system):
+      if "cache_control" in block:
+        found[f"system[{index}]"] = block["cache_control"]
+  for index, tool in enumerate(kwargs["tools"]):
+    if "cache_control" in tool:
+      found[f"tools[{index}]"] = tool["cache_control"]
+  for message_index, message in enumerate(kwargs["messages"]):
+    for block_index, block in enumerate(message["content"]):
+      if "cache_control" in block:
+        found[f"messages[{message_index}][{block_index}]"] = block[
+            "cache_control"
+        ]
+  return found
+
+
+@pytest.mark.asyncio
+async def test_no_cache_config_sends_no_cache_breakpoints():
+  """Caching stays off unless the app configured it."""
+  kwargs = await _sent_anthropic_kwargs(_cache_test_request(cache_config=None))
+
+  assert kwargs["system"] == "You are a helpful assistant"
+  assert _breakpoints(kwargs) == {}
+
+
+@pytest.mark.asyncio
+async def test_cache_config_marks_tools_system_and_conversation():
+  """One breakpoint per prefix level, each at the end of that level."""
+  kwargs = await _sent_anthropic_kwargs(_cache_test_request())
+
+  assert kwargs["system"] == [{
+      "type": "text",
+      "text": "You are a helpful assistant",
+      "cache_control": _EPHEMERAL,
+  }]
+  assert _breakpoints(kwargs) == {
+      "system[0]": _EPHEMERAL,
+      "tools[1]": _EPHEMERAL,
+      "messages[2][0]": _EPHEMERAL,
+  }
+
+
+@pytest.mark.asyncio
+async def test_cache_config_marks_breakpoints_when_streaming():
+  """The streaming path shares the caching behavior of the blocking one."""
+  kwargs = await _sent_anthropic_kwargs(_cache_test_request(), stream=True)
+
+  assert _breakpoints(kwargs) == {
+      "system[0]": _EPHEMERAL,
+      "tools[1]": _EPHEMERAL,
+      "messages[2][0]": _EPHEMERAL,
+  }
+
+
+@pytest.mark.asyncio
+async def test_cache_config_without_system_instruction_still_marks_the_rest():
+  """An absent system instruction must not suppress the other breakpoints."""
+  request = _cache_test_request()
+  request.config.system_instruction = None
+
+  kwargs = await _sent_anthropic_kwargs(request)
+
+  assert kwargs["system"] is NOT_GIVEN
+  assert _breakpoints(kwargs) == {
+      "tools[1]": _EPHEMERAL,
+      "messages[2][0]": _EPHEMERAL,
+  }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "ttl_seconds,expected_cache_control",
+    [
+        (300, {"type": "ephemeral"}),
+        (1800, {"type": "ephemeral"}),
+        (3599, {"type": "ephemeral"}),
+        (3600, {"type": "ephemeral", "ttl": "1h"}),
+        (86400, {"type": "ephemeral", "ttl": "1h"}),
+    ],
+)
+async def test_cache_ttl_maps_onto_a_lifetime_claude_offers(
+    ttl_seconds, expected_cache_control
+):
+  """Claude serves five minutes or an hour; a shorter ask gets five minutes."""
+  kwargs = await _sent_anthropic_kwargs(
+      _cache_test_request(
+          cache_config=ContextCacheConfig(ttl_seconds=ttl_seconds)
+      )
+  )
+
+  assert kwargs["system"][0]["cache_control"] == expected_cache_control
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "trailing_part,expected_block_type",
+    [
+        (types.Part(text="reasoning", thought=True), "thinking"),
+        (
+            types.Part(thought=True, thought_signature=b"opaque"),
+            "redacted_thinking",
+        ),
+    ],
+)
+async def test_cache_breakpoint_skips_a_reasoning_block(
+    trailing_part, expected_block_type
+):
+  """Claude rejects a breakpoint on a reasoning block, so it moves back one."""
+  request = _cache_test_request(
+      contents=[
+          Content(role="user", parts=[Part.from_text(text="Question")]),
+          Content(
+              role="model",
+              parts=[Part.from_text(text="Answer"), trailing_part],
+          ),
+      ]
+  )
+
+  kwargs = await _sent_anthropic_kwargs(request)
+
+  blocks = kwargs["messages"][-1]["content"]
+  assert blocks[-1]["type"] == expected_block_type
+  assert "cache_control" not in blocks[-1]
+  assert blocks[-2]["cache_control"] == _EPHEMERAL
+
+
+@pytest.mark.asyncio
+async def test_cache_breakpoint_skips_a_turn_left_with_no_blocks():
+  """An assistant turn holding only an image is dropped, so it cannot carry one."""
+  request = _cache_test_request(
+      contents=[
+          Content(role="user", parts=[Part.from_text(text="Question")]),
+          Content(
+              role="model",
+              parts=[
+                  Part.from_bytes(data=b"not-a-real-png", mime_type="image/png")
+              ],
+          ),
+      ]
+  )
+
+  kwargs = await _sent_anthropic_kwargs(request)
+
+  assert kwargs["messages"][-1]["content"] == []
+  assert _breakpoints(kwargs) == {
+      "system[0]": _EPHEMERAL,
+      "tools[1]": _EPHEMERAL,
+      "messages[0][0]": _EPHEMERAL,
+  }
+
+
+@pytest.mark.asyncio
+async def test_cache_config_below_min_tokens_sends_no_breakpoints():
+  """A prompt the app called too small to cache is sent unmarked."""
+  request = _cache_test_request(
+      cache_config=ContextCacheConfig(min_tokens=5000)
+  )
+  request.cacheable_contents_token_count = 4999
+
+  kwargs = await _sent_anthropic_kwargs(request)
+
+  assert kwargs["system"] == "You are a helpful assistant"
+  assert _breakpoints(kwargs) == {}
+
+
+@pytest.mark.asyncio
+async def test_cache_config_at_min_tokens_sends_breakpoints():
+  """Reaching the configured minimum is enough to start caching."""
+  request = _cache_test_request(
+      cache_config=ContextCacheConfig(min_tokens=5000)
+  )
+  request.cacheable_contents_token_count = 5000
+
+  kwargs = await _sent_anthropic_kwargs(request)
+
+  assert _breakpoints(kwargs) == {
+      "system[0]": _EPHEMERAL,
+      "tools[1]": _EPHEMERAL,
+      "messages[2][0]": _EPHEMERAL,
+  }
+
+
+@pytest.mark.asyncio
+async def test_cache_config_marks_the_first_turn_of_a_session():
+  """No previous token count is known yet, and marking still costs nothing."""
+  request = _cache_test_request()
+  assert request.cacheable_contents_token_count is None
+
+  kwargs = await _sent_anthropic_kwargs(request)
+
+  assert _breakpoints(kwargs) == {
+      "system[0]": _EPHEMERAL,
+      "tools[1]": _EPHEMERAL,
+      "messages[2][0]": _EPHEMERAL,
+  }

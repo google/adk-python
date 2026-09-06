@@ -58,22 +58,49 @@ def _escape_single_quotes(s: str) -> str:
   return s.replace("\\", "\\\\").replace("'", "\\'")
 
 
-def _is_valid_identifier(name: str) -> bool:
-  """Check if a string is a valid BigQuery identifier.
+def _is_valid_table_identifier(name: str) -> bool:
+  """Check if a string is a valid BigQuery table identifier.
 
   This guards against SQL injection by validating that dynamic identifiers
-  (like table names or column names), which cannot be parameterized,
+  (like table names), which cannot be parameterized,
   contain only safe characters (alphanumeric, underscores, dots, hyphens,
   colons).
-  It prevents the inclusion of SQL keywords, comments, or statement terminators.
 
   Example:
       Valid: "my_project:my_dataset.my_table"
-      Valid: "my_column_name"
+      Valid: "my_table_name"
       Invalid: "my_table; DROP TABLE users;"
-      Invalid: "my_table --"
+      Invalid: "my_table ;"
+
+  Returns:
+      bool: True if valid, False otherwise.
   """
+  if not isinstance(name, str):
+    return False
   return bool(re.fullmatch(r"[A-Za-z0-9_.:-]+", name))
+
+
+def _is_valid_column_identifier(name: str) -> bool:
+  """Check if a string is a valid BigQuery column identifier.
+
+  This guards against SQL injection by validating that column identifiers
+  contain only safe characters (alphanumeric, underscores, hyphens).
+  Excluding dots or colons here is appropriate as defense-in-depth, ensuring
+  we are dealing with simple column names in contexts where they are dynamically
+  injected.
+
+  Example:
+      Valid: "my_column_name"
+      Valid: "my-column-name"
+      Invalid: "my_project:my_dataset.my_table"
+      Invalid: "my_table; DROP TABLE users;"
+
+  Returns:
+      bool: True if valid, False otherwise.
+  """
+  if not isinstance(name, str):
+    return False
+  return bool(re.fullmatch(r"[A-Za-z0-9_-]+", name))
 
 
 def _validate_subquery(
@@ -1020,19 +1047,19 @@ def forecast(
       return validation_error
     history_data_source = f"({history_data})"
   else:
-    if not _is_valid_identifier(history_data):
+    if not _is_valid_table_identifier(history_data):
       return {
           "status": "ERROR",
           "error_details": f"Invalid BigQuery identifier: {history_data}",
       }
     history_data_source = f"TABLE `{history_data}`"
 
-  if not _is_valid_identifier(data_col):
+  if not _is_valid_column_identifier(data_col):
     return {
         "status": "ERROR",
         "error_details": f"Invalid BigQuery identifier: {data_col}",
     }
-  if not _is_valid_identifier(timestamp_col):
+  if not _is_valid_column_identifier(timestamp_col):
     return {
         "status": "ERROR",
         "error_details": f"Invalid BigQuery identifier: {timestamp_col}",
@@ -1044,7 +1071,7 @@ def forecast(
           "status": "ERROR",
           "error_details": "All elements in id_cols must be strings.",
       }
-    if not all(_is_valid_identifier(item) for item in id_cols):
+    if not all(_is_valid_column_identifier(item) for item in id_cols):
       return {
           "status": "ERROR",
           "error_details": "All elements in id_cols must be valid identifiers.",
@@ -1199,7 +1226,7 @@ def analyze_contribution(
         "error_details": "All elements in dimension_id_cols must be strings.",
     }
 
-  if not all(_is_valid_identifier(item) for item in dimension_id_cols):
+  if not all(_is_valid_column_identifier(item) for item in dimension_id_cols):
     return {
         "status": "ERROR",
         "error_details": (
@@ -1220,7 +1247,7 @@ def analyze_contribution(
         "error_details": "top_k_insights must be an integer.",
     }
 
-  if not _is_valid_identifier(is_test_col):
+  if not _is_valid_column_identifier(is_test_col):
     return {
         "status": "ERROR",
         "error_details": f"Invalid BigQuery identifier: {is_test_col}",
@@ -1257,7 +1284,7 @@ def analyze_contribution(
       return validation_error
     input_data_source = f"({input_data})"
   else:
-    if not _is_valid_identifier(input_data):
+    if not _is_valid_table_identifier(input_data):
       return {
           "status": "ERROR",
           "error_details": f"Invalid BigQuery identifier: {input_data}",
@@ -1464,14 +1491,14 @@ def detect_anomalies(
         "error_details": "anomaly_prob_threshold must be a number.",
     }
 
-  if not _is_valid_identifier(times_series_timestamp_col):
+  if not _is_valid_column_identifier(times_series_timestamp_col):
     return {
         "status": "ERROR",
         "error_details": (
             f"Invalid BigQuery identifier: {times_series_timestamp_col}"
         ),
     }
-  if not _is_valid_identifier(times_series_data_col):
+  if not _is_valid_column_identifier(times_series_data_col):
     return {
         "status": "ERROR",
         "error_details": (
@@ -1490,7 +1517,7 @@ def detect_anomalies(
       return validation_error
     history_data_source = f"({history_data})"
   else:
-    if not _is_valid_identifier(history_data):
+    if not _is_valid_table_identifier(history_data):
       return {
           "status": "ERROR",
           "error_details": f"Invalid BigQuery identifier: {history_data}",
@@ -1512,7 +1539,9 @@ def detect_anomalies(
               "All elements in times_series_id_cols must be strings."
           ),
       }
-    if not all(_is_valid_identifier(item) for item in times_series_id_cols):
+    if not all(
+        _is_valid_column_identifier(item) for item in times_series_id_cols
+    ):
       return {
           "status": "ERROR",
           "error_details": (
@@ -1534,13 +1563,13 @@ def detect_anomalies(
   AS {history_data_source}
   """
   order_by_id_cols = (
-      ", ".join(col for col in times_series_id_cols) + ", "
+      ", ".join(f"`{col}`" for col in times_series_id_cols) + ", "
       if times_series_id_cols
       else ""
   )
 
   anomaly_detection_query = f"""
-  SELECT * FROM ML.DETECT_ANOMALIES(MODEL {model_name}, STRUCT({anomaly_prob_threshold} AS anomaly_prob_threshold)) ORDER BY {order_by_id_cols}{times_series_timestamp_col}
+  SELECT * FROM ML.DETECT_ANOMALIES(MODEL {model_name}, STRUCT({anomaly_prob_threshold} AS anomaly_prob_threshold)) ORDER BY {order_by_id_cols}`{times_series_timestamp_col}`
   """
   if target_data:
     trimmed_upper_target_data = target_data.strip().upper()
@@ -1549,7 +1578,7 @@ def detect_anomalies(
     ) or trimmed_upper_target_data.startswith("WITH"):
       target_data_source = f"({target_data})"
     else:
-      if not _is_valid_identifier(target_data):
+      if not _is_valid_table_identifier(target_data):
         return {
             "status": "ERROR",
             "error_details": f"Invalid BigQuery identifier: {target_data}",
@@ -1557,7 +1586,7 @@ def detect_anomalies(
       target_data_source = f"(SELECT * FROM `{target_data}`)"
 
     anomaly_detection_query = f"""
-    SELECT * FROM ML.DETECT_ANOMALIES(MODEL {model_name}, STRUCT({anomaly_prob_threshold} AS anomaly_prob_threshold), {target_data_source}) ORDER BY {order_by_id_cols}{times_series_timestamp_col}
+    SELECT * FROM ML.DETECT_ANOMALIES(MODEL {model_name}, STRUCT({anomaly_prob_threshold} AS anomaly_prob_threshold), {target_data_source}) ORDER BY {order_by_id_cols}`{times_series_timestamp_col}`
     """
 
   # Create a session and run the create model query.

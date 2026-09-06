@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import logging
@@ -47,8 +48,11 @@ except ImportError:
   # Fallback for older versions of a2a-sdk.
   AGENT_CARD_WELL_KNOWN_PATH = "/.well-known/agent.json"
 
-
+from ..a2a.agent.config import A2aCardRequestConfig
 from ..a2a.agent.config import A2aRemoteAgentConfig
+from ..a2a.agent.config import CardRequestInterceptor
+from ..a2a.agent.config import ParametersConfig
+from ..a2a.agent.config import RequestInterceptor
 from ..a2a.agent.interceptors.new_integration_extension import _NEW_A2A_ADK_INTEGRATION_EXTENSION
 from ..a2a.agent.interceptors.new_integration_extension import _new_integration_extension_interceptor
 from ..a2a.agent.utils import execute_after_request_interceptors
@@ -73,7 +77,12 @@ from ..agents.llm.task._finish_task_tool import FINISH_TASK_SUCCESS_RESULT
 from ..agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
 from ..agents.llm.task._finish_task_tool import get_output_wrapper_key
 from ..agents.llm.task._finish_task_tool import is_finish_task_terminal_fr
+from ..auth._auth_headers import build_auth_headers
+from ..auth.auth_credential import AuthCredential
+from ..auth.auth_schemes import AuthScheme
+from ..auth.auth_tool import AuthConfig
 from ..events.event import Event
+from ..flows.llm_flows._fencing import quote_untrusted
 from ..flows.llm_flows.contents import _is_other_agent_reply
 from ..flows.llm_flows.contents import _present_other_agent_message
 from ..flows.llm_flows.functions import find_matching_function_call
@@ -111,10 +120,19 @@ _HUMAN_INPUT_FUNCTION_CALL_NAMES = frozenset({
     REQUEST_EUC_FUNCTION_CALL_NAME,
 })
 
+# Function call names whose *response* carries credential material.
 _CREDENTIAL_FUNCTION_CALL_NAMES = frozenset({
     MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH,
     REQUEST_EUC_FUNCTION_CALL_NAME,
 })
+
+# Function call names whose *arguments* carry credential material. The mock auth
+# call is not one: its args hold the peer's own prompt (`{"auth_required":
+# <prompt>}`) and it stands in for the peer's last text part, so dropping it
+# would throw away the prompt and can empty the message.
+_CREDENTIAL_ARG_FUNCTION_CALL_NAMES = frozenset(
+    {REQUEST_EUC_FUNCTION_CALL_NAME}
+)
 
 _RESULT_KEY = "result"
 
@@ -128,6 +146,17 @@ _CREDENTIAL_PAYLOAD_KEYS = frozenset({
     "raw_auth_credential",
     "rawAuthCredential",
 })
+
+# The AuthToolArguments field holding the AuthConfig; `by_alias=True` on the
+# producer in flows.llm_flows.functions emits the camelCase form.
+_AUTH_CONFIG_ARG_KEYS = ("authConfig", "auth_config")
+
+# A card description fetched over the network is peer-controlled text that a
+# parent agent puts in its own instruction, so it is capped before being fenced.
+_MAX_CARD_DESCRIPTION_CHARS = 1024
+# Marks a capped description as incomplete, so neither the model nor a reader
+# takes the cut-off text for the whole description.
+_CARD_DESCRIPTION_TRUNCATION_SUFFIX = "... [truncated]"
 
 
 def _payload_is_auth_config(payload: Any) -> bool:
@@ -152,6 +181,94 @@ def _is_credential_function_response(
   if function_response.name in _CREDENTIAL_FUNCTION_CALL_NAMES:
     return True
   return _payload_is_auth_config(function_response.response)
+
+
+def _is_credential_function_call(
+    function_call: genai_types.FunctionCall,
+) -> bool:
+  """Whether a function_call carries credential material (fail closed)."""
+  if function_call.name in _CREDENTIAL_ARG_FUNCTION_CALL_NAMES:
+    return True
+  # A request wraps the AuthConfig in an AuthToolArguments envelope, where a
+  # response carries it flat, so the shape has to be read one level down. Read
+  # the top level instead and this matches nothing, while dropping any ordinary
+  # call that happens to take an `auth_scheme` argument.
+  args = function_call.args
+  if not isinstance(args, dict):
+    return False
+  return any(
+      _payload_is_auth_config(args.get(key)) for key in _AUTH_CONFIG_ARG_KEYS
+  )
+
+
+def _is_credential_part(part: genai_types.Part) -> bool:
+  """Whether a part carries credential material (fail closed).
+
+  Both directions count: the request call carries the serialized AuthConfig in
+  its args, and the matching response carries the exchanged credential.
+  """
+  if part.function_response is not None:
+    return _is_credential_function_response(part.function_response)
+  if part.function_call is not None:
+    return _is_credential_function_call(part.function_call)
+  return False
+
+
+def _without_credential_parts(event: Event) -> Event:
+  """Returns ``event`` with every credential-bearing part removed.
+
+  An `adk_request_credential` call carries a serialized `AuthConfig` in its
+  arguments, including `raw_auth_credential` (an OAuth2 client secret or a
+  service account key), and the matching response carries the credential that
+  was exchanged for it. A flow appends both to the session, so they are in the
+  history that the next request is rebuilt from.
+
+  Filtering the event rather than the parts that come out of it matters because
+  another agent's turn is flattened into quoted text before it is forwarded: by
+  then the credential is a string like any other, and dropping it afterwards is
+  no longer possible.
+
+  Args:
+    event: The session event to scrub.
+
+  Returns:
+    The event unchanged when it holds no credential part, or a copy without
+    those parts.
+  """
+  if event.content is None or not event.content.parts:
+    return event
+  if not any(_is_credential_part(part) for part in event.content.parts):
+    return event
+  new_event = event.model_copy(deep=True)
+  # ``event.content`` is non-None (checked above) and ``model_copy`` preserves
+  # it; bind a local so the checker keeps it narrowed after ``.parts`` is set.
+  new_content = new_event.content
+  assert new_content is not None
+  new_content.parts = [
+      part for part in new_content.parts or [] if not _is_credential_part(part)
+  ]
+  return new_event
+
+
+def _adopted_card_description(
+    description: str, agent_card_source: Optional[str]
+) -> str:
+  """Returns the description to adopt from a resolved agent card.
+
+  A parent agent interpolates a transfer target's description straight into its
+  own instruction, so a description that arrived over the network is capped and
+  fenced as quoted peer content -- the same treatment the peer's message text
+  already gets. A card read from a local file is the caller's own text and is
+  adopted unchanged.
+  """
+  if not agent_card_source or not agent_card_source.startswith(
+      ("http://", "https://")
+  ):
+    return description
+  capped = description[:_MAX_CARD_DESCRIPTION_CHARS]
+  if len(capped) < len(description):
+    capped += _CARD_DESCRIPTION_TRUNCATION_SUFFIX
+  return quote_untrusted(capped)
 
 
 def _render_user_function_response(
@@ -390,18 +507,108 @@ def _find_finish_task_args_from_history(
         matching_fc_id = fr.id
         break
 
+  def _args_from(event: Event) -> Optional[dict[str, Any]]:
+    for fc in event.get_function_calls():
+      if fc.name != FINISH_TASK_TOOL_NAME:
+        continue
+      if matching_fc_id is None or fc.id == matching_fc_id:
+        return dict(fc.args or {})
+    return None
+
+  # A remote peer can send the call and its response in one event, which the
+  # caller is still streaming and has not appended to the session yet. Read it
+  # before the history, or a task that did finish looks like one still running.
+  # It carries no isolation scope yet either, so the scope filter below would
+  # discard it; the event answers this task's own call by construction.
+  if completed_fr_event is not None:
+    if (args := _args_from(completed_fr_event)) is not None:
+      return args
+
   for event in reversed(session.events):
     if isolation_scope and event.isolation_scope != isolation_scope:
       continue
-    calls = event.get_function_calls()
-    for fc in calls:
-      if fc.name == FINISH_TASK_TOOL_NAME:
-        if matching_fc_id is not None:
-          if fc.id == matching_fc_id:
-            return dict(fc.args or {})
-        else:
-          return dict(fc.args or {})
+    if (args := _args_from(event)) is not None:
+      return args
   return None
+
+
+def _add_request_headers(
+    parameters: ParametersConfig, headers: dict[str, str]
+) -> None:
+  """Adds HTTP headers to the outgoing A2A request."""
+  if parameters.client_call_context is None:
+    parameters.client_call_context = _compat.ClientCallContext()
+  client_call_context = parameters.client_call_context
+
+  if _compat.IS_A2A_V1:
+    client_call_context.service_parameters = {
+        **(client_call_context.service_parameters or {}),
+        **headers,
+    }
+    return
+
+  # Copy before writing, so the credential is not left behind in a dict that
+  # another holder of this call context can read or persist.
+  state = dict(client_call_context.state or {})
+  http_kwargs = dict(state.get("http_kwargs") or {})
+  http_kwargs["headers"] = {**(http_kwargs.get("headers") or {}), **headers}
+  state["http_kwargs"] = http_kwargs
+  client_call_context.state = state
+
+
+def _remote_identity(agent_card: Union[AgentCard, str]) -> str:
+  """Returns the remote a credential is meant for: a URL, a path or a name."""
+  if isinstance(agent_card, str):
+    return agent_card.strip()
+  # A card with neither is rejected later by `_validate_agent_card`, so return
+  # a string the digest can hash rather than fail the constructor.
+  return _compat.agent_card_url(agent_card) or agent_card.name or ""
+
+
+def _names_its_own_credential_key(
+    auth_scheme: AuthScheme, auth_credential: Optional[AuthCredential]
+) -> bool:
+  """Whether the scheme or credential carries a caller-set credential key."""
+  for obj in (auth_credential, auth_scheme):
+    extra = getattr(obj, "model_extra", None) or {}
+    for key in ("credential_key", "credentialKey"):
+      if isinstance(extra.get(key), str) and extra[key]:
+        return True
+  return False
+
+
+def _build_auth_interceptors(
+    auth_config: AuthConfig,
+) -> tuple[CardRequestInterceptor, RequestInterceptor]:
+  """Turns the credential resolved for this invocation into request headers."""
+
+  def _headers(ctx: InvocationContext) -> dict[str, str]:
+    credential = (
+        ctx.credential_by_key.get(auth_config.credential_key)
+        if auth_config.credential_key
+        else None
+    )
+    return build_auth_headers(credential, auth_config.auth_scheme) or {}
+
+  async def _before_card_request(
+      ctx: InvocationContext,
+  ) -> A2aCardRequestConfig:
+    return A2aCardRequestConfig(headers=_headers(ctx) or None)
+
+  async def _before_request(
+      ctx: InvocationContext,
+      a2a_request: A2AMessage,
+      parameters: ParametersConfig,
+  ) -> tuple[Union[A2AMessage, Event], ParametersConfig]:
+    headers = _headers(ctx)
+    if headers:
+      _add_request_headers(parameters, headers)
+    return a2a_request, parameters
+
+  return (
+      CardRequestInterceptor(before_request=_before_card_request),
+      RequestInterceptor(before_request=_before_request),
+  )
 
 
 @a2a_experimental
@@ -454,6 +661,9 @@ class RemoteA2aAgent(BaseAgent):
       full_history_when_stateless: bool = False,
       config: Optional[A2aRemoteAgentConfig] = None,
       use_legacy: bool = True,
+      auth_scheme: Optional[AuthScheme] = None,
+      auth_credential: Optional[AuthCredential] = None,
+      credential_key: Optional[str] = None,
       **kwargs: Any,
   ) -> None:
     """Initialize RemoteA2aAgent.
@@ -477,6 +687,13 @@ class RemoteA2aAgent(BaseAgent):
       config: Optional configuration object.
       use_legacy: If false, send request to the server including the extension
         indicating that the server should use the new implementation.
+      auth_scheme: Optional scheme used to authenticate the calls to the remote
+        agent. When set, the credential is resolved once per invocation and
+        attached to both the agent card fetch and the message send.
+      auth_credential: Optional credential for `auth_scheme`. Ignored when
+        `auth_scheme` is None.
+      credential_key: Optional key under which the resolved credential is
+        cached. Defaults to a digest of the scheme and the credential.
       **kwargs: Additional arguments passed to BaseAgent
 
     Raises:
@@ -532,6 +749,46 @@ class RemoteA2aAgent(BaseAgent):
           f"got {type(agent_card)}"
       )
 
+    # Set up after the card is validated: the derived credential key reads it.
+    self._auth_config: Optional[AuthConfig] = None
+    if auth_scheme:
+      self._auth_config = AuthConfig(
+          auth_scheme=auth_scheme,
+          raw_auth_credential=auth_credential,
+          credential_key=credential_key,
+      )
+      if not credential_key and not _names_its_own_credential_key(
+          auth_scheme, auth_credential
+      ):
+        # The derived key digests the scheme and the credential and nothing
+        # else, so two agents sharing a scheme would share one cache entry and
+        # the first agent's token would go to the second agent's host.
+        remote_digest = hashlib.sha256(
+            _remote_identity(agent_card).encode("utf-8")
+        ).hexdigest()[:16]
+        self._auth_config.credential_key = (
+            f"{self._auth_config.credential_key}_{remote_digest}"
+        )
+      card_interceptor, request_interceptor = _build_auth_interceptors(
+          self._auth_config
+      )
+      # Copy before appending, so this agent's credential interceptor does not
+      # land on every other agent sharing the config. Only the two lists are
+      # replaced, which keeps the caller's own interceptor objects and any
+      # value that cannot be deep-copied. Appended last so the credential wins.
+      self._config = self._config.model_copy(
+          update={
+              "card_request_interceptors": [
+                  *(self._config.card_request_interceptors or []),
+                  card_interceptor,
+              ],
+              "request_interceptors": [
+                  *(self._config.request_interceptors or []),
+                  request_interceptor,
+              ],
+          }
+      )
+
   @property
   def _full_history_when_stateless(self) -> bool:
     return self._full_history_when_stateless_param or self.mode == "task"
@@ -539,6 +796,64 @@ class RemoteA2aAgent(BaseAgent):
   @_full_history_when_stateless.setter
   def _full_history_when_stateless(self, value: bool) -> None:
     self._full_history_when_stateless_param = value
+
+  async def _resolve_auth_credential(
+      self, ctx: InvocationContext
+  ) -> Optional[Event]:
+    """Caches the credential for this invocation in ``ctx.credential_by_key``.
+
+    Args:
+      ctx: The invocation context.
+
+    Returns:
+      An event asking the client to collect credentials, or None once the
+      credential is available.
+    """
+    if not self._auth_config or not self._auth_config.credential_key:
+      return None
+    credential_key = self._auth_config.credential_key
+    if ctx.credential_by_key.get(credential_key):
+      return None
+
+    # Imported here rather than at module scope so the unit tests can patch
+    # them on their own modules. There is no import cycle.
+    from ..auth.auth_handler import AuthHandler
+    from ..auth.auth_preprocessor import TOOLSET_AUTH_CREDENTIAL_ID_PREFIX
+    from ..auth.credential_manager import CredentialManager
+    from ..flows.llm_flows.functions import build_auth_request_event
+    from .callback_context import CallbackContext
+
+    # Resolve against a copy, so a credential exchanged for one user is never
+    # written back onto the config shared by every invocation.
+    auth_config = self._auth_config.model_copy(deep=True)
+    try:
+      credential = await CredentialManager(auth_config).get_auth_credential(
+          CallbackContext(ctx)
+      )
+    except ValueError as e:
+      logger.warning(
+          "Failed to get auth credential for remote A2A agent %s: %s",
+          self.name,
+          e,
+      )
+      credential = None
+
+    # A failed exchange returns the credential with no usable token, and
+    # counting that as resolved would send the request unauthenticated.
+    if credential and build_auth_headers(credential, auth_config.auth_scheme):
+      ctx.credential_by_key[credential_key] = credential
+      return None
+
+    # The credential ID is prefixed so the auth preprocessor stores the
+    # response without trying to resume a function call.
+    auth_request_id = f"{TOOLSET_AUTH_CREDENTIAL_ID_PREFIX}{self.name}"
+    event = build_auth_request_event(
+        ctx,
+        {auth_request_id: AuthHandler(auth_config).generate_auth_request()},
+        author=self.name,
+    )
+    ctx.end_invocation = True
+    return event
 
   async def _ensure_httpx_client(self) -> httpx.AsyncClient:
     """Ensure HTTP client is available and properly configured."""
@@ -727,14 +1042,21 @@ class RemoteA2aAgent(BaseAgent):
       if not self._agent_card:
 
         # Resolve agent card if needed
-        self._agent_card = await self._resolve_agent_card(ctx)
+        agent_card = await self._resolve_agent_card(ctx)
 
         # Validate agent card
-        await self._validate_agent_card(self._agent_card)
+        await self._validate_agent_card(agent_card)
+
+        # Store the card only once it has validated. A rejected card left on
+        # the instance reads as already resolved, so the next call skips the
+        # check and talks to the origin that card named.
+        self._agent_card = agent_card
 
         # Update description if empty
-        if not self.description and self._agent_card.description:
-          self.description = self._agent_card.description
+        if not self.description and agent_card.description:
+          self.description = _adopted_card_description(
+              agent_card.description, self._agent_card_source
+          )
 
       # Initialize A2A client
       if not self._a2a_client:
@@ -909,22 +1231,29 @@ class RemoteA2aAgent(BaseAgent):
           " session history. Workflow path scopes are not supported."
       )
 
-    # Collect all FC IDs emitted by this remote agent in the task scope.
+    # Collect all FC IDs emitted by this remote agent (in the task scope, when
+    # there is one). A function response answering one of these resumes a call
+    # the peer itself made; anything else is history that belongs to someone
+    # else's call.
     remote_fc_ids = set()
-    if self.mode == "task":
-      for event in ctx.session.events:
-        if (
-            not task_scope or event.isolation_scope == task_scope
-        ) and event.author == self.name:
-          calls = event.get_function_calls()
-          for fc in calls:
-            if fc.id is not None:
-              remote_fc_ids.add(fc.id)
+    for event in ctx.session.events:
+      if (
+          not task_scope or event.isolation_scope == task_scope
+      ) and event.author == self.name:
+        calls = event.get_function_calls()
+        for fc in calls:
+          if fc.id is not None:
+            remote_fc_ids.add(fc.id)
 
     for event in reversed(events_to_process):
-      processed_event: Optional[Event] = event
-      if _is_other_agent_reply(self.name, event):
-        processed_event = _present_other_agent_message(event)
+      # Drop credential material before anything else looks at the event.
+      # `_present_other_agent_message` renders a function_call and a
+      # function_response as text with their payloads inlined, so scrubbing
+      # after it would be too late.
+      scrubbed_event = _without_credential_parts(event)
+      processed_event: Optional[Event] = scrubbed_event
+      if _is_other_agent_reply(self.name, scrubbed_event):
+        processed_event = _present_other_agent_message(scrubbed_event)
 
       if (
           not processed_event
@@ -934,17 +1263,6 @@ class RemoteA2aAgent(BaseAgent):
         continue
 
       for part in processed_event.content.parts:
-        if (
-            part.function_response is not None
-            and _is_credential_function_response(part.function_response)
-        ):
-          # Never forward credential material (an AuthConfig envelope with
-          # access tokens / client secrets) to the remote peer, even when
-          # reconstructing the request from raw session history. This closes the
-          # path where a dropped credential resume falls back to here and the
-          # untouched function_response would otherwise be re-serialized.
-          continue
-
         if (
             self.mode == "task"
             and task_scope
@@ -958,13 +1276,14 @@ class RemoteA2aAgent(BaseAgent):
           continue
 
         if (
-            self.mode == "task"
-            and part.function_response
+            part.function_response
             and isinstance(part.function_response, genai_types.FunctionResponse)
             and part.function_response.id not in remote_fc_ids
         ):
           # Convert non-agent function response to text to prevent A2A server
-          # validation errors.
+          # validation errors. The peer has no invocation to resume for a call
+          # it never made, and the receiving runner rejects a message that
+          # carries a function response next to the text of the same history.
           text_content = (
               f"Tool {part.function_response.name} returned:"
               f" {json.dumps(part.function_response.response)}"
@@ -1216,6 +1535,25 @@ class RemoteA2aAgent(BaseAgent):
     a2a_request = None
 
     try:
+      if self._auth_config:
+        try:
+          auth_request_event = await self._resolve_auth_credential(ctx)
+        except Exception as e:  # pylint: disable=broad-except
+          task_error_message = f"Failed to authenticate remote A2A agent: {e}"
+          should_release_task_control = True
+          yield Event(
+              author=self.name,
+              error_message=task_error_message,
+              invocation_id=ctx.invocation_id,
+              branch=ctx.branch,
+          )
+          return
+        if auth_request_event:
+          # A pause, not a failure: the invocation resumes once the client
+          # supplies the credential, so a task keeps its control here.
+          yield auth_request_event
+          return
+
       try:
         a2a_client = await self._ensure_resolved(ctx)
       except Exception as e:
@@ -1349,9 +1687,15 @@ class RemoteA2aAgent(BaseAgent):
                 else:
                   event.output = args
               else:
+                # A custom A2A server may signal completion with the response
+                # alone and never send the matching call, so there is nothing
+                # to read an output from. The task still finished: leaving the
+                # output unset would read as "still running" and strand the
+                # delegation, so the parent never gets its turn back.
+                event.output = {}
                 logger.warning(
-                    "Could not find finish_task arguments in session history"
-                    " for isolation scope '%s'. Task output will not be set.",
+                    "Could not find finish_task arguments for isolation scope"
+                    " '%s'. Completing the task with an empty output.",
                     ctx.isolation_scope,
                 )
               # Yield the semantic output event so the parent runner can capture

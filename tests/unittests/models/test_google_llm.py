@@ -454,6 +454,100 @@ async def test_generate_content_async(
 
 
 @pytest.mark.asyncio
+async def test_generate_content_async_multiple_candidates_logs_error(
+    gemini_llm, llm_request, generate_content_response, caplog
+):
+  generate_content_response.candidates = [
+      types.Candidate(
+          content=Content(
+              role="model", parts=[Part.from_text(text="First candidate")]
+          ),
+          finish_reason=types.FinishReason.STOP,
+      ),
+      types.Candidate(
+          content=Content(
+              role="model", parts=[Part.from_text(text="Second candidate")]
+          ),
+          finish_reason=types.FinishReason.STOP,
+      ),
+  ]
+
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+
+    async def mock_coro():
+      return generate_content_response
+
+    mock_client.aio.models.generate_content.return_value = mock_coro()
+
+    with caplog.at_level(logging.ERROR):
+      responses = [
+          response
+          async for response in gemini_llm.generate_content_async(
+              llm_request, stream=False
+          )
+      ]
+
+    mock_client.aio.models.generate_content.assert_called_once()
+    assert len(responses) == 1
+    assert responses[0].content.parts[0].text == "First candidate"
+    errors = [
+        record
+        for record in caplog.records
+        if "Multiple candidates found in response" in record.getMessage()
+    ]
+    assert len(errors) == 1
+    assert errors[0].name == "google_adk.google.adk.models.google_llm"
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_multiple_candidates_logs_error(
+    gemini_llm, llm_request, caplog
+):
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    mock_responses = [
+        types.GenerateContentResponse(
+            candidates=[
+                types.Candidate(
+                    content=Content(
+                        role="model", parts=[Part.from_text(text=first)]
+                    ),
+                    finish_reason=None,
+                ),
+                types.Candidate(
+                    content=Content(
+                        role="model", parts=[Part.from_text(text=second)]
+                    ),
+                    finish_reason=None,
+                ),
+            ]
+        )
+        for first, second in (("Hello", "World"), ("Hello2", "World2"))
+    ]
+
+    async def mock_coro():
+      return MockAsyncIterator(mock_responses)
+
+    mock_client.aio.models.generate_content_stream.return_value = mock_coro()
+
+    with caplog.at_level(logging.ERROR):
+      _ = [
+          response
+          async for response in gemini_llm.generate_content_async(
+              llm_request, stream=True
+          )
+      ]
+
+    errors = [
+        record
+        for record in caplog.records
+        if "Multiple candidates found in streaming response"
+        in record.getMessage()
+    ]
+    assert len(errors) == 1
+    assert errors[0].name == "google_adk.google.adk.models.google_llm"
+
+
+@pytest.mark.asyncio
 async def test_generate_content_async_stream(gemini_llm, llm_request):
   with mock.patch.object(gemini_llm, "api_client") as mock_client:
     mock_responses = [
@@ -2589,8 +2683,8 @@ def test_build_request_log_fallback_to_repr_on_all_failures(monkeypatch):
   assert "<error building config log>" in log_output
 
 
-def test_build_request_log_redacts_http_options_credentials():
-  """Test that _build_request_log redacts sensitive fields in http_options."""
+def test_build_request_log_omits_http_options():
+  """Test that _build_request_log keeps all of http_options out of the log."""
   llm_request = LlmRequest(
       model="gemini-2.5-flash",
       contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
@@ -2601,7 +2695,7 @@ def test_build_request_log_redacts_http_options_credentials():
               extra_body={"secret_key": "some_secret"},
               client_args={"token": "arg_secret"},
               async_client_args={"token": "async_secret"},
-              base_url="https://example.com/api",
+              base_url="https://signed.example.com/api?sig=url_secret",
           ),
       ),
   )
@@ -2609,20 +2703,39 @@ def test_build_request_log_redacts_http_options_credentials():
   log_output = _build_request_log(llm_request)
 
   assert "Config:" in log_output
-  # base_url should be present
-  assert "https://example.com/api" in log_output
-  # sensitive http_options fields should NOT be present in log_output
+  assert "'temperature': 0.7" in log_output
+  # No field of http_options reaches the log, named or not. base_url is
+  # included in that: it is where the credential sits when the caller points
+  # at a signed endpoint or an authenticating proxy.
+  assert "'http_options'" not in log_output
+  assert "url_secret" not in log_output
+  assert "signed.example.com" not in log_output
   assert "secret_token" not in log_output
   assert "secret_key" not in log_output
   assert "arg_secret" not in log_output
   assert "async_secret" not in log_output
-  assert "'headers'" not in log_output
-  assert "'extra_body'" not in log_output
-  assert "'client_args'" not in log_output
-  assert "'async_client_args'" not in log_output
-  assert "'httpx_client'" not in log_output
-  assert "'httpx_async_client'" not in log_output
-  assert "'aiohttp_client'" not in log_output
+
+
+def test_build_request_log_omits_http_options_fields_the_sdk_may_add():
+  """No field name of http_options reaches the log, listed or not."""
+  llm_request = LlmRequest(
+      model="gemini-2.5-flash",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(
+          http_options=types.HttpOptions(
+              base_url="https://proxy.example.com",
+              api_version="v1beta",
+              timeout=1234,
+          ),
+      ),
+  )
+
+  log_output = _build_request_log(llm_request)
+
+  config_section = log_output.split("Config:")[1].split("---")[0]
+  for field_name in types.HttpOptions.model_fields:
+    assert field_name not in config_section
+  assert "1234" not in config_section
 
 
 @pytest.mark.asyncio
@@ -3024,3 +3137,182 @@ async def test_connect_does_not_log_request_headers(
   # The log is still emitted and still useful.
   assert "gemini-2.5-flash" in caplog.text
   assert "Modality.AUDIO" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_secondary_candidate_chunk(
+    gemini_llm, llm_request, caplog
+):
+  """Test a candidate streamed in its own chunk is detected and skipped."""
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    mock_responses = [
+        types.GenerateContentResponse(
+            candidates=[
+                types.Candidate(
+                    index=0,
+                    content=Content(
+                        role="model", parts=[Part.from_text(text="Hello")]
+                    ),
+                    finish_reason=None,
+                )
+            ]
+        ),
+        types.GenerateContentResponse(
+            candidates=[
+                types.Candidate(
+                    index=1,
+                    content=Content(
+                        role="model", parts=[Part.from_text(text="Other")]
+                    ),
+                    finish_reason=None,
+                )
+            ]
+        ),
+        types.GenerateContentResponse(
+            candidates=[
+                types.Candidate(
+                    index=0,
+                    content=Content(
+                        role="model", parts=[Part.from_text(text=" world")]
+                    ),
+                    finish_reason=types.FinishReason.STOP,
+                )
+            ]
+        ),
+    ]
+
+    async def mock_coro():
+      return MockAsyncIterator(mock_responses)
+
+    mock_client.aio.models.generate_content_stream.return_value = mock_coro()
+
+    with caplog.at_level(logging.ERROR):
+      responses = [
+          response
+          async for response in gemini_llm.generate_content_async(
+              llm_request, stream=True
+          )
+      ]
+
+    assert responses[-1].content.parts[0].text == "Hello world"
+    errors = [
+        record
+        for record in caplog.records
+        if "Multiple candidates found in streaming response"
+        in record.getMessage()
+    ]
+    assert len(errors) == 1
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_secondary_candidate_chunk_is_skipped(
+    gemini_llm, llm_request
+):
+  """Test a chunk holding only secondary candidates yields no partial response."""
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    mock_responses = [
+        types.GenerateContentResponse(
+            candidates=[
+                types.Candidate(
+                    index=0,
+                    content=Content(
+                        role="model", parts=[Part.from_text(text="Hello")]
+                    ),
+                    finish_reason=None,
+                )
+            ]
+        ),
+        types.GenerateContentResponse(
+            candidates=[
+                types.Candidate(
+                    index=1,
+                    content=Content(
+                        role="model", parts=[Part.from_text(text="Other")]
+                    ),
+                    finish_reason=None,
+                )
+            ]
+        ),
+        types.GenerateContentResponse(
+            candidates=[
+                types.Candidate(
+                    index=0,
+                    content=Content(
+                        role="model", parts=[Part.from_text(text=" world")]
+                    ),
+                    finish_reason=types.FinishReason.STOP,
+                )
+            ]
+        ),
+    ]
+
+    async def mock_coro():
+      return MockAsyncIterator(mock_responses)
+
+    mock_client.aio.models.generate_content_stream.return_value = mock_coro()
+
+    responses = [
+        response
+        async for response in gemini_llm.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+
+    assert len(responses) == 3
+    assert [r.content.parts[0].text for r in responses] == [
+        "Hello",
+        " world",
+        "Hello world",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_secondary_candidate_chunk_preserves_usage_metadata(
+    gemini_llm, llm_request
+):
+  """Test that usage metadata on a chunk holding only secondary candidates is preserved."""
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    mock_responses = [
+        types.GenerateContentResponse(
+            candidates=[
+                types.Candidate(
+                    index=0,
+                    content=Content(
+                        role="model", parts=[Part.from_text(text="Hello")]
+                    ),
+                    finish_reason=None,
+                )
+            ]
+        ),
+        types.GenerateContentResponse(
+            candidates=[
+                types.Candidate(
+                    index=1,
+                    content=Content(
+                        role="model", parts=[Part.from_text(text="Other")]
+                    ),
+                    finish_reason=types.FinishReason.STOP,
+                )
+            ],
+            usage_metadata=types.GenerateContentResponseUsageMetadata(
+                prompt_token_count=10,
+                candidates_token_count=5,
+                total_token_count=15,
+            ),
+        ),
+    ]
+
+    async def mock_coro():
+      return MockAsyncIterator(mock_responses)
+
+    mock_client.aio.models.generate_content_stream.return_value = mock_coro()
+
+    responses = [
+        response
+        async for response in gemini_llm.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+
+    assert responses[-1].usage_metadata is not None
+    assert responses[-1].usage_metadata.total_token_count == 15

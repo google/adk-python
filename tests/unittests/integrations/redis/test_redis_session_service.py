@@ -26,64 +26,7 @@ from google.adk.integrations.redis._redis_session_service import RedisSessionSer
 from google.adk.sessions.base_session_service import GetSessionConfig
 import pytest
 
-
-class FakeRedisAsync:
-  """In-memory asynchronous Redis mock for testing."""
-
-  def __init__(self):
-    self._store: dict[str, str] = {}
-    self._ex_store: dict[str, int | None] = {}
-    self._created_at: dict[str, float] = {}
-    self._current_time: float = 0.0
-
-  def advance_time(self, seconds: float) -> None:
-    self._current_time += seconds
-
-  def _is_expired(self, key: str) -> bool:
-    if key not in self._store:
-      return True
-    ttl = self._ex_store.get(key)
-    if ttl is not None and ttl > 0:
-      created = self._created_at.get(key, 0.0)
-      if self._current_time - created >= ttl:
-        self._store.pop(key, None)
-        self._ex_store.pop(key, None)
-        self._created_at.pop(key, None)
-        return True
-    return False
-
-  async def get(self, key: str) -> str | None:
-    if self._is_expired(key):
-      return None
-    return self._store.get(key)
-
-  async def set(
-      self,
-      key: str,
-      value: str,
-      ex: int | None = None,
-      nx: bool = False,
-  ) -> bool | None:
-    if nx and not self._is_expired(key):
-      return None
-    self._store[key] = value
-    self._ex_store[key] = ex
-    self._created_at[key] = self._current_time
-    return True
-
-  async def delete(self, key: str) -> int:
-    self._ex_store.pop(key, None)
-    self._created_at.pop(key, None)
-    if key in self._store:
-      del self._store[key]
-      return 1
-    return 0
-
-  async def scan_iter(self, match: str):
-    prefix = match.rstrip("*")
-    for k in list(self._store):
-      if not self._is_expired(k) and k.startswith(prefix):
-        yield k
+from ._fake_redis import FakeRedisAsync
 
 
 @pytest.fixture

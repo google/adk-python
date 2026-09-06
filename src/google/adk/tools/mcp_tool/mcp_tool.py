@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 from collections.abc import Awaitable
 import inspect
@@ -28,10 +27,6 @@ import warnings
 
 from fastapi.openapi.models import APIKeyIn
 from google.genai.types import FunctionDeclaration
-from mcp import ClientSession
-from mcp.shared.exceptions import McpError
-from mcp.shared.session import ProgressFnT
-from mcp.types import Tool as McpBaseTool
 from opentelemetry import propagate
 from typing_extensions import override
 
@@ -40,6 +35,10 @@ from ...agents.readonly_context import ReadonlyContext
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
 from ...auth.auth_tool import AuthConfig
+from ...dependencies._mcp import ClientSession
+from ...dependencies._mcp import IS_MCP_SDK_V2
+from ...dependencies._mcp import McpError
+from ...dependencies._mcp import Tool as McpBaseTool
 from ...events.ui_widget import UiWidget
 from ...features import FeatureName
 from ...features import is_feature_enabled
@@ -73,6 +72,135 @@ _RESERVED_TOOL_NAMES = frozenset({
     REQUEST_INPUT_FUNCTION_CALL_NAME,
     transfer_to_agent.__name__,
 })
+
+_UNSET = object()
+
+
+# Values the server owns: free-form JSON, not model fields. A `_meta` inside
+# one is the server's own -- a JSON Schema may even declare a property by that
+# name -- so the walk below must not descend into them.
+_OPAQUE_KEYS = frozenset({
+    "_meta",
+    "inputSchema",
+    "outputSchema",
+    "structuredContent",
+})
+
+
+def _restore_meta_keys(value: Any) -> Any:
+  """Renames ``_meta`` back to ``meta`` throughout a dumped model.
+
+  ``meta`` is the field name under both majors and ``_meta`` its alias under
+  both, so it is the one key the aliased dump moves the wrong way. Sixty-odd
+  models declare it, content blocks included, hence the walk over the tree.
+  :const:`_OPAQUE_KEYS` keeps that walk out of server-authored data.
+
+  Args:
+    value: A node of the dumped structure.
+
+  Returns:
+    The node with every model-level ``_meta`` key renamed to ``meta``.
+  """
+  if isinstance(value, dict):
+    restored = {}
+    for key, item in value.items():
+      if key in _OPAQUE_KEYS:
+        restored["meta" if key == "_meta" else key] = item
+      else:
+        restored[key] = _restore_meta_keys(item)
+    return restored
+  if isinstance(value, list):
+    return [_restore_meta_keys(item) for item in value]
+  return value
+
+
+def _dump_mcp_model(model: Any) -> dict[str, Any]:
+  """Dumps an MCP model to the key names callers have read since 1.x.
+
+  2.x renames the wire fields to snake_case -- ``isError``,
+  ``structuredContent``, ``mimeType``. Both majors alias them to the 1.x
+  camelCase spelling, so one aliased dump restores the whole tree;
+  :func:`_restore_meta_keys` fixes the one key that moves the wrong way.
+
+  The gate matters. 1.x models are ``extra="allow"``, so a server's vendor
+  field arrives as an extra and the walk would rename keys inside it. 2.x
+  models are closed, so every key the walk sees is a declared field. On 1.x
+  this stays the plain dump ADK always made.
+
+  Every dump that reaches a caller goes through here.
+
+  Args:
+    model: The MCP model to dump.
+
+  Returns:
+    The dumped model, keyed the way 1.x keyed it.
+  """
+  if not IS_MCP_SDK_V2:
+    unaliased: dict[str, Any] = model.model_dump(exclude_none=True, mode="json")
+    return unaliased
+  aliased = model.model_dump(exclude_none=True, mode="json", by_alias=True)
+  return cast(dict[str, Any], _restore_meta_keys(aliased))
+
+
+def _read_field(model: Any, *names: str) -> Any:
+  """Reads the first attribute in ``names`` that ``model`` defines.
+
+  MCP SDK 1.x names its wire fields in camelCase. 2.x renames them to
+  snake_case and drops the camelCase attribute. Reading both spellings keeps
+  ADK working on either.
+
+  Args:
+    model: The MCP model to read from.
+    *names: Attribute names to try, in order.
+
+  Returns:
+    The value of the first attribute that exists.
+
+  Raises:
+    AttributeError: The model defines none of ``names``.
+  """
+  for name in names:
+    value = getattr(model, name, _UNSET)
+    if value is not _UNSET:
+      return value
+  raise AttributeError(
+      f"{type(model).__name__} defines none of {names}. This usually means the"
+      " installed MCP SDK renamed the field again."
+  )
+
+
+def _is_async_callable(target: Any) -> bool:
+  """Whether calling ``target`` returns a coroutine.
+
+  Functions are callable objects, but not all callable objects are functions:
+  ``iscoroutinefunction`` is False for an instance whose ``__call__`` is async,
+  so check that too.
+  """
+  return inspect.iscoroutinefunction(target) or (
+      hasattr(target, "__call__")
+      and inspect.iscoroutinefunction(target.__call__)
+  )
+
+
+class ProgressFnT(Protocol):
+  """The call signature a progress callback must have.
+
+  This copies the SDK's `ProgressFnT` rather than importing it. The SDK keeps
+  that protocol in `mcp.shared.session`, a module that exists to hold the
+  session base class; a release that reorganizes it takes this import with it,
+  and every MCP tool fails to import. Structural typing means a callback
+  written against either declaration satisfies both.
+
+  The three parameters are positional because the SDK calls them positionally.
+  """
+
+  async def __call__(
+      self,
+      progress: float,
+      total: float | None,
+      message: str | None,
+  ) -> None:
+    ...
 
 
 @runtime_checkable
@@ -222,8 +350,8 @@ class McpTool(BaseAuthenticatedTool):
     Returns:
         FunctionDeclaration: The Gemini function declaration for the tool.
     """
-    input_schema = self._mcp_tool.inputSchema
-    output_schema = self._mcp_tool.outputSchema
+    input_schema = _read_field(self._mcp_tool, "inputSchema", "input_schema")
+    output_schema = _read_field(self._mcp_tool, "outputSchema", "output_schema")
     if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
       function_decl = FunctionDeclaration(
           name=self.name,
@@ -292,14 +420,7 @@ class McpTool(BaseAuthenticatedTool):
   ) -> Any:
     """Invokes a callable, handling both sync and async cases."""
 
-    # Functions are callable objects, but not all callable objects are functions
-    # checking coroutine function is not enough. We also need to check whether
-    # Callable's __call__ function is a coroutine function
-    is_async = inspect.iscoroutinefunction(target) or (
-        hasattr(target, "__call__")
-        and inspect.iscoroutinefunction(target.__call__)
-    )
-    if is_async:
+    if _is_async_callable(target):
       return await target(**args_to_call)
     else:
       return target(**args_to_call)
@@ -376,6 +497,9 @@ class McpTool(BaseAuthenticatedTool):
                   " ToolConfirmation payload."
               ),
           )
+          # The pause is not a tool result for the model to summarize; without
+          # this the flow re-invokes the model, which calls the tool again.
+          tool_context.actions.skip_summarization = True
           return {
               "error": (
                   "This tool call requires confirmation, please approve or"
@@ -474,43 +598,66 @@ class McpTool(BaseAuthenticatedTool):
         meta=meta_trace_context,
     )
 
-    if is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):  # pylint: disable=protected-access
-      # Race the tool call against the background session task so that
-      # transport crashes (e.g. non-2xx HTTP responses from an AGW with
-      # Model Armor) surface immediately instead of hanging until
-      # sse_read_timeout (default 5 minutes) expires. ConnectionError is
-      # intentionally NOT caught here. Replaying a tool call after an
-      # ambiguous transport failure could duplicate a remote side effect, so
-      # the failure surfaces to the run_async wrapper without an automatic
-      # retry.
-      #
-      # The isinstance check is intentional: tests and external subclasses
-      # may inject mock session managers whose `_get_session_context`
-      # returns a Mock instead of a real SessionContext (or None). Falling
-      # back to the direct await keeps those callers working.
-      session_context = self._mcp_session_manager._get_session_context(  # pylint: disable=protected-access
-          headers=final_headers
-      )
-      if isinstance(session_context, SessionContext):
-        response = await session_context._run_guarded(call_coro)  # pylint: disable=protected-access
+    # Hold the session out of the pool's idle sweep for as long as the call
+    # runs. A tool call can easily outlive the idle TTL, and a session that
+    # only looks idle because its call has not come back yet must not have
+    # its transport closed underneath it.
+    self._mcp_session_manager._begin_session_use(final_headers)  # pylint: disable=protected-access
+    try:
+      if is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):  # pylint: disable=protected-access
+        # Race the tool call against the background session task so that
+        # transport crashes (e.g. non-2xx HTTP responses from an AGW with
+        # Model Armor) surface immediately instead of hanging until
+        # sse_read_timeout (default 5 minutes) expires. ConnectionError is
+        # intentionally NOT caught here. Replaying a tool call after an
+        # ambiguous transport failure could duplicate a remote side effect, so
+        # the failure surfaces to the run_async wrapper without an automatic
+        # retry.
+        #
+        # The isinstance check is intentional: tests and external subclasses
+        # may inject mock session managers whose `_get_session_context`
+        # returns a Mock instead of a real SessionContext (or None). Falling
+        # back to the direct await keeps those callers working.
+        session_context = self._mcp_session_manager._get_session_context(  # pylint: disable=protected-access
+            headers=final_headers
+        )
+        if isinstance(session_context, SessionContext):
+          response = await session_context._run_guarded(call_coro)  # pylint: disable=protected-access
+        else:
+          response = await call_coro
       else:
+        # Pre-fix behavior: await the call directly. This is what causes the
+        # ~300s hang when the underlying transport crashes.
         response = await call_coro
-    else:
-      # Pre-fix behavior: await the call directly. This is what causes the
-      # ~300s hang when the underlying transport crashes.
-      response = await call_coro
+    finally:
+      self._mcp_session_manager._end_session_use(final_headers)  # pylint: disable=protected-access
 
-    result = response.model_dump(exclude_none=True, mode="json")
+    # Keep the caller's key names off the installed SDK's field naming.
+    result = _dump_mcp_model(response)
 
-    # Push UI widget to the event actions if the tool supports it.
+    # 2.x-only field. Acting on it (`input_required` drives elicitation) is a
+    # feature, not compatibility. Not dropped on 1.x, where a key of that name
+    # could only be a server extra.
+    if IS_MCP_SDK_V2:
+      result.pop("resultType", None)
+
+    # Push UI widget to the event actions if the tool supports it. Dump the
+    # tool: `payload` is a plain dict, so a model left in it gets serialized by
+    # whichever sink writes the event, and the sinks disagree -- `inputSchema`
+    # from those passing `by_alias`, `input_schema` from the session stores.
     if self.mcp_app_resource_uri:
+      # Tests and external subclasses pass duck-typed tools that cannot be
+      # dumped. Pass those through rather than fail a call that succeeded.
+      tool_payload: Any = self._mcp_tool
+      if hasattr(tool_payload, "model_dump"):
+        tool_payload = _dump_mcp_model(tool_payload)
       tool_context.render_ui_widget(
           UiWidget(
               id=tool_context.function_call_id,
               provider="mcp",
               payload={
                   "resource_uri": self.mcp_app_resource_uri,
-                  "tool": self._mcp_tool,
+                  "tool": tool_payload,
                   "tool_args": args,
               },
           )
@@ -519,7 +666,13 @@ class McpTool(BaseAuthenticatedTool):
 
   def _detect_error_in_response(self, response: Any) -> str | None:
     """Telemetry hook: returns an error type if the response indicates an error."""
-    if isinstance(response, dict) and response.get("isError"):
+    # `response` is a dumped CallToolResult. `_run_async_impl` restores
+    # `isError`, but this hook also sees dumps made elsewhere, which keep
+    # whichever spelling their SDK used. Missing one silently stops reporting
+    # tool errors, so read both.
+    if isinstance(response, dict) and (
+        response.get("isError") or response.get("is_error")
+    ):
       return "MCP_TOOL_ERROR"
     return None
 
@@ -543,19 +696,21 @@ class McpTool(BaseAuthenticatedTool):
     ):
       return None
 
-    # Determine if callback is a factory by checking if it's a coroutine
-    # function. ProgressFnT is an async function, while ProgressCallbackFactory
-    # is a sync function that returns an async function.
-    if asyncio.iscoroutinefunction(self._progress_callback):
-      return self._progress_callback
+    # A ProgressFnT is an async callable; a ProgressCallbackFactory is a plain
+    # one that returns an async callable.
+    #
+    # The casts carry that decision to the type checker, which cannot narrow a
+    # union on a call like this. They became necessary once ADK declared
+    # `ProgressFnT` itself: while it came from the SDK the annotation resolved
+    # to `Any` here and every branch type-checked vacuously.
+    if _is_async_callable(self._progress_callback):
+      return cast(ProgressFnT, self._progress_callback)
 
-    # If it's a regular callable (not async), treat it as a factory
-    if callable(self._progress_callback) and not inspect.iscoroutinefunction(
-        self._progress_callback
-    ):
-      return self._progress_callback(self.name, callback_context=tool_context)
+    if callable(self._progress_callback):
+      factory = cast(ProgressCallbackFactory, self._progress_callback)
+      return factory(self.name, callback_context=tool_context)
 
-    return self._progress_callback
+    return cast(ProgressFnT, self._progress_callback)
 
   async def _get_headers(
       self, tool_context: ToolContext, credential: AuthCredential

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 import ntpath
 import os
 from pathlib import Path
@@ -20,6 +21,7 @@ from typing import Any
 from typing import Literal
 from typing import Type
 from unittest import mock
+import warnings
 
 from google.adk.agents import config_agent_utils
 from google.adk.agents.agent_config import agent_config_discriminator
@@ -35,6 +37,7 @@ from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.models.lite_llm import LiteLlm
 from pydantic import BaseModel
+from pydantic import ValidationError
 import pytest
 import yaml
 
@@ -504,6 +507,27 @@ def test_resolve_code_reference_blocks_os_when_enforced():
     config_agent_utils.resolve_code_reference(CodeConfig(name="os.system"))
 
 
+def test_resolve_code_reference_wraps_a_name_that_does_not_resolve():
+  """An unresolvable reference raises ValueError, as the docstring promises.
+
+  The mapper routes `Callable`-typed fields through here, so a bad name in
+  YAML must not surface as a raw ModuleNotFoundError to callers that have
+  always been told to expect ValueError.
+  """
+  with pytest.raises(ValueError, match="Invalid fully qualified name"):
+    config_agent_utils.resolve_code_reference(
+        CodeConfig(name="invalid.tool.name")
+    )
+
+
+def test_resolve_code_reference_wraps_a_missing_attribute():
+  """A real module with no such symbol is unresolvable in the same way."""
+  with pytest.raises(ValueError, match="Invalid fully qualified name"):
+    config_agent_utils.resolve_code_reference(
+        CodeConfig(name="google.adk.agents.config_agent_utils.no_such_symbol")
+    )
+
+
 def test_resolve_fully_qualified_name_blocks_subprocess_when_enforced():
   """Verify resolve_fully_qualified_name blocks subprocess module.
 
@@ -564,23 +588,24 @@ def test_resolve_agent_code_reference_blocks_when_enforced(
 )
 def test_resolve_tools_blocks_dangerous_modules(blocked_ref: str):
   """Verify _resolve_tools blocks dangerous modules for user-defined tools."""
-  from google.adk.agents.llm_agent import LlmAgent
   from google.adk.tools.tool_configs import ToolConfig
 
   tool_config = ToolConfig(name=blocked_ref)
   with pytest.raises(ValueError, match="Blocked module reference"):
-    LlmAgent._resolve_tools([tool_config], "/fake/path.yaml")
+    config_agent_utils._AgentConfigMapper("/fake/path.yaml")._resolve_tools(
+        [tool_config]
+    )
 
 
 def test_resolve_tools_allows_builtin_adk_tools():
   """Verify _resolve_tools allows ADK built-in tools (no dot in name)."""
-  from google.adk.agents.llm_agent import LlmAgent
   from google.adk.tools.tool_configs import ToolConfig
 
   # Built-in tools have no dot — they import from google.adk.tools
   tool_config = ToolConfig(name="google_search")
   # Should NOT raise — this is a safe, hardcoded import path
-  resolved = LlmAgent._resolve_tools([tool_config], "/fake/path.yaml")
+  mapper = config_agent_utils._AgentConfigMapper("/fake/path.yaml")
+  resolved = mapper._resolve_tools([tool_config])
   assert len(resolved) == 1
 
 
@@ -653,7 +678,9 @@ def test_resolve_tools_blocks_exec_capable_stdlib(blocked_ref: str):
 
   tool_config = ToolConfig(name=blocked_ref)
   with pytest.raises(ValueError, match="Blocked module reference"):
-    LlmAgent._resolve_tools([tool_config], "/fake/path.yaml")
+    config_agent_utils._AgentConfigMapper("/fake/path.yaml")._resolve_tools(
+        [tool_config]
+    )
 
 
 @pytest.mark.parametrize(
@@ -731,7 +758,9 @@ def test_resolve_tools_blocks_yaml_and_ruamel_deserialization(blocked_ref: str):
 
   tool_config = ToolConfig(name=blocked_ref)
   with pytest.raises(ValueError, match="Blocked module reference"):
-    LlmAgent._resolve_tools([tool_config], "/fake/path.yaml")
+    config_agent_utils._AgentConfigMapper("/fake/path.yaml")._resolve_tools(
+        [tool_config]
+    )
 
 
 _YAML_SAFE_LOOKING_REFS = [
@@ -773,14 +802,14 @@ def test_denylist_can_be_disabled():
     config_agent_utils._set_enforce_denylist(True)
 
 
-def test_load_config_from_path_blocks_args_when_enforced(tmp_path: Path):
-  """_load_config_from_path blocks the 'args' key when enforcement is on."""
+def test_from_config_blocks_args_key_when_enforced(tmp_path: Path):
+  """Loading blocks the 'args' key when enforcement is on."""
   config_file = tmp_path / "agent.yaml"
   config_file.write_text("name: my_agent\nargs:\n  key: value\n")
   config_agent_utils._set_enforce_yaml_key_denylist(True)
   try:
     with pytest.raises(ValueError) as exc_info:
-      config_agent_utils._load_config_from_path(str(config_file))
+      config_agent_utils.from_config(str(config_file))
     assert "Blocked key 'args' found" in str(exc_info.value)
   finally:
     config_agent_utils._set_enforce_yaml_key_denylist(False)
@@ -823,13 +852,13 @@ def test_agent_config_discriminator_rejects_non_mapping(malformed_config: Any):
     agent_config_discriminator(malformed_config)
 
 
-def test_load_config_from_path_rejects_empty_yaml_file(tmp_path: Path):
+def test_from_config_rejects_empty_yaml_file(tmp_path: Path):
   """An empty YAML file loads as None; it must not be treated as an LlmAgent."""
   config_file = tmp_path / "empty.yaml"
   config_file.write_text("")
 
   with pytest.raises(ValueError, match="Invalid agent config"):
-    config_agent_utils._load_config_from_path(str(config_file))
+    config_agent_utils.from_config(str(config_file))
 
 
 # --- AgentRefConfig exactly-one-of validation ---------------------------
@@ -921,21 +950,24 @@ def test_llm_agent_config_minimal_defaults():
 # --- LoopAgentConfig round trip -----------------------------------------
 
 
-def test_loop_agent_config_max_iterations_reaches_the_agent(tmp_path: Path):
+@pytest.mark.parametrize("max_iterations", [3, 0])
+def test_loop_agent_config_max_iterations_reaches_the_agent(
+    tmp_path: Path, max_iterations: int
+):
   """max_iterations is LoopAgentConfig's only own field; it must round trip."""
   config_file = tmp_path / "loop.yaml"
   config_file.write_text(
       "agent_class: LoopAgent\n"
       "name: looper\n"
       "description: repeats its sub agents\n"
-      "max_iterations: 3\n"
+      f"max_iterations: {max_iterations}\n"
       "sub_agents: []\n"
   )
 
   agent = config_agent_utils.from_config(str(config_file))
 
   assert isinstance(agent, LoopAgent)
-  assert agent.max_iterations == 3
+  assert agent.max_iterations == max_iterations
 
 
 # --- resolve_callbacks ---------------------------------------------------
@@ -974,3 +1006,600 @@ def test_resolve_callbacks_preserves_config_order(
 def test_resolve_callbacks_with_no_configs_returns_empty_list():
   """No configured callbacks means no callbacks, not None."""
   assert config_agent_utils.resolve_callbacks([]) == []
+
+
+# --- Workflow & FunctionNode YAML Configuration Tests ---------------------
+
+
+def test_from_config_loads_function_node_with_func_code(tmp_path: Path):
+  """FunctionNode can be loaded from YAML specifying func_code."""
+  from google.adk.workflow import FunctionNode
+
+  config_file = tmp_path / "func_node.yaml"
+  config_file.write_text(
+      "agent_class: FunctionNode\n"
+      "name: my_func_node\n"
+      "description: A function node\n"
+      "func_code: google.adk.agents.config_agent_utils.from_config\n"
+  )
+
+  node = config_agent_utils.from_config(str(config_file))
+  assert isinstance(node, FunctionNode)
+  assert node.name == "my_func_node"
+  assert node._func == config_agent_utils.from_config
+  # FunctionNode's constructor takes no `description` (it derives one from the
+  # function docstring), so this is the field the mapper has to apply after
+  # construction rather than drop -- the YAML sets it, so it must win.
+  assert node.description == "A function node"
+
+
+def test_from_config_invokes_overridden_parse_config(tmp_path: Path):
+  """A subclass overriding `_parse_config` still gets the last word on kwargs.
+
+  Reflection replaced the per-class parsers, not this hook, so a subclass that
+  overrides it keeps working -- and keeps being handed a parsed config model
+  rather than the raw mapping.
+  """
+  received = {}
+
+  class MyCustomAgent(BaseAgent):
+    custom_field: str = ""
+
+    @classmethod
+    def _parse_config(cls, config, config_abs_path, kwargs):
+      received["config"] = config
+      kwargs["custom_field"] = "set by _parse_config"
+      return kwargs
+
+  yaml_content = """\
+agent_class: mylib.agents.MyCustomAgent
+name: custom_agent
+custom_field: from yaml
+"""
+  config_file = tmp_path / "custom_agent.yaml"
+  config_file.write_text(yaml_content)
+
+  with mock.patch.object(
+      config_agent_utils,
+      "resolve_fully_qualified_name",
+      return_value=MyCustomAgent,
+  ):
+    agent = config_agent_utils.from_config(str(config_file))
+
+  assert agent.custom_field == "set by _parse_config"
+  assert isinstance(received["config"], BaseAgentConfig)
+  assert received["config"].name == "custom_agent"
+
+
+def test_from_config_warns_when_parse_config_is_overridden(tmp_path: Path):
+  """The override is what is deprecated, so the warning has to name it.
+
+  The `@deprecated` on the base implementation cannot do this: an override is
+  a different, undecorated function, and the base one is never called.
+  """
+
+  class MyCustomAgent(BaseAgent):
+
+    @classmethod
+    def _parse_config(cls, config, config_abs_path, kwargs):
+      return kwargs
+
+  yaml_content = """\
+agent_class: mylib.agents.MyCustomAgent
+name: custom_agent
+"""
+  config_file = tmp_path / "custom_agent.yaml"
+  config_file.write_text(yaml_content)
+
+  with mock.patch.object(
+      config_agent_utils,
+      "resolve_fully_qualified_name",
+      return_value=MyCustomAgent,
+  ):
+    with pytest.warns(
+        DeprecationWarning, match=r"MyCustomAgent\._parse_config is deprecated"
+    ):
+      config_agent_utils.from_config(str(config_file))
+
+
+def test_from_config_does_not_warn_without_a_parse_config_override(
+    tmp_path: Path,
+):
+  """Inheriting the no-op hook is not deprecated usage and must stay quiet."""
+  yaml_content = """\
+name: search_agent
+model: gemini-2.5-flash
+instruction: search
+"""
+  config_file = tmp_path / "root_agent.yaml"
+  config_file.write_text(yaml_content)
+
+  with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    agent = config_agent_utils.from_config(str(config_file))
+
+  assert isinstance(agent, LlmAgent)
+  assert not [
+      w for w in caught if "_parse_config is deprecated" in str(w.message)
+  ]
+
+
+def test_from_config_warns_about_a_key_a_node_class_cannot_take(
+    tmp_path: Path, caplog
+):
+  """A node class declares no `config_type`, so reflection is the only gate.
+
+  Without this the misspelled key is skipped in silence and the node comes back
+  missing whatever it was meant to set.
+  """
+  config_file = tmp_path / "root_agent.yaml"
+  config_file.write_text("agent_class: Workflow\nname: wf\nmax_concurrncy: 3\n")
+
+  with caplog.at_level(logging.WARNING, logger="google_adk"):
+    wf = config_agent_utils.from_config(str(config_file))
+
+  assert wf.max_concurrency is None
+  assert "does not accept ['max_concurrncy']" in caplog.text
+
+
+def test_from_config_stays_quiet_for_keys_the_class_accepts(
+    tmp_path: Path, caplog
+):
+  """Only keys reflection could not place are reported."""
+  config_file = tmp_path / "root_agent.yaml"
+  config_file.write_text(
+      "name: search_agent\nmodel: gemini-2.5-flash\ninstruction: search\n"
+  )
+
+  with caplog.at_level(logging.WARNING, logger="google_adk"):
+    config_agent_utils.from_config(str(config_file))
+
+  assert "does not accept" not in caplog.text
+
+
+def test_from_config_keeps_a_raw_json_schema_on_a_node(tmp_path: Path):
+  """`BaseNode.input_schema` is a `SchemaUnion`, whose first member is `dict`.
+
+  Treating every mapping as a code reference to import made a valid config die
+  with a CodeConfig validation error instead.
+  """
+  config_file = tmp_path / "root_agent.yaml"
+  config_file.write_text(
+      "agent_class: Workflow\n"
+      "name: wf\n"
+      "input_schema:\n"
+      "  type: object\n"
+      "  properties:\n"
+      "    x:\n"
+      "      type: string\n"
+  )
+
+  wf = config_agent_utils.from_config(str(config_file))
+
+  assert wf.input_schema == {
+      "type": "object",
+      "properties": {"x": {"type": "string"}},
+  }
+
+
+def test_from_config_delegates_to_a_subclass_that_overrides_from_config(
+    tmp_path: Path,
+):
+  """A subclass owning its construction is handed the config, not built here.
+
+  The mapper path would build the class itself and never reach the override.
+  """
+  seen = {}
+
+  class OwnBuildAgent(BaseAgent):
+
+    @classmethod
+    def from_config(cls, config, config_abs_path):
+      seen["config"] = config
+      seen["path"] = config_abs_path
+      return cls(name="built_by_override")
+
+  config_file = tmp_path / "root_agent.yaml"
+  config_file.write_text(
+      "agent_class: mylib.OwnBuildAgent\nname: ignored_by_the_override\n"
+  )
+
+  with mock.patch.object(
+      config_agent_utils,
+      "resolve_fully_qualified_name",
+      return_value=OwnBuildAgent,
+  ):
+    agent = config_agent_utils.from_config(str(config_file))
+
+  assert agent.name == "built_by_override"
+  assert isinstance(seen["config"], BaseAgentConfig)
+  assert seen["path"] == str(config_file)
+
+
+def test_from_config_resolves_a_leading_dot_against_the_config_directory(
+    tmp_path: Path,
+):
+  """A `*_code` value starting with `.` is relative to the config's own package.
+
+  `.my_model` inside `<...>/mypkg/root_agent.yaml` means `mypkg.my_model`.
+  """
+  pkg_dir = tmp_path / "mypkg"
+  pkg_dir.mkdir()
+  config_file = pkg_dir / "root_agent.yaml"
+  config_file.write_text(
+      "name: dotted\ninstruction: hi\nmodel_code:\n  name: .my_model\n"
+  )
+
+  seen = {}
+
+  def fake_resolve(code_config):
+    seen["name"] = code_config.name
+    return "resolved-model"
+
+  with mock.patch.object(
+      config_agent_utils, "resolve_code_reference", fake_resolve
+  ):
+    agent = config_agent_utils.from_config(str(config_file))
+
+  assert seen["name"] == "mypkg.my_model"
+  assert agent.model == "resolved-model"
+
+
+def test_resolve_code_reference_keeps_a_missing_dependency_as_itself(
+    tmp_path: Path, monkeypatch
+):
+  """A module that imports something missing is not a bad reference.
+
+  Rewriting its ModuleNotFoundError into "invalid fully qualified name" would
+  point the reader at the config instead of at the absent package.
+  """
+  (tmp_path / "userpkg.py").write_text(
+      "import a_dependency_that_is_not_installed\nthing = 1\n"
+  )
+  monkeypatch.syspath_prepend(str(tmp_path))
+
+  with pytest.raises(ModuleNotFoundError) as exc_info:
+    config_agent_utils.resolve_code_reference(CodeConfig(name="userpkg.thing"))
+  assert "a_dependency_that_is_not_installed" in str(exc_info.value)
+
+
+def test_from_config_validates_a_deferred_field(tmp_path: Path):
+  """Fields held back from the constructor are still type-checked.
+
+  They are applied after construction, so a plain `setattr` would be the one
+  path into the node that pydantic never sees.
+  """
+  config_file = tmp_path / "root_agent.yaml"
+  config_file.write_text(
+      "agent_class: FunctionNode\n"
+      "name: fn\n"
+      "description: [1, 2, 3]\n"
+      "func_code: google.adk.agents.config_agent_utils.from_config\n"
+  )
+
+  with pytest.raises(ValidationError, match="description"):
+    config_agent_utils.from_config(str(config_file))
+
+
+def test_from_config_loads_workflow_with_routing_map(tmp_path: Path):
+  """Workflow can be loaded from YAML with conditional routing maps."""
+  from google.adk.workflow import Workflow
+
+  wf_file = tmp_path / "root_agent.yaml"
+  wf_file.write_text(
+      "agent_class: Workflow\n"
+      "name: routing_pipeline\n"
+      "edges:\n"
+      "  - - START\n"
+      "    - agent_class: LlmAgent\n"
+      "      name: classifier\n"
+      "      model: gemini-2.5-flash\n"
+      "      instruction: classify\n"
+      "    - tech:\n"
+      "        agent_class: LlmAgent\n"
+      "        name: tech_agent\n"
+      "        model: gemini-2.5-flash\n"
+      "        instruction: tech\n"
+      "      other:\n"
+      "        agent_class: LlmAgent\n"
+      "        name: other_agent\n"
+      "        model: gemini-2.5-flash\n"
+      "        instruction: other\n"
+  )
+
+  wf = config_agent_utils.from_config(str(wf_file))
+  assert isinstance(wf, Workflow)
+  assert wf.name == "routing_pipeline"
+  assert len(wf.graph.edges) == 3
+  routes = {e.route: e.to_node.name for e in wf.graph.edges if e.route}
+  assert routes == {"tech": "tech_agent", "other": "other_agent"}
+
+
+def test_from_config_loads_workflow_with_fan_out_and_join(tmp_path: Path):
+  """Workflow can be loaded from YAML with fan-out and join edges."""
+  from google.adk.workflow import Workflow
+
+  wf_file = tmp_path / "root_agent.yaml"
+  wf_file.write_text(
+      "agent_class: Workflow\n"
+      "name: fan_out_pipeline\n"
+      "edges:\n"
+      "  - - START\n"
+      "    - - agent_class: LlmAgent\n"
+      "        name: worker_1\n"
+      "        model: gemini-2.5-flash\n"
+      "        instruction: worker 1\n"
+      "      - agent_class: LlmAgent\n"
+      "        name: worker_2\n"
+      "        model: gemini-2.5-flash\n"
+      "        instruction: worker 2\n"
+      "    - agent_class: LlmAgent\n"
+      "      name: aggregator\n"
+      "      model: gemini-2.5-flash\n"
+      "      instruction: aggregate\n"
+  )
+
+  wf = config_agent_utils.from_config(str(wf_file))
+  assert isinstance(wf, Workflow)
+  assert wf.name == "fan_out_pipeline"
+  assert len(wf.graph.edges) == 4
+  to_nodes = [e.to_node.name for e in wf.graph.edges]
+  assert to_nodes.count("aggregator") == 2
+
+
+def test_from_config_loads_workflow_with_linear_chain(tmp_path: Path):
+  """Workflow can be loaded from YAML with linear edge chains."""
+  from google.adk.workflow import Workflow
+
+  sub_agent_file = tmp_path / "processor.yaml"
+  sub_agent_file.write_text(
+      "agent_class: LlmAgent\n"
+      "name: processor\n"
+      "model: gemini-2.5-flash\n"
+      "instruction: process input\n"
+  )
+
+  wf_file = tmp_path / "root_agent.yaml"
+  wf_file.write_text(
+      "agent_class: Workflow\n"
+      "name: linear_pipeline\n"
+      "edges:\n"
+      "  - - START\n"
+      "    - processor.yaml\n"
+  )
+
+  wf = config_agent_utils.from_config(str(wf_file))
+  assert isinstance(wf, Workflow)
+  assert wf.name == "linear_pipeline"
+  assert wf.graph is not None
+  assert len(wf.graph.edges) == 1
+  assert wf.graph.edges[0].from_node.name == "__START__"
+  assert wf.graph.edges[0].to_node.name == "processor"
+
+
+def test_from_config_workflow_node_caching_across_edges(tmp_path: Path):
+  """Subsequent edges referencing the same node name use the same instance."""
+  from google.adk.workflow import Workflow
+
+  wf_file = tmp_path / "root_agent.yaml"
+  wf_file.write_text(
+      "agent_class: Workflow\n"
+      "name: looping_workflow\n"
+      "edges:\n"
+      "  - - START\n"
+      "    - agent_class: LlmAgent\n"
+      "      name: loop_node\n"
+      "      model: gemini-2.5-flash\n"
+      "      instruction: loop\n"
+      "    - agent_class: LlmAgent\n"
+      "      name: checker\n"
+      "      model: gemini-2.5-flash\n"
+      "      instruction: check\n"
+      "  - - checker\n"
+      "    - repeat: loop_node\n"
+  )
+
+  wf = config_agent_utils.from_config(str(wf_file))
+  assert isinstance(wf, Workflow)
+  # Find loop_node from first chain and from repeat route
+  loop_node_from_start = next(
+      e.to_node for e in wf.graph.edges if e.from_node.name == "__START__"
+  )
+  loop_node_from_repeat = next(
+      e.to_node for e in wf.graph.edges if e.route == "repeat"
+  )
+  assert loop_node_from_start is loop_node_from_repeat
+
+
+def test_from_config_keeps_a_function_node_subclass(tmp_path: Path):
+  """`agent_class` naming a FunctionNode subclass builds that class.
+
+  Constructing `FunctionNode` directly downgraded the node, and skipping the
+  mapper left the other keys unresolved -- `description` here never landed.
+  """
+
+  from google.adk.workflow import FunctionNode
+
+  class MyFuncNode(FunctionNode):
+    pass
+
+  def a_func(x):
+    return x
+
+  wf_file = tmp_path / "root_agent.yaml"
+  wf_file.write_text(
+      "agent_class: Workflow\n"
+      "name: wf\n"
+      "edges:\n"
+      "  - - START\n"
+      "    - agent_class: mylib.MyFuncNode\n"
+      "      name: fn1\n"
+      "      description: from yaml\n"
+      "      func_code: mylib.a_func\n"
+  )
+
+  def fake_resolve(name):
+    return {"mylib.MyFuncNode": MyFuncNode, "mylib.a_func": a_func}[name]
+
+  with mock.patch.object(
+      config_agent_utils, "resolve_fully_qualified_name", fake_resolve
+  ):
+    with mock.patch.object(
+        config_agent_utils,
+        "resolve_code_reference",
+        lambda cc: fake_resolve(cc.name),
+    ):
+      wf = config_agent_utils.from_config(str(wf_file))
+
+  node = wf.graph.edges[0].to_node
+  assert type(node) is MyFuncNode
+  assert node.description == "from yaml"
+
+
+def test_from_config_reads_a_routing_map_whose_route_is_called_name(
+    tmp_path: Path,
+):
+  """`name` is a legal route value, not only an inline-node key."""
+  wf_file = tmp_path / "root_agent.yaml"
+  wf_file.write_text(
+      "agent_class: Workflow\n"
+      "name: wf\n"
+      "edges:\n"
+      "  - - START\n"
+      "    - agent_class: LlmAgent\n"
+      "      name: classifier\n"
+      "      model: gemini-2.5-flash\n"
+      "      instruction: classify\n"
+      "    - name:\n"
+      "        agent_class: LlmAgent\n"
+      "        name: target_a\n"
+      "        model: gemini-2.5-flash\n"
+      "        instruction: a\n"
+      "      other:\n"
+      "        agent_class: LlmAgent\n"
+      "        name: target_b\n"
+      "        model: gemini-2.5-flash\n"
+      "        instruction: b\n"
+  )
+
+  wf = config_agent_utils.from_config(str(wf_file))
+
+  routes = {e.route: e.to_node.name for e in wf.graph.edges if e.route}
+  assert routes == {"name": "target_a", "other": "target_b"}
+
+
+def test_from_config_names_an_undefined_node_plainly(tmp_path: Path):
+  """A bare word is a node name; saying "invalid fully qualified name" misleads."""
+  wf_file = tmp_path / "root_agent.yaml"
+  wf_file.write_text(
+      "agent_class: Workflow\n"
+      "name: wf\n"
+      "edges:\n"
+      "  - - START\n"
+      "    - agent_class: LlmAgent\n"
+      "      name: checker\n"
+      "      model: gemini-2.5-flash\n"
+      "      instruction: check\n"
+      "  - - checker\n"
+      "    - later_node\n"
+  )
+
+  with pytest.raises(ValueError, match="Unknown node 'later_node'"):
+    config_agent_utils.from_config(str(wf_file))
+
+
+def test_from_config_reads_an_inline_node_spelled_with_a_code_key(
+    tmp_path: Path,
+):
+  """`model_code` names the `model` field even though it is not a field itself.
+
+  Testing keys against `model_fields` alone sent this to the routing-map branch,
+  where `name` then failed to resolve as a node.
+  """
+  wf_file = tmp_path / "root_agent.yaml"
+  wf_file.write_text(
+      "agent_class: Workflow\n"
+      "name: wf\n"
+      "edges:\n"
+      "  - - START\n"
+      "    - name: n1\n"
+      "      model_code:\n"
+      "        name: mylib.a_model\n"
+      "      instruction: i\n"
+  )
+
+  with mock.patch.object(
+      config_agent_utils,
+      "resolve_code_reference",
+      lambda cc: "gemini-2.5-flash",
+  ):
+    wf = config_agent_utils.from_config(str(wf_file))
+
+  assert [(e.from_node.name, e.to_node.name) for e in wf.graph.edges] == [
+      ("__START__", "n1")
+  ]
+
+
+def test_from_config_reads_a_single_route_map_keyed_code(tmp_path: Path):
+  """`{code: <node>}` is a routing map; `{code: "a.b.c"}` is a reference.
+
+  The two are told apart by the value, since only a reference is a string.
+  """
+  wf_file = tmp_path / "root_agent.yaml"
+  wf_file.write_text(
+      "agent_class: Workflow\n"
+      "name: wf\n"
+      "edges:\n"
+      "  - - START\n"
+      "    - agent_class: LlmAgent\n"
+      "      name: cls\n"
+      "      model: gemini-2.5-flash\n"
+      "      instruction: i\n"
+      "    - code:\n"
+      "        agent_class: LlmAgent\n"
+      "        name: tgt\n"
+      "        model: gemini-2.5-flash\n"
+      "        instruction: i\n"
+  )
+
+  wf = config_agent_utils.from_config(str(wf_file))
+
+  assert {e.route: e.to_node.name for e in wf.graph.edges if e.route} == {
+      "code": "tgt"
+  }
+
+
+def test_from_config_lets_an_inline_node_reach_a_from_config_override(
+    tmp_path: Path,
+):
+  """The same class inlined or referenced by path has to build the same way.
+
+  An inline node was constructed directly, so a subclass owning its own
+  construction was silently skipped in that spelling only.
+  """
+  ran = []
+
+  class OwnBuild(BaseAgent):
+
+    @classmethod
+    def from_config(cls, config, config_abs_path):
+      ran.append(True)
+      return cls(name="built_by_override")
+
+  wf_file = tmp_path / "root_agent.yaml"
+  wf_file.write_text(
+      "agent_class: Workflow\n"
+      "name: wf\n"
+      "edges:\n"
+      "  - - START\n"
+      "    - agent_class: mylib.OwnBuild\n"
+      "      name: ignored_by_the_override\n"
+  )
+
+  with mock.patch.object(
+      config_agent_utils, "resolve_fully_qualified_name", lambda n: OwnBuild
+  ):
+    wf = config_agent_utils.from_config(str(wf_file))
+
+  assert ran
+  assert wf.graph.edges[0].to_node.name == "built_by_override"

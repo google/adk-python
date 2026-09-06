@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING
 
 from ..events._branch_path import _BranchPath
 from ..telemetry import node_tracing
+from ._errors import DynamicNodeFailError
 
 if TYPE_CHECKING:
   from ..agents.context import Context
@@ -138,8 +139,6 @@ class NodeRunner:
           logger.debug("node %s end.", ctx.node_path)
           return ctx
       except Exception as e:
-        from ._errors import DynamicNodeFailError
-
         if isinstance(e, DynamicNodeFailError):
           # TODO: consider to retry upon dynamic node failures later. This may
           # require thorough design to consider a workflow dynamic node and a
@@ -152,8 +151,13 @@ class NodeRunner:
         from ..events.event import Event
 
         logger.exception("Node execution failed with exception")
+        # Prefer the API's own canonical status (e.g. "PERMISSION_DENIED") over
+        # the Python class name so structured error codes reach clients. The
+        # isinstance guard matters: aiohttp's `.status`, for one, is an int
+        # while Event.error_code is Optional[str].
+        status = getattr(e, "status", None)
         error_event = Event(
-            error_code=type(e).__name__,
+            error_code=status if isinstance(status, str) else type(e).__name__,
             error_message=str(e),
         )
         await self._enqueue_event(error_event, ctx)

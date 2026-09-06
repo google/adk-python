@@ -19,6 +19,7 @@ import json
 import logging
 from pathlib import Path
 from pathlib import PurePosixPath
+import re
 import sys
 from unittest import mock
 
@@ -29,6 +30,7 @@ from google.adk.code_executors.unsafe_local_code_executor import UnsafeLocalCode
 from google.adk.environment import BaseEnvironment
 from google.adk.models import llm_request as llm_request_model
 from google.adk.skills import models
+from google.adk.telemetry import _instrumentation
 from google.adk.tools import skill_toolset
 from google.adk.tools import tool_context
 from google.genai import types
@@ -624,7 +626,7 @@ async def test_process_llm_request_without_list_skills_tool(
   args, _ = llm_req.append_instructions.call_args
   instructions = args[0]
   assert len(instructions) == 2
-  assert instructions[0] == skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION
+  assert "NOT available: `list_skills`" in instructions[0]
   assert "<available_skills>" in instructions[1]
   assert "skill1" in instructions[1]
   assert "skill2" in instructions[1]
@@ -785,11 +787,11 @@ def _make_tool_context_with_agent(agent=None, invocation_id="test_invocation"):
   return ctx
 
 
-def _make_mock_executor(stdout="", stderr=""):
+def _make_mock_executor(stdout="", stderr="", exit_code=None):
   """Creates a mock code executor that returns the given output."""
   executor = mock.create_autospec(BaseCodeExecutor, instance=True)
   executor.execute_code.return_value = CodeExecutionResult(
-      stdout=stdout, stderr=stderr
+      stdout=stdout, stderr=stderr, exit_code=exit_code
   )
   return executor
 
@@ -1713,6 +1715,29 @@ def _make_real_executor_toolset(skills, **kwargs):
   return skill_toolset.SkillToolset(skills, code_executor=executor, **kwargs)
 
 
+@pytest.fixture(name="recorded_script_telemetry")
+def _recorded_script_telemetry(monkeypatch):
+  """Collects the telemetry objects the run_skill_script tool fills in.
+
+  The exit code reaches telemetry rather than the tool result, so asserting on
+  the result alone would leave it unchecked.
+  """
+  recorded = []
+  tracker = skill_toolset._instrumentation.track_skill_script_execution
+
+  def _spy(*args, **kwargs):
+    skill_telemetry = tracker(*args, **kwargs)
+    recorded.append(skill_telemetry)
+    return skill_telemetry
+
+  monkeypatch.setattr(
+      skill_toolset._instrumentation,
+      "track_skill_script_execution",
+      _spy,
+  )
+  return recorded
+
+
 @pytest.mark.asyncio
 async def test_integration_python_stdout():
   """Real executor: Python script stdout is captured."""
@@ -1834,7 +1859,7 @@ async def test_integration_shell_stdout_and_stderr():
 
 
 @pytest.mark.asyncio
-async def test_integration_shell_stderr_only():
+async def test_integration_shell_stderr_only(recorded_script_telemetry):
   """Real executor: shell script with only stderr reports error."""
   script = models.Script(src="echo failure >&2")
   skill = _make_skill_with_script("test_skill", "err.sh", script)
@@ -1851,6 +1876,114 @@ async def test_integration_shell_stderr_only():
   assert "status" in result, f"Result missing status: {result}"
   assert result["status"] == "error"
   assert "failure" in result["stderr"]
+  assert recorded_script_telemetry[0].script_exit_code == 0
+
+
+# ── Exit codes reported by the executor ──
+#
+# A Python script runs as the executed process itself, so the status that
+# process exits with is the script's own. These go through the real executor,
+# because the point is that the two agree.
+
+
+@pytest.mark.asyncio
+async def test_integration_python_reports_exit_code_after_writing_stdout(
+    recorded_script_telemetry,
+):
+  """Output written before a crash does not make the run a success."""
+  script = models.Script(src="print('progress')\nraise ValueError('boom')")
+  skill = _make_skill_with_script("test_skill", "crash.py", script)
+  toolset = _make_real_executor_toolset([skill])
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  result = await tool.run_async(
+      args={"skill_name": "test_skill", "file_path": "crash.py"},
+      tool_context=ctx,
+  )
+
+  assert result["status"] == "error"
+  assert "progress" in result["stdout"]
+  assert "ValueError: boom" in result["stderr"]
+  assert recorded_script_telemetry[0].script_exit_code == 1
+
+
+@pytest.mark.asyncio
+async def test_integration_python_reports_a_chosen_exit_code(
+    recorded_script_telemetry,
+):
+  """The status the script picked survives to telemetry."""
+  script = models.Script(src="import sys\nsys.exit(3)")
+  skill = _make_skill_with_script("test_skill", "exit_three.py", script)
+  toolset = _make_real_executor_toolset([skill])
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  result = await tool.run_async(
+      args={"skill_name": "test_skill", "file_path": "exit_three.py"},
+      tool_context=ctx,
+  )
+
+  assert result["status"] == "error"
+  assert recorded_script_telemetry[0].script_exit_code == 3
+
+
+@pytest.mark.asyncio
+async def test_integration_python_success_reports_exit_code_zero(
+    recorded_script_telemetry,
+):
+  script = models.Script(src="print('all good')")
+  skill = _make_skill_with_script("test_skill", "ok.py", script)
+  toolset = _make_real_executor_toolset([skill])
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  result = await tool.run_async(
+      args={"skill_name": "test_skill", "file_path": "ok.py"},
+      tool_context=ctx,
+  )
+
+  assert result["status"] == "success"
+  assert result["stdout"] == "all good\n"
+  assert recorded_script_telemetry[0].script_exit_code == 0
+
+
+@pytest.mark.asyncio
+async def test_executor_exit_code_is_not_overridden_by_stderr(
+    mock_skill1, recorded_script_telemetry
+):
+  """A reported status stands even when the run wrote only to stderr."""
+  executor = _make_mock_executor(stdout="", stderr="a warning\n", exit_code=0)
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "run.py"},
+      tool_context=ctx,
+  )
+
+  assert result["status"] == "error"
+  assert recorded_script_telemetry[0].script_exit_code == 0
+
+
+@pytest.mark.asyncio
+async def test_missing_executor_exit_code_falls_back_to_stderr(
+    mock_skill1, recorded_script_telemetry
+):
+  """Executors that report no status still get an outcome inferred."""
+  executor = _make_mock_executor(stdout="", stderr="fatal error\n")
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "run.py"},
+      tool_context=ctx,
+  )
+
+  assert result["status"] == "error"
+  assert recorded_script_telemetry[0].script_exit_code == 1
 
 
 # ── Shell JSON envelope parsing (unit tests with mock executor) ──
@@ -2668,7 +2801,7 @@ async def test_turn_scoped_skill_cache(
 
   # Setup executor for script tool
   executor = mock.create_autospec(skill_toolset.BaseCodeExecutor, instance=True)
-  executor.execute_code.return_value = mock.MagicMock(
+  executor.execute_code.return_value = CodeExecutionResult(
       stdout="hello\n", stderr=""
   )
   toolset._code_executor = executor
@@ -2844,3 +2977,348 @@ async def test_skill_toolset_with_dynamic_tools_filter(
   assert "list_skills" in tool_names
   assert "my_custom_tool" in tool_names
   assert "load_skill" not in tool_names
+
+
+# ── tool_filter vs system instruction consistency ──
+
+
+def test_filtered_system_instruction_appends_banned_notice():
+  """Filtered builder must document all tools but append a banned notice."""
+  instruction = skill_toolset._build_skill_system_instruction(
+      allowed_tools={"list_skills", "load_skill"}
+  )
+  assert "Use `run_skill_script` to run scripts" in instruction
+  assert "The `load_skill_resource` tool is for viewing" in instruction
+  assert "`load_skill`" in instruction
+  assert "NOT available" in instruction
+  assert "Do NOT call them" in instruction
+  assert "normal model text" in instruction
+  # Ban clause may still name the filtered tools.
+  assert "`run_skill_script`" in instruction
+  assert "`load_skill_resource`" in instruction
+
+
+def test_filtered_system_instruction_bans_load_and_list_skills():
+  """Filtered builder must include load_skill and list_skills in ban notice when filtered."""
+  instruction = skill_toolset._build_skill_system_instruction(
+      allowed_tools={"run_skill_script"}
+  )
+  assert (
+      "The following tools are NOT available: `load_skill_resource`,"
+      " `load_skill`, `list_skills`."
+      in instruction
+  )
+  assert "Do NOT call them" in instruction
+
+
+def test_tool_classes_define_tool_name_constants():
+  """Core tool classes must define TOOL_NAME attributes matching their names."""
+  assert skill_toolset.ListSkillsTool.TOOL_NAME == "list_skills"
+  assert skill_toolset.SearchSkillsTool.TOOL_NAME == "search_skills"
+  assert skill_toolset.LoadSkillTool.TOOL_NAME == "load_skill"
+  assert skill_toolset.LoadSkillResourceTool.TOOL_NAME == "load_skill_resource"
+  assert skill_toolset.RunSkillScriptTool.TOOL_NAME == "run_skill_script"
+
+
+def test_unfiltered_system_instruction_documents_all_tools():
+  """Unfiltered path must keep documenting script/resource tools."""
+  instruction = skill_toolset._build_skill_system_instruction()
+  assert instruction == skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION
+  assert "Use `run_skill_script` to run scripts" in instruction
+  assert "The `load_skill_resource` tool is for viewing" in instruction
+  assert "NOT available" not in instruction
+
+
+def test_default_skill_system_instruction_contract_unchanged():
+  """Public DEFAULT export must remain the full unfiltered instruction."""
+  assert "run_skill_script" in skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION
+  assert "load_skill_resource" in skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION
+  assert (
+      "does NOT complete your turn"
+      in skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION
+  )
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_respects_list_tool_filter(
+    mock_skill1, tool_context_instance
+):
+  toolset = skill_toolset.SkillToolset(
+      skills=[mock_skill1],
+      tool_filter=["list_skills", "load_skill"],
+  )
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+
+  llm_req.append_instructions.assert_called_once()
+  args, _ = llm_req.append_instructions.call_args
+  instructions = args[0]
+  assert len(instructions) == 1
+  instruction = instructions[0]
+  assert "Use `run_skill_script` to run scripts" in instruction
+  assert "The `load_skill_resource` tool is for viewing" in instruction
+  assert "Do NOT call them" in instruction
+  assert "normal model text" in instruction
+  assert instruction != skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_injects_skills_xml_when_list_skills_filtered(
+    mock_skill1, mock_skill2, tool_context_instance
+):
+  toolset = skill_toolset.SkillToolset(
+      skills=[mock_skill1, mock_skill2],
+      tool_filter=["load_skill"],
+  )
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+
+  args, _ = llm_req.append_instructions.call_args
+  instructions = args[0]
+  assert len(instructions) == 2
+  assert "<available_skills>" in instructions[1]
+  assert "skill1" in instructions[1]
+  assert "skill2" in instructions[1]
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_omits_search_skills_hint_when_filtered(
+    mock_registry, tool_context_instance
+):
+  toolset = skill_toolset.SkillToolset(
+      registry=mock_registry,
+      tool_filter=["list_skills", "load_skill"],
+  )
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+
+  args, _ = llm_req.append_instructions.call_args
+  instructions = args[0]
+  assert len(instructions) == 1
+  assert "search_skills" not in instructions[0]
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_includes_search_skills_hint_when_allowed(
+    mock_registry, tool_context_instance
+):
+  toolset = skill_toolset.SkillToolset(
+      registry=mock_registry,
+      tool_filter=["list_skills", "load_skill", "search_skills"],
+  )
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+
+  args, _ = llm_req.append_instructions.call_args
+  instructions = args[0]
+  assert len(instructions) == 2
+  assert "search_skills" in instructions[1]
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_with_prefix_and_tool_filter(
+    mock_skill1, tool_context_instance
+):
+  toolset = skill_toolset.SkillToolset(
+      skills=[mock_skill1],
+      tool_name_prefix="my",
+      tool_filter=["list_skills", "load_skill"],
+  )
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+
+  args, _ = llm_req.append_instructions.call_args
+  instruction = args[0][0]
+  assert "`my_load_skill`" in instruction
+  assert "Use `my_run_skill_script` to run scripts" in instruction
+  assert "The `my_load_skill_resource` tool is for viewing" in instruction
+  assert "`my_run_skill_script`" in instruction  # ban clause
+  assert "Do NOT call them" in instruction
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_respects_predicate_tool_filter(
+    mock_skill1, tool_context_instance
+):
+  toolset = skill_toolset.SkillToolset(
+      skills=[mock_skill1],
+      tool_filter=lambda tool, ctx=None: tool.name
+      in ("list_skills", "load_skill"),
+  )
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+
+  args, _ = llm_req.append_instructions.call_args
+  instruction = args[0][0]
+  assert "Use `run_skill_script` to run scripts" in instruction
+  assert "Do NOT call them" in instruction
+
+
+# ── run_skill_script is only offered when something can run scripts ──
+
+
+def _make_readonly_context(agent):
+  """Creates a ReadonlyContext whose invocation context holds `agent`."""
+  ctx = mock.MagicMock(spec=ReadonlyContext)
+  ctx._invocation_context = mock.MagicMock()
+  ctx._invocation_context.agent = agent
+  ctx.agent_name = "test_agent"
+  ctx.invocation_id = "test_invocation"
+  ctx.state = {}
+  return ctx
+
+
+_AGENTS_WITHOUT_EXECUTOR = {
+    "no_attribute": lambda: mock.MagicMock(spec=[]),
+    "attribute_is_none": lambda: mock.MagicMock(code_executor=None),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "make_agent",
+    _AGENTS_WITHOUT_EXECUTOR.values(),
+    ids=_AGENTS_WITHOUT_EXECUTOR.keys(),
+)
+async def test_get_tools_hides_run_skill_script_without_backend(
+    mock_skill1, make_agent
+):
+  """Without a backend every call returns NO_CODE_EXECUTOR, so drop the tool."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+
+  tools = await toolset.get_tools(_make_readonly_context(make_agent()))
+
+  assert [type(t) for t in tools] == [
+      skill_toolset.ListSkillsTool,
+      skill_toolset.LoadSkillTool,
+      skill_toolset.LoadSkillResourceTool,
+  ]
+
+
+@pytest.mark.asyncio
+async def test_get_tools_keeps_run_skill_script_with_toolset_executor(
+    mock_skill1,
+):
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1], code_executor=_make_mock_executor()
+  )
+
+  tools = await toolset.get_tools(
+      _make_readonly_context(mock.MagicMock(spec=[]))
+  )
+
+  assert any(isinstance(t, skill_toolset.RunSkillScriptTool) for t in tools)
+
+
+@pytest.mark.asyncio
+async def test_get_tools_keeps_run_skill_script_with_environment(mock_skill1):
+  mock_env = mock.create_autospec(BaseEnvironment, instance=True)
+  toolset = skill_toolset.SkillToolset([mock_skill1], environment=mock_env)
+
+  tools = await toolset.get_tools(
+      _make_readonly_context(mock.MagicMock(spec=[]))
+  )
+
+  assert any(isinstance(t, skill_toolset.RunSkillScriptTool) for t in tools)
+
+
+@pytest.mark.asyncio
+async def test_get_tools_keeps_run_skill_script_with_agent_executor(
+    mock_skill1,
+):
+  """RunSkillScriptTool falls back to the agent's executor, so keep the tool."""
+  agent = mock.MagicMock()
+  agent.code_executor = _make_mock_executor()
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+
+  tools = await toolset.get_tools(_make_readonly_context(agent))
+
+  assert any(isinstance(t, skill_toolset.RunSkillScriptTool) for t in tools)
+
+
+@pytest.mark.asyncio
+async def test_get_tools_keeps_run_skill_script_without_context(mock_skill1):
+  """No context means no agent to inspect, so the tool is left in place."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+
+  tools = await toolset.get_tools()
+
+  assert any(isinstance(t, skill_toolset.RunSkillScriptTool) for t in tools)
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_drops_script_guidance_without_backend(
+    mock_skill1,
+):
+  """The prompt must not advertise a tool the model is not even given."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  ctx = _make_tool_context_with_agent(agent=mock.MagicMock(spec=[]))
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(tool_context=ctx, llm_request=llm_req)
+
+  instruction = llm_req.append_instructions.call_args[0][0][0]
+  assert "run_skill_script" not in instruction
+  assert "can be run via bash" not in instruction
+  # The surviving steps stay contiguously numbered.
+  assert re.findall(r"^(\d+)\. ", instruction, re.MULTILINE) == [
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+  ]
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_keeps_script_guidance_with_backend(
+    mock_skill1,
+):
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1], code_executor=_make_mock_executor()
+  )
+  ctx = _make_tool_context_with_agent(agent=mock.MagicMock(spec=[]))
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(tool_context=ctx, llm_request=llm_req)
+
+  instruction = llm_req.append_instructions.call_args[0][0][0]
+  assert instruction == skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_with_bare_autospec_context(mock_skill1):
+  """A context that exposes no agent must not break instruction building.
+
+  Callers pass strict autospec mocks, which have no `_invocation_context`. The
+  agent's executor cannot be ruled out there, so the guidance stays.
+  """
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  ctx = mock.create_autospec(
+      tool_context.ToolContext, instance=True, spec_set=True
+  )
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(tool_context=ctx, llm_request=llm_req)
+
+  llm_req.append_instructions.assert_called_once_with(
+      [skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION]
+  )

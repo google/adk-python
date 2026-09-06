@@ -92,7 +92,6 @@
                         "parts": [
                           {
                             "function_call": {
-                              "id": "PRESENT",
                               "args": {
                                 "arg1": "val1"
                               },

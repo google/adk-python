@@ -57,7 +57,9 @@ from typing_extensions import NotRequired
 from typing_extensions import override
 from typing_extensions import Required
 
+from . import _prompt_cache
 from ..utils._google_client_headers import merge_tracking_headers
+from ..utils._schema_utils import lowercase_schema_types
 from ._capabilities import LlmCapabilities
 from .base_llm import BaseLlm
 from .interactions_utils import extract_system_instruction
@@ -80,6 +82,8 @@ if TYPE_CHECKING:
   from litellm import ModelResponseStream
   from litellm import OpenAIMessageContent
   from litellm.types.utils import Delta
+
+  from ..agents.context_cache_config import ContextCacheConfig
 else:
   litellm = None
   acompletion = None
@@ -1075,6 +1079,38 @@ def _extract_cache_creation_tokens(usage: Any) -> Optional[int]:
   return None
 
 
+def _cache_control_injection_points(
+    cache_config: ContextCacheConfig,
+) -> List[Dict[str, Any]]:
+  """Describes the prefix LiteLLM should mark as cacheable.
+
+  LiteLLM applies these itself and then lets each provider decide what to do
+  with them, so the same two points are correct whatever the model turns out
+  to be: a provider that caches by marked prefix, such as Claude, honors them,
+  and a provider that caches automatically or not at all has them dropped
+  before the request leaves.
+
+  The system instruction is one point because it is the stable head of the
+  prompt. The final message is the other, which caches the conversation so far
+  and moves forward on its own as the conversation grows. Tool definitions get
+  no point of their own, because LiteLLM's only tool-level location is
+  specific to one provider.
+
+  Args:
+    cache_config: Cache configuration for the request.
+
+  Returns:
+    Injection points to hand to LiteLLM.
+  """
+  control: Dict[str, Any] = {"type": "ephemeral"}
+  if _prompt_cache.use_one_hour_ttl(cache_config):
+    control["ttl"] = "1h"
+  return [
+      {"location": "message", "role": "system", "control": control},
+      {"location": "message", "index": -1, "control": control},
+  ]
+
+
 def _decode_thought_signature(value: Any) -> Optional[bytes]:
   """Safely decodes a thought_signature value to bytes.
 
@@ -1233,7 +1269,7 @@ async def _content_to_message_param(
     *,
     provider: str = "",
     model: str = "",
-) -> Union[Message, list[Message]]:
+) -> Union[Message, list[Message]] | None:
   """Converts a types.Content to a litellm Message or list of Messages.
 
   Handles multipart function responses by returning a list of
@@ -1245,14 +1281,18 @@ async def _content_to_message_param(
     model: The LiteLLM model string, used for provider-specific behavior.
 
   Returns:
-    A litellm Message, a list of litellm Messages.
+    A litellm Message, a list of litellm Messages, or None if skipped.
   """
   _ensure_litellm_imported()
 
+  # Skip content if there are no parts to avoid LiteLLM adapter errors.
+  parts = content.parts or []
+  if not parts:
+    return None
+
   tool_messages: list[Message] = []
   non_tool_parts: list[types.Part] = []
-  content_parts_or_empty = content.parts or []
-  for part in content_parts_or_empty:
+  for part in parts:
     if part.function_response:
       function_response = part.function_response
       response = function_response.response
@@ -1300,7 +1340,7 @@ async def _content_to_message_param(
   role = _to_litellm_role(content.role)
 
   if role == "user":
-    user_parts = [part for part in content_parts_or_empty if not part.thought]
+    user_parts = [part for part in parts if not part.thought]
     message_content = (
         await _get_content(user_parts, provider=provider, model=model) or None
     )
@@ -1312,7 +1352,7 @@ async def _content_to_message_param(
     tool_calls: list[_OutboundToolCall] = []
     content_parts: list[types.Part] = []
     reasoning_parts: list[types.Part] = []
-    for part in content_parts_or_empty:
+    for part in parts:
       if part.function_call:
         function_call = part.function_call
         if not function_call.name:
@@ -2095,20 +2135,31 @@ def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict[str, Any]:
   Returns:
     The dictionary representation of the schema.
   """
-  schema_dict = (
-      schema.model_dump(exclude_none=True)
-      if isinstance(schema, types.Schema)
-      else dict(schema)
-  )
+  if isinstance(schema, types.Schema):
+    schema_dict = schema.model_dump(by_alias=True, exclude_none=True)
+  else:
+    schema_dict = dict(schema)
   enum_values = schema_dict.get("enum")
   if isinstance(enum_values, (list, tuple)):
     schema_dict["enum"] = [value for value in enum_values if value is not None]
 
   if "type" in schema_dict and schema_dict["type"] is not None:
     t = schema_dict["type"]
-    schema_dict["type"] = (
-        t.value if isinstance(t, types.Type) else str(t)
-    ).lower()
+    if isinstance(t, types.Type):
+      schema_dict["type"] = (
+          t.value.lower() if isinstance(t.value, str) else str(t.value).lower()
+      )
+    elif isinstance(t, str):
+      schema_dict["type"] = t.lower()
+    elif isinstance(t, (list, tuple)):
+      schema_dict["type"] = [
+          item.value.lower()
+          if isinstance(item, types.Type)
+          else (item.lower() if isinstance(item, str) else item)
+          for item in t
+      ]
+    else:
+      schema_dict["type"] = str(t).lower()
 
   if "items" in schema_dict:
     items = schema_dict["items"]
@@ -2118,6 +2169,22 @@ def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict[str, Any]:
         else items
     )
 
+  # `model_dump()` spells these with pydantic field names (`any_of`,
+  # `min_items`, ...), but every downstream JSON Schema consumer reads the
+  # camelCase alias, so an un-renamed union is silently dropped and the
+  # argument reaches the model as a bare `{"type": "object"}`. `by_alias=True`
+  # renames all nine; the recursion below also lowercases nested types.
+  any_of = schema_dict.pop("any_of", None)
+  if any_of is None:
+    any_of = schema_dict.get("anyOf")
+  if any_of is not None:
+    schema_dict["anyOf"] = [
+        _schema_to_dict(item)
+        if isinstance(item, (types.Schema, dict))
+        else item
+        for item in any_of
+    ]
+
   if "properties" in schema_dict:
     new_props = {}
     for key, value in schema_dict["properties"].items():
@@ -2126,6 +2193,16 @@ def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict[str, Any]:
       else:
         new_props[key] = value
     schema_dict["properties"] = new_props
+
+  additional_properties = schema_dict.pop("additional_properties", None)
+  if additional_properties is None:
+    additional_properties = schema_dict.get("additionalProperties")
+  if additional_properties is not None:
+    schema_dict["additionalProperties"] = (
+        _schema_to_dict(additional_properties)
+        if isinstance(additional_properties, (types.Schema, dict))
+        else additional_properties
+    )
 
   return schema_dict
 
@@ -2144,24 +2221,20 @@ def _function_declaration_to_tool_param(
 
   assert function_declaration.name
 
-  parameters: dict[str, Any] = {
-      "type": "object",
-      "properties": {},
-  }
-  if (
-      function_declaration.parameters
-      and function_declaration.parameters.properties
-  ):
-    properties = {}
-    for key, value in function_declaration.parameters.properties.items():
-      properties[key] = _schema_to_dict(value)
-
+  if function_declaration.parameters_json_schema:
+    parameters = copy.deepcopy(function_declaration.parameters_json_schema)
+    lowercase_schema_types(parameters)
+  elif function_declaration.parameters:
+    parameters = _schema_to_dict(function_declaration.parameters)
+    if "type" not in parameters:
+      parameters["type"] = "object"
+    if "properties" not in parameters:
+      parameters["properties"] = {}
+  else:
     parameters = {
         "type": "object",
-        "properties": properties,
+        "properties": {},
     }
-  elif function_declaration.parameters_json_schema:
-    parameters = function_declaration.parameters_json_schema
 
   tool_params: dict[str, Any] = {
       "type": "function",
@@ -2173,11 +2246,15 @@ def _function_declaration_to_tool_param(
   }
 
   required_fields = (
-      getattr(function_declaration.parameters, "required", None)
-      if function_declaration.parameters
+      function_declaration.parameters.required
+      if not function_declaration.parameters_json_schema
+      and function_declaration.parameters
       else None
   )
-  if required_fields:
+  if (
+      required_fields
+      and "required" not in tool_params["function"]["parameters"]
+  ):
     tool_params["function"]["parameters"]["required"] = required_fields
 
   return tool_params
@@ -2234,11 +2311,13 @@ def _model_response_to_chunk(
         "Unexpected response type from LiteLLM: %r" % (type(response),)
     )
 
-  choices = response.get("choices")
-  if not choices:
+  # Extra candidates arrive as extra choices, either in the same chunk or in
+  # chunks carrying only a non-zero index; only the first candidate is used.
+  choices = response.get("choices") or []
+  choice = next((c for c in choices if not c.get("index")), None)
+  if choice is None:
     yield None, None
   else:
-    choice = choices[0]
     finish_reason = choice.get("finish_reason")
     if message_field == "delta":
       message = choice.get("delta")
@@ -2362,6 +2441,11 @@ def _model_response_to_generate_content_response(
   message = None
   finish_reason = None
   if (choices := response.get("choices")) and choices:
+    if len(choices) > 1:
+      logger.error(
+          "Multiple choices found in response but only the first one will be"
+          " used."
+      )
     first_choice = choices[0]
     message = first_choice.get("message", None)
     finish_reason = first_choice.get("finish_reason", None)
@@ -2451,9 +2535,24 @@ def _message_to_generate_content_response(
     for tool_call in tool_calls:
       if tool_call.type == "function":
         thought_signature = _extract_thought_signature_from_tool_call(tool_call)
+        try:
+          args = _parse_tool_call_arguments(tool_call.function.arguments)
+        except json.JSONDecodeError:
+          logger.warning(
+              "Malformed JSON in tool call arguments for function '%s';"
+              " dispatching with empty arguments so the tool can return a"
+              " structured error and the model can retry.",
+              tool_call.function.name,
+          )
+          logger.debug(
+              "Malformed tool call arguments for function '%s': %s",
+              tool_call.function.name,
+              tool_call.function.arguments,
+          )
+          args = {}
         part = types.Part.from_function_call(
             name=tool_call.function.name,
-            args=_parse_tool_call_arguments(tool_call.function.arguments),
+            args=args,
         )
         function_call = part.function_call
         if function_call is None:
@@ -2565,7 +2664,9 @@ def _to_litellm_response_format(
     if isinstance(response_schema, types.Schema):
       # GenAI Schema instances already represent JSON schema definitions.
       schema_dict = copy.deepcopy(
-          response_schema.model_dump(exclude_none=True, mode="json")
+          response_schema.model_dump(
+              by_alias=True, exclude_none=True, mode="json"
+          )
       )
       if "title" in schema_dict:
         schema_name = str(schema_dict["title"])
@@ -2594,6 +2695,7 @@ def _to_litellm_response_format(
   # OpenAI-compatible format (default) per LiteLLM docs:
   # https://docs.litellm.ai/docs/completion/json_mode
   if isinstance(schema_dict, dict):
+    lowercase_schema_types(schema_dict)
     _enforce_strict_openai_schema(schema_dict)
 
   return {
@@ -3078,6 +3180,18 @@ class LiteLlm(BaseLlm):
     }
     completion_args.update(self._additional_args)
 
+    # A caller who named their own injection points at construction has said
+    # more about their provider than the app-level config can, so leave those
+    # alone.
+    cache_config = _prompt_cache.resolve_cache_config(llm_request)
+    if (
+        cache_config is not None
+        and "cache_control_injection_points" not in completion_args
+    ):
+      completion_args["cache_control_injection_points"] = (
+          _cache_control_injection_points(cache_config)
+      )
+
     # merge headers
     if _is_litellm_vertex_model(effective_model) or _is_litellm_gemini_model(
         effective_model
@@ -3134,7 +3248,9 @@ class LiteLlm(BaseLlm):
       aggregated_llm_response_with_tool_call = None
       usage_metadata = None
       grounding_metadata = None
+      last_finish_reason: str | None = None
       fallback_index = 0
+      multiple_choices_logged = False
 
       def _finalize_tool_call_response(
           *, model_version: str, finish_reason: str
@@ -3220,19 +3336,34 @@ class LiteLlm(BaseLlm):
         return llm_response
 
       def _reset_stream_buffers() -> None:
-        nonlocal reasoning_parts
+        nonlocal reasoning_parts, last_finish_reason
         text_parts.clear()
         reasoning_parts = []
         function_calls.clear()
         tool_call_trackers.clear()
+        # The reason belongs to the segment just finalized; carrying it into
+        # the next one would stamp the wrong reason on the next response.
+        last_finish_reason = None
 
       async for part in await self.llm_client.acompletion(**completion_args):
+        part_choices = part.get("choices") or []
+        if not multiple_choices_logged and (
+            len(part_choices) > 1
+            or any(choice.get("index") for choice in part_choices)
+        ):
+          multiple_choices_logged = True
+          logger.error(
+              "Multiple choices found in streaming response but only the first"
+              " one will be used."
+          )
         # Grounding metadata can arrive on the first chunk (search queries) or
         # the final chunk (supports); keep the latest non-empty one.
         part_grounding = _extract_grounding_metadata(part)
         if part_grounding:
           grounding_metadata = part_grounding
         for chunk, finish_reason in _model_response_to_chunk(part):
+          if finish_reason:
+            last_finish_reason = finish_reason
           if isinstance(chunk, FunctionChunk):
             index = chunk.index or fallback_index
             if index not in function_calls:
@@ -3324,19 +3455,42 @@ class LiteLlm(BaseLlm):
             )
             _reset_stream_buffers()
 
+      # The in-loop finalizers only fire on the reasons known to end a stream,
+      # so any other terminal reason ("content_filter" above all) reaches the
+      # end of the stream with the buffers still full. Finalize with the reason
+      # the provider actually sent rather than assuming a clean stop, so a
+      # filtered stream reports the same finish_reason and error_code that the
+      # non-streaming path reports.
       if function_calls and not aggregated_llm_response_with_tool_call:
         aggregated_llm_response_with_tool_call = _finalize_tool_call_response(
             model_version=part.model,
-            finish_reason="tool_calls",
+            finish_reason=last_finish_reason or "tool_calls",
         )
         _reset_stream_buffers()
 
       if (text_parts or reasoning_parts) and not aggregated_llm_response:
         aggregated_llm_response = _finalize_text_response(
             model_version=part.model,
-            finish_reason="stop",
+            finish_reason=last_finish_reason or "stop",
         )
         _reset_stream_buffers()
+      elif (
+          not aggregated_llm_response
+          and not aggregated_llm_response_with_tool_call
+      ):
+        # The stream ended abnormally without ever producing content (an
+        # immediate content filter, or truncation before the first token).
+        # Non-streaming reports that as an error response; without this the
+        # generator ends having yielded nothing at all, so the reason, the
+        # error and the usage are all dropped and the caller sees a silent stop.
+        trailing_finish_reason = last_finish_reason or ""
+        if trailing_finish_reason and _map_finish_reason(
+            trailing_finish_reason
+        ) not in (None, types.FinishReason.STOP):
+          aggregated_llm_response = _finalize_text_response(
+              model_version=part.model,
+              finish_reason=trailing_finish_reason,
+          )
 
       # waiting until streaming ends to yield the llm_response as litellm tends
       # to send chunk that contains usage_metadata after the chunk with

@@ -40,6 +40,7 @@ from ..code_executors.code_execution_utils import CodeExecutionInput
 from ..skills import models
 from ..skills import prompt
 from ..skills import SkillRegistry
+from ..telemetry import _hallucination
 from ..telemetry import _instrumentation
 from ..utils import instructions_utils
 from .base_tool import BaseTool
@@ -65,28 +66,108 @@ _BINARY_FILE_DETECTED_MSG = (
 )
 
 
+_LIST_SKILLS_TOOL_NAME = "list_skills"
+_SEARCH_SKILLS_TOOL_NAME = "search_skills"
+_LOAD_SKILL_TOOL_NAME = "load_skill"
+_LOAD_SKILL_RESOURCE_TOOL_NAME = "load_skill_resource"
+_RUN_SKILL_SCRIPT_TOOL_NAME = "run_skill_script"
+
+
 def _build_skill_system_instruction(
-    prefix: str | None = None, skills_folder: Path | None = None
+    prefix: str | None = None,
+    allowed_tools: set[str] | frozenset[str] | None = None,
+    skills_folder: Path | None = None,
+    script_execution_enabled: bool = True,
 ) -> str:
+  """Builds the skill guidance injected into the model's system instruction.
+
+  Args:
+    prefix: Optional tool name prefix, matching the toolset's.
+    allowed_tools: Optional set of base tool names available after filtering.
+      When None, documents all skill tools (historical default, used for
+      ``DEFAULT_SKILL_SYSTEM_INSTRUCTION``). When provided, documents all skill
+      tools, and explicitly forbids calling filtered-out tools.
+    skills_folder: Where skill resources are materialized, when running in an
+      environment.
+    script_execution_enabled: Whether scripts can actually be run. When False,
+      `run_skill_script` is not offered to the model either, so advertising it
+      here would promise a capability that always fails.
+
+  Returns:
+    The system instruction text.
+  """
   p = f"{prefix}_" if prefix else ""
   skills_folder_posix = (
       skills_folder.as_posix() if skills_folder is not None else None
   )
-  env_note = (
-      (
-          "8. NOTE ON ENVIRONMENT EXECUTION: When using"
-          f" `{p}run_skill_script` with the `command` parameter, all skill"
-          " resources (including scripts and assets) are materialized in the"
-          f" execution environment under `{skills_folder_posix}/<skill_name>/`."
-          " Always specify file and script paths relative to or starting with"
-          f" `{skills_folder_posix}/<skill_name>/` (e.g.,"
-          f" `{skills_folder_posix}/<skill_name>/scripts/<script_name>`).\n"
+  scripts_bullet = (
+      "- **scripts/** (Optional): Executable scripts that can be run via "
+      "bash.\n\n"
+      if script_execution_enabled
+      else (
+          "- **scripts/** (Optional): Scripts bundled with the skill. You"
+          f" cannot run them; use `{p}{_LOAD_SKILL_RESOURCE_TOOL_NAME}` to read"
+          " one and follow it yourself.\n\n"
       )
-      if skills_folder_posix is not None
-      else ""
   )
 
-  return (
+  steps = [
+      (
+          "If a skill seems relevant to the current user query, you MUST use "
+          f"the `{p}{_LOAD_SKILL_TOOL_NAME}` tool with"
+          ' `skill_name="<SKILL_NAME>"` to read '
+          "its full instructions before proceeding."
+      ),
+      (
+          "Once you have read the instructions, follow them exactly as "
+          "documented before replying to the user. For example, If the "
+          "instruction lists multiple steps, please make sure you complete all "
+          "of them in order."
+      ),
+      (
+          f"The `{p}{_LOAD_SKILL_RESOURCE_TOOL_NAME}` tool is for viewing files"
+          " within a skill's directory (e.g., `references/*`, `assets/*`,"
+          " `scripts/*`). It is ONLY for skill-bundled files — do NOT use it"
+          " to access documents or files provided by the user at runtime. Do"
+          " NOT use other tools to access skill files."
+      ),
+  ]
+  if script_execution_enabled:
+    steps.append(
+        f"Use `{p}{_RUN_SKILL_SCRIPT_TOOL_NAME}` to run scripts from a skill's"
+        f" `scripts/` directory. Use `{p}{_LOAD_SKILL_RESOURCE_TOOL_NAME}` to"
+        " view script content first if needed."
+    )
+  steps.append(
+      f"If `{p}{_LOAD_SKILL_RESOURCE_TOOL_NAME}` returns any error, do not"
+      " retry any path. Report the error to the user and stop."
+  )
+  if script_execution_enabled:
+    steps.append(
+        f"If `{p}{_RUN_SKILL_SCRIPT_TOOL_NAME}` returns an error (for example "
+        "`SCRIPT_NOT_FOUND`), do not retry the same script or guess a "
+        "different script path. Report the error to the user and stop."
+    )
+  steps.append(
+      "Loading a skill only retrieves its instructions; it does NOT complete"
+      f" your turn. After a `{p}{_LOAD_SKILL_TOOL_NAME}` call returns, continue"
+      " in the SAME turn: call whatever tools the skill's steps require"
+      " (search, data retrieval, render), then write your reply. Never end"
+      " your turn with an empty response right after loading a skill."
+  )
+  if script_execution_enabled and skills_folder_posix is not None:
+    steps.append(
+        "NOTE ON ENVIRONMENT EXECUTION: When using"
+        f" `{p}{_RUN_SKILL_SCRIPT_TOOL_NAME}` with the `command` parameter, all"
+        " skill resources (including scripts and assets) are materialized in"
+        " the execution environment under"
+        f" `{skills_folder_posix}/<skill_name>/`. Always specify file and"
+        " script paths relative to or starting with"
+        f" `{skills_folder_posix}/<skill_name>/` (e.g.,"
+        f" `{skills_folder_posix}/<skill_name>/scripts/<script_name>`)."
+    )
+
+  instruction = (
       "You can use specialized 'skills' to help you with complex tasks. "
       "You MUST use the skill tools to interact with these skills.\n\n"
       "Skills are folders of instructions and resources that extend your "
@@ -97,45 +178,42 @@ def _build_skill_system_instruction(
       "skill usage.\n"
       "- **assets/** (Optional): Templates, scripts or other resources used by "
       "the skill.\n"
-      "- **scripts/** (Optional): Executable scripts that can be run via "
-      "bash.\n\n"
-      "This is very important:\n\n"
-      "1. If a skill seems relevant to the current user query, you MUST use "
-      f'the `{p}load_skill` tool with `skill_name="<SKILL_NAME>"` to read '
-      "its full instructions before proceeding.\n"
-      "2. Once you have read the instructions, follow them exactly as "
-      "documented before replying to the user. For example, If the "
-      "instruction lists multiple steps, please make sure you complete all "
-      "of them in order.\n"
-      f"3. The `{p}load_skill_resource` tool is for viewing files within a "
-      "skill's directory (e.g., `references/*`, `assets/*`, `scripts/*`). "
-      "It is ONLY for skill-bundled files — do NOT use it to access "
-      "documents or files provided by the user at runtime. Do NOT use "
-      "other tools to access skill files.\n"
-      f"4. Use `{p}run_skill_script` to run scripts from a skill's `scripts/` "
-      f"directory. Use `{p}load_skill_resource` to view script content"
-      " first if "
-      "needed.\n"
-      f"5. If `{p}load_skill_resource` returns any error, do not retry any "
-      "path. Report the error to the user and stop.\n"
-      f"6. If `{p}run_skill_script` returns an error (for example "
-      f"`SCRIPT_NOT_FOUND`), do not retry the same script or guess a "
-      "different script path. Report the error to the user and stop.\n"
-      f"7. Loading a skill only retrieves its instructions; it does NOT "
-      f"complete your turn. After a `{p}load_skill` call returns, continue "
-      "in the SAME turn: call whatever tools the skill's steps require "
-      "(search, data retrieval, render), then write your reply. Never end "
-      "your turn with an empty response right after loading a skill.\n"
-      + env_note
+      + scripts_bullet
+      + "This is very important:\n\n"
+      + "".join(f"{i}. {step}\n" for i, step in enumerate(steps, start=1))
   )
+
+  if allowed_tools is not None:
+    banned = []
+    for tool_name in (
+        _RUN_SKILL_SCRIPT_TOOL_NAME,
+        _LOAD_SKILL_RESOURCE_TOOL_NAME,
+        _LOAD_SKILL_TOOL_NAME,
+        _LIST_SKILLS_TOOL_NAME,
+    ):
+      if tool_name not in allowed_tools:
+        banned.append(f"`{p}{tool_name}`")
+    if banned:
+      banned_csv = ", ".join(banned)
+      instruction += (
+          f"\n\nNote: The following tools are NOT available: {banned_csv}."
+          " Do NOT call them. After loading a skill (if available), apply"
+          " its instructions in context and write your final reply as"
+          " normal model text. Never wrap the user-facing answer inside a"
+          " tool call.\n"
+      )
+
+  return instruction
 
 
 class ListSkillsTool(BaseTool):
   """Tool to list all available skills."""
 
+  TOOL_NAME = _LIST_SKILLS_TOOL_NAME
+
   def __init__(self, toolset: "SkillToolset"):
     super().__init__(
-        name="list_skills",
+        name=self.TOOL_NAME,
         description=(
             "Lists all available skills with their names and descriptions."
         ),
@@ -162,6 +240,8 @@ class ListSkillsTool(BaseTool):
 class SearchSkillsTool(BaseTool):
   """Tool to search for relevant skills in the registry."""
 
+  TOOL_NAME = _SEARCH_SKILLS_TOOL_NAME
+
   def __init__(self, toolset: "SkillToolset"):
     if not toolset._registry:
       raise ValueError("SearchSkillsTool requires a configured skill registry.")
@@ -170,7 +250,7 @@ class SearchSkillsTool(BaseTool):
         " keyword query."
     )
     super().__init__(
-        name="search_skills",
+        name=self.TOOL_NAME,
         description=description,
     )
     self._toolset = toolset
@@ -224,9 +304,11 @@ class SearchSkillsTool(BaseTool):
 class LoadSkillTool(BaseTool):
   """Tool to load a skill's instructions."""
 
+  TOOL_NAME = _LOAD_SKILL_TOOL_NAME
+
   def __init__(self, toolset: "SkillToolset"):
     super().__init__(
-        name="load_skill",
+        name=self.TOOL_NAME,
         description="Loads the SKILL.md instructions for a given skill.",
     )
     self._toolset = toolset
@@ -257,13 +339,14 @@ class LoadSkillTool(BaseTool):
           "error_code": "INVALID_ARGUMENTS",
       }
 
-    skill_telemetry = _instrumentation.track_skill_load(skill_name)
+    skill_telemetry = _instrumentation.track_skill_load(
+        _hallucination.MaybeHallucinated(skill_name)
+    )
 
     try:
       skill = await self._toolset._get_or_fetch_skill(
           skill_name, tool_context.invocation_id
       )
-      skill_telemetry.skill = skill
     except Exception as e:
       return {
           "error": f"Failed to fetch skill '{skill_name}' from registry: {e}",
@@ -275,6 +358,12 @@ class LoadSkillTool(BaseTool):
           "error": f"Skill '{skill_name}' not found.",
           "error_code": "SKILL_NOT_FOUND",
       }
+
+    skill_telemetry.skill = skill
+    # If we loaded a skill, it's not hallucinated, so we can confirm it.
+    skill_telemetry.skill_name = _hallucination.ConfirmedNotHallucinated(
+        skill.name
+    )
 
     # Record skill activation in agent state for tool resolution.
     agent_name = tool_context.agent_name
@@ -309,9 +398,11 @@ class LoadSkillTool(BaseTool):
 class LoadSkillResourceTool(BaseTool):
   """Tool to load resources (references, assets, or scripts) from a skill."""
 
+  TOOL_NAME = _LOAD_SKILL_RESOURCE_TOOL_NAME
+
   def __init__(self, toolset: "SkillToolset"):
     super().__init__(
-        name="load_skill_resource",
+        name=self.TOOL_NAME,
         description=(
             "Loads a resource file (from references/, assets/, or"
             " scripts/) from within a skill."
@@ -361,14 +452,14 @@ class LoadSkillResourceTool(BaseTool):
       }
 
     skill_telemetry = _instrumentation.track_skill_resource_load(
-        skill_name, file_path
+        _hallucination.MaybeHallucinated(skill_name),
+        _hallucination.MaybeHallucinated(file_path),
     )
 
     try:
       skill = await self._toolset._get_or_fetch_skill(
           skill_name, tool_context.invocation_id
       )
-      skill_telemetry.skill = skill
     except Exception as e:
       return {
           "error": f"Failed to fetch skill '{skill_name}' from registry: {e}",
@@ -380,6 +471,12 @@ class LoadSkillResourceTool(BaseTool):
           "error": f"Skill '{skill_name}' not found.",
           "error_code": "SKILL_NOT_FOUND",
       }
+
+    skill_telemetry.skill = skill
+    # If we loaded a skill, it's not hallucinated, so we can confirm it.
+    skill_telemetry.skill_name = _hallucination.ConfirmedNotHallucinated(
+        skill.name
+    )
 
     content = None
     if file_path.startswith("references/"):
@@ -423,6 +520,12 @@ class LoadSkillResourceTool(BaseTool):
           "error": f"Resource '{file_path}' not found in skill '{skill_name}'.",
           "error_code": "RESOURCE_NOT_FOUND",
       }
+
+    if content is not None:
+      # If we found the resource, it's not hallucinated, so we can confirm it.
+      skill_telemetry.resource_path = _hallucination.ConfirmedNotHallucinated(
+          file_path
+      )
 
     if isinstance(content, bytes):
       return {
@@ -528,6 +631,78 @@ class _SkillScriptCodeExecutor:
   _base_executor: BaseCodeExecutor
   _script_timeout: int
 
+  _WRAPPER_START_TEMPLATE = """
+import os
+import tempfile
+import sys
+import json as _json
+import subprocess
+import runpy
+_files = {files_dict!r}
+def _materialize_and_run():
+  _orig_cwd = os.getcwd()
+  with tempfile.TemporaryDirectory() as td:
+    for rel_path, content in _files.items():
+      norm_rel = os.path.normpath(rel_path)
+      if norm_rel.startswith('..') or os.path.isabs(norm_rel):
+        raise PermissionError(
+            'Path traversal blocked in skill file: ' + rel_path
+        )
+      full_path = os.path.join(os.path.abspath(td), norm_rel)
+      os.makedirs(os.path.dirname(full_path), exist_ok=True)
+      mode = 'wb' if isinstance(content, bytes) else 'w'
+      with open(full_path, mode,
+        encoding='utf-8' if mode == 'w' else None
+      ) as f:
+        f.write(content)
+    os.chdir(td)
+    try:
+"""
+
+  _WRAPPER_END_TEMPLATE = """
+    finally:
+      os.chdir(_orig_cwd)
+_materialize_and_run()
+"""
+
+  _WRAPPER_PYTHON_TEMPLATE = """
+      sys.argv = {argv_list!r}
+      sys.path.insert(0, os.path.dirname(os.path.abspath({file_path!r})))
+      try:
+        runpy.run_path({file_path!r}, run_name='__main__')
+      except SystemExit as e:
+        if e.code is not None and e.code != 0:
+          raise e
+"""
+
+  _WRAPPER_SHELL_TEMPLATE = """
+      try:
+        _r = subprocess.run(
+          {arr!r},
+          capture_output=True,
+          text=True,
+          # Keep shell output decoding independent from the host locale.
+          encoding='utf-8',
+          errors='replace',
+          timeout={timeout!r},
+          cwd=td,
+        )
+        print(_json.dumps({{
+            '__shell_result__': True,
+            'stdout': _r.stdout,
+            'stderr': _r.stderr,
+            'returncode': _r.returncode,
+        }}))
+      except subprocess.TimeoutExpired as _e:
+        print(_json.dumps({{
+            '__shell_result__': True,
+            'stdout': _e.stdout or '',
+            'stderr': 'Timed out after {timeout}s',
+            'returncode': -1,
+            'timeout': True,
+        }}))
+"""
+
   def __init__(self, base_executor: BaseCodeExecutor, script_timeout: int):
     self._base_executor = base_executor
     self._script_timeout = script_timeout
@@ -540,6 +715,9 @@ class _SkillScriptCodeExecutor:
       script_args: dict[str, Any] | list[str] | None,
       short_options: dict[str, Any] | None = None,
       positional_args: list[str] | None = None,
+      skill_telemetry: _instrumentation.SkillScriptExecutionTelemetry | None = (
+          None
+      ),
   ) -> dict[str, Any]:
     """Prepares and executes the script using the base executor.
 
@@ -552,6 +730,8 @@ class _SkillScriptCodeExecutor:
         long options or a list of strings.
       short_options: Optional short options (single hyphen) as key-value pairs.
       positional_args: Optional positional arguments.
+      skill_telemetry: Optional telemetry object to record script execution
+        details.
 
     Returns:
       A dictionary containing execution results (stdout, stderr, status).
@@ -583,37 +763,52 @@ class _SkillScriptCodeExecutor:
       stdout = result.stdout
       stderr = result.stderr
 
-      # Shell scripts serialize both streams as JSON
-      # through stdout; parse the envelope if present.
-      rc = 0
+      # The status the script exited with, or None when nothing reported one.
+      rc: int | None = None
       is_shell = "." in file_path and file_path.rsplit(".", 1)[-1].lower() in (
           "sh",
           "bash",
       )
-      if is_shell and stdout:
-        try:
-          parsed = json.loads(stdout)
-          if isinstance(parsed, dict) and parsed.get("__shell_result__"):
-            stdout = parsed.get("stdout", "")
-            stderr = parsed.get("stderr", "")
-            rc = parsed.get("returncode", 0)
-            if rc != 0 and not parsed.get("timeout", False):
-              exit_code_message = f"Exit code {rc}"
-              stderr = (
-                  f"{stderr.rstrip()}\n{exit_code_message}"
-                  if stderr
-                  else exit_code_message
-              )
-        except (json.JSONDecodeError, ValueError):
-          pass
+      if is_shell:
+        # A shell script runs as a child of the wrapper, so the wrapper's own
+        # status says nothing about it. Both streams come back serialized as
+        # JSON through stdout; that envelope carries the script's status.
+        if stdout:
+          try:
+            parsed = json.loads(stdout)
+            if isinstance(parsed, dict) and parsed.get("__shell_result__"):
+              stdout = parsed.get("stdout", "")
+              stderr = parsed.get("stderr", "")
+              rc = parsed.get("returncode", 0)
+              if rc != 0 and not parsed.get("timeout", False):
+                exit_code_message = f"Exit code {rc}"
+                stderr = (
+                    f"{stderr.rstrip()}\n{exit_code_message}"
+                    if stderr
+                    else exit_code_message
+                )
+          except (json.JSONDecodeError, ValueError):
+            pass
+      else:
+        # A Python script runs in the wrapper process itself, so the process
+        # the executor ran exited with the script's own status. Executors that
+        # cannot report one leave this None and fall back to stderr below.
+        rc = result.exit_code
 
       status = "success"
-      if rc != 0:
+      if rc is not None and rc != 0:
         status = "error"
       elif stderr and not stdout:
         status = "error"
+        # Reached only when the executor reported no status: an inference, and
+        # never an override of a status the run actually reported.
+        if rc is None:
+          rc = 1
       elif stderr:
         status = "warning"
+
+      if skill_telemetry is not None:
+        skill_telemetry.script_exit_code = rc
 
       return {
           "skill_name": skill.name,
@@ -623,6 +818,13 @@ class _SkillScriptCodeExecutor:
           "status": status,
       }
     except SystemExit as e:
+      if skill_telemetry is not None:
+        if e.code is None:
+          skill_telemetry.script_exit_code = 0
+        elif isinstance(e.code, int):
+          skill_telemetry.script_exit_code = e.code
+        else:
+          skill_telemetry.script_exit_code = 1
       if e.code in (None, 0):
         return {
             "skill_name": skill.name,
@@ -702,35 +904,9 @@ class _SkillScriptCodeExecutor:
       )
 
     # Build the boilerplate extract string
-    code_lines = [
-        "import os",
-        "import tempfile",
-        "import sys",
-        "import json as _json",
-        "import subprocess",
-        "import runpy",
-        f"_files = {files_dict!r}",
-        "def _materialize_and_run():",
-        "  _orig_cwd = os.getcwd()",
-        "  with tempfile.TemporaryDirectory() as td:",
-        "    for rel_path, content in _files.items():",
-        "      norm_rel = os.path.normpath(rel_path)",
-        "      if norm_rel.startswith('..') or os.path.isabs(norm_rel):",
-        (
-            "        raise PermissionError('Path traversal blocked in skill"
-            " file: ' + rel_path)"
-        ),
-        "      full_path = os.path.join(os.path.abspath(td), norm_rel)",
-        "      os.makedirs(os.path.dirname(full_path), exist_ok=True)",
-        "      mode = 'wb' if isinstance(content, bytes) else 'w'",
-        (
-            "      with open(full_path, mode, encoding='utf-8' if mode == 'w'"
-            " else None) as f:"
-        ),
-        "        f.write(content)",
-        "    os.chdir(td)",
-        "    try:",
-    ]
+    code = self._WRAPPER_START_TEMPLATE.format(
+        files_dict=files_dict,
+    )
 
     if ext == "py":
       argv_list = [file_path]
@@ -749,18 +925,10 @@ class _SkillScriptCodeExecutor:
           argv_list.append("--")
           argv_list.extend(str(v) for v in positional_args)
 
-      code_lines.extend([
-          f"      sys.argv = {argv_list!r}",
-          (
-              "      sys.path.insert(0,"
-              f" os.path.dirname(os.path.abspath({file_path!r})))"
-          ),
-          "      try:",
-          f"        runpy.run_path({file_path!r}, run_name='__main__')",
-          "      except SystemExit as e:",
-          "        if e.code is not None and e.code != 0:",
-          "          raise e",
-      ])
+      code += self._WRAPPER_PYTHON_TEMPLATE.format(
+          argv_list=argv_list,
+          file_path=file_path,
+      )
     elif ext in ("sh", "bash"):
       arr = ["bash", file_path]
       if isinstance(script_args, list):
@@ -778,48 +946,25 @@ class _SkillScriptCodeExecutor:
           arr.append("--")
           arr.extend(positional_args)
       timeout = self._script_timeout
-      code_lines.extend([
-          "      try:",
-          "        _r = subprocess.run(",
-          f"          {arr!r},",
-          "          capture_output=True, text=True,",
-          # Keep shell output decoding independent from the host locale.
-          "          encoding='utf-8', errors='replace',",
-          f"          timeout={timeout!r}, cwd=td,",
-          "        )",
-          "        print(_json.dumps({",
-          "            '__shell_result__': True,",
-          "            'stdout': _r.stdout,",
-          "            'stderr': _r.stderr,",
-          "            'returncode': _r.returncode,",
-          "        }))",
-          "      except subprocess.TimeoutExpired as _e:",
-          "        print(_json.dumps({",
-          "            '__shell_result__': True,",
-          "            'stdout': _e.stdout or '',",
-          f"            'stderr': 'Timed out after {timeout}s',",
-          "            'returncode': -1,",
-          "            'timeout': True,",
-          "        }))",
-      ])
+      code += self._WRAPPER_SHELL_TEMPLATE.format(
+          arr=arr,
+          timeout=timeout,
+      )
     else:
       return None
 
-    code_lines.extend([
-        "    finally:",
-        "      os.chdir(_orig_cwd)",
-    ])
-
-    code_lines.append("_materialize_and_run()")
-    return "\n".join(code_lines)
+    code += self._WRAPPER_END_TEMPLATE
+    return code
 
 
 class RunSkillScriptTool(BaseTool):
   """Tool to execute scripts from a skill's scripts/ directory."""
 
+  TOOL_NAME = _RUN_SKILL_SCRIPT_TOOL_NAME
+
   def __init__(self, toolset: "SkillToolset"):
     super().__init__(
-        name="run_skill_script",
+        name=self.TOOL_NAME,
         description="Executes a script from a skill's scripts/ directory.",
     )
     self._toolset = toolset
@@ -926,6 +1071,11 @@ class RunSkillScriptTool(BaseTool):
           "error_code": "INVALID_ARGUMENTS",
       }
 
+    skill_telemetry = _instrumentation.track_skill_script_execution(
+        _hallucination.MaybeHallucinated(skill_name),
+        _hallucination.MaybeHallucinated(file_path),
+    )
+
     env = self._toolset._env
     if env is not None:
       if command is None or not isinstance(command, str) or not command:
@@ -981,6 +1131,12 @@ class RunSkillScriptTool(BaseTool):
           "error_code": "SKILL_NOT_FOUND",
       }
 
+    skill_telemetry.skill = skill
+    # If we loaded the skill, it's not hallucinated, so we can confirm it.
+    skill_telemetry.skill_name = _hallucination.ConfirmedNotHallucinated(
+        skill.name
+    )
+
     if file_path.startswith("scripts/"):
       script = skill.resources.get_script(file_path[len("scripts/") :])
     else:
@@ -1011,6 +1167,12 @@ class RunSkillScriptTool(BaseTool):
           "error_code": "SCRIPT_NOT_FOUND",
       }
 
+    if script is not None:
+      # If we found the script, we can mark the path as not hallucinated.
+      skill_telemetry.script_path = _hallucination.ConfirmedNotHallucinated(
+          file_path
+      )
+
     if env is not None:
       try:
         await self._ensure_skill_materialized_in_env(skill, file_path, env)
@@ -1018,6 +1180,7 @@ class RunSkillScriptTool(BaseTool):
             command=cast(str, command),
             timeout=self._toolset._script_timeout,
         )
+        skill_telemetry.script_exit_code = result.exit_code
         return {
             "stdout": result.stdout,
             "stderr": result.stderr,
@@ -1067,6 +1230,7 @@ class RunSkillScriptTool(BaseTool):
         script_args,
         short_options,
         positional_args,  # pylint: disable=protected-access
+        skill_telemetry,
     )
 
   async def _ensure_skill_materialized_in_env(
@@ -1147,6 +1311,8 @@ class RunSkillScriptTool(BaseTool):
     if isinstance(response, dict) and response.get("error"):
       error_code = response.get("error_code")
       return error_code if error_code else "TOOL_ERROR"
+    if isinstance(response, dict) and response.get("status", "") == "error":
+      return "SKILL_SCRIPT_EXECUTION_ERROR"
     return None
 
 
@@ -1254,6 +1420,17 @@ class SkillToolset(BaseToolset):
       return self._env.working_dir / "skills"
     return None
 
+  def _has_script_execution(self, context: ReadonlyContext | None) -> bool:
+    """Whether scripts can be run; an unknown agent counts as yes."""
+    if self._env is not None or self._code_executor is not None:
+      return True
+    agent = getattr(
+        getattr(context, "_invocation_context", None), "agent", None
+    )
+    if agent is None:
+      return True
+    return getattr(agent, "code_executor", None) is not None
+
   async def get_tools(
       self, readonly_context: ReadonlyContext | None = None
   ) -> list[BaseTool]:
@@ -1262,6 +1439,10 @@ class SkillToolset(BaseToolset):
         readonly_context
     )
     all_tools = self._tools + dynamic_tools
+    if not self._has_script_execution(readonly_context):
+      all_tools = [
+          t for t in all_tools if not isinstance(t, RunSkillScriptTool)
+      ]
     return [t for t in all_tools if self._is_tool_selected(t, readonly_context)]
 
   async def _resolve_additional_tools_from_state(
@@ -1411,26 +1592,32 @@ class SkillToolset(BaseToolset):
     """Processes the outgoing LLM request to include available skills."""
     if self._env is not None and not self._env.is_initialized:
       await self._env.initialize()
+    selected_core_tools = {
+        t.name for t in self._tools if self._is_tool_selected(t, tool_context)
+    }
+
     instructions = [
         _build_skill_system_instruction(
             prefix=self.tool_name_prefix,
+            allowed_tools=selected_core_tools,
             skills_folder=self.skills_folder,
+            script_execution_enabled=self._has_script_execution(tool_context),
         )
     ]
 
-    has_list_skills = any(isinstance(t, ListSkillsTool) for t in self._tools)
+    has_list_skills = _LIST_SKILLS_TOOL_NAME in selected_core_tools
 
     if not has_list_skills:
       skills = self._list_skills()
       skills_xml = prompt.format_skills_as_xml(skills)
       instructions.append(skills_xml)
 
-    if self._registry:
+    if self._registry and _SEARCH_SKILLS_TOOL_NAME in selected_core_tools:
       p = f"{self.tool_name_prefix}_" if self.tool_name_prefix else ""
       instructions.append(
           "\nIf the locally available skills are not sufficient to complete "
-          f"your task, you can use the `{p}search_skills` tool to discover "
-          "additional skills from the registry."
+          f"your task, you can use the `{p}{_SEARCH_SKILLS_TOOL_NAME}` tool to"
+          " discover additional skills from the registry."
       )
 
     llm_request.append_instructions(instructions)
