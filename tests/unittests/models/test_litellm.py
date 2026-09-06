@@ -1401,6 +1401,47 @@ NON_COMPLIANT_MULTIPLE_FUNCTION_CALLS_STREAM = [
 ]
 
 
+def _same_chunk_multiple_function_calls_stream(
+    finish_reason, content=None, reasoning_content=None
+):
+  """A single delta carrying two complete tool calls and a finish reason.
+
+  Providers and litellm transformations that emit a whole assistant message as
+  one stream chunk produce this shape, as do custom ``LiteLlm.llm_client``
+  implementations. ``_model_response_to_chunk`` yields one ``FunctionChunk`` per
+  tool call, each paired with the same choice-level finish reason.
+  """
+  delta = Delta(
+      role="assistant",
+      content=content,
+      tool_calls=[
+          ChatCompletionDeltaToolCall(
+              type="function",
+              id="call_1",
+              function=Function(
+                  name="function_1", arguments='{"arg": "value1"}'
+              ),
+              index=0,
+          ),
+          ChatCompletionDeltaToolCall(
+              type="function",
+              id="call_2",
+              function=Function(
+                  name="function_2", arguments='{"arg": "value2"}'
+              ),
+              index=1,
+          ),
+      ],
+  )
+  if reasoning_content:
+    delta.reasoning_content = reasoning_content
+  return [
+      ModelResponseStream(
+          choices=[StreamingChoices(finish_reason=finish_reason, delta=delta)]
+      )
+  ]
+
+
 @pytest.fixture
 def mock_acompletion(mock_response):
   return AsyncMock(return_value=mock_response)
@@ -5344,6 +5385,151 @@ async def test_generate_content_async_non_compliant_multiple_function_calls(
   assert final_response.content.parts[1].function_call.name == "function_2"
   assert final_response.content.parts[1].function_call.id == "1"
   assert final_response.content.parts[1].function_call.args == {"arg": "value2"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finish_reason", ["tool_calls", "length"])
+async def test_generate_content_async_same_chunk_multiple_function_calls(
+    mock_completion, lite_llm_instance, finish_reason
+):
+  """Every tool call in one finish-bearing delta reaches the final response.
+
+  The finalization is decided once per streamed part. Deciding it per chunk
+  rebuilt the aggregated response for each tool call and kept only the last.
+  """
+  mock_completion.return_value = _same_chunk_multiple_function_calls_stream(
+      finish_reason
+  )
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user",
+              parts=[types.Part.from_text(text="Test same-chunk calls")],
+          )
+      ],
+      config=types.GenerateContentConfig(
+          tools=[
+              types.Tool(
+                  function_declarations=[
+                      types.FunctionDeclaration(
+                          name="function_1",
+                          description="First test function",
+                          parameters=types.Schema(
+                              type=types.Type.OBJECT,
+                              properties={
+                                  "arg": types.Schema(type=types.Type.STRING),
+                              },
+                          ),
+                      ),
+                      types.FunctionDeclaration(
+                          name="function_2",
+                          description="Second test function",
+                          parameters=types.Schema(
+                              type=types.Type.OBJECT,
+                              properties={
+                                  "arg": types.Schema(type=types.Type.STRING),
+                              },
+                          ),
+                      ),
+                  ]
+              )
+          ],
+      ),
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          llm_request, stream=True
+      )
+      if not response.partial
+  ]
+
+  function_calls = [
+      part.function_call
+      for response in responses
+      if response.content
+      for part in response.content.parts
+      if part.function_call
+  ]
+  assert [call.name for call in function_calls] == [
+      "function_1",
+      "function_2",
+  ]
+  assert [call.id for call in function_calls] == ["call_1", "call_2"]
+  assert [call.args for call in function_calls] == [
+      {"arg": "value1"},
+      {"arg": "value2"},
+  ]
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_same_chunk_calls_keep_text_and_reasoning(
+    mock_completion, lite_llm_instance
+):
+  """Text and reasoning sharing the delta survive alongside every tool call."""
+  mock_completion.return_value = _same_chunk_multiple_function_calls_stream(
+      "tool_calls", content="Calling both.", reasoning_content="Thinking."
+  )
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user",
+              parts=[types.Part.from_text(text="Test same-chunk calls")],
+          )
+      ],
+      config=types.GenerateContentConfig(
+          tools=[
+              types.Tool(
+                  function_declarations=[
+                      types.FunctionDeclaration(
+                          name="function_1",
+                          description="First test function",
+                          parameters=types.Schema(
+                              type=types.Type.OBJECT,
+                              properties={
+                                  "arg": types.Schema(type=types.Type.STRING),
+                              },
+                          ),
+                      ),
+                      types.FunctionDeclaration(
+                          name="function_2",
+                          description="Second test function",
+                          parameters=types.Schema(
+                              type=types.Type.OBJECT,
+                              properties={
+                                  "arg": types.Schema(type=types.Type.STRING),
+                              },
+                          ),
+                      ),
+                  ]
+              )
+          ],
+      ),
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          llm_request, stream=True
+      )
+      if not response.partial
+  ]
+
+  parts = [
+      part
+      for response in responses
+      if response.content
+      for part in response.content.parts
+  ]
+  assert [part.function_call.name for part in parts if part.function_call] == [
+      "function_1",
+      "function_2",
+  ]
+  assert any(part.text == "Calling both." for part in parts)
+  assert any(part.thought and part.text == "Thinking." for part in parts)
 
 
 @pytest.mark.asyncio

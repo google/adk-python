@@ -3361,6 +3361,15 @@ class LiteLlm(BaseLlm):
         part_grounding = _extract_grounding_metadata(part)
         if part_grounding:
           grounding_metadata = part_grounding
+        # One delta can carry several complete tool calls, and
+        # _model_response_to_chunk yields a FunctionChunk per call, each paired
+        # with the same choice-level finish_reason. Record what this part asks
+        # for and finalize once, after every chunk in it has been accumulated:
+        # finalizing inside the loop rebuilds the response per call and keeps
+        # only the last one.
+        finalize_tool_calls = False
+        finalize_text = False
+        finalize_finish_reason: str | None = None
         for chunk, finish_reason in _model_response_to_chunk(part):
           if finish_reason:
             last_finish_reason = finish_reason
@@ -3434,13 +3443,8 @@ class LiteLlm(BaseLlm):
               or finish_reason == "length"
               or (finish_reason == "stop" and chunk is None)
           ):
-            aggregated_llm_response_with_tool_call = (
-                _finalize_tool_call_response(
-                    model_version=part.model,
-                    finish_reason=finish_reason,
-                )
-            )
-            _reset_stream_buffers()
+            finalize_tool_calls = True
+            finalize_finish_reason = finish_reason
           elif (text_parts or reasoning_parts) and (
               finish_reason == "length"
               or (
@@ -3449,11 +3453,24 @@ class LiteLlm(BaseLlm):
                   and not function_calls
               )
           ):
-            aggregated_llm_response = _finalize_text_response(
-                model_version=part.model,
-                finish_reason=finish_reason,
-            )
-            _reset_stream_buffers()
+            finalize_text = True
+            finalize_finish_reason = finish_reason
+
+        # Tool calls take precedence for a part that asks for both:
+        # _finalize_tool_call_response carries the buffered text and reasoning
+        # into the tool-call response, so nothing accumulated here is dropped.
+        if finalize_tool_calls:
+          aggregated_llm_response_with_tool_call = _finalize_tool_call_response(
+              model_version=part.model,
+              finish_reason=finalize_finish_reason,
+          )
+          _reset_stream_buffers()
+        elif finalize_text:
+          aggregated_llm_response = _finalize_text_response(
+              model_version=part.model,
+              finish_reason=finalize_finish_reason,
+          )
+          _reset_stream_buffers()
 
       # The in-loop finalizers only fire on the reasons known to end a stream,
       # so any other terminal reason ("content_filter" above all) reaches the
