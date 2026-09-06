@@ -434,10 +434,15 @@ class RestApiTool(BaseTool):
     # here) into query_params, since httpx replaces (rather than merges)
     # the URL query string when `params` is set.
     parsed_url = urlparse(url)
-    if parsed_url.query or parsed_url.fragment:
-      for key, values in parse_qs(parsed_url.query).items():
-        query_params.setdefault(key, values[0] if len(values) == 1 else values)
-      url = urlunparse(parsed_url._replace(query="", fragment=""))
+    for part in (parsed_url.query, parsed_url.fragment):
+        if part:
+            for key, values in parse_qs(part).items():
+                query_params.setdefault(
+                    key,
+                    values[0] if len(values) == 1 else values
+                )
+    # URL without query and fragment
+    url = urlunparse(parsed_url._replace(query="", fragment=""))
 
     # Construct body
     body_kwargs: Dict[str, Any] = {}
