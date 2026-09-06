@@ -55,6 +55,7 @@ from google.adk.models.lite_llm import _MISSING_TOOL_RESULT_MESSAGE
 from google.adk.models.lite_llm import _model_response_to_chunk
 from google.adk.models.lite_llm import _model_response_to_generate_content_response
 from google.adk.models.lite_llm import _parse_deepseek_tool_calls_from_text
+from google.adk.models.lite_llm import _parse_tool_call_arguments
 from google.adk.models.lite_llm import _parse_tool_calls_from_text
 from google.adk.models.lite_llm import _redact_file_uri_for_log
 from google.adk.models.lite_llm import _redirect_litellm_loggers_to_stdout
@@ -7848,6 +7849,68 @@ async def test_generate_content_async_omits_tool_choice_when_functions_override(
   assert "tool_choice" not in kwargs
 
 
+class TestParseToolCallArguments:
+  """Tests for _parse_tool_call_arguments."""
+
+  def test_valid_json(self):
+    assert _parse_tool_call_arguments('{"a": 1}') == {"a": 1}
+
+  def test_empty(self):
+    assert _parse_tool_call_arguments(None) == {}
+    assert _parse_tool_call_arguments("") == {}
+
+  def test_already_dict(self):
+    assert _parse_tool_call_arguments({"a": 1}) == {"a": 1}
+
+  def test_unquoted_keys(self):
+    result = _parse_tool_call_arguments('{a: 1}')
+    assert result == {"a": 1}
+
+  def test_markdown_fence_valid(self):
+    result = _parse_tool_call_arguments(
+        "```json\n{\"a\": 1}\n```"
+    )
+    assert result == {"a": 1}
+
+  def test_markdown_fence_malformed(self):
+    result = _parse_tool_call_arguments("```\n{a: 1}\n```")
+    assert result == {"a": 1}
+
+  def test_extra_trailing_text(self):
+    result = _parse_tool_call_arguments('{"a": 1} extra stuff')
+    assert result == {"a": 1}
+
+  def test_truly_malformed_strict_raises(self):
+    with pytest.raises(json.JSONDecodeError):
+      _parse_tool_call_arguments("{bad")
+
+  def test_truly_malformed_nonstrict_returns_empty(self):
+    result = _parse_tool_call_arguments("{bad", strict=False)
+    assert result == {}
+
+  def test_trailing_comma(self):
+    result = _parse_tool_call_arguments('{"a": 1,}')
+    assert result == {"a": 1}
+
+  def test_single_quotes(self):
+    result = _parse_tool_call_arguments("{'a': 1}")
+    assert result == {"a": 1}
+
+  def test_empty_object(self):
+    result = _parse_tool_call_arguments("{}")
+    assert result == {}
+
+  def test_nested_objects(self):
+    result = _parse_tool_call_arguments('{"a": {"b": 2}}')
+    assert result == {"a": {"b": 2}}
+
+  def test_array_values(self):
+    result = _parse_tool_call_arguments('{"a": [1, 2, 3]}')
+    assert result == {"a": [1, 2, 3]}
+
+  def test_string_with_escaped_chars(self):
+    result = _parse_tool_call_arguments('{"a": "he\\"llo"}')
+    assert result == {"a": 'he"llo'}
 def _cache_llm_request(cache_config=None):
   return LlmRequest(
       contents=[

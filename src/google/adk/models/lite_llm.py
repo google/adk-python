@@ -191,7 +191,9 @@ def _quote_unquoted_json_object_keys(value: str) -> str:
   return "".join(result)
 
 
-def _parse_tool_call_arguments(arguments: Any) -> Any:
+def _parse_tool_call_arguments(
+    arguments: Any, *, strict: bool = True
+) -> Any:
   """Parses LiteLLM tool call arguments.
 
   LiteLLM normally returns OpenAI-compatible tool call arguments as JSON
@@ -199,6 +201,14 @@ def _parse_tool_call_arguments(arguments: Any) -> Any:
   argument payload is a Python dict literal or has unquoted object keys. Keep
   strict JSON as the primary path, then repair only those complete
   object-literal shapes so ADK can still surface the intended function call.
+
+  When ``strict=False`` (non-strict mode), all repairs failing produces a
+  warning log and an empty dict ``{}`` fallback instead of raising.
+
+  Args:
+    arguments: The tool call arguments to parse.
+    strict: If ``True`` (default), raises ``json.JSONDecodeError`` when all
+      repairs fail. If ``False``, logs a warning and returns ``{}``.
   """
   if not arguments:
     return {}
@@ -210,11 +220,13 @@ def _parse_tool_call_arguments(arguments: Any) -> Any:
   except json.JSONDecodeError as exc:
     json_error = exc
 
+  # Retry with Python literal eval (handles single-quoted keys, etc.).
   try:
     return ast.literal_eval(arguments)
   except (SyntaxError, ValueError):
     pass
 
+  # Retry after quoting unquoted JSON object keys.
   repaired_arguments = _quote_unquoted_json_object_keys(arguments)
   if repaired_arguments != arguments:
     try:
@@ -224,6 +236,48 @@ def _parse_tool_call_arguments(arguments: Any) -> Any:
         return ast.literal_eval(repaired_arguments)
       except (SyntaxError, ValueError):
         pass
+
+  # Retry after stripping Markdown code fences (```json ... ```).
+  fence_match = re.search(
+      r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", arguments
+  )
+  if fence_match:
+    candidate = fence_match.group(1).strip()
+    if candidate != arguments:
+      try:
+        return json.loads(candidate)
+      except json.JSONDecodeError:
+        try:
+          return ast.literal_eval(candidate)
+        except (SyntaxError, ValueError):
+          pass
+      # Also try with unquoted-key repair on the fence-stripped content.
+      repaired_candidate = _quote_unquoted_json_object_keys(candidate)
+      if repaired_candidate != candidate:
+        try:
+          return json.loads(repaired_candidate)
+        except json.JSONDecodeError:
+          try:
+            return ast.literal_eval(repaired_candidate)
+          except (SyntaxError, ValueError):
+            pass
+
+  # Fall back to the first balanced {…} block (tolerates trailing content).
+  open_brace = arguments.find("{")
+  if open_brace != -1:
+    try:
+      candidate, _ = _JSON_DECODER.raw_decode(arguments, open_brace)
+      return candidate
+    except json.JSONDecodeError:
+      pass
+
+  if not strict:
+    logger.warning(
+        "Failed to parse tool call arguments as JSON, falling back to empty"
+        " args. Arguments (first 200 chars): %s",
+        arguments[:200],
+    )
+    return {}
 
   raise json_error
 
@@ -2552,6 +2606,9 @@ def _message_to_generate_content_response(
           args = {}
         part = types.Part.from_function_call(
             name=tool_call.function.name,
+            args=_parse_tool_call_arguments(
+                tool_call.function.arguments, strict=False
+            ),
             args=args,
         )
         function_call = part.function_call
