@@ -162,6 +162,7 @@ class MockPlugin(BasePlugin):
     super().__init__(name="mock_plugin")
     self.enable_user_message_callback = False
     self.enable_event_callback = False
+    self.before_run_response: Optional[types.Content] = None
     self.user_content_seen_in_before_run_callback = None
 
   async def on_user_message_callback(
@@ -181,10 +182,11 @@ class MockPlugin(BasePlugin):
       self,
       *,
       invocation_context: InvocationContext,
-  ) -> None:
+  ) -> Optional[types.Content]:
     self.user_content_seen_in_before_run_callback = (
         invocation_context.user_content
     )
+    return self.before_run_response
 
   async def on_event_callback(
       self, *, invocation_context: InvocationContext, event: Event
@@ -1217,6 +1219,68 @@ class TestRunnerWithPlugins:
     assert (
         persisted_event.custom_metadata == MockPlugin.ON_EVENT_CALLBACK_METADATA
     )
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      ("agent_cls", "is_live"),
+      [
+          (MockAgent, False),
+          (MockLlmAgent, False),
+          (MockLiveAgent, True),
+      ],
+      ids=("legacy", "node", "live"),
+  )
+  async def test_runner_processes_before_run_early_exit_with_event_callback(
+      self, agent_cls, is_live
+  ):
+    """Before-run early exits still pass through on-event hooks."""
+    from google.adk.live import LiveRequestQueue
+
+    plugin = MockPlugin()
+    plugin.before_run_response = types.Content(
+        role="model", parts=[types.Part(text="blocked by before_run")]
+    )
+    plugin.enable_event_callback = True
+    session_service = InMemorySessionService()
+    runner = Runner(
+        app=App(
+            name=TEST_APP_ID,
+            root_agent=agent_cls("test_agent"),
+            plugins=[plugin],
+        ),
+        session_service=session_service,
+    )
+    session = await session_service.create_session(
+        app_name=TEST_APP_ID,
+        user_id=TEST_USER_ID,
+        session_id=TEST_SESSION_ID,
+    )
+
+    if is_live:
+      event_stream = runner.run_live(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          live_request_queue=LiveRequestQueue(),
+      )
+    else:
+      event_stream = runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=types.Content(
+              role="user", parts=[types.Part(text="hello")]
+          ),
+      )
+    events = [event async for event in event_stream]
+    persisted_session = await session_service.get_session(
+        app_name=TEST_APP_ID,
+        user_id=TEST_USER_ID,
+        session_id=session.id,
+    )
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == MockPlugin.ON_EVENT_CALLBACK_MSG
+    assert events[0].custom_metadata == MockPlugin.ON_EVENT_CALLBACK_METADATA
+    assert persisted_session.events[-1] == events[0]
 
   @pytest.mark.asyncio
   async def test_runner_close_calls_plugin_close(self):
