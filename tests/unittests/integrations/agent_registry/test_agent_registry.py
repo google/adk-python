@@ -615,6 +615,29 @@ class TestAgentRegistry:
         agent._agent_card, "1.0" if _compat.IS_A2A_V1 else "0.3.0"
     )
 
+  def test_get_remote_a2a_agent_advertises_streaming(self, registry):
+    """Constructed registry cards advertise streaming when no card is supplied."""
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "displayName": "TestAgent",
+        "description": "Test Desc",
+        "version": "1.0",
+        "protocols": [{
+            "type": _ProtocolType.A2A_AGENT,
+            "interfaces": [{
+                "url": "https://my-agent.com",
+            }],
+        }],
+    }
+    mock_response.raise_for_status = MagicMock()
+    registry._session.get.return_value = mock_response
+
+    registry._credentials.token = "token"
+    registry._credentials.refresh = MagicMock()
+
+    agent = registry.get_remote_a2a_agent("test-agent")
+    assert agent._agent_card.capabilities.streaming is True
+
   def test_get_remote_a2a_agent_with_card(self, registry):
     mock_response = MagicMock()
     mock_response.json.return_value = {
