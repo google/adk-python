@@ -44,6 +44,24 @@ except ImportError:
 logger = logging.getLogger("google_adk." + __name__)
 
 
+
+_REDIS_GLOB_METACHARACTERS = "*?[]^"
+
+
+def _escape_redis_glob(value: str) -> str:
+  """Escapes Redis glob metacharacters so a value is matched literally.
+
+  Redis ``SCAN``/``KEYS`` ``MATCH`` uses glob-style patterns (``*``, ``?``,
+  ``[...]``). Interpolating a caller-supplied value into such a pattern without
+  escaping lets the caller inject wildcards and match keys belonging to other
+  users. The backslash must be escaped first so it cannot form an escape
+  sequence with a following metacharacter.
+  """
+  escaped = value.replace("\\", "\\\\")
+  for char in _REDIS_GLOB_METACHARACTERS:
+    escaped = escaped.replace(char, "\\" + char)
+  return escaped
+
 class RedisSessionService(BaseSessionService):
   """Redis-backed session service for ADK.
 
@@ -269,9 +287,10 @@ class RedisSessionService(BaseSessionService):
     """Lists sessions matching the given app_name and optional user_id."""
     client = self._get_redis()
     pattern = (
-        f"{self.config.key_prefix}{app_name}:{user_id}:*"
+        f"{self.config.key_prefix}{_escape_redis_glob(app_name)}"
+        f":{_escape_redis_glob(user_id)}:*"
         if user_id
-        else f"{self.config.key_prefix}{app_name}:*"
+        else f"{self.config.key_prefix}{_escape_redis_glob(app_name)}:*"
     )
     app_raw = await client.get(self._app_state_key(app_name))
     app_state = json.loads(app_raw) if app_raw else {}
