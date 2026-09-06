@@ -111,6 +111,7 @@ optional-dependencies.all = [
   "oci>=2.126",
   "openai>=2.20,<3",
   "openpyxl>=3.1.5,<4",
+  "opensandbox>=0.1.15,<0.2",
   "opentelemetry-exporter-gcp-logging>=1.9.0a0,<=1.12.0a0",
   "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",
   "opentelemetry-exporter-gcp-trace>=1.9,<2",
@@ -259,6 +260,9 @@ optional-dependencies.mcp = [
 optional-dependencies.oci = [
   "oci>=2.126", # OCI Generative AI native SDK (OCIGenAILlm)
 ]
+optional-dependencies.opensandbox = [
+  "opensandbox>=0.1.15,<0.2", # For OpenSandboxEnvironment remote sandbox.
+]
 optional-dependencies.otel-gcp = [
   "opentelemetry-instrumentation-google-genai>=0.7b1,<1",
   "opentelemetry-instrumentation-grpc>=0.43b0,<1",
@@ -317,6 +321,7 @@ optional-dependencies.test = [
   "nltk!=3.10.1",                                                    # Transitive via rouge-score and llama-index-core; 3.10.1's import hook breaks any venv living inside the working directory (reverted upstream in nltk/nltk#3732).
   "openai>=2.20,<3",
   "openpyxl>=3.1.5,<4",
+  "opensandbox>=0.1.15,<0.2",
   "opentelemetry-exporter-gcp-logging>=1.9.0a0,<=1.12.0a0",
   "opentelemetry-exporter-gcp-monitoring>=1.9.0a0,<2",
   "opentelemetry-exporter-gcp-trace>=1.9,<2",
