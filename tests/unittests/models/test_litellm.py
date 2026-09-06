@@ -4708,7 +4708,7 @@ async def test_completion_additional_args(mock_completion, mock_client):
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 4
+  assert len(responses) == 6
   mock_completion.assert_called_once()
 
   _, kwargs = mock_completion.call_args
@@ -4736,7 +4736,7 @@ async def test_completion_with_drop_params(mock_completion, mock_client):
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 4
+  assert len(responses) == 6
 
   mock_completion.assert_called_once()
 
@@ -5151,12 +5151,12 @@ async def test_generate_content_async_stream_with_usage_metadata(
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 4
-  assert responses[3].usage_metadata.prompt_token_count == 10
-  assert responses[3].usage_metadata.candidates_token_count == 5
-  assert responses[3].usage_metadata.total_token_count == 15
-  assert responses[3].usage_metadata.cached_content_token_count == 8
-  assert responses[3].usage_metadata.thoughts_token_count == 5
+  assert len(responses) == 6
+  assert responses[-1].usage_metadata.prompt_token_count == 10
+  assert responses[-1].usage_metadata.candidates_token_count == 5
+  assert responses[-1].usage_metadata.total_token_count == 15
+  assert responses[-1].usage_metadata.cached_content_token_count == 8
+  assert responses[-1].usage_metadata.thoughts_token_count == 5
 
 
 @pytest.mark.asyncio
@@ -5360,8 +5360,8 @@ async def test_generate_content_async_stream_with_empty_chunk(
       )
   ]
 
-  assert len(responses) == 1
-  final_response = responses[0]
+  assert len(responses) == 3
+  final_response = responses[-1]
   assert final_response.content.role == "model"
 
   # Crucially, assert that only ONE tool call was generated,
@@ -5414,8 +5414,8 @@ async def test_streaming_tool_call_truncated_by_max_tokens(
       )
   ]
 
-  assert len(responses) == 1
-  error_response = responses[0]
+  assert len(responses) == 2
+  error_response = responses[-1]
   assert error_response.error_code == types.FinishReason.MAX_TOKENS
   assert error_response.finish_reason == types.FinishReason.MAX_TOKENS
   assert "truncated" in error_response.error_message
@@ -5462,8 +5462,8 @@ async def test_streaming_tool_call_complete_with_length_finish_reason(
       )
   ]
 
-  assert len(responses) == 1
-  final_response = responses[0]
+  assert len(responses) == 2
+  final_response = responses[-1]
   assert final_response.content.role == "model"
   assert len(final_response.content.parts) == 1
 
@@ -7353,8 +7353,10 @@ async def test_streaming_tool_call_args_assembled_from_many_fragments(
       )
   ]
 
-  assert len(responses) == 1
-  function_call = responses[0].content.parts[0].function_call
+  # One partial response per argument fragment, plus the final aggregated call.
+  assert len(responses) == len(fragments) + 1
+  assert all(r.partial for r in responses[:-1])
+  function_call = responses[-1].content.parts[0].function_call
   assert function_call.name == "my_func"
   assert function_call.id == "call_xyz"
   assert function_call.args == json.loads(full_args)
@@ -7439,12 +7441,56 @@ async def test_streaming_tool_call_brace_in_string_does_not_falsely_complete(
       )
   ]
 
-  assert len(responses) == 1
-  parts = responses[0].content.parts
+  # One partial response per argument fragment across both tool calls, plus
+  # the final aggregated response carrying both function calls.
+  assert len(responses) == len(fragments_a) + len(fragments_b) + 1
+  assert all(r.partial for r in responses[:-1])
+  parts = responses[-1].content.parts
   assert len(parts) == 2
   args_by_name = {p.function_call.name: p.function_call.args for p in parts}
   assert args_by_name["my_func"] == json.loads(full_args_a)
   assert args_by_name["other_func"] == json.loads(full_args_b)
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_emits_partial_argument_deltas(
+    mock_completion, lite_llm_instance
+):
+  """Argument fragments are surfaced as partial FunctionCall updates as they
+  arrive, not just in the final aggregated call."""
+  fragments = ['{"city": "San ', 'Francisco"}']
+  mock_completion.return_value = iter(
+      _stream_chunks_from_function_chunks(_function_chunks_for_args(fragments))
+  )
+
+  responses = [
+      r
+      async for r in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert len(responses) == len(fragments) + 1
+  partials = responses[:-1]
+  final_function_call = responses[-1].content.parts[0].function_call
+
+  for partial_response, fragment in zip(partials, fragments):
+    assert partial_response.partial is True
+    fc = partial_response.content.parts[0].function_call
+    assert fc.id == "call_xyz"
+    assert fc.will_continue is True
+    assert fc.args is None
+    assert [pa.string_value for pa in fc.partial_args] == [fragment]
+    # Partial updates must never carry pre-parsed args, so callers can't
+    # mistake them for a complete, executable function call.
+    assert fc.name == "my_func" or fc.name is None
+
+  assert final_function_call.name == "my_func"
+  assert final_function_call.id == "call_xyz"
+  assert final_function_call.args == {"city": "San Francisco"}
+  # The final aggregated call is a normal (non-streaming) FunctionCall.
+  assert final_function_call.partial_args is None
+  assert final_function_call.will_continue is None
 
 
 def _text_stream_chunks(text_fragments, finish_reason="stop"):
@@ -7509,7 +7555,10 @@ async def test_streaming_buffers_hold_fragments_instead_of_growing_copies(
       LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
   )
   try:
-    # Suspends on the first partial text response, with both buffers filled.
+    # Each argument fragment now yields its own partial response; drain those
+    # before reaching the first partial text response, with both buffers filled.
+    for _ in range(len(arg_fragments)):
+      await responses.__anext__()
     await responses.__anext__()
     buffers = responses.ag_frame.f_locals
     assert buffers["text_parts"] == text_fragments[:1]
