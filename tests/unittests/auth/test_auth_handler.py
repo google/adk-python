@@ -450,7 +450,13 @@ class TestGenerateAuthRequest:
     handler = AuthHandler(config)
     result = handler.generate_auth_request()
 
-    assert result == config
+    # api key is stripped from the client-facing request; everything else stays.
+    assert result.raw_auth_credential.api_key is None
+    assert result.exchanged_auth_credential.api_key is None
+    expected = config.model_copy(deep=True)
+    expected.raw_auth_credential.api_key = None
+    expected.exchanged_auth_credential.api_key = None
+    assert result == expected
 
   def test_with_existing_auth_uri(self, auth_config_with_exchanged):
     """Test when auth_uri already exists in exchanged credential."""
@@ -926,3 +932,54 @@ class TestExchangeAuthToken:
     assert result.oauth2.access_token == "mock_access_token"
     assert result.oauth2.refresh_token == "mock_refresh_token"
     assert result.auth_type == AuthCredentialTypes.OAUTH2
+
+
+def test_generate_auth_request_redacts_api_key():
+  """A non-OAuth API key must not survive into the client-facing auth request."""
+  auth_config = AuthConfig(
+      auth_scheme=APIKey(**{"in": APIKeyIn.header}, name="X-API-Key"),
+      raw_auth_credential=AuthCredential(
+          auth_type=AuthCredentialTypes.API_KEY,
+          api_key="super-secret-api-key",
+      ),
+  )
+
+  prepared = AuthHandler(auth_config).generate_auth_request()
+
+  assert prepared.raw_auth_credential.api_key is None
+
+
+def test_generate_auth_request_redacts_service_account_private_key():
+  """A service account private key must not survive into the auth request."""
+  from google.adk.auth.auth_credential import ServiceAccount
+  from google.adk.auth.auth_credential import ServiceAccountCredential
+
+  auth_config = AuthConfig(
+      auth_scheme=APIKey(**{"in": APIKeyIn.header}, name="X-SA"),
+      raw_auth_credential=AuthCredential(
+          auth_type=AuthCredentialTypes.SERVICE_ACCOUNT,
+          service_account=ServiceAccount(
+              service_account_credential=ServiceAccountCredential(
+                  type="service_account",
+                  project_id="p",
+                  private_key_id="kid",
+                  private_key="-----BEGIN PRIVATE KEY-----secret-----END PRIVATE KEY-----",
+                  client_email="a@p.iam.gserviceaccount.com",
+                  client_id="1",
+                  auth_uri="https://accounts.google.com/o/oauth2/auth",
+                  token_uri="https://oauth2.googleapis.com/token",
+                  auth_provider_x509_cert_url="https://www.googleapis.com/oauth2/v1/certs",
+                  client_x509_cert_url="https://www.googleapis.com/robot/v1/x",
+                  universe_domain="googleapis.com",
+              ),
+              scopes=["https://www.googleapis.com/auth/cloud-platform"],
+          ),
+      ),
+  )
+
+  prepared = AuthHandler(auth_config).generate_auth_request()
+
+  assert (
+      prepared.raw_auth_credential.service_account.service_account_credential.private_key
+      is None
+  )

@@ -164,12 +164,12 @@ def _build_auth_message(auth_config: AuthConfig) -> str:
 
 
 def _without_client_secret(auth_config: AuthConfig) -> AuthConfig:
-  """Returns a copy of the auth config with the OAuth client secret removed.
+  """Returns a copy of the auth config with the agent's secrets removed.
 
-  The auth request is handed to the caller, which needs the authorization uri
-  and the state to complete the flow but never the developer's client secret.
-  The secret stays on this side and is supplied again when the response comes
-  back.
+  The caller needs the authorization uri and the state to complete the flow but
+  never the agent's own secrets: the OAuth2 client secret, an API key, an HTTP
+  Basic password, or a service account private key. They are re-supplied from
+  the node config when the credential is used.
 
   Args:
     auth_config: The auth configuration for the node.
@@ -179,8 +179,19 @@ def _without_client_secret(auth_config: AuthConfig) -> AuthConfig:
       without_secret.raw_auth_credential,
       without_secret.exchanged_auth_credential,
   ):
-    if credential and credential.oauth2:
+    if not credential:
+      continue
+    if credential.oauth2:
       credential.oauth2.client_secret = None
+    if credential.api_key is not None:
+      credential.api_key = None
+    if credential.http and credential.http.credentials:
+      credential.http.credentials.password = None
+    if (
+        credential.service_account
+        and credential.service_account.service_account_credential
+    ):
+      credential.service_account.service_account_credential.private_key = None
   return without_secret
 
 
