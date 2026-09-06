@@ -379,7 +379,8 @@ def process_llm_agent_output(
     ctx.actions.state_delta[agent.output_key] = output
 
   event.output = output
-  event.node_info.message_as_output = True
+  if not agent.output_schema:
+    event.node_info.message_as_output = True
 
 
 async def run_llm_agent_as_node(
