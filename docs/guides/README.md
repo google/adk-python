@@ -64,6 +64,9 @@ This directory contains specific developer guides for the ADK Python implementat
 * [Node as tool](tools/node_tool/index.md) - Exposing workflows and deterministic nodes as agent tools with isolated runtime branching and resume support.
 * [to_mcp_server](tools/mcp_tool/agent_to_mcp/index.md) - Expose an ADK agent as an MCP server so any MCP host can drive it as a single tool (the MCP counterpart of to_a2a).
 
+### Security
+* [Credentials Encryption](credentials_encryption.md) - Securely encrypting sensitive session credentials using GCP Cloud KMS.
+
 ### Workflows
 * [Workflow](workflow/workflow/index.md) - Graph-based orchestration of complex, multi-step agent interactions.
 * [Workflow Graphs](workflow/graph/index.md) - Understanding nodes, edges, and graph structures in workflows.
