@@ -941,6 +941,13 @@ class Runner:
 
     def _asyncio_thread_main() -> None:
       try:
+        # Honour ADK_UVLOOP=1 so deployments can run this sync shim on libuv
+        # without changing application code. asyncio.run() below then picks up
+        # the installed uvloop policy. Explicit enable_uvloop() at the
+        # entrypoint has the same effect and takes precedence.
+        from .utils.event_loop import maybe_enable_uvloop_from_env
+
+        maybe_enable_uvloop_from_env()
         asyncio.run(_invoke_run_async())
       except BaseException as e:  # pylint: disable=broad-except
         # The failure surfaces only on this thread, and the agent may raise
