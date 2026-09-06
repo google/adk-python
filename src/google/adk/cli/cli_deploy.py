@@ -572,6 +572,61 @@ def _validate_app_name(app_name: str) -> None:
     )
 
 
+# project and region are interpolated verbatim into the generated Dockerfile
+# (ENV GOOGLE_CLOUD_PROJECT={gcp_project_id} / ENV GOOGLE_CLOUD_LOCATION=
+# {gcp_region}) by _DOCKERFILE_TEMPLATE, the same as app_name above. Both are
+# plain CLI flag values (--project, --region) with no requirement that they
+# name a real, already-validated GCP resource before reaching this point --
+# _resolve_project's own fallback path aside, a caller (or a script wrapping
+# this CLI) can supply any string here. A value containing a newline breaks
+# out of the ENV instruction's line exactly as an unvalidated app_name broke
+# out of the COPY instruction, injecting an arbitrary new Dockerfile
+# instruction. Restrict both to GCP's own project-ID/region character set
+# before they reach the template.
+_GCP_PROJECT_ID_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r'^[A-Za-z][A-Za-z0-9_-]{0,62}$'
+)
+_GCP_REGION_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r'^[A-Za-z][A-Za-z0-9_-]{0,62}$'
+)
+
+
+def _validate_gcp_project_id(project: str) -> None:
+  """Validates a GCP project id before it is written into a Dockerfile.
+
+  Args:
+    project: The project id, either passed via --project or resolved from
+      the local gcloud configuration.
+
+  Raises:
+    click.ClickException: If the project id is not a plain GCP project id.
+  """
+  if not _GCP_PROJECT_ID_PATTERN.fullmatch(project):
+    raise click.ClickException(
+        f'Invalid GCP project id {project!r}. The project id is used in the'
+        ' generated Dockerfile and must contain only letters, digits,'
+        ' hyphens, and underscores (1-63 characters, starting with a'
+        ' letter).'
+    )
+
+
+def _validate_gcp_region(region: str) -> None:
+  """Validates a GCP region before it is written into a Dockerfile.
+
+  Args:
+    region: The region, passed via --region.
+
+  Raises:
+    click.ClickException: If the region is not a plain GCP region name.
+  """
+  if not _GCP_REGION_PATTERN.fullmatch(region):
+    raise click.ClickException(
+        f'Invalid GCP region {region!r}. The region is used in the generated'
+        ' Dockerfile and must contain only letters, digits, hyphens, and'
+        ' underscores (1-63 characters, starting with a letter).'
+    )
+
+
 def _validate_gcloud_extra_args(
     extra_gcloud_args: Optional[tuple[str, ...]], adk_managed_args: set[str]
 ) -> None:
@@ -949,6 +1004,9 @@ def to_cloud_run(
     click.echo('Deploying to Cloud Run...')
     region_options = ['--region', region] if region else []
     project = _resolve_project(project)
+    _validate_gcp_project_id(project)
+    if region:
+      _validate_gcp_region(region)
 
     # Build the set of args that ADK will manage
     adk_managed_args = {'--source', '--project', '--port', '--verbosity'}
@@ -1450,6 +1508,9 @@ def to_agent_engine(
             f' {adk_version} was requested',
             fg='yellow',
         )
+      if region:
+        _validate_gcp_region(region)
+      _validate_gcp_project_id(project)
       dockerfile_content = _DOCKERFILE_TEMPLATE.format(
           gcp_project_id=project,
           gcp_region=region,
@@ -1594,6 +1655,9 @@ def to_gke(
   click.echo('--------------------------------------------------')
   # Resolve project early to show the user which one is being used
   project = _resolve_project(project)
+  _validate_gcp_project_id(project)
+  if region:
+    _validate_gcp_region(region)
   click.echo(f'  Project:         {project}')
   click.echo(f'  Region:          {region}')
   click.echo(f'  Cluster:         {cluster_name}')

