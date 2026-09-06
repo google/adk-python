@@ -3260,12 +3260,16 @@ class LiteLlm(BaseLlm):
         for index, func_data in function_calls.items():
           if func_data["id"]:
             args = "".join(func_data["args_parts"])
-            if finish_reason == "length":
-              try:
-                _parse_tool_call_arguments(args)
-              except json.JSONDecodeError:
-                has_incomplete_tool_call_args = True
-                continue
+            # Validate regardless of finish_reason: a stream that aborts
+            # mid-tool-call (e.g. transport cut, provider incident) ends
+            # with no finish_reason at all, so finalization falls back to a
+            # hardcoded "tool_calls" below and would otherwise let partial
+            # arguments through to an uncaught JSONDecodeError downstream.
+            try:
+              _parse_tool_call_arguments(args)
+            except json.JSONDecodeError:
+              has_incomplete_tool_call_args = True
+              continue
             tool_calls.append(
                 ChatCompletionMessageToolCall(
                     type="function",
