@@ -14,86 +14,97 @@
 
 from __future__ import annotations
 
+import os
+from typing import Optional
+
 from google.genai import types
 from typing_extensions import override
 
 from .base_example_provider import BaseExampleProvider
 from .example import Example
 
+_TOP_K = 10
+
+# Below this an example is more likely to mislead the model than help it.
+_SIMILARITY_THRESHOLD = 0.5
+
 
 class VertexAiExampleStore(BaseExampleProvider):
   """Provides examples from Vertex example store."""
 
-  def __init__(self, examples_store_name: str):
+  def __init__(
+      self,
+      examples_store_name: str,
+      *,
+      project: Optional[str] = None,
+      location: Optional[str] = None,
+  ):
     """Initializes the VertexAiExampleStore.
 
     Args:
         examples_store_name: The resource name of the vertex example store, in
           the format of
           ``projects/{project}/locations/{location}/exampleStores/{example_store}``.
+        project: The project to use for the Agent Platform client. If not set,
+          the GOOGLE_CLOUD_PROJECT environment variable is used, falling back to
+          the project in ``examples_store_name``.
+        location: The location to use for the Agent Platform client. If not set,
+          the GOOGLE_CLOUD_LOCATION environment variable is used, falling back
+          to the location in ``examples_store_name``.
     """
+    try:
+      import agentplatform  # noqa: F401
+    except ImportError as e:
+      from ..utils._dependency import missing_extra
+
+      raise missing_extra("google-cloud-aiplatform", "gcp") from e
+
     self.examples_store_name = examples_store_name
+    self._project = project or os.environ.get("GOOGLE_CLOUD_PROJECT")
+    self._location = location or os.environ.get("GOOGLE_CLOUD_LOCATION")
+
+    # Fallback: a fully-qualified store name already carries both, so a caller
+    # that passed one should not also have to set the environment.
+    if (not self._project or not self._location) and (
+        examples_store_name.startswith("projects/")
+    ):
+      parts = examples_store_name.split("/")
+      if len(parts) >= 4 and parts[0] == "projects" and parts[2] == "locations":
+        self._project = self._project or parts[1]
+        self._location = self._location or parts[3]
 
   @override
   def get_examples(self, query: str) -> list[Example]:
-    from ..dependencies.vertexai import example_stores
+    import agentplatform
 
-    example_store = example_stores.ExampleStore(self.examples_store_name)
-    # Retrieve relevant examples.
-    request = {
-        "stored_contents_example_parameters": {
+    client = agentplatform.Client(
+        project=self._project, location=self._location
+    )
+    response = client.example_stores.search_examples(
+        name=self.examples_store_name,
+        stored_contents_example_parameters={
             "content_search_key": {
                 "contents": [{"role": "user", "parts": [{"text": query}]}],
                 "search_key_generation_method": {"last_entry": {}},
             }
         },
-        "top_k": 10,
-        "example_store": self.examples_store_name,
-    }
-    response = example_store.api_client.search_examples(request)
+        config={"top_k": _TOP_K},
+    )
 
     returned_examples = []
-    # Convert results to genai formats
-    for result in response.results:
-      if result.similarity_score < 0.5:
+    for result in response.results or []:
+      if (result.similarity_score or 0.0) < _SIMILARITY_THRESHOLD:
         continue
-      expected_contents = [
-          content.content
-          for content in (
-              result.example.stored_contents_example.contents_example.expected_contents
-          )
+      stored_contents_example = result.example.stored_contents_example
+      contents_example = stored_contents_example.contents_example
+
+      # The module hands back google.genai Content already, so the expected
+      # output needs no part-by-part rebuilding.
+      expected_output = [
+          expected.content
+          for expected in contents_example.expected_contents or []
+          if expected.content
       ]
-      expected_output = []
-      for content in expected_contents:
-        expected_parts = []
-        for part in content.parts:
-          if part.text:
-            expected_parts.append(types.Part.from_text(text=part.text))
-          elif part.function_call:
-            expected_parts.append(
-                types.Part.from_function_call(
-                    name=part.function_call.name,
-                    args={
-                        key: value
-                        for key, value in part.function_call.args.items()
-                    },
-                )
-            )
-          elif part.function_response:
-            expected_parts.append(
-                types.Part.from_function_response(
-                    name=part.function_response.name,
-                    response={
-                        key: value
-                        for key, value in (
-                            part.function_response.response.items()
-                        )
-                    },
-                )
-            )
-        expected_output.append(
-            types.Content(role=content.role, parts=expected_parts)
-        )
 
       returned_examples.append(
           Example(
@@ -101,7 +112,7 @@ class VertexAiExampleStore(BaseExampleProvider):
                   role="user",
                   parts=[
                       types.Part.from_text(
-                          text=result.example.stored_contents_example.search_key
+                          text=stored_contents_example.search_key or ""
                       )
                   ],
               ),
