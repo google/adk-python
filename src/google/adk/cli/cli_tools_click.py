@@ -2000,6 +2000,46 @@ def _check_windows_reload(reload: bool) -> bool:
   return reload
 
 
+@main.command("graph")
+@click.argument("agent_file", type=click.Path(exists=True), required=False)
+@click.option("--host", default="127.0.0.1", help="Host address to bind the web server.")
+@click.option("--port", default=8000, type=int, help="Port to serve the visual graph UI.")
+def cli_graph(agent_file: Optional[str], host: str, port: int) -> None:
+  """Inspect and visualize agent topology interactively."""
+  from .graph.graph_server import GraphServer
+  from .graph.inspector import AgentInspector
+  from .utils.agent_loader import AgentLoader
+
+  if not agent_file:
+    click.echo("Starting ADK Graph Server in standalone builder mode...")
+    server = GraphServer(topology=None, host=host, port=port)
+    server.run()
+    return
+
+  click.echo(f"Inspecting agent at: {agent_file}")
+  path = Path(agent_file).resolve()
+  if path.is_file():
+    agents_dir = str(path.parent)
+    agent_name = path.stem
+  else:
+    agents_dir = str(path)
+    agent_name = path.name
+
+  loader = AgentLoader(agents_dir=agents_dir)
+  agent_or_app = loader.load_agent(agent_name)
+
+  inspector = AgentInspector(agent_or_app)
+  topology = inspector.inspect()
+
+  click.echo(f"Successfully parsed agent graph! Total nodes: {len(topology.nodes)}, edges: {len(topology.edges)}")
+  click.echo(f"Serving Visual Agent Graph on http://{host}:{port}")
+
+  server = GraphServer(
+      topology=topology, agent_file_path=path, host=host, port=port
+  )
+  server.run()
+
+
 @main.command("web")
 @feature_options()
 @fast_api_common_options()
