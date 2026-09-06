@@ -863,6 +863,10 @@ def to_cloud_run(
     with_cloud_run_sandbox: Whether to enable the Cloud Run sandbox for code
       execution.
   """
+  if trigger_sources and not trigger_oidc_audience and not trigger_auth_verifier:
+    raise click.UsageError(
+        "--trigger_oidc_audience is required when --trigger_sources is set"
+    )
   app_name = app_name or os.path.basename(os.path.normpath(agent_folder))
   _validate_app_name(app_name)
   if parse(adk_version) >= parse('1.3.0') and not use_local_storage:
@@ -1141,6 +1145,10 @@ def to_agent_engine(
       Overrides `worker_pool` / `build_config.worker_pool` from
       `.agent_engine_config.json` when both are present.
   """
+  if trigger_sources and not trigger_oidc_audience and not trigger_auth_verifier:
+    raise click.UsageError(
+        "--trigger_oidc_audience is required when --trigger_sources is set"
+    )
   app_name = os.path.basename(os.path.normpath(agent_folder))
   _validate_app_name(app_name)
   display_name = display_name or app_name
