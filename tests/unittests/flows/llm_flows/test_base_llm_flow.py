@@ -28,6 +28,8 @@ from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.agents.run_config import StreamingMode
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.code_executors.base_code_executor import BaseCodeExecutor
+from google.adk.code_executors.code_execution_utils import CodeExecutionResult
 from google.adk.events.event import Event
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
@@ -2507,6 +2509,51 @@ def _make_agent_tree():
   child2.parent_agent = root
   root.sub_agents = [child1, child2]
   return root, child1, child2
+
+
+@pytest.mark.asyncio
+async def test_code_execution_stop_continues_to_final_response():
+  """A code response ending in STOP continues after sandbox execution."""
+  code_response = LlmResponse(
+      content=types.Content(
+          role='model',
+          parts=[types.Part(text='```python\nprint(6 * 7)\n```')],
+      ),
+      finish_reason=types.FinishReason.STOP,
+  )
+  final_response = LlmResponse(
+      content=types.Content(
+          role='model',
+          parts=[types.Part(text='The answer is 42.')],
+      ),
+      finish_reason=types.FinishReason.STOP,
+  )
+  code_executor = mock.MagicMock(spec=BaseCodeExecutor)
+  code_executor.optimize_data_file = False
+  code_executor.code_block_delimiters = [('```python\n', '\n```')]
+  code_executor.execution_result_delimiters = (
+      '```tool_output\n',
+      '\n```',
+  )
+  code_executor.error_retry_attempts = 2
+  code_executor.stateful = False
+  code_executor.execute_code.return_value = CodeExecutionResult(stdout='42\n')
+  mock_model = testing_utils.MockModel.create(
+      responses=[code_response, final_response]
+  )
+  agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      code_executor=code_executor,
+  )
+
+  events = testing_utils.InMemoryRunner(agent).run('What is 6 * 7?')
+
+  code_executor.execute_code.assert_called_once()
+  assert len(mock_model.requests) == 2
+  assert not any(event.error_code for event in events)
+  assert events[-1].content
+  assert events[-1].content.parts[0].text == 'The answer is 42.'
 
 
 @pytest.mark.asyncio
