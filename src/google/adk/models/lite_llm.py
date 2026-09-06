@@ -2559,7 +2559,20 @@ def _message_to_generate_content_response(
           raise ValueError(
               "Function-call part factory returned no function call"
           )
-        function_call.id = tool_call.id
+        # The signature is carried on the part, so strip it back out of the id.
+        # Leaving it there appends a few hundred characters of base64 to every
+        # consumer of `function_call_id`, and `_content_to_message_param`
+        # re-attaches it to the outgoing tool call from `thought_signature`
+        # anyway. Only an id whose suffix decodes as a signature is LiteLLM's
+        # own; every other id is the provider's and stays opaque.
+        call_id, separator, suffix = tool_call.id.partition(
+            _THOUGHT_SIGNATURE_SEPARATOR
+        )
+        function_call.id = (
+            call_id
+            if separator and _decode_thought_signature(suffix)
+            else tool_call.id
+        )
         if thought_signature:
           part.thought_signature = thought_signature
         parts.append(part)
