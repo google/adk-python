@@ -1597,6 +1597,35 @@ def test_cli_api_server_invokes_uvicorn(
   assert result.exit_code == 0
   assert _patch_uvicorn.calls, "uvicorn.Server.run must be called"
 
+def test_cli_api_server_passes_auto_create_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _patch_uvicorn: _Recorder,
+) -> None:
+  """`adk api_server --auto_create_session` enables automatic sessions."""
+  agents_dir = tmp_path / "agents_api"
+  agents_dir.mkdir()
+
+  mock_get_app = _Recorder()
+  monkeypatch.setattr(
+      "google.adk.cli.fast_api.get_fast_api_app", mock_get_app
+  )
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "api_server",
+          str(agents_dir),
+          "--auto_create_session",
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert mock_get_app.calls
+
+  called_kwargs = mock_get_app.calls[-1][1]
+  assert called_kwargs["auto_create_session"] is True
 
 def test_cli_web_passes_service_uris(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _patch_uvicorn: _Recorder
