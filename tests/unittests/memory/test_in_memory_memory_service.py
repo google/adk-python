@@ -384,8 +384,15 @@ async def test_search_memory_does_not_collide_on_slash_in_identifiers():
         # Mixed: non-Latin substring + Latin token in same event
         ('太郎 works at ABC Corp', '太郎', 1),
         ('太郎 works at ABC Corp', 'ABC', 1),
+        # Latin word inside an unspaced script (no space to tokenize on)
+        ('私はPythonでADKを使っています', 'Python', 1),
+        ('私はPythonでADKを使っています', 'adk', 1),
+        ('我用Python写代码', 'python', 1),
+        ('私はPythonでADKを使っています', '使って', 1),
+        ('私はPythonでADKを使っています', 'Java', 0),
         # Latin partial-word must NOT match (regression guard)
         ('I like to code in Python.', 'thon', 0),
+        ('私はPythonでADKを使っています', 'thon', 0),
     ],
 )
 async def test_search_memory_non_latin(event_text, query, expected_count):
