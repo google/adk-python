@@ -66,6 +66,7 @@ class TestEventConverter:
     self.mock_event.error_code = None
     self.mock_event.error_message = None
     self.mock_event.content = None
+    self.mock_event.output = None
     self.mock_event.long_running_tool_ids = None
     self.mock_event.actions = None
 
@@ -687,6 +688,86 @@ class TestEventConverter:
     assert _compat.part_text(result.parts[0]) == "part 1"
     assert _compat.part_text(result.parts[1]) == "part 2"
     mock_convert_part.assert_called_once_with(mock_genai_part)
+
+  def test_convert_event_to_a2a_message_prefers_event_output(self):
+    """Structured Event.output becomes the A2A message over content text."""
+    from google.adk.a2a.converters.event_converter import convert_event_to_a2a_message
+    from google.adk.a2a.executor.task_result_aggregator import TaskResultAggregator
+    from pydantic import BaseModel
+
+    class Report(BaseModel):
+      title: str
+      summary: str
+      note: str
+
+    # Simulate the #6762 stream: agent texts, then workflow structured output.
+    stream = [
+        Event(
+            author="agent_a",
+            content=genai_types.Content(
+                role="model", parts=[genai_types.Part(text='{"title":"T"}')]
+            ),
+            partial=False,
+        ),
+        Event(
+            author="agent_c",
+            content=genai_types.Content(
+                role="model", parts=[genai_types.Part(text="note-text")]
+            ),
+            partial=False,
+        ),
+        Event(
+            author="wf",
+            output=Report(title="T", summary="S", note="note-text"),
+            partial=False,
+        ),
+    ]
+
+    aggregator = TaskResultAggregator()
+    for event in stream:
+      for a2a_event in convert_event_to_a2a_events(
+          event,
+          self.mock_invocation_context,
+          task_id="task-1",
+          context_id="ctx-1",
+      ):
+        aggregator.process_event(a2a_event)
+
+    parts = aggregator.task_status_message.parts
+    assert parts and _compat.is_data_part(parts[0])
+    assert _compat.data_part_dict(parts[0]) == {
+        "title": "T",
+        "summary": "S",
+        "note": "note-text",
+    }
+
+    # Direct message conversion uses output when content is absent.
+    output_only = Event(
+        author="wf",
+        output=Report(title="T", summary="S", note="note-text"),
+        partial=False,
+    )
+    message = convert_event_to_a2a_message(
+        output_only, self.mock_invocation_context
+    )
+    assert message is not None
+    assert _compat.is_data_part(message.parts[0])
+    assert _compat.data_part_dict(message.parts[0])["title"] == "T"
+
+    # Content still wins when both are present (e.g. finish_task FC parts).
+    mixed = Event(
+        author="wf",
+        content=genai_types.Content(
+            role="model", parts=[genai_types.Part(text="kept-content")]
+        ),
+        output=Report(title="T", summary="S", note="note-text"),
+        partial=False,
+    )
+    mixed_message = convert_event_to_a2a_message(
+        mixed, self.mock_invocation_context
+    )
+    assert mixed_message is not None
+    assert _compat.part_text(mixed_message.parts[0]) == "kept-content"
 
 
 class TestA2AToEventConverters:
