@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 import copy
 import datetime
 import re
@@ -1184,6 +1186,62 @@ async def test_append_event():
   assert len(retrieved_session.events) == 2
   event_to_append.id = retrieved_session.events[1].id
   assert retrieved_session.events[1] == event_to_append
+
+
+@pytest.mark.asyncio
+async def test_append_event_does_not_mutate_session_on_remote_failure() -> None:
+  """Regression test for #6998.
+
+  A failed remote append must leave normal state and the event list
+  untouched (temp state remains, since it is invocation-local), and a
+  successful retry must apply the delta and append the event exactly once.
+  """
+  append = mock.AsyncMock(side_effect=[RuntimeError('network failure'), None])
+  client = types.SimpleNamespace(
+      agent_engines=types.SimpleNamespace(
+          sessions=types.SimpleNamespace(
+              events=types.SimpleNamespace(append=append),
+          )
+      )
+  )
+
+  @asynccontextmanager
+  async def fake_client() -> AsyncIterator[types.SimpleNamespace]:
+    yield client
+
+  session_service = mock_vertex_ai_session_service()
+  session = Session(
+      id='1',
+      app_name='123',
+      user_id='user',
+      state={'existing': 'value'},
+  )
+  event = Event(
+      invocation_id='invocation',
+      author='model',
+      actions=EventActions(
+          state_delta={
+              'normal': 'persisted',
+              'temp:scratch': 'ephemeral',
+          }
+      ),
+  )
+
+  with mock.patch.object(session_service, '_get_api_client', fake_client):
+    with pytest.raises(RuntimeError):
+      await session_service.append_event(session, event)
+
+    assert session.state == {'existing': 'value', 'temp:scratch': 'ephemeral'}
+    assert len(session.events) == 0
+
+    await session_service.append_event(session, event)
+
+    assert session.state == {
+        'existing': 'value',
+        'temp:scratch': 'ephemeral',
+        'normal': 'persisted',
+    }
+    assert len(session.events) == 1
 
 
 @pytest.mark.asyncio
