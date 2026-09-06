@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING
 from ..utils import _lazy
 
 if TYPE_CHECKING:
+  from ._callback_metadata import CallbackHook
+  from ._callback_metadata import CallbackInvocationInfo
   from ._managed_agent import ManagedAgent
   from .base_agent import BaseAgent
   from .base_agent_config import BaseAgentConfig
@@ -42,6 +44,8 @@ _LAZY_MEMBERS: dict[str, str] = {
     'Agent': '.llm_agent',
     'BaseAgent': '.base_agent',
     'BaseAgentConfig': '.base_agent_config',
+    'CallbackHook': '._callback_metadata',
+    'CallbackInvocationInfo': '._callback_metadata',
     'Context': '.context',
     'InvocationContext': '.invocation_context',
     'LiveRequest': '.live_request_queue',
@@ -61,6 +65,8 @@ _LAZY_MEMBERS: dict[str, str] = {
 __all__ = [
     'Agent',
     'BaseAgent',
+    'CallbackHook',
+    'CallbackInvocationInfo',
     'Context',
     'LlmAgent',
     'LoopAgent',

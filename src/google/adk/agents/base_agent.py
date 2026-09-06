@@ -51,6 +51,7 @@ from ..utils._callback_pipeline import _run_callbacks
 from ..utils._callback_pipeline import _stop_on_truthy
 from ..utils.context_utils import Aclosing
 from ..workflow import BaseNode
+from ._callback_metadata import CallbackHook
 from .base_agent_config import BaseAgentConfig as BaseAgentConfig
 from .callback_context import CallbackContext
 from .context import Context
@@ -528,11 +529,12 @@ class BaseAgent(BaseNode, abc.ABC):
     # callbacks.
     callbacks = self.canonical_before_agent_callbacks
     if not before_agent_callback_content and callbacks:
-      before_agent_callback_content = await _run_callbacks(
-          callbacks,
-          _stop_on_truthy,
-          callback_context=callback_context,
-      )
+      with callback_context._callback_scope(CallbackHook.BEFORE_AGENT):
+        before_agent_callback_content = await _run_callbacks(
+            callbacks,
+            _stop_on_truthy,
+            callback_context=callback_context,
+        )
 
     # Process the override content if exists, and further process the state
     # change if exists.
@@ -583,11 +585,12 @@ class BaseAgent(BaseNode, abc.ABC):
     # callbacks.
     callbacks = self.canonical_after_agent_callbacks
     if not after_agent_callback_content and callbacks:
-      after_agent_callback_content = await _run_callbacks(
-          callbacks,
-          _stop_on_truthy,
-          callback_context=callback_context,
-      )
+      with callback_context._callback_scope(CallbackHook.AFTER_AGENT):
+        after_agent_callback_content = await _run_callbacks(
+            callbacks,
+            _stop_on_truthy,
+            callback_context=callback_context,
+        )
 
     # Process the override content if exists, and further process the state
     # change if exists.

@@ -16,6 +16,7 @@ from typing import Any
 from typing import Optional
 from unittest import mock
 
+from google.adk.agents import CallbackHook
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.llm_agent import Agent
 from google.adk.models.llm_request import LlmRequest
@@ -175,6 +176,40 @@ def test_after_model_callback_lambda_with_arbitrary_param_names():
   ]
 
 
+def test_model_callbacks_receive_current_hook_metadata():
+  """Model callbacks observe their active hook only during execution."""
+  observations = []
+  callback_contexts = []
+
+  def before_callback(
+      callback_context: CallbackContext, llm_request: LlmRequest
+  ) -> None:
+    observations.append(callback_context.callback_info.hook)
+    callback_contexts.append(callback_context)
+
+  def after_callback(
+      callback_context: CallbackContext, llm_response: LlmResponse
+  ) -> None:
+    observations.append(callback_context.callback_info.hook)
+    callback_contexts.append(callback_context)
+
+  agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(responses=['model_response']),
+      before_model_callback=before_callback,
+      after_model_callback=after_callback,
+  )
+
+  runner = testing_utils.InMemoryRunner(agent)
+  _ = runner.run('test')
+
+  assert observations == [
+      CallbackHook.BEFORE_MODEL,
+      CallbackHook.AFTER_MODEL,
+  ]
+  assert all(context.callback_info is None for context in callback_contexts)
+
+
 @pytest.mark.asyncio
 async def test_on_model_callback_model_error_noop():
   """Test that the on_model_error_callback is a no-op when the model returns an error."""
@@ -210,6 +245,40 @@ async def test_on_model_callback_model_error_modify_model_response():
   assert testing_utils.simplify_events(
       await runner.run_async_with_new_session('test')
   ) == [('root_agent', 'on_model_error_callback_response')]
+
+
+@pytest.mark.asyncio
+async def test_model_error_callback_receives_current_hook_metadata():
+  """A model error callback observes the error hook only while it runs."""
+  observations = []
+  callback_contexts = []
+
+  def error_callback(
+      callback_context: CallbackContext,
+      llm_request: LlmRequest,
+      error: Exception,
+  ) -> LlmResponse:
+    observations.append(callback_context.callback_info.hook)
+    callback_contexts.append(callback_context)
+    return LlmResponse(
+        content=testing_utils.ModelContent(
+            [types.Part.from_text(text='recovered')]
+        )
+    )
+
+  agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(
+          responses=[], error=SystemError('error')
+      ),
+      on_model_error_callback=error_callback,
+  )
+  runner = testing_utils.TestInMemoryRunner(agent)
+
+  await runner.run_async_with_new_session('test')
+
+  assert observations == [CallbackHook.ON_MODEL_ERROR]
+  assert all(context.callback_info is None for context in callback_contexts)
 
 
 @pytest.mark.asyncio

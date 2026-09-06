@@ -22,6 +22,7 @@ from typing import cast
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from ...agents._callback_metadata import CallbackHook
 from ...tools.base_tool import BaseTool
 from ...tools.tool_context import ToolContext
 from ...utils._callback_pipeline import _run_callbacks
@@ -117,11 +118,12 @@ async def run_on_tool_error_callbacks(
   if error_response is not None:
     return error_response
 
-  return await _run_callbacks(
-      agent.canonical_on_tool_error_callbacks,  # type: ignore[arg-type]
-      _stop_on_non_none,
-      tool=tool,
-      args=tool_args,
-      tool_context=tool_context,
-      error=error,
-  )
+  with tool_context._callback_scope(CallbackHook.ON_TOOL_ERROR):
+    return await _run_callbacks(
+        agent.canonical_on_tool_error_callbacks,  # type: ignore[arg-type]
+        _stop_on_non_none,
+        tool=tool,
+        args=tool_args,
+        tool_context=tool_context,
+        error=error,
+    )

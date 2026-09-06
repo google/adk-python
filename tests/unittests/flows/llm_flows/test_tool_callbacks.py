@@ -16,6 +16,7 @@ import contextvars
 from typing import Any
 from unittest import mock
 
+from google.adk.agents import CallbackHook
 from google.adk.agents.llm_agent import Agent
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
@@ -266,6 +267,45 @@ def test_after_tool_callback_noop():
   ]
 
 
+def test_tool_callbacks_receive_current_hook_metadata():
+  """Tool callbacks observe their active hook only during execution."""
+  observations = []
+  tool_contexts = []
+
+  def context_aware_function(tool_context: ToolContext) -> str:
+    observations.append(tool_context.callback_info)
+    return 'tool_response'
+
+  def before_callback(tool, args, tool_context):
+    observations.append(tool_context.callback_info.hook)
+    tool_contexts.append(tool_context)
+
+  def after_callback(tool, args, tool_context, tool_response):
+    observations.append(tool_context.callback_info.hook)
+    tool_contexts.append(tool_context)
+
+  responses = [
+      types.Part.from_function_call(name='context_aware_function', args={}),
+      'response1',
+  ]
+  agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(responses=responses),
+      before_tool_callback=before_callback,
+      after_tool_callback=after_callback,
+      tools=[context_aware_function],
+  )
+
+  _ = testing_utils.InMemoryRunner(agent).run('test')
+
+  assert observations == [
+      CallbackHook.BEFORE_TOOL,
+      None,
+      CallbackHook.AFTER_TOOL,
+  ]
+  assert all(context.callback_info is None for context in tool_contexts)
+
+
 def test_after_tool_callback_modify_tool_response():
   """Test that the after_tool_callback modifies the tool response."""
   responses = [
@@ -477,6 +517,33 @@ def test_on_tool_error_callback_tool_error_modify_tool_response():
       ),
       ('root_agent', 'response1'),
   ]
+
+
+def test_tool_error_callback_receives_current_hook_metadata():
+  """A tool error callback observes the error hook only while it runs."""
+  observations = []
+  tool_contexts = []
+
+  def error_callback(tool, args, tool_context, error):
+    observations.append(tool_context.callback_info.hook)
+    tool_contexts.append(tool_context)
+    return {'result': 'recovered'}
+
+  responses = [
+      types.Part.from_function_call(name='simple_function_with_error', args={}),
+      'response1',
+  ]
+  agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(responses=responses),
+      on_tool_error_callback=error_callback,
+      tools=[simple_function_with_error],
+  )
+
+  _ = testing_utils.InMemoryRunner(agent).run('test')
+
+  assert observations == [CallbackHook.ON_TOOL_ERROR]
+  assert all(context.callback_info is None for context in tool_contexts)
 
 
 def test_before_tool_callback_lambda_with_arbitrary_param_names():

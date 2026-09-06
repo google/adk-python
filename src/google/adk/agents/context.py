@@ -16,8 +16,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from collections.abc import Mapping
 from collections.abc import Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 from typing import cast
 from typing import TYPE_CHECKING
@@ -25,6 +28,8 @@ from typing import TYPE_CHECKING
 from opentelemetry import context as context_api
 from typing_extensions import override
 
+from ._callback_metadata import CallbackHook
+from ._callback_metadata import CallbackInvocationInfo
 from .readonly_context import ReadonlyContext
 
 if TYPE_CHECKING:
@@ -229,6 +234,9 @@ class Context(ReadonlyContext):
       self._output_for_ancestors = []
     self._error: Exception | None = None
     self._error_node_path: str = ''
+    self._callback_info: ContextVar[CallbackInvocationInfo | None] = ContextVar(
+        'callback_info', default=None
+    )
 
   @property
   @override
@@ -246,6 +254,20 @@ class Context(ReadonlyContext):
   def function_call_id(self, value: str | None) -> None:
     """Sets the function call id of the current tool call."""
     self._function_call_id = value
+
+  @property
+  def callback_info(self) -> CallbackInvocationInfo | None:
+    """Returns metadata for the callback currently being invoked, if any."""
+    return self._callback_info.get()
+
+  @contextmanager
+  def _callback_scope(self, hook: CallbackHook) -> Iterator[None]:
+    """Sets task-local callback metadata for the duration of a callback."""
+    token = self._callback_info.set(CallbackInvocationInfo(hook=hook))
+    try:
+      yield
+    finally:
+      self._callback_info.reset(token)
 
   @property
   def branch(self) -> str | None:
