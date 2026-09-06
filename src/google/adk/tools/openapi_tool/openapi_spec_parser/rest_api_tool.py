@@ -610,7 +610,7 @@ class RestApiTool(BaseTool):
       response.raise_for_status()  # Raise HTTPStatusError for bad responses
       return response.json()  # Try to decode JSON
     except httpx.HTTPStatusError:
-      error_details = response.content.decode("utf-8")
+      error_details = response.text
       self._logger.warning(
           "API call failed for tool %s: Status %d - %s",
           self.name,

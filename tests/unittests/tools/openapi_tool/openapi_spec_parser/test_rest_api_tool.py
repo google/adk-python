@@ -322,18 +322,10 @@ class TestRestApiTool:
       sample_auth_scheme,
       sample_auth_credential,
   ):
-    mock_response = MagicMock()
-    mock_response.status_code = 500
-    mock_response.content = b"Internal Server Error"
-
-    # Create a proper HTTPStatusError with request and response
-    mock_http_request = MagicMock(spec=httpx.Request)
-    mock_response.raise_for_status = MagicMock(
-        side_effect=httpx.HTTPStatusError(
-            "500 Server Error",
-            request=mock_http_request,
-            response=mock_response,
-        )
+    mock_response = httpx.Response(
+        500,
+        content=b"Internal Server Error",
+        request=httpx.Request("GET", "https://example.com/test"),
     )
     mock_request.return_value = mock_response
 
@@ -358,6 +350,54 @@ class TestRestApiTool:
             " Status Code: 500, Internal Server Error"
         )
     }
+
+  @pytest.mark.parametrize(
+      "content,content_type,expected_text",
+      [
+          pytest.param(
+              b"Acc\xe8s refus\xe9",
+              "text/plain; charset=iso-8859-1",
+              "Acc\u00e8s refus\u00e9",
+              id="declared-latin-1",
+          ),
+          pytest.param(
+              b"Invalid byte: \xff",
+              "text/plain; charset=utf-8",
+              "Invalid byte: \ufffd",
+              id="invalid-utf-8",
+          ),
+          pytest.param(
+              b"Invalid byte: \xff",
+              "text/plain",
+              "Invalid byte: \ufffd",
+              id="missing-charset",
+          ),
+      ],
+  )
+  async def test_run_async_returns_decoded_http_error(
+      self, sample_endpoint, content, content_type, expected_text
+  ):
+    """HTTP error bodies remain tool errors regardless of their encoding."""
+
+    def handle_request(request):
+      return httpx.Response(
+          400, content=content, headers={"Content-Type": content_type}
+      )
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=Operation(operationId="testOperation"),
+        httpx_client_factory=lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(handle_request)
+        ),
+    )
+
+    result = await tool.run_async(args={}, tool_context=None)
+
+    assert "Status Code: 400" in result["error"]
+    assert expected_text in result["error"]
 
   @patch(
       "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
