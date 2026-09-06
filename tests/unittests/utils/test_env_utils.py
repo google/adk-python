@@ -78,7 +78,16 @@ def test_is_enterprise_mode_enabled_falls_back_to_vertexai_with_warning(
 
 def test_is_enterprise_mode_enabled_defaults_to_false(monkeypatch):
   """Enterprise mode is off when no relevant env var is set."""
+  from google.adk.utils import _gcp_metadata
+
   monkeypatch.delenv('GOOGLE_GENAI_USE_ENTERPRISE', raising=False)
   monkeypatch.delenv('GOOGLE_GENAI_USE_VERTEXAI', raising=False)
+  monkeypatch.delenv('GOOGLE_CLOUD_PROJECT', raising=False)
+  monkeypatch.delenv('GOOGLE_CLOUD_LOCATION', raising=False)
+  # Keep this test offline-deterministic (no metadata probe / GCP VM noise).
+  monkeypatch.setattr(_gcp_metadata, '_off_gcp_cached', False)
+  monkeypatch.setattr(
+      _gcp_metadata, 'get_project_id_from_metadata', lambda: None
+  )
 
   assert is_enterprise_mode_enabled() is False

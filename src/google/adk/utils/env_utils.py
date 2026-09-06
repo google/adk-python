@@ -63,9 +63,16 @@ def is_env_enabled(env_var_name: str, default: str = '0') -> bool:
 def is_enterprise_mode_enabled() -> bool:
   """Check if Google GenAI Enterprise mode is enabled via environment variables.
 
+  On Google Cloud, unset project/location/enterprise flags are filled from the
+  instance metadata server before this check (explicit env values still win).
+
   Returns:
     True if enabled, False otherwise.
   """
+  # Ensure GCP metadata defaults are applied once before reading the flags so
+  # Agent Engine / Cloud Run agents work without a `.env` for Vertex identity.
+  apply_gcp_runtime_defaults()
+
   if 'GOOGLE_GENAI_USE_ENTERPRISE' in os.environ:
     return is_env_enabled('GOOGLE_GENAI_USE_ENTERPRISE')
   if 'GOOGLE_GENAI_USE_VERTEXAI' in os.environ:
@@ -77,3 +84,19 @@ def is_enterprise_mode_enabled() -> bool:
     )
     return is_env_enabled('GOOGLE_GENAI_USE_VERTEXAI')
   return False
+
+
+def apply_gcp_runtime_defaults() -> dict[str, str]:
+  """Apply GCP metadata defaults for unset Vertex/project/location env vars.
+
+  When ADK runs on Google Cloud without an explicit `.env` / shell configuration,
+  project id, location, and enterprise/Vertex mode are filled from the instance
+  metadata server. Values already present in the environment are never
+  overwritten.
+
+  Returns:
+    Mapping of environment variable names to values that were applied.
+  """
+  from ._gcp_metadata import apply_gcp_runtime_defaults as _apply
+
+  return _apply()
