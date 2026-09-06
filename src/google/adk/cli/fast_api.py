@@ -516,6 +516,47 @@ def get_fast_api_app(
     adk_app._tmpl_attrs["memory_service"] = memory_service
     adk_app._tmpl_attrs["artifact_service"] = artifact_service
 
+    # AdkApp (vertexai/agentplatform) does not yet ship async_rewind. Bind an
+    # ADK-owned implementation onto the instance so Agent Engine class_method
+    # dispatch and deploy class_methods metadata can expose rewind parity with
+    # runner.rewind_async (see #4121).
+    async def _async_rewind(
+        *,
+        user_id: str,
+        session_id: str,
+        rewind_before_invocation_id: str,
+        run_config: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+      from ..agents.run_config import RunConfig
+
+      runner = adk_app._tmpl_attrs.get("runner")
+      if runner is None:
+        raise RuntimeError("Runner is not set up for async_rewind")
+      parsed_run_config = (
+          RunConfig.model_validate(run_config)
+          if run_config is not None
+          else None
+      )
+      await runner.rewind_async(
+          user_id=user_id,
+          session_id=session_id,
+          rewind_before_invocation_id=rewind_before_invocation_id,
+          run_config=parsed_run_config,
+      )
+      get_session = getattr(adk_app, "async_get_session", None)
+      if get_session is None:
+        get_session = getattr(adk_app, "get_session", None)
+      if get_session is None:
+        return None
+      if inspect.iscoroutinefunction(get_session):
+        return await get_session(user_id=user_id, session_id=session_id)
+      return await run_in_threadpool(
+          get_session, user_id=user_id, session_id=session_id
+      )
+
+    adk_app.async_rewind = _async_rewind
+
     def _encode_chunk_to_json(chunk: Any) -> str | None:
       """Encodes a chunk to a JSON string with a newline."""
       try:

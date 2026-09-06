@@ -416,6 +416,38 @@ _AGENT_ENGINE_CLASS_METHODS = [
         'api_mode': 'async',
     },
     {
+        'name': 'async_rewind',
+        'description': (
+            'Rewinds a session to before the given invocation.\n\n       '
+            ' Mirrors `runner.rewind_async` so Agent Engine deployments can\n  '
+            '      implement edit-message / undo flows without'
+            ' self-hosting.\n\n        Args:\n            user_id (str):\n     '
+            '           Required. The ID of the user.\n            session_id'
+            ' (str):\n                Required. The ID of the session.\n       '
+            '     rewind_before_invocation_id (str):\n                Required.'
+            ' The invocation ID to rewind before.\n            run_config'
+            ' (Optional[Dict[str, Any]]):\n                Optional. The run'
+            ' config to use for session lookup.\n\n        Returns:\n          '
+            '  Session: The updated session after the rewind marker is'
+            ' appended.\n        '
+        ),
+        'parameters': {
+            'properties': {
+                'user_id': {'type': 'string'},
+                'session_id': {'type': 'string'},
+                'rewind_before_invocation_id': {'type': 'string'},
+                'run_config': {'type': 'object', 'nullable': True},
+            },
+            'required': [
+                'user_id',
+                'session_id',
+                'rewind_before_invocation_id',
+            ],
+            'type': 'object',
+        },
+        'api_mode': 'async',
+    },
+    {
         'name': 'stream_query',
         'description': (
             'Deprecated. Use async_stream_query instead.\n\n        Streams'
