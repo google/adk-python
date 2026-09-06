@@ -19,6 +19,7 @@ from unittest.mock import MagicMock
 
 from google.adk.events.event import Event
 from google.adk.events.event import NodeInfo
+from google.adk.events.event_actions import EventActions
 from google.adk.workflow.utils._replay_manager import ReplayManager
 import pytest
 
@@ -443,6 +444,51 @@ async def test_scan_workflow_events_sequence_empty_when_all_events_are_prior():
   assert sequence == []
   # An empty sequence must fast-forward rather than deadlock.
   await asyncio.wait_for(mgr.sequence_barrier.wait("anything"), timeout=1)
+
+
+def test_scan_workflow_events_sequence_ignores_reemitted_completion_echo():
+  """A fast-forwarded node's resurfaced output must not reorder the sequence.
+
+  A HITL loop (review -> revise -> review -> ...) genuinely completes
+  `hitl@1` then `revise@1`. On a later turn within the same invocation,
+  Workflow._maybe_reemit_replayed_output resurfaces hitl@1's output again
+  (a duplicate echo, since a completed run id cannot complete twice) so a
+  resumable stream stays complete. Before the fix, `_scan_sequence` treated
+  that echo as a new completion and moved `hitl@1` after `revise@1`, even
+  though `revise@1` can only run after `hitl@1` -- corrupting the barrier
+  into a cycle that deadlocks the next resume (issue #7027).
+  """
+  mgr = ReplayManager()
+  hitl_1 = Event(
+      author="node",
+      node_info=NodeInfo(path="wf@1/hitl@1", run_id="1"),
+      invocation_id="inv-1",
+      output="rejected_1",
+      actions=EventActions(route="rejected"),
+  )
+  revise_1 = Event(
+      author="node",
+      node_info=NodeInfo(path="wf@1/revise@1", run_id="1"),
+      invocation_id="inv-1",
+      actions=EventActions(route="review"),
+  )
+  hitl_1_echo = Event(
+      author="node",
+      node_info=NodeInfo(path="wf@1/hitl@1", run_id="1"),
+      invocation_id="inv-1",
+      output="rejected_1",
+  )
+
+  ctx = MagicMock()
+  ctx._invocation_context = MagicMock()
+  ctx._invocation_context.invocation_id = "inv-1"
+  ctx._invocation_context.session = MagicMock()
+  ctx._invocation_context.session.events = [hitl_1, revise_1, hitl_1_echo]
+  ctx.node_path = "wf@1"
+
+  _, sequence = mgr.scan_workflow_events(ctx)
+
+  assert sequence == ["hitl@1", "revise@1"]
 
 
 def _recorded_two_step_ctx():
