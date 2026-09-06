@@ -33,6 +33,31 @@ from . import models
 # Bounds on a skill archive, which may come from a remote registry and is
 # untrusted until it has been loaded. They are generous relative to any
 # realistic skill; the toolset already warns about payloads over 16 MB.
+def _validate_path_segment(value: str, field_name: str) -> None:
+  """Rejects values that could alter a storage blob path.
+
+  Args:
+    value: The caller-supplied identifier.
+    field_name: Human-readable field name used in error messages.
+
+  Raises:
+    ValueError: If the value contains path separators, traversal segments,
+      or null bytes.
+  """
+  if not value:
+    raise ValueError(f"{field_name} must not be empty.")
+  if "\x00" in value:
+    raise ValueError(f"{field_name} must not contain null bytes.")
+  if "\\" in value:
+    raise ValueError(
+        f"{field_name} {value!r} must not contain path separators."
+    )
+  if value in (".", ".."):
+    raise ValueError(
+        f"{field_name} {value!r} must not contain traversal segments."
+    )
+
+
 _MAX_ZIP_ENTRIES = 2000
 _MAX_ZIP_UNCOMPRESSED_BYTES = 32 * 1024 * 1024
 # How much of a member is decompressed per step. Reading in steps keeps the
@@ -625,6 +650,15 @@ def _load_skill_from_gcs_dir(
 
   client = storage.Client(project=project_id, credentials=credentials)
   bucket = client.bucket(bucket_name)
+
+  # skill_id identifies which of potentially many skill directories under
+  # a shared bucket gets loaded. An application may resolve it from a
+  # caller- or model-selected skill name rather than a fixed,
+  # developer-authored constant, so each segment is validated the same
+  # way app_name/eval_set_id are validated in the evaluation GCS managers
+  # before being interpolated into a blob prefix.
+  for segment in skill_id.strip("/").split("/"):
+    _validate_path_segment(segment, "skill_id")
 
   base_prefix = skills_base_path.strip("/")
   if base_prefix:
