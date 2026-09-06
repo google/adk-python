@@ -178,6 +178,17 @@ def test_eval_metric_criterion_survives_json_round_trip():
   assert criterion.judge_model_options.judge_model == "my-judge"
 
 
+def test_judge_model_options_rejects_zero_num_samples():
+  """num_samples=0 must be rejected, matching parallelism_limit's own ge=1.
+
+  A zero-sample judge configuration is never a legitimate value -- it causes
+  LlmAsJudge.evaluate_invocations to silently drop the invocation from the
+  aggregated result with no error and no NOT_EVALUATED marker.
+  """
+  with pytest.raises(ValidationError):
+    JudgeModelOptions(num_samples=0)
+
+
 def test_eval_config_dump_preserves_concrete_criterion_fields():
   """Criteria values keep their subclass fields, and plain thresholds survive."""
   eval_config = EvalConfig(
