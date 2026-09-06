@@ -41,6 +41,7 @@ from google.adk.evaluation.metric_evaluator_registry import RubricBasedFinalResp
 from google.adk.evaluation.metric_evaluator_registry import RubricBasedMultiTurnTrajectoryMetricInfoProvider
 from google.adk.evaluation.metric_evaluator_registry import RubricBasedToolUseV1EvaluatorMetricInfoProvider
 from google.adk.evaluation.metric_evaluator_registry import SafetyEvaluatorV1MetricInfoProvider
+from google.adk.evaluation.metric_evaluator_registry import ToolParameterMatchEvaluatorMetricInfoProvider
 from google.adk.evaluation.metric_evaluator_registry import TrajectoryEvaluator
 from google.adk.evaluation.metric_evaluator_registry import TrajectoryEvaluatorMetricInfoProvider
 from google.adk.evaluation.metric_info_providers import MultiTurnTaskSuccessV1MetricInfoProvider
@@ -696,6 +697,7 @@ class TestMetricInfoProviders:
         provider.get_metric_info().metric_name
         for provider in [
             TrajectoryEvaluatorMetricInfoProvider(),
+            ToolParameterMatchEvaluatorMetricInfoProvider(),
             ResponseEvaluatorMetricInfoProvider(
                 PrebuiltMetrics.RESPONSE_EVALUATION_SCORE.value
             ),
