@@ -213,6 +213,7 @@ class GcsArtifactService(BaseArtifactService):
     if self._file_has_user_namespace(filename):
       return f"{app_name}/{user_id}/user/{filename}"
 
+    session_id = artifact_util.normalize_session_id(session_id)
     if session_id is None:
       raise InputValidationError(
           "Session ID must be provided for session-scoped artifacts."
@@ -254,6 +255,7 @@ class GcsArtifactService(BaseArtifactService):
       custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
     artifact = ensure_part(artifact)
+    session_id = artifact_util.normalize_session_id(session_id)
     versions = self._list_versions(
         app_name=app_name,
         user_id=user_id,
@@ -337,6 +339,7 @@ class GcsArtifactService(BaseArtifactService):
       filename: str,
       version: Optional[int] = None,
   ) -> Optional[types.Part]:
+    session_id = artifact_util.normalize_session_id(session_id)
     if version is None:
       versions = self._list_versions(
           app_name=app_name,
@@ -417,6 +420,7 @@ class GcsArtifactService(BaseArtifactService):
   ) -> list[str]:
     artifact_util.validate_path_segment(app_name, "app_name")
     artifact_util.validate_path_segment(user_id, "user_id")
+    session_id = artifact_util.normalize_session_id(session_id)
     if session_id is not None:
       artifact_util.validate_path_segment(session_id, "session_id")
     filenames = set()
@@ -622,6 +626,7 @@ class GcsArtifactService(BaseArtifactService):
       max_depth: int = _MAX_ARTIFACT_REFERENCE_DEPTH,
   ) -> Optional[str]:
     """Generates an authenticated browser URL for an artifact."""
+    session_id = artifact_util.normalize_session_id(session_id)
     if version is None:
       versions = self._list_versions(
           app_name=app_name,
@@ -729,6 +734,7 @@ class GcsArtifactService(BaseArtifactService):
       max_depth: int = _MAX_ARTIFACT_REFERENCE_DEPTH,
   ) -> Optional[str]:
     """Generates a time-limited signed URL for an artifact."""
+    session_id = artifact_util.normalize_session_id(session_id)
     if version is None:
       versions = self._list_versions(
           app_name=app_name,

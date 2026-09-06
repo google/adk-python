@@ -91,6 +91,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     if self._file_has_user_namespace(filename):
       return f"{app_name}/{user_id}/user/{filename}"
 
+    session_id = artifact_util.normalize_session_id(session_id)
     if session_id is None:
       raise InputValidationError(
           "Session ID must be provided for session-scoped artifacts."
@@ -110,6 +111,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
     artifact = ensure_part(artifact)
+    session_id = artifact_util.normalize_session_id(session_id)
     path = self._artifact_path(app_name, user_id, filename, session_id)
     if path not in self.artifacts:
       self.artifacts[path] = []
@@ -167,6 +169,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       session_id: Optional[str] = None,
       version: Optional[int] = None,
   ) -> Optional[types.Part]:
+    session_id = artifact_util.normalize_session_id(session_id)
     path = self._artifact_path(app_name, user_id, filename, session_id)
     versions = self.artifacts.get(path)
     if not versions:
@@ -222,6 +225,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
   ) -> list[str]:
     artifact_util.validate_path_segment(app_name, "app_name")
     artifact_util.validate_path_segment(user_id, "user_id")
+    session_id = artifact_util.normalize_session_id(session_id)
     if session_id is not None:
       artifact_util.validate_path_segment(session_id, "session_id")
     usernamespace_prefix = f"{app_name}/{user_id}/user/"

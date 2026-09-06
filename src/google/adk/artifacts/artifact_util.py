@@ -43,6 +43,24 @@ _USER_SCOPED_ARTIFACT_URI_RE = re.compile(
 )
 
 
+def normalize_session_id(session_id: str | None) -> str | None:
+  """Normalizes a caller-supplied session id.
+
+  Strips surrounding whitespace the same way the session services do, so an
+  artifact saved against a padded session id lands in the same storage
+  namespace as the (normalized) session it belongs to, instead of a sibling
+  namespace no caller using the trimmed id can ever reach.
+
+  Args:
+      session_id: The caller-supplied session id, or None for a user-scoped
+        artifact.
+
+  Returns:
+      The stripped session id, or None if `session_id` was None.
+  """
+  return session_id.strip() if session_id is not None else None
+
+
 def parse_artifact_uri(uri: str) -> ParsedArtifactUri | None:
   """Parses an artifact URI.
 
@@ -60,7 +78,7 @@ def parse_artifact_uri(uri: str) -> ParsedArtifactUri | None:
     return ParsedArtifactUri(
         app_name=match.group(1),
         user_id=match.group(2),
-        session_id=match.group(3),
+        session_id=normalize_session_id(match.group(3)),
         filename=match.group(4),
         version=int(match.group(5)),
     )
@@ -97,6 +115,7 @@ def get_artifact_uri(
   Returns:
       The constructed artifact URI.
   """
+  session_id = normalize_session_id(session_id)
   if session_id:
     return f"artifact://apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{filename}/versions/{version}"
   else:

@@ -287,6 +287,125 @@ async def test_save_load_delete(service_type, artifact_service_factory):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+async def test_padded_session_id_lands_in_same_namespace_as_trimmed(
+    service_type, artifact_service_factory
+):
+  """An artifact saved against a whitespace-padded session id must be
+  reachable, listable, and deletable using the trimmed id, since that is the
+  id the corresponding session is actually stored under (session services
+  normalize session_id the same way)."""
+  artifact_service = artifact_service_factory(service_type)
+  artifact = types.Part(text="hello")
+
+  await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="sess0\n",
+      filename="report.txt",
+      artifact=artifact,
+  )
+
+  # Reachable under the trimmed id, the one the session itself is keyed on.
+  assert (
+      await artifact_service.load_artifact(
+          app_name="app0",
+          user_id="user0",
+          session_id="sess0",
+          filename="report.txt",
+      )
+      == artifact
+  )
+  assert "report.txt" in await artifact_service.list_artifact_keys(
+      app_name="app0", user_id="user0", session_id="sess0"
+  )
+
+  # Also reachable under the original padded id: both forms must resolve to
+  # the same stored artifact rather than the padded id silently shadowing it
+  # in a namespace only the padded id itself could ever reach again.
+  assert (
+      await artifact_service.load_artifact(
+          app_name="app0",
+          user_id="user0",
+          session_id="sess0\n",
+          filename="report.txt",
+      )
+      == artifact
+  )
+
+  await artifact_service.delete_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="sess0",
+      filename="report.txt",
+  )
+  assert not await artifact_service.load_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="sess0\n",
+      filename="report.txt",
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+    ],
+)
+async def test_artifact_reference_allows_padded_session_id_at_call_site(
+    service_type, artifact_service_factory
+):
+  """A caller that consistently uses a padded session id must still be able
+  to save and resolve an artifact reference within that session: the scope
+  check must compare normalized ids on both sides, not the caller's raw
+  string against a URI minted from the (already normalized) stored id."""
+  artifact_service = artifact_service_factory(service_type)
+
+  await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="sess0\n",
+      filename="source.txt",
+      artifact=types.Part(text="hello"),
+  )
+
+  ref = types.Part(
+      file_data=types.FileData(
+          file_uri=(
+              "artifact://apps/app0/users/user0/sessions/sess0/"
+              "artifacts/source.txt/versions/0"
+          ),
+          mime_type="text/plain",
+      )
+  )
+  await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="sess0\n",
+      filename="ref.txt",
+      artifact=ref,
+  )
+
+  loaded = await artifact_service.load_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="sess0\n",
+      filename="ref.txt",
+  )
+  assert loaded == types.Part(text="hello")
+
+
+@pytest.mark.asyncio
 async def test_in_memory_loads_nested_artifact_reference(
     artifact_service_factory,
 ):
