@@ -290,14 +290,11 @@ class AuthHandler:
           credential_key=self.auth_config.credential_key,
       )
 
-    # Check for client_id and client_secret
-    if (
-        not self.auth_config.raw_auth_credential.oauth2.client_id
-        or not self.auth_config.raw_auth_credential.oauth2.client_secret
-    ):
+    # Public clients (Azure AD B2C, PKCE) have a client_id and no secret.
+    if not self.auth_config.raw_auth_credential.oauth2.client_id:
       raise ValueError(
-          f"Auth Scheme {self.auth_config.auth_scheme.type_} requires both"
-          " client_id and client_secret in auth_credential.oauth2."
+          f"Auth Scheme {self.auth_config.auth_scheme.type_} requires"
+          " client_id in auth_credential.oauth2."
       )
 
     # Generate new auth URI

@@ -119,6 +119,28 @@ def openid_connect_credential():
 
 
 @pytest.mark.asyncio
+async def test_openid_connect_public_client_without_secret(
+    openid_connect_scheme,
+):
+  public_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
+      oauth2=OAuth2Auth(
+          client_id='public-client',
+          redirect_uri='https://app/cb',
+      ),
+  )
+  tool_context = create_mock_tool_context()
+  handler = ToolAuthHandler(
+      tool_context,
+      openid_connect_scheme,
+      public_credential,
+  )
+  result = await handler.prepare_auth_credentials()
+  assert result.state == 'pending'
+  assert result.auth_credential == public_credential
+
+
+@pytest.mark.asyncio
 async def test_openid_connect_no_auth_response(
     openid_connect_scheme, openid_connect_credential
 ):

@@ -514,7 +514,7 @@ class TestGenerateAuthRequest:
     )
 
   def test_missing_client_credentials(self, oauth2_auth_scheme):
-    """Test when client_id or client_secret is missing."""
+    """Test when client_id is missing."""
     bad_credential = AuthCredential(
         auth_type=AuthCredentialTypes.OAUTH2,
         oauth2=OAuth2Auth(redirect_uri="https://example.com/callback"),
@@ -530,10 +530,36 @@ class TestGenerateAuthRequest:
     )
     handler = AuthHandler(config)
 
-    with pytest.raises(
-        ValueError, match="requires both client_id and client_secret"
-    ):
+    with pytest.raises(ValueError, match="requires client_id"):
       handler.generate_auth_request()
+
+  @patch("google.adk.auth.auth_handler.AuthHandler.generate_auth_uri")
+  def test_public_client_without_client_secret(
+      self, mock_generate_auth_uri, oauth2_auth_scheme
+  ):
+    """Public clients can start the auth request with client_id only."""
+    public_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="public-client",
+            redirect_uri="https://example.com/callback",
+        ),
+    )
+    mock_generate_auth_uri.return_value = public_credential.model_copy(
+        deep=True
+    )
+    config = AuthConfig(
+        auth_scheme=oauth2_auth_scheme,
+        raw_auth_credential=public_credential,
+        exchanged_auth_credential=public_credential.model_copy(deep=True),
+    )
+    handler = AuthHandler(config)
+
+    result = handler.generate_auth_request()
+
+    mock_generate_auth_uri.assert_called_once()
+    assert result.raw_auth_credential.oauth2.client_id == "public-client"
+    assert result.raw_auth_credential.oauth2.client_secret is None
 
   @patch("google.adk.auth.auth_handler.AuthHandler.generate_auth_uri")
   def test_generate_new_auth_uri(self, mock_generate_auth_uri, auth_config):
