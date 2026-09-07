@@ -840,5 +840,6 @@ def test_inherited_method_is_not_pinned_on_subclass(fixture):
     asyncio.run(plugin.before_run_callback(invocation_context=None))
     assert "shared" not in module.AChild.__dict__
     assert module.AChild().shared(3) == 6
+    assert any("shared" in n for n in _span_names(fixture.exporter))
   finally:
     sys.modules.pop(_DESCRIPTOR_MODULE_NAME, None)
