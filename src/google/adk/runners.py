@@ -20,6 +20,7 @@ import inspect
 import logging
 from pathlib import Path
 import queue
+import threading
 from types import TracebackType
 from typing import Any
 from typing import AsyncGenerator
@@ -31,6 +32,7 @@ from typing import Literal
 from typing import Optional
 from typing import TYPE_CHECKING
 import warnings
+import weakref
 
 from google.genai import types
 from opentelemetry import context
@@ -76,6 +78,37 @@ if TYPE_CHECKING:
 logger = logging.getLogger('google_adk.' + __name__)
 
 _EventQueueItem = tuple[object, asyncio.Event | None]
+
+# Toolsets are often shared across Runners (parallel AgentTool, two Runners
+# on the same agent). Holders are weak, so a Runner dropped without close()
+# does not pin the toolset open for the process lifetime.
+_toolset_holders: weakref.WeakKeyDictionary[
+    BaseToolset, weakref.WeakSet[Runner]
+] = weakref.WeakKeyDictionary()
+_toolset_holders_lock = threading.Lock()
+
+
+def _register_toolset_runner(toolset: BaseToolset, runner: Runner) -> None:
+  with _toolset_holders_lock:
+    holders = _toolset_holders.get(toolset)
+    if holders is None:
+      holders = weakref.WeakSet()
+      _toolset_holders[toolset] = holders
+    holders.add(runner)
+
+
+def _unregister_toolset_runner(toolset: BaseToolset, runner: Runner) -> bool:
+  """Returns True if no live runner still holds the toolset."""
+  with _toolset_holders_lock:
+    holders = _toolset_holders.get(toolset)
+    if holders is None:
+      return True
+    holders.discard(runner)
+    if holders:
+      return False
+    _toolset_holders.pop(toolset, None)
+    return True
+
 
 # Silence unused warning.
 # tracer is imported for backwards compatibility, to avoid breaking change in the API.
@@ -292,6 +325,12 @@ class Runner:
     self._app_name_alignment_hint: Optional[str] = None
     self._enforce_app_name_alignment()
     self._warn_uncached_agent_transfer()
+    self._held_toolsets: set[BaseToolset] = set()
+    self._toolsets_released = False
+    if isinstance(self.agent, BaseAgent):
+      self._held_toolsets = self._collect_toolset(self.agent)
+      for toolset in self._held_toolsets:
+        _register_toolset_runner(toolset, self)
 
   def _require_root_agent(self) -> BaseAgent:
     """Returns the root as an agent for agent-only execution paths."""
@@ -2140,9 +2179,17 @@ class Runner:
   async def close(self) -> None:
     """Closes the runner."""
     logger.info('Closing runner...')
-    # Close Toolsets
-    if isinstance(self.agent, BaseAgent):
-      await self._cleanup_toolsets(self._collect_toolset(self.agent))
+    # Close Toolsets only when this runner was the last live holder.
+    if isinstance(self.agent, BaseAgent) and not self._toolsets_released:
+      self._toolsets_released = True
+      collected = self._collect_toolset(self.agent)
+      to_close = {
+          toolset
+          for toolset in collected | self._held_toolsets
+          if _unregister_toolset_runner(toolset, self)
+      }
+      self._held_toolsets = set()
+      await self._cleanup_toolsets(to_close)
 
     # Close Plugins
     if self.plugin_manager:

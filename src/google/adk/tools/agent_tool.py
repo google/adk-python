@@ -317,27 +317,30 @@ class AgentTool(BaseTool):
     last_content = None
     last_error_message = None
     last_grounding_metadata = None
-    async with Aclosing(
-        runner.run_async(
-            user_id=session.user_id,
-            session_id=session.id,
-            new_message=content,
-            run_config=nested_run_config,
-        )
-    ) as agen:
-      async for event in agen:
-        # Forward state delta to parent session.
-        if event.actions.state_delta:
-          tool_context.state.update(event.actions.state_delta)
-        if event.error_message:
-          last_error_message = event.error_message
-        if event.content:
-          last_content = event.content
-          last_grounding_metadata = event.grounding_metadata
-
-    # Clean up runner resources (especially MCP sessions)
-    # to avoid "Attempted to exit cancel scope in a different task" errors
-    await runner.close()
+    try:
+      async with Aclosing(
+          runner.run_async(
+              user_id=session.user_id,
+              session_id=session.id,
+              new_message=content,
+              run_config=nested_run_config,
+          )
+      ) as agen:
+        async for event in agen:
+          # Forward state delta to parent session.
+          if event.actions.state_delta:
+            tool_context.state.update(event.actions.state_delta)
+          if event.error_message:
+            last_error_message = event.error_message
+          if event.content:
+            last_content = event.content
+            last_grounding_metadata = event.grounding_metadata
+    finally:
+      # Same-task close so MCP cancel scopes unwind on this task even
+      # when the nested run raises. Runner.close only closes a toolset
+      # once no other live Runner holds it, so this is safe when the
+      # toolset is shared with the parent.
+      await runner.close()
 
     if last_content is None or last_content.parts is None:
       return last_error_message or ''
