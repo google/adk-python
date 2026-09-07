@@ -40,6 +40,16 @@ class AgentDirFixture(Protocol):
     ...
 
 
+def test_dockerfile_template_consumes_agent_gateway_root_certificates() -> None:
+  """The shared deploy template must declare and consume the Cloud Build ARG."""
+  content = cli_deploy._DOCKERFILE_TEMPLATE
+  assert "ARG AGENT_GATEWAY_ROOT_CERTIFICATES" in content
+  assert "update-ca-certificates" in content
+  assert content.index("ARG AGENT_GATEWAY_ROOT_CERTIFICATES") < content.index(
+      "USER myuser"
+  )
+
+
 # Helpers
 class _Recorder:
   """A callable object that records every invocation."""
