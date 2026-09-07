@@ -30,6 +30,7 @@ from google.genai import types
 from litellm import ChatCompletionAssistantMessage
 from litellm.types.utils import Choices
 from litellm.types.utils import ModelResponse
+from pydantic import ValidationError
 import pytest
 
 
@@ -227,12 +228,14 @@ async def test_tool_result_role_override_forces_tool_responses_on_openai():
 def test_litellm_stores_tool_result_role_and_does_not_forward_it():
   lite_llm = LiteLlm(model="google/gemma-4-e4b", tool_result_role="tool")
 
-  assert lite_llm._tool_result_role == "tool"
+  assert lite_llm.tool_result_role == "tool"
   assert "tool_result_role" not in lite_llm._additional_args
+  restored = LiteLlm(**lite_llm.model_dump())
+  assert restored.tool_result_role == "tool"
 
 
 def test_litellm_rejects_invalid_tool_result_role():
-  with pytest.raises(ValueError, match="tool_result_role"):
+  with pytest.raises(ValidationError, match="tool_result_role"):
     LiteLlm(model="google/gemma-4-e4b", tool_result_role="assistant")
 
 

@@ -1290,6 +1290,8 @@ async def _content_to_message_param(
     content: The content to convert.
     provider: The LLM provider name (e.g., "openai", "azure").
     model: The LiteLLM model string, used for provider-specific behavior.
+    tool_result_role: Override for tool-result message role. None keeps
+      Gemma-4 auto-detect.
 
   Returns:
     A litellm Message, a list of litellm Messages, or None if skipped.
@@ -3122,6 +3124,8 @@ class LiteLlm(BaseLlm):
   Attributes:
     model: The name of the LiteLlm model.
     llm_client: The LLM client to use for the model.
+    tool_result_role: Override for tool-result message role. None keeps
+      Gemma-4 auto-detect.
   """
 
   # LiteLLMClient has no JSON serializer, so it is excluded from dumps to keep
@@ -3129,10 +3133,10 @@ class LiteLlm(BaseLlm):
   llm_client: LiteLLMClient = Field(default_factory=LiteLLMClient, exclude=True)
   """The LLM client to use for the model."""
 
+  tool_result_role: Optional[Literal["tool", "tool_responses"]] = None
+  """Override for tool-result message role. None keeps Gemma-4 auto-detect."""
+
   _additional_args: Dict[str, Any] = PrivateAttr(default_factory=dict)
-  _tool_result_role: Literal["tool", "tool_responses"] | None = PrivateAttr(
-      default=None
-  )
 
   def __init__(self, model: str, **kwargs: Any) -> None:
     """Initializes the LiteLlm class.
@@ -3140,27 +3144,16 @@ class LiteLlm(BaseLlm):
     Args:
       model: The name of the LiteLlm model.
       **kwargs: Additional arguments to pass to the litellm completion api.
-        tool_result_role is consumed here (tool or tool_responses) and is
-        not forwarded to LiteLLM.
     """
     drop_params = kwargs.pop("drop_params", None)
-    tool_result_role = kwargs.pop("tool_result_role", None)
-    if tool_result_role is not None and tool_result_role not in (
-        "tool",
-        "tool_responses",
-    ):
-      raise ValueError(
-          "tool_result_role must be 'tool' or 'tool_responses', got"
-          f" {tool_result_role!r}"
-      )
     super().__init__(model=model, **kwargs)
     # Warn if using Gemini via LiteLLM
     _warn_gemini_via_litellm(model)
-    self._tool_result_role = tool_result_role
     self._additional_args = dict(kwargs)
     # preventing generation call with llm_client
     # and overriding messages, tools and stream which are managed internally
     self._additional_args.pop("llm_client", None)
+    self._additional_args.pop("tool_result_role", None)
     self._additional_args.pop("messages", None)
     self._additional_args.pop("tools", None)
     # public api called from runner determines to stream or not
@@ -3200,7 +3193,7 @@ class LiteLlm(BaseLlm):
         await _get_completion_inputs(
             llm_request,
             effective_model,
-            tool_result_role=self._tool_result_role,
+            tool_result_role=self.tool_result_role,
         )
     )
     normalized_messages = _normalize_ollama_chat_messages(
