@@ -37,6 +37,7 @@ from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
 from google.api_core import exceptions as api_core_exceptions
 from google.genai import types as genai_types
 from google.genai.errors import ClientError
+import httpx
 import pydantic
 import pytest
 
@@ -890,6 +891,26 @@ async def test_get_session_from_raw_event(
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+async def test_get_session_falls_back_to_resource_id_without_raw_event_id(
+    mock_api_client_instance: MockAsyncClient,
+) -> None:
+  mock_api_client_instance.session_dict['6'] = MOCK_SESSION_WITH_OVERRIDE_JSON
+  mock_api_client_instance.event_dict['6'] = (
+      copy.deepcopy(MOCK_EVENT_WITH_OVERRIDE_JSON),
+      None,
+  )
+  session_service = mock_vertex_ai_session_service()
+
+  session = await session_service.get_session(
+      app_name='123', user_id='user_with_override', session_id='6'
+  )
+
+  assert session is not None
+  assert session.events[0].id == '1'
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_get_session_with_many_events(mock_api_client_instance):
   mock_api_client_instance.session_dict['5'] = MOCK_SESSION_JSON_5
   mock_api_client_instance.event_dict['5'] = (
@@ -1247,6 +1268,30 @@ async def test_append_event_with_part_metadata_round_trips(
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_round_trips_event_id() -> None:
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  event_to_append = Event(
+      invocation_id='inv_event_id_rt',
+      author='user',
+      timestamp=1734005535.0,
+  )
+
+  await session_service.append_event(session, event_to_append)
+  retrieved = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+
+  appended = next(
+      e for e in retrieved.events if e.invocation_id == 'inv_event_id_rt'
+  )
+  assert appended.id == event_to_append.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_append_event_with_compaction():
   """Compaction data round-trips through append_event and get_session."""
   session_service = mock_vertex_ai_session_service()
@@ -1557,3 +1602,143 @@ async def test_get_session_strips_full_resource_name(
   mock_api_client_instance.agent_engines.sessions.get.assert_called_once_with(
       name='reasoningEngines/123/sessions/session-123'
   )
+
+
+def test_api_client_http_options_override_default():
+  """Tests that _api_client_http_options_override defaults to None."""
+  session_service = mock_vertex_ai_session_service()
+  assert session_service._api_client_http_options_override() is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_retries_once_on_429(mock_api_client_instance):
+  """Tests that append_event retries once on 429 and succeeds."""
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  event_to_append = Event(
+      invocation_id='inv_429',
+      author='model',
+      timestamp=1734005533.0,
+      content=genai_types.Content(parts=[genai_types.Part(text='retry test')]),
+  )
+  real_append = mock_api_client_instance._append_event
+  calls = 0
+
+  async def side_effect(*args, **kwargs):
+    nonlocal calls
+    calls += 1
+    if calls == 1:
+      raise ClientError(
+          429, {'error': {'code': 429, 'message': 'Resource exhausted'}}
+      )
+    return await real_append(*args, **kwargs)
+
+  mock_api_client_instance.agent_engines.sessions.events.append.side_effect = (
+      side_effect
+  )
+
+  with mock.patch('asyncio.sleep', new_callable=mock.AsyncMock) as mock_sleep:
+    result = await session_service.append_event(
+        session=session, event=event_to_append
+    )
+    assert result == event_to_append
+    assert calls == 2
+    mock_sleep.assert_awaited_once_with(1.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_raises_after_retry_on_persistent_429(
+    mock_api_client_instance,
+):
+  """Tests that append_event raises ClientError after retrying once on persistent 429."""
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  event_to_append = Event(
+      invocation_id='inv_429',
+      author='model',
+      timestamp=1734005533.0,
+  )
+  calls = 0
+
+  async def side_effect(*args, **kwargs):
+    nonlocal calls
+    calls += 1
+    raise ClientError(
+        429, {'error': {'code': 429, 'message': 'Resource exhausted'}}
+    )
+
+  mock_api_client_instance.agent_engines.sessions.events.append.side_effect = (
+      side_effect
+  )
+
+  with mock.patch('asyncio.sleep', new_callable=mock.AsyncMock) as mock_sleep:
+    with pytest.raises(ClientError) as exc_info:
+      await session_service.append_event(session=session, event=event_to_append)
+    assert exc_info.value.code == 429
+    assert calls == 2
+    mock_sleep.assert_awaited_once_with(1.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_does_not_retry_on_read_timeout(
+    mock_api_client_instance,
+):
+  """Tests that append_event does not retry read timeouts to avoid duplicate events."""
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  event_to_append = Event(
+      invocation_id='inv_timeout',
+      author='model',
+      timestamp=1734005533.0,
+  )
+  mock_api_client_instance.agent_engines.sessions.events.append.side_effect = (
+      httpx.ReadTimeout('Read timed out')
+  )
+
+  with mock.patch('asyncio.sleep', new_callable=mock.AsyncMock) as mock_sleep:
+    with pytest.raises(httpx.ReadTimeout):
+      await session_service.append_event(session=session, event=event_to_append)
+    assert (
+        mock_api_client_instance.agent_engines.sessions.events.append.call_count
+        == 1
+    )
+    mock_sleep.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_does_not_retry_on_non_429_client_error(
+    mock_api_client_instance,
+):
+  """Tests that append_event does not retry non-429 client errors."""
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  event_to_append = Event(
+      invocation_id='inv_400',
+      author='model',
+      timestamp=1734005533.0,
+  )
+  mock_api_client_instance.agent_engines.sessions.events.append.side_effect = (
+      ClientError(400, {'error': {'code': 400, 'message': 'Bad request'}})
+  )
+
+  with mock.patch('asyncio.sleep', new_callable=mock.AsyncMock) as mock_sleep:
+    with pytest.raises(ClientError) as exc_info:
+      await session_service.append_event(session=session, event=event_to_append)
+    assert exc_info.value.code == 400
+    assert (
+        mock_api_client_instance.agent_engines.sessions.events.append.call_count
+        == 1
+    )
+    mock_sleep.assert_not_called()

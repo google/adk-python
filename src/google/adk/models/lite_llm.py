@@ -2311,11 +2311,13 @@ def _model_response_to_chunk(
         "Unexpected response type from LiteLLM: %r" % (type(response),)
     )
 
-  choices = response.get("choices")
-  if not choices:
+  # Extra candidates arrive as extra choices, either in the same chunk or in
+  # chunks carrying only a non-zero index; only the first candidate is used.
+  choices = response.get("choices") or []
+  choice = next((c for c in choices if not c.get("index")), None)
+  if choice is None:
     yield None, None
   else:
-    choice = choices[0]
     finish_reason = choice.get("finish_reason")
     if message_field == "delta":
       message = choice.get("delta")
@@ -2439,6 +2441,11 @@ def _model_response_to_generate_content_response(
   message = None
   finish_reason = None
   if (choices := response.get("choices")) and choices:
+    if len(choices) > 1:
+      logger.error(
+          "Multiple choices found in response but only the first one will be"
+          " used."
+      )
     first_choice = choices[0]
     message = first_choice.get("message", None)
     finish_reason = first_choice.get("finish_reason", None)
@@ -2528,9 +2535,24 @@ def _message_to_generate_content_response(
     for tool_call in tool_calls:
       if tool_call.type == "function":
         thought_signature = _extract_thought_signature_from_tool_call(tool_call)
+        try:
+          args = _parse_tool_call_arguments(tool_call.function.arguments)
+        except json.JSONDecodeError:
+          logger.warning(
+              "Malformed JSON in tool call arguments for function '%s';"
+              " dispatching with empty arguments so the tool can return a"
+              " structured error and the model can retry.",
+              tool_call.function.name,
+          )
+          logger.debug(
+              "Malformed tool call arguments for function '%s': %s",
+              tool_call.function.name,
+              tool_call.function.arguments,
+          )
+          args = {}
         part = types.Part.from_function_call(
             name=tool_call.function.name,
-            args=_parse_tool_call_arguments(tool_call.function.arguments),
+            args=args,
         )
         function_call = part.function_call
         if function_call is None:
@@ -3228,6 +3250,7 @@ class LiteLlm(BaseLlm):
       grounding_metadata = None
       last_finish_reason: str | None = None
       fallback_index = 0
+      multiple_choices_logged = False
 
       def _finalize_tool_call_response(
           *, model_version: str, finish_reason: str
@@ -3323,6 +3346,16 @@ class LiteLlm(BaseLlm):
         last_finish_reason = None
 
       async for part in await self.llm_client.acompletion(**completion_args):
+        part_choices = part.get("choices") or []
+        if not multiple_choices_logged and (
+            len(part_choices) > 1
+            or any(choice.get("index") for choice in part_choices)
+        ):
+          multiple_choices_logged = True
+          logger.error(
+              "Multiple choices found in streaming response but only the first"
+              " one will be used."
+          )
         # Grounding metadata can arrive on the first chunk (search queries) or
         # the final chunk (supports); keep the latest non-empty one.
         part_grounding = _extract_grounding_metadata(part)

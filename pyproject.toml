@@ -106,7 +106,7 @@ optional-dependencies.all = [
   "llama-index-embeddings-google-genai>=0.3",
   "llama-index-readers-file>=0.4",
   "lxml>=5.3",
-  "mcp>=1.24,<2",
+  "mcp>=1.24,<3",
   "nltk!=3.10.1",
   "oci>=2.126",
   "openai>=2.20,<3",
@@ -254,7 +254,7 @@ optional-dependencies.mcp = [
   # 3.14.3 fixed it.
   "aiohttp!=3.14.2",
   "anyio>=4.9,<5",
-  "mcp>=1.24,<2",
+  "mcp>=1.24,<3",
 ]
 optional-dependencies.oci = [
   "oci>=2.126", # OCI Generative AI native SDK (OCIGenAILlm)
@@ -313,7 +313,7 @@ optional-dependencies.test = [
   "litellm>=1.84",
   "llama-index-readers-file>=0.4",
   "lxml>=5.3",
-  "mcp>=1.24,<2",
+  "mcp>=1.24,<3",
   "nltk!=3.10.1",                                                    # Transitive via rouge-score and llama-index-core; 3.10.1's import hook breaks any venv living inside the working directory (reverted upstream in nltk/nltk#3732).
   "openai>=2.20,<3",
   "openpyxl>=3.1.5,<4",

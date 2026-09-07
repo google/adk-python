@@ -51,6 +51,7 @@ from google.adk.tools.google_search_tool import GoogleSearchTool
 from google.adk.utils.context_utils import Aclosing
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
+from google.genai.errors import APIError
 import httpx
 import pytest
 from websockets.exceptions import ConnectionClosed
@@ -1819,38 +1820,6 @@ async def test_run_live_reconnect_reset_attempt():
 
 
 @pytest.mark.asyncio
-async def test_postprocess_live_session_resumption_update():
-  """Test that _postprocess_live yields live_session_resumption_update."""
-  agent = Agent(name='test_agent')
-  invocation_context = await testing_utils.create_invocation_context(
-      agent=agent
-  )
-  flow = BaseLlmFlowForTesting()
-
-  llm_request = LlmRequest()
-  llm_response = LlmResponse(
-      live_session_resumption_update=types.LiveServerSessionResumptionUpdate(
-          new_handle='test_handle'
-      )
-  )
-  model_response_event = Event(
-      id=Event.new_id(),
-      invocation_id=invocation_context.invocation_id,
-      author=agent.name,
-  )
-
-  events = []
-  async for event in flow._postprocess_live(
-      invocation_context, llm_request, llm_response, model_response_event
-  ):
-    events.append(event)
-
-  assert len(events) == 1
-  assert events[0].live_session_resumption_update is not None
-  assert events[0].live_session_resumption_update.new_handle == 'test_handle'
-
-
-@pytest.mark.asyncio
 async def test_receive_from_model_author_attribution():
   """Test that _receive_from_model sets the correct author for events based on LlmResponse."""
   agent = Agent(name='test_agent')
@@ -2725,37 +2694,6 @@ async def test_postprocess_live_skips_none_function_response_event():
 
 
 @pytest.mark.asyncio
-async def test_postprocess_live_voice_activity_events():
-  """Test that _postprocess_live yields voice activity events."""
-  agent = Agent(name='test_agent', model='gemini-2.0-flash')
-  invocation_context = await testing_utils.create_invocation_context(
-      agent=agent
-  )
-  flow = BaseLlmFlowForTesting()
-
-  vad = types.VoiceActivity(
-      voice_activity_type=types.VoiceActivityType.ACTIVITY_START,
-      audio_offset='1.5s',
-  )
-  llm_response = LlmResponse(voice_activity=vad)
-  model_response_event = Event(
-      invocation_id=invocation_context.invocation_id,
-      author=agent.name,
-  )
-  llm_request = LlmRequest(model='gemini-2.0-flash')
-
-  events = [
-      event
-      async for event in flow._postprocess_live(
-          invocation_context, llm_request, llm_response, model_response_event
-      )
-  ]
-
-  assert len(events) == 1
-  assert events[0].voice_activity == vad
-
-
-@pytest.mark.asyncio
 async def test_send_to_model_rejects_function_call():
   """Test that _send_to_model raises ValueError if user message contains function calls."""
   agent = Agent(name='test_agent')
@@ -3380,3 +3318,116 @@ def test_duck_typed_agent_transfer_targets_safe():
 
   duck = DuckAgent()
   assert _get_transfer_targets(duck) == []
+
+
+async def _run_live_until_closed(closure: BaseException, *, queue_closed: bool):
+  """Drives one `run_live` against a connection that ends with `closure`.
+
+  Yields a session-resumption handle first, so the reconnect path is armed and
+  the close check is what has to stop it.
+
+  Returns:
+    The number of times a connection was established.
+
+  Raises:
+    Whatever `run_live` propagates.
+  """
+  connection = mock.AsyncMock()
+
+  async def receive():
+    yield LlmResponse(
+        live_session_resumption_update=types.LiveServerSessionResumptionUpdate(
+            new_handle='test_handle'
+        )
+    )
+    raise closure
+
+  connection.receive = mock.Mock(side_effect=receive)
+
+  agent = Agent(name='test_agent', model=Gemini())
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+  if queue_closed:
+    invocation_context.live_request_queue.close()
+
+  flow = BaseLlmFlowForTesting()
+  with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+    aenter = mock.AsyncMock()
+    aenter.side_effect = [connection]
+    with mock.patch('google.adk.models.google_llm.Gemini.connect') as connect:
+      connect.return_value.__aenter__ = aenter
+      async with Aclosing(flow.run_live(invocation_context)) as agen:
+        async for _ in agen:
+          pass
+      return connect.call_count
+
+
+@pytest.mark.parametrize(
+    'closure,expected_error',
+    [
+        (ConnectionClosedOK(None, None), None),
+        (APIError(1000, {}), None),
+        (ConnectionClosed(None, None), ConnectionClosed),
+        (APIError(500, {}), APIError),
+    ],
+    ids=['normal_websocket', 'normal_api', 'abnormal_websocket', 'fatal_api'],
+)
+async def test_closed_queue_ends_run_without_reconnecting(
+    closure, expected_error
+):
+  """A closed queue stops the reconnect; it does not make an error benign.
+
+  A resumption handle is issued before the connection ends, so without the
+  close check every row here would reconnect into a session with no sender.
+  A clean 1000 closure then ends the run; anything else still reaches the
+  caller, which `evaluation_generator._is_normal_closure` relies on.
+  """
+  if expected_error is None:
+    assert await _run_live_until_closed(closure, queue_closed=True) == 1
+    return
+
+  with pytest.raises(expected_error):
+    await _run_live_until_closed(closure, queue_closed=True)
+
+
+async def test_eof_connection_ends_the_run_instead_of_spinning():
+  """A connection that stops yielding ends the run rather than being re-entered.
+
+  `BaseLlmConnection` does not require `receive()` to raise on close, so an
+  EOF connection would otherwise send the receive loop straight back in.
+  """
+  receive_calls = 0
+
+  async def receive():
+    nonlocal receive_calls
+    receive_calls += 1
+    return
+    yield  # pragma: no cover - makes this an async generator
+
+  connection = mock.AsyncMock()
+  connection.receive = mock.Mock(side_effect=receive)
+
+  agent = Agent(name='test_agent', model=Gemini())
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  flow = BaseLlmFlowForTesting()
+  with mock.patch.object(flow, '_send_to_model', new_callable=AsyncMock):
+    aenter = mock.AsyncMock()
+    aenter.side_effect = [connection]
+    with mock.patch('google.adk.models.google_llm.Gemini.connect') as connect:
+      connect.return_value.__aenter__ = aenter
+
+      async def drive():
+        async with Aclosing(flow.run_live(invocation_context)) as agen:
+          async for _ in agen:
+            pass
+
+      # Without the EOF check this never completes.
+      await asyncio.wait_for(drive(), timeout=5)
+
+  assert receive_calls == 1

@@ -26,6 +26,7 @@ from google.adk.flows.llm_flows._resume_utils import _is_sub_branch_answer
 from google.adk.flows.llm_flows._resume_utils import _needs_call_replay
 from google.adk.flows.llm_flows._resume_utils import _pause_left_calls_unanswered
 from google.adk.flows.llm_flows._resume_utils import decide_resume
+from google.adk.flows.llm_flows._resume_utils import decide_step_resume
 from google.adk.flows.llm_flows._resume_utils import ResumeAction
 from google.adk.flows.llm_flows._resume_utils import ResumeDecision
 from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
@@ -321,3 +322,60 @@ class TestResumeDecision:
     decision = ResumeDecision(ResumeAction.REPLAY_CALLS)
     with pytest.raises(ValueError, match='carries no event to replay'):
       decision.replay_event()
+
+
+class TestDecideStepResume:
+  """The entry point: gathers the branch, then defers to `decide_resume`."""
+
+  def _ctx(self, events, *, resumable=True, pausing=None):
+    pausing = pausing or set()
+    ctx = mock.Mock()
+    ctx.is_resumable = resumable
+    ctx._get_events.return_value = events
+    ctx.should_pause_invocation.side_effect = lambda ev: ev.id in pausing
+    return ctx
+
+  def test_a_non_resumable_invocation_never_walks_the_session(self):
+    ctx = self._ctx([_call_event('ask', 'c1')], resumable=False)
+    decision = decide_step_resume(ctx, {'ask': object()})
+    assert decision.action is ResumeAction.CONTINUE
+    ctx._get_events.assert_not_called()
+
+  def test_no_events_continues(self):
+    decision = decide_step_resume(self._ctx([]), {'ask': object()})
+    assert decision.action is ResumeAction.CONTINUE
+
+  def test_a_lone_call_event_is_replayed(self):
+    call = _call_event('ask', 'c1')
+    decision = decide_step_resume(self._ctx([call]), {'ask': object()})
+    assert decision.action is ResumeAction.REPLAY_CALLS
+    assert decision.replay_event() is call
+
+  def test_a_lone_text_event_continues(self):
+    decision = decide_step_resume(
+        self._ctx([_text_event('hi')]), {'ask': object()}
+    )
+    assert decision.action is ResumeAction.CONTINUE
+
+  def test_a_partial_trailing_call_is_not_replayed(self):
+    call = _call_event('ask', 'c1')
+    call.partial = True
+    decision = decide_step_resume(self._ctx([call]), {'ask': object()})
+    assert decision.action is ResumeAction.CONTINUE
+
+  def test_a_multi_event_pause_is_passed_through(self):
+    call = _call_event('ask', 'c1', lro=True)
+    decision = decide_step_resume(
+        self._ctx([call, _text_event('tail')]), {'ask': object()}
+    )
+    assert decision.action is ResumeAction.PAUSE
+
+  def test_a_cleared_branch_still_replays_its_trailing_call(self):
+    # `decide_resume` returns CONTINUE for the answered pair, but the branch
+    # ends on a call nothing has answered, so it still owes a replay.
+    answered = _call_event('ask', 'c1')
+    tail = _call_event('ask', 'c2')
+    events = [answered, _response_event('ask', 'c1'), tail]
+    decision = decide_step_resume(self._ctx(events), {'ask': object()})
+    assert decision.action is ResumeAction.REPLAY_CALLS
+    assert decision.replay_event() is tail

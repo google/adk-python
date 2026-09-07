@@ -38,6 +38,8 @@ from google.adk.a2a.agent.interceptors.new_integration_extension import _NEW_A2A
 from google.adk.a2a.converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
 from google.adk.a2a.executor.config import A2aAgentExecutorConfig
 from google.adk.a2a.executor.interceptors.include_artifacts_in_a2a_event import include_artifacts_in_a2a_event_interceptor
+from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_SUCCESS_RESULT
+from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.remote_a2a_agent import A2A_METADATA_PREFIX
 from google.adk.events.event import Event
@@ -687,6 +689,88 @@ async def test_task_mode_follow_up_reaches_remote_agent(follow_up):
   # A remote agent left with nothing to send emits an event carrying no parts,
   # so the second reply going missing is the symptom the user sees.
   assert replies == ["reply 1", "reply 2"]
+
+
+@pytest.mark.asyncio
+async def test_task_mode_follow_up_after_the_task_completes():
+  """A completed task must hand the conversation back to the coordinator.
+
+  The remote agent finishes its task on the first turn, which ends that
+  delegation. The follow-up therefore belongs to the coordinator, which is
+  free to open a fresh delegation for it.
+
+  A task-mode delegation is only resolved once a function response carrying
+  the delegating call's id reaches the session, and that response is
+  synthesized from the task's output. A finished task whose output never
+  gets set is indistinguishable from one still running, so the delegation
+  stays open, every later turn is dispatched straight back into the finished
+  task, and the coordinator never speaks again. The caller sees the first
+  turn's answer repeated for everything they say.
+
+  The remote here signals completion with the finish_task response alone and
+  sends no matching call, which is what the mode contract asks a custom A2A
+  server to do, and leaves nothing to read an output from.
+  """
+  received_requests = []
+
+  async def mock_run_async(**kwargs):
+    received_requests.append(kwargs)
+    yield Event(
+        author="FakeAgent",
+        content=types.Content(
+            parts=[types.Part(text=f"reply {len(received_requests)}")],
+            role="model",
+        ),
+    )
+    yield Event(
+        author="FakeAgent",
+        content=types.Content(
+            role="user",
+            parts=[
+                types.Part.from_function_response(
+                    name=FINISH_TASK_TOOL_NAME,
+                    response={"result": FINISH_TASK_SUCCESS_RESULT},
+                )
+            ],
+        ),
+    )
+
+  app = create_server_app(mock_run_async)
+  remote_agent = create_client(app, mode="task")
+
+  def delegate():
+    return types.Part.from_function_call(name="remote_agent", args={})
+
+  coordinator = LlmAgent(
+      name="coordinator",
+      model=testing_utils.MockModel.create(
+          responses=[delegate(), "first done", delegate(), "second done"]
+      ),
+      sub_agents=[remote_agent],
+  )
+
+  session_service = InMemorySessionService()
+  await session_service.create_session(
+      app_name="ClientApp", user_id="test_user", session_id="test_session"
+  )
+  client_runner = Runner(
+      app_name="ClientApp",
+      agent=coordinator,
+      session_service=session_service,
+  )
+
+  for text in ("book a flight", "London"):
+    async for _ in client_runner.run_async(
+        user_id="test_user",
+        session_id="test_session",
+        new_message=types.Content(parts=[types.Part(text=text)], role="user"),
+    ):
+      pass
+
+  assert len(received_requests) == 2, (
+      "the completed task kept the delegation open, so the follow-up never"
+      " reached the remote agent"
+  )
 
 
 @pytest.mark.asyncio

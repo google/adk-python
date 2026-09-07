@@ -108,6 +108,28 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 _NEW_LINE = '\n'
 
+# Sampling knobs the interactions API applies, but that the installed
+# google-genai release does not declare on its request model. That model
+# discards keys it has no field for while serializing, so these never reach the
+# API and sending them is indistinguishable from never setting them.
+_UNDECLARED_SAMPLING_PARAMS = (
+    'temperature',
+    'top_p',
+    'top_k',
+)
+
+# Sampling knobs the interactions API itself rejects as unknown parameters.
+# No release of the client can carry these, so the caller has to stop setting
+# them or stop using the interactions API.
+_UNSUPPORTED_SAMPLING_PARAMS = (
+    'presence_penalty',
+    'frequency_penalty',
+)
+
+# Sampling knobs already reported as dropped, so each warning below is emitted
+# once per process instead of once per model turn.
+_WARNED_SAMPLING_PARAMS: set[str] = set()
+
 
 def _extract_stream_interaction_id(
     event: InteractionSSEEvent,
@@ -795,6 +817,12 @@ class _StreamState:
   """
 
   parts: list[types.Part] = dataclasses.field(default_factory=list)
+  # Maps a function-call step's ``index`` to the part started at that step, so
+  # interleaved calls route their argument deltas and stops to the matching
+  # step instead of always landing on the most recently started call.
+  fc_parts_by_index: dict[int, types.Part] = dataclasses.field(
+      default_factory=dict
+  )
   web_search_queries: list[str] = dataclasses.field(default_factory=list)
   grounding_chunks: list[types.GroundingChunk] = dataclasses.field(
       default_factory=list
@@ -861,23 +889,55 @@ def _handle_media(
   return _partial_part_response(part, interaction_id)
 
 
+def _resolve_streaming_function_call_part(
+    index: int | None, state: _StreamState
+) -> types.Part | None:
+  """Resolve the function-call part a streaming event applies to.
+
+  Streaming events carry the ``index`` of the step they belong to. When that
+  index maps to a known function-call part we use it directly, so argument
+  deltas and step stops for interleaved calls route to the correct step instead
+  of always landing on the most recently started call. Events without an index
+  (or from builds that don't track one) fall back to the last started function
+  call to preserve the previous behavior.
+  """
+  if index is not None:
+    return state.fc_parts_by_index.get(index)
+  if state.parts and state.parts[-1].function_call:
+    return state.parts[-1]
+  return None
+
+
 def _handle_arguments_delta(
-    delta: ArgumentsDelta, state: _StreamState, interaction_id: str | None
+    delta: ArgumentsDelta,
+    state: _StreamState,
+    interaction_id: str | None,
+    index: int | None = None,
 ) -> LlmResponse | None:
-  if not state.parts:
-    return None
-  last_part = state.parts[-1]
-  if not last_part.function_call:
+  target_part = _resolve_streaming_function_call_part(index, state)
+  if target_part is None or not target_part.function_call:
+    logger.warning(
+        'Interactions streaming converter dropped an arguments delta: step'
+        ' index %r has no function-call part; skipping.',
+        index,
+    )
     return None
   delta_args = delta.arguments
-  if delta_args is None or last_part.function_call.partial_args is None:
+  if delta_args is None:
     return None
-  last_part.function_call.partial_args.append(
+  if target_part.function_call.partial_args is None:
+    logger.warning(
+        'Interactions streaming converter dropped an arguments delta: step'
+        ' index %r was already finalized; skipping.',
+        index,
+    )
+    return None
+  target_part.function_call.partial_args.append(
       types.PartialArg(string_value=delta_args)
   )
   chunk_part = types.Part(
       function_call=types.FunctionCall(
-          name=last_part.function_call.name,
+          name=target_part.function_call.name,
           partial_args=[types.PartialArg(string_value=delta_args)],
       )
   )
@@ -1104,6 +1164,8 @@ def convert_interaction_event_to_llm_response(
       )
       part = types.Part(function_call=fc)
       state.parts.append(part)
+      if event.index is not None:
+        state.fc_parts_by_index[event.index] = part
 
       return LlmResponse(
           content=types.Content(role='model', parts=[part]),
@@ -1127,7 +1189,7 @@ def convert_interaction_event_to_llm_response(
     elif isinstance(delta, (ImageDelta, AudioDelta, VideoDelta, DocumentDelta)):
       return _handle_media(delta, state, interaction_id)
     elif isinstance(delta, ArgumentsDelta):
-      return _handle_arguments_delta(delta, state, interaction_id)
+      return _handle_arguments_delta(delta, state, interaction_id, event.index)
     elif isinstance(delta, CodeExecutionCallDelta):
       return _handle_code_execution_call(delta, state, interaction_id)
     elif isinstance(delta, CodeExecutionResultDelta):
@@ -1144,8 +1206,9 @@ def convert_interaction_event_to_llm_response(
       return _handle_unknown_delta(delta, state, interaction_id)
 
   elif isinstance(event, StepStop):
-    if state.parts and state.parts[-1].function_call:
-      fc = state.parts[-1].function_call
+    target_part = _resolve_streaming_function_call_part(event.index, state)
+    if target_part is not None and target_part.function_call:
+      fc = target_part.function_call
       if fc.partial_args is not None:
         arg_str = ''.join(pa.string_value or '' for pa in fc.partial_args)
 
@@ -1219,10 +1282,27 @@ def convert_interaction_event_to_llm_response(
   return None
 
 
+def _unwarned_params_set_on(
+    config: types.GenerateContentConfig, names: tuple[str, ...]
+) -> list[str]:
+  """Return the names the caller set that have not been warned about yet."""
+  return [
+      name
+      for name in names
+      if getattr(config, name) is not None
+      and name not in _WARNED_SAMPLING_PARAMS
+  ]
+
+
 def build_generation_config(
     config: types.GenerateContentConfig,
 ) -> GenerationConfigParam:
   """Build generation config dict for interactions API.
+
+  Only the parameters that reach the interactions API are carried over. A
+  sampling parameter that would be discarded before the request is sent is
+  logged as ignored, once per parameter per process, naming whether the client
+  or the API is the one that cannot carry it.
 
   Args:
     config: The GenerateContentConfig to extract parameters from.
@@ -1231,20 +1311,33 @@ def build_generation_config(
     A dictionary containing generation configuration parameters.
   """
   generation_config: GenerationConfigParam = {}
-  if config.temperature is not None:
-    generation_config['temperature'] = config.temperature
-  if config.top_p is not None:
-    generation_config['top_p'] = config.top_p
-  if config.top_k is not None:
-    generation_config['top_k'] = config.top_k
   if config.max_output_tokens is not None:
     generation_config['max_output_tokens'] = config.max_output_tokens
   if config.stop_sequences:
     generation_config['stop_sequences'] = config.stop_sequences
-  if config.presence_penalty is not None:
-    generation_config['presence_penalty'] = config.presence_penalty
-  if config.frequency_penalty is not None:
-    generation_config['frequency_penalty'] = config.frequency_penalty
+  if config.seed is not None:
+    generation_config['seed'] = config.seed
+
+  undeclared = _unwarned_params_set_on(config, _UNDECLARED_SAMPLING_PARAMS)
+  if undeclared:
+    _WARNED_SAMPLING_PARAMS.update(undeclared)
+    logger.warning(
+        'The installed google-genai has no field for %s on the interactions'
+        ' request, so they are dropped before the request is sent even though'
+        ' the API itself applies them. Applying them needs a google-genai'
+        ' release that declares those fields.',
+        ', '.join(undeclared),
+    )
+
+  unsupported = _unwarned_params_set_on(config, _UNSUPPORTED_SAMPLING_PARAMS)
+  if unsupported:
+    _WARNED_SAMPLING_PARAMS.update(unsupported)
+    logger.warning(
+        'The interactions API has no equivalent for %s, so the model decodes'
+        ' with its own defaults instead. Unset them, or turn off'
+        ' use_interactions_api to have them applied.',
+        ', '.join(unsupported),
+    )
   return generation_config
 
 

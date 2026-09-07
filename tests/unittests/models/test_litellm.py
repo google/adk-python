@@ -2903,6 +2903,88 @@ def test_message_to_generate_content_response_tool_call_accepts_unquoted_json_ke
   }
 
 
+def test_message_to_generate_content_response_tool_call_malformed_arguments_returns_empty():
+  """Unparseable tool-call argument JSON degrades to empty args, not a crash."""
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id="test_tool_call_id",
+              function=Function(
+                  name="test_function",
+                  arguments='{"city":"unterminated',
+              ),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+
+  function_call = response.content.parts[0].function_call
+  assert response.content.role == "model"
+  assert function_call.name == "test_function"
+  assert isinstance(function_call.args, dict)
+  assert not function_call.args
+  assert function_call.id == "test_tool_call_id"
+
+
+def test_message_to_generate_content_response_tool_call_malformed_arguments_logs_warning(
+    caplog,
+):
+  """The warning names the function but keeps the raw arguments out of it."""
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id="test_tool_call_id",
+              function=Function(
+                  name="test_function",
+                  arguments='{"city":"unterminated',
+              ),
+          )
+      ],
+  )
+
+  with caplog.at_level(
+      logging.WARNING, logger="google_adk.google.adk.models.lite_llm"
+  ):
+    _message_to_generate_content_response(message)
+
+  assert "test_function" in caplog.text
+  assert '{"city":"unterminated' not in caplog.text
+
+
+def test_message_to_generate_content_response_tool_call_malformed_arguments_logs_raw_at_debug(
+    caplog,
+):
+  """The raw arguments are only logged at DEBUG."""
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id="test_tool_call_id",
+              function=Function(
+                  name="test_function",
+                  arguments='{"city":"unterminated',
+              ),
+          )
+      ],
+  )
+
+  with caplog.at_level(
+      logging.DEBUG, logger="google_adk.google.adk.models.lite_llm"
+  ):
+    _message_to_generate_content_response(message)
+
+  assert '{"city":"unterminated' in caplog.text
+
+
 def test_message_to_generate_content_response_inline_tool_call_text():
   message = ChatCompletionAssistantMessage(
       role="assistant",
@@ -2969,6 +3051,115 @@ def test_model_response_to_generate_content_response_reasoning_content():
   assert response.content.parts[0].text == "Step-by-step"
   assert response.content.parts[0].thought is True
   assert response.content.parts[1].text == "Answer"
+
+
+def test_model_response_to_generate_content_response_uses_first_choice(
+    caplog,
+):
+  """Test LiteLLM conversion follows the single-candidate contract."""
+  model_response = ModelResponse(
+      model="test-model",
+      choices=[
+          {
+              "message": {"role": "assistant", "content": "First"},
+              "finish_reason": "stop",
+          },
+          {
+              "message": {"role": "assistant", "content": "Second"},
+              "finish_reason": "stop",
+          },
+      ],
+  )
+
+  with caplog.at_level(logging.ERROR):
+    response = _model_response_to_generate_content_response(model_response)
+
+  assert len(model_response.choices) == 2
+  assert [
+      part.text for part in response.content.parts if part.text is not None
+  ] == ["First"]
+  errors = [
+      record
+      for record in caplog.records
+      if "Multiple choices found in response" in record.getMessage()
+  ]
+  assert len(errors) == 1
+  assert errors[0].name == "google_adk.google.adk.models.lite_llm"
+
+
+def test_model_response_to_chunk_skips_non_zero_choice_index():
+  """Test a chunk holding only a secondary candidate yields no content."""
+  chunk = ModelResponseStream(
+      model="test-model",
+      choices=[{"index": 1, "delta": {"content": "Second"}}],
+  )
+
+  assert list(_model_response_to_chunk(chunk)) == [(None, None)]
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_multiple_choices_logs_error_once(
+    mock_completion, lite_llm_instance, caplog
+):
+  """Test a multi-candidate stream logs once and keeps the first candidate."""
+  mock_completion.return_value = iter([
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  index=0,
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content="Hello"),
+              ),
+              StreamingChoices(
+                  index=1,
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content="Other"),
+              ),
+          ],
+      ),
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  index=1,
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content=" candidate"),
+              )
+          ],
+      ),
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(index=0, finish_reason="stop", delta=Delta())
+          ],
+      ),
+  ])
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  with caplog.at_level(logging.ERROR):
+    responses = [
+        response
+        async for response in lite_llm_instance.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+
+  assert responses[-1].content.parts[0].text == "Hello"
+  errors = [
+      record
+      for record in caplog.records
+      if "Multiple choices found in streaming response" in record.getMessage()
+  ]
+  assert len(errors) == 1
+  assert errors[0].name == "google_adk.google.adk.models.lite_llm"
 
 
 def test_message_to_generate_content_response_reasoning_field():
@@ -5282,6 +5473,57 @@ async def test_streaming_tool_call_complete_with_length_finish_reason(
   assert function_call.args == {"test_arg": "value"}
   assert final_response.finish_reason == types.FinishReason.MAX_TOKENS
   assert final_response.error_code == types.FinishReason.MAX_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_malformed_arguments_returns_empty(
+    mock_completion, lite_llm_instance
+):
+  """Malformed streamed tool-call args (finish_reason='tool_calls') degrade to empty args."""
+  stream_chunks = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_789",
+                              function=Function(
+                                  name="test_function",
+                                  arguments='{"city":"unterminated',
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+      ModelResponseStream(
+          choices=[StreamingChoices(finish_reason="tool_calls", delta=Delta())]
+      ),
+  ]
+  mock_completion.return_value = iter(stream_chunks)
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert len(responses) == 1
+  final_response = responses[0]
+  assert final_response.content.role == "model"
+  function_call = final_response.content.parts[0].function_call
+  assert function_call.name == "test_function"
+  assert function_call.id == "call_789"
+  assert isinstance(function_call.args, dict)
+  assert not function_call.args
+  assert final_response.error_code != types.FinishReason.MAX_TOKENS
 
 
 @pytest.mark.asyncio

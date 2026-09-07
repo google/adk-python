@@ -507,17 +507,28 @@ def _find_finish_task_args_from_history(
         matching_fc_id = fr.id
         break
 
+  def _args_from(event: Event) -> Optional[dict[str, Any]]:
+    for fc in event.get_function_calls():
+      if fc.name != FINISH_TASK_TOOL_NAME:
+        continue
+      if matching_fc_id is None or fc.id == matching_fc_id:
+        return dict(fc.args or {})
+    return None
+
+  # A remote peer can send the call and its response in one event, which the
+  # caller is still streaming and has not appended to the session yet. Read it
+  # before the history, or a task that did finish looks like one still running.
+  # It carries no isolation scope yet either, so the scope filter below would
+  # discard it; the event answers this task's own call by construction.
+  if completed_fr_event is not None:
+    if (args := _args_from(completed_fr_event)) is not None:
+      return args
+
   for event in reversed(session.events):
     if isolation_scope and event.isolation_scope != isolation_scope:
       continue
-    calls = event.get_function_calls()
-    for fc in calls:
-      if fc.name == FINISH_TASK_TOOL_NAME:
-        if matching_fc_id is not None:
-          if fc.id == matching_fc_id:
-            return dict(fc.args or {})
-        else:
-          return dict(fc.args or {})
+    if (args := _args_from(event)) is not None:
+      return args
   return None
 
 
@@ -1676,9 +1687,15 @@ class RemoteA2aAgent(BaseAgent):
                 else:
                   event.output = args
               else:
+                # A custom A2A server may signal completion with the response
+                # alone and never send the matching call, so there is nothing
+                # to read an output from. The task still finished: leaving the
+                # output unset would read as "still running" and strand the
+                # delegation, so the parent never gets its turn back.
+                event.output = {}
                 logger.warning(
-                    "Could not find finish_task arguments in session history"
-                    " for isolation scope '%s'. Task output will not be set.",
+                    "Could not find finish_task arguments for isolation scope"
+                    " '%s'. Completing the task with an empty output.",
                     ctx.isolation_scope,
                 )
               # Yield the semantic output event so the parent runner can capture

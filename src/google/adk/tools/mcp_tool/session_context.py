@@ -27,6 +27,7 @@ from typing import TypeVar
 
 from ...dependencies._mcp import ClientSession
 from ...dependencies._mcp import ElicitationFnT
+from ...dependencies._mcp import IS_MCP_SDK_V2
 from ...dependencies._mcp import SamplingCapability
 from ...dependencies._mcp import SamplingFnT
 from ...features import FeatureName
@@ -37,12 +38,14 @@ logger = logging.getLogger('google_adk.' + __name__)
 _T = TypeVar('_T')
 
 
-def _read_timeout(seconds: Optional[float]) -> Optional[timedelta]:
+def _read_timeout(seconds: Optional[float]) -> Optional[float | timedelta]:
   """Converts a timeout in seconds to the type ``ClientSession`` expects.
 
   ADK carries every timeout as float seconds. MCP SDK 1.x wants a
-  ``timedelta`` here, while 2.x wants the float. Converting in one place keeps
-  that difference to a single function.
+  ``timedelta`` here, while 2.x wants the float. Neither accepts the other, and
+  the wrong one does not fail at the call: it fails later, in arithmetic the
+  SDK does on the value. Converting in one place keeps that difference to a
+  single function.
 
   Args:
     seconds: The timeout in seconds, or None for no timeout.
@@ -52,6 +55,8 @@ def _read_timeout(seconds: Optional[float]) -> Optional[timedelta]:
   """
   if seconds is None:
     return None
+  if IS_MCP_SDK_V2:
+    return seconds
   return timedelta(seconds=seconds)
 
 

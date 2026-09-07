@@ -257,3 +257,53 @@ def decide_resume(
       return ResumeDecision(ResumeAction.REPLAY_CALLS, call_event)
 
   return ResumeDecision(ResumeAction.PAUSE if pause else ResumeAction.CONTINUE)
+
+
+def decide_step_resume(
+    invocation_context: InvocationContext,
+    tools_dict: dict[str, Any],
+) -> ResumeDecision:
+  """Decides how a flow's next step resumes, if it resumes at all.
+
+  The branch's last event is what decides the case: user content means the
+  normal flow carries on, while a function call that was never executed means
+  the tool has to run first and produce its response event.
+
+  This is the entry point a flow calls; `decide_resume` above is the
+  multi-event core it delegates to once the trivial cases are out of the
+  way. Keeping both here means the flow holds no resume logic of its own,
+  and the "at least two events" precondition `decide_resume` documents is
+  satisfied here rather than by every caller.
+
+  Args:
+    invocation_context: Supplies the branch's events, `is_resumable` and
+      `should_pause_invocation`.
+    tools_dict: The tools this flow can run, by name.
+
+  Returns:
+    CONTINUE for a fresh step, PAUSE when the branch still owes an answer,
+    or REPLAY_CALLS naming the event whose calls were never executed.
+  """
+  if not invocation_context.is_resumable:
+    return ResumeDecision(ResumeAction.CONTINUE)
+
+  events = invocation_context._get_events(  # pylint: disable=protected-access
+      current_invocation=True, current_branch=True
+  )
+  if not events:
+    return ResumeDecision(ResumeAction.CONTINUE)
+
+  # For a multi-event branch, decide whether to pause (unanswered tool calls
+  # or LROs), replay unexecuted tool calls, or continue to the LLM.
+  if len(events) > 1:
+    decision = decide_resume(invocation_context, events, tools_dict)
+    if decision.action in (ResumeAction.PAUSE, ResumeAction.REPLAY_CALLS):
+      return decision
+
+  # A single event, or a multi-event branch that `decide_resume` cleared:
+  # the branch is only still owed something if its last event carries calls
+  # nothing has answered yet -- being last is what makes them unanswered.
+  if not events[-1].partial and events[-1].get_function_calls():
+    return ResumeDecision(ResumeAction.REPLAY_CALLS, events[-1])
+
+  return ResumeDecision(ResumeAction.CONTINUE)

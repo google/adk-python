@@ -118,9 +118,9 @@ class TransferToAgentTool(FunctionTool):
         agent_name_schema.enum = self._agent_names
       if (
           not self._include_transfer_reason
-          and 'transfer_reason' in function_decl.parameters.properties
+          and 'transfer_reason' in parameters.properties
       ):
-        del function_decl.parameters.properties['transfer_reason']
+        del parameters.properties['transfer_reason']
 
     # Handle parameters_json_schema (dict)
     if function_decl.parameters_json_schema:

@@ -24,10 +24,10 @@ import pytest
 
 from .functional._aclosing import aclosing_wrapping_assertions
 from .functional._recording import check_case
-from .functional._scenarios import install_telemetry
-from .functional._scenarios import mock_test_model
-from .functional._scenarios import run_node_scenario
-from .functional._scenarios import TOOL_ERROR
+from .functional.scenarios.agent import run_node_scenario
+from .functional.scenarios.conversation import TOOL_ERROR
+from .functional.scenarios.inference import mock_test_model
+from .functional.scenarios.telemetry_setup import install_telemetry
 from .functional_node_test_cases import ALL_NODE_CASES
 
 if TYPE_CHECKING:

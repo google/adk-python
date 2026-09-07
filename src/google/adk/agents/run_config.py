@@ -313,7 +313,7 @@ class RunConfig(BaseModel):
   @field_validator('max_llm_calls', mode='after')
   @classmethod
   def validate_max_llm_calls(cls, value: int) -> int:
-    if value == sys.maxsize:
+    if value >= sys.maxsize:
       raise ValueError(f'max_llm_calls should be less than {sys.maxsize}.')
     elif value <= 0:
       logger.warning(

@@ -43,9 +43,9 @@ from typing import Sequence
 from google.genai import errors as genai_errors
 
 from .functional._recording import FunctionalTestCase
-from .functional._scenarios import EXPERIMENTAL_OPT_IN
-from .functional._scenarios import Scenario
-from .functional._scenarios import TOOL_ERROR
+from .functional.scenarios import Scenario
+from .functional.scenarios.conversation import TOOL_ERROR
+from .functional.scenarios.telemetry_setup import EXPERIMENTAL_OPT_IN
 
 
 @dataclass(frozen=True)
@@ -185,6 +185,10 @@ ALL_CASES: list[FunctionalTestCase] = semconv_matrix("agent") + [
         schema_version=2,
         tool_exception=TOOL_ERROR,
     ),
+    # The same turn streamed, its answer arriving in two chunks that leave
+    # `partial` unset: one inference span per turn either way, and a completion
+    # log holding the whole answer rather than whichever chunk arrived first.
+    *semconv_matrix("streaming"),
     # Skill telemetry scenarios.
     FunctionalTestCase(
         test_id="skill-telemetry-disabled-schema-v1",

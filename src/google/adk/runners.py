@@ -915,8 +915,18 @@ class Runner:
     """
     run_config = run_config or RunConfig()
     event_queue: queue.Queue[Event | BaseException | None] = queue.Queue()
+    # Handle to the background invocation, so that closing this generator early
+    # can cancel it instead of leaking a running task. See
+    # `_cleanup_root_task()` for the equivalent guarantee on `run_async()`.
+    invocation_handle: queue.Queue[
+        tuple[asyncio.AbstractEventLoop, Optional[asyncio.Task[Any]]]
+    ] = queue.Queue(maxsize=1)
+    caller_closed_early = False
 
     async def _invoke_run_async() -> None:
+      invocation_handle.put(
+          (asyncio.get_running_loop(), asyncio.current_task())
+      )
       async with aclosing(
           self.run_async(
               user_id=user_id,
@@ -937,26 +947,43 @@ class Runner:
         # anything, so forward it for the calling thread to report. This
         # catches BaseException because a cancelled run raises CancelledError,
         # which would otherwise be lost here.
-        event_queue.put(e)
+        if not (isinstance(e, asyncio.CancelledError) and caller_closed_early):
+          event_queue.put(e)
       finally:
         event_queue.put(None)
 
     thread = create_thread(target=_asyncio_thread_main)
     thread.start()
 
-    # consumes and re-yield the events from background thread.
+    exhausted = False
     agent_error: BaseException | None = None
-    while True:
-      item = event_queue.get()
-      if item is None:
-        break
-      elif isinstance(item, BaseException):
-        agent_error = item
-        break
-      else:
-        yield item
+    try:
+      # consumes and re-yield the events from background thread.
+      while True:
+        item = event_queue.get()
+        if item is None:
+          exhausted = True
+          break
+        elif isinstance(item, BaseException):
+          agent_error = item
+          exhausted = True
+          break
+        else:
+          yield item
+    finally:
+      if not exhausted:
+        # The caller stopped iterating early, so cancel the invocation before
+        # it can run further tools or append more events to the session.
+        caller_closed_early = True
+        loop, task = invocation_handle.get()
+        if task is not None:
+          try:
+            loop.call_soon_threadsafe(task.cancel)
+          except RuntimeError:
+            # The background loop already finished; nothing to cancel.
+            pass
+      thread.join()
 
-    thread.join()
     if isinstance(agent_error, Exception):
       raise agent_error
     if agent_error is not None:

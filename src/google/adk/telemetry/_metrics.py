@@ -24,7 +24,6 @@ from google.adk.telemetry import _hallucination
 from google.adk.telemetry import tracing
 from google.adk.telemetry._token_usage import CACHE_READ_INPUT_TOKENS_MEANING
 from google.adk.telemetry._token_usage import INPUT_TOKENS_MEANING
-from google.adk.telemetry._token_usage import InvocationTokenTotals
 from google.adk.telemetry._token_usage import OUTPUT_TOKENS_MEANING
 from google.adk.telemetry._token_usage import REASONING_OUTPUT_TOKENS_MEANING
 from google.adk.telemetry._token_usage import TokenUsage
@@ -365,7 +364,7 @@ def record_invoke_agent_tool_calls(agent_name: str, count: int) -> None:
 
 def record_invoke_agent_token_usage(
     agent_name: str,
-    totals: InvocationTokenTotals,
+    totals: TokenUsage,
 ) -> None:
   """Records the token spend accumulated over one agent invocation.
 
@@ -374,17 +373,19 @@ def record_invoke_agent_token_usage(
     totals: Token counts summed over the invocation's model calls.
   """
   attrs = {gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name}
-  _invoke_agent_input_tokens.record(totals.input_tokens, attributes=attrs)
-  _invoke_agent_output_tokens.record(totals.output_tokens, attributes=attrs)
+  _invoke_agent_input_tokens.record(totals.input_tokens or 0, attributes=attrs)
+  _invoke_agent_output_tokens.record(
+      totals.output_tokens or 0, attributes=attrs
+  )
   _invoke_agent_total_tokens.record(totals.total_tokens, attributes=attrs)
   _invoke_agent_cache_read_input_tokens.record(
-      totals.cache_read_input_tokens, attributes=attrs
+      totals.cache_read_input_tokens or 0, attributes=attrs
   )
   _invoke_agent_reasoning_output_tokens.record(
-      totals.reasoning_output_tokens, attributes=attrs
+      totals.reasoning_output_tokens or 0, attributes=attrs
   )
   _invoke_agent_tool_input_tokens.record(
-      totals.tool_input_tokens, attributes=attrs
+      totals.tool_input_tokens or 0, attributes=attrs
   )
 
 
@@ -420,7 +421,7 @@ def record_invoke_workflow_token_usage(
     *,
     root_agent_name: str,
     workflow_name: str | None,
-    totals: InvocationTokenTotals,
+    totals: TokenUsage,
     nested: bool,
 ) -> None:
   """Records the token spend of one workflow, across every agent in it.
@@ -435,17 +436,21 @@ def record_invoke_workflow_token_usage(
     nested: Whether another workflow enclosed this one.
   """
   attrs = _invoke_workflow_attrs(root_agent_name, workflow_name, nested)
-  _invoke_workflow_input_tokens.record(totals.input_tokens, attributes=attrs)
-  _invoke_workflow_output_tokens.record(totals.output_tokens, attributes=attrs)
+  _invoke_workflow_input_tokens.record(
+      totals.input_tokens or 0, attributes=attrs
+  )
+  _invoke_workflow_output_tokens.record(
+      totals.output_tokens or 0, attributes=attrs
+  )
   _invoke_workflow_total_tokens.record(totals.total_tokens, attributes=attrs)
   _invoke_workflow_cache_read_input_tokens.record(
-      totals.cache_read_input_tokens, attributes=attrs
+      totals.cache_read_input_tokens or 0, attributes=attrs
   )
   _invoke_workflow_reasoning_output_tokens.record(
-      totals.reasoning_output_tokens, attributes=attrs
+      totals.reasoning_output_tokens or 0, attributes=attrs
   )
   _invoke_workflow_tool_input_tokens.record(
-      totals.tool_input_tokens, attributes=attrs
+      totals.tool_input_tokens or 0, attributes=attrs
   )
 
 
@@ -576,9 +581,9 @@ def record_client_token_usage(
   # thoughts tokens for "output".
   # `cached_content_token_count` is omitted as it's already included in prompt tokens.
   # `total_token_count` is omitted as SemConv expects input/output breakdown.
-  token_usage = TokenUsage(last_response.usage_metadata)
-  input_token_count = token_usage.input_token_count or 0
-  output_token_count = token_usage.output_token_count or 0
+  token_usage = TokenUsage.from_usage_metadata(last_response.usage_metadata)
+  input_token_count = token_usage.input_tokens or 0
+  output_token_count = token_usage.output_tokens or 0
   response_model = last_response.model_version or llm_request.model
   base_attrs = {
       gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name,

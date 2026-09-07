@@ -256,6 +256,17 @@ def convert_a2a_task_to_event(
         event: Event = convert_a2a_message_to_event(
             message, author, invocation_context, part_converter=part_converter
         )
+        if (
+            getattr(a2a_task.status, "state", None)
+            in (
+                _compat.TS_COMPLETED,
+                _compat.TS_FAILED,
+                _compat.TS_CANCELED,
+            )
+            and event.content
+            and event.content.parts
+        ):
+          event.actions.skip_summarization = True
         return event
       except Exception as e:
         logger.error("Failed to convert A2A task message to event: %s", e)

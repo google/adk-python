@@ -15,10 +15,28 @@
 from __future__ import annotations
 
 from fastapi import Request
-from mcp.server.fastmcp import Context
-from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP('Header Check Server', host='localhost', port=3000)
+# MCP 2.0 renamed this server class and moved the bind address from the
+# constructor to run(). ADK supports both majors, so this sample does too.
+try:
+  from mcp.server.mcpserver import Context
+  from mcp.server.mcpserver import MCPServer as FastMCP
+
+  _BINDS_AT_RUN = True
+except ImportError:
+  from mcp.server.fastmcp import Context
+  from mcp.server.fastmcp import FastMCP
+
+  _BINDS_AT_RUN = False
+
+HOST = 'localhost'
+PORT = 3000
+
+_BIND = {'host': HOST, 'port': PORT}
+SERVE_AT = {} if _BINDS_AT_RUN else _BIND
+RUN_AT = _BIND if _BINDS_AT_RUN else {}
+
+mcp = FastMCP('Header Check Server', **SERVE_AT)
 
 TENANT_DATA = {
     'tenant1': {'name': 'Tenant 1', 'data': 'Data for tenant 1'},
@@ -44,7 +62,7 @@ def get_tenant_data(context: Context) -> dict:
 
 if __name__ == '__main__':
   try:
-    print('Starting Header Check MCP server on http://localhost:3000')
-    mcp.run(transport='streamable-http')
+    print(f'Starting Header Check MCP server on http://{HOST}:{PORT}')
+    mcp.run(transport='streamable-http', **RUN_AT)
   except KeyboardInterrupt:
     print('\nServer stopped.')
