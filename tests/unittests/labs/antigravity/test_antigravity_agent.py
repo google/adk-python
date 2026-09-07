@@ -491,10 +491,10 @@ async def test_a_turn_with_no_steps_records_nothing():
 
 @pytest.mark.asyncio
 async def test_a_content_less_turn_with_history_still_records_the_id():
-  # Mirrors external report PR #6765 (cl/966049341): a compaction turn's steps
-  # carry no user-visible content, so the turn yields zero ADK events, yet the
-  # conversation has history and an id and must still be recorded -- otherwise
-  # the next turn starts fresh and orphans this conversation.
+  # A compaction turn's steps carry no user-visible content, so the turn
+  # yields zero ADK events, yet the conversation has history and an id and
+  # must still be recorded -- otherwise the next turn starts fresh and
+  # orphans this conversation.
 
   async def _no_steps() -> AsyncIterator[MagicMock]:
     return

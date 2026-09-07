@@ -626,7 +626,7 @@ async def test_process_llm_request_without_list_skills_tool(
   args, _ = llm_req.append_instructions.call_args
   instructions = args[0]
   assert len(instructions) == 2
-  assert instructions[0] == skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION
+  assert "NOT available: `list_skills`" in instructions[0]
   assert "<available_skills>" in instructions[1]
   assert "skill1" in instructions[1]
   assert "skill2" in instructions[1]
@@ -2977,6 +2977,199 @@ async def test_skill_toolset_with_dynamic_tools_filter(
   assert "list_skills" in tool_names
   assert "my_custom_tool" in tool_names
   assert "load_skill" not in tool_names
+
+
+# ── tool_filter vs system instruction consistency ──
+
+
+def test_filtered_system_instruction_appends_banned_notice():
+  """Filtered builder must document all tools but append a banned notice."""
+  instruction = skill_toolset._build_skill_system_instruction(
+      allowed_tools={"list_skills", "load_skill"}
+  )
+  assert "Use `run_skill_script` to run scripts" in instruction
+  assert "The `load_skill_resource` tool is for viewing" in instruction
+  assert "`load_skill`" in instruction
+  assert "NOT available" in instruction
+  assert "Do NOT call them" in instruction
+  assert "normal model text" in instruction
+  # Ban clause may still name the filtered tools.
+  assert "`run_skill_script`" in instruction
+  assert "`load_skill_resource`" in instruction
+
+
+def test_filtered_system_instruction_bans_load_and_list_skills():
+  """Filtered builder must include load_skill and list_skills in ban notice when filtered."""
+  instruction = skill_toolset._build_skill_system_instruction(
+      allowed_tools={"run_skill_script"}
+  )
+  assert (
+      "The following tools are NOT available: `load_skill_resource`,"
+      " `load_skill`, `list_skills`."
+      in instruction
+  )
+  assert "Do NOT call them" in instruction
+
+
+def test_tool_classes_define_tool_name_constants():
+  """Core tool classes must define TOOL_NAME attributes matching their names."""
+  assert skill_toolset.ListSkillsTool.TOOL_NAME == "list_skills"
+  assert skill_toolset.SearchSkillsTool.TOOL_NAME == "search_skills"
+  assert skill_toolset.LoadSkillTool.TOOL_NAME == "load_skill"
+  assert skill_toolset.LoadSkillResourceTool.TOOL_NAME == "load_skill_resource"
+  assert skill_toolset.RunSkillScriptTool.TOOL_NAME == "run_skill_script"
+
+
+def test_unfiltered_system_instruction_documents_all_tools():
+  """Unfiltered path must keep documenting script/resource tools."""
+  instruction = skill_toolset._build_skill_system_instruction()
+  assert instruction == skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION
+  assert "Use `run_skill_script` to run scripts" in instruction
+  assert "The `load_skill_resource` tool is for viewing" in instruction
+  assert "NOT available" not in instruction
+
+
+def test_default_skill_system_instruction_contract_unchanged():
+  """Public DEFAULT export must remain the full unfiltered instruction."""
+  assert "run_skill_script" in skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION
+  assert "load_skill_resource" in skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION
+  assert (
+      "does NOT complete your turn"
+      in skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION
+  )
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_respects_list_tool_filter(
+    mock_skill1, tool_context_instance
+):
+  toolset = skill_toolset.SkillToolset(
+      skills=[mock_skill1],
+      tool_filter=["list_skills", "load_skill"],
+  )
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+
+  llm_req.append_instructions.assert_called_once()
+  args, _ = llm_req.append_instructions.call_args
+  instructions = args[0]
+  assert len(instructions) == 1
+  instruction = instructions[0]
+  assert "Use `run_skill_script` to run scripts" in instruction
+  assert "The `load_skill_resource` tool is for viewing" in instruction
+  assert "Do NOT call them" in instruction
+  assert "normal model text" in instruction
+  assert instruction != skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_injects_skills_xml_when_list_skills_filtered(
+    mock_skill1, mock_skill2, tool_context_instance
+):
+  toolset = skill_toolset.SkillToolset(
+      skills=[mock_skill1, mock_skill2],
+      tool_filter=["load_skill"],
+  )
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+
+  args, _ = llm_req.append_instructions.call_args
+  instructions = args[0]
+  assert len(instructions) == 2
+  assert "<available_skills>" in instructions[1]
+  assert "skill1" in instructions[1]
+  assert "skill2" in instructions[1]
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_omits_search_skills_hint_when_filtered(
+    mock_registry, tool_context_instance
+):
+  toolset = skill_toolset.SkillToolset(
+      registry=mock_registry,
+      tool_filter=["list_skills", "load_skill"],
+  )
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+
+  args, _ = llm_req.append_instructions.call_args
+  instructions = args[0]
+  assert len(instructions) == 1
+  assert "search_skills" not in instructions[0]
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_includes_search_skills_hint_when_allowed(
+    mock_registry, tool_context_instance
+):
+  toolset = skill_toolset.SkillToolset(
+      registry=mock_registry,
+      tool_filter=["list_skills", "load_skill", "search_skills"],
+  )
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+
+  args, _ = llm_req.append_instructions.call_args
+  instructions = args[0]
+  assert len(instructions) == 2
+  assert "search_skills" in instructions[1]
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_with_prefix_and_tool_filter(
+    mock_skill1, tool_context_instance
+):
+  toolset = skill_toolset.SkillToolset(
+      skills=[mock_skill1],
+      tool_name_prefix="my",
+      tool_filter=["list_skills", "load_skill"],
+  )
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+
+  args, _ = llm_req.append_instructions.call_args
+  instruction = args[0][0]
+  assert "`my_load_skill`" in instruction
+  assert "Use `my_run_skill_script` to run scripts" in instruction
+  assert "The `my_load_skill_resource` tool is for viewing" in instruction
+  assert "`my_run_skill_script`" in instruction  # ban clause
+  assert "Do NOT call them" in instruction
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_respects_predicate_tool_filter(
+    mock_skill1, tool_context_instance
+):
+  toolset = skill_toolset.SkillToolset(
+      skills=[mock_skill1],
+      tool_filter=lambda tool, ctx=None: tool.name
+      in ("list_skills", "load_skill"),
+  )
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+
+  args, _ = llm_req.append_instructions.call_args
+  instruction = args[0][0]
+  assert "Use `run_skill_script` to run scripts" in instruction
+  assert "Do NOT call them" in instruction
 
 
 # ── run_skill_script is only offered when something can run scripts ──

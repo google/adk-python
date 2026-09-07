@@ -51,26 +51,32 @@ _CODE_CONTAINER_NAME = "code-runner"
 
 
 class GkeCodeExecutor(BaseCodeExecutor):
-  """Executes Python code in a secure gVisor-sandboxed Pod on GKE.
+  """Executes Python code in a dedicated Pod on GKE.
 
-  This executor supports two modes of execution: 'job' and 'sandbox'.
+  This executor supports two modes of execution: 'job' and 'sandbox', which do
+  not provide the same isolation.
 
   Job Mode (default):
   Securely runs code by dynamically creating a Kubernetes Job for each execution
   request. The user's code is mounted via a ConfigMap, and the Pod is hardened
-  with a strict security context and resource limits.
+  with a strict security context and resource limits. The Pod also requests the
+  gVisor runtime, so this is the mode that isolates the code from the host
+  kernel.
 
   Sandbox Mode:
-  Executes code using the Agent Sandbox Client. This mode requires additional
-  infrastructure to be deployed in the cluster, specifically:
+  Executes code using the Agent Sandbox Client. The Pod is created from a
+  sandbox template already installed in the cluster, so its runtime class and
+  security context come from that template rather than from this executor.
+  This mode requires additional infrastructure to be deployed in the cluster,
+  specifically:
   - Agent-sandbox controller
   - Sandbox templates (e.g., python-sandbox-template)
   - Sandbox router and gateway
 
   Key Features:
-  - Sandboxed execution using the gVisor runtime.
+  - In job mode, sandboxed execution using the gVisor runtime and a
+    secure-by-default Pod configuration (non-root, no privileges).
   - Ephemeral, per-execution environments using Kubernetes Jobs.
-  - Secure-by-default Pod configuration (non-root, no privileges).
   - Automatic garbage collection of completed Jobs and Pods via TTL.
   - Efficient, event-driven waiting using the Kubernetes watch API.
 

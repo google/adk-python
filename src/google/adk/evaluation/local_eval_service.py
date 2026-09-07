@@ -292,7 +292,10 @@ class LocalEvalService(BaseEvalService):
     )
 
     actual_invocations = inference_result.inferences
-    if actual_invocations is None:
+    if (
+        actual_invocations is None
+        or inference_result.status == InferenceStatus.FAILURE
+    ):
       session_details = None
       if inference_result.session_id is not None:
         session_details = await self._session_service.get_session(

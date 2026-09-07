@@ -238,6 +238,55 @@ async def test_evaluate_eval_set_keeps_metric_detail_for_failed_metric(mocker):
 
 
 @pytest.mark.asyncio
+async def test_evaluate_eval_set_reports_not_evaluated_metric_separately(
+    mocker,
+):
+  """A metric that never ran is not reported as a score regression.
+
+  This is the shape recorded when a judge model is unreachable: the metric
+  produces no score, so there is nothing to compare against the threshold.
+  """
+  not_evaluated_result = EvalCaseResult(
+      eval_set_id="test_eval_set",
+      eval_id="case1",
+      final_eval_status=EvalStatus.NOT_EVALUATED,
+      overall_eval_metric_results=[],
+      eval_metric_result_per_invocation=[
+          EvalMetricResultPerInvocation(
+              actual_invocation=Invocation(
+                  user_content=_content("What is 2 + 2?"),
+                  final_response=_content("4"),
+              ),
+              expected_invocation=Invocation(
+                  user_content=_content("What is 2 + 2?"),
+                  final_response=_content("4"),
+              ),
+              eval_metric_results=[
+                  EvalMetricResult(
+                      metric_name="final_response_match_v2",
+                      threshold=0.8,
+                      score=None,
+                      eval_status=EvalStatus.NOT_EVALUATED,
+                  )
+              ],
+          )
+      ],
+      session_id="",
+  )
+
+  with pytest.raises(AssertionError) as exc_info:
+    await _mock_evaluate_eval_set(mocker, not_evaluated_result)
+
+  message = str(exc_info.value)
+  assert "final_response_match_v2 for my.agent.module was not evaluated" in (
+      message
+  )
+  # The wording used for a metric that scored below its threshold.
+  assert "Failed. Expected" not in message
+  assert "but got None" not in message
+
+
+@pytest.mark.asyncio
 async def test_evaluate_eval_set_passes_when_metrics_pass(mocker):
   """A passing eval case is not turned into a failure."""
   passing_result = EvalCaseResult(

@@ -2110,6 +2110,77 @@ async def test_run_async_teardown_on_aclose():
   assert was_cancelled["value"] is True
 
 
+def test_run_teardown_on_close():
+  """Closing the sync run() generator cancels the running agent task."""
+  session_service = InMemorySessionService()
+
+  was_cancelled = {"value": False}
+
+  class CancellingAgent(BaseAgent):
+
+    async def _run_async_impl(
+        self, invocation_context: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      try:
+        yield Event(
+            invocation_id=invocation_context.invocation_id,
+            author=self.name,
+            content=types.Content(
+                role="model", parts=[types.Part(text="First response")]
+            ),
+        )
+        # Block simulating slow ongoing task
+        await asyncio.sleep(5.0)
+        yield Event(
+            invocation_id=invocation_context.invocation_id,
+            author=self.name,
+            content=types.Content(
+                role="model", parts=[types.Part(text="Second response")]
+            ),
+        )
+      except (asyncio.CancelledError, GeneratorExit):
+        was_cancelled["value"] = True
+        raise
+
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=CancellingAgent(name="cancel_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  # Given a sync run stream
+  stream = runner.run(
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      new_message=types.Content(role="user", parts=[types.Part(text="hello")]),
+  )
+
+  # When the client reads the first event and then calls close()
+  event = next(stream)
+  assert event.content.parts[0].text == "First response"
+
+  stream.close()
+
+  # Then the running agent was cancelled before it could do further work
+  assert was_cancelled["value"] is True
+
+  # And no later event was appended to the session.
+  session = asyncio.run(
+      session_service.get_session(
+          app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+      )
+  )
+  texts = [
+      part.text
+      for session_event in session.events
+      if session_event.content
+      for part in session_event.content.parts
+  ]
+  assert texts == ["hello", "First response"]
+
+
 @pytest.mark.asyncio
 async def test_run_live_passes_get_session_config():
   """run_live should forward RunConfig.get_session_config to get_session."""
@@ -3564,6 +3635,160 @@ async def test_node_runner_passes_modified_user_message_as_node_input():
 
   assert len(received_node_inputs) == 1
   assert received_node_inputs[0].parts[0].text == "modified text"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "follow_up", ["London", "book a flight"], ids=["distinct", "repeated"]
+)
+async def test_new_turn_joins_paused_task_instead_of_being_dropped(follow_up):
+  """A follow-up message must reach the session while a task is paused.
+
+  The paused task's invocation id is reused so the task agent sees the message,
+  and the message is stamped with the task's isolation scope. That reuse is a
+  new user turn, not a replay of the turn that opened the task, so it must not
+  be treated as a retry. What separates the two is where the invocation id came
+  from, not what the message says, so a user who repeats themselves is still
+  heard. The node must also be driven with that new turn rather than with the
+  content of the turn whose invocation id was borrowed.
+  """
+  from typing import Any
+
+  from google.adk.agents.context import Context
+  from google.adk.workflow._base_node import BaseNode
+
+  received_node_inputs = []
+
+  class QuietNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      received_node_inputs.append(node_input)
+      yield "done"
+
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      node=QuietNode(name="quiet"),
+      session_service=session_service,
+  )
+  session = await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID
+  )
+
+  # The coordinator delegated to a task agent, which replied without finishing
+  # the task, so scope "fc-1" is still open.
+  delegation = types.Part.from_function_call(name="task_agent", args={})
+  delegation.function_call.id = "fc-1"
+  for event in [
+      Event(
+          author="user",
+          invocation_id="inv-1",
+          content=_user_message("book a flight"),
+      ),
+      Event(
+          author="coordinator",
+          invocation_id="inv-1",
+          content=types.Content(role="model", parts=[delegation]),
+      ),
+      Event(
+          author="task_agent",
+          invocation_id="inv-1",
+          isolation_scope="fc-1",
+          content=types.Content(
+              role="model", parts=[types.Part(text="which city?")]
+          ),
+      ),
+  ]:
+    await session_service.append_event(session=session, event=event)
+
+  await _drain_events(
+      runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=session.id,
+          new_message=_user_message(follow_up),
+      )
+  )
+
+  stored = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=session.id
+  )
+  user_events = _user_events_for(stored, "inv-1")
+  assert [event.content.parts[0].text for event in user_events] == [
+      "book a flight",
+      follow_up,
+  ]
+  assert user_events[-1].isolation_scope == "fc-1"
+  assert [content.parts[0].text for content in received_node_inputs] == [
+      follow_up
+  ]
+
+
+@pytest.mark.asyncio
+async def test_retry_is_deduplicated_even_when_a_plugin_rewrote_the_message():
+  """A retry is recognised by its invocation id, not by comparing content.
+
+  ``on_user_message_callback`` may rewrite the message before it is stored, so
+  the stored user content need not equal what the caller re-sends.
+  """
+  from typing import Any
+
+  from google.adk.agents.context import Context
+  from google.adk.workflow._base_node import BaseNode
+
+  class QuietNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      yield "done"
+
+  class NormalizingPlugin(BasePlugin):
+
+    def __init__(self):
+      super().__init__(name="normalizing_plugin")
+      self.calls = 0
+
+    async def on_user_message_callback(
+        self,
+        *,
+        invocation_context: InvocationContext,
+        user_message: types.Content,
+    ) -> Optional[types.Content]:
+      self.calls += 1
+      return types.Content(
+          role="user",
+          parts=[types.Part(text=user_message.parts[0].text.strip())],
+      )
+
+  session_service = InMemorySessionService()
+  plugin = NormalizingPlugin()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      node=QuietNode(name="quiet"),
+      session_service=session_service,
+      plugins=[plugin],
+  )
+  session = await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID
+  )
+
+  for _ in range(2):
+    await _drain_events(
+        runner.run_async(
+            user_id=TEST_USER_ID,
+            session_id=session.id,
+            invocation_id="inv-retry",
+            new_message=_user_message("  book a flight  "),
+        )
+    )
+
+  stored = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=session.id
+  )
+  assert len(_user_events_for(stored, "inv-retry")) == 1
+  assert plugin.calls == 1
 
 
 if __name__ == "__main__":

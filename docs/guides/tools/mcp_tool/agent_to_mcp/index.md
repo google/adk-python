@@ -84,8 +84,9 @@ there is one connection per process, so all calls share one conversation; over
 streamable-http each client connection gets its own session.
 
 `to_mcp_server` depends on `Runner`, the agent (`BaseAgent`/`LlmAgent`),
-`google.genai.types`, and `mcp.server.fastmcp.FastMCP`; it returns a `FastMCP`
-that the caller runs on a transport of their choice.
+`google.genai.types`, and the MCP SDK's server class -- `mcp.server.fastmcp.FastMCP`
+on SDK 1.x, renamed to `mcp.server.mcpserver.MCPServer` on 2.x. It returns an
+instance of that class, which the caller runs on a transport of their choice.
 
 ## Configuration options
 

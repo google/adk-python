@@ -52,7 +52,30 @@ class TestTransferToAgentToolLegacy:
     assert agent_name_schema.type == types.Type.STRING
     assert agent_name_schema.enum == agent_names
 
-    # Verify that agent_name is marked as required
+    # By default, transfer_reason is not included in parameters or description
+    assert 'transfer_reason' not in decl.parameters.properties
+    assert 'transfer_reason' not in decl.description
+    assert decl.parameters.required == ['agent_name']
+
+  def test_transfer_to_agent_tool_with_transfer_reason(self):
+    """Test TransferToAgentTool when include_transfer_reason=True."""
+    agent_names = ['agent_a', 'agent_b', 'agent_c']
+    tool = TransferToAgentTool(
+        agent_names=agent_names, include_transfer_reason=True
+    )
+
+    decl = tool._get_declaration()
+
+    assert decl is not None
+    assert 'agent_name' in decl.parameters.properties
+    assert 'transfer_reason' in decl.parameters.properties
+    assert 'transfer_reason' in decl.description
+
+    transfer_reason_schema = decl.parameters.properties['transfer_reason']
+    assert transfer_reason_schema.type == types.Type.STRING
+    assert transfer_reason_schema.enum is None
+
+    # Verify that only agent_name is marked as required (transfer_reason is optional)
     assert decl.parameters.required == ['agent_name']
 
   def test_transfer_to_agent_tool_single_agent(self):
@@ -105,10 +128,20 @@ class TestTransferToAgentToolLegacy:
     decl = tool._get_declaration()
 
     assert decl is not None
-    # Should only have agent_name parameter (tool_context is ignored)
+    # Should only have agent_name parameter by default (tool_context and transfer_reason are ignored)
     assert len(decl.parameters.properties) == 1
     assert 'agent_name' in decl.parameters.properties
+    assert 'transfer_reason' not in decl.parameters.properties
     assert 'tool_context' not in decl.parameters.properties
+
+    tool_with_reason = TransferToAgentTool(
+        agent_names=['agent_a'], include_transfer_reason=True
+    )
+    decl_with_reason = tool_with_reason._get_declaration()
+    assert decl_with_reason is not None
+    assert len(decl_with_reason.parameters.properties) == 2
+    assert 'agent_name' in decl_with_reason.parameters.properties
+    assert 'transfer_reason' in decl_with_reason.parameters.properties
 
 
 # Shared/Common tests at module level
@@ -121,6 +154,27 @@ def test_transfer_to_agent_tool_preserves_description():
   assert decl is not None
   assert decl.description is not None
   assert 'Transfer the query to another agent' in decl.description
+  assert 'transfer_reason' not in decl.description
+  assert 'transfer_reason' not in tool.description
+  assert decl.description == tool.description
+  assert '\n  Use this tool' not in decl.description
+  assert '\nUse this tool' in decl.description
+
+
+def test_transfer_to_agent_tool_with_reason_includes_reason_in_description():
+  """Test that TransferToAgentTool includes transfer_reason in description when enabled."""
+  tool = TransferToAgentTool(
+      agent_names=['agent_a', 'agent_b'], include_transfer_reason=True
+  )
+
+  decl = tool._get_declaration()
+
+  assert decl is not None
+  assert decl.description is not None
+  assert 'Transfer the query to another agent' in decl.description
+  assert 'transfer_reason' in decl.description
+  assert 'transfer_reason' in tool.description
+  assert decl.description == tool.description
 
 
 def test_transfer_to_agent_tool_maintains_inheritance():
@@ -200,7 +254,38 @@ class TestTransferToAgentToolWithJsonSchema:
     agent_name_schema = decl.parameters_json_schema['properties']['agent_name']
     assert agent_name_schema['type'] == 'string'
     assert agent_name_schema['enum'] == agent_names
-    assert decl.parameters_json_schema['required'] == ['agent_name']
+
+    # By default, transfer_reason is not included in parameters_json_schema or description
+    assert 'transfer_reason' not in decl.parameters_json_schema['properties']
+    assert 'transfer_reason' not in decl.description
+
+    assert decl.parameters_json_schema['required'] == [
+        'agent_name',
+    ]
+
+  def test_transfer_to_agent_tool_with_transfer_reason(self):
+    """Test TransferToAgentTool with include_transfer_reason=True in JSON schema mode."""
+    agent_names = ['agent_a', 'agent_b', 'agent_c']
+    tool = TransferToAgentTool(
+        agent_names=agent_names, include_transfer_reason=True
+    )
+
+    decl = tool._get_declaration()
+
+    assert decl is not None
+    assert 'agent_name' in decl.parameters_json_schema['properties']
+    assert 'transfer_reason' in decl.parameters_json_schema['properties']
+    assert 'transfer_reason' in decl.description
+
+    transfer_reason_schema = decl.parameters_json_schema['properties'][
+        'transfer_reason'
+    ]
+    assert transfer_reason_schema['type'] == 'string'
+    assert 'enum' not in transfer_reason_schema
+
+    assert decl.parameters_json_schema['required'] == [
+        'agent_name',
+    ]
 
   def test_transfer_to_agent_tool_single_agent(self):
     """Test TransferToAgentTool with a single agent."""
@@ -253,4 +338,86 @@ class TestTransferToAgentToolWithJsonSchema:
     assert decl is not None
     assert len(decl.parameters_json_schema['properties']) == 1
     assert 'agent_name' in decl.parameters_json_schema['properties']
+    assert 'transfer_reason' not in decl.parameters_json_schema['properties']
     assert 'tool_context' not in decl.parameters_json_schema['properties']
+
+    tool_with_reason = TransferToAgentTool(
+        agent_names=['agent_a'], include_transfer_reason=True
+    )
+    decl_with_reason = tool_with_reason._get_declaration()
+    assert decl_with_reason is not None
+    assert len(decl_with_reason.parameters_json_schema['properties']) == 2
+    assert 'agent_name' in decl_with_reason.parameters_json_schema['properties']
+    assert (
+        'transfer_reason'
+        in decl_with_reason.parameters_json_schema['properties']
+    )
+
+
+def test_transfer_to_agent_function_sets_reason():
+  from unittest.mock import MagicMock
+
+  from google.adk.events.event_actions import EventActions
+  from google.adk.tools.transfer_to_agent_tool import transfer_to_agent
+
+  mock_context = MagicMock()
+  mock_context.actions = EventActions()
+
+  transfer_to_agent('target_agent', mock_context, transfer_reason='because')
+
+  assert mock_context.actions.transfer_to_agent == 'target_agent'
+  assert mock_context.actions.transfer_reason == 'because'
+
+
+def test_transfer_to_agent_function_without_reason():
+  from unittest.mock import MagicMock
+
+  from google.adk.events.event_actions import EventActions
+  from google.adk.tools.transfer_to_agent_tool import transfer_to_agent
+
+  mock_context = MagicMock()
+  mock_context.actions = EventActions()
+
+  transfer_to_agent('target_agent', mock_context)
+
+  assert mock_context.actions.transfer_to_agent == 'target_agent'
+  assert mock_context.actions.transfer_reason is None
+
+
+async def test_transfer_to_agent_tool_run_async_default():
+  from unittest.mock import MagicMock
+
+  from google.adk.events.event_actions import EventActions
+
+  mock_context = MagicMock()
+  mock_context.actions = EventActions()
+  mock_context._invocation_context = None
+
+  tool = TransferToAgentTool(agent_names=['target_agent'])
+  await tool.run_async(
+      args={'agent_name': 'target_agent'}, tool_context=mock_context
+  )
+
+  assert mock_context.actions.transfer_to_agent == 'target_agent'
+  assert mock_context.actions.transfer_reason is None
+
+
+async def test_transfer_to_agent_tool_run_async_with_reason():
+  from unittest.mock import MagicMock
+
+  from google.adk.events.event_actions import EventActions
+
+  mock_context = MagicMock()
+  mock_context.actions = EventActions()
+  mock_context._invocation_context = None
+
+  tool = TransferToAgentTool(
+      agent_names=['target_agent'], include_transfer_reason=True
+  )
+  await tool.run_async(
+      args={'agent_name': 'target_agent', 'transfer_reason': 'escalation'},
+      tool_context=mock_context,
+  )
+
+  assert mock_context.actions.transfer_to_agent == 'target_agent'
+  assert mock_context.actions.transfer_reason == 'escalation'

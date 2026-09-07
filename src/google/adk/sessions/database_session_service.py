@@ -84,6 +84,7 @@ _SQLITE_DIALECT = "sqlite"
 _MARIADB_DIALECT = "mariadb"
 _MYSQL_DIALECT = "mysql"
 _POSTGRESQL_DIALECT = "postgresql"
+_MSSQL_DIALECT = "mssql"
 # Dialects whose DATETIME/TIMESTAMP columns do not retain timezone info, so
 # timezone-aware datetimes must have their tzinfo stripped before storage. This
 # keeps the value written by create_session consistent with the value read back
@@ -95,6 +96,7 @@ _NAIVE_DATETIME_DIALECTS = (
     _POSTGRESQL_DIALECT,
     _MYSQL_DIALECT,
     _MARIADB_DIALECT,
+    _MSSQL_DIALECT,
 )
 # The driver a URL falls back to when it names none is synchronous for each of
 # these backends, and the asyncio extension of SQLAlchemy refuses a synchronous

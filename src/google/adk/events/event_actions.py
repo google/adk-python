@@ -122,6 +122,9 @@ class EventActions(BaseModel):  # type: ignore[misc]
   transfer_to_agent: Optional[str] = None
   """If set, the event transfers to the specified agent."""
 
+  transfer_reason: Optional[str] = None
+  """The reason for transferring to the target agent."""
+
   escalate: Optional[bool] = None
   """The agent is escalating to a higher level agent."""
 

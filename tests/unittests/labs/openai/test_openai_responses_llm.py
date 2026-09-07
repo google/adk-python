@@ -437,6 +437,52 @@ def test_function_declaration_uses_responses_tool_shape():
   }
 
 
+def test_function_declaration_to_response_tool_parameters_json_schema_ignores_parameters_required():
+  declaration = types.FunctionDeclaration(
+      name='custom_tool',
+      description='Tool with both schemas',
+      parameters=types.Schema(
+          type=types.Type.OBJECT,
+          required=['legacy_param'],
+      ),
+      parameters_json_schema={
+          'type': 'object',
+          'properties': {
+              'query': {'type': 'string'},
+          },
+      },
+  )
+  tool = _function_declaration_to_response_tool(declaration)
+  params = tool['parameters']
+  assert 'required' not in params
+
+
+def test_function_declaration_to_response_tool_prefers_parameters_json_schema_over_parameters():
+  declaration = types.FunctionDeclaration(
+      name='custom_tool',
+      description='Tool with both schemas',
+      parameters=types.Schema(
+          type=types.Type.OBJECT,
+          properties={
+              'legacy_param': types.Schema(type=types.Type.STRING),
+          },
+          required=['legacy_param'],
+      ),
+      parameters_json_schema={
+          'type': 'object',
+          'properties': {
+              'query': {'type': 'string'},
+          },
+          'required': ['query'],
+      },
+  )
+  tool = _function_declaration_to_response_tool(declaration)
+  params = tool['parameters']
+  assert 'query' in params['properties']
+  assert 'legacy_param' not in params['properties']
+  assert params['required'] == ['query']
+
+
 def test_structured_output_uses_responses_text_format():
   """ADK response schemas become Responses text.format json_schema."""
 
@@ -1229,6 +1275,31 @@ def test_structured_output_schema_name_is_sanitized():
   )
 
   assert kwargs['text']['format']['name'] == 'My_Schema_'
+
+
+def test_structured_output_preserves_any_of_for_genai_schema():
+  llm = OpenAIResponsesLlm(model='gpt-5')
+  schema = types.Schema(
+      type=types.Type.OBJECT,
+      properties={
+          'choice': types.Schema(
+              any_of=[
+                  types.Schema(type=types.Type.STRING),
+                  types.Schema(type=types.Type.INTEGER),
+              ]
+          )
+      },
+  )
+  kwargs = llm._get_response_create_kwargs(
+      _user_request(response_schema=schema),
+      stream=False,
+  )
+  schema_dict = kwargs['text']['format']['schema']
+  assert 'any_of' not in schema_dict['properties']['choice']
+  assert schema_dict['properties']['choice']['anyOf'] == [
+      {'type': 'string'},
+      {'type': 'integer'},
+  ]
 
 
 def test_enforce_strict_openai_schema_handles_nested_refs():

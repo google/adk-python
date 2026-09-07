@@ -42,7 +42,7 @@ import pytest
 from ..testing_utils import InMemoryRunner
 from ..testing_utils import MockModel
 from ..testing_utils import UserContent
-from .functional._scenarios import install_telemetry
+from .functional.scenarios.telemetry_setup import install_telemetry
 
 _ENV_EXPERIMENTAL = 'OTEL_SEMCONV_STABILITY_OPT_IN'
 _ENV_CAPTURE = 'OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT'

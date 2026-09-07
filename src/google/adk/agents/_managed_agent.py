@@ -376,8 +376,10 @@ class ManagedAgent(BaseAgent):
   async def _run_async_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
-    # Lazy import: google.genai is heavy, so only `types` is imported at module
-    # level (see CheckGoogleGenaiLazyImport / base_llm_flow.run_live).
+    # Lazy import: google.genai is heavy, so `types` is the only name imported
+    # at module level via `from google.genai import ...`; every other such name
+    # is imported inside the function that needs it, as base_llm_flow.run_live
+    # does.
     from google.genai import errors
 
     # Recovery and tool resolution run outside the try so config errors (e.g.

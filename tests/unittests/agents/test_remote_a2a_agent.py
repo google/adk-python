@@ -5182,6 +5182,7 @@ class TestFindFinishTaskArgsFromHistory:
 
     # Create a FR event with matching ID "fc-1" (the older one)
     fr_event = Mock(spec=Event)
+    fr_event.get_function_calls.return_value = []
     fr_event.get_function_responses.return_value = [
         genai_types.FunctionResponse(
             id="fc-1", name="finish_task", response={"result": "SUCCESS"}
@@ -5194,6 +5195,34 @@ class TestFindFinishTaskArgsFromHistory:
         session, "task-1", completed_fr_event=fr_event
     )
     assert args == {"result": "first-attempt"}
+
+  def test_find_finish_task_args_from_the_completing_event_itself(self):
+    """The call and its response can arrive in one not-yet-appended event.
+
+    A remote peer sends both in the same event, so the call is not in the
+    session when the caller reads it, and the event carries no isolation
+    scope yet. Missing it makes a finished task look like a running one.
+    """
+    fr_event = Mock(spec=Event)
+    fr_event.isolation_scope = None
+    fr_event.get_function_calls.return_value = [
+        genai_types.FunctionCall(
+            id="fc-1", name="finish_task", args={"result": "in-flight"}
+        )
+    ]
+    fr_event.get_function_responses.return_value = [
+        genai_types.FunctionResponse(
+            id="fc-1", name="finish_task", response={"result": "SUCCESS"}
+        )
+    ]
+
+    session = Mock(spec=Session)
+    session.events = []
+
+    args = remote_a2a_agent._find_finish_task_args_from_history(
+        session, "task-1", completed_fr_event=fr_event
+    )
+    assert args == {"result": "in-flight"}
 
   def test_find_finish_task_args_with_non_matching_fr_id(self):
     # Session with a finish_task FC
@@ -5210,6 +5239,7 @@ class TestFindFinishTaskArgsFromHistory:
 
     # Create a FR event with a non-matching ID "fc-different"
     fr_event = Mock(spec=Event)
+    fr_event.get_function_calls.return_value = []
     fr_event.get_function_responses.return_value = [
         genai_types.FunctionResponse(
             id="fc-different",
@@ -6047,7 +6077,8 @@ class TestRemoteA2aAgentWorkflowOutput:
 
 
 # ---------------------------------------------------------------------------
-# Regression coverage for the A2A human-input resume rewrite (b/540026826) and
+# Regression coverage for the A2A human-input resume rewrite, which flattens a
+# pause's function_response into text before forwarding it to the peer, and for
 # its adversarial follow-ups: credential egress via the caller fallback, and a
 # parallel real-tool + human-input resume re-creating the ValueError.
 # ---------------------------------------------------------------------------
@@ -6075,9 +6106,9 @@ def _resume_events(
   Args:
     calls: list of ``(name, id)`` function calls that paused the invocation.
     responses: list of ``(name, id, response_dict)`` user function responses.
-      Unlike the harness in cl/955528102, this can place more than one
-      function_response on the resume event, which is required to reproduce the
-      parallel real-tool + human-input case.
+      All of them go onto one resume event. A fixture that carries a single
+      function_response cannot reach the parallel real-tool + human-input case,
+      which needs two responses in the same turn.
     user_text: optional sibling text part appended to the response event.
     task_id: value stamped into the pausing event's a2a metadata.
 

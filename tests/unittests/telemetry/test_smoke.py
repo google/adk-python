@@ -29,9 +29,9 @@ from opentelemetry.instrumentation._semconv import _OpenTelemetrySemanticConvent
 from opentelemetry.instrumentation.google_genai import GoogleGenAiSdkInstrumentor
 import pytest
 
-from .functional._scenarios import EXPERIMENTAL_OPT_IN
-from .functional._scenarios import gemini_test_model
-from .functional._scenarios import OTEL_OPT_IN
+from .functional.scenarios.inference import gemini_test_model
+from .functional.scenarios.telemetry_setup import EXPERIMENTAL_OPT_IN
+from .functional.scenarios.telemetry_setup import OTEL_OPT_IN
 
 
 def test_semconv_stability_cache_can_be_reset(

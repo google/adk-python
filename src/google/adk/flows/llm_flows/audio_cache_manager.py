@@ -14,8 +14,10 @@
 
 """Backward compatibility module for AudioCacheManager.
 
-AudioCacheManager and AudioCacheConfig have been moved to
-``google.adk.live.audio_cache_manager``.
+AudioCacheManager and AudioCacheConfig are no longer public; they live in
+``google.adk.live._audio_cache_manager`` and this module only keeps
+existing imports working. RealtimeCacheEntry is public as
+``google.adk.agents.invocation_context.RealtimeCacheEntry``.
 """
 
 from __future__ import annotations

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import json
 from pathlib import Path
 import shutil
@@ -767,6 +768,41 @@ class TestValidateAgentImport:
     # Should not raise
     cli_deploy._validate_agent_import(
         str(tmp_path), "app", is_config_agent=False
+    )
+
+  def test_validate_agent_import_with_stale_cache(
+      self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    """Should succeed even when parent dir contents were cached before agent package creation."""
+    import os
+    import sys
+
+    parent_dir = str(tmp_path)
+    # Populate sys.path_importer_cache before agent package directory exists
+    finder = None
+    for hook in sys.path_hooks:
+      try:
+        finder = hook(parent_dir)
+        if finder and hasattr(finder, "find_spec"):
+          finder.find_spec("non_existent_module")
+          break
+      except Exception:
+        pass
+
+    assert finder is not None
+    monkeypatch.setitem(sys.path_importer_cache, parent_dir, finder)
+
+    agent_dir = tmp_path / "new_agent_package"
+    agent_dir.mkdir()
+    (agent_dir / "__init__.py").touch()
+    (agent_dir / "agent.py").write_text("root_agent = 'stale_test'\n")
+
+    # Ensure finder has stale mtime cache so it requires invalidate_caches
+    assert hasattr(finder, "_path_mtime")
+    finder._path_mtime = os.stat(parent_dir).st_mtime
+
+    cli_deploy._validate_agent_import(
+        str(agent_dir), "root_agent", is_config_agent=False
     )
 
   def test_success_with_relative_imports(self, tmp_path: Path) -> None:
@@ -1864,3 +1900,62 @@ def test_cli_deploy_agent_engine_passes_worker_pool(tmp_path: Path) -> None:
     mock_to_agent_engine.assert_called_once()
     _, kwargs = mock_to_agent_engine.call_args
     assert kwargs["worker_pool"] == _VALID_WORKER_POOL
+
+
+def _adk_app_template() -> type:
+  """Returns the Agent Platform template the class-method catalogue mirrors."""
+  agent_engines = pytest.importorskip(
+      "vertexai.agent_engines",
+      reason="Agent Platform deployment is an optional extra.",
+  )
+  return agent_engines.AdkApp
+
+
+def test_agent_engine_class_methods_match_the_template_operations() -> None:
+  """The deployed resource advertises the operations the template registers."""
+  adk_app_template = _adk_app_template()
+  # register_operations reads nothing off the instance, so call it unbound.
+  # Constructing the template would resolve Application Default Credentials,
+  # which a unit test must not depend on.
+  operations = adk_app_template.register_operations(None)
+
+  declared = {
+      (method["name"], method["api_mode"])
+      for method in cli_deploy._AGENT_ENGINE_CLASS_METHODS
+  }
+  registered = {
+      (name, api_mode)
+      for api_mode, names in operations.items()
+      for name in names
+  }
+
+  assert declared == registered
+
+
+def test_agent_engine_class_method_parameters_match_the_template() -> None:
+  """Every catalogue schema names what the template's method accepts."""
+  adk_app_template = _adk_app_template()
+
+  for method in cli_deploy._AGENT_ENGINE_CLASS_METHODS:
+    signature = inspect.signature(getattr(adk_app_template, method["name"]))
+    named = {
+        name: parameter
+        for name, parameter in signature.parameters.items()
+        if name != "self"
+        and parameter.kind
+        not in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD)
+    }
+    absorbs_extras = any(
+        parameter.kind is parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+    declared = method["parameters"]["properties"]
+
+    assert not set(named) - set(declared), method["name"]
+    if not absorbs_extras:
+      assert not set(declared) - set(named), method["name"]
+    assert sorted(method["parameters"]["required"]) == sorted(
+        name
+        for name, parameter in named.items()
+        if parameter.default is parameter.empty
+    ), method["name"]

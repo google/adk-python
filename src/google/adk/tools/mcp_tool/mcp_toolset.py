@@ -60,6 +60,7 @@ from .mcp_session_manager import retry_on_errors
 from .mcp_session_manager import SseConnectionParams
 from .mcp_session_manager import StdioConnectionParams
 from .mcp_session_manager import StreamableHTTPConnectionParams
+from .mcp_tool import _dump_mcp_model
 from .mcp_tool import _RESERVED_TOOL_NAMES
 from .mcp_tool import MCPTool
 from .mcp_tool import ProgressCallbackFactory
@@ -594,7 +595,10 @@ class McpToolset(BaseToolset):
     )
     for resource in result.resources:
       if resource.name == name:
-        return resource.model_dump(mode="json", exclude_none=True)
+        # `Resource` carries `mimeType`, which 2.x renames. A plain dump would
+        # hand the caller a different key on each major, the way the tool
+        # result did.
+        return _dump_mcp_model(resource)
     raise ValueError(f"Resource with name '{name}' not found.")
 
   async def close(self) -> None:

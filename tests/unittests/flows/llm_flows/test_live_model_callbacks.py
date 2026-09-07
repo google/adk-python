@@ -145,9 +145,7 @@ async def _collect_receive(
   events = []
   try:
     async with testing_utils.Aclosing(
-        flow._receive_from_model(
-            connection, 'e1', invocation_context, llm_request
-        )
+        flow._receive_from_model(connection, invocation_context, llm_request)
     ) as agen:
       async for event in agen:
         events.append(event)

@@ -1391,6 +1391,10 @@ def test_forecast_with_query_statement(
         ({"history_data": "invalid; drop"}, "Invalid BigQuery identifier"),
         ({"data_col": "invalid; drop"}, "Invalid BigQuery identifier"),
         ({"timestamp_col": "invalid; drop"}, "Invalid BigQuery identifier"),
+        ({"data_col": "my_table.my_col"}, "Invalid BigQuery identifier"),
+        ({"timestamp_col": "my_dataset:my_col"}, "Invalid BigQuery identifier"),
+        ({"data_col": None}, "Invalid BigQuery identifier"),
+        ({"timestamp_col": None}, "Invalid BigQuery identifier"),
         (
             {"id_cols": ["valid", "invalid; drop"]},
             "All elements in id_cols must be valid identifiers",
@@ -1646,7 +1650,7 @@ def test_detect_anomalies_with_table_id(
   """
 
   expected_anomaly_detection_query = """
-  SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.95 AS anomaly_prob_threshold)) ORDER BY ts_timestamp
+  SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.95 AS anomaly_prob_threshold)) ORDER BY `ts_timestamp`
   """
 
   assert mock_execute_sql.call_count == 2
@@ -1705,7 +1709,61 @@ def test_detect_anomalies_with_custom_params(
   """
 
   expected_anomaly_detection_query = """
-  SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.8 AS anomaly_prob_threshold)) ORDER BY dim1, dim2, ts_timestamp
+  SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.8 AS anomaly_prob_threshold)) ORDER BY `dim1`, `dim2`, `ts_timestamp`
+  """
+
+  assert mock_execute_sql.call_count == 2
+  mock_execute_sql.assert_any_call(
+      project_id="test-project",
+      query=expected_create_model_query,
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+      caller_id="detect_anomalies",
+  )
+  mock_execute_sql.assert_any_call(
+      project_id="test-project",
+      query=expected_anomaly_detection_query,
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+      caller_id="detect_anomalies",
+  )
+
+
+@mock.patch.object(query_tool, "_validate_subquery", autospec=True)
+@mock.patch.object(query_tool, "_execute_sql", autospec=True)
+@mock.patch.object(uuid, "uuid4", autospec=True)
+def test_detect_anomalies_with_hyphenated_columns(
+    mock_uuid, mock_execute_sql, mock_validate_subquery
+):
+  """Anomaly detection orders by hyphenated columns wrapped in backticks."""
+  mock_validate_subquery.return_value = None
+  mock_credentials = mock.MagicMock(spec=Credentials)
+  mock_settings = BigQueryToolConfig(write_mode=WriteMode.PROTECTED)
+  mock_tool_context = mock.create_autospec(ToolContext, instance=True)
+  mock_uuid.return_value = "test_uuid"
+  mock_execute_sql.return_value = {"status": "SUCCESS"}
+  history_data_query = "SELECT * FROM `test-dataset.test-table`"
+  query_tool.detect_anomalies(
+      project_id="test-project",
+      history_data=history_data_query,
+      times_series_timestamp_col="event-ts",
+      times_series_data_col="event-val",
+      times_series_id_cols=["store-id"],
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+  )
+
+  expected_create_model_query = """
+  CREATE TEMP MODEL detect_anomalies_model_test_uuid
+    OPTIONS (MODEL_TYPE = 'ARIMA_PLUS', TIME_SERIES_TIMESTAMP_COL = 'event-ts', TIME_SERIES_DATA_COL = 'event-val', HORIZON = 1000, TIME_SERIES_ID_COL = ['store-id'])
+  AS (SELECT * FROM `test-dataset.test-table`)
+  """
+
+  expected_anomaly_detection_query = """
+  SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.95 AS anomaly_prob_threshold)) ORDER BY `store-id`, `event-ts`
   """
 
   assert mock_execute_sql.call_count == 2
@@ -1766,7 +1824,7 @@ def test_detect_anomalies_on_target_table(
   """
 
   expected_anomaly_detection_query = """
-    SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.8 AS anomaly_prob_threshold), (SELECT * FROM `test-dataset.target-table`)) ORDER BY dim1, dim2, ts_timestamp
+    SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.8 AS anomaly_prob_threshold), (SELECT * FROM `test-dataset.target-table`)) ORDER BY `dim1`, `dim2`, `ts_timestamp`
     """
 
   assert mock_execute_sql.call_count == 2
@@ -1823,7 +1881,7 @@ def test_detect_anomalies_with_str_table_id(
   """
 
   expected_anomaly_detection_query = """
-    SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.95 AS anomaly_prob_threshold), (SELECT * FROM `test-dataset.target-table`)) ORDER BY ts_timestamp
+    SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.95 AS anomaly_prob_threshold), (SELECT * FROM `test-dataset.target-table`)) ORDER BY `ts_timestamp`
     """
 
   assert mock_execute_sql.call_count == 2
@@ -1859,7 +1917,24 @@ def test_detect_anomalies_with_str_table_id(
             "Invalid BigQuery identifier",
         ),
         (
+            {"times_series_data_col": "my_table.my_col"},
+            "Invalid BigQuery identifier",
+        ),
+        (
+            {"times_series_timestamp_col": "my_dataset:my_col"},
+            "Invalid BigQuery identifier",
+        ),
+        ({"times_series_data_col": None}, "Invalid BigQuery identifier"),
+        (
+            {"times_series_timestamp_col": None},
+            "Invalid BigQuery identifier",
+        ),
+        (
             {"times_series_id_cols": ["valid", "invalid; drop"]},
+            "All elements in times_series_id_cols must be valid identifiers",
+        ),
+        (
+            {"times_series_id_cols": ["valid", "my_table.my_col"]},
             "All elements in times_series_id_cols must be valid identifiers",
         ),
         (

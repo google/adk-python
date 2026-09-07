@@ -1174,6 +1174,74 @@ async def test_search_memory(mock_vertexai_client):
 
   assert len(result.memories) == 1
   assert result.memories[0].content.parts[0].text == 'test_content'
+  assert result.memories[0].custom_metadata == {}
+
+
+@pytest.mark.asyncio
+async def test_search_memory_returns_custom_metadata(mock_vertexai_client):
+  """`search_memory` must round-trip `custom_metadata`."""
+  timestamp = datetime.datetime(2024, 12, 12, 12, 12, 12, 123456)
+  retrieved_memory = mock.MagicMock()
+  retrieved_memory.memory.fact = 'test_content'
+  retrieved_memory.memory.update_time = timestamp
+  retrieved_memory.memory.metadata = {
+      'a_bool': vertex_types.MemoryMetadataValue(bool_value=True),
+      'a_double': vertex_types.MemoryMetadataValue(double_value=1.5),
+      'a_string': vertex_types.MemoryMetadataValue(string_value='record-123'),
+      'a_timestamp': vertex_types.MemoryMetadataValue(
+          timestamp_value=timestamp
+      ),
+      'a_mapping': {'string_value': 'mapping-val'},
+      'a_mapping_with_none': {
+          'bool_value': None,
+          'double_value': None,
+          'string_value': 'none-mapping-val',
+          'timestamp_value': None,
+      },
+  }
+
+  mock_vertexai_client.agent_engines.memories.retrieve.return_value = (
+      _AsyncListIterator([retrieved_memory])
+  )
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='query'
+  )
+
+  assert len(result.memories) == 1
+  assert result.memories[0].custom_metadata == {
+      'a_bool': True,
+      'a_double': 1.5,
+      'a_string': 'record-123',
+      'a_timestamp': timestamp,
+      'a_mapping': 'mapping-val',
+      'a_mapping_with_none': 'none-mapping-val',
+  }
+
+
+@pytest.mark.asyncio
+async def test_search_memory_when_memory_has_no_metadata_attr(
+    mock_vertexai_client,
+):
+  """A memory object missing the metadata attribute returns an empty dict."""
+  retrieved_memory = mock.MagicMock()
+  retrieved_memory.memory.fact = 'test_content'
+  retrieved_memory.memory.update_time = None
+  del retrieved_memory.memory.metadata
+
+  mock_vertexai_client.agent_engines.memories.retrieve.return_value = (
+      _AsyncListIterator([retrieved_memory])
+  )
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='query'
+  )
+
+  assert len(result.memories) == 1
+  assert result.memories[0].content.parts[0].text == 'test_content'
+  assert result.memories[0].custom_metadata == {}
 
 
 @pytest.mark.asyncio

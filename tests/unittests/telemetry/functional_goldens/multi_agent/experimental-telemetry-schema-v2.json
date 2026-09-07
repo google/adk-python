@@ -281,6 +281,20 @@
         "value": 15
       }
     ],
+    "adk.experimental.invoke_agent.skill.loads": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 0
+      },
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_specialist_agent"
+        },
+        "value": 0
+      }
+    ],
     "adk.experimental.invoke_agent.tool.input_tokens": [
       {
         "attributes": {
@@ -352,6 +366,15 @@
           "gen_ai.workflow.name": "some_root_agent"
         },
         "value": 20
+      }
+    ],
+    "adk.experimental.invoke_workflow.skill.loads": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "some_root_agent",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": 0
       }
     ],
     "adk.experimental.invoke_workflow.tool.input_tokens": [

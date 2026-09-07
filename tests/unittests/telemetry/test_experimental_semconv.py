@@ -309,6 +309,63 @@ def test_response_attributes_split_between_details_and_common():
   }
 
 
+def test_response_attributes_accumulate_output_messages_across_a_stream():
+  """Keeping only the last chunk truncated the log to it."""
+  details: dict = {}
+  common: dict = {}
+
+  for text in ('text ', 'response'):
+    set_operation_details_attributes_from_response(
+        LlmResponse(
+            content=types.Content(role='model', parts=[types.Part(text=text)]),
+            finish_reason=types.FinishReason.STOP,
+        ),
+        details,
+        common,
+    )
+
+  assert details == {
+      'gen_ai.output.messages': [
+          {
+              'role': 'assistant',
+              'parts': [{'content': 'text ', 'type': 'text'}],
+              'finish_reason': 'stop',
+          },
+          {
+              'role': 'assistant',
+              'parts': [{'content': 'response', 'type': 'text'}],
+              'finish_reason': 'stop',
+          },
+      ]
+  }
+
+
+def test_streamed_chunks_are_reported_one_message_each():
+  """Each chunk is its own message, as the OTel instrumentor reports a stream."""
+  details: dict = {}
+  common: dict = {}
+
+  # Only the chunk that ends the turn reports why generation stopped.
+  for text, finish_reason in (
+      ('text ', types.FinishReason.FINISH_REASON_UNSPECIFIED),
+      ('response', types.FinishReason.STOP),
+  ):
+    set_operation_details_attributes_from_response(
+        LlmResponse(
+            content=types.Content(role='model', parts=[types.Part(text=text)]),
+            finish_reason=finish_reason,
+        ),
+        details,
+        common,
+    )
+
+  assert [
+      message['parts'][0]['content']
+      for message in details['gen_ai.output.messages']
+  ] == ['text ', 'response']
+  assert common == {'gen_ai.response.finish_reasons': ['stop']}
+
+
 def test_response_attributes_omit_output_messages_without_content():
   """An error-only response writes no output-message key at all."""
   llm_response = LlmResponse(
@@ -346,7 +403,6 @@ def test_response_attributes_omit_finish_reasons_but_keep_empty_message_field():
         (types.FinishReason.STOP, 'stop'),
         (types.FinishReason.MAX_TOKENS, 'length'),
         (types.FinishReason.OTHER, 'error'),
-        (types.FinishReason.FINISH_REASON_UNSPECIFIED, 'error'),
         (types.FinishReason.SAFETY, 'safety'),
     ],
 )
@@ -363,6 +419,19 @@ def test_response_attributes_normalize_finish_reason(
 
   assert common[GEN_AI_RESPONSE_FINISH_REASONS] == [expected]
   assert details[GEN_AI_OUTPUT_MESSAGES][0]['finish_reason'] == expected
+
+
+def test_response_attributes_treat_unspecified_finish_reason_as_unreported():
+  """The proto3 zero value means unreported, not failed."""
+  llm_response = LlmResponse(
+      content=types.Content(role='model', parts=[types.Part(text='Response')]),
+      finish_reason=types.FinishReason.FINISH_REASON_UNSPECIFIED,
+  )
+
+  details, common = _response_attributes(llm_response)
+
+  assert GEN_AI_RESPONSE_FINISH_REASONS not in common
+  assert details[GEN_AI_OUTPUT_MESSAGES][0]['finish_reason'] == ''
 
 
 def test_response_attributes_omit_token_usage_without_metadata():

@@ -392,3 +392,52 @@ async def test_send_to_model_state_delta_with_close(mock_llm_connection):
 
   assert invocation_context.session.state['k'] == 'v'
   mock_llm_connection.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_send_to_model_does_not_cache_input_audio_by_default(
+    test_blob, mock_llm_connection
+):
+  """User audio is not retained when save_live_blob is left at its default."""
+  agent = Agent(name='test_agent', model='mock')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  flow = TestBaseLlmFlow()
+
+  invocation_context.live_request_queue.send(LiveRequest(blob=test_blob))
+  invocation_context.live_request_queue.close()
+
+  await flow._send_to_model(
+      mock_llm_connection, invocation_context, LlmRequest()
+  )
+
+  assert not invocation_context.input_realtime_cache
+  mock_llm_connection.send_realtime.assert_called_once_with(test_blob)
+
+
+@pytest.mark.asyncio
+async def test_send_to_model_caches_input_audio_when_save_live_blob(
+    test_blob, mock_llm_connection
+):
+  """User audio is retained when save_live_blob asks for it."""
+  agent = Agent(name='test_agent', model='mock')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='', run_config=RunConfig(save_live_blob=True)
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  flow = TestBaseLlmFlow()
+
+  invocation_context.live_request_queue.send(LiveRequest(blob=test_blob))
+  invocation_context.live_request_queue.close()
+
+  await flow._send_to_model(
+      mock_llm_connection, invocation_context, LlmRequest()
+  )
+
+  assert invocation_context.input_realtime_cache
+  assert invocation_context.input_realtime_cache[0].data == test_blob
+  mock_llm_connection.send_realtime.assert_called_once_with(test_blob)
