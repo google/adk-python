@@ -152,14 +152,54 @@ class AutoTracingPlugin(BasePlugin):
       if inspect.isfunction(attr):
         self._rebind(module, attr_name, attr)
       elif inspect.isclass(attr):
-        for member_name, member in inspect.getmembers(attr):
-          if member_name.startswith("__"):
-            continue
-          if not inspect.isfunction(member):
-            continue
-          if getattr(member, "__module__", "") != module_name:
-            continue
-          self._rebind(attr, member_name, member)
+        self._wrap_class(attr, module_name)
+
+  def _wrap_class(self, cls: type[Any], module_name: str) -> None:
+    """Wraps callables defined on ``cls``, not inherited unwrapped members."""
+    for member_name, member in cls.__dict__.items():
+      if member_name.startswith("__"):
+        continue
+      if isinstance(member, staticmethod):
+        fn = member.__func__
+        if getattr(fn, "__module__", "") != module_name:
+          continue
+        self._rebind_descriptor(cls, member_name, fn, staticmethod)
+      elif isinstance(member, classmethod):
+        fn = member.__func__
+        if getattr(fn, "__module__", "") != module_name:
+          continue
+        self._rebind_descriptor(cls, member_name, fn, classmethod)
+      elif inspect.isfunction(member):
+        if getattr(member, "__module__", "") != module_name:
+          continue
+        self._rebind(cls, member_name, member)
+
+  def _rebind_descriptor(
+      self,
+      owner: type[Any],
+      name: str,
+      fn: Callable[..., Any],
+      descriptor: type[staticmethod] | type[classmethod],
+  ) -> None:
+    if getattr(fn, auto_tracing_helpers.WRAPPED_ATTR, False):
+      return
+    try:
+      setattr(
+          owner,
+          name,
+          descriptor(
+              auto_tracing_helpers.build_tracing_wrapper(
+                  fn, self._tracer, self._caps
+              )
+          ),
+      )
+    except (AttributeError, TypeError) as exc:
+      logger.info(
+          "AutoTracingPlugin: cannot rebind %s.%s: %s",
+          getattr(owner, "__qualname__", owner),
+          name,
+          exc,
+      )
 
   def _rebind(
       self, owner: ModuleType | type[Any], name: str, fn: Callable[..., Any]

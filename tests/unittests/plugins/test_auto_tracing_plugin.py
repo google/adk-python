@@ -752,3 +752,93 @@ def test_sync_gen_caps_buffered_items(fixture):
     assert f"first {cap}:" in rendered, rendered
   finally:
     sys.modules.pop(name, None)
+
+
+_DESCRIPTOR_MODULE_NAME = (
+    "google.adk.tests.unittests.plugins.descriptor_test_fixture"
+)
+
+
+def _build_descriptor_module() -> types.ModuleType:
+  module = types.ModuleType(_DESCRIPTOR_MODULE_NAME)
+  module.__name__ = _DESCRIPTOR_MODULE_NAME
+
+  def slugify(text):
+    return text.strip().lower().replace(" ", "-")
+
+  def build(cls, name):
+    return cls.slugify(name)
+
+  def instance_method(self, x):
+    return x + 1
+
+  def shared(self, x):
+    return x * 2
+
+  for fn in (slugify, build, instance_method, shared):
+    fn.__module__ = _DESCRIPTOR_MODULE_NAME
+
+  tools = type(
+      "Tools",
+      (),
+      {
+          "slugify": staticmethod(slugify),
+          "build": classmethod(build),
+          "instance_method": instance_method,
+      },
+  )
+  zbase = type("ZBase", (), {"shared": shared})
+  achild = type("AChild", (zbase,), {})
+  for cls in (tools, zbase, achild):
+    cls.__module__ = _DESCRIPTOR_MODULE_NAME
+  module.AChild = achild
+  module.Tools = tools
+  module.ZBase = zbase
+  return module
+
+
+def test_staticmethod_stays_callable_on_instance(fixture):
+  module = _build_descriptor_module()
+  sys.modules[_DESCRIPTOR_MODULE_NAME] = module
+  try:
+    plugin = auto_tracing_plugin.AutoTracingPlugin(
+        tracer=fixture.tracer,
+        extra_scope_prefixes=(_DESCRIPTOR_MODULE_NAME,),
+    )
+    asyncio.run(plugin.before_run_callback(invocation_context=None))
+    assert isinstance(module.Tools.__dict__["slugify"], staticmethod)
+    assert module.Tools().slugify("Hello World") == "hello-world"
+    assert any("slugify" in n for n in _span_names(fixture.exporter))
+  finally:
+    sys.modules.pop(_DESCRIPTOR_MODULE_NAME, None)
+
+
+def test_classmethod_is_traced(fixture):
+  module = _build_descriptor_module()
+  sys.modules[_DESCRIPTOR_MODULE_NAME] = module
+  try:
+    plugin = auto_tracing_plugin.AutoTracingPlugin(
+        tracer=fixture.tracer,
+        extra_scope_prefixes=(_DESCRIPTOR_MODULE_NAME,),
+    )
+    asyncio.run(plugin.before_run_callback(invocation_context=None))
+    assert isinstance(module.Tools.__dict__["build"], classmethod)
+    assert module.Tools.build("Hello World") == "hello-world"
+    assert any("build" in n for n in _span_names(fixture.exporter))
+  finally:
+    sys.modules.pop(_DESCRIPTOR_MODULE_NAME, None)
+
+
+def test_inherited_method_is_not_pinned_on_subclass(fixture):
+  module = _build_descriptor_module()
+  sys.modules[_DESCRIPTOR_MODULE_NAME] = module
+  try:
+    plugin = auto_tracing_plugin.AutoTracingPlugin(
+        tracer=fixture.tracer,
+        extra_scope_prefixes=(_DESCRIPTOR_MODULE_NAME,),
+    )
+    asyncio.run(plugin.before_run_callback(invocation_context=None))
+    assert "shared" not in module.AChild.__dict__
+    assert module.AChild().shared(3) == 6
+  finally:
+    sys.modules.pop(_DESCRIPTOR_MODULE_NAME, None)
