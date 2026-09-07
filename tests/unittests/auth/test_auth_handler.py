@@ -769,6 +769,43 @@ class TestGetAuthResponse:
     assert state[credential_key].oauth2.access_token == "mock_access_token"
     assert state[credential_key].oauth2.client_secret is None
 
+  @patch("google.adk.auth.oauth2_credential_util.OAuth2Session")
+  def test_get_auth_response_exchanges_public_client(
+      self, mock_oauth2_session, oauth2_auth_scheme
+  ):
+    """Public clients exchange an auth code with client_id only."""
+    public = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="public-client",
+            redirect_uri="https://example.com/callback",
+        ),
+    )
+    stored = public.model_copy(deep=True)
+    stored.oauth2.auth_code = "public-auth-code"
+    stored.oauth2.auth_response_uri = (
+        "https://example.com/callback?code=public-auth-code"
+    )
+    config = AuthConfig(
+        auth_scheme=oauth2_auth_scheme,
+        raw_auth_credential=public,
+        exchanged_auth_credential=stored,
+    )
+    mock_client = Mock()
+    mock_oauth2_session.return_value = mock_client
+    mock_client.fetch_token.return_value = OAuth2Token(
+        {"access_token": "public_access_token"}
+    )
+    state = MockState()
+    state["temp:" + config.credential_key] = stored
+
+    result = AuthHandler(config).get_auth_response(state)
+
+    assert result.oauth2.access_token == "public_access_token"
+    assert mock_oauth2_session.call_args[0][0] == "public-client"
+    assert mock_oauth2_session.call_args[0][1] is None
+    assert mock_oauth2_session.return_value.fetch_token.called
+
 
 class TestParseAndStoreAuthResponse:
   """Tests for the parse_and_store_auth_response method."""
@@ -810,6 +847,35 @@ class TestParseAndStoreAuthResponse:
 
     credential_key = auth_config_with_exchanged.credential_key
     assert state["temp:" + credential_key] == mock_exchange_token.return_value
+    assert mock_exchange_token.called
+
+  @patch("google.adk.auth.auth_handler.AuthHandler.exchange_auth_token")
+  @pytest.mark.asyncio
+  async def test_oauth_scheme_public_client(
+      self, mock_exchange_token, oauth2_auth_scheme
+  ):
+    """Public clients still exchange an auth code (no client_secret)."""
+    public = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="public-client",
+            redirect_uri="https://example.com/callback",
+        ),
+    )
+    exchanged = public.model_copy(deep=True)
+    exchanged.oauth2.auth_code = "public-auth-code"
+    config = AuthConfig(
+        auth_scheme=oauth2_auth_scheme,
+        raw_auth_credential=public,
+        exchanged_auth_credential=exchanged,
+    )
+    mock_exchange_token.return_value = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(access_token="exchanged_token"),
+    )
+
+    await AuthHandler(config).parse_and_store_auth_response(MockState())
+
     assert mock_exchange_token.called
 
   @pytest.mark.asyncio

@@ -148,12 +148,7 @@ class AuthHandler:
     ):
       return False
     oauth2 = credential.oauth2 if credential else None
-    return bool(
-        oauth2
-        and not oauth2.access_token
-        and oauth2.client_id
-        and oauth2.client_secret
-    )
+    return bool(oauth2 and not oauth2.access_token and oauth2.client_id)
 
   def _read_stored_credential(
       self, state: State
