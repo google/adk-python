@@ -470,8 +470,24 @@ class McpTool(BaseAuthenticatedTool):
       result = await self._invoke_callable(
           self._require_confirmation, args_to_call
       )
+      if inspect.isawaitable(result):
+        logger.warning(
+            "require_confirmation predicate for tool '%s' returned an"
+            " un-awaited awaitable (%s); the predicate did not actually run."
+            " Treating this as requiring confirmation.",
+            self.name,
+            type(result).__name__,
+        )
+        return True
       if isinstance(result, bool):
         return result
+      logger.warning(
+          "require_confirmation predicate for tool '%s' returned %r (%s),"
+          " which is not a bool. Treating this as requiring confirmation.",
+          self.name,
+          result,
+          type(result).__name__,
+      )
       return True
     return bool(self._require_confirmation)
 

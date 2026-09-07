@@ -1296,6 +1296,51 @@ class TestMCPTool:
     )
 
     assert result is False
+    
+
+  @pytest.mark.asyncio
+  async def test_check_require_confirmation_callable_returns_zero(
+      self,
+  ):
+    """A predicate returning 0 (falsy non-bool) must require confirmation."""
+
+    def returns_zero(param1: str):
+      return 0
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        require_confirmation=returns_zero,
+    )
+    tool_context = Mock(spec=ToolContext)
+
+    result = await tool.check_require_confirmation(
+        {"param1": "test_value"}, tool_context
+    )
+
+    assert result is True
+
+  @pytest.mark.asyncio
+  async def test_check_require_confirmation_callable_returns_empty_string(
+      self,
+  ):
+    """A predicate returning '' (falsy non-bool) must require confirmation."""
+
+    def returns_empty_string(param1: str):
+      return ""
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        require_confirmation=returns_empty_string,
+    )
+    tool_context = Mock(spec=ToolContext)
+
+    result = await tool.check_require_confirmation(
+        {"param1": "test_value"}, tool_context
+    )
+
+    assert result is True
 
   def test_init_validation(self):
     """Test that initialization validates required parameters."""

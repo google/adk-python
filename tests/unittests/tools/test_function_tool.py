@@ -418,6 +418,44 @@ async def test_check_require_confirmation_callable_returns_bool_false(
 
 
 @pytest.mark.asyncio
+async def test_check_require_confirmation_callable_returns_zero(
+    mock_tool_context,
+):
+  """A predicate returning 0 (falsy non-bool) must require confirmation."""
+
+  def returns_zero(arg1: str):
+    return 0
+
+  tool = FunctionTool(
+      lambda arg1: {"received_arg": arg1},
+      require_confirmation=returns_zero,
+  )
+  result = await tool.check_require_confirmation(
+      {"arg1": "hello"}, mock_tool_context
+  )
+  assert result is True
+
+
+@pytest.mark.asyncio
+async def test_check_require_confirmation_callable_returns_empty_string(
+    mock_tool_context,
+):
+  """A predicate returning '' (falsy non-bool) must require confirmation."""
+
+  def returns_empty_string(arg1: str):
+    return ""
+
+  tool = FunctionTool(
+      lambda arg1: {"received_arg": arg1},
+      require_confirmation=returns_empty_string,
+  )
+  result = await tool.check_require_confirmation(
+      {"arg1": "hello"}, mock_tool_context
+  )
+  assert result is True
+
+
+@pytest.mark.asyncio
 async def test_run_async_with_tool_context_and_unexpected_argument():
   """Test that run_async handles tool_context and filters out unexpected arguments."""
 
