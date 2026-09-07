@@ -391,7 +391,9 @@ class LlmAgent(BaseAgent, abc.ABC):
   """The additional content generation configurations.
 
   NOTE: not all fields are usable, e.g. tools must be configured via `tools`,
-  thinking_config can be configured here or via the `planner`. If both are set, the planner's configuration takes precedence.
+  candidate_count must be 1 or unset, and thinking_config can be configured
+  here or via the `planner`. If both are set, the planner's configuration
+  takes precedence.
 
   For example: use this config to adjust model temperature, configure safety
   settings, etc.
@@ -1251,6 +1253,16 @@ class LlmAgent(BaseAgent, abc.ABC):
           'Base URL is a transport setting and must be set on the model'
           ' or its client, not via'
           ' LlmAgent.generate_content_config.http_options.base_url.'
+      )
+    if (
+        generate_content_config.candidate_count is not None
+        and generate_content_config.candidate_count > 1
+    ):
+      raise ValueError(
+          'candidate_count must be 1 or unset. LlmResponse keeps one'
+          ' candidate, so extra values are requested then discarded. Pass'
+          ' generate_content_config=types.GenerateContentConfig() without'
+          ' candidate_count, or set candidate_count=1.'
       )
     return generate_content_config
 

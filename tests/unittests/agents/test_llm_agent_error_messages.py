@@ -147,6 +147,15 @@ class TestValidateGenerateContentConfigErrors:
     with pytest.raises(ValueError, match=r'Move your schema'):
       LlmAgent.validate_generate_content_config(config)
 
+  def test_candidate_count_error_names_generate_content_config(self):
+    """candidate_count > 1 should name generate_content_config in the error."""
+    config = types.GenerateContentConfig(candidate_count=2)
+    with pytest.raises(
+        ValueError, match=r'generate_content_config'
+    ) as exc_info:
+      LlmAgent.validate_generate_content_config(config)
+    assert 'candidate_count=1' in str(exc_info.value)
+
 
 class TestGenerateContentKwargErrors:
   """Tests for misplaced GenerateContentConfig kwargs on LlmAgent."""

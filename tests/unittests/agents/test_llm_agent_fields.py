@@ -449,6 +449,24 @@ def test_validate_generate_content_config_http_options_base_url_throw():
     )
 
 
+def test_validate_generate_content_config_candidate_count_throw():
+  """candidate_count greater than 1 is rejected at LlmAgent construction."""
+  with pytest.raises(ValueError, match=r'candidate_count must be 1 or unset'):
+    LlmAgent(
+        name='test_agent',
+        generate_content_config=types.GenerateContentConfig(candidate_count=2),
+    )
+
+
+def test_validate_generate_content_config_candidate_count_one_allowed():
+  """candidate_count=1 remains settable on generate_content_config."""
+  agent = LlmAgent(
+      name='test_agent',
+      generate_content_config=types.GenerateContentConfig(candidate_count=1),
+  )
+  assert agent.generate_content_config.candidate_count == 1
+
+
 def test_validate_generate_content_config_http_options_allowed():
   """Tests that request-time http options remain settable in config."""
   extra_body = {'tool_config': {'function_calling_config': {'mode': 'AUTO'}}}
