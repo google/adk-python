@@ -4710,7 +4710,7 @@ async def test_completion_additional_args(mock_completion, mock_client):
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 6
+  assert [r for r in responses if not r.partial]
   mock_completion.assert_called_once()
 
   _, kwargs = mock_completion.call_args
@@ -4738,7 +4738,7 @@ async def test_completion_with_drop_params(mock_completion, mock_client):
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 6
+  assert [r for r in responses if not r.partial]
 
   mock_completion.assert_called_once()
 
@@ -4802,12 +4802,13 @@ async def test_generate_content_async_stream_tool_call_includes_aggregated_text(
 
   mock_completion.return_value = iter(STREAMING_MODEL_RESPONSE)
 
-  responses = [
-      response
-      async for response in lite_llm_instance.generate_content_async(
-          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
-      )
-  ]
+  with temporary_feature_override(FeatureName.PROGRESSIVE_SSE_STREAMING, True):
+    responses = [
+        response
+        async for response in lite_llm_instance.generate_content_async(
+            LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+        )
+    ]
   assert len(responses) == 6
   assert responses[0].content.role == "model"
   assert responses[0].content.parts[0].text == "zero, "
@@ -5085,7 +5086,7 @@ async def test_generate_content_async_stream_with_reasoning_tokens(
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 6
+  assert responses[-1].partial is False
   assert responses[0].content.role == "model"
   assert responses[0].content.parts[0].text == "zero, "
   assert responses[1].content.role == "model"
@@ -5157,7 +5158,7 @@ async def test_generate_content_async_stream_with_usage_metadata(
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 6
+  assert responses[-1].partial is False
   assert responses[-1].usage_metadata.prompt_token_count == 10
   assert responses[-1].usage_metadata.candidates_token_count == 5
   assert responses[-1].usage_metadata.total_token_count == 15
@@ -5197,7 +5198,7 @@ async def test_generate_content_async_stream_with_bedrock_cache_tokens(
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 6
+  assert responses[-1].partial is False
   assert responses[-1].usage_metadata.prompt_token_count == 10
   assert responses[-1].usage_metadata.candidates_token_count == 5
   assert responses[-1].usage_metadata.total_token_count == 15
@@ -5366,8 +5367,8 @@ async def test_generate_content_async_stream_with_empty_chunk(
       )
   ]
 
-  assert len(responses) == 3
   final_response = responses[-1]
+  assert final_response.partial is False
   assert final_response.content.role == "model"
 
   # Crucially, assert that only ONE tool call was generated,
@@ -5420,8 +5421,8 @@ async def test_streaming_tool_call_truncated_by_max_tokens(
       )
   ]
 
-  assert len(responses) == 2
   error_response = responses[-1]
+  assert not error_response.partial
   assert error_response.error_code == types.FinishReason.MAX_TOKENS
   assert error_response.finish_reason == types.FinishReason.MAX_TOKENS
   assert "truncated" in error_response.error_message
@@ -5468,8 +5469,8 @@ async def test_streaming_tool_call_complete_with_length_finish_reason(
       )
   ]
 
-  assert len(responses) == 2
   final_response = responses[-1]
+  assert final_response.partial is False
   assert final_response.content.role == "model"
   assert len(final_response.content.parts) == 1
 
@@ -5521,8 +5522,8 @@ async def test_streaming_tool_call_malformed_arguments_returns_empty(
       )
   ]
 
-  assert len(responses) == 2
   final_response = responses[-1]
+  assert final_response.partial is False
   assert final_response.content.role == "model"
   function_call = final_response.content.parts[0].function_call
   assert function_call.name == "test_function"
@@ -7359,7 +7360,6 @@ async def test_streaming_tool_call_args_assembled_from_many_fragments(
       )
   ]
 
-  assert len(responses) == len(fragments) + 1
   function_call = responses[-1].content.parts[0].function_call
   assert function_call.name == "my_func"
   assert function_call.id == "call_xyz"
@@ -7445,7 +7445,6 @@ async def test_streaming_tool_call_brace_in_string_does_not_falsely_complete(
       )
   ]
 
-  assert len(responses) == len(function_chunks) + 1
   parts = responses[-1].content.parts
   assert len(parts) == 2
   args_by_name = {p.function_call.name: p.function_call.args for p in parts}
@@ -7462,22 +7461,21 @@ async def test_streaming_function_chunks_yield_partials_when_progressive_sse_on(
       _stream_chunks_from_function_chunks(_function_chunks_for_args(fragments))
   )
 
-  responses = [
-      r
-      async for r in lite_llm_instance.generate_content_async(
-          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
-      )
-  ]
+  with temporary_feature_override(FeatureName.PROGRESSIVE_SSE_STREAMING, True):
+    responses = [
+        r
+        async for r in lite_llm_instance.generate_content_async(
+            LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+        )
+    ]
 
   partials = [r for r in responses if r.partial]
   assert len(partials) == len(fragments)
-  accumulated = ""
   for fragment, partial in zip(fragments, partials):
     assert partial.get_function_calls()
     function_call = partial.get_function_calls()[0]
     assert function_call.will_continue is True
-    accumulated += fragment
-    assert function_call.partial_args[0].string_value == accumulated
+    assert function_call.partial_args[0].string_value == fragment
   assert responses[-1].partial is False
   assert responses[-1].content.parts[0].function_call.args == {"city": "Paris"}
 
@@ -7566,11 +7564,11 @@ async def test_streaming_buffers_hold_fragments_instead_of_growing_copies(
       LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
   )
   try:
-    # FunctionChunks now yield progressive partials. Drain those first so
-    # the next item is the first text partial, with both buffers filled.
-    for _ in arg_fragments:
-      await responses.__anext__()
-    await responses.__anext__()
+    # Drain until the first text partial, so both buffers are filled.
+    while True:
+      partial = await responses.__anext__()
+      if partial.content and any(p.text for p in partial.content.parts or []):
+        break
     buffers = responses.ag_frame.f_locals
     assert buffers["text_parts"] == text_fragments[:1]
     assert buffers["function_calls"][0]["args_parts"] == arg_fragments

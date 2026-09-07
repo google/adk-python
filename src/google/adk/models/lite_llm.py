@@ -2576,19 +2576,17 @@ def _message_to_generate_content_response(
 def _function_chunk_partial_response(
     fc_state: dict[str, Any],
     *,
+    args_delta: str | None,
     model_version: str | None,
 ) -> LlmResponse:
-  """Builds a partial LlmResponse from the current FunctionChunk buffer."""
-  accumulated_args = "".join(fc_state["args_parts"])
+  """Builds a partial LlmResponse for one FunctionChunk args delta."""
   function_call = types.FunctionCall(
       id=fc_state["id"],
       name=fc_state["name"] or None,
       will_continue=True,
   )
-  if accumulated_args:
-    function_call.partial_args = [
-        types.PartialArg(string_value=accumulated_args)
-    ]
+  if args_delta:
+    function_call.partial_args = [types.PartialArg(string_value=args_delta)]
   return LlmResponse(
       content=types.Content(
           role="model",
@@ -3421,6 +3419,7 @@ class LiteLlm(BaseLlm):
             if is_feature_enabled(FeatureName.PROGRESSIVE_SSE_STREAMING):
               yield _function_chunk_partial_response(
                   function_calls[index],
+                  args_delta=chunk.args,
                   model_version=part.model,
               )
           elif isinstance(chunk, TextChunk):
