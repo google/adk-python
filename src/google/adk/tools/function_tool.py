@@ -110,7 +110,9 @@ class FunctionTool(BaseTool):
       require_confirmation: Whether this tool requires confirmation. A boolean or
         a callable that takes the function's arguments and returns a boolean. If
         the callable returns True, the tool will require confirmation from the
-        user.
+        user. Any return value that is not a bool (including None, e.g. from a
+        function that falls through without an explicit return, or an
+        un-awaited awaitable) is treated as requiring confirmation.
     """
     self._spec = CallableSpec(func)
     name = _function_tool_declarations.get_callable_name(func)

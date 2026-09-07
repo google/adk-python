@@ -302,10 +302,13 @@ class McpTool(BaseAuthenticatedTool):
         mcp_session_manager: The MCP session manager to use for communication.
         auth_scheme: The authentication scheme to use.
         auth_credential: The authentication credential to use.
-        require_confirmation: Whether this tool requires confirmation. A boolean
-          or a callable that takes the function's arguments and returns a
-          boolean. If the callable returns True, the tool will require
-          confirmation from the user.
+        func: The function to wrap.
+        require_confirmation: Whether this tool requires confirmation. A boolean or
+        a callable that takes the function's arguments and returns a boolean. If
+        the callable returns True, the tool will require confirmation from the
+        user. Any return value that is not a bool (including None, e.g. from a
+        function that falls through without an explicit return, or an
+        un-awaited awaitable) is treated as requiring confirmation.
         header_provider: Optional function to provide dynamic headers.
         progress_callback: Optional callback to receive progress notifications
           from MCP server during long-running tool execution. Can be either:
