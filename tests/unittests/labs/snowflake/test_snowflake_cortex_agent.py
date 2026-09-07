@@ -27,6 +27,8 @@ paths that leave the cursor alone, and cancellation on disconnect.
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
 import functools
 import json
 from typing import Any
@@ -38,13 +40,16 @@ from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.agents.run_config import RunConfig
 from google.adk.agents.run_config import StreamingMode
+from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.cli.utils.graph_serialization import serialize_agent
 from google.adk.events.event import Event
 from google.adk.labs.snowflake import SnowflakeCortexAgent
 from google.adk.labs.snowflake._client import CortexApiError
 from google.adk.labs.snowflake._client import CortexTransportError
+from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.tools.base_tool import BaseTool
 from google.genai import types as genai_types
 import httpx
 from pydantic import ValidationError
@@ -785,3 +790,502 @@ async def test_cleanup_leaves_a_shared_http_client_open():
   assert shared.is_closed is False
   await _run(agent, await _invocation_context(agent))
   await shared.aclose()
+
+
+@asynccontextmanager
+async def _callback_runner(snowflake=None, *, plugins=None, **agent_fields):
+  """Runs real ADK components with only the Snowflake HTTP boundary replaced."""
+  snowflake = snowflake or _FakeSnowflake()
+  async with snowflake.http_client() as client:
+    agent = _make_agent(http_client=client, **agent_fields)
+    sessions = InMemorySessionService()
+    session = await sessions.create_session(app_name='app', user_id='u')
+    async with Runner(
+        app_name='app',
+        agent=agent,
+        session_service=sessions,
+        artifact_service=InMemoryArtifactService(),
+        plugins=plugins,
+    ) as runner:
+      try:
+        yield runner, session
+      finally:
+        await agent.cleanup()
+
+
+async def _runner_turn(runner, session, mode=StreamingMode.NONE):
+  return [
+      event
+      async for event in runner.run_async(
+          user_id='u',
+          session_id=session.id,
+          new_message=genai_types.Content(
+              role='user', parts=[genai_types.Part(text='hello')]
+          ),
+          run_config=RunConfig(streaming_mode=mode),
+      )
+  ]
+
+
+async def _read_session(runner, session):
+  return await runner.session_service.get_session(
+      app_name='app', user_id='u', session_id=session.id
+  )
+
+
+@pytest.mark.parametrize('mode', [StreamingMode.SSE, StreamingMode.NONE])
+@pytest.mark.parametrize('replacement', [None, {}, {'ui': 'ready'}])
+async def test_callback_result_and_actions_survive_runner_readback(
+    mode, replacement, monkeypatch
+):
+  """Remote results, state, artifacts and the cursor persist across two turns."""
+  seen = []
+
+  async def never_execute(*args, **kwargs):
+    pytest.fail('Remote tools must not execute locally')
+
+  monkeypatch.setattr(BaseTool, 'run_async', never_execute)
+
+  async def after_tool(*, tool, args, tool_context, tool_response):
+    assert isinstance(tool, BaseTool)
+    assert tool.name == 'system_execute_sql'
+    assert args == {'sql': 'SELECT 1'}
+    assert tool_context.function_call_id == 't1'
+    assert tool_context.agent_name == 'cortex'
+    assert tool_context.user_id == 'u'
+    assert tool_context.session.id == session.id
+    seen.append((tool_context.invocation_id, tool_response.copy()))
+    tool_context.state['processed'] = tool_context.state.get('processed', 0) + 1
+    await tool_context.save_artifact('receipt.txt', genai_types.Part(text='ok'))
+    tool_context.actions.skip_summarization = True
+    return replacement
+
+  snowflake = _FakeSnowflake()
+  snowflake.run_bodies = [_run_stream(), _run_stream(assistant_message_id=789)]
+  async with _callback_runner(snowflake, after_tool_callback=after_tool) as (
+      runner,
+      session,
+  ):
+    first = await _runner_turn(runner, session, mode)
+    second = await _runner_turn(runner, session, mode)
+    stored = await _read_session(runner, session)
+    artifact = await runner.artifact_service.load_artifact(
+        app_name='app',
+        user_id='u',
+        session_id=session.id,
+        filename='receipt.txt',
+        version=1,
+    )
+
+  expected = {
+      'status': 'success',
+      'content': [{'json': {'query_id': 'q1'}, 'type': 'json'}],
+  }
+  assert len(seen) == 2
+  assert seen[0][0] != seen[1][0]
+  assert all(result == expected for _, result in seen)
+  emitted = [e for e in first + second if e.get_function_responses()]
+  persisted = [e for e in stored.events if e.get_function_responses()]
+  assert [e.model_dump(mode='json') for e in emitted] == [
+      e.model_dump(mode='json') for e in persisted
+  ]
+  for index, event in enumerate(emitted):
+    response = event.get_function_responses()[0]
+    assert response.response == (
+        expected if replacement is None else replacement
+    )
+    assert response.id == 't1'
+    assert response.name == event.author == 'system_execute_sql'
+    assert event.invocation_id == seen[index][0]
+    assert event.actions.state_delta == {'processed': index + 1}
+    assert event.actions.artifact_delta == {'receipt.txt': index}
+    assert event.actions.skip_summarization is True
+  assert stored.state['processed'] == 2
+  assert artifact.text == 'ok'
+  assert stored.state['_snowflake_cortex_cortex']['parent_message_id'] == '789'
+  assert [
+      json.loads(r.content)['parent_message_id']
+      for r in snowflake.paths(':run')
+  ] == [0, 456]
+  assert len(snowflake.paths('/cortex/threads')) == 1
+  assert all(stream.closed for stream in snowflake.streams)
+
+
+@pytest.mark.parametrize('stop_at', ['none', 'plugin', 'agent'])
+@pytest.mark.parametrize('replacement', [{}, {'changed': True}])
+async def test_plugin_and_agent_chains_follow_adk_stop_rules(
+    stop_at, replacement
+):
+  """Registration order and first non-None (including {}) match ADK."""
+  order = []
+
+  class Plugin(BasePlugin):
+
+    async def after_tool_callback(
+        self, *, tool, tool_args, tool_context, result
+    ):
+      order.append(self.name)
+      assert tool.name == 'system_execute_sql'
+      assert tool_args == {'sql': 'SELECT 1'}
+      assert result['status'] == 'success'
+      tool_context.state[self.name] = True
+      if self.name == 'p2' and stop_at == 'plugin':
+        return replacement
+
+  def first(t, a, c, r, /):
+    # ADK's positional fallback and sync callbacks are supported too.
+    order.append('a1')
+    assert t.name == 'system_execute_sql'
+    assert a == {'sql': 'SELECT 1'}
+    assert c.function_call_id == 't1'
+    assert r['status'] == 'success'
+    if stop_at == 'agent':
+      return replacement
+
+  async def second(**kwargs):
+    order.append('a2')
+
+  async with _callback_runner(
+      plugins=[Plugin(name=name) for name in ['p1', 'p2', 'p3']],
+      after_tool_callback=[first, second],
+  ) as (runner, session):
+    events = await _runner_turn(runner, session)
+    stored = await _read_session(runner, session)
+
+  expected_order = {
+      'plugin': ['p1', 'p2'],
+      'agent': ['p1', 'p2', 'p3', 'a1'],
+      'none': ['p1', 'p2', 'p3', 'a1', 'a2'],
+  }[stop_at]
+  assert order == expected_order
+  response = next(e for e in events if e.get_function_responses())
+  if stop_at != 'none':
+    assert response.get_function_responses()[0].response == replacement
+  else:
+    assert response.get_function_responses()[0].response['status'] == 'success'
+  assert all(stored.state[name] for name in order if name.startswith('p'))
+
+
+async def test_plugin_receives_results_without_an_agent_callback():
+  """Plugins observe remote results even when the agent callback is unset."""
+  seen = []
+
+  class Plugin(BasePlugin):
+
+    async def after_tool_callback(self, **kwargs):
+      seen.append(kwargs['tool_context'].function_call_id)
+      return {'plugin': True}
+
+  async with _callback_runner(plugins=[Plugin(name='observer')]) as (
+      runner,
+      session,
+  ):
+    events = await _runner_turn(runner, session)
+  assert seen == ['t1']
+  assert next(
+      e for e in events if e.get_function_responses()
+  ).get_function_responses()[0].response == {'plugin': True}
+
+
+def _custom_tool_stream(*events):
+  return (
+      _sse(*events)
+      + _sse((
+          'response',
+          {
+              'status': 'completed',
+              'content': [{'type': 'text', 'text': 'done'}],
+              'metadata': {'assistant_message_id': 456},
+          },
+      ))
+      + _DONE
+  )
+
+
+@pytest.mark.parametrize(
+    'case',
+    [
+        'paired',
+        'orphan',
+        'result_first',
+        'missing_id',
+        'empty_id',
+        'missing_name',
+        'wrong_name',
+    ],
+)
+async def test_callbacks_require_identifiable_prior_calls_and_deduplicate(case):
+  """Unpaired results stay visible; paired results use original call metadata."""
+  seen = []
+  call = {'tool_use_id': 'custom1', 'name': 'custom', 'input': {'original': 1}}
+  result = {'tool_use_id': 'custom1', 'status': 'success', 'content': []}
+  if case == 'missing_id':
+    call.pop('tool_use_id')
+    result.pop('tool_use_id')
+  elif case == 'empty_id':
+    call['tool_use_id'] = result['tool_use_id'] = ''
+  elif case == 'missing_name':
+    call.pop('name')
+  elif case == 'wrong_name':
+    result['name'] = 'conflicting_name'
+  use = ('response.tool_use', call)
+  output = ('response.tool_result', result)
+  if case == 'orphan':
+    stream = [output, output]
+  elif case == 'result_first':
+    stream = [output, use, output]
+  else:
+    stream = [use, use, output, output]
+
+  def callback(tool, args, tool_context, tool_response):
+    seen.append((tool.name, args, tool_context.function_call_id))
+
+  async with _callback_runner(
+      _FakeSnowflake(run_body=_custom_tool_stream(*stream)),
+      after_tool_callback=callback,
+  ) as (runner, session):
+    events = await _runner_turn(runner, session)
+    stored = await _read_session(runner, session)
+
+  assert seen == (
+      [('custom', {'original': 1}, 'custom1')]
+      if case in ['paired', 'wrong_name']
+      else []
+  )
+  assert len([e for e in events if e.get_function_responses()]) == 1
+  assert len([e for e in stored.events if e.get_function_responses()]) == 1
+
+
+async def test_interleaved_tool_results_use_their_own_arguments():
+  """Results arriving in reverse call order are paired by id, not position."""
+  seen = []
+  calls = [
+      (
+          'response.tool_use',
+          {'tool_use_id': str(i), 'name': f'tool{i}', 'input': {'i': i}},
+      )
+      for i in range(3)
+  ]
+  results = [
+      ('response.tool_result', {'tool_use_id': str(i), 'status': 'success'})
+      for i in reversed(range(3))
+  ]
+
+  def callback(tool, args, tool_context, tool_response):
+    seen.append((tool.name, args['i'], tool_context.function_call_id))
+
+  async with _callback_runner(
+      _FakeSnowflake(run_body=_custom_tool_stream(*calls, *results)),
+      after_tool_callback=callback,
+  ) as (runner, session):
+    await _runner_turn(runner, session)
+  assert seen == [(f'tool{i}', i, str(i)) for i in reversed(range(3))]
+
+
+@pytest.mark.parametrize('failure', [ValueError, asyncio.CancelledError])
+@pytest.mark.parametrize('plugin', [False, True])
+async def test_callback_failure_does_not_publish_success_or_advance_cursor(
+    failure, plugin
+):
+  """After one successful turn, callback failure keeps its stored cursor."""
+  fail = False
+
+  async def callback(**kwargs):
+    if fail:
+      kwargs['tool_context'].state['uncommitted'] = True
+      raise failure('callback failed')
+
+  class Plugin(BasePlugin):
+
+    async def after_tool_callback(self, **kwargs):
+      return await callback(**kwargs)
+
+  snowflake = _FakeSnowflake()
+  snowflake.run_bodies = [_run_stream(), _run_stream(assistant_message_id=789)]
+  async with _callback_runner(
+      snowflake,
+      after_tool_callback=None if plugin else callback,
+      plugins=[Plugin(name='failing')] if plugin else None,
+  ) as (runner, session):
+    await _runner_turn(runner, session)
+    before = await _read_session(runner, session)
+    fail = True
+    expected_error = (
+        RuntimeError if plugin and failure is ValueError else failure
+    )
+    with pytest.raises(expected_error):
+      await _runner_turn(runner, session)
+    after = await _read_session(runner, session)
+
+  assert after.state == before.state
+  new_events = after.events[len(before.events) :]
+  assert not any(e.get_function_responses() for e in new_events)
+  assert not any(
+      (e.custom_metadata or {}).get('snowflake_cortex', {}).get('status')
+      == 'completed'
+      for e in new_events
+  )
+  assert all(stream.closed for stream in snowflake.streams)
+  assert bool(snowflake.paths('/cancel')) == (failure is asyncio.CancelledError)
+
+
+@pytest.mark.parametrize('limit', [2, 20, 64, 300])
+@pytest.mark.parametrize('expand', [False, True])
+async def test_size_limit_applies_after_callback_without_state_copy(
+    limit, expand
+):
+  """Callbacks see full input; arbitrary enlarged output cannot bypass bounds."""
+  secret = '원본' * 2000
+  seen = []
+  body = _custom_tool_stream(
+      ('response.tool_use', {'tool_use_id': 'large', 'name': 'custom'}),
+      (
+          'response.tool_result',
+          {
+              'tool_use_id': 'large',
+              'status': 'error',
+              'content': [{'json': {'error': secret}}],
+          },
+      ),
+  )
+
+  def callback(tool, args, tool_context, tool_response):
+    seen.append(tool_response['content'][0]['json']['error'] == secret)
+    return {'expanded': secret * 2} if expand else None
+
+  async with _callback_runner(
+      _FakeSnowflake(run_body=body),
+      max_tool_result_bytes=limit,
+      after_tool_callback=callback,
+  ) as (runner, session):
+    events = await _runner_turn(runner, session)
+    stored = await _read_session(runner, session)
+
+  assert seen == [True]
+  result = (
+      next(e for e in events if e.get_function_responses())
+      .get_function_responses()[0]
+      .response
+  )
+  assert (
+      len(
+          json.dumps(result, separators=(',', ':'), ensure_ascii=False).encode()
+      )
+      <= limit
+  )
+  assert secret not in stored.model_dump_json()
+  assert list(stored.state) == ['_snowflake_cortex_cortex']
+
+
+def test_after_tool_callback_is_runtime_only():
+  """Callbacks remain callable but never appear in repr, JSON or web graphs."""
+  callback = functools.partial(lambda *args, **kwargs: None, secret=_TOKEN)
+  agent = _make_agent(after_tool_callback=callback)
+  assert agent.canonical_after_tool_callbacks == [callback]
+  for output in [
+      repr(agent),
+      agent.model_dump_json(),
+      str(agent.model_dump()),
+      json.dumps(serialize_agent(agent), default=str),
+  ]:
+    assert 'after_tool_callback' not in output
+    assert _TOKEN not in output
+
+
+@pytest.mark.parametrize('endpoint', ['/run', '/run_sse'])
+async def test_api_result_matches_session_and_artifact_readback(
+    endpoint, tmp_path
+):
+  """Real ADK HTTP routes expose the same callback result as session readback."""
+  from google.adk.cli.fast_api import get_fast_api_app
+  from google.adk.cli.utils.base_agent_loader import BaseAgentLoader
+
+  async def callback(tool, args, tool_context, tool_response):
+    tool_context.state['api_processed'] = True
+    await tool_context.save_artifact(
+        'api.txt', genai_types.Part(text='verified')
+    )
+    return {'ui': 'ready'}
+
+  async with _FakeSnowflake().http_client() as remote_client:
+    agent = _make_agent(http_client=remote_client, after_tool_callback=callback)
+
+    class Loader(BaseAgentLoader):
+
+      def load_agent(self, agent_name):
+        return agent
+
+      def list_agents(self):
+        return ['app']
+
+    app = get_fast_api_app(
+        agents_dir=str(tmp_path),
+        agent_loader=Loader(),
+        use_local_storage=False,
+        web=False,
+    )
+    try:
+      async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url='http://127.0.0.1:8000',
+        ) as client:
+          session_path = '/apps/app/users/u/sessions/api_session'
+          created = await client.post(session_path, json={})
+          assert created.status_code == 200
+          response = await client.post(
+              endpoint,
+              json={
+                  'appName': 'app',
+                  'userId': 'u',
+                  'sessionId': 'api_session',
+                  'newMessage': {'role': 'user', 'parts': [{'text': 'hello'}]},
+              },
+          )
+          assert response.status_code == 200
+          payloads = (
+              response.json()
+              if endpoint == '/run'
+              else [
+                  json.loads(line.removeprefix('data: '))
+                  for line in response.text.splitlines()
+                  if line.startswith('data: ')
+              ]
+          )
+          emitted = [Event.model_validate(payload) for payload in payloads]
+          readback = (await client.get(session_path)).json()
+          saved = [
+              Event.model_validate(payload) for payload in readback['events']
+          ]
+          artifact = (
+              await client.get(session_path + '/artifacts/api.txt')
+          ).json()
+    finally:
+      await agent.cleanup()
+
+  event = next(e for e in emitted if e.get_function_responses())
+  stored_event = next(e for e in saved if e.get_function_responses())
+  if endpoint == '/run_sse':
+    # The existing API deliberately separates artifact actions from content
+    # to prevent duplicate rendering. Both frames carry the stored event id.
+    artifact_event = next(e for e in emitted if e.actions.artifact_delta)
+    assert artifact_event.content is None
+    assert artifact_event.id == event.id == stored_event.id
+    assert artifact_event.actions == stored_event.actions
+    assert event.actions.artifact_delta == {}
+    event.actions.artifact_delta = artifact_event.actions.artifact_delta
+  assert event.model_dump(mode='json') == stored_event.model_dump(mode='json')
+  assert event.get_function_responses()[0].response == {'ui': 'ready'}
+  assert event.actions.artifact_delta == {'api.txt': 0}
+  assert readback['state']['api_processed'] is True
+  assert artifact['text'] == 'verified'
+
+
+async def test_impossible_json_budget_fails_without_a_persisted_result():
+  """A one-byte budget fails explicitly rather than recording oversized JSON."""
+  async with _callback_runner(max_tool_result_bytes=1) as (runner, session):
+    with pytest.raises(ValueError, match='at least 2'):
+      await _runner_turn(runner, session)
+    stored = await _read_session(runner, session)
+  assert not any(e.get_function_responses() for e in stored.events)
+  assert not stored.state

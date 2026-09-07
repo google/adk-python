@@ -30,6 +30,8 @@ terminator.
 
 from __future__ import annotations
 
+import copy
+import dataclasses
 import json
 from typing import Any
 from typing import Callable
@@ -40,11 +42,16 @@ from pydantic import JsonValue
 
 from ...events.event import Event
 from ...events.event_actions import EventActions
+from ...tools.base_tool import BaseTool
+from ...tools.tool_context import ToolContext
+from ...utils._callback_pipeline import _run_callbacks
+from ...utils._callback_pipeline import _stop_on_non_none
 from ._sse_parser import SseEvent
 from ._sse_parser import SseParseError
 
 if TYPE_CHECKING:
   from ...agents.invocation_context import InvocationContext
+  from ...agents.llm_agent import _SingleAfterToolCallback
 
 METADATA_KEY = 'snowflake_cortex'
 """The ``custom_metadata`` key under which every Cortex detail is namespaced."""
@@ -54,6 +61,14 @@ _DEFAULT_ERROR_MESSAGE = 'The Snowflake Cortex Agent run failed.'
 _DEFAULT_TOOL_ERROR = {'message': 'The Snowflake tool call failed.'}
 
 _Handler = Callable[[str, dict[str, Any]], list[Event]]
+
+
+@dataclasses.dataclass(frozen=True)
+class _RemoteToolCall:
+  """Original tool identity and arguments retained until its result arrives."""
+
+  name: str
+  args: dict[str, Any]
 
 
 class UnsupportedCortexEventError(RuntimeError):
@@ -170,6 +185,7 @@ class CortexEventConverter:
     self._seen_deltas: set[tuple[str, int, int]] = set()
     self._seen_tool_calls: set[str] = set()
     self._seen_tool_results: set[str] = set()
+    self._tool_calls: dict[str, _RemoteToolCall] = {}
     self._text_blocks: dict[int, str] = {}
     self._thinking_blocks: dict[int, str] = {}
     self._annotations: list[Any] = []
@@ -254,9 +270,71 @@ class CortexEventConverter:
       UnsupportedCortexEventError: The run needs client-side tool execution or
         a permission decision.
     """
+    events, _ = self._convert_unbounded(sse_event)
+    self._bound_event_results(events)
+    return events
+
+  async def convert_async(
+      self,
+      sse_event: SseEvent,
+      *,
+      after_tool_callbacks: list[_SingleAfterToolCallback],
+  ) -> list[Event]:
+    """Converts an event with plugin/agent postprocessing before size bounds.
+
+    Only results with a preceding, identifiable tool use invoke callbacks.
+    Orphan results retain the synchronous conversion behavior. Callbacks
+    receive the invocation's real services; their actions travel on the
+    resulting event for Runner persistence.
+    """
+    events, payload = self._convert_unbounded(sse_event)
+    for event in events:
+      for response in event.get_function_responses():
+        if response.id is None:
+          continue
+        call = self._tool_calls.pop(response.id, None)
+        if call is None or payload.get('tool_use_id') in (None, ''):
+          continue
+        tool = BaseTool(
+            name=call.name,
+            description='Server-side Snowflake tool; execution is remote only.',
+        )
+        tool_context = ToolContext(
+            self._ctx, function_call_id=response.id, event_actions=event.actions
+        )
+        args = call.args or {}
+        result = response.response if response.response is not None else {}
+        replacement = await self._ctx.plugin_manager.run_after_tool_callback(
+            tool=tool, tool_args=args, tool_context=tool_context, result=result
+        )
+        if replacement is None:
+          replacement = await _run_callbacks(
+              after_tool_callbacks,  # type: ignore[arg-type]
+              _stop_on_non_none,
+              tool=tool,
+              args=args,
+              tool_context=tool_context,
+              tool_response=result,
+          )
+        if replacement is not None:
+          response.response = replacement
+        event.actions = tool_context.actions
+    self._bound_event_results(events)
+    return events
+
+  def _bound_event_results(self, events: list[Event]) -> None:
+    for event in events:
+      for response in event.get_function_responses():
+        response.response = self._bound_tool_result(
+            response.response if response.response is not None else {}
+        )
+
+  def _convert_unbounded(
+      self, sse_event: SseEvent
+  ) -> tuple[list[Event], dict[str, Any]]:
     if sse_event.is_done:
       self._done = True
-      return []
+      return [], {}
     payload = sse_event.json_data()
     if not isinstance(payload, dict):
       raise SseParseError(
@@ -264,10 +342,13 @@ class CortexEventConverter:
       )
     handler = self._handlers.get(sse_event.event)
     if handler is None:
-      return self._partial_metadata(
-          {'unknown': {'event': sse_event.event, 'data': payload}}
+      return (
+          self._partial_metadata(
+              {'unknown': {'event': sse_event.event, 'data': payload}}
+          ),
+          payload,
       )
-    return handler(sse_event.event, payload)
+    return handler(sse_event.event, payload), payload
 
   def final_event(self, *, state_delta: dict[str, Any] | None = None) -> Event:
     """Builds the single non-partial event that closes a successful run.
@@ -484,6 +565,14 @@ class CortexEventConverter:
     args = payload.get('input')
     if not isinstance(args, dict):
       args = {} if args is None else {'input': args}
+    if payload.get('tool_use_id') not in (None, '') and (
+        payload.get('name') or payload.get('type')
+    ):
+      # Own the arguments independently of the emitted FunctionCall: event
+      # consumers must not change what the result callback sees.
+      self._tool_calls[tool_use_id] = _RemoteToolCall(
+          name=tool_name, args=copy.deepcopy(args)
+      )
     return [
         self._event(
             content=genai_types.Content(
@@ -505,6 +594,9 @@ class CortexEventConverter:
     if tool_use_id in self._seen_tool_results:
       return []
     self._seen_tool_results.add(tool_use_id)
+    call = self._tool_calls.get(tool_use_id)
+    if call is not None:
+      tool_name = call.name
     status = str(payload.get('status') or 'unknown')
     content = _as_list(payload.get('content'))
     response: dict[str, JsonValue] = {'status': status, 'content': content}
@@ -524,7 +616,7 @@ class CortexEventConverter:
                         function_response=genai_types.FunctionResponse(
                             name=tool_name,
                             id=tool_use_id,
-                            response=self._bound_tool_result(response),
+                            response=response,
                         )
                     )
                 ],
@@ -543,7 +635,7 @@ class CortexEventConverter:
     if size <= self._max_bytes:
       return response
     content = [
-        _without_result_rows(item) for item in _as_list(response['content'])
+        _without_result_rows(item) for item in _as_list(response.get('content'))
     ]
     bounded: dict[str, JsonValue] = {
         **response,
@@ -559,7 +651,23 @@ class CortexEventConverter:
     }
     if _json_size(shaped) <= self._max_bytes:
       return shaped
-    return {**bounded, 'content': []}
+    # Arbitrary callback keys and error details can also exceed the budget.
+    # Keep the familiar summary when it fits, then fall back to a marker.
+    candidates: list[dict[str, JsonValue]] = [
+        {**bounded, 'content': []},
+        {
+            'status': response.get('status'),
+            'content': [],
+            'truncated': True,
+        },
+        {'truncated': True, 'original_bytes': size},
+        {'truncated': True},
+        {},
+    ]
+    for candidate in candidates:
+      if _json_size(candidate) <= self._max_bytes:
+        return candidate
+    raise ValueError('max_tool_result_bytes must be at least 2 to store JSON.')
 
   def _on_annotation(self, name: str, payload: dict[str, Any]) -> list[Event]:
     del name

@@ -135,6 +135,7 @@ thread either way.
 | `timeout` | `float` | `900.0` | Seconds to wait on Snowflake before the turn fails. |
 | `cancel_on_disconnect` | `bool` | `True` | Cancel the Snowflake run when the consumer stops reading. |
 | `max_tool_result_bytes` | `int` | `32768` | Size bound for one recorded tool result, table or chart. |
+| `after_tool_callback` | `AfterToolCallback \| None` | `None` | Sync/async callback or ordered list for remote tool results; excluded from serialization and repr. |
 | `include_thinking_in_final_event` | `bool` | `False` | Also persist the completed reasoning on the final event. |
 
 `account_url`, `database`, `schema_name` and `cortex_agent_name` locate the
@@ -174,7 +175,11 @@ cut down in stages: a SQL result keeps its query id and column metadata and
 drops the rows; a result that is still too large, such as a semantic view
 context, keeps each block's type and the byte size of each of its keys; only
 if even that does not fit is the content emptied. `truncated` and
-`original_bytes` on the response say when this happened. Tables and charts on
+`original_bytes` on the response say when this happened, space permitting.
+Arbitrary callback fields and error details are also bounded: a minimal
+summary, a truncation marker, or finally `{}` is used when needed. A limit
+below two bytes cannot hold a JSON object and fails the turn on a tool result.
+Tables and charts on
 the final event are bounded the same way. Raise it if your application reads
 rows or tool payloads from the recorded events, lower it if session size
 matters more.
@@ -185,6 +190,96 @@ default so reasoning does not reach the session store; streamed reasoning
 deltas are unaffected because partial events are never persisted.
 
 ## Advanced applications
+
+### Postprocessing remote tool results
+
+Use `after_tool_callback` to process a server-side tool result before ADK
+publishes and stores its `FunctionResponse`:
+
+```python
+from google.adk.labs.snowflake import SnowflakeCortexAgent
+from google.adk.tools.base_tool import BaseTool
+from google.adk.tools.tool_context import ToolContext
+
+
+def after_remote_tool(
+    tool: BaseTool,
+    args: dict,
+    tool_context: ToolContext,
+    tool_response: dict,
+) -> dict | None:
+  tool_context.state["last_remote_tool"] = tool.name
+  return {**tool_response, "processed_by_application": True}
+
+
+root_agent = SnowflakeCortexAgent(
+    name="sales_analyst",
+    account_url="https://<account>.snowflakecomputing.com",
+    database="SALES_DB",
+    schema_name="ANALYTICS",
+    cortex_agent_name="SALES_AGENT",
+    header_provider=snowflake_headers,
+    after_tool_callback=after_remote_tool,
+)
+```
+
+The type, argument convention and callback pipeline are shared with
+`LlmAgent.after_tool_callback`. A single synchronous or asynchronous function,
+or an ordered list mixing both, is supported. The arguments are `tool`, `args`,
+`tool_context`, and `tool_response`; ADK's positional fallback is supported.
+Returning `None` keeps the result and continues the chain; returning a dict,
+including `{}`, replaces it and stops the chain. In-place mutations have the
+same behavior as in ADK. Callback objects are runtime dependencies and are
+excluded from agent serialization, repr, and the web agent graph.
+
+`PluginManager.run_after_tool_callback` runs first, in plugin registration
+order, with `tool`, `tool_args`, `tool_context`, and `result`. Its first non-None
+return skips later plugins and all agent callbacks. Plugins still run when
+`after_tool_callback` is unset. The integration does not register or execute
+local tools: the `BaseTool` passed to callbacks describes the remote tool and
+has no local execution implementation.
+
+`args` contains the original `response.tool_use.input` (non-dict input is
+wrapped as `{"input": value}`, absent input becomes `{}`). The preceding tool
+use supplies the authoritative name, and `tool_context.function_call_id` is
+its `tool_use_id`. Results may arrive in a different order from calls. An
+orphan result, a result arriving before its call, or missing call identity is
+still emitted with the existing fallback identity, but invokes neither plugin
+nor agent tool callbacks. No arguments are guessed and no delayed callback is
+scheduled. Repeated calls/results with the same ID are ignored within that
+run; the same ID in a later turn is independent. A conflicting result name
+uses the preceding call's name.
+
+`tool_context` refers to the real invocation, session and configured services.
+Write state through `tool_context.state` and save artifacts with
+`await tool_context.save_artifact(...)` in an async callback. Its `EventActions`,
+including `state_delta` and `artifact_delta`, accompany the result event through
+Runner and SessionService. Callback return values and actions are therefore
+the values consumers receive and session readback records. `/run_sse` keeps
+ADK's existing artifact presentation: a content frame and a separate artifact
+action frame share the stored event ID; session readback contains the combined
+event. `/run` returns the combined event directly. As with ordinary
+ADK callbacks, artifact saves happen immediately; a later callback failure does
+not roll back an artifact already saved. No successful result or final cursor
+update is emitted for a callback that raises or is cancelled. Earlier yielded
+events remain stored; cancellation retains the existing best-effort remote
+cancel behavior.
+
+Callbacks receive the full normalized result (`status`, `content`, and `error`
+for a failed tool) before `max_tool_result_bytes` is applied. The limit applies
+to the final replacement too, including arbitrary application fields. The
+adapter does not copy raw, removed, or intermediate results into state.
+Application callbacks should store only the state they need; callback-authored
+state and artifacts are separate from the FunctionResponse size limit.
+
+**This is remote postprocessing.** A `LlmAgent` callback can replace a local
+tool result before the next ADK-controlled model request consumes it. Here
+Snowflake owns the loop and may already have consumed the original result:
+replacement affects only ADK events, session history, and application output.
+It does not rewrite Snowflake's result or final answer. State/actions cannot
+pause Snowflake, wait for user input and resume a remote tool, or block an
+already executed tool through `before_tool_callback`. Implementing those
+capabilities requires a separate remote execution protocol.
 
 ### Reading the run metadata
 

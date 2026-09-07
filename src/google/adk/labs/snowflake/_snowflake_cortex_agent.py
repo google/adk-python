@@ -44,8 +44,11 @@ from typing_extensions import override
 from ...agents._streaming_mode import StreamingMode
 from ...agents.base_agent import BaseAgent
 from ...agents.invocation_context import InvocationContext
+from ...agents.llm_agent import _SingleAfterToolCallback
+from ...agents.llm_agent import AfterToolCallback
 from ...agents.readonly_context import ReadonlyContext
 from ...events.event import Event
+from ...utils._callback_pipeline import _normalize_callbacks
 from ._client import CortexTransportError
 from ._client import SnowflakeCortexClient
 from ._event_converter import CortexEventConverter
@@ -181,6 +184,18 @@ class SnowflakeCortexAgent(BaseAgent):
   ``cleanup``. Excluded from serialization: it is runtime wiring.
   """
 
+  after_tool_callback: AfterToolCallback | None = Field(
+      default=None, exclude=True, repr=False
+  )
+  """ADK callbacks for results of server-side tool executions.
+
+  Accepts a sync/async callback or list, with the same arguments and
+  None/dict replacement rules as ``LlmAgent.after_tool_callback``. Plugins
+  run first. Changes affect ADK events and state only; they cannot change
+  results already consumed by Snowflake or pause its execution.
+  Excluded from serialization and repr as a runtime dependency.
+  """
+
   timeout: float = Field(default=900.0, gt=0)
   """Seconds to wait on Snowflake before the turn fails with a timeout.
 
@@ -213,6 +228,11 @@ class SnowflakeCortexAgent(BaseAgent):
   """
 
   _cortex_client: SnowflakeCortexClient | None = PrivateAttr(default=None)
+
+  @property
+  def canonical_after_tool_callbacks(self) -> list[_SingleAfterToolCallback]:
+    """Returns the configured after-tool callbacks as an ordered list."""
+    return _normalize_callbacks(self.after_tool_callback)
 
   @override
   def model_post_init(self, __context: Any) -> None:
@@ -355,7 +375,10 @@ class SnowflakeCortexAgent(BaseAgent):
           text=text,
       ) as events:
         async for sse_event in events:
-          for event in converter.convert(sse_event):
+          for event in await converter.convert_async(
+              sse_event,
+              after_tool_callbacks=self.canonical_after_tool_callbacks,
+          ):
             yield event
           if converter.is_done or converter.failed:
             # Nothing useful follows the terminator; stop reading rather than
