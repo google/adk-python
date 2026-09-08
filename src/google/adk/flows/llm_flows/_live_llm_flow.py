@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import enum
 import logging
+from typing import Any
 from typing import AsyncGenerator
 from typing import cast
 from typing import Optional
@@ -99,11 +100,9 @@ async def stop_background_tool_tasks(
   ``_TOOL_SHUTDOWN_TIMEOUT_SECONDS`` is logged and left behind rather than
   stalling the handoff or the caller's teardown on it.
   """
-  tasks = [
-      active.task
-      for active in (invocation_context.active_streaming_tools or {}).values()
-      if active.task is not None
-  ]
+  tasks: list[asyncio.Task[Any]] = []
+  for active in (invocation_context.active_streaming_tools or {}).values():
+    tasks.extend(active._active_tasks())
   tasks.extend(
       (invocation_context.active_non_blocking_tool_tasks or {}).values()
   )
@@ -111,27 +110,30 @@ async def stop_background_tool_tasks(
   if not pending:
     return
 
-  from . import base_llm_flow
+  if pending:
+    from . import base_llm_flow
 
-  logger.debug('Stopping %d background tool task(s).', len(pending))
-  for task in pending:
-    task.cancel()
-  stopped, still_running = await asyncio.wait(
-      pending, timeout=base_llm_flow._TOOL_SHUTDOWN_TIMEOUT_SECONDS
-  )
-  for task in still_running:
-    logger.warning(
-        'Tool task %s ignored cancellation and outlives its agent.',
-        task.get_name(),
+    logger.debug('Stopping %d background tool task(s).', len(pending))
+    for task in pending:
+      task.cancel()
+    stopped, still_running = await asyncio.wait(
+        pending, timeout=base_llm_flow._TOOL_SHUTDOWN_TIMEOUT_SECONDS
     )
-  for task in stopped:
-    # A tool reports its own failures to the model, so an exception here is
-    # unexpected. Retrieve it anyway: an unread one is reported by asyncio
-    # itself, out of context, when the task is garbage collected.
-    if not task.cancelled() and task.exception() is not None:
-      logger.error(
-          'Tool task %s failed.', task.get_name(), exc_info=task.exception()
+    for task in still_running:
+      logger.warning(
+          'Tool task %s ignored cancellation and outlives its agent.',
+          task.get_name(),
       )
+    for task in stopped:
+      # A tool reports its own failures to the model, so an exception here is
+      # unexpected. Retrieve it anyway: an unread one is reported by asyncio
+      # itself, out of context, when the task is garbage collected.
+      if not task.cancelled() and task.exception() is not None:
+        logger.error(
+            'Tool task %s failed.',
+            task.get_name(),
+            exc_info=task.exception(),
+        )
 
   # Retire the registry entries: the run is over, so nothing it started is
   # current any more, whether or not the task honored the cancellation.
@@ -202,8 +204,8 @@ async def send_to_model(
       for active_streaming_tool in (
           invocation_context.active_streaming_tools
       ).values():
-        if active_streaming_tool.stream:
-          active_streaming_tool.stream.send(live_request)
+        for input_stream in active_streaming_tool._active_streams():
+          input_stream.send(live_request)
     # Yield to event loop for cooperative multitasking
     await asyncio.sleep(0)
 

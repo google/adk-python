@@ -921,44 +921,43 @@ async def _process_function_live_helper(
       raise ValueError('stop_streaming requires a string function_name.')
     # Thread-safe access to active_streaming_tools
     async with active_tools_lock:
-      active_tasks = invocation_context.active_streaming_tools
-      active_task = (
-          active_tasks[function_name].task
-          if active_tasks and function_name in active_tasks
-          else None
+      active_tools = invocation_context.active_streaming_tools
+      active_tool = (
+          active_tools.get(function_name) if active_tools is not None else None
       )
-      task = active_task if active_task and not active_task.done() else None
+      tasks = active_tool._active_tasks() if active_tool is not None else set()
 
-    if task:
-      task.cancel()
-      try:
-        # Wait for the task to be cancelled
-        await asyncio.wait_for(task, timeout=1.0)
-      except (asyncio.CancelledError, asyncio.TimeoutError):
-        # Log the specific condition
-        if task.cancelled():
-          logging.info('Task %s was cancelled successfully', function_name)
-        elif task.done():
-          logging.info('Task %s completed during cancellation', function_name)
-        else:
-          logging.warning(
-              'Task %s might still be running after cancellation timeout',
-              function_name,
-          )
-          function_response = {
-              'status': f'The task is not cancelled yet for {function_name}.'
-          }
-      if not function_response:
-        # Clean up the reference under lock
+    if tasks:
+      for task in tasks:
+        task.cancel()
+      _, pending = await asyncio.wait(tasks, timeout=1.0)
+      if pending:
+        logging.warning(
+            '%d task(s) for %s might still be running after cancellation'
+            ' timeout',
+            len(pending),
+            function_name,
+        )
+        function_response = {
+            'status': f'The task is not cancelled yet for {function_name}.'
+        }
+      else:
+        logging.info(
+            '%d task(s) for %s stopped successfully',
+            len(tasks),
+            function_name,
+        )
+        # Clean up references without discarding calls registered after this
+        # stop request took its snapshot.
         async with active_tools_lock:
-          if (
-              invocation_context.active_streaming_tools
-              and function_name in invocation_context.active_streaming_tools
-          ):
-            invocation_context.active_streaming_tools[function_name].task = None
-            invocation_context.active_streaming_tools[function_name].stream = (
-                None
-            )
+          active_tools = invocation_context.active_streaming_tools
+          current = (
+              active_tools.get(function_name)
+              if active_tools is not None
+              else None
+          )
+          if current is not None:
+            current._discard_tasks(tasks)
 
         function_response = {
             'status': f'Successfully stopped streaming function {function_name}'
@@ -1040,6 +1039,15 @@ async def _process_function_live_helper(
     # confirmation request is recorded on `tool_context.actions` by the
     # background task while the caller builds the response event, and nothing
     # orders the two, so the request can be missing from the emitted event.
+    sig = inspect.signature(streaming_tool.func)
+    input_stream = None
+    if 'input_stream' in sig.parameters and _is_live_request_queue_annotation(
+        sig.parameters['input_stream']
+    ):
+      input_stream = LiveRequestQueue()
+      function_args = dict(function_args)
+      function_args['input_stream'] = input_stream
+
     task = asyncio.create_task(
         run_tool_and_update_queue(streaming_tool, function_args, tool_context)
     )
@@ -1047,28 +1055,17 @@ async def _process_function_live_helper(
     async with active_tools_lock:
       if invocation_context.active_streaming_tools is None:
         invocation_context.active_streaming_tools = {}
-      if tool.name in invocation_context.active_streaming_tools:
-        invocation_context.active_streaming_tools[tool.name].task = task
-      else:
+      active_streaming_tool = invocation_context.active_streaming_tools.get(
+          tool.name
+      )
+      if active_streaming_tool is None:
         # Register the streaming tool lazily when the model calls it.
+        active_streaming_tool = ActiveStreamingTool()
         invocation_context.active_streaming_tools[tool.name] = (
-            ActiveStreamingTool(task=task)
+            active_streaming_tool
         )
         logger.debug('Lazily registered streaming tool: %s', tool.name)
-
-      # For input-streaming tools (those with `input_stream:
-      # LiveRequestQueue`), create a dedicated LiveRequestQueue so
-      # _send_to_model starts duplicating data to it. This also
-      # handles re-invocation after stop_streaming reset .stream
-      # to None.
-      sig = inspect.signature(streaming_tool.func)
-      if (
-          'input_stream' in sig.parameters
-          and _is_live_request_queue_annotation(sig.parameters['input_stream'])
-      ):
-        invocation_context.active_streaming_tools[tool.name].stream = (
-            LiveRequestQueue()
-        )
+      active_streaming_tool._track_task(task, input_stream)
 
     # Immediately return a pending response.
     # This is required by current live model.

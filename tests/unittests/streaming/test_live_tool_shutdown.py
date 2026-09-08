@@ -35,6 +35,7 @@ from google.adk.agents.llm_agent import Agent
 from google.adk.agents.run_config import RunConfig
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows import base_llm_flow
+from google.adk.flows.llm_flows.functions import handle_function_calls_live
 from google.adk.flows.llm_flows.single_flow import SingleFlow
 from google.adk.live import LiveRequestQueue
 from google.adk.models.llm_response import LlmResponse
@@ -181,6 +182,90 @@ async def test_teardown_empties_both_registries(
       streaming_task, non_blocking_task, return_exceptions=True
   )
   assert streaming_task.done() and non_blocking_task.done()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('stop_via_tool', [False, True])
+async def test_all_parallel_calls_to_same_streaming_tool_stop(
+    stop_via_tool: bool,
+):
+  """Both stop paths stop every call even when tool names are identical."""
+  tasks: list[asyncio.Task[Any]] = []
+  streams: list[LiveRequestQueue] = []
+  both_started = asyncio.Event()
+
+  async def monitor(
+      value: str, input_stream: LiveRequestQueue
+  ) -> AsyncGenerator[dict[str, str], None]:
+    tasks.append(asyncio.current_task())
+    streams.append(input_stream)
+    if len(tasks) == 2:
+      both_started.set()
+    while True:
+      yield {'value': value}
+      await asyncio.sleep(60)
+
+  tool = FunctionTool(monitor)
+  agent = Agent(name='agent', model=testing_utils.MockModel.create([]))
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(
+          parts=[
+              types.Part.from_function_call(
+                  name=tool.name, args={'value': 'first'}
+              ),
+              types.Part.from_function_call(
+                  name=tool.name, args={'value': 'second'}
+              ),
+          ]
+      ),
+  )
+
+  try:
+    await handle_function_calls_live(
+        invocation_context, event, {tool.name: tool}
+    )
+    await asyncio.wait_for(both_started.wait(), timeout=1)
+    assert streams[0] is not streams[1]
+    active_tool = invocation_context.active_streaming_tools[tool.name]
+
+    if stop_via_tool:
+
+      def stop_streaming(function_name: str) -> None:
+        pass
+
+      stop_tool = FunctionTool(stop_streaming)
+      stop_event = Event(
+          invocation_id=invocation_context.invocation_id,
+          author=agent.name,
+          content=types.Content(
+              parts=[
+                  types.Part.from_function_call(
+                      name='stop_streaming',
+                      args={'function_name': tool.name},
+                  )
+              ]
+          ),
+      )
+      await handle_function_calls_live(
+          invocation_context, stop_event, {stop_tool.name: stop_tool}
+      )
+    else:
+      await SingleFlow()._stop_background_tool_tasks(invocation_context)
+
+    assert all(task.done() for task in tasks)
+    if stop_via_tool:
+      assert active_tool.task is None
+      assert active_tool.stream is None
+  finally:
+    for task in tasks:
+      task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @pytest.mark.asyncio
