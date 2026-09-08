@@ -40,6 +40,16 @@ class AgentDirFixture(Protocol):
     ...
 
 
+def test_dockerfile_template_consumes_agent_gateway_root_certificates() -> None:
+  """The shared deploy template must declare and consume the Cloud Build ARG."""
+  content = cli_deploy._DOCKERFILE_TEMPLATE
+  assert "ARG AGENT_GATEWAY_ROOT_CERTIFICATES" in content
+  assert "update-ca-certificates" in content
+  assert content.index("ARG AGENT_GATEWAY_ROOT_CERTIFICATES") < content.index(
+      "USER myuser"
+  )
+
+
 # Helpers
 class _Recorder:
   """A callable object that records every invocation."""
@@ -150,6 +160,11 @@ def test_to_cloud_run_happy_path(
       'RUN adduser --disabled-password --gecos "" myuser' in dockerfile_content
   )
   assert "USER myuser" in dockerfile_content
+  assert "ARG AGENT_GATEWAY_ROOT_CERTIFICATES" in dockerfile_content
+  assert "update-ca-certificates" in dockerfile_content
+  assert dockerfile_content.index(
+      "ARG AGENT_GATEWAY_ROOT_CERTIFICATES"
+  ) < dockerfile_content.index("USER myuser")
   assert "ENV GOOGLE_CLOUD_PROJECT=proj" in dockerfile_content
   assert "ENV GOOGLE_CLOUD_LOCATION=asia-northeast1" in dockerfile_content
   assert 'RUN pip install "google-adk[a2a]==1.3.0"' in dockerfile_content
