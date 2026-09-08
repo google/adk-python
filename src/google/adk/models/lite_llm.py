@@ -58,6 +58,8 @@ from typing_extensions import override
 from typing_extensions import Required
 
 from . import _prompt_cache
+from ..features import FeatureName
+from ..features import is_feature_enabled
 from ..utils._google_client_headers import merge_tracking_headers
 from ..utils._schema_utils import lowercase_schema_types
 from ._capabilities import LlmCapabilities
@@ -2571,6 +2573,30 @@ def _message_to_generate_content_response(
   )
 
 
+def _function_chunk_partial_response(
+    fc_state: dict[str, Any],
+    *,
+    args_delta: str | None,
+    model_version: str | None,
+) -> LlmResponse:
+  """Builds a partial LlmResponse for one FunctionChunk args delta."""
+  function_call = types.FunctionCall(
+      id=fc_state["id"],
+      name=fc_state["name"] or None,
+      will_continue=True,
+  )
+  if args_delta:
+    function_call.partial_args = [types.PartialArg(string_value=args_delta)]
+  return LlmResponse(
+      content=types.Content(
+          role="model",
+          parts=[types.Part(function_call=function_call)],
+      ),
+      partial=True,
+      model_version=model_version,
+  )
+
+
 def _finish_reason_to_error_message(
     finish_reason: types.FinishReason,
 ) -> str:
@@ -3390,6 +3416,12 @@ class LiteLlm(BaseLlm):
             function_calls[index]["id"] = (
                 chunk.id or function_calls[index]["id"] or str(index)
             )
+            if is_feature_enabled(FeatureName.PROGRESSIVE_SSE_STREAMING):
+              yield _function_chunk_partial_response(
+                  function_calls[index],
+                  args_delta=chunk.args,
+                  model_version=part.model,
+              )
           elif isinstance(chunk, TextChunk):
             if chunk.text:
               text_parts.append(chunk.text)

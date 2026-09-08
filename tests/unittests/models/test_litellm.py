@@ -28,6 +28,8 @@ from unittest.mock import patch
 import warnings
 
 from google.adk.agents.context_cache_config import ContextCacheConfig
+from google.adk.features._feature_registry import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.models.lite_llm import _aggregate_streaming_thought_parts
 from google.adk.models.lite_llm import _append_fallback_user_content_if_missing
 from google.adk.models.lite_llm import _BraceDepthTracker
@@ -4708,7 +4710,7 @@ async def test_completion_additional_args(mock_completion, mock_client):
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 4
+  assert [r for r in responses if not r.partial]
   mock_completion.assert_called_once()
 
   _, kwargs = mock_completion.call_args
@@ -4736,7 +4738,7 @@ async def test_completion_with_drop_params(mock_completion, mock_client):
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 4
+  assert [r for r in responses if not r.partial]
 
   mock_completion.assert_called_once()
 
@@ -4800,13 +4802,14 @@ async def test_generate_content_async_stream_tool_call_includes_aggregated_text(
 
   mock_completion.return_value = iter(STREAMING_MODEL_RESPONSE)
 
-  responses = [
-      response
-      async for response in lite_llm_instance.generate_content_async(
-          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
-      )
-  ]
-  assert len(responses) == 4
+  with temporary_feature_override(FeatureName.PROGRESSIVE_SSE_STREAMING, True):
+    responses = [
+        response
+        async for response in lite_llm_instance.generate_content_async(
+            LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+        )
+    ]
+  assert len(responses) == 6
   assert responses[0].content.role == "model"
   assert responses[0].content.parts[0].text == "zero, "
   assert responses[0].model_version == "test_model"
@@ -4816,16 +4819,20 @@ async def test_generate_content_async_stream_tool_call_includes_aggregated_text(
   assert responses[2].content.role == "model"
   assert responses[2].content.parts[0].text == "two:"
   assert responses[2].model_version == "test_model"
-  assert responses[3].content.role == "model"
-  assert len(responses[3].content.parts) == 2
-  assert responses[3].content.parts[0].text == "zero, one, two:"
-  assert responses[3].content.parts[1].function_call.name == "test_function"
-  assert responses[3].content.parts[-1].function_call.args == {
+  assert responses[3].partial is True
+  assert responses[3].get_function_calls()
+  assert responses[4].partial is True
+  assert responses[4].get_function_calls()
+  assert responses[5].content.role == "model"
+  assert len(responses[5].content.parts) == 2
+  assert responses[5].content.parts[0].text == "zero, one, two:"
+  assert responses[5].content.parts[1].function_call.name == "test_function"
+  assert responses[5].content.parts[-1].function_call.args == {
       "test_arg": "test_value"
   }
-  assert responses[3].content.parts[-1].function_call.id == "test_tool_call_id"
-  assert responses[3].finish_reason == types.FinishReason.STOP
-  assert responses[3].model_version == "test_model"
+  assert responses[5].content.parts[-1].function_call.id == "test_tool_call_id"
+  assert responses[5].finish_reason == types.FinishReason.STOP
+  assert responses[5].model_version == "test_model"
   mock_completion.assert_called_once()
 
   _, kwargs = mock_completion.call_args
@@ -5079,25 +5086,25 @@ async def test_generate_content_async_stream_with_reasoning_tokens(
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 4
+  assert responses[-1].partial is False
   assert responses[0].content.role == "model"
   assert responses[0].content.parts[0].text == "zero, "
   assert responses[1].content.role == "model"
   assert responses[1].content.parts[0].text == "one, "
   assert responses[2].content.role == "model"
   assert responses[2].content.parts[0].text == "two:"
-  assert responses[3].content.role == "model"
-  assert responses[3].content.parts[-1].function_call.name == "test_function"
-  assert responses[3].content.parts[-1].function_call.args == {
+  assert responses[-1].content.role == "model"
+  assert responses[-1].content.parts[-1].function_call.name == "test_function"
+  assert responses[-1].content.parts[-1].function_call.args == {
       "test_arg": "test_value"
   }
-  assert responses[3].content.parts[-1].function_call.id == "test_tool_call_id"
-  assert responses[3].finish_reason == types.FinishReason.STOP
+  assert responses[-1].content.parts[-1].function_call.id == "test_tool_call_id"
+  assert responses[-1].finish_reason == types.FinishReason.STOP
 
-  assert responses[3].usage_metadata.prompt_token_count == 10
-  assert responses[3].usage_metadata.candidates_token_count == 5
-  assert responses[3].usage_metadata.total_token_count == 15
-  assert responses[3].usage_metadata.thoughts_token_count == 5
+  assert responses[-1].usage_metadata.prompt_token_count == 10
+  assert responses[-1].usage_metadata.candidates_token_count == 5
+  assert responses[-1].usage_metadata.total_token_count == 15
+  assert responses[-1].usage_metadata.thoughts_token_count == 5
 
   mock_completion.assert_called_once()
 
@@ -5151,12 +5158,12 @@ async def test_generate_content_async_stream_with_usage_metadata(
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 4
-  assert responses[3].usage_metadata.prompt_token_count == 10
-  assert responses[3].usage_metadata.candidates_token_count == 5
-  assert responses[3].usage_metadata.total_token_count == 15
-  assert responses[3].usage_metadata.cached_content_token_count == 8
-  assert responses[3].usage_metadata.thoughts_token_count == 5
+  assert responses[-1].partial is False
+  assert responses[-1].usage_metadata.prompt_token_count == 10
+  assert responses[-1].usage_metadata.candidates_token_count == 5
+  assert responses[-1].usage_metadata.total_token_count == 15
+  assert responses[-1].usage_metadata.cached_content_token_count == 8
+  assert responses[-1].usage_metadata.thoughts_token_count == 5
 
 
 @pytest.mark.asyncio
@@ -5191,12 +5198,12 @@ async def test_generate_content_async_stream_with_bedrock_cache_tokens(
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 4
-  assert responses[3].usage_metadata.prompt_token_count == 10
-  assert responses[3].usage_metadata.candidates_token_count == 5
-  assert responses[3].usage_metadata.total_token_count == 15
-  assert responses[3].usage_metadata.cached_content_token_count == 8
-  assert responses[3].usage_metadata.cache_creation_input_tokens == 4
+  assert responses[-1].partial is False
+  assert responses[-1].usage_metadata.prompt_token_count == 10
+  assert responses[-1].usage_metadata.candidates_token_count == 5
+  assert responses[-1].usage_metadata.total_token_count == 15
+  assert responses[-1].usage_metadata.cached_content_token_count == 8
+  assert responses[-1].usage_metadata.cache_creation_input_tokens == 4
 
 
 @pytest.mark.asyncio
@@ -5360,8 +5367,8 @@ async def test_generate_content_async_stream_with_empty_chunk(
       )
   ]
 
-  assert len(responses) == 1
-  final_response = responses[0]
+  final_response = responses[-1]
+  assert final_response.partial is False
   assert final_response.content.role == "model"
 
   # Crucially, assert that only ONE tool call was generated,
@@ -5414,8 +5421,8 @@ async def test_streaming_tool_call_truncated_by_max_tokens(
       )
   ]
 
-  assert len(responses) == 1
-  error_response = responses[0]
+  error_response = responses[-1]
+  assert not error_response.partial
   assert error_response.error_code == types.FinishReason.MAX_TOKENS
   assert error_response.finish_reason == types.FinishReason.MAX_TOKENS
   assert "truncated" in error_response.error_message
@@ -5462,8 +5469,8 @@ async def test_streaming_tool_call_complete_with_length_finish_reason(
       )
   ]
 
-  assert len(responses) == 1
-  final_response = responses[0]
+  final_response = responses[-1]
+  assert final_response.partial is False
   assert final_response.content.role == "model"
   assert len(final_response.content.parts) == 1
 
@@ -5515,8 +5522,8 @@ async def test_streaming_tool_call_malformed_arguments_returns_empty(
       )
   ]
 
-  assert len(responses) == 1
-  final_response = responses[0]
+  final_response = responses[-1]
+  assert final_response.partial is False
   assert final_response.content.role == "model"
   function_call = final_response.content.parts[0].function_call
   assert function_call.name == "test_function"
@@ -7353,8 +7360,7 @@ async def test_streaming_tool_call_args_assembled_from_many_fragments(
       )
   ]
 
-  assert len(responses) == 1
-  function_call = responses[0].content.parts[0].function_call
+  function_call = responses[-1].content.parts[0].function_call
   assert function_call.name == "my_func"
   assert function_call.id == "call_xyz"
   assert function_call.args == json.loads(full_args)
@@ -7439,12 +7445,61 @@ async def test_streaming_tool_call_brace_in_string_does_not_falsely_complete(
       )
   ]
 
-  assert len(responses) == 1
-  parts = responses[0].content.parts
+  parts = responses[-1].content.parts
   assert len(parts) == 2
   args_by_name = {p.function_call.name: p.function_call.args for p in parts}
   assert args_by_name["my_func"] == json.loads(full_args_a)
   assert args_by_name["other_func"] == json.loads(full_args_b)
+
+
+@pytest.mark.asyncio
+async def test_streaming_function_chunks_yield_partials_when_progressive_sse_on(
+    mock_completion, lite_llm_instance
+):
+  fragments = ['{"city": "', "Paris", '"}']
+  mock_completion.return_value = iter(
+      _stream_chunks_from_function_chunks(_function_chunks_for_args(fragments))
+  )
+
+  with temporary_feature_override(FeatureName.PROGRESSIVE_SSE_STREAMING, True):
+    responses = [
+        r
+        async for r in lite_llm_instance.generate_content_async(
+            LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+        )
+    ]
+
+  partials = [r for r in responses if r.partial]
+  assert len(partials) == len(fragments)
+  for fragment, partial in zip(fragments, partials):
+    assert partial.get_function_calls()
+    function_call = partial.get_function_calls()[0]
+    assert function_call.will_continue is True
+    assert function_call.partial_args[0].string_value == fragment
+  assert responses[-1].partial is False
+  assert responses[-1].content.parts[0].function_call.args == {"city": "Paris"}
+
+
+@pytest.mark.asyncio
+async def test_streaming_function_chunks_stay_buffered_when_progressive_sse_off(
+    mock_completion, lite_llm_instance
+):
+  fragments = ['{"city": "', "Paris", '"}']
+  mock_completion.return_value = iter(
+      _stream_chunks_from_function_chunks(_function_chunks_for_args(fragments))
+  )
+
+  with temporary_feature_override(FeatureName.PROGRESSIVE_SSE_STREAMING, False):
+    responses = [
+        r
+        async for r in lite_llm_instance.generate_content_async(
+            LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+        )
+    ]
+
+  assert len(responses) == 1
+  assert responses[0].partial is False
+  assert responses[0].content.parts[0].function_call.args == {"city": "Paris"}
 
 
 def _text_stream_chunks(text_fragments, finish_reason="stop"):
@@ -7509,8 +7564,11 @@ async def test_streaming_buffers_hold_fragments_instead_of_growing_copies(
       LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
   )
   try:
-    # Suspends on the first partial text response, with both buffers filled.
-    await responses.__anext__()
+    # Drain until the first text partial, so both buffers are filled.
+    while True:
+      partial = await responses.__anext__()
+      if partial.content and any(p.text for p in partial.content.parts or []):
+        break
     buffers = responses.ag_frame.f_locals
     assert buffers["text_parts"] == text_fragments[:1]
     assert buffers["function_calls"][0]["args_parts"] == arg_fragments
