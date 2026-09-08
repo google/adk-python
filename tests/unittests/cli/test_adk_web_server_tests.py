@@ -195,8 +195,24 @@ def test_get_test_content_not_found(test_client):
   assert response.status_code == 404
 
 
+def test_get_test_rejects_path_traversal(test_client, tmp_path):
+  """GET must use the same basename rule as create_test."""
+  agent_dir = tmp_path / "test_app"
+  tests_dir = agent_dir / "tests"
+  tests_dir.mkdir(parents=True)
+  outside = agent_dir / "outside.json"
+  outside.write_text('{"secret": true}')
+
+  encoded = "%2e%2e%2foutside.json"
+  get = test_client.get(f"/dev/apps/test_app/tests/{encoded}")
+
+  assert get.status_code == 404
+  assert outside.exists()
+  assert outside.read_text() == '{"secret": true}'
+
+
 def test_delete_test_rejects_path_traversal(test_client, tmp_path):
-  """GET/DELETE must use the same basename rule as create_test."""
+  """DELETE must use the same basename rule as create_test."""
   agent_dir = tmp_path / "test_app"
   tests_dir = agent_dir / "tests"
   tests_dir.mkdir(parents=True)
@@ -205,10 +221,8 @@ def test_delete_test_rejects_path_traversal(test_client, tmp_path):
 
   encoded = "%2e%2e%2foutside.json"
   delete = test_client.delete(f"/dev/apps/test_app/tests/{encoded}")
-  get = test_client.get(f"/dev/apps/test_app/tests/{encoded}")
 
   assert delete.status_code == 404
-  assert get.status_code == 404
   assert outside.exists()
   assert outside.read_text() == '{"secret": true}'
 
