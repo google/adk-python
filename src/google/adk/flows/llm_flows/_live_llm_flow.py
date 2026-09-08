@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import enum
 import logging
+from typing import Any
 from typing import AsyncGenerator
 from typing import cast
 from typing import Optional
@@ -99,11 +100,9 @@ async def stop_background_tool_tasks(
   ``_TOOL_SHUTDOWN_TIMEOUT_SECONDS`` is logged and left behind rather than
   stalling the handoff or the caller's teardown on it.
   """
-  tasks = [
-      active.task
-      for active in (invocation_context.active_streaming_tools or {}).values()
-      if active.task is not None
-  ]
+  tasks: list[asyncio.Task[Any]] = []
+  for active in (invocation_context.active_streaming_tools or {}).values():
+    tasks.extend(active._active_tasks())
   tasks.extend(
       (invocation_context.active_non_blocking_tool_tasks or {}).values()
   )
@@ -202,8 +201,8 @@ async def send_to_model(
       for active_streaming_tool in (
           invocation_context.active_streaming_tools
       ).values():
-        if active_streaming_tool.stream:
-          active_streaming_tool.stream.send(live_request)
+        for input_stream in active_streaming_tool._active_streams():
+          input_stream.send(live_request)
     # Yield to event loop for cooperative multitasking
     await asyncio.sleep(0)
 

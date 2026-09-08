@@ -1246,8 +1246,8 @@ def _run_single_tool_live(
   return captured_child_context.active_streaming_tools or {}
 
 
-def test_input_streaming_tool_has_stream_set_at_registration():
-  """Test that input-streaming tools get .stream set to a LiveRequestQueue during registration."""
+def test_completed_input_streaming_tool_releases_resources():
+  """A completed input-streaming tool releases its task and stream."""
 
   async def monitor_video_stream(
       input_stream: LiveRequestQueue,
@@ -1259,16 +1259,9 @@ def test_input_streaming_tool_has_stream_set_at_registration():
       monitor_video_stream, "monitor_video_stream"
   )
 
-  assert (
-      "monitor_video_stream" in active_tools
-  ), "Expected input-streaming tool to be registered when called"
-  # Stream should be a LiveRequestQueue, not None.
-  assert (
-      active_tools["monitor_video_stream"].stream is not None
-  ), "Expected .stream to be set for input-streaming tool"
-  assert isinstance(
-      active_tools["monitor_video_stream"].stream, LiveRequestQueue
-  ), "Expected .stream to be a LiveRequestQueue instance"
+  assert "monitor_video_stream" in active_tools
+  assert active_tools["monitor_video_stream"].task is None
+  assert active_tools["monitor_video_stream"].stream is None
 
 
 def test_input_streaming_tool_stream_recreated_after_stop():
