@@ -2236,11 +2236,27 @@ def _function_declaration_to_tool_param(
         "properties": {},
     }
 
+  description = function_declaration.description or ""
+  # Most OpenAI-compatible providers have no dedicated field for a tool's
+  # result/output schema, unlike the Gemini path (see #2828). Rather than
+  # inventing a non-standard key that providers would ignore, surface the
+  # schema by appending it to the description, which is always forwarded.
+  output_schema_dict: Optional[dict[str, Any]] = None
+  if function_declaration.response_json_schema:
+    output_schema_dict = function_declaration.response_json_schema
+  elif function_declaration.response:
+    output_schema_dict = _schema_to_dict(function_declaration.response)
+  if output_schema_dict:
+    description = (
+        f"{description}\n\nResult schema:"
+        f" {json.dumps(output_schema_dict)}"
+    ).strip()
+
   tool_params: dict[str, Any] = {
       "type": "function",
       "function": {
           "name": function_declaration.name,
-          "description": function_declaration.description or "",
+          "description": description,
           "parameters": parameters,
       },
   }
