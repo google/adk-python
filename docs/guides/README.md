@@ -31,6 +31,8 @@ This directory contains specific developer guides for the ADK Python implementat
 * [Live model callbacks](flows/llm_flows/base_llm_flow/live_model_callbacks.md) - Inspecting or blocking content on a live bidirectional session.
 
 ### Integrations
+* [AgentCoreSessionService](integrations/agentcore/agentcore_session_service/index.md) - Storing ADK sessions in Amazon Bedrock AgentCore Memory short-term memory.
+* [AgentCoreSessionServiceConfig](integrations/agentcore/config/index.md) - Memory id and AWS region for AgentCoreSessionService.
 * [Model Armor](integrations/model_armor/index.md) - Screening user input and model output with Google Cloud Model Armor.
 
 ### Labs

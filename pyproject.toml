@@ -62,6 +62,9 @@ optional-dependencies.agent-identity = [
   "google-cloud-agentidentitycredentials>=0.1,<0.2",
   "google-cloud-iamconnectorcredentials>=0.1,<0.2",
 ]
+optional-dependencies.agentcore = [
+  "boto3>=1.43.77", # bedrock-agentcore Memory STM APIs (create_event / list_events).
+]
 # Union of every extra that unlocks a runtime feature. Excludes benchmark,
 # community, dev, docs and test, which exist to build, test or document ADK
 # itself.
@@ -71,6 +74,7 @@ optional-dependencies.all = [
   "anthropic>=0.78",
   "anyio>=4.9,<5",
   "beautifulsoup4>=3.2.2",
+  "boto3>=1.43.77",
   "crewai[tools]; python_version>='3.11' and python_version<'3.12'", # chromadb/pypika fail on 3.12+
   "daytona>=0.191",
   "docker>=7",
