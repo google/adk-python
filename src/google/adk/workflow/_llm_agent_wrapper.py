@@ -374,12 +374,18 @@ def process_llm_agent_output(
       output = None
   else:
     output = text
+    # Only set when there is no output_schema: this tells the consumer
+    # loop in runners.py that event.content IS the node's output (plain
+    # text), so it can avoid surfacing the same text twice. When
+    # output_schema is set, event.output holds the validated structured
+    # result, which is not the same as the raw message content and must
+    # not be cleared downstream.
+    event.node_info.message_as_output = True
 
   if agent.output_key and output is not None:
     ctx.actions.state_delta[agent.output_key] = output
 
   event.output = output
-  event.node_info.message_as_output = True
 
 
 async def run_llm_agent_as_node(
