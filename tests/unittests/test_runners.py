@@ -1858,6 +1858,34 @@ class TestRunnerShouldAppendEvent:
     )
     assert self.runner._should_append_event(event, is_live_call=False) is True
 
+  def test_should_not_append_event_live_model_image(self):
+    event = Event(
+        invocation_id="inv1",
+        author="model",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    inline_data=types.Blob(data=b"123", mime_type="image/jpeg")
+                )
+            ]
+        ),
+    )
+    assert self.runner._should_append_event(event, is_live_call=True) is False
+
+  def test_should_append_event_non_live_model_image(self):
+    event = Event(
+        invocation_id="inv1",
+        author="model",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    inline_data=types.Blob(data=b"123", mime_type="image/jpeg")
+                )
+            ]
+        ),
+    )
+    assert self.runner._should_append_event(event, is_live_call=False) is True
+
 
 @pytest.fixture
 def user_agent_module(tmp_path, monkeypatch):

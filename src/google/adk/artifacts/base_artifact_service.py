@@ -122,6 +122,33 @@ class BaseArtifactService(ABC):
       This is incremented by 1 after each successful save.
     """
 
+  async def save_media_frames(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      collection_name: str,
+      frames: list[tuple[types.Blob, float]],
+      session_id: Optional[str] = None,
+      custom_metadata: Optional[dict[str, Any]] = None,
+  ) -> int:
+    """Saves a sequence of media frames to artifact storage.
+
+    Args:
+      app_name: The app name.
+      user_id: The user ID.
+      collection_name: The name of the collection folder for these frames.
+      frames: List of (Blob, timestamp_seconds) tuples representing frames.
+      session_id: The session ID. If None, the artifact is user-scoped.
+      custom_metadata: Optional custom metadata to associate with the frames.
+
+    Returns:
+      The revision/version integer of the stored media collection.
+    """
+    raise NotImplementedError(
+        f"{type(self).__name__} does not implement save_media_frames."
+    )
+
   @abstractmethod
   async def load_artifact(
       self,

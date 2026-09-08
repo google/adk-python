@@ -158,6 +158,84 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     return version
 
   @override
+  async def save_media_frames(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      collection_name: str,
+      frames: list[tuple[types.Blob, float]],
+      session_id: Optional[str] = None,
+      custom_metadata: Optional[dict[str, Any]] = None,
+  ) -> int:
+    if not frames:
+      raise InputValidationError("Cannot save empty frames list.")
+
+    path = self._artifact_path(app_name, user_id, collection_name, session_id)
+    if path not in self.artifacts:
+      self.artifacts[path] = []
+    version = len(self.artifacts[path])
+
+    if self._file_has_user_namespace(collection_name):
+      canonical_uri = f"memory://apps/{app_name}/users/{user_id}/artifacts/{collection_name}/versions/{version}"
+    else:
+      canonical_uri = f"memory://apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{collection_name}/versions/{version}"
+
+    start_ts = frames[0][1]
+    end_ts = frames[-1][1]
+    duration_ms = int((end_ts - start_ts) * 1000)
+    frame_count = len(frames)
+    estimated_fps = (
+        round((frame_count - 1) / (end_ts - start_ts), 2)
+        if duration_ms > 0 and frame_count > 1
+        else 0.0
+    )
+
+    frame_indices = []
+    for idx, (blob, ts) in enumerate(frames):
+      mime = (blob.mime_type or "image/jpeg").lower()
+      ext = mime.split("/")[-1].split(";")[0].strip() or "jpeg"
+      offset_ms = int((ts - start_ts) * 1000)
+      frame_indices.append({
+          "frameIndex": idx,
+          "offsetMs": offset_ms,
+          "fileName": f"frames/frame_{idx:04d}.{ext}",
+          "mimeType": mime,
+          "sizeBytes": len(blob.data or b""),
+      })
+
+    merged_custom_metadata = dict(custom_metadata or {})
+    merged_custom_metadata.update({
+        "type": "video_frame_sequence",
+        "frameCount": frame_count,
+        "startTimestampMs": int(start_ts * 1000),
+        "endTimestampMs": int(end_ts * 1000),
+        "durationMs": duration_ms,
+        "estimatedFps": estimated_fps,
+        "frames": frame_indices,
+    })
+
+    primary_mime_type = frames[0][0].mime_type or "image/jpeg"
+    artifact_version = ArtifactVersion(
+        version=version,
+        canonical_uri=canonical_uri,
+        custom_metadata=merged_custom_metadata,
+        mime_type=primary_mime_type,
+    )
+
+    preview_part = types.Part(
+        inline_data=types.Blob(
+            data=frames[0][0].data,
+            mime_type=primary_mime_type,
+        )
+    )
+
+    self.artifacts[path].append(
+        _ArtifactEntry(data=preview_part, artifact_version=artifact_version)
+    )
+    return version
+
+  @override
   async def load_artifact(
       self,
       *,
