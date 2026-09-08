@@ -152,28 +152,48 @@ class AutoTracingPlugin(BasePlugin):
       if inspect.isfunction(attr):
         self._rebind(module, attr_name, attr)
       elif inspect.isclass(attr):
-        for member_name, member in inspect.getmembers(attr):
-          if member_name.startswith("__"):
-            continue
-          if not inspect.isfunction(member):
-            continue
-          if getattr(member, "__module__", "") != module_name:
-            continue
-          self._rebind(attr, member_name, member)
+        self._wrap_class(attr, module_name)
+
+  def _wrap_class(self, cls: type[Any], module_name: str) -> None:
+    """Wraps functions, staticmethods and classmethods in cls.__dict__.
+
+    Inherited members are left to the defining class so they are not
+    pinned onto subclasses.
+    """
+    for member_name, member in list(cls.__dict__.items()):
+      if member_name.startswith("__"):
+        continue
+      fn = (
+          member.__func__
+          if isinstance(member, (staticmethod, classmethod))
+          else member
+      )
+      if (
+          not inspect.isfunction(fn)
+          or getattr(fn, "__module__", "") != module_name
+      ):
+        continue
+      self._rebind(
+          cls,
+          member_name,
+          fn,
+          wrap=type(member) if fn is not member else None,
+      )
 
   def _rebind(
-      self, owner: ModuleType | type[Any], name: str, fn: Callable[..., Any]
+      self,
+      owner: ModuleType | type[Any],
+      name: str,
+      fn: Callable[..., Any],
+      wrap: Callable[[Callable[..., Any]], object] | None = None,
   ) -> None:
     if getattr(fn, auto_tracing_helpers.WRAPPED_ATTR, False):
       return
     try:
-      setattr(
-          owner,
-          name,
-          auto_tracing_helpers.build_tracing_wrapper(
-              fn, self._tracer, self._caps
-          ),
+      wrapper = auto_tracing_helpers.build_tracing_wrapper(
+          fn, self._tracer, self._caps
       )
+      setattr(owner, name, wrap(wrapper) if wrap else wrapper)
     except (AttributeError, TypeError) as exc:
       logger.info(
           "AutoTracingPlugin: cannot rebind %s.%s: %s",
