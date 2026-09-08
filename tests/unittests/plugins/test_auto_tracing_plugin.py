@@ -775,7 +775,20 @@ def _build_descriptor_module() -> types.ModuleType:
   def shared(self, x):
     return x * 2
 
-  for fn in (slugify, build, instance_method, shared):
+  async def async_slugify(text):
+    return text.strip().lower().replace(" ", "-")
+
+  async def async_build(cls, name):
+    return await cls.async_slugify(name)
+
+  for fn in (
+      slugify,
+      build,
+      instance_method,
+      shared,
+      async_slugify,
+      async_build,
+  ):
     fn.__module__ = _DESCRIPTOR_MODULE_NAME
 
   tools = type(
@@ -785,6 +798,8 @@ def _build_descriptor_module() -> types.ModuleType:
           "slugify": staticmethod(slugify),
           "build": classmethod(build),
           "instance_method": instance_method,
+          "async_slugify": staticmethod(async_slugify),
+          "async_build": classmethod(async_build),
       },
   )
   zbase = type("ZBase", (), {"shared": shared})
@@ -841,5 +856,37 @@ def test_inherited_method_is_not_pinned_on_subclass(fixture):
     assert "shared" not in module.AChild.__dict__
     assert module.AChild().shared(3) == 6
     assert any("shared" in n for n in _span_names(fixture.exporter))
+  finally:
+    sys.modules.pop(_DESCRIPTOR_MODULE_NAME, None)
+
+
+async def test_async_staticmethod_stays_callable_on_instance(fixture):
+  module = _build_descriptor_module()
+  sys.modules[_DESCRIPTOR_MODULE_NAME] = module
+  try:
+    plugin = auto_tracing_plugin.AutoTracingPlugin(
+        tracer=fixture.tracer,
+        extra_scope_prefixes=(_DESCRIPTOR_MODULE_NAME,),
+    )
+    await plugin.before_run_callback(invocation_context=None)
+    assert isinstance(module.Tools.__dict__["async_slugify"], staticmethod)
+    assert await module.Tools().async_slugify("Hello World") == "hello-world"
+    assert any("async_slugify" in n for n in _span_names(fixture.exporter))
+  finally:
+    sys.modules.pop(_DESCRIPTOR_MODULE_NAME, None)
+
+
+async def test_async_classmethod_is_traced(fixture):
+  module = _build_descriptor_module()
+  sys.modules[_DESCRIPTOR_MODULE_NAME] = module
+  try:
+    plugin = auto_tracing_plugin.AutoTracingPlugin(
+        tracer=fixture.tracer,
+        extra_scope_prefixes=(_DESCRIPTOR_MODULE_NAME,),
+    )
+    await plugin.before_run_callback(invocation_context=None)
+    assert isinstance(module.Tools.__dict__["async_build"], classmethod)
+    assert await module.Tools.async_build("Hello World") == "hello-world"
+    assert any("async_build" in n for n in _span_names(fixture.exporter))
   finally:
     sys.modules.pop(_DESCRIPTOR_MODULE_NAME, None)
