@@ -192,6 +192,20 @@ def test_validate_path_segment_invalid(value, field_name):
     artifact_util.validate_path_segment(value, field_name)
 
 
+def test_validate_session_id_segment_rejects_reserved_user():
+  with pytest.raises(InputValidationError, match="reserved value 'user'"):
+    artifact_util.validate_session_id_segment("user")
+
+
+def test_validate_session_id_segment_allows_ordinary_values():
+  artifact_util.validate_session_id_segment("session1")
+
+
+def test_validate_session_id_segment_still_runs_path_segment_checks():
+  with pytest.raises(InputValidationError, match="must not be empty"):
+    artifact_util.validate_session_id_segment("")
+
+
 @pytest.mark.parametrize(
     "caller_session_id, uri_session_id",
     [

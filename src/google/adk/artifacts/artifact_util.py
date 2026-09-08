@@ -143,6 +143,31 @@ def _is_drive_qualified(value: str) -> bool:
   return _WINDOWS_DRIVE_RE.match(value) is not None
 
 
+def validate_session_id_segment(session_id: str) -> None:
+  """Validates a session_id that will be used as a literal storage segment.
+
+  In addition to the checks in `validate_path_segment`, rejects the literal
+  value "user". Backends that lay out session-scoped and user-scoped
+  artifacts in the same flat namespace (in-memory, GCS) use that exact
+  string as a reserved segment marking user-scoped artifacts, so a session
+  actually named "user" would silently write into -- and read out of -- that
+  reserved namespace instead of its own.
+
+  Args:
+    session_id: The caller-supplied session id.
+
+  Raises:
+    InputValidationError: If `session_id` fails `validate_path_segment`, or
+      is the reserved value "user".
+  """
+  validate_path_segment(session_id, "session_id")
+  if session_id == "user":
+    raise input_validation_error.InputValidationError(
+        "session_id must not be the reserved value 'user', which this"
+        " backend uses internally to mark user-scoped artifacts."
+    )
+
+
 def validate_path_segment(value: str, field_name: str) -> None:
   """Rejects values that could alter the constructed path.
 
