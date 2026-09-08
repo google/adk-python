@@ -181,7 +181,7 @@ async def test_handle_control_event_flush_on_interrupted():
   response = LlmResponse(interrupted=True)
 
   with mock.patch.object(
-      flow.audio_cache_manager, 'flush_caches', new_callable=mock.AsyncMock
+      flow.cache_manager, 'flush_caches', new_callable=mock.AsyncMock
   ) as mock_flush:
     mock_flush.return_value = [Event(id='flushed-event')]
     events = await _live_llm_flow.handle_control_event_flush(
@@ -190,7 +190,11 @@ async def test_handle_control_event_flush_on_interrupted():
 
   assert len(events) == 1
   mock_flush.assert_awaited_once_with(
-      context, flush_user_audio=False, flush_model_audio=True
+      context,
+      flush_user_audio=False,
+      flush_model_audio=True,
+      flush_user_media=False,
+      flush_model_media=True,
   )
 
 
@@ -201,7 +205,7 @@ async def test_handle_control_event_flush_on_turn_complete():
   response = LlmResponse(turn_complete=True)
 
   with mock.patch.object(
-      flow.audio_cache_manager, 'flush_caches', new_callable=mock.AsyncMock
+      flow.cache_manager, 'flush_caches', new_callable=mock.AsyncMock
   ) as mock_flush:
     mock_flush.return_value = [Event(id='flushed-event')]
     events = await _live_llm_flow.handle_control_event_flush(
@@ -210,7 +214,11 @@ async def test_handle_control_event_flush_on_turn_complete():
 
   assert len(events) == 1
   mock_flush.assert_awaited_once_with(
-      context, flush_user_audio=True, flush_model_audio=True
+      context,
+      flush_user_audio=True,
+      flush_model_audio=True,
+      flush_user_media=True,
+      flush_model_media=True,
   )
 
 
@@ -310,19 +318,17 @@ async def test_handle_control_event_flush_logs_stats_when_enabled_on_base_llm_fl
   with (
       mock.patch.object(base_llm_flow, 'DEFAULT_ENABLE_CACHE_STATISTICS', True),
       mock.patch.object(
-          flow.audio_cache_manager, 'get_cache_stats'
+          flow.cache_manager, 'get_cache_stats'
       ) as mock_get_stats,
-      mock.patch.object(
-          flow.audio_cache_manager, 'flush_caches', return_value=[]
-      ),
+      mock.patch.object(flow.cache_manager, 'flush_caches', return_value=[]),
   ):
     await _live_llm_flow.handle_control_event_flush(flow, context, response)
 
   mock_get_stats.assert_called_once_with(context)
 
 
-async def test_send_to_model_uses_flow_audio_cache_manager():
-  """send_to_model accesses the audio cache manager directly from the flow instance."""
+async def test_send_to_model_uses_flow_cache_manager():
+  """send_to_model accesses the cache manager directly from the flow instance."""
   flow = _TestBaseLlmFlow()
   queue = LiveRequestQueue()
   queue.send_realtime(types.Blob(mime_type='audio/pcm', data=b'audio_bytes'))
@@ -331,9 +337,7 @@ async def test_send_to_model_uses_flow_audio_cache_manager():
   )
   mock_connection = mock.AsyncMock()
 
-  with mock.patch.object(
-      flow.audio_cache_manager, 'cache_audio'
-  ) as mock_cache_audio:
+  with mock.patch.object(flow.cache_manager, 'cache_blob') as mock_cache_blob:
     # Run send_to_model briefly and cancel it after processing the queued item
     send_task = asyncio.create_task(
         _live_llm_flow.send_to_model(
@@ -347,4 +351,41 @@ async def test_send_to_model_uses_flow_audio_cache_manager():
     except asyncio.CancelledError:
       pass
 
-  mock_cache_audio.assert_called_once()
+  mock_cache_blob.assert_called_once()
+
+
+async def test_receive_from_model_caches_output_blobs():
+  """receive_from_model caches output blobs via cache_manager.cache_blob when save_live_blob=True."""
+  flow = _TestBaseLlmFlow()
+  context = _create_test_context(
+      live_request_queue=LiveRequestQueue(),
+      run_config=RunConfig(save_live_blob=True),
+  )
+  mock_connection = mock.AsyncMock()
+  blob = types.Blob(mime_type='image/jpeg', data=b'frame_bytes')
+  response = LlmResponse(
+      content=types.Content(
+          role='model',
+          parts=[types.Part(inline_data=blob)],
+      )
+  )
+
+  first = True
+
+  async def _receive():
+    nonlocal first
+    if first:
+      first = False
+      yield response
+
+  mock_connection.receive = _receive
+
+  with mock.patch.object(flow.cache_manager, 'cache_blob') as mock_cache_blob:
+    events = [
+        e
+        async for e in _live_llm_flow.receive_from_model(
+            flow, mock_connection, context, LlmRequest()
+        )
+    ]
+
+  mock_cache_blob.assert_called_once_with(context, blob, cache_type='output')

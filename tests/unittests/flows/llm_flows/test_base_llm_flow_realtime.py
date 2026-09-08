@@ -441,3 +441,32 @@ async def test_send_to_model_caches_input_audio_when_save_live_blob(
   assert invocation_context.input_realtime_cache
   assert invocation_context.input_realtime_cache[0].data == test_blob
   mock_llm_connection.send_realtime.assert_called_once_with(test_blob)
+
+
+@pytest.mark.asyncio
+async def test_send_to_model_caches_input_media_when_save_live_blob(
+    mock_llm_connection,
+):
+  """User media frames are retained when save_live_blob is enabled."""
+  agent = Agent(name='test_agent', model='mock')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='', run_config=RunConfig(save_live_blob=True)
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  flow = TestBaseLlmFlow()
+  media_blob = types.Blob(
+      data=b'\xff\xd8\xff\xe0jpeg_data', mime_type='image/jpeg'
+  )
+
+  invocation_context.live_request_queue.send(LiveRequest(blob=media_blob))
+  invocation_context.live_request_queue.close()
+
+  await flow._send_to_model(
+      mock_llm_connection, invocation_context, LlmRequest()
+  )
+
+  assert invocation_context.input_media_realtime_cache
+  assert invocation_context.input_media_realtime_cache[0].data == media_blob
+  assert not invocation_context.input_realtime_cache
+  mock_llm_connection.send_realtime.assert_called_once_with(media_blob)

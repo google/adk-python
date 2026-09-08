@@ -336,6 +336,27 @@ class PerAgentFileArtifactService(BaseArtifactService):
     )
 
   @override
+  async def save_media_frames(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      collection_name: str,
+      frames: list[tuple[types.Blob, float]],
+      session_id: Optional[str] = None,
+      custom_metadata: Optional[dict[str, Any]] = None,
+  ) -> int:
+    service = await self._get_service(app_name)
+    return await service.save_media_frames(
+        app_name=app_name,
+        user_id=user_id,
+        collection_name=collection_name,
+        frames=frames,
+        session_id=session_id,
+        custom_metadata=custom_metadata,
+    )
+
+  @override
   async def load_artifact(
       self,
       *,

@@ -12200,7 +12200,6 @@ async def test_multiple_plugins_share_background_loop_state_with_equivalent_cred
         creds1
     )
 
-
     plugin1 = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
         project_id=PROJECT_ID,
         dataset_id=DATASET_ID,

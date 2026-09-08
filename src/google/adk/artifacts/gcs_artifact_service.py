@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import json
 import logging
 from typing import Any
 from typing import cast
@@ -36,7 +37,7 @@ import urllib.parse
 from google.genai import types
 from typing_extensions import override
 
-from . import artifact_util
+from ..artifacts import artifact_util
 from ..errors.input_validation_error import InputValidationError
 from .base_artifact_service import ArtifactVersion
 from .base_artifact_service import BaseArtifactService
@@ -124,6 +125,109 @@ class GcsArtifactService(BaseArtifactService):
         artifact,
         custom_metadata,
     )
+
+  @override
+  async def save_media_frames(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      collection_name: str,
+      frames: list[tuple[types.Blob, float]],
+      session_id: Optional[str] = None,
+      custom_metadata: Optional[dict[str, Any]] = None,
+  ) -> int:
+    return await asyncio.to_thread(
+        self._save_media_frames,
+        app_name,
+        user_id,
+        session_id,
+        collection_name,
+        frames,
+        custom_metadata,
+    )
+
+  def _save_media_frames(
+      self,
+      app_name: str,
+      user_id: str,
+      session_id: Optional[str],
+      collection_name: str,
+      frames: list[tuple[types.Blob, float]],
+      custom_metadata: Optional[dict[str, Any]] = None,
+  ) -> int:
+    if not frames:
+      raise InputValidationError("Cannot save empty frames list.")
+
+    versions = self._list_versions(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        filename=collection_name,
+    )
+    version = 0 if not versions else max(versions) + 1
+
+    prefix = self._get_blob_name(
+        app_name, user_id, collection_name, version, session_id
+    )
+
+    start_ts = frames[0][1]
+    end_ts = frames[-1][1]
+    duration_ms = int((end_ts - start_ts) * 1000)
+    frame_count = len(frames)
+    estimated_fps = (
+        round((frame_count - 1) / (end_ts - start_ts), 2)
+        if duration_ms > 0 and frame_count > 1
+        else 0.0
+    )
+
+    frame_indices = []
+    primary_mime_type = "image/jpeg"
+
+    for idx, (blob, ts) in enumerate(frames):
+      if not blob.data:
+        raise InputValidationError(f"Frame {idx} has no byte data.")
+      mime = (blob.mime_type or "image/jpeg").lower()
+      if idx == 0:
+        primary_mime_type = mime
+      ext = mime.split("/")[-1].split(";")[0].strip() or "jpeg"
+      frame_blob_name = f"{prefix}/frames/frame_{idx:04d}.{ext}"
+      frame_blob = self.bucket.blob(frame_blob_name)
+      frame_blob.upload_from_string(data=blob.data, content_type=mime)
+
+      # For preview / load_artifact compatibility: upload frame 0 as the version blob itself
+      if idx == 0:
+        preview_blob = self.bucket.blob(prefix)
+        preview_blob.upload_from_string(data=blob.data, content_type=mime)
+
+      offset_ms = int((ts - start_ts) * 1000)
+      frame_indices.append({
+          "frameIndex": idx,
+          "offsetMs": offset_ms,
+          "fileName": f"frames/frame_{idx:04d}.{ext}",
+          "mimeType": mime,
+          "sizeBytes": len(blob.data),
+      })
+
+    metadata_payload = {
+        "type": "video_frame_sequence",
+        "frameCount": frame_count,
+        "startTimestampMs": int(start_ts * 1000),
+        "endTimestampMs": int(end_ts * 1000),
+        "durationMs": duration_ms,
+        "estimatedFps": estimated_fps,
+        "frames": frame_indices,
+    }
+    if custom_metadata:
+      metadata_payload.update(custom_metadata)
+
+    metadata_blob = self.bucket.blob(f"{prefix}/metadata.json")
+    metadata_blob.upload_from_string(
+        data=json.dumps(metadata_payload),
+        content_type="application/json",
+    )
+
+    return version
 
   @override
   async def load_artifact(

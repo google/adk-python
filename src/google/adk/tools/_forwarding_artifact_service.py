@@ -54,6 +54,33 @@ class ForwardingArtifactService(BaseArtifactService):
     )
 
   @override
+  async def save_media_frames(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      collection_name: str,
+      frames: list[tuple[types.Blob, float]],
+      session_id: Optional[str] = None,
+      custom_metadata: Optional[dict[str, Any]] = None,
+  ) -> int:
+    del app_name, user_id, session_id
+    if self._invocation_context.artifact_service is None:
+      raise ValueError("Artifact service is not initialized.")
+    return await self._invocation_context.artifact_service.save_media_frames(
+        app_name=self._invocation_context.app_name,
+        user_id=self._invocation_context.user_id,
+        session_id=(
+            self._invocation_context.session.id
+            if self._invocation_context.session
+            else None
+        ),
+        collection_name=collection_name,
+        frames=frames,
+        custom_metadata=custom_metadata,
+    )
+
+  @override
   async def load_artifact(
       self,
       *,
