@@ -33,7 +33,7 @@ from ..auth.credential_service.base_credential_service import BaseCredentialServ
 from ..events._branch_path import _BranchPath
 from ..events.event import Event
 from ..live._active_streaming_tool import ActiveStreamingTool
-from ..live._audio_cache_manager import RealtimeCacheEntry as RealtimeCacheEntry
+from ..live._cache_manager import RealtimeCacheEntry as RealtimeCacheEntry
 from ..live._transcription_entry import TranscriptionEntry
 from ..live.live_request_queue import LiveRequestQueue
 from ..memory.base_memory_service import BaseMemoryService
@@ -208,6 +208,12 @@ class InvocationContext(BaseModel):
 
   output_realtime_cache: list[RealtimeCacheEntry] | None = None
   """Caches output audio chunks before flushing to session and artifact services."""
+
+  input_media_realtime_cache: list[RealtimeCacheEntry] | None = None
+  """Caches input media frames before flushing to session and artifact services."""
+
+  output_media_realtime_cache: list[RealtimeCacheEntry] | None = None
+  """Caches output media frames before flushing to session and artifact services."""
 
   run_config: RunConfig | None = None
   """Configurations for live agents under this invocation."""

@@ -29,6 +29,9 @@ queue.send_content(types.Content(parts=[types.Part.from_text(text="Hello!")]))
 # Send realtime audio chunks (e.g. PCM audio bytes)
 queue.send_realtime(types.Blob(data=audio_bytes, mime_type="audio/pcm"))
 
+# Send realtime video or camera frames (e.g. JPEG bytes)
+queue.send_realtime(types.Blob(data=frame_jpeg_bytes, mime_type="image/jpeg"))
+
 # Signal that the audio input stream has ended (e.g. microphone switched off)
 queue.send_audio_stream_end()
 
@@ -74,3 +77,7 @@ queue.send(LiveRequest(audio_stream_end=True))
 
 > [!IMPORTANT]
 > `LiveRequestQueue` accepts `LiveRequest` instances, not `LiveClientRealtimeInput`. App developers should use `queue.send_audio_stream_end()` or `queue.send(LiveRequest(audio_stream_end=True))`. The translation to `LiveClientRealtimeInput` is handled internally by the ADK connection layer (`GeminiLlmConnection`).
+
+## Related guides
+
+*   [Live Streaming with Runner](../runners/runner/live.md) — Persistent live session orchestration with Gemini Live.

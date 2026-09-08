@@ -21,21 +21,23 @@ import importlib
 from google.adk.flows.llm_flows import audio_cache_manager as legacy_module
 from google.adk.flows.llm_flows.audio_cache_manager import AudioCacheConfig as LegacyAudioCacheConfig
 from google.adk.flows.llm_flows.audio_cache_manager import AudioCacheManager as LegacyAudioCacheManager
-from google.adk.live._audio_cache_manager import AudioCacheConfig
-from google.adk.live._audio_cache_manager import AudioCacheManager
+from google.adk.live._cache_manager import CacheConfig
+from google.adk.live._cache_manager import CacheManager
 import pytest
 
 
 def test_audio_cache_manager_reexport():
-  assert LegacyAudioCacheManager is AudioCacheManager
-  assert LegacyAudioCacheConfig is AudioCacheConfig
-  assert getattr(legacy_module, 'AudioCacheManager') is AudioCacheManager
-  assert getattr(legacy_module, 'AudioCacheConfig') is AudioCacheConfig
+  assert LegacyAudioCacheManager is CacheManager
+  assert LegacyAudioCacheConfig is CacheConfig
+  assert getattr(legacy_module, 'AudioCacheManager') is CacheManager
+  assert getattr(legacy_module, 'AudioCacheConfig') is CacheConfig
+  assert getattr(legacy_module, 'CacheManager') is CacheManager
+  assert getattr(legacy_module, 'CacheConfig') is CacheConfig
 
 
 def test_audio_cache_manager_deprecation_warning():
   with pytest.warns(
       DeprecationWarning,
-      match='use google.adk.live._audio_cache_manager instead',
+      match='use google.adk.live._cache_manager instead',
   ):
     importlib.reload(legacy_module)

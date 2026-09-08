@@ -14,24 +14,32 @@
 
 """Backward compatibility module for AudioCacheManager.
 
-AudioCacheManager and AudioCacheConfig are no longer public; they live in
-``google.adk.live._audio_cache_manager`` and this module only keeps
-existing imports working. RealtimeCacheEntry is public as
-``google.adk.agents.invocation_context.RealtimeCacheEntry``.
+The audio-only cache has been superseded by the unified multimodal cache in
+``google.adk.live._cache_manager``, which caches media frames alongside audio
+chunks. ``CacheManager`` and ``CacheConfig`` are not public; this module only
+keeps existing imports working. ``AudioCacheManager`` and ``AudioCacheConfig``
+are retained here as aliases of their unified replacements. RealtimeCacheEntry
+is public as ``google.adk.agents.invocation_context.RealtimeCacheEntry``.
 """
 
 from __future__ import annotations
 
 import warnings
 
-from ...live._audio_cache_manager import AudioCacheConfig as AudioCacheConfig
-from ...live._audio_cache_manager import AudioCacheManager as AudioCacheManager
-from ...live._audio_cache_manager import logger as logger
-from ...live._audio_cache_manager import RealtimeCacheEntry as RealtimeCacheEntry
+from ...live._cache_manager import CacheConfig as CacheConfig
+from ...live._cache_manager import CacheManager as CacheManager
+from ...live._cache_manager import logger as logger
+from ...live._cache_manager import RealtimeCacheEntry as RealtimeCacheEntry
+
+# Legacy aliases. `CacheManager` retains the full `cache_audio` /
+# `flush_caches` surface of the removed `AudioCacheManager`, and `CacheConfig`
+# is a superset of `AudioCacheConfig`, so audio-only callers are unaffected.
+AudioCacheManager = CacheManager
+AudioCacheConfig = CacheConfig
 
 warnings.warn(
     'google.adk.flows.llm_flows.audio_cache_manager is deprecated; use'
-    ' google.adk.live._audio_cache_manager instead.',
+    ' google.adk.live._cache_manager instead.',
     DeprecationWarning,
     stacklevel=2,
 )

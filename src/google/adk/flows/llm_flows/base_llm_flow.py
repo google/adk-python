@@ -24,6 +24,7 @@ from typing import cast
 from typing import Iterator
 from typing import Optional
 from typing import TYPE_CHECKING
+import warnings
 
 from google.adk.platform import time as platform_time
 from google.genai import types
@@ -39,7 +40,7 @@ from ...agents.invocation_context import InvocationContext
 from ...agents.readonly_context import ReadonlyContext
 from ...auth.auth_tool import AuthConfig
 from ...events.event import Event
-from ...live._audio_cache_manager import AudioCacheManager
+from ...live._cache_manager import CacheManager
 from ...live.live_request_queue import LiveRequestQueue
 from ...models.base_llm_connection import BaseLlmConnection
 from ...models.llm_request import LlmRequest
@@ -325,7 +326,17 @@ class BaseLlmFlow(ABC):
     self.response_processors: list[BaseLlmResponseProcessor] = []
 
     # Initialize configuration and managers
-    self.audio_cache_manager = AudioCacheManager()
+    self.cache_manager = CacheManager()
+
+  @property
+  def audio_cache_manager(self) -> CacheManager:
+    """Deprecated alias for cache_manager."""
+    warnings.warn(
+        'audio_cache_manager is deprecated, use cache_manager instead.',
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return self.cache_manager
 
   async def run_live(
       self,
