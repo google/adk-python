@@ -80,6 +80,7 @@ def _make_event(
   event.invocation_id = invocation_id
   event.author = author
   event.output = output
+  event.error_code = None
   event.partial = False
   event.node_info = MagicMock(spec=NodeInfo)
   event.node_info.path = path
@@ -99,6 +100,7 @@ def _make_fr_event(fc_id, response, invocation_id='inv-1'):
   event.invocation_id = invocation_id
   event.author = 'user'
   event.output = None
+  event.error_code = None
   event.node_info = MagicMock(spec=NodeInfo)
   event.node_info.path = ''
   event.node_info.message_as_output = None
@@ -802,3 +804,137 @@ async def test_dynamic_node_replay_ordering_preserved(
   # Assert source_a and source_b were replayed from cache in exact historical order,
   # ensuring winner_val correctly resolves to 'result_b' without re-execution.
   assert recorded_winner_vals == ['result_b']
+
+
+@pytest.mark.asyncio
+async def test_node_with_clone_uses_clone():
+  """DynamicNodeScheduler uses node.clone() if available."""
+
+  class MockNodeWithClone(BaseNode):
+    clone_called: bool = False
+
+    async def _run_impl(self, *, ctx, node_input):
+      yield 'output'
+
+    def clone(self, update=None):
+      copied = self.model_copy(update=update)
+      copied.clone_called = True
+      return copied
+
+  ctx, _ = _make_parent_ctx()
+  tracker = DynamicNodeScheduler(state=DynamicNodeState())
+
+  mock_child_ctx = MagicMock(spec=Context)
+  mock_child_ctx.error = None
+  mock_child_ctx.interrupt_ids = set()
+  mock_child_ctx.output = 'output'
+  mock_child_ctx.actions = MagicMock()
+  mock_child_ctx.actions.transfer_to_agent = None
+  ctx._run_node_standalone = AsyncMock(return_value=mock_child_ctx)
+
+  node = MockNodeWithClone(name='child')
+
+  await tracker(
+      ctx,
+      node,
+      'data',
+      node_name='child',
+      run_id='1',
+  )
+
+  ctx._run_node_standalone.assert_called_once()
+  called_node = ctx._run_node_standalone.call_args[0][0]
+  assert called_node.clone_called is True
+  assert called_node.name == 'child'
+
+
+@pytest.mark.asyncio
+async def test_node_without_clone_uses_model_copy():
+  """DynamicNodeScheduler falls back to model_copy() if clone is not available."""
+
+  class MockNodeWithoutClone(BaseNode):
+    model_copy_called: bool = False
+
+    async def _run_impl(self, *, ctx, node_input):
+      yield 'output'
+
+    def model_copy(self, *, update=None, deep=False):
+      copied = super().model_copy(update=update, deep=deep)
+      copied.model_copy_called = True
+      return copied
+
+  ctx, _ = _make_parent_ctx()
+  tracker = DynamicNodeScheduler(state=DynamicNodeState())
+
+  mock_child_ctx = MagicMock(spec=Context)
+  mock_child_ctx.error = None
+  mock_child_ctx.interrupt_ids = set()
+  mock_child_ctx.output = 'output'
+  mock_child_ctx.actions = MagicMock()
+  mock_child_ctx.actions.transfer_to_agent = None
+  ctx._run_node_standalone = AsyncMock(return_value=mock_child_ctx)
+
+  node = MockNodeWithoutClone(name='child')
+
+  await tracker(
+      ctx,
+      node,
+      'data',
+      node_name='child',
+      run_id='1',
+  )
+
+  ctx._run_node_standalone.assert_called_once()
+  called_node = ctx._run_node_standalone.call_args[0][0]
+  assert called_node.model_copy_called is True
+  assert called_node.name == 'child'
+
+
+@pytest.mark.asyncio
+async def test_node_with_clone_preserves_parent_agent():
+  """DynamicNodeScheduler preserves parent_agent if it was cleared by clone()."""
+
+  class MockParentAgent(BaseNode):
+
+    async def _run_impl(self, *, ctx, node_input):
+      yield 'parent'
+
+  class MockNodeWithCloneAndParent(BaseNode):
+    parent_agent: MockParentAgent | None = None
+
+    async def _run_impl(self, *, ctx, node_input):
+      yield 'output'
+
+    def clone(self, update=None):
+      copied = self.model_copy(update=update)
+      # Simulate BaseAgent.clone behavior of clearing parent_agent
+      copied.parent_agent = None
+      return copied
+
+  ctx, _ = _make_parent_ctx()
+  tracker = DynamicNodeScheduler(state=DynamicNodeState())
+
+  mock_child_ctx = MagicMock(spec=Context)
+  mock_child_ctx.error = None
+  mock_child_ctx.interrupt_ids = set()
+  mock_child_ctx.output = 'output'
+  mock_child_ctx.actions = MagicMock()
+  mock_child_ctx.actions.transfer_to_agent = None
+  ctx._run_node_standalone = AsyncMock(return_value=mock_child_ctx)
+
+  parent_node = MockParentAgent(name='parent')
+  node = MockNodeWithCloneAndParent(name='child', parent_agent=parent_node)
+
+  await tracker(
+      ctx,
+      node,
+      'data',
+      node_name='child',
+      run_id='1',
+  )
+
+  ctx._run_node_standalone.assert_called_once()
+  called_node = ctx._run_node_standalone.call_args[0][0]
+  # Verify parent_agent was restored
+  assert called_node.parent_agent is parent_node
+  assert called_node.name == 'child'

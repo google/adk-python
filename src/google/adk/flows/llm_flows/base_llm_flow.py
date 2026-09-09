@@ -807,18 +807,17 @@ class BaseLlmFlow(ABC):
       A generator of events.
     """
 
-    # Runs processors.
-    async with Aclosing(
-        self._postprocess_run_processors_async(invocation_context, llm_response)
-    ) as agen:
-      async for event in agen:
-        yield event
-
     # A non-streaming turn that finishes with STOP but has no content parts would
     # otherwise be skipped below and become a silent empty final response;
     # surface it as an actionable error instead. Streaming is excluded
     # because a terminal finish-only chunk legitimately follows content already
     # streamed in earlier chunks.
+    #
+    # This must run before the response processors. Emptiness is a property of
+    # what the model returned, so it can only be judged before local processing
+    # touches the response: a processor may clear the content deliberately to
+    # signal that the flow should continue, as the code execution processor does
+    # once it has run the code and emitted its result.
     run_config = _require_run_config(invocation_context)
     if (
         not llm_response.partial
@@ -831,6 +830,13 @@ class BaseLlmFlow(ABC):
       llm_response.error_message = (
           llm_response.error_message or _NO_CONTENT_ERROR_MESSAGE
       )
+
+    # Runs processors.
+    async with Aclosing(
+        self._postprocess_run_processors_async(invocation_context, llm_response)
+    ) as agen:
+      async for event in agen:
+        yield event
 
     # Skip the model response event if there is no content and no error code.
     # This is needed for the code executor to trigger another loop.
@@ -972,13 +978,17 @@ class BaseLlmFlow(ABC):
 
     from google.adk.agents.llm_agent import LlmAgent
 
-    if (
-        isinstance(agent, LlmAgent)
-        and agent.disallow_transfer_to_peers
-        and agent_to_run.parent_agent == agent.parent_agent
-        and agent_to_run != agent
-    ):
-      raise ValueError(f'Transfer to sibling agent {agent_name} is disallowed.')
+    from .agent_transfer import _get_transfer_targets
+
+    # Restrict transfers to declared targets (or itself) to prevent
+    # unauthorized escalation.
+    if isinstance(agent, LlmAgent) and agent_to_run.name != agent.name:
+      allowed_names = {target.name for target in _get_transfer_targets(agent)}
+      if agent_to_run.name not in allowed_names:
+        raise ValueError(
+            f'Agent {agent.name} is not allowed to transfer to agent'
+            f' {agent_name}.'
+        )
     return agent_to_run
 
   async def _call_llm_async(
@@ -1020,7 +1030,7 @@ class BaseLlmFlow(ABC):
           llm_request.config.labels[_ADK_AGENT_NAME_LABEL_KEY] = agent.name
 
         # Calls the LLM.
-        llm = self.__get_llm(invocation_context)
+        llm = await self.__get_llm(invocation_context)
 
         # Check if we can make this llm call or not. If the current
         # call pushes the counter beyond the max set value, then the
@@ -1176,10 +1186,28 @@ class BaseLlmFlow(ABC):
         self, invocation_context, llm_response
     )
 
-  def _get_llm(self, invocation_context: InvocationContext) -> BaseLlm:
-    return self.__get_llm(invocation_context)
+  async def _get_llm(self, invocation_context: InvocationContext) -> BaseLlm:
+    return await self.__get_llm(invocation_context)
 
-  def __get_llm(self, invocation_context: InvocationContext) -> BaseLlm:
+  async def __get_llm(self, invocation_context: InvocationContext) -> BaseLlm:
+    """Resolves the model this invocation should call.
+
+    Resolution goes through the agent's async accessors, so that it can
+    depend on the invocation and can await. An agent that supplies only the
+    synchronous properties is read through those instead.
+
+    A conformance replay overrides both, because the model it substitutes has
+    to be the one the recording was made against.
+
+    Args:
+      invocation_context: The invocation being served.
+
+    Returns:
+      The model to call for this invocation.
+
+    Raises:
+      TypeError: If the agent supplies no model at all, by either name.
+    """
     agent = _as_llm_agent(invocation_context)
 
     # Check for conformance test replay mode
@@ -1208,7 +1236,14 @@ class BaseLlmFlow(ABC):
       config['_adk_replay_indexes'] = replay_indexes
       return model
 
+    ctx = ReadonlyContext(invocation_context)
+
+    # An agent from outside this package may supply the LlmAgent surface
+    # without subclassing it, and predates the async accessors, so fall back
+    # to the property it does have. See `as_llm_agent`.
     if invocation_context.live_request_queue is not None:
+      if hasattr(agent, 'canonical_live_model_async'):
+        return await agent.canonical_live_model_async(ctx)
       return agent.canonical_live_model
 
     if not hasattr(agent, 'canonical_model'):
@@ -1216,6 +1251,8 @@ class BaseLlmFlow(ABC):
           'Expected agent to have canonical_model attribute,'
           f' but got {type(agent)}'
       )
+    if hasattr(agent, 'canonical_model_async'):
+      return await agent.canonical_model_async(ctx)
     return agent.canonical_model
 
 

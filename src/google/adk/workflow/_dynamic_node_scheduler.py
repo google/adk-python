@@ -389,7 +389,16 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
           dict(run.state.resume_inputs) if run.state.resume_inputs else None
       )
 
-    target_node = node.model_copy(update={'name': name})
+    if hasattr(node, 'clone'):
+      target_node = node.clone(update={'name': name})
+      parent_agent = getattr(node, 'parent_agent', None)
+      if (
+          parent_agent is not None
+          and getattr(target_node, 'parent_agent', None) is None
+      ):
+        target_node.parent_agent = parent_agent
+    else:
+      target_node = node.model_copy(update={'name': name})
     run.task = asyncio.create_task(
         ctx._run_node_standalone(
             target_node,

@@ -702,6 +702,40 @@ class Runner:
         session=ic.session, event=event
     )
 
+  async def _append_state_delta_event(
+      self,
+      ic: InvocationContext,
+      state_delta: dict[str, Any],
+  ) -> Event:
+    """Appends an event to the session carrying only a state delta.
+
+    Used when resuming an invocation without a new message, so that any
+    caller-supplied state delta is still persisted to the session rather than
+    being dropped because there is no new message event to attach it to.
+
+    Args:
+      ic: The invocation context for the run.
+      state_delta: The state delta dictionary to append.
+
+    Returns:
+      The appended event, matching the return convention of
+      the user message event.
+    """
+    event = Event(
+        invocation_id=ic.invocation_id,
+        author='user',
+        actions=EventActions(state_delta=state_delta),
+    )
+    if event.isolation_scope is None:
+      active_scope = _find_active_task_scope(ic.session)
+      if active_scope is not None:
+        event.isolation_scope, _ = active_scope
+    _apply_run_config_custom_metadata(event, ic.run_config)
+    ic.stamp_event_branch_context(event)
+    return await self.session_service.append_event(
+        session=ic.session, event=event
+    )
+
   def _find_user_message_for_invocation(
       self, events: list[Event], invocation_id: str
   ) -> types.Content | None:
@@ -1913,6 +1947,11 @@ class Runner:
           run_config=run_config,
           state_delta=state_delta,
       )
+    elif state_delta:
+      # Resuming without a new message: there is no user message event to
+      # carry the delta, so append it as a content-less event instead of
+      # dropping it.
+      await self._append_state_delta_event(invocation_context, state_delta)
     # Step 4: Populate agent states for the current invocation.
     invocation_context.populate_invocation_agent_states()
     # Step 5: Set agent to run for the invocation.

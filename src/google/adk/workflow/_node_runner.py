@@ -135,9 +135,16 @@ class NodeRunner:
         ) as telemetry_context:
           ctx._telemetry_context = telemetry_context
           await self._execute_node(ctx, node_input)
-          await self._flush_output_and_deltas(ctx)
-          logger.debug("node %s end.", ctx.node_path)
-          return ctx
+          # A Workflow reports a failing child by setting an error on its own
+          # context rather than by raising, so a failure that happened inside
+          # a sub-workflow reaches the retry policy here and never through the
+          # handler below.
+          if ctx.error is None or not await self._attempt_retry(
+              ctx.error, attempt_count
+          ):
+            await self._flush_output_and_deltas(ctx)
+            logger.debug("node %s end.", ctx.node_path)
+            return ctx
       except Exception as e:
         if isinstance(e, DynamicNodeFailError):
           # TODO: consider to retry upon dynamic node failures later. This may
@@ -167,12 +174,12 @@ class NodeRunner:
           ctx._error_node_path = ctx.node_path
           logger.debug("node %s end.", ctx.node_path)
           return ctx
-        logger.warning(
-            "Node %s failed and is being retried locally. Note: retry count is"
-            " not persisted across resuming.",
-            self._node.name,
-        )
-        attempt_count += 1
+      logger.warning(
+          "Node %s failed and is being retried locally. Note: retry count is"
+          " not persisted across resuming.",
+          self._node.name,
+      )
+      attempt_count += 1
 
   async def _attempt_retry(self, e: Exception, attempt_count: int) -> bool:
     """Checks if node should retry and sleeps if so."""

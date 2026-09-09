@@ -629,6 +629,235 @@ def test_run_reports_agent_cancellation_as_runtime_error():
 
 
 @pytest.mark.asyncio
+async def test_run_async_applies_state_delta_when_resuming_without_new_message():
+  """Resuming by invocation_id should still apply a caller-supplied delta."""
+
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockAgent("test_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+  runner.resumability_config = ResumabilityConfig(is_resumable=True)
+
+  # Seed the session with an invocation to resume.
+  async with aclosing(
+      runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=types.Content(
+              role="user", parts=[types.Part(text="hello")]
+          ),
+      )
+  ) as agen:
+    async for _ in agen:
+      pass
+
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  invocation_id = session.events[0].invocation_id
+
+  state_delta = {"resumed_key": "resumed_value"}
+
+  async with aclosing(
+      runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          invocation_id=invocation_id,
+          state_delta=state_delta,
+      )
+  ) as agen:
+    async for _ in agen:
+      pass
+
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  assert session.state["resumed_key"] == "resumed_value"
+
+
+@pytest.mark.asyncio
+async def test_run_async_applies_state_delta_when_resuming_without_new_message_llm_agent():
+  """Resuming by invocation_id should apply caller-supplied delta for LLM agent."""
+
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockLlmAgent("test_llm_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+  runner.resumability_config = ResumabilityConfig(is_resumable=True)
+
+  # Seed the session with an invocation to resume.
+  async with aclosing(
+      runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=types.Content(
+              role="user", parts=[types.Part(text="hello")]
+          ),
+      )
+  ) as agen:
+    async for _ in agen:
+      pass
+
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  invocation_id = session.events[0].invocation_id
+
+  state_delta = {"resumed_key": "resumed_value"}
+
+  async with aclosing(
+      runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          invocation_id=invocation_id,
+          state_delta=state_delta,
+      )
+  ) as agen:
+    async for _ in agen:
+      pass
+
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  assert session.state["resumed_key"] == "resumed_value"
+  delta_event = [
+      e
+      for e in session.events
+      if e.actions and e.actions.state_delta and not e.content
+  ][0]
+  assert delta_event.branch is None
+
+
+@pytest.mark.asyncio
+async def test_run_node_async_yields_state_delta_when_resuming_with_yield_user_message():
+  """run_node_async yields delta event when yield_user_message=True on resume."""
+  from typing import Any
+
+  from google.adk.agents.context import Context
+  from google.adk.workflow import _node_runner_utils
+  from google.adk.workflow._base_node import BaseNode
+
+  class _TestNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Event, None]:
+      yield Event(
+          author=self.name,
+          content=types.Content(
+              role="model", parts=[types.Part(text="node response")]
+          ),
+      )
+
+  session_service = InMemorySessionService()
+  node = _TestNode(name="test_node")
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockAgent("test_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+  session = await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  seed_event = Event(
+      invocation_id="inv_1",
+      author="user",
+      content=types.Content(role="user", parts=[types.Part(text="initial")]),
+  )
+  await session_service.append_event(session, seed_event)
+
+  state_delta = {"resumed_key": "resumed_value"}
+  events = []
+  async for event in _node_runner_utils.run_node_async(
+      runner,
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      invocation_id="inv_1",
+      state_delta=state_delta,
+      yield_user_message=True,
+      node=node,
+      session=session,
+  ):
+    events.append(event)
+
+  user_events = [e for e in events if e.author == "user"]
+  assert len(user_events) == 1
+  assert user_events[0].actions.state_delta == state_delta
+  assert session.state["resumed_key"] == "resumed_value"
+
+
+@pytest.mark.asyncio
+async def test_run_node_async_does_not_yield_state_delta_when_resuming_without_yield_user_message():
+  """run_node_async does not yield delta event by default on resume."""
+  from typing import Any
+
+  from google.adk.agents.context import Context
+  from google.adk.workflow import _node_runner_utils
+  from google.adk.workflow._base_node import BaseNode
+
+  class _TestNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Event, None]:
+      yield Event(
+          author=self.name,
+          content=types.Content(
+              role="model", parts=[types.Part(text="node response")]
+          ),
+      )
+
+  session_service = InMemorySessionService()
+  node = _TestNode(name="test_node")
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockAgent("test_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+  session = await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  seed_event = Event(
+      invocation_id="inv_1",
+      author="user",
+      content=types.Content(role="user", parts=[types.Part(text="initial")]),
+  )
+  await session_service.append_event(session, seed_event)
+
+  state_delta = {"resumed_key": "resumed_value"}
+  events = []
+  async for event in _node_runner_utils.run_node_async(
+      runner,
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      invocation_id="inv_1",
+      state_delta=state_delta,
+      yield_user_message=False,
+      node=node,
+      session=session,
+  ):
+    events.append(event)
+
+  user_events = [e for e in events if e.author == "user"]
+  assert not user_events
+  assert session.state["resumed_key"] == "resumed_value"
+
+
+@pytest.mark.asyncio
 async def test_run_async_propagates_invocation_id():
   """run_async should propagate invocation_id to the invocation context and events."""
 

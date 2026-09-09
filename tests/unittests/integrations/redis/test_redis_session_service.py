@@ -204,6 +204,78 @@ async def test_list_sessions(session_service):
 
 
 @pytest.mark.asyncio
+async def test_list_sessions_glob_metacharacters_match_literally(
+    session_service, fake_redis
+):
+  await session_service.create_session(
+      app_name="app1",
+      user_id="u1",
+      session_id="s1",
+  )
+  await session_service.create_session(
+      app_name="app1",
+      user_id="u2",
+      session_id="s2",
+  )
+
+  for app_name, user_id, expected_pattern in (
+      ("app1", "*", r"test:session:app1:\*:*"),
+      ("app1", "u?", r"test:session:app1:u\?:*"),
+      ("app1", "[u]1", r"test:session:app1:\[u\]1:*"),
+      ("*", "u1", r"test:session:\*:u1:*"),
+  ):
+    fake_redis.scan_patterns.clear()
+    resp = await session_service.list_sessions(
+        app_name=app_name, user_id=user_id
+    )
+    assert fake_redis.scan_patterns == [expected_pattern], (app_name, user_id)
+    assert resp.sessions == [], (app_name, user_id)
+
+  fake_redis.scan_patterns.clear()
+  resp = await session_service.list_sessions(app_name="*")
+  assert fake_redis.scan_patterns == [r"test:session:\*:*"]
+  assert resp.sessions == []
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_empty_user_id_is_a_filter_not_a_wildcard(
+    session_service,
+):
+  await session_service.create_session(
+      app_name="app1",
+      user_id="",
+      session_id="s1",
+  )
+  await session_service.create_session(
+      app_name="app1",
+      user_id="u1",
+      session_id="s2",
+  )
+
+  resp = await session_service.list_sessions(app_name="app1", user_id="")
+  assert [s.id for s in resp.sessions] == ["s1"]
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_excludes_user_ids_sharing_a_prefix(
+    session_service,
+):
+  await session_service.create_session(
+      app_name="app1",
+      user_id="u1",
+      session_id="s1",
+  )
+  await session_service.create_session(
+      app_name="app1",
+      user_id="u1:sub",
+      session_id="s2",
+  )
+
+  resp = await session_service.list_sessions(app_name="app1", user_id="u1")
+  assert [s.id for s in resp.sessions] == ["s1"]
+
+
+@pytest.mark.asyncio
 async def test_delete_session(session_service):
   await session_service.create_session(
       app_name="app1",

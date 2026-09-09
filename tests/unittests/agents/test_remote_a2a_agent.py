@@ -514,6 +514,56 @@ class TestRemoteA2aAgentResolution:
       await agent._resolve_agent_card_from_url("invalid-url", Mock())
 
   @pytest.mark.asyncio
+  async def test_resolve_agent_card_rejects_plain_http_source(self):
+    """A cleartext card source is refused before the credential is attached."""
+
+    async def provider(ctx):
+      return A2aCardRequestConfig(headers={"Authorization": "Bearer abc"})
+
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card="http://example.com/agent.json",
+        config=A2aRemoteAgentConfig(
+            card_request_interceptors=[
+                CardRequestInterceptor(before_request=provider)
+            ]
+        ),
+    )
+
+    with patch.object(agent, "_ensure_httpx_client") as mock_ensure_client:
+      mock_ensure_client.return_value = AsyncMock()
+      with patch(
+          "google.adk.agents.remote_a2a_agent.A2ACardResolver"
+      ) as mock_resolver_class:
+        mock_resolver = AsyncMock()
+        mock_resolver.get_agent_card.return_value = self.agent_card
+        mock_resolver_class.return_value = mock_resolver
+
+        with pytest.raises(AgentCardResolutionError, match="must use https"):
+          await agent._resolve_agent_card(Mock())
+
+    # No fetch was attempted, so the credential never went out over cleartext.
+    mock_resolver_class.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_resolve_agent_card_allows_loopback_http_source(self):
+    """Plain http stays allowed for the local-development card source."""
+    agent = RemoteA2aAgent(
+        name="test_agent", agent_card="http://localhost:8000/agent.json"
+    )
+
+    with patch.object(agent, "_ensure_httpx_client") as mock_ensure_client:
+      mock_ensure_client.return_value = AsyncMock()
+      with patch(
+          "google.adk.agents.remote_a2a_agent.A2ACardResolver"
+      ) as mock_resolver_class:
+        mock_resolver = AsyncMock()
+        mock_resolver.get_agent_card.return_value = self.agent_card
+        mock_resolver_class.return_value = mock_resolver
+
+        assert await agent._resolve_agent_card(Mock()) == self.agent_card
+
+  @pytest.mark.asyncio
   async def test_card_request_interceptors_injects_headers(self):
     """Header provider headers (from session state) are sent for the card."""
 

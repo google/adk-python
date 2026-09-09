@@ -5423,6 +5423,102 @@ async def test_streaming_tool_call_truncated_by_max_tokens(
 
 
 @pytest.mark.asyncio
+async def test_streaming_tool_call_cut_off_reports_malformed_function_call(
+    mock_completion, lite_llm_instance
+):
+  """A stream that stops mid-tool-call refuses the call instead of running it."""
+  stream_chunks = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_123",
+                              function=Function(
+                                  name="test_function",
+                                  arguments='{"test_arg": ',
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+      # No terminal chunk follows: the stream simply stops, the way it does
+      # when a proxy times out or the provider drops the connection.
+  ]
+  mock_completion.return_value = iter(stream_chunks)
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert len(responses) == 1
+  error_response = responses[0]
+  assert error_response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert (
+      error_response.finish_reason == types.FinishReason.MALFORMED_FUNCTION_CALL
+  )
+  # The token limit had nothing to do with it, so it must not be blamed.
+  assert "max_output_tokens" not in error_response.error_message
+  # Above all, the half-built call must not reach the caller as a real call.
+  assert error_response.content is None
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_cut_off_after_complete_arguments_is_kept(
+    mock_completion, lite_llm_instance
+):
+  """A stream missing only its terminal chunk still yields the finished call."""
+  stream_chunks = [
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_123",
+                              function=Function(
+                                  name="test_function",
+                                  arguments='{"test_arg": "test_value"}',
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ],
+      ),
+  ]
+  mock_completion.return_value = iter(stream_chunks)
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  final_response = responses[-1]
+  assert final_response.error_code is None
+  function_call = final_response.content.parts[0].function_call
+  assert function_call.name == "test_function"
+  assert function_call.args == {"test_arg": "test_value"}
+
+
+@pytest.mark.asyncio
 async def test_streaming_tool_call_complete_with_length_finish_reason(
     mock_completion, lite_llm_instance
 ):
@@ -5476,10 +5572,14 @@ async def test_streaming_tool_call_complete_with_length_finish_reason(
 
 
 @pytest.mark.asyncio
-async def test_streaming_tool_call_malformed_arguments_returns_empty(
+async def test_streaming_tool_call_malformed_arguments_is_refused(
     mock_completion, lite_llm_instance
 ):
-  """Malformed streamed tool-call args (finish_reason='tool_calls') degrade to empty args."""
+  """Streamed args that do not parse are refused even on a clean finish_reason.
+
+  LiteLLM substitutes "stop" when a provider ends a stream without sending a
+  reason, so a clean-looking reason is no evidence the call arrived whole.
+  """
   stream_chunks = [
       ModelResponseStream(
           choices=[
@@ -5517,13 +5617,9 @@ async def test_streaming_tool_call_malformed_arguments_returns_empty(
 
   assert len(responses) == 1
   final_response = responses[0]
-  assert final_response.content.role == "model"
-  function_call = final_response.content.parts[0].function_call
-  assert function_call.name == "test_function"
-  assert function_call.id == "call_789"
-  assert isinstance(function_call.args, dict)
-  assert not function_call.args
-  assert final_response.error_code != types.FinishReason.MAX_TOKENS
+  assert final_response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  # The tool must not run with arguments the model never finished sending.
+  assert final_response.content is None
 
 
 @pytest.mark.asyncio
@@ -5587,6 +5683,7 @@ async def test_get_completion_inputs_generation_params():
           max_output_tokens=123,
           top_p=0.88,
           top_k=7,
+          seed=42,
           stop_sequences=["foo", "bar"],
           presence_penalty=0.1,
           frequency_penalty=0.2,
@@ -5600,6 +5697,7 @@ async def test_get_completion_inputs_generation_params():
   assert generation_params["max_completion_tokens"] == 123
   assert generation_params["top_p"] == 0.88
   assert generation_params["top_k"] == 7
+  assert generation_params["seed"] == 42
   assert generation_params["stop"] == ["foo", "bar"]
   assert generation_params["presence_penalty"] == 0.1
   assert generation_params["frequency_penalty"] == 0.2

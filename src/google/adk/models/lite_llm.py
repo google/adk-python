@@ -2800,6 +2800,7 @@ async def _get_completion_inputs(
         "max_output_tokens",
         "top_p",
         "top_k",
+        "seed",
         "stop_sequences",
         "presence_penalty",
         "frequency_penalty",
@@ -3255,17 +3256,19 @@ class LiteLlm(BaseLlm):
       def _finalize_tool_call_response(
           *, model_version: str, finish_reason: str
       ) -> LlmResponse:
+        # The finish reason cannot reveal a truncated call: LiteLLM
+        # substitutes "stop" when a provider ends a stream without sending
+        # one. Whether the arguments parse is the only evidence left.
         tool_calls = []
         has_incomplete_tool_call_args = False
         for index, func_data in function_calls.items():
           if func_data["id"]:
             args = "".join(func_data["args_parts"])
-            if finish_reason == "length":
-              try:
-                _parse_tool_call_arguments(args)
-              except json.JSONDecodeError:
-                has_incomplete_tool_call_args = True
-                continue
+            try:
+              _parse_tool_call_arguments(args)
+            except json.JSONDecodeError:
+              has_incomplete_tool_call_args = True
+              continue
             tool_calls.append(
                 ChatCompletionMessageToolCall(
                     type="function",
@@ -3279,14 +3282,26 @@ class LiteLlm(BaseLlm):
             )
 
         if has_incomplete_tool_call_args:
+          if finish_reason == "length":
+            return LlmResponse(
+                error_code=types.FinishReason.MAX_TOKENS,
+                error_message=(
+                    "Tool call arguments were truncated while streaming and"
+                    " could not be parsed as valid JSON. Increase"
+                    " `max_output_tokens` and retry."
+                ),
+                finish_reason=types.FinishReason.MAX_TOKENS,
+                model_version=model_version,
+            )
+          # Any other ending blames no token limit, so saying MAX_TOKENS here
+          # would send the caller off to raise a limit that was not involved.
           return LlmResponse(
-              error_code=types.FinishReason.MAX_TOKENS,
+              error_code=types.FinishReason.MALFORMED_FUNCTION_CALL,
               error_message=(
-                  "Tool call arguments were truncated while streaming and"
-                  " could not be parsed as valid JSON. Increase"
-                  " `max_output_tokens` and retry."
+                  "A tool call's arguments could not be parsed as valid JSON."
+                  " The stream carrying them most likely ended early."
               ),
-              finish_reason=types.FinishReason.MAX_TOKENS,
+              finish_reason=types.FinishReason.MALFORMED_FUNCTION_CALL,
               model_version=model_version,
           )
 

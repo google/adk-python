@@ -79,8 +79,13 @@ class BaseNode(BaseModel, abc.ABC):
   retry_config: RetryConfig | None = None
   """Configuration for retrying the node on failure.
 
-  If set, exceptions raised by the node will trigger retries according
-  to the specified policy.
+  If set, failures of the node will trigger retries according to the
+  specified policy.
+
+  On a ``Workflow``, a failure of any node inside it is a failure of the
+  workflow, so the whole sub-workflow is retried. Children that already
+  produced an output or a state change are replayed rather than run again;
+  a child that produced neither leaves nothing to replay and runs again.
   """
 
   timeout: float | None = None
