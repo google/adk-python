@@ -14,9 +14,9 @@
 
 from __future__ import annotations
 
-from typing import cast
 from typing import TYPE_CHECKING
 
+from fastapi.openapi.models import OAuthFlows
 from fastapi.openapi.models import SecurityBase
 
 from .auth_credential import AuthCredential
@@ -26,8 +26,6 @@ from .auth_tool import AuthConfig
 from .exchanger.oauth2_credential_exchanger import OAuth2CredentialExchanger
 
 if TYPE_CHECKING:
-  from fastapi.openapi.models import OAuth2
-
   from ..sessions.state import State
 
 try:
@@ -322,8 +320,10 @@ class AuthHandler:
         authlib is unavailable and no raw credential was configured.
 
     Raises:
-        ValueError: If the authorization endpoint is not configured in the auth
-            scheme.
+        ValueError: If the raw credential carries no oauth2 section, if the
+            auth scheme is not one that carries an authorization endpoint, or
+            if the credential asks for a code_challenge_method other than
+            S256.
     """
     if not AUTHLIB_AVAILABLE:
       return (
@@ -342,34 +342,44 @@ class AuthHandler:
       authorization_endpoint = auth_scheme.authorization_endpoint
       scopes = _normalize_oauth_scopes(auth_scheme.scopes)
     else:
-      # This branch assumes an OAuth2 scheme: OpenID Connect is handled above,
-      # and the other schemes carry no authorization endpoint to read.
-      auth_scheme = cast("OAuth2", auth_scheme)
-      # A flow object is never falsy, so the chain yields the first configured
-      # URL, or None when no flow carries one.
-      authorization_endpoint = cast(
-          "str | None",
-          auth_scheme.flows.implicit
-          and auth_scheme.flows.implicit.authorizationUrl
-          or auth_scheme.flows.authorizationCode
-          and auth_scheme.flows.authorizationCode.authorizationUrl
-          or auth_scheme.flows.clientCredentials
-          and auth_scheme.flows.clientCredentials.tokenUrl
-          or auth_scheme.flows.password
-          and auth_scheme.flows.password.tokenUrl,
+      # `flows` is declared only on OAuth2, but a CustomAuthScheme subclass may
+      # also carry one to join the OAuth2 consent flow, so read it off the
+      # scheme rather than requiring an OAuth2 instance. Reaching the raise
+      # below used to be an AttributeError inside the expression that follows.
+      flows = getattr(auth_scheme, "flows", None)
+      if not isinstance(flows, OAuthFlows):
+        raise ValueError(
+            "Cannot generate an auth uri for auth scheme"
+            f" {type(auth_scheme).__name__}: it carries no OAuth2 flows."
+        )
+      authorization_endpoint = (
+          (flows.implicit.authorizationUrl if flows.implicit else None)
+          or (
+              flows.authorizationCode.authorizationUrl
+              if flows.authorizationCode
+              else None
+          )
+          or (
+              flows.clientCredentials.tokenUrl
+              if flows.clientCredentials
+              else None
+          )
+          or (flows.password.tokenUrl if flows.password else None)
       )
-      if auth_scheme.flows.implicit:
-        scopes = _normalize_oauth_scopes(auth_scheme.flows.implicit.scopes)
-      elif auth_scheme.flows.authorizationCode:
-        scopes = _normalize_oauth_scopes(
-            auth_scheme.flows.authorizationCode.scopes
+      if not authorization_endpoint:
+        raise ValueError(
+            "Cannot generate an auth uri for auth scheme"
+            f" {type(auth_scheme).__name__}: no flow declares an"
+            " authorization endpoint."
         )
-      elif auth_scheme.flows.clientCredentials:
-        scopes = _normalize_oauth_scopes(
-            auth_scheme.flows.clientCredentials.scopes
-        )
-      elif auth_scheme.flows.password:
-        scopes = _normalize_oauth_scopes(auth_scheme.flows.password.scopes)
+      if flows.implicit:
+        scopes = _normalize_oauth_scopes(flows.implicit.scopes)
+      elif flows.authorizationCode:
+        scopes = _normalize_oauth_scopes(flows.authorizationCode.scopes)
+      elif flows.clientCredentials:
+        scopes = _normalize_oauth_scopes(flows.clientCredentials.scopes)
+      elif flows.password:
+        scopes = _normalize_oauth_scopes(flows.password.scopes)
       else:
         scopes = []
 
