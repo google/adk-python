@@ -16,15 +16,18 @@ from __future__ import annotations
 
 from abc import ABC
 import asyncio
+import contextlib
 import inspect
 import logging
 from typing import AsyncGenerator
 from typing import cast
+from typing import Iterator
 from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.adk.platform import time as platform_time
 from google.genai import types
+from opentelemetry import context as otel_context
 from opentelemetry import trace
 
 from . import _live_llm_flow
@@ -336,6 +339,16 @@ async def _handle_after_model_callback(
   if callback_response:
     return await _maybe_add_grounding_metadata(callback_response)
   return await _maybe_add_grounding_metadata()
+
+
+@contextlib.contextmanager
+def _use_otel_context(context: otel_context.Context) -> Iterator[None]:
+  """Makes ``context`` the current OpenTelemetry context inside the block."""
+  token = otel_context.attach(context)
+  try:
+    yield
+  finally:
+    otel_context.detach(token)
 
 
 async def _run_and_handle_error(
@@ -1000,6 +1013,11 @@ class BaseLlmFlow(ABC):
 
     agent = _as_llm_agent(invocation_context)
     run_config = _require_run_config(invocation_context)
+    # Spans opened for the model call stay attached to the ambient context
+    # while this generator is suspended at a yield, so without this the
+    # caller's post-processing -- tool calls, agent transfers -- is traced as
+    # a child of the model call instead of a sibling of it.
+    caller_context = otel_context.get_current()
 
     async def _call_llm_with_tracing() -> AsyncGenerator[LlmResponse, None]:
       with tracer.start_as_current_span('call_llm') as span:
@@ -1107,7 +1125,8 @@ class BaseLlmFlow(ABC):
 
     async with Aclosing(_call_llm_with_tracing()) as agen:
       async for event in agen:
-        yield event
+        with _use_otel_context(caller_context):
+          yield event
 
   def _finalize_model_response_event(
       self,
