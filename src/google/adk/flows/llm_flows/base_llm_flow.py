@@ -268,6 +268,32 @@ async def _handle_before_model_callback(
   return None
 
 
+def _inherit_unset_streaming_fields(
+    original: LlmResponse, replacement: LlmResponse
+) -> LlmResponse:
+  """Carries streaming-control fields over to a callback-built replacement.
+
+  A callback that returns a replacement ``LlmResponse`` (as the
+  ``after_model_callback`` contract suggests) rarely sets ``partial`` or
+  ``turn_complete``. ``None`` means "unset": inherit the value from the
+  response being replaced so a replacement cannot silently turn a streaming
+  delta into a final response. An explicit value set by the callback is
+  respected.
+
+  Args:
+    original: The response produced by the model.
+    replacement: The response returned by an after-model callback.
+
+  Returns:
+    The replacement response, with unset streaming-control fields inherited.
+  """
+  if replacement.partial is None and original.partial is not None:
+    replacement.partial = original.partial
+  if replacement.turn_complete is None and original.turn_complete is not None:
+    replacement.turn_complete = original.turn_complete
+  return replacement
+
+
 async def _handle_after_model_callback(
     invocation_context: InvocationContext,
     llm_response: LlmResponse,
@@ -1059,7 +1085,7 @@ class BaseLlmFlow(ABC):
                         model_response_event,
                     )
                 ):
-                  event = altered
+                  event = _inherit_unset_streaming_fields(event, altered)
               # only yield partial response in SSE streaming mode
               if (
                   run_config.streaming_mode == StreamingMode.SSE
@@ -1101,7 +1127,9 @@ class BaseLlmFlow(ABC):
                         model_response_event,
                     )
                 ):
-                  llm_response = altered
+                  llm_response = _inherit_unset_streaming_fields(
+                      llm_response, altered
+                  )
 
               yield llm_response
 
