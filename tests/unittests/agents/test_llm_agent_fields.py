@@ -38,6 +38,9 @@ from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.google_search_tool import google_search
 from google.adk.tools.google_search_tool import GoogleSearchTool
 from google.adk.tools.vertex_ai_search_tool import VertexAiSearchTool
+from google.adk.workflow import node
+from google.adk.workflow._base_node import BaseNode
+from google.adk.workflow._function_node import FunctionNode
 from google.genai import types
 from pydantic import BaseModel
 import pytest
@@ -808,6 +811,111 @@ class TestCanonicalTools:
     assert 'MCP server unavailable' in message
     # The traceback is what identifies where inside the toolset it broke.
     assert record.exc_info is not None
+
+  async def test_handle_base_node_remains_unwrapped_in_tools(self):
+    """Test that BaseNode in agent.tools remains unwrapped until canonical_tools."""
+
+    @node
+    def add_one(x: int) -> int:
+      """Adds one."""
+      return x + 1
+
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-pro',
+        tools=[add_one],
+    )
+
+    # In agent.tools, the node remains native and unwrapped
+    assert len(agent.tools) == 1
+    assert agent.tools[0] is add_one
+
+    # In canonical_tools, it resolves to a NodeTool
+    ctx = await _create_readonly_context(agent)
+    tools = await agent.canonical_tools(ctx)
+
+    assert len(tools) == 1
+    assert tools[0].name == 'add_one'
+    assert tools[0].__class__.__name__ == 'NodeTool'
+    assert tools[0].node.name == add_one.name
+    assert tools[0].node.parameter_binding == 'node_input'
+    assert add_one.parameter_binding == 'state'
+
+  async def test_handle_base_node_without_description(self):
+    """Test that BaseNode without explicit description resolves default description."""
+
+    def compute(x: int) -> int:
+      return x * 2
+
+    compute_node = FunctionNode(func=compute)
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-pro',
+        tools=[compute_node],
+    )
+
+    assert agent.tools[0] is compute_node
+
+    ctx = await _create_readonly_context(agent)
+    tools = await agent.canonical_tools(ctx)
+
+    assert len(tools) == 1
+    assert tools[0].name == 'compute'
+    assert tools[0].__class__.__name__ == 'NodeTool'
+    declaration = tools[0]._get_declaration()
+    assert declaration is not None
+    assert declaration.name == 'compute'
+    assert declaration.description == 'Executes the node: compute'
+
+  async def test_handle_base_node_with_docstring_description(self):
+    """Test that BaseNode with docstring resolves description from docstring."""
+
+    @node
+    def compute(x: int) -> int:
+      """Doubles the input value."""
+      return x * 2
+
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-pro',
+        tools=[compute],
+    )
+
+    ctx = await _create_readonly_context(agent)
+    tools = await agent.canonical_tools(ctx)
+
+    assert len(tools) == 1
+    declaration = tools[0]._get_declaration()
+    assert declaration is not None
+    assert declaration.name == 'compute'
+    assert declaration.description == 'Doubles the input value.'
+
+  def test_node_missing_input_schema_raises_error_at_construction(self):
+    """Test that a non-FunctionNode without input_schema raises ValueError at init."""
+
+    class CustomNode(BaseNode):
+      pass
+
+    custom_node = CustomNode(name='custom')
+    with pytest.raises(
+        ValueError, match='does not have an input_schema defined'
+    ):
+      LlmAgent(
+          name='test_agent',
+          model='gemini-pro',
+          tools=[custom_node],
+      )
+
+  def test_base_agent_as_tool_raises_error(self):
+    """Test that passing BaseAgent to tools raises ValueError."""
+    sub_agent = LlmAgent(name='sub_agent', model='gemini-pro')
+
+    with pytest.raises(ValueError, match='cannot be used directly as a tool'):
+      LlmAgent(
+          name='parent_agent',
+          model='gemini-pro',
+          tools=[sub_agent],
+      )
 
 
 # Tests for multi-provider model support via string model names
