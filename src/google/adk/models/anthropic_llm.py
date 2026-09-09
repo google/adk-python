@@ -506,7 +506,11 @@ def _part_to_message_block(
     # We serialize to str here
     # SDK ref: anthropic.types.tool_result_block_param
     # https://github.com/anthropics/anthropic-sdk-python/blob/main/src/anthropic/types/tool_result_block_param.py
-    elif "result" in response_data and response_data["result"] is not None:
+    # Exactly {"result": value} is ADK's wrapper for a non-dict tool return.
+    elif (
+        response_data.keys() == {"result"}
+        and response_data["result"] is not None
+    ):
       result = response_data["result"]
       if isinstance(result, (dict, list)):
         content = json.dumps(result)

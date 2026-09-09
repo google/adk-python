@@ -1288,6 +1288,28 @@ def test_part_to_message_block_nested_dict_result():
   assert parsed["results"][0]["tags"] == ["a", "b"]
 
 
+def test_part_to_message_block_keys_beside_result_are_kept():
+  """A tool's own dict travels whole even when one of its keys is 'result'."""
+  response_part = types.Part.from_function_response(
+      name="run_code",
+      response={
+          "result": "ok",
+          "files": ["report.csv"],
+          "stdout": "wrote report.csv",
+      },
+  )
+  response_part.function_response.id = "test_id"
+
+  result = part_to_message_block(response_part)
+
+  parsed = json.loads(result["content"])
+  assert parsed == {
+      "result": "ok",
+      "files": ["report.csv"],
+      "stdout": "wrote report.csv",
+  }
+
+
 # --- Tests for arbitrary dict fallback (e.g. SkillToolset load_skill) ---
 
 
