@@ -278,10 +278,17 @@ async def send_to_model(
             session=invocation_context.session,
             event=user_content_event,
         )
-        # Live callback site 1 of 3: Live typed text is screened directly
-        # before sending to the model. Unlike the other callback sites, a
-        # block here does not reconnect because the model has not yet
-        # received the content.
+      # Live callback site 1 of 3: Live typed text is screened directly
+      # before sending to the model. Unlike the other callback sites, a
+      # block here does not reconnect because the model has not yet
+      # received the content.
+      #
+      # Screen everything the model receives, including the partials that the
+      # session-event branch above skips. A pure tool result is not user input.
+      is_only_function_responses = bool(
+          content.parts and all(p.function_response for p in content.parts)
+      )
+      if not is_only_function_responses:
         if blocked_event := await flow._screen_live_user_content(
             invocation_context, content, llm_request
         ):
