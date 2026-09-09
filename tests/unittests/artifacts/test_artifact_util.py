@@ -150,14 +150,11 @@ def test_is_artifact_ref_false(part):
         "user123",
         "myapp",
         "sess123",
-        "group/user123",
-        "has/slash",
-        "back\\slash",
         mock.MagicMock(),
     ],
 )
 def test_validate_path_segment_valid(value, field_name):
-  """Normal and namespaced segments should pass validation."""
+  """Normal identifier segments should pass validation."""
   artifact_util.validate_path_segment(value, field_name)
 
 
@@ -184,10 +181,14 @@ def test_validate_path_segment_valid(value, field_name):
         "C:\\absolute",
         "C:/absolute",
         "C:drive-relative",
+        "group/user123",
+        "has/slash",
+        "back\\slash",
+        "u1/sessions/s2",
     ],
 )
 def test_validate_path_segment_invalid(value, field_name):
-  """Traversal segments, null bytes, and absolute paths should raise InputValidationError."""
+  """Traversal, separators, null bytes, and absolute paths should raise."""
   with pytest.raises(InputValidationError):
     artifact_util.validate_path_segment(value, field_name)
 

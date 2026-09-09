@@ -151,8 +151,9 @@ def validate_path_segment(value: str, field_name: str) -> None:
     field_name: Human-readable name used in the error message.
 
   Raises:
-    InputValidationError: If the value contains traversal segments, null bytes,
-      is an absolute path / starts with a slash, or is drive-qualified.
+    InputValidationError: If the value contains traversal segments, path
+      separators, null bytes, is an absolute path / starts with a slash, or is
+      drive-qualified.
   """
   if not value:
     raise input_validation_error.InputValidationError(
@@ -176,4 +177,10 @@ def validate_path_segment(value: str, field_name: str) -> None:
   if value in (".", "..") or ".." in value.replace("\\", "/").split("/"):
     raise input_validation_error.InputValidationError(
         f"{field_name} {value!r} must not contain traversal segments."
+    )
+  # Identifiers are joined as a single path segment. A user_id such as
+  # "u1/sessions/s2" would otherwise compose onto another user's session tree.
+  if isinstance(value, str) and ("/" in value or "\\" in value):
+    raise input_validation_error.InputValidationError(
+        f"{field_name} {value!r} must not contain path separators."
     )
