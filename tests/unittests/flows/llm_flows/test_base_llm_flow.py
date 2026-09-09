@@ -21,6 +21,7 @@ from typing import Optional
 from unittest import mock
 from unittest.mock import AsyncMock
 
+from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.invocation_context import LlmCallsLimitExceededError
 from google.adk.agents.llm_agent import Agent
@@ -28,6 +29,9 @@ from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.agents.run_config import StreamingMode
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.code_executors.base_code_executor import BaseCodeExecutor
+from google.adk.code_executors.code_execution_utils import CodeExecutionInput
+from google.adk.code_executors.code_execution_utils import CodeExecutionResult
 from google.adk.events.event import Event
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
@@ -39,10 +43,12 @@ from google.adk.flows.llm_flows.base_llm_flow import _process_agent_tools
 from google.adk.flows.llm_flows.base_llm_flow import _ReconnectSentinel
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
 from google.adk.live import LiveRequestQueue
+from google.adk.models.base_llm import BaseLlm
 from google.adk.models.base_llm_connection import BaseLlmConnection
 from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.models.registry import LLMRegistry
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.base_toolset import BaseToolset
@@ -2509,6 +2515,57 @@ def _make_agent_tree():
   return root, child1, child2
 
 
+class _StubCodeExecutor(BaseCodeExecutor):
+  """Returns a fixed result and counts how many times it ran."""
+
+  executed: list[str] = []
+
+  def execute_code(
+      self,
+      invocation_context,
+      code_execution_input: CodeExecutionInput,
+  ) -> CodeExecutionResult:
+    self.executed.append(code_execution_input.code)
+    return CodeExecutionResult(stdout='42\n')
+
+
+@pytest.mark.asyncio
+async def test_code_execution_stop_response_continues_the_loop():
+  """Regression test for a code block returned with finish_reason=STOP.
+
+  The code execution response processor clears the response content once it has
+  run the code, which is how it tells the flow to ask the model again. That
+  cleared content must not be mistaken for a model that returned nothing, so
+  the flow has to make a second model call and emit the final answer.
+  """
+  code_turn = LlmResponse(
+      content=types.Content(
+          role='model',
+          parts=[types.Part(text='```python\nprint(6 * 7)\n```')],
+      ),
+      finish_reason=types.FinishReason.STOP,
+  )
+  final_turn = LlmResponse(
+      content=types.Content(
+          role='model', parts=[types.Part(text='The answer is 42.')]
+      ),
+      finish_reason=types.FinishReason.STOP,
+  )
+
+  code_executor = _StubCodeExecutor()
+  mock_model = testing_utils.MockModel.create(responses=[code_turn, final_turn])
+  agent = Agent(
+      name='root_agent', model=mock_model, code_executor=code_executor
+  )
+  events = testing_utils.InMemoryRunner(agent).run('What is 6 * 7?')
+
+  assert code_executor.executed == ['print(6 * 7)']
+  assert len(mock_model.requests) == 2
+  assert not [e for e in events if e.error_code]
+  assert events[-1].content
+  assert events[-1].content.parts[0].text == 'The answer is 42.'
+
+
 @pytest.mark.asyncio
 async def test_empty_stop_after_tool_call_surfaces_error_event():
   """Regression test for an empty Gemini turn after a successful tool call.
@@ -2573,7 +2630,7 @@ async def test_transfer_to_sibling_disallowed_raises_value_error():
 
   # Act & Assert
   with pytest.raises(
-      ValueError, match='Transfer to sibling agent child2 is disallowed'
+      ValueError, match='child1 is not allowed to transfer to agent child2'
   ):
     flow._get_agent_to_run(ctx, 'child2')
 
@@ -2649,6 +2706,56 @@ async def test_transfer_to_sibling_from_non_llm_agent_allowed():
   # Assert
   assert agent is not None
   assert agent.name == 'child2'
+
+
+@pytest.mark.asyncio
+async def test_transfer_to_unoffered_agent_raises_value_error():
+  """Transfer to an agent that is only reachable through the tree is rejected."""
+  # Arrange
+  _, child1, child2 = _make_agent_tree()
+  grandchild2 = Agent(name='grandchild2')
+  grandchild2.parent_agent = child2
+  child2.sub_agents = [grandchild2]
+  ctx = await testing_utils.create_invocation_context(child1)
+  flow = BaseLlmFlow()
+
+  # Act & Assert
+  with pytest.raises(
+      ValueError, match='child1 is not allowed to transfer to agent grandchild2'
+  ):
+    flow._get_agent_to_run(ctx, 'grandchild2')
+
+
+@pytest.mark.asyncio
+async def test_transfer_to_parent_disallowed_raises_value_error():
+  """Transfer to parent raises ValueError when disallow_transfer_to_parent is True."""
+  # Arrange
+  _, child1, _ = _make_agent_tree()
+  child1.disallow_transfer_to_parent = True
+  ctx = await testing_utils.create_invocation_context(child1)
+  flow = BaseLlmFlow()
+
+  # Act & Assert
+  with pytest.raises(
+      ValueError, match='child1 is not allowed to transfer to agent root'
+  ):
+    flow._get_agent_to_run(ctx, 'root')
+
+
+@pytest.mark.asyncio
+async def test_transfer_to_parent_allowed_returns_agent():
+  """Transfer to parent returns the agent when it is not disallowed."""
+  # Arrange
+  _, child1, _ = _make_agent_tree()
+  ctx = await testing_utils.create_invocation_context(child1)
+  flow = BaseLlmFlow()
+
+  # Act
+  agent = flow._get_agent_to_run(ctx, 'root')
+
+  # Assert
+  assert agent is not None
+  assert agent.name == 'root'
 
 
 @pytest.mark.asyncio
@@ -3431,3 +3538,42 @@ async def test_eof_connection_ends_the_run_instead_of_spinning():
       await asyncio.wait_for(drive(), timeout=5)
 
   assert receive_calls == 1
+
+
+class _SyncOnlyAgent(BaseAgent):
+  """An agent supplying the LlmAgent model surface without subclassing it.
+
+  `_invocation_utils.as_llm_agent` documents that flows drive agents shaped
+  like this, so resolving a model must not require the async accessors.
+  """
+
+  @property
+  def canonical_model(self) -> BaseLlm:
+    return LLMRegistry.new_llm('gemini-2.5-flash')
+
+  @property
+  def canonical_live_model(self) -> BaseLlm:
+    return LLMRegistry.new_llm('gemini-2.5-flash')
+
+
+@pytest.mark.asyncio
+async def test_get_llm_reads_an_agent_that_has_only_the_sync_properties():
+  agent = _SyncOnlyAgent(name='sync_only')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  llm = await BaseLlmFlow()._BaseLlmFlow__get_llm(invocation_context)
+
+  assert llm.model == 'gemini-2.5-flash'
+
+
+@pytest.mark.asyncio
+async def test_get_llm_rejects_an_agent_with_no_model_at_all():
+  agent = BaseAgent(name='no_model')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  with pytest.raises(TypeError, match='canonical_model'):
+    await BaseLlmFlow()._BaseLlmFlow__get_llm(invocation_context)

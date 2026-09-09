@@ -102,18 +102,25 @@ def check_interception(
     else:
       interrupts = unresolved
 
+  elif recovered.error_code is not None:
+    # Case 3: Cross-turn failed in a prior turn.
+    # A failure left no result to fast-forward, so rerun the node instead of
+    # replaying it as one that completed with no output.
+    should_run = True
+    resume_inputs = recovered.resolved_responses
+
   elif (
       recovered.route is not None
       or recovered.output is not None
       or recovered.transfer_to_agent is not None
   ):
-    # Case 3: Cross-turn successfully completed in a prior turn (fast-forward).
+    # Case 4: Cross-turn successfully completed in a prior turn (fast-forward).
     # Bypass execution completely and return the cached output and route.
     output = _process_rehydrated_output(node, recovered.output)
     route = recovered.route
 
   elif recovered.interrupt_ids:
-    # Case 4: Cross-turn all prior interrupts are resolved, but no output yet.
+    # Case 5: Cross-turn all prior interrupts are resolved, but no output yet.
     # Extract responses directly if the node does not support rerun; otherwise
     # rerun natively with resolved responses to produce output.
     if not node.rerun_on_resume:
@@ -127,7 +134,7 @@ def check_interception(
       resume_inputs = recovered.resolved_responses
 
   else:
-    # Case 5: Cross-turn no events, or events contain no output, route, or interrupts.
+    # Case 6: Cross-turn no events, or events contain no output, route, or interrupts.
     # Rerun Workflow nodes, wait_for_output nodes, and rerun_on_resume nodes
     # with no prior output so they can guide nested children or resume execution;
     # otherwise fall through.

@@ -39,6 +39,7 @@ def _make_event(
   event.invocation_id = invocation_id
   event.author = "node"
   event.output = output
+  event.error_code = None
   event.partial = False
   event.node_info = MagicMock(spec=NodeInfo)
   event.node_info.path = path

@@ -34,6 +34,7 @@ from urllib.parse import urlparse
 from urllib.request import url2pathname
 
 from google.adk.artifacts import file_artifact_service
+from google.adk.artifacts import gcs_artifact_service
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
 from google.adk.artifacts.base_artifact_service import ensure_part
 from google.adk.artifacts.file_artifact_service import FileArtifactService
@@ -41,6 +42,7 @@ from google.adk.artifacts.gcs_artifact_service import GcsArtifactService
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.errors.input_validation_error import InputValidationError
 from google.cloud.exceptions import NotFound
+from google.cloud.exceptions import PreconditionFailed
 from google.genai import types
 import pytest
 
@@ -75,25 +77,40 @@ class MockBlob:
     self.content_type: Optional[str] = None
     self.time_created = FIXED_DATETIME
     self.metadata: dict[str, Any] = {}
+    # GCS evaluates a generation precondition and applies the write as one
+    # server-side step; the lock gives the mock the same indivisibility.
+    self._lock = threading.Lock()
 
   def upload_from_string(
-      self, data: Union[str, bytes], content_type: Optional[str] = None
+      self,
+      data: Union[str, bytes],
+      content_type: Optional[str] = None,
+      if_generation_match: Optional[int] = None,
   ) -> None:
     """Mocks uploading data to the blob (from a string or bytes).
 
     Args:
         data: The data to upload (string or bytes).
         content_type:  The content type of the data (optional).
+        if_generation_match: Generation precondition. 0 means the upload must
+          create the object, so it fails if the blob already has content.
+
+    Raises:
+        PreconditionFailed: If the generation precondition is not met.
     """
     if isinstance(data, str):
-      self.content = data.encode("utf-8")
+      encoded = data.encode("utf-8")
     elif isinstance(data, bytes):
-      self.content = data
+      encoded = data
     else:
       raise TypeError("data must be str or bytes")
 
-    if content_type:
-      self.content_type = content_type
+    with self._lock:
+      if if_generation_match == 0 and self.content is not None:
+        raise PreconditionFailed(f"Object already exists: {self.name}")
+      self.content = encoded
+      if content_type:
+        self.content_type = content_type
 
   def download_as_bytes(self) -> bytes:
     """Mocks downloading the blob's content as bytes.
@@ -140,6 +157,7 @@ class MockBucket:
     """
     self.name = name
     self.blobs: dict[str, MockBlob] = {}
+    self._lock = threading.Lock()
 
   def blob(self, blob_name: str) -> MockBlob:
     """Mocks getting a Blob object (doesn't create it in storage).
@@ -150,9 +168,10 @@ class MockBucket:
     Returns:
         A MockBlob instance.
     """
-    if blob_name not in self.blobs:
-      self.blobs[blob_name] = MockBlob(blob_name)
-    return self.blobs[blob_name]
+    with self._lock:
+      if blob_name not in self.blobs:
+        self.blobs[blob_name] = MockBlob(blob_name)
+      return self.blobs[blob_name]
 
   def get_blob(self, blob_name: str) -> Optional[MockBlob]:
     """Mocks getting a blob from storage if it exists and has content."""
@@ -2229,6 +2248,91 @@ async def test_gcs_save_artifact_metadata_namespacing_and_mime() -> None:
   assert blob.metadata.get("adkFileUri") == "gs://my-bucket/report.pdf"
   assert blob.metadata.get("adkFileMimeType") == "application/pdf"
   assert "file_uri" not in blob.metadata
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_save_artifact_reserves_concurrent_versions() -> None:
+  """GcsArtifactService gives two overlapping saves distinct versions."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  original_list_versions = service._list_versions
+  first_reads = threading.Barrier(2)
+  calls_lock = threading.Lock()
+  synchronized_calls = 0
+
+  def synchronize_initial_reads(**kwargs: Any) -> list[int]:
+    nonlocal synchronized_calls
+    versions = original_list_versions(**kwargs)
+    with calls_lock:
+      synchronized_calls += 1
+      should_wait = synchronized_calls <= 2
+    if should_wait:
+      first_reads.wait(timeout=5)
+    return versions
+
+  save_args = {
+      "app_name": "app",
+      "user_id": "user1",
+      "session_id": "sess1",
+      "filename": "report.txt",
+  }
+  with mock.patch.object(
+      service,
+      "_list_versions",
+      side_effect=synchronize_initial_reads,
+  ):
+    saved_versions = await asyncio.gather(
+        service.save_artifact(
+            **save_args,
+            artifact=types.Part(text="first"),
+        ),
+        service.save_artifact(
+            **save_args,
+            artifact=types.Part(text="second"),
+        ),
+    )
+
+  assert sorted(saved_versions) == [0, 1]
+  assert await service.list_versions(**save_args) == [0, 1]
+
+  loaded_texts: set[str] = set()
+  for version in saved_versions:
+    artifact = await service.load_artifact(**save_args, version=version)
+    assert artifact is not None
+    assert artifact.text is not None
+    loaded_texts.add(artifact.text)
+  assert loaded_texts == {"first", "second"}
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_save_artifact_bounds_version_retries() -> None:
+  """GcsArtifactService stops retrying and raises under sustained contention."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  save_args = {
+      "app_name": "app",
+      "user_id": "user1",
+      "session_id": "sess1",
+      "filename": "report.txt",
+  }
+  max_attempts = gcs_artifact_service._MAX_SAVE_VERSION_ATTEMPTS
+  # Every version the save can reach is already taken, so no attempt wins the
+  # precondition and only the cap can end the loop. The empty version list is
+  # what a save sees when concurrent saves keep claiming versions behind it.
+  for version in range(max_attempts + 5):
+    blob_name = service._get_blob_name(
+        "app", "user1", "report.txt", version, "sess1"
+    )
+    service.bucket.blob(blob_name).upload_from_string("taken")
+
+  with mock.patch.object(service, "_list_versions", return_value=[]):
+    with mock.patch.object(
+        service.bucket, "blob", wraps=service.bucket.blob
+    ) as blob_calls:
+      with pytest.raises(PreconditionFailed):
+        await service.save_artifact(
+            **save_args, artifact=types.Part(text="new")
+        )
+
+  assert blob_calls.call_count == max_attempts
 
 
 @pytest.mark.asyncio  # type: ignore[untyped-decorator]

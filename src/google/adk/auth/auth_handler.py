@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from typing import cast
 from typing import TYPE_CHECKING
 
 from fastapi.openapi.models import SecurityBase
@@ -25,6 +26,8 @@ from .auth_tool import AuthConfig
 from .exchanger.oauth2_credential_exchanger import OAuth2CredentialExchanger
 
 if TYPE_CHECKING:
+  from fastapi.openapi.models import OAuth2
+
   from ..sessions.state import State
 
 try:
@@ -311,11 +314,12 @@ class AuthHandler:
 
   def generate_auth_uri(
       self,
-  ) -> AuthCredential:
+  ) -> AuthCredential | None:
     """Generates a response containing the auth uri for user to sign in.
 
     Returns:
-        An AuthCredential object containing the auth URI and state.
+        An AuthCredential object containing the auth URI and state, or None if
+        authlib is unavailable and no raw credential was configured.
 
     Raises:
         ValueError: If the authorization endpoint is not configured in the auth
@@ -333,11 +337,18 @@ class AuthHandler:
     if not auth_credential or not auth_credential.oauth2:
       raise ValueError("raw_auth_credential or oauth2 is empty")
 
+    authorization_endpoint: str | None
     if isinstance(auth_scheme, OpenIdConnectWithConfig):
       authorization_endpoint = auth_scheme.authorization_endpoint
       scopes = _normalize_oauth_scopes(auth_scheme.scopes)
     else:
-      authorization_endpoint = (
+      # This branch assumes an OAuth2 scheme: OpenID Connect is handled above,
+      # and the other schemes carry no authorization endpoint to read.
+      auth_scheme = cast("OAuth2", auth_scheme)
+      # A flow object is never falsy, so the chain yields the first configured
+      # URL, or None when no flow carries one.
+      authorization_endpoint = cast(
+          "str | None",
           auth_scheme.flows.implicit
           and auth_scheme.flows.implicit.authorizationUrl
           or auth_scheme.flows.authorizationCode
@@ -345,7 +356,7 @@ class AuthHandler:
           or auth_scheme.flows.clientCredentials
           and auth_scheme.flows.clientCredentials.tokenUrl
           or auth_scheme.flows.password
-          and auth_scheme.flows.password.tokenUrl
+          and auth_scheme.flows.password.tokenUrl,
       )
       if auth_scheme.flows.implicit:
         scopes = _normalize_oauth_scopes(auth_scheme.flows.implicit.scopes)

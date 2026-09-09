@@ -80,6 +80,7 @@ def _make_event(
   event.invocation_id = invocation_id
   event.author = author
   event.output = output
+  event.error_code = None
   event.partial = False
   event.node_info = MagicMock(spec=NodeInfo)
   event.node_info.path = path
@@ -99,6 +100,7 @@ def _make_fr_event(fc_id, response, invocation_id='inv-1'):
   event.invocation_id = invocation_id
   event.author = 'user'
   event.output = None
+  event.error_code = None
   event.node_info = MagicMock(spec=NodeInfo)
   event.node_info.path = ''
   event.node_info.message_as_output = None

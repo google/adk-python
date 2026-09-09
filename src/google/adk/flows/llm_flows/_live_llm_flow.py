@@ -649,7 +649,7 @@ async def run_live_flow(
     live_request_queue = require_live_request_queue(invocation_context)
     llm_request.model = agent.canonical_live_model.model
 
-    llm = flow._get_llm(invocation_context)
+    llm = await flow._get_llm(invocation_context)
     # Only log non-sensitive request metadata. The full request carries the
     # user conversation and http_options.headers, which may hold credentials.
     logger.debug(

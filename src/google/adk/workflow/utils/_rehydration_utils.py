@@ -47,6 +47,7 @@ class _ChildScanState:
 
   run_id: str | None = None
   output: Any = None
+  error_code: str | None = None
   route: RouteValue | list[RouteValue] | None = None
   branch: str | None = None
   isolation_scope: str | None = None
@@ -358,6 +359,23 @@ def _reconstruct_node_states(
         child.route = event.actions.route
       if event.actions and event.actions.transfer_to_agent is not None:
         child.transfer_to_agent = event.actions.transfer_to_agent
+
+      # The node's outcome is whatever its latest attempt recorded, so a
+      # result clears the error left by an earlier failed attempt. A result
+      # wins on the same event too: an LlmAgent node's output rides on the
+      # response event, which carries an error code for any finish reason
+      # other than STOP, and that node did produce a result.
+      has_result = has_output or (
+          event.actions is not None
+          and (
+              event.actions.route is not None
+              or event.actions.transfer_to_agent is not None
+          )
+      )
+      if has_result:
+        child.error_code = None
+      elif event.error_code is not None:
+        child.error_code = event.error_code
 
     # 6. Extract interrupts and their schemas
     # Modern events explicitly set long_running_tool_ids.

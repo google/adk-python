@@ -932,6 +932,19 @@ class RemoteA2aAgent(BaseAgent):
 
     # Determine if source is URL or file path
     if agent_card_source.startswith(("http://", "https://")):
+      # The card request interceptors attach the credential resolved for this
+      # invocation, so the scheme is checked before the fetch rather than with
+      # the card's RPC targets afterwards -- by then the credential has already
+      # gone out on the wire. Plain http stays allowed on a loopback host, the
+      # same carve-out `_validate_card_rpc_targets` applies.
+      parsed_source = urlparse(agent_card_source)
+      if parsed_source.scheme.lower() != "https" and not _is_loopback_host(
+          parsed_source.hostname
+      ):
+        raise AgentCardResolutionError(
+            "Agent card URL must use https, or http on a loopback host:"
+            f" {agent_card_source}"
+        )
       return await self._resolve_agent_card_from_url(agent_card_source, ctx)
     else:
       return await self._resolve_agent_card_from_file(agent_card_source)

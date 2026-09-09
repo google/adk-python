@@ -369,7 +369,10 @@ def _parse_schema_from_parameter(
       schema.type = types.Type.OBJECT
       # args[1] is the value type of dict[K, V]. Untyped dictionaries (where
       # len(args) == 0) intentionally leave additional_properties unset.
-      if len(args) == 2:
+      # Google AI has no such field on its declaration schema and rejects the
+      # whole request when it is present, so there the value type is dropped
+      # and the parameter is declared as a plain object.
+      if len(args) == 2 and variant != GoogleLLMVariant.GEMINI_API:
         value_type = args[1]
         schema.additional_properties = _parse_schema_from_parameter(
             variant,

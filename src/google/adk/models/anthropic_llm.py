@@ -339,6 +339,34 @@ def _is_pdf_part(part: types.Part) -> bool:
   )
 
 
+# The fields that mean a part carries something to send. The rest of a Part is
+# annotation -- `part_metadata`, `video_metadata`, `media_resolution` and the
+# like -- and ADK's own A2A converter sets some of them, so asking "is anything
+# else set?" would leave the part in place and the session wedged.
+_PART_CONTENT_FIELDS = (
+    "audio_transcription",
+    "code_execution_result",
+    "executable_code",
+    "file_data",
+    "function_call",
+    "function_response",
+    "inline_data",
+    "tool_call",
+    "tool_response",
+)
+
+
+def _is_content_free_signature(part: types.Part) -> bool:
+  """Whether a part is a thought signature with nothing to send beside it.
+
+  A part that still has its `thought` flag is redacted thinking Claude issued
+  itself, and the branches in `_part_to_message_block` handle it.
+  """
+  if not part.thought_signature or part.thought or part.text:
+    return False
+  return not any(getattr(part, f, None) for f in _PART_CONTENT_FIELDS)
+
+
 def _normalize_image_media_type(mime_type: str) -> _ImageMediaType:
   normalized = mime_type.split(";", 1)[0].strip().lower()
   if normalized not in _ANTHROPIC_IMAGE_MEDIA_TYPES:
@@ -576,6 +604,12 @@ def _content_to_message_param(
     # PDF data is not supported in Claude for assistant turns.
     if content.role != "user" and _is_pdf_part(part):
       logger.warning("PDF data is not supported in Claude for assistant turns.")
+      continue
+
+    # A signature with nothing to send beside it: there is no block to build
+    # from it, and it used to raise and wedge the session for good.
+    if _is_content_free_signature(part):
+      logger.warning("Dropping a thought signature from another model.")
       continue
 
     message_block.append(_part_to_message_block(part, sanitizer))
@@ -995,9 +1029,17 @@ class AnthropicLlm(BaseLlm):
       self, llm_request: LlmRequest, stream: bool = False
   ) -> AsyncGenerator[LlmResponse, None]:
     sanitizer = _ToolUseIdSanitizer()
+    # A turn whose parts are all dropped above leaves no blocks behind, and
+    # Anthropic rejects a message with empty content. Sending one re-wedges the
+    # session exactly as the NotImplementedError did: the offending part stays
+    # in history, so every later turn fails the same way.
     messages = [
-        _content_to_message_param(content, sanitizer)
-        for content in llm_request.contents or []
+        message
+        for message in (
+            _content_to_message_param(content, sanitizer)
+            for content in llm_request.contents or []
+        )
+        if message["content"]
     ]
     tools: Iterable[anthropic_types.ToolUnionParam] | NotGiven = NOT_GIVEN
     function_declarations: list[types.FunctionDeclaration] = []

@@ -710,6 +710,41 @@ class LlmAgent(BaseAgent, abc.ABC):
         ancestor_agent = ancestor_agent.parent_agent
       return self._resolve_default_live_model()
 
+  async def canonical_model_async(self, ctx: ReadonlyContext) -> BaseLlm:
+    """The resolved self.model field as BaseLlm, for one invocation.
+
+    The async counterpart of :attr:`canonical_model`, and what the flow calls
+    to pick the model for a turn. Resolution may depend on the invocation and
+    may await.
+
+    This method is only for use by Agent Development Kit.
+
+    Args:
+      ctx: The invocation the model is being resolved for.
+
+    Returns:
+      The model to call.
+    """
+    del ctx  # No resolution yet depends on the invocation.
+    return self.canonical_model
+
+  async def canonical_live_model_async(self, ctx: ReadonlyContext) -> BaseLlm:
+    """The resolved self.model field as BaseLlm for live mode.
+
+    The async counterpart of :attr:`canonical_live_model`; see
+    :meth:`canonical_model_async`.
+
+    This method is only for use by Agent Development Kit.
+
+    Args:
+      ctx: The invocation the model is being resolved for.
+
+    Returns:
+      The model to open a live connection with.
+    """
+    del ctx  # No resolution yet depends on the invocation.
+    return self.canonical_live_model
+
   @classmethod
   def set_default_model(cls, model: Union[str, BaseLlm]) -> None:
     """Overrides the default model used when an agent has no model set."""

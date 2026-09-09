@@ -2997,10 +2997,13 @@ async def test_database_session_service_sqlite_file_timestamp_read_after_reopen(
   raw_epoch_float = time.time()
   conn = sqlite3.connect(str(db_path))
   try:
-    conn.execute(
+    cursor = conn.execute(
         'UPDATE events SET timestamp = ? WHERE session_id = ?',
         (raw_epoch_float, session.id),
     )
+    # Without a row here the reopen below never sees a float, and the test
+    # would pass without exercising the REAL-affinity path at all.
+    assert cursor.rowcount == 1
     conn.commit()
   finally:
     conn.close()
@@ -3017,9 +3020,11 @@ async def test_database_session_service_sqlite_file_timestamp_read_after_reopen(
 
   assert retrieved_session is not None
   assert len(retrieved_session.events) == 1
-  assert retrieved_session.events[0].timestamp == pytest.approx(
-      raw_epoch_float, abs=1.0
-  )
+  # The returned timestamp is deserialized from the event_data blob rather than
+  # from the DATETIME column overwritten above, so it still holds the value the
+  # event was created with. Comparing it to the wall clock read for the raw
+  # write instead only holds while both reads land in the same second.
+  assert retrieved_session.events[0].timestamp == event.timestamp
 
 
 @pytest.fixture

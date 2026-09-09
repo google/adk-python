@@ -78,6 +78,33 @@ retry_config = RetryConfig(
 
 A class you pass is normalized to its `__name__` at validation time, and matching at retry time compares `type(exception).__name__` against that list. **The match is on the exact class name, not `isinstance`.** Listing `ConnectionError` therefore does not retry a `ConnectionResetError`, and listing `Exception` retries nothing at all. Name every concrete class you want to catch, or leave `exceptions` as `None` to retry on everything.
 
+### Retrying a nested workflow
+
+A `Workflow` is itself a node, so it takes a `RetryConfig` like any other. A failure of any node inside the workflow is a failure of the workflow, so the whole sub-workflow is retried.
+
+```python
+from google.adk.workflow import RetryConfig, START, Workflow, node
+
+@node()
+async def load(node_input: str):
+  ...
+
+@node()
+async def flaky(node_input: str):
+  ...
+
+# A failure in load or flaky retries the sub-workflow, up to 3 attempts.
+inner = Workflow(
+    name='inner',
+    edges=[(START, load, flaky)],
+    retry_config=RetryConfig(max_attempts=3, initial_delay=1.0),
+)
+```
+
+A retried sub-workflow does not redo work it already finished. Children that produced an output or a state change are replayed from the session's events, so only the failed node and whatever follows it run again. A child that produced neither leaves nothing to replay and runs again on every attempt, so give a side-effecting node an output or a state change if repeating it would be harmful.
+
+Setting `RetryConfig` on the node that can fail is still the narrower option, and it retries just that node rather than the whole sub-workflow.
+
 ### Deterministic delays under test
 
 Under test, retries should be fast and should behave the same way every run, which means turning jitter off and dropping the delays right down.
@@ -95,6 +122,7 @@ test_retry_config = RetryConfig(
 
 - **The attempt counter does not survive an interrupt.** It is **not** persisted. If the workflow is interrupted, whether by a human-in-the-loop input downstream or by the application restarting, and is later resumed, a node that has to run again starts counting from 1 with its full budget of attempts back.
 - **Retries are local to the node.** They happen inside that node's execution and nowhere else. Once a node has used up its attempts it enters the `FAILED` state, and the workflow execution fails with it, or follows whatever error handling you have configured.
+- **A retried node runs again in full.** When the node is a `Workflow`, a child that produced no output and no state change also runs again, because the replay has no record that it completed. See [Retrying a nested workflow](#retrying-a-nested-workflow).
 
 ## Related samples
 
