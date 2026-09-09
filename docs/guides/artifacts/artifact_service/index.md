@@ -195,12 +195,44 @@ and the deployed agent falls back to `InMemoryArtifactService` and loses every
 artifact when it restarts.
 
 Writing your own means subclassing `BaseArtifactService` and implementing its
-seven abstract methods: `save_artifact`, `load_artifact`, `list_artifact_keys`,
-`delete_artifact`, `list_versions`, `list_artifact_versions`, and
-`get_artifact_version`. All are keyword-only and take `app_name`, `user_id`, and
-an optional `session_id`, where `None` means the user-scoped namespace. Your
-implementation is responsible for honoring the `user:` prefix, since the routing
-lives in the service and not above it.
+abstract methods: `save_artifact`, `load_artifact`, `list_artifact_keys`,
+`delete_artifact`, `list_versions`, `list_artifact_versions`,
+`get_artifact_version`, and `save_media_frames`. All are keyword-only and take
+`app_name`, `user_id`, and an optional `session_id`, where `None` means the
+user-scoped namespace. Your implementation is responsible for honoring the `user:`
+prefix, since the routing lives in the service and not above it.
+
+## Saving media frames (`save_media_frames`)
+
+In addition to individual single-blob artifacts, `BaseArtifactService` supports
+persisting sequences of video/image frames through `save_media_frames`:
+
+```python
+version = await artifact_service.save_media_frames(
+    app_name="vision_app",
+    user_id="u1",
+    session_id="s1",
+    collection_name="input_media_20260101_120000_000000",
+    frames=[
+        (types.Blob(data=frame_bytes_0, mime_type="image/jpeg"), 0.0),
+        (types.Blob(data=frame_bytes_1, mime_type="image/jpeg"), 0.5),
+    ],
+    custom_metadata={"source": "camera_feed"},
+)
+```
+
+Each frame is stored in a `frames/` subfolder (e.g. `frame_0000.jpeg`,
+`frame_0001.jpeg`), accompanied by an atomic `metadata.json` document capturing:
+*   `frame_count`: Total count of persisted frames.
+*   `fps`: Estimated frames per second based on frame timestamps.
+*   `duration_seconds`: Total duration span across the frame sequence.
+*   `frames`: Per-frame index, filename, timestamp, and relative offset in milliseconds.
+*   `custom_metadata`: User-supplied key-value metadata dict.
+
+For backward compatibility with preview tools and standard readers, loading the
+collection name directly via `load_artifact(filename=collection_name)` returns the
+initial frame (`frame_0000`) as a `types.Part`.
+
 
 ## Letting the model fetch an artifact
 

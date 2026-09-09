@@ -187,7 +187,7 @@ async def send_to_model(
 ) -> None:
   """Sends data to model."""
   run_config = _require_run_config(invocation_context)
-  audio_cache_manager = flow.audio_cache_manager
+  cache_manager = flow.cache_manager
   while True:
     live_request_queue = invocation_context.live_request_queue
     assert live_request_queue is not None
@@ -243,9 +243,9 @@ async def send_to_model(
           types.LiveClientRealtimeInput(audio_stream_end=True)  # type: ignore[arg-type]
       )
     elif live_request.blob:
-      # Cache input audio chunks before flushing
+      # Cache input blobs (audio and media) before flushing
       if run_config.save_live_blob:
-        audio_cache_manager.cache_audio(
+        cache_manager.cache_blob(
             invocation_context, live_request.blob, cache_type='input'
         )
 
@@ -300,7 +300,7 @@ async def receive_from_model(
 ) -> AsyncGenerator[Event, None]:
   """Receive data from model and process events using BaseLlmConnection."""
   run_config = _require_run_config(invocation_context)
-  audio_cache_manager = flow.audio_cache_manager
+  cache_manager = flow.cache_manager
 
   def get_author_for_event(llm_response: LlmResponse) -> str:
     """Get the author of the event.
@@ -392,8 +392,7 @@ async def receive_from_model(
             )
         ) as postprocess_agen:
           async for event in postprocess_agen:
-            # Cache output audio chunks from model responses
-            # TODO: support video data
+            # Cache output audio chunks and media frames from model responses
             if (
                 run_config.save_live_blob
                 and event.content
@@ -402,15 +401,15 @@ async def receive_from_model(
               for part in event.content.parts:
                 if (
                     part.inline_data
+                    and part.inline_data.data
                     and part.inline_data.mime_type
-                    and part.inline_data.mime_type.startswith('audio/')
                 ):
-                  audio_blob = types.Blob(
+                  blob = types.Blob(
                       data=part.inline_data.data,
                       mime_type=part.inline_data.mime_type,
                   )
-                  audio_cache_manager.cache_audio(
-                      invocation_context, audio_blob, cache_type='output'
+                  cache_manager.cache_blob(
+                      invocation_context, blob, cache_type='output'
                   )
 
             yield event
@@ -471,29 +470,31 @@ async def handle_control_event_flush(
   """
   from . import base_llm_flow
 
-  audio_cache_manager = flow.audio_cache_manager
+  cache_manager = flow.cache_manager
 
   # Log cache statistics if enabled
   if base_llm_flow.DEFAULT_ENABLE_CACHE_STATISTICS:
-    stats = audio_cache_manager.get_cache_stats(invocation_context)
-    logger.debug('Audio cache stats: %s', stats)
+    stats = cache_manager.get_cache_stats(invocation_context)
+    logger.debug('Cache stats: %s', stats)
 
   if llm_response.interrupted:
-    # user interrupts so the model will stop. we can flush model audio here
-    return await audio_cache_manager.flush_caches(
+    # user interrupts so the model will stop. we can flush model caches here
+    return await cache_manager.flush_caches(
         invocation_context,
         flush_user_audio=False,
         flush_model_audio=True,
+        flush_user_media=False,
+        flush_model_media=True,
     )
   elif llm_response.turn_complete:
-    # turn completes so we can flush both user and model
-    return await audio_cache_manager.flush_caches(
+    # turn completes so we can flush both user and model caches
+    return await cache_manager.flush_caches(
         invocation_context,
         flush_user_audio=True,
         flush_model_audio=True,
+        flush_user_media=True,
+        flush_model_media=True,
     )
-  # TODO: Once generation_complete is surfaced on LlmResponse, we can flush
-  # model audio here (flush_user_audio=False, flush_model_audio=True).
   return []
 
 

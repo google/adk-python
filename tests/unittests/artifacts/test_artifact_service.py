@@ -3253,3 +3253,157 @@ async def test_list_artifact_keys_survives_metadata_path_shadowed_by_dir(
   # The shadowed artifact has no readable metadata, so it is listed by its
   # scope-relative path rather than dropped or raised on.
   assert keys == ["user:a"]
+
+
+@pytest.mark.asyncio
+async def test_file_artifact_service_save_media_frames(tmp_path):
+  """FileArtifactService saves frames, creates metadata.json, and supports preview load."""
+  service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  frames = [
+      (types.Blob(data=b"frame_data_0", mime_type="image/jpeg"), 0.0),
+      (types.Blob(data=b"frame_data_1", mime_type="image/jpeg"), 0.5),
+      (types.Blob(data=b"frame_data_2", mime_type="image/jpeg"), 1.0),
+  ]
+
+  version = await service.save_media_frames(
+      app_name="app",
+      user_id="user",
+      session_id="session",
+      collection_name="input_media_20260101_120000_000000",
+      frames=frames,
+      custom_metadata={"test_key": "test_value"},
+  )
+
+  assert version == 0
+
+  # Loading artifact by collection name should return preview Part (frame_0000)
+  preview_part = await service.load_artifact(
+      app_name="app",
+      user_id="user",
+      session_id="session",
+      filename="input_media_20260101_120000_000000",
+  )
+  assert preview_part is not None
+  assert preview_part.inline_data.data == b"frame_data_0"
+  assert preview_part.inline_data.mime_type == "image/jpeg"
+
+  # Verify on-disk structure
+  artifact_dir = (
+      service._artifact_dir(
+          app_name="app",
+          user_id="user",
+          session_id="session",
+          filename="input_media_20260101_120000_000000",
+      )
+      / "versions"
+      / "0"
+  )
+  assert (artifact_dir / "frames" / "frame_0000.jpeg").is_file()
+  assert (artifact_dir / "frames" / "frame_0001.jpeg").is_file()
+  assert (artifact_dir / "frames" / "frame_0002.jpeg").is_file()
+  assert (artifact_dir / "metadata.json").is_file()
+
+  with open(artifact_dir / "metadata.json", "r", encoding="utf-8") as f:
+    metadata = json.load(f)
+
+  custom_meta = metadata.get(
+      "customMetadata", metadata.get("custom_metadata", {})
+  )
+  assert custom_meta["frameCount"] == 3
+  assert custom_meta["estimatedFps"] == 2.0
+  assert custom_meta["durationMs"] == 1000
+  assert custom_meta["test_key"] == "test_value"
+  assert len(custom_meta["frames"]) == 3
+  assert custom_meta["frames"][0]["frameIndex"] == 0
+  assert custom_meta["frames"][0]["fileName"] == "frames/frame_0000.jpeg"
+  assert custom_meta["frames"][0]["offsetMs"] == 0
+
+
+@pytest.mark.asyncio
+async def test_file_artifact_service_save_media_frames_empty_raises(tmp_path):
+  """Saving an empty list of frames raises InputValidationError."""
+  service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  with pytest.raises(
+      InputValidationError, match="Cannot save empty frames list."
+  ):
+    await service.save_media_frames(
+        app_name="app",
+        user_id="user",
+        session_id="session",
+        collection_name="test_media",
+        frames=[],
+    )
+
+
+@pytest.mark.asyncio
+async def test_in_memory_artifact_service_save_media_frames():
+  """InMemoryArtifactService saves frames and supports preview load."""
+  service = InMemoryArtifactService()
+  frames = [
+      (types.Blob(data=b"frame_0", mime_type="image/jpeg"), 0.0),
+      (types.Blob(data=b"frame_1", mime_type="image/jpeg"), 0.5),
+  ]
+
+  version = await service.save_media_frames(
+      app_name="app",
+      user_id="user",
+      session_id="session",
+      collection_name="media_test",
+      frames=frames,
+  )
+
+  assert version == 0
+  loaded = await service.load_artifact(
+      app_name="app",
+      user_id="user",
+      session_id="session",
+      filename="media_test",
+  )
+  assert loaded is not None
+  assert loaded.inline_data.data == b"frame_0"
+
+  with pytest.raises(InputValidationError):
+    await service.save_media_frames(
+        app_name="app",
+        user_id="user",
+        session_id="session",
+        collection_name="media_test",
+        frames=[],
+    )
+
+
+@pytest.mark.asyncio
+async def test_gcs_artifact_service_save_media_frames():
+  """GcsArtifactService saves frame blobs, preview blob, and metadata.json."""
+  service = mock_gcs_artifact_service()
+  frames = [
+      (types.Blob(data=b"gcs_frame_0", mime_type="image/jpeg"), 0.0),
+      (types.Blob(data=b"gcs_frame_1", mime_type="image/jpeg"), 1.0),
+  ]
+
+  version = await service.save_media_frames(
+      app_name="app",
+      user_id="user",
+      session_id="session",
+      collection_name="gcs_media",
+      frames=frames,
+  )
+
+  assert version == 0
+  loaded = await service.load_artifact(
+      app_name="app",
+      user_id="user",
+      session_id="session",
+      filename="gcs_media",
+  )
+  assert loaded is not None
+  assert loaded.inline_data.data == b"gcs_frame_0"
+
+  with pytest.raises(InputValidationError):
+    await service.save_media_frames(
+        app_name="app",
+        user_id="user",
+        session_id="session",
+        collection_name="gcs_media",
+        frames=[],
+    )
