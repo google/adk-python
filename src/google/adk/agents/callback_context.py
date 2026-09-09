@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from ._callback_metadata import CallbackHook as CallbackHook
+from ._callback_metadata import CallbackInvocationInfo as CallbackInvocationInfo
 from .context import Context
 
 # Keep ReadonlyContext for backward compatibility

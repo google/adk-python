@@ -30,6 +30,7 @@ from opentelemetry import trace
 from . import _live_llm_flow
 from . import _output_schema_processor
 from . import functions
+from ...agents._callback_metadata import CallbackHook
 from ...agents._streaming_mode import StreamingMode
 from ...agents.base_agent import BaseAgent
 from ...agents.callback_context import CallbackContext
@@ -257,12 +258,13 @@ async def _handle_before_model_callback(
 
   # If no overrides are provided from the plugins, further run the canonical
   # callbacks.
-  callback_response = await _run_callbacks(
-      agent.canonical_before_model_callbacks,
-      _stop_on_truthy,
-      callback_context=callback_context,
-      llm_request=llm_request,
-  )
+  with callback_context._callback_scope(CallbackHook.BEFORE_MODEL):
+    callback_response = await _run_callbacks(
+        agent.canonical_before_model_callbacks,
+        _stop_on_truthy,
+        callback_context=callback_context,
+        llm_request=llm_request,
+    )
   if callback_response:
     return callback_response
   return None
@@ -327,12 +329,13 @@ async def _handle_after_model_callback(
 
   # If no overrides are provided from the plugins, further run the canonical
   # callbacks.
-  callback_response = await _run_callbacks(
-      agent.canonical_after_model_callbacks,
-      _stop_on_truthy,
-      callback_context=callback_context,
-      llm_response=llm_response,
-  )
+  with callback_context._callback_scope(CallbackHook.AFTER_MODEL):
+    callback_response = await _run_callbacks(
+        agent.canonical_after_model_callbacks,
+        _stop_on_truthy,
+        callback_context=callback_context,
+        llm_response=llm_response,
+    )
   if callback_response:
     return await _maybe_add_grounding_metadata(callback_response)
   return await _maybe_add_grounding_metadata()
@@ -390,13 +393,14 @@ async def _run_and_handle_error(
     if error_response is not None:
       return error_response
 
-    return await _run_callbacks(
-        agent.canonical_on_model_error_callbacks,
-        _stop_on_non_none,
-        callback_context=callback_context,
-        llm_request=llm_request,
-        error=error,
-    )
+    with callback_context._callback_scope(CallbackHook.ON_MODEL_ERROR):
+      return await _run_callbacks(
+          agent.canonical_on_model_error_callbacks,
+          _stop_on_non_none,
+          callback_context=callback_context,
+          llm_request=llm_request,
+          error=error,
+      )
 
   try:
     async with _instrumentation.record_inference_telemetry(

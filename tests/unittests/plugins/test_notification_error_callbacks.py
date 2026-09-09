@@ -164,6 +164,10 @@ async def _create_ctx(
   )
 
 
+async def _create_callback_context(agent: BaseAgent) -> CallbackContext:
+  return CallbackContext(await _create_ctx(agent))
+
+
 # ---------------------------------------------------------------------------
 # Agent-level error callback tests
 # ---------------------------------------------------------------------------
@@ -510,14 +514,13 @@ class TestPluginManagerErrorCallbackDispatch:
     plugin2 = _ErrorTrackingPlugin(name="p2")
     pm = PluginManager(plugins=[plugin1, plugin2])
 
-    mock_agent = Mock(spec=BaseAgent)
-    mock_agent.name = "test_agent"
-    mock_ctx = Mock(spec=CallbackContext)
+    agent = _SuccessAgent(name="test_agent")
+    callback_context = await _create_callback_context(agent)
     err = RuntimeError("boom")
 
     await pm.run_on_agent_error_callback(
-        agent=mock_agent,
-        callback_context=mock_ctx,
+        agent=agent,
+        callback_context=callback_context,
         error=err,
     )
 
@@ -561,10 +564,11 @@ class TestPluginManagerErrorCallbackDispatch:
     p1 = _ReturningPlugin(name="p1")
     p2 = _ReturningPlugin(name="p2")
     pm = PluginManager(plugins=[p1, p2])
+    agent = _SuccessAgent(name="test_agent")
 
     await pm.run_on_agent_error_callback(
-        agent=Mock(spec=BaseAgent),
-        callback_context=Mock(spec=CallbackContext),
+        agent=agent,
+        callback_context=await _create_callback_context(agent),
         error=RuntimeError("x"),
     )
 
@@ -627,11 +631,10 @@ class TestPluginManagerErrorCallbackDispatch:
     pm = PluginManager(plugins=[p1, p2])
 
     # Agent error callback: p1 raises, p2 must still be notified.
-    mock_agent = Mock(spec=BaseAgent)
-    mock_agent.name = "test_agent"
+    agent = _SuccessAgent(name="test_agent")
     await pm.run_on_agent_error_callback(
-        agent=mock_agent,
-        callback_context=Mock(spec=CallbackContext),
+        agent=agent,
+        callback_context=await _create_callback_context(agent),
         error=RuntimeError("app crash"),
     )
     assert p1.agent_error_called
