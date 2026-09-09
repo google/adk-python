@@ -37,8 +37,8 @@ from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.flows.llm_flows._invocation_utils import copy_http_options
 from google.adk.flows.llm_flows._invocation_utils import run_config_for_new_live_session
+from google.adk.flows.llm_flows._model_response_finalizer import handle_after_model_callback
 from google.adk.flows.llm_flows.base_llm_flow import _finalize_dynamic_instructions
-from google.adk.flows.llm_flows.base_llm_flow import _handle_after_model_callback
 from google.adk.flows.llm_flows.base_llm_flow import _process_agent_tools
 from google.adk.flows.llm_flows.base_llm_flow import _ReconnectSentinel
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
@@ -394,7 +394,7 @@ async def test_process_agent_tools_preserves_order_when_later_unions_resolve_fir
   with mock.patch.object(
       type(agent), 'canonical_tools', new_callable=AsyncMock
   ) as resolve_again:
-    await _handle_after_model_callback(invocation_context, response, event)
+    await handle_after_model_callback(invocation_context, response, event)
   resolve_again.assert_not_awaited()
 
 
@@ -508,250 +508,87 @@ class _AsyncProcessLlmRequestTool:
       self._on_process(self.name)
 
 
-# Pending cleanup: remove the following
-# test_handle_after_model_callback_grounding tests once the workaround
-# is no longer needed.
-def dummy_tool():
-  pass
-
-
-@pytest.mark.parametrize(
-    'tools, state_metadata, expect_metadata',
-    [
-        ([], None, False),
-        ([google_search, dummy_tool], {'foo': 'bar'}, True),
-        ([dummy_tool], {'foo': 'bar'}, False),
-        ([google_search, dummy_tool], None, False),
-    ],
-    ids=[
-        'no_search_no_grounding',
-        'with_search_with_grounding',
-        'no_search_with_grounding',
-        'with_search_no_grounding',
-    ],
-)
 @pytest.mark.asyncio
-async def test_handle_after_model_callback_grounding_with_no_callbacks(
-    tools, state_metadata, expect_metadata
-):
-  """Test handling grounding metadata when there are no callbacks."""
-  agent = Agent(name='test_agent', tools=tools)
+async def test_base_llm_flow_delegates_to_model_response_finalizer():
+  """Tests that BaseLlmFlow helper methods delegate to _model_response_finalizer."""
+  flow = BaseLlmFlowForTesting()
+  agent = Agent(name='test_agent', tools=[])
   invocation_context = await testing_utils.create_invocation_context(
       agent=agent
   )
-  if state_metadata:
-    invocation_context.session.state['temp:_adk_grounding_metadata'] = (
-        state_metadata
-    )
-
-  llm_response = LlmResponse(
-      content=types.Content(parts=[types.Part.from_text(text='response')])
-  )
   event = Event(
-      id=Event.new_id(),
       invocation_id=invocation_context.invocation_id,
       author=agent.name,
   )
-
-  result = await _handle_after_model_callback(
-      invocation_context, llm_response, event
-  )
-
-  if expect_metadata:
-    llm_response.grounding_metadata = state_metadata
-    assert result == llm_response
-  else:
-    assert result is None
-
-
-@pytest.mark.parametrize(
-    'tools, state_metadata, expect_metadata',
-    [
-        ([], None, False),
-        ([google_search, dummy_tool], {'foo': 'bar'}, True),
-        ([dummy_tool], {'foo': 'bar'}, False),
-        ([google_search, dummy_tool], None, False),
-    ],
-    ids=[
-        'no_search_no_grounding',
-        'with_search_with_grounding',
-        'no_search_with_grounding',
-        'with_search_no_grounding',
-    ],
-)
-@pytest.mark.asyncio
-async def test_handle_after_model_callback_grounding_with_callback_override(
-    tools, state_metadata, expect_metadata
-):
-  """Test handling grounding metadata when there is a callback override."""
-  agent_response = LlmResponse(
-      content=types.Content(parts=[types.Part.from_text(text='agent')])
-  )
-  agent_callback = AsyncMock(return_value=agent_response)
-
-  agent = Agent(
-      name='test_agent', tools=tools, after_model_callback=[agent_callback]
-  )
-  invocation_context = await testing_utils.create_invocation_context(
-      agent=agent
-  )
-  if state_metadata:
-    invocation_context.session.state['temp:_adk_grounding_metadata'] = (
-        state_metadata
-    )
-
   llm_response = LlmResponse(
-      content=types.Content(parts=[types.Part.from_text(text='response')])
+      content=types.Content(parts=[types.Part.from_text(text='test')])
   )
-  event = Event(
-      id=Event.new_id(),
+  llm_request = LlmRequest()
+  sentinel_response = LlmResponse(
+      content=types.Content(parts=[types.Part.from_text(text='sentinel')])
+  )
+  sentinel_event = Event(
       invocation_id=invocation_context.invocation_id,
-      author=agent.name,
+      author='sentinel',
   )
 
-  result = await _handle_after_model_callback(
-      invocation_context, llm_response, event
-  )
-
-  if expect_metadata:
-    agent_response.grounding_metadata = state_metadata
-
-  assert result == agent_response
-  agent_callback.assert_called_once()
-
-
-@pytest.mark.parametrize(
-    'tools, state_metadata, expect_metadata',
-    [
-        ([], None, False),
-        ([google_search, dummy_tool], {'foo': 'bar'}, True),
-        ([dummy_tool], {'foo': 'bar'}, False),
-        ([google_search, dummy_tool], None, False),
-    ],
-    ids=[
-        'no_search_no_grounding',
-        'with_search_with_grounding',
-        'no_search_with_grounding',
-        'with_search_no_grounding',
-    ],
-)
-@pytest.mark.asyncio
-async def test_handle_after_model_callback_grounding_with_plugin_override(
-    tools, state_metadata, expect_metadata
-):
-  """Test handling grounding metadata when there is a plugin override."""
-  plugin_response = LlmResponse(
-      content=types.Content(parts=[types.Part.from_text(text='plugin')])
-  )
-
-  class _MockPlugin(BasePlugin):
-
-    def __init__(self):
-      super().__init__(name='mock_plugin')
-
-    after_model_callback = AsyncMock(return_value=plugin_response)
-
-  plugin = _MockPlugin()
-  agent = Agent(name='test_agent', tools=tools)
-  invocation_context = await testing_utils.create_invocation_context(
-      agent=agent, plugins=[plugin]
-  )
-  if state_metadata:
-    invocation_context.session.state['temp:_adk_grounding_metadata'] = (
-        state_metadata
+  # _handle_before_model_callback delegates to handle_before_model_callback
+  with mock.patch(
+      'google.adk.flows.llm_flows.base_llm_flow.handle_before_model_callback',
+      new_callable=AsyncMock,
+      return_value=sentinel_response,
+  ) as mock_before:
+    result = await flow._handle_before_model_callback(
+        invocation_context, llm_request, event
     )
+    assert result is sentinel_response
+    mock_before.assert_awaited_once_with(invocation_context, llm_request, event)
 
-  llm_response = LlmResponse(
-      content=types.Content(parts=[types.Part.from_text(text='response')])
-  )
-  event = Event(
-      id=Event.new_id(),
-      invocation_id=invocation_context.invocation_id,
-      author=agent.name,
-  )
-
-  result = await _handle_after_model_callback(
-      invocation_context, llm_response, event
-  )
-
-  if expect_metadata:
-    plugin_response.grounding_metadata = state_metadata
-
-  assert result == plugin_response
-  plugin.after_model_callback.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_handle_after_model_callback_caches_canonical_tools():
-  """Test that canonical_tools is only called once per invocation_context."""
-  canonical_tools_call_count = 0
-
-  async def mock_canonical_tools(self, readonly_context=None):
-    nonlocal canonical_tools_call_count
-    canonical_tools_call_count += 1
-    from google.adk.tools.base_tool import BaseTool
-
-    class MockGoogleSearchTool(BaseTool):
-
-      def __init__(self):
-        super().__init__(name='google_search_agent', description='Mock search')
-        self.propagate_grounding_metadata = True
-
-      async def call(self, **kwargs):
-        return 'mock result'
-
-    return [MockGoogleSearchTool()]
-
-  agent = Agent(name='test_agent', tools=[google_search, dummy_tool])
-
-  with mock.patch.object(
-      type(agent), 'canonical_tools', new=mock_canonical_tools
-  ):
-    invocation_context = await testing_utils.create_invocation_context(
-        agent=agent
-    )
-
-    assert invocation_context.canonical_tools_cache is None
-
-    invocation_context.session.state['temp:_adk_grounding_metadata'] = {
-        'foo': 'bar'
-    }
-
-    llm_response = LlmResponse(
-        content=types.Content(parts=[types.Part.from_text(text='response')])
-    )
-    event = Event(
-        id=Event.new_id(),
-        invocation_id=invocation_context.invocation_id,
-        author=agent.name,
-    )
-
-    # Call _handle_after_model_callback multiple times with the same context
-    result1 = await _handle_after_model_callback(
+  # _handle_after_model_callback delegates to handle_after_model_callback
+  with mock.patch(
+      'google.adk.flows.llm_flows.base_llm_flow.handle_after_model_callback',
+      new_callable=AsyncMock,
+      return_value=sentinel_response,
+  ) as mock_after:
+    result = await flow._handle_after_model_callback(
         invocation_context, llm_response, event
     )
-    result2 = await _handle_after_model_callback(
-        invocation_context, llm_response, event
-    )
-    result3 = await _handle_after_model_callback(
-        invocation_context, llm_response, event
-    )
+    assert result is sentinel_response
+    mock_after.assert_awaited_once_with(invocation_context, llm_response, event)
 
-    assert canonical_tools_call_count == 1, (
-        'canonical_tools should be called once, but was called '
-        f'{canonical_tools_call_count} times'
+  # _finalize_model_response_event delegates to finalize_model_response_event
+  with mock.patch(
+      'google.adk.flows.llm_flows.base_llm_flow.finalize_model_response_event',
+      return_value=sentinel_event,
+  ) as mock_finalize:
+    result = flow._finalize_model_response_event(
+        llm_request, llm_response, event
     )
+    assert result is sentinel_event
+    mock_finalize.assert_called_once_with(llm_request, llm_response, event)
 
-    assert invocation_context.canonical_tools_cache is not None
-    assert len(invocation_context.canonical_tools_cache) == 1
-    assert (
-        invocation_context.canonical_tools_cache[0].name
-        == 'google_search_agent'
+  # _run_and_handle_error delegates to run_and_handle_error
+  async def dummy_gen():
+    yield llm_response
+
+  async def mock_run_gen(*args, **kwargs):
+    yield sentinel_response
+
+  with mock.patch(
+      'google.adk.flows.llm_flows.base_llm_flow.run_and_handle_error',
+      side_effect=mock_run_gen,
+  ) as mock_run:
+    gen = dummy_gen()
+    results = [
+        resp
+        async for resp in flow._run_and_handle_error(
+            gen, invocation_context, llm_request, event
+        )
+    ]
+    assert results == [sentinel_response]
+    mock_run.assert_called_once_with(
+        gen, invocation_context, llm_request, event, call_llm_span=None
     )
-
-    assert result1.grounding_metadata == {'foo': 'bar'}
-    assert result2.grounding_metadata == {'foo': 'bar'}
-    assert result3.grounding_metadata == {'foo': 'bar'}
 
 
 @pytest.mark.asyncio
