@@ -48,7 +48,7 @@ logger = logging.getLogger('google_adk.' + __name__)
 _COMPACTION_CUSTOM_METADATA_KEY = '_compaction'
 _USAGE_METADATA_CUSTOM_METADATA_KEY = '_usage_metadata'
 
-_SESSION_ID_PATTERN = re.compile(r'^[A-Za-z0-9_-]+$')
+_SESSION_ID_PATTERN = re.compile(r'^[a-z0-9]([a-z0-9-]*[a-z0-9])?$')
 
 
 def _extract_short_session_id(
