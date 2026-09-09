@@ -1202,7 +1202,17 @@ class ApiServer:
     register_processors(tracer_provider)
 
     # Run the FastAPI server.
-    app = FastAPI(lifespan=internal_lifespan)
+    #
+    # `url_prefix` may be a bare path (e.g. "/adk") or a full absolute URL
+    # (e.g. "https://host/adk", as used for the dev-ui's `backendUrl`).
+    # FastAPI's `root_path` must be a path only, so extract it here. This is
+    # what makes generated URLs -- notably `/openapi.json` referenced from
+    # `/docs` -- resolve correctly when the app sits behind a reverse proxy
+    # that strips the prefix before forwarding.
+    root_path = ""
+    if self.url_prefix:
+      root_path = urllib.parse.urlparse(self.url_prefix).path.rstrip("/")
+    app = FastAPI(lifespan=internal_lifespan, root_path=root_path)
 
     has_configured_allowed_origins = bool(allow_origins)
     if allow_origins:
