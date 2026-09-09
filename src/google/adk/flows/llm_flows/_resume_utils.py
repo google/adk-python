@@ -33,6 +33,7 @@ from google.genai import types
 
 from ...events._branch_path import _BranchPath
 from ...events.event import Event
+from ._invocation_utils import require_agent_name
 
 if TYPE_CHECKING:
   from ...agents.invocation_context import InvocationContext
@@ -116,10 +117,22 @@ def _pause_left_calls_unanswered(
 
 
 def _find_target_call_event(
-    events: list[Event], tools_dict: dict[str, Any]
+    events: list[Event],
+    tools_dict: dict[str, Any],
+    agent_name: str | None = None,
 ) -> Event | None:
-  """The most recent event before the last that calls a tool this flow owns."""
+  """The most recent event before the last that calls a tool this flow owns.
+
+  When ``agent_name`` is given, only events that agent authored are eligible.
+  A resumable branch may contain caller-supplied events (session init accepts a
+  restored conversation), and one carrying a ``function_call`` must not be
+  selected as a call to replay unless the current agent authored it -- otherwise
+  a client could inject a function call and have it dispatched with no model
+  turn. See ``decide_step_resume`` for the trailing-event counterpart.
+  """
   for ev in reversed(events[:-1]):
+    if agent_name is not None and ev.author != agent_name:
+      continue
     calls = ev.get_function_calls()
     if calls and any(fc.name in tools_dict for fc in calls):
       return ev
@@ -218,7 +231,9 @@ def decide_resume(
     return ResumeDecision(ResumeAction.PAUSE)
 
   pause = paused_by_last
-  call_event = _find_target_call_event(events, tools_dict)
+  call_event = _find_target_call_event(
+      events, tools_dict, require_agent_name(invocation_context)
+  )
   if call_event:
     call_idx = next(i for i, ev in enumerate(events) if ev is call_event)
     calls = call_event.get_function_calls()
@@ -303,7 +318,16 @@ def decide_step_resume(
   # A single event, or a multi-event branch that `decide_resume` cleared:
   # the branch is only still owed something if its last event carries calls
   # nothing has answered yet -- being last is what makes them unanswered.
-  if not events[-1].partial and events[-1].get_function_calls():
+  if (
+      not events[-1].partial
+      and events[-1].get_function_calls()
+      # SECURITY: only replay a trailing function call the CURRENT AGENT
+      # authored. Session init accepts caller-supplied events, so an event
+      # authored by anyone else (e.g. a "user" event carrying a function_call)
+      # is not this agent's own paused turn and must not be dispatched here --
+      # doing so would run the tool with no model turn and no provenance check.
+      and events[-1].author == require_agent_name(invocation_context)
+  ):
     return ResumeDecision(ResumeAction.REPLAY_CALLS, events[-1])
 
   return ResumeDecision(ResumeAction.CONTINUE)
