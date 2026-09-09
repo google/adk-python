@@ -5710,6 +5710,101 @@ class TestSchemaAutoUpgrade:
       plugin._ensure_schema_exists()
 
 
+class TestReadinessMemoisedAcrossReinit:
+  """Regression tests for issue #7017.
+
+  ``BigQueryAgentAnalyticsPlugin`` used to re-run its full table/view
+  readiness pass on every re-initialisation. A host that builds a
+  short-lived ``Runner`` per request over one shared plugin closes and
+  re-inits the plugin every request (``Runner.close()`` ->
+  ``PluginManager.close()`` -> ``plugin.close()``), so the per-view
+  ``CREATE OR REPLACE VIEW`` DDL ran on the request path every single time.
+  Readiness success is now memoised in a flag that survives ``close()``, so
+  a *successful* pass runs once per process while a *failed* one still
+  retries.
+  """
+
+  def _existing_table(self):
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = bigquery_agent_analytics_plugin._get_events_schema()
+    existing.labels = {
+        bigquery_agent_analytics_plugin._SCHEMA_VERSION_LABEL_KEY: (
+            bigquery_agent_analytics_plugin._SCHEMA_VERSION
+        ),
+    }
+    return existing
+
+  @pytest.mark.asyncio
+  async def test_readiness_pass_runs_once_across_reinit_cycles(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """N close/re-init cycles issue the view DDL once, not once per cycle."""
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+    )
+    mock_bq_client.get_table.return_value = self._existing_table()
+
+    num_views = len(bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS)
+    cycles = 3
+    try:
+      for _ in range(cycles):
+        assert await plugin._ensure_started() == "ok"
+        assert plugin._schema_ready is True
+        # Runner.close() -> PluginManager.close() -> plugin.close() clears
+        # _started; the readiness flag must survive it.
+        await plugin.shutdown()
+    finally:
+      await plugin.shutdown()
+
+    # One readiness pass total (num_views CREATE OR REPLACE VIEW
+    # statements), not one pass per cycle. Before the fix this was
+    # num_views * cycles.
+    assert mock_bq_client.query.call_count == num_views
+
+  @pytest.mark.asyncio
+  async def test_failed_readiness_is_retried_and_not_memoised(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """A failed readiness attempt is not remembered and retries next time."""
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+    )
+    # First readiness attempt fails at the table check; the second succeeds.
+    mock_bq_client.get_table.side_effect = [
+        cloud_exceptions.ServiceUnavailable("control plane down"),
+        self._existing_table(),
+    ]
+    try:
+      assert await plugin._ensure_started() == "failed"
+      # A *failed* pass must NOT be memoised (the 2.8.0 intent).
+      assert plugin._schema_ready is False
+
+      # Clear the post-failure backoff window so the retry runs now.
+      plugin._setup_retry_at = 0.0
+      plugin._startup_error = None
+
+      assert await plugin._ensure_started() == "ok"
+      assert plugin._schema_ready is True
+      # The table check was retried, not skipped.
+      assert mock_bq_client.get_table.call_count == 2
+    finally:
+      await plugin.shutdown()
+
+
 class TestToolProvenance:
   """Tests for _get_tool_origin helper."""
 
