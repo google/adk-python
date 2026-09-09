@@ -22,6 +22,8 @@ from unittest.mock import Mock
 from unittest.mock import patch
 
 from google.adk.agents.context import Context
+from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.llm_agent import Agent
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import HttpAuth
@@ -33,6 +35,7 @@ from google.adk.dependencies._mcp import McpError
 from google.adk.events.event_actions import EventActions
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.mcp_tool import mcp_tool
 from google.adk.tools.mcp_tool.mcp_session_manager import _SESSION_IDLE_TTL_SECONDS
 from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
@@ -42,6 +45,7 @@ from google.adk.tools.mcp_tool.mcp_tool import ProgressCallbackFactory
 from google.adk.tools.mcp_tool.mcp_tool import ProgressFnT
 from google.adk.tools.tool_context import ToolContext
 from google.genai.types import FunctionDeclaration
+from google.genai.types import GroundingMetadata
 from mcp.types import CallToolResult
 from mcp.types import ImageContent
 from mcp.types import TextContent
@@ -402,6 +406,71 @@ class TestMCPTool:
     self.mock_session.call_tool.assert_called_once_with(
         "test_tool", arguments=args, progress_callback=None, meta=None
     )
+
+  async def _tool_context_with_session(self) -> ToolContext:
+    session_service = InMemorySessionService()
+    session = await session_service.create_session(
+        app_name="test_app", user_id="test_user"
+    )
+    tool_context = ToolContext(
+        invocation_context=InvocationContext(
+            invocation_id="invocation_id",
+            agent=Agent(name="test_agent"),
+            session=session,
+            session_service=session_service,
+        )
+    )
+    tool_context.function_call_id = "test-call-id"
+    return tool_context
+
+  @pytest.mark.asyncio
+  async def test_run_async_impl_propagates_grounding_metadata_from_meta(self):
+    """_meta.adk_grounding_metadata becomes temp state when the flag is on."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        propagate_grounding_metadata=True,
+    )
+    mcp_response = CallToolResult(
+        content=[TextContent(type="text", text="success")],
+        _meta={"adk_grounding_metadata": {"webSearchQueries": ["q1"]}},
+    )
+    self.mock_session.call_tool = AsyncMock(return_value=mcp_response)
+    tool_context = await self._tool_context_with_session()
+
+    result = await tool._run_async_impl(
+        args={"param1": "test_value"},
+        tool_context=tool_context,
+        credential=None,
+    )
+
+    assert result == expected_tool_result(mcp_response)
+    stored = tool_context.state["temp:_adk_grounding_metadata"]
+    assert isinstance(stored, GroundingMetadata)
+    assert stored.web_search_queries == ["q1"]
+
+  @pytest.mark.asyncio
+  async def test_run_async_impl_skips_grounding_metadata_when_flag_off(self):
+    """Default McpTool leaves temp grounding unset even if _meta carries it."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+    mcp_response = CallToolResult(
+        content=[TextContent(type="text", text="success")],
+        _meta={"adk_grounding_metadata": {"webSearchQueries": ["q1"]}},
+    )
+    self.mock_session.call_tool = AsyncMock(return_value=mcp_response)
+    tool_context = await self._tool_context_with_session()
+
+    result = await tool._run_async_impl(
+        args={"param1": "test_value"},
+        tool_context=tool_context,
+        credential=None,
+    )
+
+    assert result == expected_tool_result(mcp_response)
+    assert "temp:_adk_grounding_metadata" not in tool_context.state
 
   @pytest.mark.asyncio
   async def test_in_flight_tool_call_is_held_out_of_the_idle_sweep(self):

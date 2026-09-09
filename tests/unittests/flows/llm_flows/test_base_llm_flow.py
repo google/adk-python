@@ -617,6 +617,9 @@ async def test_handle_after_model_callback_grounding_with_callback_override(
     agent_response.grounding_metadata = state_metadata
 
   assert result == agent_response
+  assert result.grounding_metadata == (
+      state_metadata if expect_metadata else None
+  )
   agent_callback.assert_called_once()
 
 
@@ -678,6 +681,9 @@ async def test_handle_after_model_callback_grounding_with_plugin_override(
     plugin_response.grounding_metadata = state_metadata
 
   assert result == plugin_response
+  assert result.grounding_metadata == (
+      state_metadata if expect_metadata else None
+  )
   plugin.after_model_callback.assert_called_once()
 
 
@@ -691,16 +697,16 @@ async def test_handle_after_model_callback_caches_canonical_tools():
     canonical_tools_call_count += 1
     from google.adk.tools.base_tool import BaseTool
 
-    class MockGoogleSearchTool(BaseTool):
+    class MockResearchTool(BaseTool):
 
       def __init__(self):
-        super().__init__(name='google_search_agent', description='Mock search')
+        super().__init__(name='research_agent', description='Mock research')
         self.propagate_grounding_metadata = True
 
       async def call(self, **kwargs):
         return 'mock result'
 
-    return [MockGoogleSearchTool()]
+    return [MockResearchTool()]
 
   agent = Agent(name='test_agent', tools=[google_search, dummy_tool])
 
@@ -726,7 +732,6 @@ async def test_handle_after_model_callback_caches_canonical_tools():
         author=agent.name,
     )
 
-    # Call _handle_after_model_callback multiple times with the same context
     result1 = await _handle_after_model_callback(
         invocation_context, llm_response, event
     )
@@ -744,10 +749,7 @@ async def test_handle_after_model_callback_caches_canonical_tools():
 
     assert invocation_context.canonical_tools_cache is not None
     assert len(invocation_context.canonical_tools_cache) == 1
-    assert (
-        invocation_context.canonical_tools_cache[0].name
-        == 'google_search_agent'
-    )
+    assert invocation_context.canonical_tools_cache[0].name == 'research_agent'
 
     assert result1.grounding_metadata == {'foo': 'bar'}
     assert result2.grounding_metadata == {'foo': 'bar'}

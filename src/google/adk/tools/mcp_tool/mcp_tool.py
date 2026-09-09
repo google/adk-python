@@ -27,7 +27,9 @@ import warnings
 
 from fastapi.openapi.models import APIKeyIn
 from google.genai.types import FunctionDeclaration
+from google.genai.types import GroundingMetadata
 from opentelemetry import propagate
+from pydantic import ValidationError
 from typing_extensions import override
 
 from ...agents.callback_context import CallbackContext
@@ -291,6 +293,7 @@ class McpTool(BaseAuthenticatedTool):
           | None
       ) = None,
       progress_callback: ProgressFnT | ProgressCallbackFactory | None = None,
+      propagate_grounding_metadata: bool = False,
   ):
     """Initializes an McpTool.
 
@@ -317,6 +320,10 @@ class McpTool(BaseAuthenticatedTool):
             The factory receives (tool_name, callback_context, **kwargs) and
             returns a ProgressFnT or None. This allows callbacks to access
             and modify runtime context like session state.
+        propagate_grounding_metadata: If True, copy
+          ``meta.adk_grounding_metadata`` from the MCP result into
+          ``temp:_adk_grounding_metadata`` so the flow can attach it to
+          ``LlmResponse``. Default False.
 
     Raises:
         ValueError: If the MCP tool name collides with a reserved ADK tool
@@ -342,6 +349,7 @@ class McpTool(BaseAuthenticatedTool):
     self._require_confirmation = require_confirmation
     self._header_provider = header_provider
     self._progress_callback = progress_callback
+    self.propagate_grounding_metadata = propagate_grounding_metadata
 
   @override
   def _get_declaration(self) -> FunctionDeclaration:
@@ -634,6 +642,7 @@ class McpTool(BaseAuthenticatedTool):
 
     # Keep the caller's key names off the installed SDK's field naming.
     result = _dump_mcp_model(response)
+    self._store_grounding_metadata_from_result(result, tool_context)
 
     # 2.x-only field. Acting on it (`input_required` drives elicitation) is a
     # feature, not compatibility. Not dropped on 1.x, where a key of that name
@@ -663,6 +672,31 @@ class McpTool(BaseAuthenticatedTool):
           )
       )
     return result
+
+  def _store_grounding_metadata_from_result(
+      self, result: dict[str, Any], tool_context: ToolContext
+  ) -> None:
+    """Copies ADK grounding from MCP meta into session temp state."""
+    if not self.propagate_grounding_metadata:
+      return
+    meta = result.get("meta")
+    if meta is None:
+      meta = result.get("_meta")
+    if not isinstance(meta, dict):
+      return
+    raw = meta.get("adk_grounding_metadata")
+    if raw is None:
+      return
+    try:
+      metadata = GroundingMetadata.model_validate(raw)
+    except ValidationError as e:
+      logger.warning(
+          "Ignoring _meta.adk_grounding_metadata from %s: %s",
+          self.name,
+          e,
+      )
+      return
+    tool_context.state["temp:_adk_grounding_metadata"] = metadata
 
   def _detect_error_in_response(self, response: Any) -> str | None:
     """Telemetry hook: returns an error type if the response indicates an error."""
