@@ -46,6 +46,9 @@ class AgentInfo(pydantic.BaseModel):
 
 async def get_tools_info(tools: list[ToolUnion]) -> list[Any]:
   """Returns the info for a given list of tools."""
+  from ..tools._node_tool import NodeTool
+  from ..workflow._base_node import BaseNode
+
   final_tools = []
   for tool in tools:
     if isinstance(tool, BaseTool):
@@ -54,6 +57,10 @@ async def get_tools_info(tools: list[ToolUnion]) -> list[Any]:
       # Await the async coroutine call natively!
       tools_res = await tool.get_tools()
       final_tools.extend(tools_res)
+    elif isinstance(tool, BaseNode):
+      final_tools.append(
+          NodeTool(node=tool, name=tool.name, description=tool.description)
+      )
     else:
       final_tools.append(FunctionTool(tool))
   declarations = (tool._get_declaration() for tool in final_tools)
