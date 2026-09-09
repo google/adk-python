@@ -2910,12 +2910,15 @@ async def test_save_load_text_artifact(
 @pytest.mark.parametrize(
     "service_type",
     [
+        ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
     ],
 )
+@pytest.mark.parametrize("filename", ["empty.txt", "user:empty.txt"])
+@pytest.mark.parametrize("version", [None, 0])
 async def test_save_load_empty_text_artifact(
-    service_type, artifact_service_factory
+    service_type, artifact_service_factory, filename, version
 ):
   """Tests that empty text artifacts survive round-trip save/load."""
   artifact_service = artifact_service_factory(service_type)
@@ -2925,14 +2928,15 @@ async def test_save_load_empty_text_artifact(
       app_name="app0",
       user_id="user0",
       session_id="123",
-      filename="empty.txt",
+      filename=filename,
       artifact=artifact,
   )
   loaded = await artifact_service.load_artifact(
       app_name="app0",
       user_id="user0",
       session_id="123",
-      filename="empty.txt",
+      filename=filename,
+      version=version,
   )
   assert loaded is not None
   assert loaded.text == ""
