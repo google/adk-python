@@ -48,6 +48,28 @@ logger = logging.getLogger('google_adk.' + __name__)
 _COMPACTION_CUSTOM_METADATA_KEY = '_compaction'
 _USAGE_METADATA_CUSTOM_METADATA_KEY = '_usage_metadata'
 
+# The event fields the API carries under names of its own, which is all an
+# event keeps when raw_event is rejected. This mirrors the Event built by the
+# fallback branch of _from_api_event; every other field is dropped on write.
+_FIELD_BY_FIELD_EVENT_FIELDS = frozenset({
+    'id',
+    'invocation_id',
+    'author',
+    'actions',
+    'content',
+    'timestamp',
+    'error_code',
+    'error_message',
+    'partial',
+    'turn_complete',
+    'interrupted',
+    'branch',
+    'custom_metadata',
+    'grounding_metadata',
+    'long_running_tool_ids',
+    'usage_metadata',
+})
+
 _SESSION_ID_PATTERN = re.compile(r'^[A-Za-z0-9_-]+$')
 
 
@@ -506,7 +528,14 @@ class VertexAiSessionService(BaseSessionService):
       try:
         await _do_append(config)
       except pydantic.ValidationError:
-        logger.warning('Vertex SDK does not support raw_event, falling back.')
+        _session_util.warn_event_fields_not_stored(
+            _FIELD_BY_FIELD_EVENT_FIELDS,
+            cause=(
+                'The installed Vertex AI SDK does not support raw_event, so an'
+                ' event is stored under the named fields the API defines'
+            ),
+            remedy='Upgrade the Vertex AI SDK to keep them.',
+        )
         if 'raw_event' in config:
           del config['raw_event']
         await _do_append(config)
