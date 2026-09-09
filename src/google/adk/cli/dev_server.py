@@ -99,6 +99,18 @@ TAG_DEBUG = "Debug"
 TAG_EVALUATION = "Evaluation"
 
 
+def _sanitize_test_filename(test_name: str) -> str:
+  """Return a tests/ filename, stripping directories that would escape it.
+
+  ``create_test`` already used ``os.path.basename``. Get, delete, and rebuild
+  did not, so a name like ``../outside.json`` could leave the tests folder.
+  """
+  test_name = os.path.basename(test_name)
+  if not test_name.endswith(".json"):
+    test_name += ".json"
+  return test_name
+
+
 class CreateTestRequest(common.BaseModel):
   session_data: dict
 
@@ -912,9 +924,7 @@ class DevServer(ApiServer):
       agent_dir = self._get_agent_dir(app_name)
 
       if test_name:
-        if not test_name.endswith(".json"):
-          test_name += ".json"
-        path = os.path.join(agent_dir, "tests", test_name)
+        path = os.path.join(agent_dir, "tests", _sanitize_test_filename(test_name))
       else:
         path = agent_dir
 
@@ -939,14 +949,10 @@ class DevServer(ApiServer):
         app_name: str, test_name: str, req: CreateTestRequest
     ) -> dict[str, str]:
       """Creates or updates a test file from session data."""
-      # Sanitize test_name to prevent directory traversal
-      test_name = os.path.basename(test_name)
+      test_name = _sanitize_test_filename(test_name)
       agent_dir = self._get_agent_dir(app_name)
       tests_dir = os.path.join(agent_dir, "tests")
       os.makedirs(tests_dir, exist_ok=True)
-
-      if not test_name.endswith(".json"):
-        test_name += ".json"
 
       test_file_path = os.path.join(tests_dir, test_name)
 
@@ -963,10 +969,7 @@ class DevServer(ApiServer):
       """Deletes a specific test file."""
       agent_dir = self._get_agent_dir(app_name)
       tests_dir = os.path.join(agent_dir, "tests")
-
-      if not test_name.endswith(".json"):
-        test_name += ".json"
-
+      test_name = _sanitize_test_filename(test_name)
       test_file_path = os.path.join(tests_dir, test_name)
 
       if not os.path.exists(test_file_path):
@@ -980,10 +983,7 @@ class DevServer(ApiServer):
       """Fetches the content of a specific test file."""
       agent_dir = self._get_agent_dir(app_name)
       tests_dir = os.path.join(agent_dir, "tests")
-
-      if not test_name.endswith(".json"):
-        test_name += ".json"
-
+      test_name = _sanitize_test_filename(test_name)
       test_file_path = os.path.join(tests_dir, test_name)
 
       if not os.path.exists(test_file_path):
