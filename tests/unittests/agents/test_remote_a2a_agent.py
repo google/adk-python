@@ -5724,6 +5724,139 @@ class TestRemoteA2aAgentTaskModeFailurePropagation:
           )
 
 
+class TestRemoteA2aAgentStreamTruncation:
+  """Test how RemoteA2aAgent handles a stream that stops mid-task.
+
+  A remote agent whose connection closes cleanly while its task is still
+  running produces a stream that looks exactly like a finished one, so the
+  agent has to decide from the last task state whether the peer was done.
+  """
+
+  async def _run_stream_ending_in(self, state, *, mode=None):
+    """Runs one turn whose stream ends with the remote task left in ``state``.
+
+    Returns the agent, the invocation context and the events yielded.
+    """
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=create_test_agent_card(),
+        mode=mode,
+    )
+
+    mock_context = Mock(spec=InvocationContext)
+    mock_context.session = Mock(spec=Session)
+    mock_context.session.events = [_make_dummy_task_trigger_event()]
+    mock_context.session.state = {}
+    mock_context.agent_states = {}
+    mock_context.end_of_agents = {}
+    mock_context.isolation_scope = "task-1"
+    mock_context.invocation_id = "invocation-123"
+    mock_context.branch = "main"
+
+    def set_agent_state_side_effect(agent_name, **kwargs):
+      if kwargs.get("end_of_agent"):
+        mock_context.end_of_agents[agent_name] = True
+      else:
+        mock_context.end_of_agents.pop(agent_name, None)
+
+    mock_context.set_agent_state.side_effect = set_agent_state_side_effect
+
+    unfinished_task = A2ATask(
+        id="task-1",
+        context_id="context-123",
+        status=A2ATaskStatus(state=state),
+    )
+    mock_send_message = AsyncMock()
+    mock_send_message.__aiter__.return_value = [
+        _make_stream_task(unfinished_task)
+    ]
+    mock_a2a_client = Mock()
+    mock_a2a_client.send_message.return_value = mock_send_message
+    agent._a2a_client = mock_a2a_client
+
+    progress_event = Event(
+        author=agent.name,
+        invocation_id=mock_context.invocation_id,
+        branch=mock_context.branch,
+        content=genai_types.Content(
+            role="model",
+            parts=[genai_types.Part.from_text(text="Working on it")],
+        ),
+    )
+
+    with patch.object(
+        agent, "_ensure_resolved", AsyncMock(return_value=mock_a2a_client)
+    ):
+      with patch.object(
+          agent, "_construct_message_parts_from_session"
+      ) as mock_construct:
+        mock_construct.return_value = (
+            [_compat.make_text_part("test_message")],
+            "context-123",
+        )
+        with patch.object(
+            agent, "_handle_a2a_response", new_callable=AsyncMock
+        ) as mock_handle:
+          mock_handle.return_value = progress_event
+
+          events = [
+              event async for event in agent._run_async_impl(mock_context)
+          ]
+
+    return agent, mock_context, events
+
+  @pytest.mark.asyncio
+  async def test_reports_stream_that_ends_while_task_is_working(self):
+    _, _, events = await self._run_stream_ending_in(_compat.TS_WORKING)
+
+    assert len(events) == 2
+    assert events[1].error_message == (
+        "A2A response stream ended before task task-1 reached a terminal state."
+    )
+
+  @pytest.mark.asyncio
+  async def test_reports_stream_that_ends_on_unknown_task_state(self):
+    _, _, events = await self._run_stream_ending_in(_compat.TS_UNKNOWN)
+
+    assert len(events) == 2
+    assert events[1].error_message == (
+        "A2A response stream ended before task task-1 reached a terminal state."
+    )
+
+  @pytest.mark.asyncio
+  async def test_accepts_stream_that_ends_on_completed_task(self):
+    _, _, events = await self._run_stream_ending_in(_compat.TS_COMPLETED)
+
+    assert len(events) == 1
+    assert events[0].error_message is None
+
+  @pytest.mark.asyncio
+  async def test_accepts_stream_that_ends_awaiting_user_input(self):
+    _, _, events = await self._run_stream_ending_in(_compat.TS_INPUT_REQUIRED)
+
+    assert len(events) == 1
+    assert events[0].error_message is None
+
+  @pytest.mark.asyncio
+  async def test_releases_task_control_when_stream_ends_while_working(self):
+    agent, mock_context, events = await self._run_stream_ending_in(
+        _compat.TS_WORKING, mode="task"
+    )
+
+    assert len(events) == 4
+    assert (
+        events[2].content.parts[0].function_response.name
+        == FINISH_TASK_TOOL_NAME
+    )
+    assert events[2].content.parts[0].function_response.response == {
+        "result": FINISH_TASK_ERROR_RESULT
+    }
+    assert events[3].actions.end_of_agent is True
+    mock_context.set_agent_state.assert_called_once_with(
+        agent.name, end_of_agent=True
+    )
+
+
 class TestRemoteA2aAgentWorkflowOutput:
   """Tests that RemoteA2aAgent surfaces a workflow-node output value.
 
