@@ -1085,3 +1085,53 @@ async def test_canonical_tools_without_context_passes_none_to_toolset():
       '_toolset_tool_2',
   ]
   assert toolset.received_context is None
+
+
+@pytest.mark.asyncio
+async def test_canonical_model_async_matches_the_property():
+  # A model name rather than an instance, so that canonical_model and
+  # canonical_live_model resolve to distinct objects and the assertion can
+  # tell which one came back.
+  agent = LlmAgent(name='test_agent', model='gemini-pro')
+  ctx = await _create_readonly_context(agent)
+
+  assert await agent.canonical_model_async(ctx) is agent.canonical_model
+
+
+@pytest.mark.asyncio
+async def test_canonical_model_async_inherits_from_an_ancestor():
+  sub_agent = LlmAgent(name='sub_agent')
+  parent_agent = LlmAgent(
+      name='parent_agent', model='gemini-pro', sub_agents=[sub_agent]
+  )
+  ctx = await _create_readonly_context(sub_agent)
+
+  assert (
+      await sub_agent.canonical_model_async(ctx) is parent_agent.canonical_model
+  )
+
+
+@pytest.mark.asyncio
+async def test_canonical_model_async_reuses_the_resolved_instance():
+  # It goes through the property, so a name is still resolved only once.
+  agent = LlmAgent(name='test_agent', model='gemini-pro')
+  ctx = await _create_readonly_context(agent)
+
+  with mock.patch.object(
+      LLMRegistry, 'new_llm', wraps=LLMRegistry.new_llm
+  ) as new_llm:
+    first = await agent.canonical_model_async(ctx)
+    second = await agent.canonical_model_async(ctx)
+
+  assert new_llm.call_count == 1
+  assert first is second
+
+
+@pytest.mark.asyncio
+async def test_canonical_live_model_async_matches_the_property():
+  agent = LlmAgent(name='test_agent', model='gemini-pro')
+  ctx = await _create_readonly_context(agent)
+
+  assert (
+      await agent.canonical_live_model_async(ctx) is agent.canonical_live_model
+  )

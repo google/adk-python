@@ -447,6 +447,15 @@ def test_schema_sanitization_for_complex_union_type():
   assert declaration.parameters.properties['tags'] == types.Schema(
       type=types.Type.OBJECT,
       nullable=True,
+  )
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      complex_tool, GoogleLLMVariant.VERTEX_AI
+  )
+
+  assert declaration.parameters.properties['tags'] == types.Schema(
+      type=types.Type.OBJECT,
+      nullable=True,
       additional_properties=types.Schema(type=types.Type.STRING),
   )
 

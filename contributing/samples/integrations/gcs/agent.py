@@ -29,7 +29,13 @@ import google.auth
 CREDENTIALS_TYPE = None
 
 # Define GCS tool config (default is READ_ONLY; add Capabilities.READ_WRITE for modification access)
-tool_settings = GCSToolSettings(capabilities=[Capabilities.READ_WRITE])
+# The tools refuse to upload from or download to the local filesystem unless
+# local_file_root names a directory. A path the model asks for is resolved
+# inside that directory and cannot escape it.
+tool_settings = GCSToolSettings(
+    capabilities=[Capabilities.READ_WRITE],
+    local_file_root=os.getcwd(),
+)
 
 if CREDENTIALS_TYPE == AuthCredentialTypes.OAUTH2:
   # Initialize the tools to do interactive OAuth

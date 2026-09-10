@@ -140,6 +140,7 @@ if IS_A2A_V1:
   # 1.x: protobuf EnumTypeWrapper — access values as integer constants.
   ROLE_USER = Role.Value("ROLE_USER")
   ROLE_AGENT = Role.Value("ROLE_AGENT")
+  TS_UNKNOWN = TaskState.Value("TASK_STATE_UNSPECIFIED")
   TS_SUBMITTED = TaskState.Value("TASK_STATE_SUBMITTED")
   TS_WORKING = TaskState.Value("TASK_STATE_WORKING")
   TS_COMPLETED = TaskState.Value("TASK_STATE_COMPLETED")
@@ -155,6 +156,7 @@ if IS_A2A_V1:
 else:
   # 0.3.x: pydantic enum
   ROLE_USER, ROLE_AGENT = Role.user, Role.agent
+  TS_UNKNOWN = TaskState.unknown
   TS_SUBMITTED = TaskState.submitted
   TS_WORKING = TaskState.working
   TS_COMPLETED = TaskState.completed

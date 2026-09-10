@@ -273,6 +273,15 @@ def test_sample_loads(sample_dir: Path, monkeypatch):
   ), f"{sample_dir} root agent has no name"
 
 
+def test_knowledge_agent_requires_datastore_env(monkeypatch):
+  """The knowledge agent takes its data store from the environment."""
+  for key, value in _DUMMY_ENV.items():
+    monkeypatch.setenv(key, value)
+  monkeypatch.delenv("VERTEXAI_DATASTORE_ID")
+  with pytest.raises(ValueError, match="VERTEXAI_DATASTORE_ID"):
+    _load_root_agent(SAMPLES_DIR / "adk_team" / "adk_knowledge_agent")
+
+
 @contextlib.contextmanager
 def _sample_module(sample_dir: Path, module_name: str) -> Iterator[Any]:
   """Imports one module of a sample package and evicts it afterwards."""

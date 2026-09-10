@@ -23,6 +23,7 @@ import threading
 from typing import Any
 from typing import cast
 from typing import TYPE_CHECKING
+import warnings
 
 from pydantic import PrivateAttr
 from typing_extensions import override
@@ -32,6 +33,7 @@ from .base_code_executor import BaseCodeExecutor
 from .code_execution_utils import CodeExecutionInput
 from .code_execution_utils import CodeExecutionResult
 from .code_execution_utils import File
+from .code_executor_context import _CONTEXT_KEY
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -86,6 +88,16 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
 
     # Case 1: sandbox_resource_name is provided.
     if sandbox_resource_name is not None:
+      msg = (
+          f'Using a static sandbox_resource_name ({sandbox_resource_name}) on'
+          ' shared agent definitions may cause state leak across user sessions.'
+          ' To avoid state leakage in multi-tenant applications, omit'
+          ' sandbox_resource_name; the executor then either auto-creates a'
+          ' sandbox per session, or reuses the one named by'
+          " invocation_context.session.state['sandbox_name'] if you set it."
+      )
+      logger.warning(msg)
+      warnings.warn(msg, UserWarning, stacklevel=2)
       self._project_id, self._location = (
           self._get_project_id_and_location_from_resource_name(
               sandbox_resource_name, sandbox_resource_name_pattern
@@ -150,6 +162,12 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
           'str | None',
           invocation_context.session.state.get('sandbox_name', None),
       )
+      if sandbox_name is None:
+        exec_ctx = invocation_context.session.state.get(_CONTEXT_KEY, {})
+        if isinstance(exec_ctx, dict):
+          sandbox_name = exec_ctx.get('sandbox_name') or None
+          if sandbox_name:
+            invocation_context.session.state['sandbox_name'] = sandbox_name
       create_new_sandbox = False
       if sandbox_name is None:
         create_new_sandbox = True
@@ -184,7 +202,11 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
             ),
         )
         sandbox_name = cast(str, operation.response.name)
-        invocation_context.session.state['sandbox_name'] = sandbox_name
+
+      invocation_context.session.state['sandbox_name'] = sandbox_name
+      # Must mutate in-place so CodeExecutorContext._context reference aliasing is preserved.
+      exec_ctx = invocation_context.session.state.setdefault(_CONTEXT_KEY, {})
+      exec_ctx['sandbox_name'] = sandbox_name
 
     # Execute the code.
     input_data: dict[str, object] = {

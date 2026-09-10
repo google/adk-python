@@ -169,29 +169,38 @@ class BaseAgent(BaseNode, abc.ABC):
   """Callback or list of callbacks to be invoked before the agent run.
 
   When a list of callbacks is provided, the callbacks will be called in the
-  order they are listed until a callback does not return None.
+  order they are listed until a callback returns a truthy value.
+
+  Arguments are passed by keyword first. If keyword binding fails, ADK tries
+  positional binding in the argument order below. Keyword-only parameters must
+  use the documented names; positional parameters may use different names.
 
   Args:
-    callback_context: MUST be named 'callback_context' (enforced).
+    callback_context: The context of the agent invocation.
 
   Returns:
     Optional[types.Content]: The content to return to the user.
-      When the content is present, the agent run will be skipped and the
+      When the content is truthy, the agent run will be skipped and the
       provided content will be returned to user.
   """
   after_agent_callback: Optional[AfterAgentCallback] = None
   """Callback or list of callbacks to be invoked after the agent run.
 
   When a list of callbacks is provided, the callbacks will be called in the
-  order they are listed until a callback does not return None.
+  order they are listed until a callback returns a truthy value.
+
+  Arguments are passed by keyword first. If keyword binding fails, ADK tries
+  positional binding in the argument order below. Keyword-only parameters must
+  use the documented names; positional parameters may use different names.
 
   Args:
-    callback_context: MUST be named 'callback_context' (enforced).
+    callback_context: The context of the agent invocation.
 
   Returns:
     Optional[types.Content]: The content to return to the user.
-      When the content is present, an additional event with the provided content
-      will be appended to event history as an additional agent response.
+      When the content is truthy, an additional event with the provided
+      content will be appended to event history as an additional agent
+      response.
   """
 
   def _load_agent_state(
