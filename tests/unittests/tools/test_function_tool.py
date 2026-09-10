@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import dataclasses
 import inspect
 from typing import Any
 from typing import Optional
@@ -20,6 +21,7 @@ from unittest.mock import MagicMock
 
 from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.models.llm_request import LlmRequest
 from google.adk.sessions.session import Session
 from google.adk.tools.function_tool import _build_declaration_cached
 from google.adk.tools.function_tool import FunctionTool
@@ -565,6 +567,37 @@ def test_get_declaration_is_cached_and_returns_independent_copies():
   d1.name = "prefixed_sample_tool"
   d3 = tool._get_declaration()  # pylint: disable=protected-access
   assert d3.name == "sample_tool"
+
+
+@pytest.mark.parametrize("bound_method", [False, True])
+async def test_unhashable_callable_can_be_declared_and_invoked(
+    bound_method, mock_tool_context
+):
+  """Dataclass tools and their bound methods remain usable in LLM requests."""
+
+  @dataclasses.dataclass
+  class Search:
+    prefix: str
+
+    def __call__(self, query: str) -> str:
+      """Search for a query."""
+      return self.prefix + query
+
+  search = Search(prefix="found: ")
+  tool = FunctionTool(search.__call__ if bound_method else search)
+  first = LlmRequest()
+  first.append_tools([tool])
+  first.config.tools[0].function_declarations[0].name = "prefixed_search"
+  second = LlmRequest()
+  second.append_tools([tool])
+  result = await tool.run_async(
+      args={"query": "hello"}, tool_context=mock_tool_context
+  )
+
+  declaration = second.config.tools[0].function_declarations[0]
+  assert declaration.name == tool.name
+  assert "query" in declaration.parameters_json_schema["properties"]
+  assert result == "found: hello"
 
 
 @pytest.mark.asyncio
