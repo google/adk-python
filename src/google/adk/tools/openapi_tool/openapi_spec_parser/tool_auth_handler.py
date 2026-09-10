@@ -158,7 +158,12 @@ class ToolContextCredentialStore:
       )
 
   def remove_credential(self, key: str):
-    del self.tool_context.state[key]
+    """Removes a credential from the tool context state."""
+    if self.tool_context and hasattr(self.tool_context, "state"):
+      try:
+        del self.tool_context.state[key]
+      except KeyError:
+        pass
 
 
 class ToolAuthHandler:
@@ -277,6 +282,15 @@ class ToolAuthHandler:
           self.auth_scheme, self.auth_credential
       )
       self.credential_store.store_credential(key, auth_credential)
+
+  def evict_credential(self) -> None:
+    """Evicts the cached credential and requests re-authorization."""
+    if self.credential_store:
+      key = self.credential_store.get_credential_key(
+          self.auth_scheme, self.auth_credential
+      )
+      self.credential_store.remove_credential(key)
+    self._request_credential()
 
   def _request_credential(self) -> None:
     """Handles the case where an OpenID Connect or OAuth2 authentication request is needed."""

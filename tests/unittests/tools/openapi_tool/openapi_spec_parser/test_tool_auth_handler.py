@@ -452,3 +452,65 @@ def test_legacy_credential_migration(
   assert tool_context.state[new_key] == legacy_credential.model_dump(
       exclude_none=True
   )
+
+
+def test_remove_credential_deletes_key_from_state():
+  """Removing a credential deletes the key from state and marks a tombstone in delta."""
+  tool_context = create_mock_tool_context()
+  tool_context.state['cred_key'] = 'stored_token'
+  store = ToolContextCredentialStore(tool_context=tool_context)
+
+  store.remove_credential('cred_key')
+
+  assert 'cred_key' not in tool_context.state
+  assert tool_context.state.get('cred_key') is None
+  assert tool_context.state._delta['cred_key'] is None
+
+
+def test_remove_credential_missing_key_does_not_raise():
+  """Removing a missing key from state does not raise and does not mutate delta."""
+  tool_context = create_mock_tool_context()
+  store = ToolContextCredentialStore(tool_context=tool_context)
+
+  store.remove_credential('missing_key')
+
+  assert not tool_context.state.has_delta()
+
+
+def test_remove_credential_without_tool_context_state_does_not_raise():
+  """Removing a credential when tool_context has no state does not raise."""
+  tool_context = create_mock_tool_context()
+  tool_context._invocation_context.session.state = None
+  store = ToolContextCredentialStore(tool_context=tool_context)
+
+  store.remove_credential('any_key')
+  store_none = ToolContextCredentialStore(tool_context=None)
+  store_none.remove_credential('any_key')
+
+
+def test_evict_credential_removes_key_and_requests_credential(
+    openid_connect_scheme, openid_connect_credential
+):
+  """evict_credential deletes the active credential key, preserves unrelated state, and requests reauth."""
+  tool_context = create_mock_tool_context()
+  store = ToolContextCredentialStore(tool_context=tool_context)
+  key = store.get_credential_key(
+      openid_connect_scheme, openid_connect_credential
+  )
+  store.store_credential(key, openid_connect_credential)
+  tool_context.state['unrelated_user_key'] = 'stays_intact'
+
+  tool_context.request_credential = MagicMock()
+
+  handler = ToolAuthHandler(
+      tool_context,
+      openid_connect_scheme,
+      openid_connect_credential,
+      credential_store=store,
+  )
+
+  handler.evict_credential()
+
+  assert key not in tool_context.state
+  assert tool_context.state.get('unrelated_user_key') == 'stays_intact'
+  tool_context.request_credential.assert_called_once()

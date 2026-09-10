@@ -617,6 +617,22 @@ class RestApiTool(BaseTool):
           response.status_code,
           error_details,
       )
+      # On 401 Unauthorized, evict the dead credential and
+      # re-trigger the authorization flow so the user is prompted
+      # for fresh credentials instead of looping forever.
+      if response.status_code == 401 and self.auth_scheme:
+        self._logger.info(
+            "Evicting stale credential for tool %s after HTTP 401",
+            self.name,
+        )
+        tool_auth_handler.evict_credential()
+        return {
+            "pending": True,
+            "message": (
+                "Your authorization has expired. Needs your"
+                " authorization to access your data."
+            ),
+        }
       return {
           "error": (
               f"Tool {self.name} execution failed. Analyze this execution error"
