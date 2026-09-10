@@ -413,6 +413,9 @@ class BaseAgent(BaseNode, abc.ABC):
             async for event in agen:
               yield event
 
+          if ctx.end_invocation:
+            return
+
           if event := await self._handle_after_agent_callback(ctx):
             yield event
         except Exception as e:
