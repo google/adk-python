@@ -560,9 +560,12 @@ def _create_test_client(
         (None, ""),
         ("/agents/myagent", "/agents/myagent"),
         ("/agents/myagent/", "/agents/myagent"),
+        ("agents/myagent", "/agents/myagent"),
+        ("agents/myagent/", "/agents/myagent"),
         ("https://host/agents/myagent", "/agents/myagent"),
         ("https://host/agents/myagent/", "/agents/myagent"),
         ("https://host", ""),
+        ("https://host/", ""),
     ],
 )
 def test_url_prefix_sets_fastapi_root_path(

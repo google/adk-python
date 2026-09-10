@@ -1203,15 +1203,24 @@ class ApiServer:
 
     # Run the FastAPI server.
     #
-    # `url_prefix` may be a bare path (e.g. "/adk") or a full absolute URL
-    # (e.g. "https://host/adk", as used for the dev-ui's `backendUrl`).
-    # FastAPI's `root_path` must be a path only, so extract it here. This is
-    # what makes generated URLs -- notably `/openapi.json` referenced from
-    # `/docs` -- resolve correctly when the app sits behind a reverse proxy
-    # that strips the prefix before forwarding.
+    # `url_prefix` may be a bare path (e.g. "adk" or "/adk") or a full
+    # absolute URL (e.g. "https://host/adk", as used for the dev-ui's
+    # `backendUrl`). FastAPI's `root_path` must be a path only and, per the
+    # ASGI spec, either empty or starting with "/", so normalize both forms
+    # here. Only call urlparse() on strings that are actually absolute
+    # http(s) URLs -- otherwise a bare "host:port"-shaped prefix would be
+    # misparsed as `scheme:path`. This is what makes generated URLs --
+    # notably `/openapi.json` referenced from `/docs` -- resolve correctly
+    # when the app sits behind a reverse proxy that strips the prefix
+    # before forwarding.
     root_path = ""
     if self.url_prefix:
-      root_path = urllib.parse.urlparse(self.url_prefix).path.rstrip("/")
+      prefix = self.url_prefix
+      if prefix.startswith(("http://", "https://")):
+        prefix = urllib.parse.urlparse(prefix).path
+      if prefix and not prefix.startswith("/"):
+        prefix = "/" + prefix
+      root_path = prefix.rstrip("/")
     app = FastAPI(lifespan=internal_lifespan, root_path=root_path)
 
     has_configured_allowed_origins = bool(allow_origins)
