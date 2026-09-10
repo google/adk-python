@@ -14,11 +14,14 @@ This release focuses on agent resilience and ecosystem integration by introducin
 
 #### Breaking changes
 
-* **Nested Workflow Retries**: Ensure nested workflow logic can handle parent retries triggered automatically when an inner node fails.
-* **GCS Path Confinement**: Update file-handling logic to ensure all GCS tool local file paths fall within the configured root directory.
-* **Workflow Node Resumption**: Ensure nodes are idempotent because failed nodes will now rerun upon resumption instead of replaying as completed.
-* **Session Append Exceptions**: Update session management integrations to catch the newly raised `SessionNotFoundError` when appending to an unknown session.
-* **MCP SDK 2.x Custom Fields**: For servers using MCP SDK 2.x, migrate undeclared custom fields under the `_meta` field to prevent them from being discarded during validation.
+* **Workflow node resumption**: A node that failed now runs again when the workflow resumes, where before it replayed as though it had completed. Make node bodies idempotent: a node that performs an external side effect and then fails will perform that side effect again on every resume.
+* **GCS tool local paths**: The GCS tools now read and write local files only inside the directory named by `local_file_root`, and refuse local file access entirely when that setting is absent. Paths may be absolute or relative, and are judged by where they resolve.
+* **In-memory sessions only**: `InMemorySessionService` now raises `SessionNotFoundError` when an event is appended to a session it does not hold, instead of accepting the event and discarding it. The database-backed services already behaved this way, so this affects in-memory sessions alone.
+
+Two further changes are marked breaking in the commit log but do not affect a
+default installation. Nested workflow retry changes behavior only for a node
+that already sets `retry_config`. The MCP SDK 2.x field handling applies only if
+you install MCP 2.x deliberately, which this release does not resolve to.
 
 <details>
 <summary>All changes</summary>
@@ -73,7 +76,6 @@ This release focuses on agent resilience and ecosystem integration by introducin
 * default AgentCardBuilder capabilities to streaming=True ([b018062](https://github.com/google/adk-python/commit/b0180620f4c2f4f4467a89c37a30f75bf849700b)), closes [#6672](https://github.com/google/adk-python/issues/6672)
 * defer local state/event mutation until Vertex append succeeds ([903f37f](https://github.com/google/adk-python/commit/903f37fda5f6624cdaf2c28f6e072c3b6ba8472a)), closes [#6998](https://github.com/google/adk-python/issues/6998)
 * end a live session when the client closes the request queue, instead of reconnecting or busy-waiting ([07b1173](https://github.com/google/adk-python/commit/07b1173e6a694e05d40554daaba74cc21e2e75cd))
-* end a ParallelAgent early only when a direct sub-agent escalates ([cd04c7a](https://github.com/google/adk-python/commit/cd04c7a7fa9bf4fc68151d680da674de78d0d755))
 * end tool callback chains on the first non-None result ([895b6f2](https://github.com/google/adk-python/commit/895b6f2a59ff1881127261ec71891d494da999f0))
 * **environment:** terminate the whole process tree when a local command times out ([fa321f1](https://github.com/google/adk-python/commit/fa321f1b49f7bd961b58ad19fd8b8e6fa285b918))
 * fail a workflow when a detached dynamic node errors or interrupts ([34e13df](https://github.com/google/adk-python/commit/34e13df41750fc5243a1cd42a86491ee5acdd876))
@@ -92,12 +94,9 @@ This release focuses on agent resilience and ecosystem integration by introducin
 * keep the original event id when reloading a Vertex session ([864914b](https://github.com/google/adk-python/commit/864914ba9865811515080475c35a2f955e72f93f)), closes [#6530](https://github.com/google/adk-python/issues/6530)
 * keep the tool filter and name prefix when cloning a skill toolset ([e4f1700](https://github.com/google/adk-python/commit/e4f1700e012ba1c0f5fbaff1de5f730423707295))
 * keep the turn anchor when a long-running tool result is posted back ([b499fbe](https://github.com/google/adk-python/commit/b499fbece77309400cd96f2b73dbf4bb80b860ba))
-* keep transport options and scoped state keys out of the debug log ([453e31c](https://github.com/google/adk-python/commit/453e31c75624a6ec100ac7b3414c8f795bb073c6))
 * label the dynamic instruction so a model does not read it as a user turn and imitate it ([8cdbbb1](https://github.com/google/adk-python/commit/8cdbbb158c70d22c414bd943ad29ec080d1a52b6))
-* lazy-load evaluation dependencies in AgentEvaluator ([72a87a2](https://github.com/google/adk-python/commit/72a87a2eb9da19f73828c2f1a22272712183ec49))
 * log an error when a model returns multiple candidates ([25f5214](https://github.com/google/adk-python/commit/25f5214c83f56b2fcffd35757e886026632f3c2b))
 * make SkillToolset system instruction respect tool_filter ([66d7609](https://github.com/google/adk-python/commit/66d76090baae16c2393bc7ab4a82aff2503b2303)), closes [#6448](https://github.com/google/adk-python/issues/6448)
-* make state serialization fallback resilient per value ([20780ac](https://github.com/google/adk-python/commit/20780acd3ad945bd69603fda776ec991799c1f96))
 * match a branch's run ids exactly when resolving HITL interrupts ([8db82ba](https://github.com/google/adk-python/commit/8db82ba298af92256f9566a766bbe55a4912d873))
 * **mcp:** keep resolving MCP 1.x by default ([46edaa2](https://github.com/google/adk-python/commit/46edaa24a4ee1e14b542638950d3043096a56032))
 * **mcp:** only attach application default credentials to Google API hosts ([f9f4a39](https://github.com/google/adk-python/commit/f9f4a3901a7a6c932b336ce0936aece66b459954))
@@ -122,7 +121,6 @@ This release focuses on agent resilience and ecosystem integration by introducin
 * refuse a tool call whose arguments a broken stream cut short ([da22e43](https://github.com/google/adk-python/commit/da22e4307ea2de902a304e6a4aa3768560c31290)), closes [#6716](https://github.com/google/adk-python/issues/6716)
 * refuse a transfer to a forbidden parent or peer agent ([b0503a0](https://github.com/google/adk-python/commit/b0503a03663368688f19881a9813152b5db3e2ca))
 * reload changed agent correctly ([397ed42](https://github.com/google/adk-python/commit/397ed423550da5114aa7fcaa2d5da4f77679460a)), closes [#4956](https://github.com/google/adk-python/issues/4956)
-* remove an internal link from a shipped comment and guard against more ([31198ad](https://github.com/google/adk-python/commit/31198ad1a020ec118d3fbd1170c9cc5fc2a462ee))
 * report a metric that never ran as not evaluated, not as failed ([9c9b81a](https://github.com/google/adk-python/commit/9c9b81a17295333e396c7826050d186c30ffadcb))
 * report an unknown tool name to the model instead of raising ([f337793](https://github.com/google/adk-python/commit/f33779378c58ff0cf7bacad62c25ef194b5fa24e))
 * report the real finish reason from a LiteLlm stream ([eaed0aa](https://github.com/google/adk-python/commit/eaed0aa8b25220b63890c72746f3b314686f2812))
@@ -135,7 +133,6 @@ This release focuses on agent resilience and ecosystem integration by introducin
 * **samples:** correct the live audio path, the live eval config and the multimodal samples ([6499a44](https://github.com/google/adk-python/commit/6499a44a7ef1262c53ce571ab08213e7d2fc6e92))
 * **samples:** read the knowledge agent data store from the environment ([d5129f3](https://github.com/google/adk-python/commit/d5129f3aa05be2017078f98d7307b5727a2b6a63))
 * sanitize anyOf schemas for Vertex AI function declarations ([642439c](https://github.com/google/adk-python/commit/642439cd5a8e8027947823a5d5f669daf22032fc)), closes [#6373](https://github.com/google/adk-python/issues/6373)
-* **sessions:** admit the stdlib data types legacy session state holds ([b94df49](https://github.com/google/adk-python/commit/b94df4977f60ca9f0c58a78c5d56f39b5eeca4cc))
 * show adk create --type in --help ([d0d5ade](https://github.com/google/adk-python/commit/d0d5adeffd69775ed15af90cec950d645e8caf07)), closes [#6737](https://github.com/google/adk-python/issues/6737)
 * skip duplicate user event append on invocation retry ([d06a7fe](https://github.com/google/adk-python/commit/d06a7fed56dff71cbfa709edb5bb1d72989eca8e)), closes [#4506](https://github.com/google/adk-python/issues/4506)
 * skip rewound invocations when resuming agent in _find_agent_to_run ([ed1306f](https://github.com/google/adk-python/commit/ed1306f58796648a58b5ee2f99f80e81e92cd7de)), closes [#4169](https://github.com/google/adk-python/issues/4169)
@@ -170,8 +167,6 @@ This release focuses on agent resilience and ecosystem integration by introducin
 * **workflow:** drop resume inputs from the resumable node checkpoint ([790cb7c](https://github.com/google/adk-python/commit/790cb7c4c7af3f2a0812ba86f50a2b0154f769ae))
 * **workflow:** omit the oauth client secret from the credential request event ([fdfa4b1](https://github.com/google/adk-python/commit/fdfa4b11473069d4107c986802fb1705c86a3818))
 * **workflow:** retry subclasses of a configured retry exception ([f6fe8d2](https://github.com/google/adk-python/commit/f6fe8d265bff283aa28cdeec9780e789a8847435))
-* **workflow:** revert storing a single-turn node's synthetic input in the session ([7b0f7f0](https://github.com/google/adk-python/commit/7b0f7f019db043f24b3ab94682a8eccd32382189))
-* **workflow:** store a single-turn node's synthetic input in the session ([8aaf62a](https://github.com/google/adk-python/commit/8aaf62ab1e5c88365b8abc4c6a9101d7dcd3afce))
 
 
 ### Performance Improvements
@@ -202,8 +197,6 @@ This release focuses on agent resilience and ecosystem integration by introducin
 * **memory:** describe ttl as the revision_ttl alias it actually is ([c3f785c](https://github.com/google/adk-python/commit/c3f785c43074550e0a230e1cff9eed0b4125f38f))
 * **openai:** drop the third-party gateway from the OPENAI_BASE_URL tip ([8d624bd](https://github.com/google/adk-python/commit/8d624bdc52afc3f1bf0b39598ab3d626c9e0124f))
 * **plugins:** say what the reflect-and-retry failure counter's lock guarantees ([6762652](https://github.com/google/adk-python/commit/6762652ac1a7077888568b7f88f5233d36ef6ab1))
-* restore the guides index to its previous form ([420ea72](https://github.com/google/adk-python/commit/420ea721a0e7fd17425172c21891e010d414513b))
-* restructure the guides index around a reading path ([5ca0746](https://github.com/google/adk-python/commit/5ca07469af0d40e8a60b178ddce92bd5dceba160))
 * scope the gVisor claim to the mode that provides it ([bd4c6d7](https://github.com/google/adk-python/commit/bd4c6d77d06c90412d46cef59f21a5b8efbd8fa4))
 * state what a parallel branch isolates and what it shares ([a28c66b](https://github.com/google/adk-python/commit/a28c66b39e62402a82d574097bfec0cd07dc22c3))
 * **tests:** remove the internal notebook link from the hello world fixtures ([7988f4c](https://github.com/google/adk-python/commit/7988f4c48582bac17d48984fe39b1c0f31cbae81))
