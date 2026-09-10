@@ -533,6 +533,14 @@ class DatabaseSessionService(BaseSessionService):
         else:
           # await conn.run_sync(BaseV0.metadata.drop_all)
           logger.debug("Using V0 schema tables...")
+          _session_util.warn_event_fields_not_stored(
+              StorageEventV0.stored_event_fields(),
+              cause=(
+                  "This database uses the legacy schema, which stores an event"
+                  " as one column per field"
+              ),
+              remedy="Migrate the database to the current schema to keep them.",
+          )
           await conn.run_sync(_setup_database_schema, BaseV0.metadata)
 
       if self._db_schema_version == _schema_check_utils.LATEST_SCHEMA_VERSION:

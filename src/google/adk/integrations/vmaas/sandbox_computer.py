@@ -44,8 +44,6 @@ logger = logging.getLogger("google_adk." + __name__)
 # Session state keys for sharing resources across sessions
 _STATE_KEY_AGENT_ENGINE_NAME = "_vmaas_agent_engine_name"
 _STATE_KEY_SANDBOX_NAME = "_vmaas_sandbox_name"
-_STATE_KEY_ACCESS_TOKEN = "_vmaas_access_token"
-_STATE_KEY_TOKEN_EXPIRY = "_vmaas_token_expiry"
 
 # Default token timeout in seconds
 _DEFAULT_TOKEN_TIMEOUT = 3600
@@ -157,8 +155,14 @@ class AgentEngineSandboxComputer(BaseComputer):
     # Vertex client (lazy-initialized if not provided)
     self._client = vertexai_client
 
-    # Session state for sharing sandbox/tokens across invocations
+    # Session state for sharing the sandbox across invocations
     self._session_state: dict[str, Any] | None = None
+
+    # Access token cache. Held on the instance rather than in session state:
+    # session state is persisted and emitted in the event state delta, and the
+    # token is a bearer credential for the configured service account.
+    self._access_token: str | None = None
+    self._token_expiry: float = 0.0
 
   async def prepare(self, tool_context: "ToolContext") -> None:
     """Bind session state for sandbox resource sharing."""
@@ -276,11 +280,12 @@ class AgentEngineSandboxComputer(BaseComputer):
     Returns:
       The access token.
     """
-    # Check session state
-    token = self._session_state.get(_STATE_KEY_ACCESS_TOKEN)
-    expiry = self._session_state.get(_STATE_KEY_TOKEN_EXPIRY, 0)
-    if token and time.time() < expiry - _TOKEN_REFRESH_BUFFER:
-      return token
+    # Check the cached token
+    if (
+        self._access_token
+        and time.time() < self._token_expiry - _TOKEN_REFRESH_BUFFER
+    ):
+      return self._access_token
 
     # Generate new token
     logger.debug("Generating new access token for sandbox: %s", sandbox_name)
@@ -292,11 +297,8 @@ class AgentEngineSandboxComputer(BaseComputer):
         timeout=_DEFAULT_TOKEN_TIMEOUT,
     )
 
-    # Store in session state
-    self._session_state[_STATE_KEY_ACCESS_TOKEN] = token
-    self._session_state[_STATE_KEY_TOKEN_EXPIRY] = (
-        time.time() + _DEFAULT_TOKEN_TIMEOUT
-    )
+    self._access_token = token
+    self._token_expiry = time.time() + _DEFAULT_TOKEN_TIMEOUT
 
     return token
 
@@ -313,8 +315,8 @@ class AgentEngineSandboxComputer(BaseComputer):
     except Exception as e:
       # Token generation failed - clear cached token and retry
       logger.warning("Token generation failed, clearing cache: %s", e)
-      self._session_state[_STATE_KEY_ACCESS_TOKEN] = None
-      self._session_state[_STATE_KEY_TOKEN_EXPIRY] = 0
+      self._access_token = None
+      self._token_expiry = 0.0
       token = await self._get_access_token(sandbox_name)
 
     return SandboxClient(

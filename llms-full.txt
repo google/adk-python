@@ -1,4 +1,4 @@
-# Agent Development Kit (ADK) - New llms.txt location
+# Agent Development Kit (ADK) - New llms-full.txt location
 
 > The machine-readable llms.txt documentation for Agent Development Kit (ADK) is
 > no longer hosted statically in this repository. It is now automatically

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for to_cloud_run functionality in cli_deploy."""
+"""Tests for run functionality in cli_deploy."""
 
 from __future__ import annotations
 
@@ -112,8 +112,9 @@ def test_to_cloud_run_happy_path(
   rmtree_recorder = _Recorder()
   monkeypatch.setattr(shutil, "rmtree", rmtree_recorder)
 
-  cli_deploy.to_cloud_run(
+  cli_deploy.run(
       agent_folder=str(src_dir),
+      provider="cloud_run",
       project="proj",
       region="asia-northeast1",
       service_name="svc",
@@ -130,6 +131,8 @@ def test_to_cloud_run_happy_path(
       artifact_service_uri="gs://bucket",
       memory_service_uri="rag://",
       adk_version="1.3.0",
+      provider_args=(),
+      env=(),
   )
 
   agent_dest_path = tmp_path / "agents" / "agent"
@@ -150,8 +153,6 @@ def test_to_cloud_run_happy_path(
       'RUN adduser --disabled-password --gecos "" myuser' in dockerfile_content
   )
   assert "USER myuser" in dockerfile_content
-  assert "ENV GOOGLE_CLOUD_PROJECT=proj" in dockerfile_content
-  assert "ENV GOOGLE_CLOUD_LOCATION=asia-northeast1" in dockerfile_content
   assert 'RUN pip install "google-adk[a2a]==1.3.0"' in dockerfile_content
   assert "--trace_to_cloud" in dockerfile_content
   assert "--otel_to_cloud" in dockerfile_content
@@ -186,6 +187,8 @@ def test_to_cloud_run_happy_path(
       "asia-northeast1",
       "--port",
       "8080",
+      "--update-env-vars",
+      "GOOGLE_GENAI_USE_ENTERPRISE=1,GOOGLE_CLOUD_PROJECT=proj,GOOGLE_CLOUD_LOCATION=asia-northeast1",
       "--verbosity",
       "info",
       "--labels",
@@ -212,8 +215,9 @@ def test_to_cloud_run_cleans_temp_dir(
   monkeypatch.setattr(shutil, "rmtree", _fake_rmtree)
   monkeypatch.setattr(subprocess, "run", _Recorder())
 
-  cli_deploy.to_cloud_run(
+  cli_deploy.run(
       agent_folder=str(src_dir),
+      provider="cloud_run",
       project="proj",
       region=None,
       service_name="svc",
@@ -229,6 +233,8 @@ def test_to_cloud_run_cleans_temp_dir(
       session_service_uri=None,
       artifact_service_uri=None,
       memory_service_uri=None,
+      provider_args=(),
+      env=(),
   )
 
   assert deleted["path"] == tmp_dir
@@ -238,7 +244,7 @@ def test_to_cloud_run_cleans_temp_dir_on_failure(
     monkeypatch: pytest.MonkeyPatch,
     agent_dir: AgentDirFixture,
 ) -> None:
-  """`to_cloud_run` should delete the temp folder on exit, even if gcloud fails."""
+  """`run` should delete the temp folder on exit, even if gcloud fails."""
   tmp_dir = Path(tempfile.mkdtemp())
   src_dir = agent_dir(include_requirements=False, include_env=False)
 
@@ -251,8 +257,9 @@ def test_to_cloud_run_cleans_temp_dir_on_failure(
   )
 
   with pytest.raises(subprocess.CalledProcessError):
-    cli_deploy.to_cloud_run(
+    cli_deploy.run(
         agent_folder=str(src_dir),
+        provider="cloud_run",
         project="proj",
         region="us-central1",
         service_name="svc",
@@ -268,6 +275,8 @@ def test_to_cloud_run_cleans_temp_dir_on_failure(
         session_service_uri=None,
         artifact_service_uri=None,
         memory_service_uri=None,
+        provider_args=(),
+        env=(),
     )
 
   assert rmtree_recorder.calls, "shutil.rmtree should have been called"
@@ -399,8 +408,9 @@ def test_cloud_run_label_merging(
   monkeypatch.setattr(shutil, "rmtree", lambda _x: None)
 
   # Execute the function under test
-  cli_deploy.to_cloud_run(
+  cli_deploy.run(
       agent_folder=str(src_dir),
+      provider="cloud_run",
       project="test-project",
       region="us-central1",
       service_name="test-service",
@@ -414,6 +424,8 @@ def test_cloud_run_label_merging(
       verbosity="info",
       adk_version="1.0.0",
       extra_gcloud_args=tuple(extra_gcloud_args) if extra_gcloud_args else None,
+      provider_args=(),
+      env=(),
   )
 
   # Verify that the gcloud command was called
@@ -423,5 +435,128 @@ def test_cloud_run_label_merging(
   # Find the labels argument
   labels_idx = gcloud_args.index("--labels")
   actual_labels = gcloud_args[labels_idx + 1]
-
   assert actual_labels == expected_labels
+
+
+def test_run_with_default_provider_args_and_env(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: AgentDirFixture,
+    tmp_path: Path,
+) -> None:
+  """`cli_deploy.run` should allow omitting optional provider_args and env."""
+  src_dir = agent_dir(include_requirements=False, include_env=False)
+  run_recorder = _Recorder()
+  monkeypatch.setattr(subprocess, "run", run_recorder)
+  monkeypatch.setattr(shutil, "rmtree", lambda _x: None)
+
+  cli_deploy.run(
+      agent_folder=str(src_dir),
+      provider="cloud_run",
+      project="proj",
+      region="us-central1",
+      service_name="svc",
+      app_name="app",
+      temp_folder=str(tmp_path),
+      port=8080,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="info",
+      verbosity="info",
+      adk_version="1.0.0",
+  )
+  assert len(run_recorder.calls) == 1
+
+
+def test_docker_deploy_does_not_bake_env_vars_into_dockerfile(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: AgentDirFixture,
+    tmp_path: Path,
+) -> None:
+  """Docker deployment must not bake environment variables into the Dockerfile."""
+  src_dir = agent_dir(include_requirements=False, include_env=False)
+  monkeypatch.setattr(subprocess, "run", _Recorder())
+  monkeypatch.setattr(shutil, "rmtree", lambda _x: None)
+
+  cli_deploy.run(
+      agent_folder=str(src_dir),
+      provider="docker",
+      project=None,
+      region=None,
+      service_name="svc",
+      app_name="app",
+      temp_folder=str(tmp_path),
+      port=8080,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="info",
+      verbosity="info",
+      adk_version="1.0.0",
+      provider_args=(),
+      env=(),
+  )
+  dockerfile_content = (tmp_path / "Dockerfile").read_text()
+  assert "ENV GOOGLE_GENAI_USE_ENTERPRISE" not in dockerfile_content
+  assert "ENV GOOGLE_CLOUD_PROJECT" not in dockerfile_content
+  assert "ENV GOOGLE_CLOUD_LOCATION" not in dockerfile_content
+
+
+def test_to_cloud_run_backwards_compatibility(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: AgentDirFixture,
+    tmp_path: Path,
+) -> None:
+  """`to_cloud_run` must maintain backwards compatibility as a keyword-only wrapper."""
+  src_dir = agent_dir(include_requirements=False, include_env=False)
+  run_recorder = _Recorder()
+  monkeypatch.setattr(cli_deploy, "run", run_recorder)
+  monkeypatch.setattr(shutil, "rmtree", lambda _x: None)
+
+  with pytest.deprecated_call():
+    cli_deploy.to_cloud_run(
+        agent_folder=str(src_dir),
+        project="proj",
+        region="us-central1",
+        service_name="svc",
+        app_name="app",
+        temp_folder=str(tmp_path),
+        port=8080,
+        trace_to_cloud=False,
+        otel_to_cloud=False,
+        with_ui=False,
+        log_level="info",
+        verbosity="info",
+        adk_version="1.0.0",
+    )
+
+  assert len(run_recorder.calls) == 1
+  assert run_recorder.calls[0][1]["provider"] == "cloud_run"
+
+
+def test_run_allows_omitting_project_and_region_for_docker(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: AgentDirFixture,
+    tmp_path: Path,
+) -> None:
+  """`cli_deploy.run` should allow omitting project and region when deploying to docker."""
+  src_dir = agent_dir(include_requirements=False, include_env=False)
+  run_recorder = _Recorder()
+  monkeypatch.setattr(subprocess, "run", run_recorder)
+  monkeypatch.setattr(shutil, "rmtree", lambda _x: None)
+
+  cli_deploy.run(
+      agent_folder=str(src_dir),
+      provider="docker",
+      service_name="svc",
+      app_name="app",
+      temp_folder=str(tmp_path),
+      port=8080,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="info",
+      verbosity="info",
+      adk_version="1.0.0",
+  )
+  assert len(run_recorder.calls) == 2

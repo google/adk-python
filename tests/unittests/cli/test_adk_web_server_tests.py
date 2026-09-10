@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import os
+from pathlib import Path
 import signal
 import subprocess
 import sys
@@ -239,6 +240,82 @@ def test_run_tests(test_client):
     content = response.content
     assert b"line1\n" in content
     assert b"line2\n" in content
+
+
+def test_rebuild_rejects_test_name_that_escapes_the_agent(test_client):
+  """The rebuild endpoint must not be steered outside the agents directory.
+
+  ``test_name`` arrives on the query string, so the route's single-segment
+  match does not constrain it. Whatever directory it names gets walked, and
+  the agent packages found there are imported.
+  """
+  with patch("google.adk.cli.dev_server.asyncio.to_thread") as mock_to_thread:
+    mock_to_thread.return_value = None
+    response = test_client.post(
+        "/dev/apps/test_app/tests/rebuild",
+        params={"test_name": "../../../../tmp/planted/agent/tests/x.json"},
+        json={},
+    )
+
+  assert response.status_code == 400
+  mock_to_thread.assert_not_called()
+
+
+def test_rebuild_still_accepts_a_plain_test_name(test_client, tmp_path):
+  with patch("google.adk.cli.dev_server.asyncio.to_thread") as mock_to_thread:
+    mock_to_thread.return_value = None
+    response = test_client.post(
+        "/dev/apps/test_app/tests/rebuild?test_name=my_test", json={}
+    )
+
+  assert response.status_code == 200
+  rebuilt = Path(mock_to_thread.call_args.args[1])
+  assert rebuilt == tmp_path / "test_app" / "tests" / "my_test.json"
+
+
+@pytest.mark.parametrize("method", ["get", "delete"])
+def test_test_name_with_a_backslash_is_refused(method, test_client, tmp_path):
+  """A backslash is a path separator on Windows, so it cannot reach the join."""
+  (tmp_path / "test_app" / "tests").mkdir(parents=True)
+  outside = tmp_path / "outside.json"
+  outside.write_text("{}")
+
+  response = getattr(test_client, method)(
+      "/dev/apps/test_app/tests/..\\..\\outside.json"
+  )
+
+  assert response.status_code == 400
+  assert outside.exists()
+
+
+def test_rebuild_refuses_a_name_the_filesystem_cannot_resolve(test_client):
+  """A name that breaks the containment check is refused, not passed through."""
+  with patch("google.adk.cli.dev_server.asyncio.to_thread") as mock_to_thread:
+    response = test_client.post(
+        "/dev/apps/test_app/tests/rebuild",
+        params={"test_name": "embedded\x00null.json"},
+        json={},
+    )
+
+  assert response.status_code == 400
+  mock_to_thread.assert_not_called()
+
+
+def test_create_test_refuses_to_write_through_a_symlink(test_client, tmp_path):
+  """A test file may not be a link to somewhere outside the tests directory."""
+  tests_dir = tmp_path / "test_app" / "tests"
+  tests_dir.mkdir(parents=True)
+  outside = tmp_path / "outside.json"
+  outside.write_text('{"original": true}')
+  (tests_dir / "linked.json").symlink_to(outside)
+
+  response = test_client.put(
+      "/dev/apps/test_app/tests/linked.json",
+      json={"session_data": {"events": []}},
+  )
+
+  assert response.status_code == 400
+  assert outside.read_text() == '{"original": true}'
 
 
 @pytest.mark.asyncio

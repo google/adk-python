@@ -328,6 +328,19 @@ class StorageEvent(Base):
       ),
   )
 
+  @classmethod
+  def stored_event_fields(cls) -> frozenset[str]:
+    """Returns the names of the event fields this table has a column for.
+
+    Read off the columns rather than listed, so it cannot drift from them. The
+    legacy layout is frozen, so any event field outside this set is one the
+    table can never hold.
+    """
+    names = set(cls.__mapper__.columns.keys())
+    names.discard("long_running_tool_ids_json")
+    names.add("long_running_tool_ids")
+    return frozenset(names)
+
   @property
   def long_running_tool_ids(self) -> set[str]:
     return (

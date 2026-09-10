@@ -143,6 +143,26 @@ def build_node(
         return node_like.model_copy(update=kwargs)
       return node_like
   elif isinstance(node_like, BaseTool):
+    # Lazy imports to avoid circular dependency
+    from ...tools._node_tool import NodeTool
+
+    # 1. Unpack NodeTool: directly return the underlying native node, applying any overrides
+    if isinstance(node_like, NodeTool):
+      target_name = name or node_like.name
+      kwargs = {}
+      if target_name != getattr(node_like.node, 'name', None):
+        kwargs['name'] = target_name
+      if rerun_on_resume is not None:
+        kwargs['rerun_on_resume'] = rerun_on_resume
+      if retry_config is not None:
+        kwargs['retry_config'] = retry_config
+      if timeout is not None:
+        kwargs['timeout'] = timeout
+      if kwargs and hasattr(node_like.node, 'model_copy'):
+        return node_like.node.model_copy(update=kwargs)
+      return node_like.node
+
+    # 2. Other generic BaseTools (including FunctionTool) are wrapped in _ToolNode
     return _ToolNode(
         tool=node_like,
         name=name,
