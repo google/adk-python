@@ -58,6 +58,7 @@ from typing_extensions import override
 from typing_extensions import Required
 
 from . import _prompt_cache
+from ..utils import streaming_utils
 from ..utils._google_client_headers import merge_tracking_headers
 from ..utils._schema_utils import lowercase_schema_types
 from ._capabilities import LlmCapabilities
@@ -3490,6 +3491,31 @@ class LiteLlm(BaseLlm):
 
             function_calls[index]["id"] = (
                 chunk.id or function_calls[index]["id"] or str(index)
+            )
+
+            partial_args = None
+            if chunk.args:
+              path_tracker = function_calls[index].setdefault(
+                  "path_tracker", streaming_utils._JsonPathTracker()
+              )
+              partial_args = path_tracker.handle_chunk(chunk.args)
+
+            yield LlmResponse(
+                partial=True,
+                content=types.Content(
+                    role="model",
+                    parts=[
+                        types.Part(
+                            function_call=types.FunctionCall(
+                                id=function_calls[index]["id"],
+                                name=function_calls[index]["name"] or None,
+                                partial_args=partial_args or None,
+                                will_continue=True,
+                            )
+                        )
+                    ],
+                ),
+                model_version=part.model,
             )
           elif isinstance(chunk, TextChunk):
             if chunk.text:
