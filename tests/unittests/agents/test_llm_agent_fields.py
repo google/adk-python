@@ -38,6 +38,7 @@ from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.google_search_tool import google_search
 from google.adk.tools.google_search_tool import GoogleSearchTool
 from google.adk.tools.vertex_ai_search_tool import VertexAiSearchTool
+from google.adk.workflow._function_node import FunctionNode
 from google.genai import types
 from pydantic import BaseModel
 import pytest
@@ -808,6 +809,35 @@ class TestCanonicalTools:
     assert 'MCP server unavailable' in message
     # The traceback is what identifies where inside the toolset it broke.
     assert record.exc_info is not None
+
+  @pytest.mark.parametrize(
+      'docstring, expected_desc',
+      [
+          (None, 'Executes the node: compute'),
+          ('Doubles the input value.', 'Doubles the input value.'),
+      ],
+  )
+  async def test_handle_base_node_in_tools(self, docstring, expected_desc):
+    """Test that BaseNode in agent.tools is adapted into a NodeTool with fallback description."""
+
+    def compute(x: int) -> int:
+      return x * 2
+
+    compute.__doc__ = docstring
+    compute_node = FunctionNode(func=compute)
+    agent = LlmAgent(name='test_agent', tools=[compute_node])
+
+    assert len(agent.tools) == 1
+    assert agent.tools[0].__class__.__name__ == 'NodeTool'
+    assert agent.tools[0].node.name == compute_node.name
+
+    ctx = await _create_readonly_context(agent)
+    tools = await agent.canonical_tools(ctx)
+    assert len(tools) == 1
+    decl = tools[0]._get_declaration()
+    assert decl is not None
+    assert decl.name == 'compute'
+    assert decl.description == expected_desc
 
 
 # Tests for multi-provider model support via string model names
