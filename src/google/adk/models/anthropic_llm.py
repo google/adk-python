@@ -507,15 +507,17 @@ def _part_to_message_block(
     # SDK ref: anthropic.types.tool_result_block_param
     # https://github.com/anthropics/anthropic-sdk-python/blob/main/src/anthropic/types/tool_result_block_param.py
     # Exactly {"result": value} is ADK's wrapper for a non-dict tool return.
-    elif (
-        response_data.keys() == {"result"}
-        and response_data["result"] is not None
-    ):
-      result = response_data["result"]
-      if isinstance(result, (dict, list)):
-        content = json.dumps(result)
+    # If sibling keys exist beside result, serialize the whole dict so Claude
+    # matches Gemini (issue #7073).
+    elif "result" in response_data and response_data["result"] is not None:
+      if response_data.keys() == {"result"}:
+        result = response_data["result"]
+        if isinstance(result, (dict, list)):
+          content = json.dumps(result)
+        else:
+          content = str(result)
       else:
-        content = str(result)
+        content = json.dumps(response_data, default=str)
     elif response_data:
       # Fallback: serialize the entire response dict as JSON so that tools
       # returning arbitrary key structures (e.g. load_skill returning
