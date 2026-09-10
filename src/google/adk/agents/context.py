@@ -56,13 +56,7 @@ def _derive_scheduler(
 ) -> ScheduleDynamicNode | None:
   """Derives the dynamic node scheduler from the parent context."""
   if parent_ctx:
-    scheduler = parent_ctx._workflow_scheduler
-    if scheduler is None:
-      from ..workflow._dynamic_node_scheduler import DynamicNodeScheduler
-      from ..workflow._dynamic_node_scheduler import DynamicNodeState
-
-      scheduler = DynamicNodeScheduler(state=DynamicNodeState())
-    return scheduler
+    return parent_ctx._workflow_scheduler
   return None
 
 
@@ -122,6 +116,8 @@ class Context(ReadonlyContext):
   When used in a workflow, additional fields under the ``Workflow-specific
   fields`` section are available.
   """
+
+  _workflow_scheduler: ScheduleDynamicNode | None = None
 
   def __init__(
       self,

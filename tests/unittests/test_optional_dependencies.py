@@ -20,6 +20,7 @@ integration tests using a clean venv (skipped by default, run via env var).
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import os
 import subprocess
@@ -32,6 +33,25 @@ from .isolated_import_utils import REPO_ROOT as _REPO_ROOT
 
 # Check if we should run integration tests that require network/install
 RUN_INTEGRATION = os.environ.get("ADK_TEST_NETWORK") == "1"
+
+
+@contextlib.contextmanager
+def _dataplex_uninstalled():
+  """Makes `from google.cloud import dataplex_v1` fail, as a plain install does."""
+  import google.cloud
+
+  # google.cloud is a namespace package, and an already-imported submodule
+  # stays reachable as an attribute on it, so masking sys.modules alone would
+  # leave the import working.
+  module = getattr(google.cloud, "dataplex_v1", None)
+  if module is not None:
+    delattr(google.cloud, "dataplex_v1")
+  try:
+    with mock.patch.dict("sys.modules", {"google.cloud.dataplex_v1": None}):
+      yield
+  finally:
+    if module is not None:
+      google.cloud.dataplex_v1 = module
 
 
 @pytest.fixture(scope="session")
@@ -157,6 +177,34 @@ def test_bigquery_agent_analytics_plugin_fails_on_import_naming_its_extra():
     message = str(exc_info.value)
     assert "pyarrow" in message
     assert "pip install google-adk[bigquery-analytics]" in message
+
+
+def test_bigquery_toolset_imports_without_dataplex():
+  """Verify that the BigQuery toolset imports without google-cloud-dataplex."""
+  with _dataplex_uninstalled():
+    for mod in list(sys.modules):
+      if mod.startswith("google.adk.integrations.bigquery"):
+        sys.modules.pop(mod, None)
+    from google.adk.integrations.bigquery import BigQueryToolset  # noqa: F401
+
+
+def test_bigquery_search_catalog_fails_naming_its_extra():
+  """Verify that the catalog search tool without Dataplex names the extra."""
+  from google.adk.integrations.bigquery import search_tool
+  from google.adk.integrations.bigquery.config import BigQueryToolConfig
+
+  with _dataplex_uninstalled():
+    with pytest.raises(ImportError) as exc_info:
+      search_tool.search_catalog(
+          prompt="tables about customers",
+          project_id="my-project",
+          credentials=mock.Mock(),
+          settings=BigQueryToolConfig(),
+      )
+
+  message = str(exc_info.value)
+  assert "google-cloud-dataplex" in message
+  assert "pip install google-adk[gcp]" in message
 
 
 def test_vertexai_dependency_shim_raises_clear_importerror():

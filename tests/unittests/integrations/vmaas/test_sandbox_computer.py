@@ -20,11 +20,10 @@ from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
-from google.adk.integrations.vmaas.sandbox_computer import _STATE_KEY_ACCESS_TOKEN
 from google.adk.integrations.vmaas.sandbox_computer import _STATE_KEY_AGENT_ENGINE_NAME
 from google.adk.integrations.vmaas.sandbox_computer import _STATE_KEY_SANDBOX_NAME
-from google.adk.integrations.vmaas.sandbox_computer import _STATE_KEY_TOKEN_EXPIRY
 from google.adk.integrations.vmaas.sandbox_computer import AgentEngineSandboxComputer
+from google.adk.sessions.state import State
 from google.adk.tools.computer_use.base_computer import ComputerEnvironment
 from google.adk.tools.computer_use.base_computer import ComputerState
 
@@ -257,14 +256,11 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
     """Test _get_access_token uses cached token."""
     sandbox_name = "projects/test/sandboxEnvironments/123"
     cached_token = "cached_token_123"
-    # Set expiry far in the future
-    token_expiry = time.time() + 3600
 
     computer = AgentEngineSandboxComputer()
-    computer._session_state = {
-        _STATE_KEY_ACCESS_TOKEN: cached_token,
-        _STATE_KEY_TOKEN_EXPIRY: token_expiry,
-    }
+    computer._access_token = cached_token
+    # Set expiry far in the future
+    computer._token_expiry = time.time() + 3600
 
     result = await computer._get_access_token(sandbox_name)
 
@@ -278,8 +274,6 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
     """Test _get_access_token generates new token when expired."""
     sandbox_name = "projects/test/sandboxEnvironments/123"
     new_token = "new_token_456"
-    # Set expiry in the past
-    token_expiry = time.time() - 100
 
     mock_to_thread.return_value = new_token
     mock_client = MagicMock()
@@ -288,17 +282,43 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
     computer = AgentEngineSandboxComputer(
         service_account_email=self.service_account
     )
-    computer._session_state = {
-        _STATE_KEY_ACCESS_TOKEN: "old_token",
-        _STATE_KEY_TOKEN_EXPIRY: token_expiry,
-    }
+    computer._access_token = "old_token"
+    # Set expiry in the past
+    computer._token_expiry = time.time() - 100
 
     result = await computer._get_access_token(sandbox_name)
 
     self.assertEqual(result, new_token)
-    self.assertEqual(
-        computer._session_state[_STATE_KEY_ACCESS_TOKEN], new_token
+    self.assertEqual(computer._access_token, new_token)
+
+  @patch("google.adk.integrations.vmaas.sandbox_computer.asyncio.to_thread")
+  @patch.object(AgentEngineSandboxComputer, "_get_client")
+  async def test_get_access_token_stays_out_of_session_state(
+      self, mock_get_client, mock_to_thread
+  ):
+    """Test the access token is kept out of session state."""
+    sandbox_name = "projects/test/sandboxEnvironments/123"
+    new_token = "new_token_456"
+
+    mock_to_thread.return_value = new_token
+    mock_get_client.return_value = MagicMock()
+
+    delta = {}
+    state = State(value={}, delta=delta)
+    computer = AgentEngineSandboxComputer(
+        service_account_email=self.service_account
     )
+    computer._session_state = state
+
+    result = await computer._get_access_token(sandbox_name)
+
+    self.assertEqual(result, new_token)
+    # The token is a bearer credential for the service account. Session state
+    # is persisted and emitted in the event state delta, so neither the token
+    # nor its expiry may be written there.
+    self.assertFalse(state.has_delta())
+    self.assertEqual(delta, {})
+    self.assertEqual(state.to_dict(), {})
 
   @patch.object(AgentEngineSandboxComputer, "_get_sandbox_client")
   async def test_click_at(self, mock_get_client):

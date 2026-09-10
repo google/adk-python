@@ -61,7 +61,6 @@ async def run_node_async(
     session: Optional[Session] = None,
 ) -> AsyncGenerator[Event, None]:
   """Runs a BaseNode or Workflow in async mode."""
-  from ..runners import _apply_run_config_custom_metadata
   from ..runners import _find_active_task_scope
 
   caller_ctx = context.get_current()
@@ -175,6 +174,15 @@ async def run_node_async(
             )
             if yield_user_message and user_event:
               yield user_event
+          elif state_delta:
+            # Resuming without a new message: there is no user message event to
+            # carry the delta, so append it as a content-less event instead of
+            # dropping it.
+            delta_event = await runner._append_state_delta_event(  # pylint: disable=protected-access
+                ic, state_delta
+            )
+            if yield_user_message and delta_event:
+              yield delta_event
 
           # Run before_run callbacks. A returned Content halts execution and ends
           # the run with that content (same contract as the non-workflow path).
@@ -187,15 +195,19 @@ async def run_node_async(
                 author="model",
                 content=early_exit_result,
             )
-            _apply_run_config_custom_metadata(early_exit_event, ic.run_config)
+            # Ensure the early-exit event also passes through on_event callbacks and metadata enrichment.
+            output_event = await runner._process_event_with_plugin_callbacks(  # pylint: disable=protected-access
+                invocation_context=ic,
+                event=early_exit_event,
+            )
             if runner._should_append_event(  # pylint: disable=protected-access
                 early_exit_event, is_live_call=False
             ):
               await runner.session_service.append_event(
                   session=ic.session,
-                  event=early_exit_event,
+                  event=output_event,
               )
-            yield early_exit_event
+            yield output_event
           else:
             # 3. Start root node in background
             root_ctx = Context(ic)
@@ -204,7 +216,7 @@ async def run_node_async(
             has_sub_agents = is_agent and bool(
                 getattr(runner.agent, "sub_agents", None)
             )
-            use_scheduler = is_agent and has_sub_agents
+            use_scheduler = not is_agent or has_sub_agents
 
             # The root chat coordinator's isolation_scope stays None: its own
             # events (FCs, text, synthesized FRs from completed task
@@ -236,6 +248,7 @@ async def run_node_async(
                 except DynamicNodeFailError as e:
                   raise e.error
               finally:
+                root_ctx._workflow_scheduler = None  # pylint: disable=protected-access
                 assert ic._event_queue is not None  # pylint: disable=protected-access
                 await ic._event_queue.put((done_sentinel, None))  # pylint: disable=protected-access
 

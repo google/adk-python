@@ -44,3 +44,11 @@ class GCSToolSettings(BaseModel):
   By default, tools allow only read operations. This behaviour may change in
   future versions.
   """
+
+  local_file_root: str | None = None
+  """Directory that local file paths passed to the GCS tools resolve under.
+
+  Those paths come from the model, so uploading from and downloading to the
+  agent's own filesystem stays disabled until this is set. A path that resolves
+  outside this directory is rejected.
+  """

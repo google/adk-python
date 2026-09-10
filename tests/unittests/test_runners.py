@@ -162,6 +162,7 @@ class MockPlugin(BasePlugin):
     super().__init__(name="mock_plugin")
     self.enable_user_message_callback = False
     self.enable_event_callback = False
+    self.before_run_response: Optional[types.Content] = None
     self.user_content_seen_in_before_run_callback = None
 
   async def on_user_message_callback(
@@ -181,10 +182,11 @@ class MockPlugin(BasePlugin):
       self,
       *,
       invocation_context: InvocationContext,
-  ) -> None:
+  ) -> Optional[types.Content]:
     self.user_content_seen_in_before_run_callback = (
         invocation_context.user_content
     )
+    return self.before_run_response
 
   async def on_event_callback(
       self, *, invocation_context: InvocationContext, event: Event
@@ -626,6 +628,235 @@ def test_run_reports_agent_cancellation_as_runtime_error():
     )
 
   assert isinstance(exc_info.value.__cause__, asyncio.CancelledError)
+
+
+@pytest.mark.asyncio
+async def test_run_async_applies_state_delta_when_resuming_without_new_message():
+  """Resuming by invocation_id should still apply a caller-supplied delta."""
+
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockAgent("test_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+  runner.resumability_config = ResumabilityConfig(is_resumable=True)
+
+  # Seed the session with an invocation to resume.
+  async with aclosing(
+      runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=types.Content(
+              role="user", parts=[types.Part(text="hello")]
+          ),
+      )
+  ) as agen:
+    async for _ in agen:
+      pass
+
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  invocation_id = session.events[0].invocation_id
+
+  state_delta = {"resumed_key": "resumed_value"}
+
+  async with aclosing(
+      runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          invocation_id=invocation_id,
+          state_delta=state_delta,
+      )
+  ) as agen:
+    async for _ in agen:
+      pass
+
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  assert session.state["resumed_key"] == "resumed_value"
+
+
+@pytest.mark.asyncio
+async def test_run_async_applies_state_delta_when_resuming_without_new_message_llm_agent():
+  """Resuming by invocation_id should apply caller-supplied delta for LLM agent."""
+
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockLlmAgent("test_llm_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+  runner.resumability_config = ResumabilityConfig(is_resumable=True)
+
+  # Seed the session with an invocation to resume.
+  async with aclosing(
+      runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=types.Content(
+              role="user", parts=[types.Part(text="hello")]
+          ),
+      )
+  ) as agen:
+    async for _ in agen:
+      pass
+
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  invocation_id = session.events[0].invocation_id
+
+  state_delta = {"resumed_key": "resumed_value"}
+
+  async with aclosing(
+      runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          invocation_id=invocation_id,
+          state_delta=state_delta,
+      )
+  ) as agen:
+    async for _ in agen:
+      pass
+
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  assert session.state["resumed_key"] == "resumed_value"
+  delta_event = [
+      e
+      for e in session.events
+      if e.actions and e.actions.state_delta and not e.content
+  ][0]
+  assert delta_event.branch is None
+
+
+@pytest.mark.asyncio
+async def test_run_node_async_yields_state_delta_when_resuming_with_yield_user_message():
+  """run_node_async yields delta event when yield_user_message=True on resume."""
+  from typing import Any
+
+  from google.adk.agents.context import Context
+  from google.adk.workflow import _node_runner_utils
+  from google.adk.workflow._base_node import BaseNode
+
+  class _TestNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Event, None]:
+      yield Event(
+          author=self.name,
+          content=types.Content(
+              role="model", parts=[types.Part(text="node response")]
+          ),
+      )
+
+  session_service = InMemorySessionService()
+  node = _TestNode(name="test_node")
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockAgent("test_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+  session = await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  seed_event = Event(
+      invocation_id="inv_1",
+      author="user",
+      content=types.Content(role="user", parts=[types.Part(text="initial")]),
+  )
+  await session_service.append_event(session, seed_event)
+
+  state_delta = {"resumed_key": "resumed_value"}
+  events = []
+  async for event in _node_runner_utils.run_node_async(
+      runner,
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      invocation_id="inv_1",
+      state_delta=state_delta,
+      yield_user_message=True,
+      node=node,
+      session=session,
+  ):
+    events.append(event)
+
+  user_events = [e for e in events if e.author == "user"]
+  assert len(user_events) == 1
+  assert user_events[0].actions.state_delta == state_delta
+  assert session.state["resumed_key"] == "resumed_value"
+
+
+@pytest.mark.asyncio
+async def test_run_node_async_does_not_yield_state_delta_when_resuming_without_yield_user_message():
+  """run_node_async does not yield delta event by default on resume."""
+  from typing import Any
+
+  from google.adk.agents.context import Context
+  from google.adk.workflow import _node_runner_utils
+  from google.adk.workflow._base_node import BaseNode
+
+  class _TestNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Event, None]:
+      yield Event(
+          author=self.name,
+          content=types.Content(
+              role="model", parts=[types.Part(text="node response")]
+          ),
+      )
+
+  session_service = InMemorySessionService()
+  node = _TestNode(name="test_node")
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockAgent("test_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+  session = await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  seed_event = Event(
+      invocation_id="inv_1",
+      author="user",
+      content=types.Content(role="user", parts=[types.Part(text="initial")]),
+  )
+  await session_service.append_event(session, seed_event)
+
+  state_delta = {"resumed_key": "resumed_value"}
+  events = []
+  async for event in _node_runner_utils.run_node_async(
+      runner,
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      invocation_id="inv_1",
+      state_delta=state_delta,
+      yield_user_message=False,
+      node=node,
+      session=session,
+  ):
+    events.append(event)
+
+  user_events = [e for e in events if e.author == "user"]
+  assert not user_events
+  assert session.state["resumed_key"] == "resumed_value"
 
 
 @pytest.mark.asyncio
@@ -1217,6 +1448,68 @@ class TestRunnerWithPlugins:
     assert (
         persisted_event.custom_metadata == MockPlugin.ON_EVENT_CALLBACK_METADATA
     )
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      ("agent_cls", "is_live"),
+      [
+          (MockAgent, False),
+          (MockLlmAgent, False),
+          (MockLiveAgent, True),
+      ],
+      ids=("legacy", "node", "live"),
+  )
+  async def test_runner_processes_before_run_early_exit_with_event_callback(
+      self, agent_cls, is_live
+  ):
+    """Before-run early exits still pass through on-event hooks."""
+    from google.adk.live import LiveRequestQueue
+
+    plugin = MockPlugin()
+    plugin.before_run_response = types.Content(
+        role="model", parts=[types.Part(text="blocked by before_run")]
+    )
+    plugin.enable_event_callback = True
+    session_service = InMemorySessionService()
+    runner = Runner(
+        app=App(
+            name=TEST_APP_ID,
+            root_agent=agent_cls("test_agent"),
+            plugins=[plugin],
+        ),
+        session_service=session_service,
+    )
+    session = await session_service.create_session(
+        app_name=TEST_APP_ID,
+        user_id=TEST_USER_ID,
+        session_id=TEST_SESSION_ID,
+    )
+
+    if is_live:
+      event_stream = runner.run_live(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          live_request_queue=LiveRequestQueue(),
+      )
+    else:
+      event_stream = runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=types.Content(
+              role="user", parts=[types.Part(text="hello")]
+          ),
+      )
+    events = [event async for event in event_stream]
+    persisted_session = await session_service.get_session(
+        app_name=TEST_APP_ID,
+        user_id=TEST_USER_ID,
+        session_id=session.id,
+    )
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == MockPlugin.ON_EVENT_CALLBACK_MSG
+    assert events[0].custom_metadata == MockPlugin.ON_EVENT_CALLBACK_METADATA
+    assert persisted_session.events[-1] == events[0]
 
   @pytest.mark.asyncio
   async def test_runner_close_calls_plugin_close(self):
