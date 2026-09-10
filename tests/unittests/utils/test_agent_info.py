@@ -150,24 +150,6 @@ async def test_get_tools_info_flattens_toolset_into_its_tools():
 
 
 @pytest.mark.asyncio
-async def test_get_tools_info_handles_base_node():
-  from google.adk.workflow import node
-
-  @node
-  def add_two(x: int) -> int:
-    """Adds two to x."""
-    return x + 2
-
-  tools_info = await get_tools_info([add_two])
-
-  assert len(tools_info) == 1
-  declaration = tools_info[0].function_declarations[0]
-  assert declaration.name == 'add_two'
-  assert declaration.description == 'Adds two to x.'
-  assert list(_declared_parameters(declaration)) == ['x']
-
-
-@pytest.mark.asyncio
 async def test_get_tools_info_omits_tools_without_a_declaration():
   tools_info = await get_tools_info(
       [_CountingTool('hidden', declared=False), _CountingTool('visible')]

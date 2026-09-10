@@ -92,8 +92,7 @@ async def test_workflow_as_tool_hitl_resume(request: pytest.FixtureRequest):
     )
 
   sub_workflow = Workflow(
-      name='collect_user_info_tool',
-      description='Call this tool to collect customer name and age.',
+      name='sub_workflow',
       edges=[
           (START, input_node),
           (input_node, format_response),
@@ -101,7 +100,16 @@ async def test_workflow_as_tool_hitl_resume(request: pytest.FixtureRequest):
   )
   sub_workflow.input_schema = DummyRequest
 
-  # 2. Define the parent agent that calls this workflow directly as a native node
+  # 2. Wrap the sub-workflow as a WorkflowTool
+  wf_tool = NodeTool(
+      node=sub_workflow,
+      name='collect_user_info_tool',
+      description='Call this tool to collect customer name and age.',
+  )
+
+  # 3. Define the parent agent that calls this tool
+  # In the first turn, the model decides to call the tool.
+  # In the second turn, after the tool resumes and returns output, the model replies to the user.
   parent_agent = LlmAgent(
       name='parent_agent',
       model=testing_utils.MockModel.create(
@@ -115,9 +123,8 @@ async def test_workflow_as_tool_hitl_resume(request: pytest.FixtureRequest):
               ),
           ]
       ),
-      tools=[sub_workflow],
+      tools=[wf_tool],
   )
-  assert parent_agent.tools[0] is sub_workflow
 
   # 4. Wrap the parent agent in an App with resumability enabled
   app = App(
@@ -326,105 +333,6 @@ async def test_function_node_wrapped_as_tool_returns_output(
 
 
 @pytest.mark.asyncio
-async def test_native_function_node_directly_in_llm_agent_tools(
-    request: pytest.FixtureRequest,
-):
-  """LlmAgent directly accepts a FunctionNode in tools without NodeTool wrapper."""
-
-  @node
-  def greet_node(request: str) -> str:
-    """Greets the user."""
-    return f'Hello, {request}!'
-
-  parent_agent = LlmAgent(
-      name='parent_agent',
-      model=testing_utils.MockModel.create(
-          responses=[
-              types.Part.from_function_call(
-                  name='greet_node',
-                  args={'request': 'world'},
-              ),
-              types.Part.from_text(text='Processed greet.'),
-          ]
-      ),
-      tools=[greet_node],
-  )
-
-  # Verify agent.tools maintains the native node
-  assert parent_agent.tools[0] is greet_node
-
-  app = App(
-      name=request.function.__name__,
-      root_agent=parent_agent,
-  )
-  runner = testing_utils.InMemoryRunner(app=app)
-  events = await runner.run_async(testing_utils.get_user_content('Greet world'))
-
-  func_response_events = [
-      e
-      for e in events
-      if e.content and e.content.parts and e.content.parts[0].function_response
-  ]
-  assert len(func_response_events) == 1
-  assert func_response_events[0].content.parts[
-      0
-  ].function_response.response == {'result': 'Hello, world!'}
-
-
-@pytest.mark.asyncio
-async def test_native_workflow_directly_in_llm_agent_tools(
-    request: pytest.FixtureRequest,
-):
-  """LlmAgent directly accepts a Workflow in tools without NodeTool wrapper."""
-
-  def step(node_input: DummyRequest):
-    yield Event(output=f'Hello, {node_input.request}!')
-
-  sub_workflow = Workflow(
-      name='greet_workflow',
-      description='Executes the greet workflow.',
-      edges=[(START, step)],
-  )
-  sub_workflow.input_schema = DummyRequest
-
-  parent_agent = LlmAgent(
-      name='parent_agent',
-      model=testing_utils.MockModel.create(
-          responses=[
-              types.Part.from_function_call(
-                  name='greet_workflow',
-                  args={'request': 'world'},
-              ),
-              types.Part.from_text(text='Processed greet workflow.'),
-          ]
-      ),
-      tools=[sub_workflow],
-  )
-
-  # Verify agent.tools maintains the native Workflow instance
-  assert parent_agent.tools[0] is sub_workflow
-
-  app = App(
-      name=request.function.__name__,
-      root_agent=parent_agent,
-  )
-  runner = testing_utils.InMemoryRunner(app=app)
-  events = await runner.run_async(
-      testing_utils.get_user_content('Run workflow')
-  )
-
-  func_response_events = [
-      e
-      for e in events
-      if e.content and e.content.parts and e.content.parts[0].function_response
-  ]
-  assert len(func_response_events) == 1
-  assert func_response_events[0].content.parts[
-      0
-  ].function_response.response == {'result': 'Hello, world!'}
-
-
-@pytest.mark.asyncio
 async def test_function_node_wrapped_as_tool_no_output(
     request: pytest.FixtureRequest,
 ):
@@ -487,8 +395,7 @@ async def test_workflow_tool_with_join_node(request: pytest.FixtureRequest):
     )
 
   sub_workflow = Workflow(
-      name='my_join_tool',
-      description='Collect parallel items.',
+      name='sub_workflow',
       edges=[
           (START, node_a),
           (START, node_b),
@@ -498,6 +405,12 @@ async def test_workflow_tool_with_join_node(request: pytest.FixtureRequest):
       ],
   )
   sub_workflow.input_schema = DummyRequest
+
+  wf_tool = NodeTool(
+      node=sub_workflow,
+      name='my_join_tool',
+      description='Collect parallel items.',
+  )
 
   parent_agent = LlmAgent(
       name='parent_agent',
@@ -510,9 +423,8 @@ async def test_workflow_tool_with_join_node(request: pytest.FixtureRequest):
               types.Part.from_text(text='Done.'),
           ]
       ),
-      tools=[sub_workflow],
+      tools=[wf_tool],
   )
-  assert parent_agent.tools[0] is sub_workflow
 
   app = App(
       name=request.function.__name__,

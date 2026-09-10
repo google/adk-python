@@ -57,7 +57,6 @@ from ..utils._schema_utils import SchemaType
 from ..utils._schema_utils import validate_schema
 from ..utils.context_utils import Aclosing
 from ..utils.instructions_utils import InstructionProvider as InstructionProvider
-from ..workflow._base_node import BaseNode
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
 from .base_agent_config import BaseAgentConfig as BaseAgentConfig
@@ -129,7 +128,7 @@ OnToolErrorCallback: TypeAlias = Union[
     list[_SingleOnToolErrorCallback],
 ]
 
-ToolUnion: TypeAlias = Union[Callable, BaseTool, BaseToolset, BaseNode]  # type: ignore[type-arg]
+ToolUnion: TypeAlias = Union[Callable, BaseTool, BaseToolset]  # type: ignore[type-arg]
 
 
 async def _convert_tool_union_to_tools(
@@ -170,6 +169,7 @@ async def _convert_tool_union_to_tools(
               max_results=vais_tool.max_results,
           )
       ]
+  from ..workflow._base_node import BaseNode
 
   if isinstance(tool_union, BaseNode):
     from ..tools._node_tool import NodeTool
@@ -177,15 +177,22 @@ async def _convert_tool_union_to_tools(
 
     if isinstance(tool_union, BaseAgent):
       raise ValueError(
-          f"Agent '{tool_union.name}' cannot be used directly as a tool. Agents"
+          f"Agent '{tool_union.name}' cannot be wrapped as a NodeTool. Agents"
           ' should be invoked as sub-agents.'
+      )
+
+    description = tool_union.description
+    if not description:
+      raise ValueError(
+          f"Workflow/Node '{tool_union.name}' must have a description to be"
+          ' wrapped as a tool.'
       )
 
     return [
         NodeTool(
             node=tool_union,
             name=tool_union.name,
-            description=tool_union.description,
+            description=description,
         )
     ]
 
@@ -1228,26 +1235,24 @@ class LlmAgent(BaseAgent, abc.ABC):
   def _pre_validate_tools(cls, data: Any) -> Any:
     if isinstance(data, dict) and 'tools' in data and data['tools']:
       from google.adk.agents.base_agent import BaseAgent
+      from google.adk.tools._node_tool import NodeTool
       from google.adk.workflow._base_node import BaseNode
-      from google.adk.workflow._function_node import FunctionNode
 
       new_tools = []
       for t in data['tools']:
         if isinstance(t, BaseAgent):
           raise ValueError(
-              f"Agent '{t.name}' cannot be used directly as a tool. Agents"
-              ' should be invoked as sub-agents.'
+              f"Agent '{t.name}' cannot be wrapped as a NodeTool. Agents should"
+              ' be invoked as sub-agents.'
           )
         elif isinstance(t, BaseNode):
-          if not isinstance(t, FunctionNode) and not getattr(
-              t, 'input_schema', None
-          ):
+          description = t.description
+          if not description:
             raise ValueError(
-                f"Node '{t.name}' does not have an input_schema defined."
-                ' NodeTool requires an explicit Pydantic input_schema on the'
-                ' wrapped node.'
+                f"Workflow/Node '{t.name}' must have a description to be"
+                ' wrapped as a tool.'
             )
-          new_tools.append(t)
+          new_tools.append(NodeTool(node=t, description=description))
         else:
           new_tools.append(t)
       data['tools'] = new_tools
