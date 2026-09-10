@@ -37,6 +37,8 @@ from ..features import FeatureName
 from ..features import is_feature_enabled
 from .base_tool import BaseTool
 
+# Marks an artifact as scoped to the user rather than to a single session.
+_USER_NAMESPACE_PREFIX = 'user:'
 # MIME types Gemini accepts for inline data in requests.
 _GEMINI_SUPPORTED_INLINE_MIME_PREFIXES = (
     'image/',
@@ -298,6 +300,43 @@ ProcessArtifactCallback: TypeAlias = Callable[
 ]
 
 
+def _resolve_requested_artifact_name(
+    requested_name: str, available_names: set[str]
+) -> str | None:
+  """Maps a name the model asked for onto one the current session really has.
+
+  The model chooses the name, so it is untrusted input: it is only honoured
+  when the artifact service just listed it for this app, user and session.
+  Backends key their storage on those identifiers joined with the filename, so
+  one that normalises or splits the joined key could resolve a name that was
+  never listed into a different scope.
+
+  Args:
+      requested_name: The artifact name supplied by the model.
+      available_names: Names listed for the current scope, which is also the
+        list the model was shown.
+
+  Returns:
+      The name to load, or None if the request does not match anything in
+      scope.
+  """
+  if requested_name in available_names:
+    return requested_name
+  # User-scoped artifacts are often listed with their "user:" prefix and
+  # models routinely drop it when echoing the name back. Conversely,
+  # FileArtifactService lists an artifact saved with session_id=None under
+  # its bare name, but a model may request it with the "user:" prefix.
+  if requested_name.startswith(_USER_NAMESPACE_PREFIX):
+    bare_name = requested_name.removeprefix(_USER_NAMESPACE_PREFIX)
+    if bare_name in available_names:
+      return requested_name
+  else:
+    prefixed_name = f'{_USER_NAMESPACE_PREFIX}{requested_name}'
+    if prefixed_name in available_names:
+      return prefixed_name
+  return None
+
+
 class LoadArtifactsTool(BaseTool):
   """A tool that loads the artifacts and adds them to the session."""
 
@@ -313,16 +352,18 @@ class LoadArtifactsTool(BaseTool):
       process_artifact: An optional sync or async callable with signature
         `(artifact: types.Part, artifact_name: str) -> types.Part | None |
         Awaitable[types.Part | None]`. Allows artifact parts to be customized or
-        filtered before being added to the LLM request. If `None` (default), the
-        built-in safety conversion (`as_safe_part_for_llm`) is used to convert
-        unsupported formats (e.g., extracting text from DOCX/CSV/JSON/plain text
-        or replacing binary data with safe placeholder descriptions). If a
-        custom function is supplied, it bypasses default safety conversions;
-        returning `None` skips the artifact so it is omitted from the request.
-        If a custom callback raises an exception, the error is logged and the
-        artifact is skipped.
-      enable_spreadsheet_parsing: Whether to enable spreadsheet parsing
-        files (e.g., .xlsx, .xls) into text. Defaults to False.
+        filtered before being added to the LLM request. `artifact_name` is the
+        name the artifact was loaded under, which carries the `user:` prefix for
+        a user-scoped artifact even when the model omitted it. If `None`
+        (default), the built-in safety conversion (`as_safe_part_for_llm`) is
+        used to convert unsupported formats (e.g., extracting text from
+        DOCX/CSV/JSON/plain text or replacing binary data with safe placeholder
+        descriptions). If a custom function is supplied, it bypasses default
+        safety conversions; returning `None` skips the artifact so it is omitted
+        from the request. If a custom callback raises an exception, the error is
+        logged and the artifact is skipped.
+      enable_spreadsheet_parsing: Whether to enable spreadsheet parsing files
+        (e.g., .xlsx, .xls) into text. Defaults to False.
     """
     super().__init__(
         name='load_artifacts',
@@ -438,23 +479,36 @@ web UI)."""),
               'Ignoring invalid artifact_names in load_artifacts response.'
           )
           return
-        artifact_names = [
-            name for name in raw_artifact_names if isinstance(name, str)
-        ]
-        for artifact_name in artifact_names:
-          # Try session-scoped first (default behavior)
+        available_names = set(artifact_names)
+        for requested_name in raw_artifact_names:
+          artifact_name = _resolve_requested_artifact_name(
+              requested_name, available_names
+          )
+          if artifact_name is None:
+            logger.warning(
+                'Artifact "%s" is not available in this session, skipping',
+                requested_name,
+            )
+            continue
+
           artifact = await tool_context.load_artifact(artifact_name)
 
-          # If not found and name doesn't already have user: prefix,
-          # try cross-session artifacts with user: prefix
-          if artifact is None and not artifact_name.startswith('user:'):
-            prefixed_name = f'user:{artifact_name}'
-            artifact = await tool_context.load_artifact(prefixed_name)
+          # A backend may list a user-scoped artifact under its bare name, in
+          # which case the session scope searched above does not hold it. The
+          # retry stays within this user because the name was listed for them.
+          if artifact is None and not artifact_name.startswith(
+              _USER_NAMESPACE_PREFIX
+          ):
+            artifact_name = f'{_USER_NAMESPACE_PREFIX}{artifact_name}'
+            artifact = await tool_context.load_artifact(artifact_name)
 
           if artifact is None:
             logger.warning('Artifact "%s" not found, skipping', artifact_name)
             continue
 
+          # The resolved name, so a callback that filters on scope sees the
+          # name the artifact was really loaded under. The prompt text below
+          # keeps the model's own wording, as the other ADK languages do.
           if self._process_artifact is not None:
             try:
               artifact_part = self._process_artifact(artifact, artifact_name)
@@ -466,8 +520,11 @@ web UI)."""),
               )
               continue
           else:
+            # The model's own wording, because this name is interpolated into
+            # placeholder text the model reads. The suffix heuristics inside
+            # are unaffected by the prefix.
             artifact_part = as_safe_part_for_llm(
-                artifact, artifact_name, self._enable_spreadsheet_parsing
+                artifact, requested_name, self._enable_spreadsheet_parsing
             )
 
           if artifact_part is None:
@@ -487,7 +544,7 @@ web UI)."""),
                   role='user',
                   parts=[
                       types.Part.from_text(
-                          text=f'Artifact {artifact_name} is:'
+                          text=f'Artifact {requested_name} is:'
                       ),
                       artifact_part,
                   ],
