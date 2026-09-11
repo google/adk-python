@@ -34,6 +34,7 @@ from google.adk.code_executors.code_executor_context import CodeExecutorContext
 from google.adk.flows.llm_flows._code_execution import _DATA_FILE_HELPER_LIB
 from google.adk.flows.llm_flows._code_execution import _extract_and_replace_inline_files
 from google.adk.flows.llm_flows._code_execution import _get_data_file_preprocessing_code
+from google.adk.flows.llm_flows._code_execution import _NON_BUILTIN_EXECUTOR_INSTRUCTION
 from google.adk.flows.llm_flows._code_execution import get_content_as_bytes
 from google.adk.flows.llm_flows._code_execution import request_processor
 from google.adk.flows.llm_flows._code_execution import response_processor
@@ -375,3 +376,106 @@ def test_get_content_as_bytes_returns_bytes_unchanged():
 def test_get_content_as_bytes_base64_decodes_str():
   """Text output files arrive base64-encoded and are decoded to raw bytes."""
   assert get_content_as_bytes('aGVsbG8gd29ybGQ=') == b'hello world'
+
+
+# ---------------------------------------------------------------------------
+# Pre-processor: instruction injection
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pre_processor_injects_instruction_for_non_builtin_executor():
+  mock_executor = MagicMock(spec=BaseCodeExecutor)
+  mock_executor.optimize_data_file = True
+  mock_executor.code_block_delimiters = [('```tool_code\n', '\n```')]
+  mock_executor.error_retry_attempts = 2
+
+  agent = Agent(name='test_agent', code_executor=mock_executor)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='run some code'
+  )
+  llm_request = LlmRequest()
+
+  _ = [
+      event
+      async for event in request_processor.run_async(
+          invocation_context, llm_request
+      )
+  ]
+
+  assert llm_request.config.system_instruction is not None
+  expected_instruction = _NON_BUILTIN_EXECUTOR_INSTRUCTION.format(
+      code_fence_start='```tool_code\n',
+      code_fence_end='\n```',
+  )
+  assert expected_instruction in str(llm_request.config.system_instruction)
+
+
+@pytest.mark.asyncio
+async def test_pre_processor_injects_custom_delimiter_instruction():
+  mock_executor = MagicMock(spec=BaseCodeExecutor)
+  mock_executor.optimize_data_file = True
+  mock_executor.code_block_delimiters = [('```python\n', '\n```')]
+  mock_executor.error_retry_attempts = 2
+
+  agent = Agent(name='test_agent', code_executor=mock_executor)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='run some code'
+  )
+  llm_request = LlmRequest()
+
+  _ = [
+      event
+      async for event in request_processor.run_async(
+          invocation_context, llm_request
+      )
+  ]
+
+  assert llm_request.config.system_instruction is not None
+  expected_instruction = _NON_BUILTIN_EXECUTOR_INSTRUCTION.format(
+      code_fence_start='```python\n',
+      code_fence_end='\n```',
+  )
+  assert expected_instruction in str(llm_request.config.system_instruction)
+
+
+@pytest.mark.asyncio
+async def test_pre_processor_does_not_inject_instruction_when_optimize_data_file_false():
+  mock_executor = MagicMock(spec=BaseCodeExecutor)
+  mock_executor.optimize_data_file = False
+
+  agent = Agent(name='test_agent', code_executor=mock_executor)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='run some code'
+  )
+  llm_request = LlmRequest()
+
+  _ = [
+      event
+      async for event in request_processor.run_async(
+          invocation_context, llm_request
+      )
+  ]
+
+  system_instruction = str(llm_request.config.system_instruction or '')
+  assert 'CRITICAL: Code execution format' not in system_instruction
+
+
+@pytest.mark.asyncio
+async def test_pre_processor_does_not_inject_instruction_for_builtin_executor():
+  code_executor = BuiltInCodeExecutor()
+  agent = Agent(name='test_agent', code_executor=code_executor)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='run some code'
+  )
+  llm_request = LlmRequest(model='gemini-2.0-flash')
+
+  _ = [
+      event
+      async for event in request_processor.run_async(
+          invocation_context, llm_request
+      )
+  ]
+
+  system_instruction = str(llm_request.config.system_instruction or '')
+  assert 'CRITICAL: Code execution format' not in system_instruction
