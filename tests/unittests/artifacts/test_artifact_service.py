@@ -1454,6 +1454,10 @@ INVALID_PATH_SEGMENT_CASES = (
     (r"C:\absolute", "must not be drive-qualified"),
     ("C:/absolute", "must not be drive-qualified"),
     ("C:drive-relative", "must not be drive-qualified"),
+    ("group/user123", "must not contain path separators"),
+    ("has/slash", "must not contain path separators"),
+    (r"back\slash", "must not contain path separators"),
+    ("u1/sessions/s2", "must not contain path separators"),
 )
 
 
@@ -1466,26 +1470,58 @@ INVALID_PATH_SEGMENT_CASES = (
         ArtifactServiceType.FILE,
     ],
 )
-async def test_save_and_load_namespaced_user_id_succeeds(
+async def test_save_artifact_rejects_namespaced_user_id(
     service_type, artifact_service_factory
 ):
-  """ArtifactService implementations permit namespaced user IDs."""
+  """Artifact services reject user IDs that contain path separators."""
   service = artifact_service_factory(service_type)
   artifact = types.Part.from_bytes(data=b"data", mime_type="text/plain")
+  with pytest.raises(InputValidationError, match="path separators"):
+    await service.save_artifact(
+        app_name="myapp",
+        user_id="group/user123",
+        session_id="sess123",
+        filename="safe.txt",
+        artifact=artifact,
+    )
+
+
+@pytest.mark.asyncio
+async def test_file_user_id_with_slash_cannot_reach_another_session(
+    tmp_path,
+):
+  """A user_id containing '/' must not compose onto another user's session tree."""
+  service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  victim_payload = types.Part(text="VICTIM-SECRET")
   await service.save_artifact(
       app_name="myapp",
-      user_id="group/user123",
-      session_id="sess123",
-      filename="safe.txt",
-      artifact=artifact,
+      user_id="u1",
+      session_id="s2",
+      filename="notes",
+      artifact=victim_payload,
   )
+
+  composed = "u1/sessions/s2"
+  with pytest.raises(InputValidationError, match="path separators"):
+    await service.load_artifact(
+        app_name="myapp", user_id=composed, filename="notes"
+    )
+  with pytest.raises(InputValidationError, match="path separators"):
+    await service.save_artifact(
+        app_name="myapp",
+        user_id=composed,
+        filename="notes",
+        artifact=types.Part(text="ATTACKER-PWNED"),
+    )
+  with pytest.raises(InputValidationError, match="path separators"):
+    await service.delete_artifact(
+        app_name="myapp", user_id=composed, filename="notes"
+    )
+
   loaded = await service.load_artifact(
-      app_name="myapp",
-      user_id="group/user123",
-      session_id="sess123",
-      filename="safe.txt",
+      app_name="myapp", user_id="u1", session_id="s2", filename="notes"
   )
-  assert loaded.inline_data.data == b"data"
+  assert loaded.text == "VICTIM-SECRET"
 
 
 @pytest.mark.asyncio
