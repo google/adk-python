@@ -29,6 +29,8 @@ from google.adk.errors.already_exists_error import AlreadyExistsError
 from google.adk.errors.session_not_found_error import SessionNotFoundError
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
+from google.adk.features import FeatureName
+from google.adk.features import override_feature_enabled
 from google.adk.sessions import database_session_service
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.database_session_service import DatabaseSessionService
@@ -2786,6 +2788,56 @@ async def test_get_user_state_reflects_latest_write(session_service):
 
   state = await session_service.get_user_state(app_name='my_app', user_id='u1')
   assert state['counter'] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('light_copy', [False, True])
+async def test_get_user_state_copies_to_session_state_depth(light_copy):
+  """get_user_state copies as deeply as a session's own state is copied.
+
+  Light copy exists to skip the recursive copy, so under it nested values stay
+  shared with the service; without it they are deep-copied.
+  """
+  override_feature_enabled(
+      FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY, light_copy
+  )
+  try:
+    service = InMemorySessionService()
+    await service.create_session(
+        app_name='my_app',
+        user_id='u1',
+        session_id='s1',
+        state={'user:profile': {'name': 'Alice'}, 'sk1': {'n': 1}},
+    )
+
+    user_state = await service.get_user_state(app_name='my_app', user_id='u1')
+    user_state['profile']['name'] = 'Mallory'
+    user_state['added'] = 1
+
+    session = await service.get_session(
+        app_name='my_app', user_id='u1', session_id='s1'
+    )
+    stored = service.sessions['my_app']['u1']['s1']
+    session_state_is_shared = session.state['sk1'] is stored.state['sk1']
+
+    assert (
+        user_state['profile'] is service.user_state['my_app']['u1']['profile']
+    ) == session_state_is_shared
+    assert (
+        service.user_state['my_app']['u1']['profile'] == {'name': 'Mallory'}
+    ) == session_state_is_shared
+    # A later session of the same user reads the same user state.
+    later = await service.create_session(
+        app_name='my_app', user_id='u1', session_id='s2'
+    )
+    assert (later.state['user:profile'] == {'name': 'Mallory'}) == (
+        session_state_is_shared
+    )
+    assert 'added' not in service.user_state['my_app']['u1']
+  finally:
+    override_feature_enabled(
+        FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY, False
+    )
 
 
 @pytest.mark.asyncio
