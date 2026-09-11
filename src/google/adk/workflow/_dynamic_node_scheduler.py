@@ -31,6 +31,8 @@ from typing import TYPE_CHECKING
 from pydantic import ValidationError
 
 from ..events._node_path_builder import _NodePathBuilder
+from ._errors import WorkflowConfigurationError
+from ._errors import WorkflowInvariantError
 from ._node_state import NodeState
 from ._node_status import NodeStatus
 from ._schedule_dynamic_node import ScheduleDynamicNode
@@ -59,7 +61,7 @@ class DynamicNodeRun:
   """The final output of the node once it completes."""
 
   task: asyncio.Task[Context] | None = None
-  """The running asyncio Task for this node execution."""
+  """The running asyncio Task, or None for a run replayed from cache."""
 
   transfer_to_agent: str | None = None
   """The target agent name if this node execution transferred."""
@@ -237,7 +239,7 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
       )
 
     if child_ctx is None:
-      raise RuntimeError(
+      raise WorkflowInvariantError(
           f'Dynamic node {node_path} completed without a child context.'
       )
 
@@ -281,7 +283,7 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
       unresolved = recovered.interrupt_ids - recovered.resolved_ids
       if recovered.interrupt_ids and not unresolved:
         if curr_node.wait_for_output and not curr_node.rerun_on_resume:
-          raise ValueError(
+          raise WorkflowConfigurationError(
               f'Node {node_path} is waiting for output but was called again'
               ' with rerun_on_resume=False. This would cause it to'
               ' auto-complete with empty output, which is likely a'

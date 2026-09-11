@@ -23,6 +23,7 @@ from typing import Literal
 from ...tools.base_tool import BaseTool
 from .._base_node import BaseNode
 from .._base_node import START
+from .._errors import WorkflowConfigurationError
 from .._function_node import FunctionNode
 from .._graph import NodeLike
 from .._retry_config import RetryConfig
@@ -59,18 +60,18 @@ def build_node(
       wrapped node.
     timeout: If provided, overrides the timeout property of the wrapped node.
     auth_config: If provided, passed to FunctionNode for authentication.
-    parameter_binding: How function parameters are bound. ``'state'``
-      (default) binds parameters from ``ctx.state``. ``'node_input'``
-      binds parameters from ``node_input`` dict and infers
-      ``input_schema`` / ``output_schema`` from the function signature
-      (used when the node acts as an agent's tool).
+    parameter_binding: How function parameters are bound. ``'state'`` (default)
+      binds parameters from ``ctx.state``. ``'node_input'`` binds parameters
+      from ``node_input`` dict and infers ``input_schema`` / ``output_schema``
+      from the function signature (used when the node acts as an agent's tool).
 
   Returns:
     A BaseNode instance.
 
   Raises:
-    ValueError: If node_like is not a valid type (BaseNode, BaseAgent,
-      BaseTool, callable, or 'START').
+    WorkflowConfigurationError: If node_like is not a valid type (BaseNode,
+      BaseAgent, BaseTool, callable, or 'START'), or if it is a task-mode
+      RemoteA2aAgent with no parent agent.
   """
 
   if node_like == 'START':
@@ -107,7 +108,7 @@ def build_node(
           and node_like.mode == 'task'
       )
     if is_remote_a2a_task and getattr(node_like, 'parent_agent', None) is None:
-      raise ValueError(
+      raise WorkflowConfigurationError(
           'RemoteA2aAgent in task mode is not supported as a standalone '
           'workflow node. It is only supported in tool-delegation mode.'
       )
@@ -180,7 +181,7 @@ def build_node(
         parameter_binding=parameter_binding,
     )
   else:
-    raise ValueError(
+    raise WorkflowConfigurationError(
         f'Invalid node type: {type(node_like)}. Node must be a BaseNode, a'
         ' BaseAgent, a BaseTool, or a callable.'
     )

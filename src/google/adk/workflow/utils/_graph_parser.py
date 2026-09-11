@@ -21,6 +21,7 @@ from typing import get_args
 
 from .._base_node import BaseNode
 from .._base_node import START
+from .._errors import WorkflowConfigurationError
 from .._graph import ChainElement
 from .._graph import Edge
 from .._graph import EdgeItem
@@ -37,7 +38,7 @@ def _expand_routing_map(
 ) -> list[tuple[ChainElement, NodeLike | tuple[NodeLike, ...], RouteValue]]:
   """Expands a routing map into individual (from, to, route) triples."""
   if not routing_map:
-    raise ValueError(
+    raise WorkflowConfigurationError(
         "Routing map must not be empty. Provide at least one route -> node"
         " mapping."
     )
@@ -49,7 +50,7 @@ def _expand_routing_map(
 
   for route_key, target in routing_map.items():
     if not isinstance(route_key, route_value_types):
-      raise ValueError(
+      raise WorkflowConfigurationError(
           f"Invalid routing map key: {route_key!r} (type"
           f" {type(route_key).__name__}). Keys must be RouteValue"
           " (str, int, or bool)."
@@ -57,14 +58,14 @@ def _expand_routing_map(
     if isinstance(target, tuple):
       for node in target:
         if not is_node_like(node):
-          raise ValueError(
+          raise WorkflowConfigurationError(
               f"Invalid node in fan-out tuple for route {route_key!r}:"
               f" {node!r} (type {type(node).__name__})."
               " Values must be NodeLike (BaseNode, BaseAgent, BaseTool,"
               " callable, or 'START')."
           )
     elif not is_node_like(target):
-      raise ValueError(
+      raise WorkflowConfigurationError(
           f"Invalid routing map value for route {route_key!r}:"
           f" {target!r} (type {type(target).__name__})."
           " Values must be NodeLike (BaseNode, BaseAgent, BaseTool,"
@@ -122,16 +123,12 @@ def _get_or_build_node(
   return node
 
 
-def _process_explicit_edge(
-    edge: Edge, node_map: dict[int, BaseNode], graph_edges: list[Edge]
-) -> None:
+def _process_explicit_edge(edge: Edge, node_map: dict[int, BaseNode]) -> Edge:
   """Processes an explicit Edge object."""
-  graph_edges.append(
-      Edge(
-          from_node=_get_or_build_node(edge.from_node, node_map),
-          to_node=_get_or_build_node(edge.to_node, node_map),
-          route=edge.route,
-      )
+  return Edge(
+      from_node=_get_or_build_node(edge.from_node, node_map),
+      to_node=_get_or_build_node(edge.to_node, node_map),
+      route=edge.route,
   )
 
 
@@ -139,59 +136,62 @@ def _process_routing_map_edge(
     from_el: Any,
     to_el: RoutingMap,
     node_map: dict[int, BaseNode],
-    graph_edges: list[Edge],
-) -> None:
+) -> list[Edge]:
   """Processes edges where the destination is a routing map."""
   if isinstance(from_el, dict):
-    raise ValueError(
+    raise WorkflowConfigurationError(
         "Consecutive routing maps are not allowed in a chain."
         " Split them into separate edge items."
     )
 
+  edges: list[Edge] = []
   for exp_from, exp_to, route in _expand_routing_map(from_el, to_el):
     for from_node in _flatten_element(exp_from):
       for to_node in _flatten_element(exp_to):
-        graph_edges.append(
+        edges.append(
             Edge(
                 from_node=_get_or_build_node(from_node, node_map),
                 to_node=_get_or_build_node(to_node, node_map),
                 route=route,
             )
         )
+  return edges
 
 
 def _process_unconditional_edge(
     from_el: Any,
     to_el: Any,
     node_map: dict[int, BaseNode],
-    graph_edges: list[Edge],
-) -> None:
+) -> list[Edge]:
   """Processes unconditional edges between elements."""
+  edges: list[Edge] = []
   for from_node in _flatten_element(from_el):
     for to_node in _flatten_element(to_el):
-      graph_edges.append(
+      edges.append(
           Edge(
               from_node=_get_or_build_node(from_node, node_map),
               to_node=_get_or_build_node(to_node, node_map),
               route=None,
           )
       )
+  return edges
 
 
 def _process_chain(
     chain: tuple[Any, ...],
     node_map: dict[int, BaseNode],
-    graph_edges: list[Edge],
-) -> None:
+) -> list[Edge]:
   """Processes a chain of elements (tuple)."""
+  edges: list[Edge] = []
   for i in range(len(chain) - 1):
     from_el = chain[i]
     to_el = chain[i + 1]
 
     if isinstance(to_el, dict):
-      _process_routing_map_edge(from_el, to_el, node_map, graph_edges)
+      edges.extend(_process_routing_map_edge(from_el, to_el, node_map))
     else:
-      _process_unconditional_edge(from_el, to_el, node_map, graph_edges)
+      edges.extend(_process_unconditional_edge(from_el, to_el, node_map))
+  return edges
 
 
 def parse_edge_items(edge_items: list[EdgeItem]) -> list[Edge]:
@@ -201,10 +201,10 @@ def parse_edge_items(edge_items: list[EdgeItem]) -> list[Edge]:
 
   for item in edge_items:
     if isinstance(item, Edge):
-      _process_explicit_edge(item, node_map, graph_edges)
+      graph_edges.append(_process_explicit_edge(item, node_map))
     elif isinstance(item, tuple):
-      _process_chain(item, node_map, graph_edges)
+      graph_edges.extend(_process_chain(item, node_map))
     else:
-      raise ValueError(f"Invalid edge type: {type(item)}")
+      raise WorkflowConfigurationError(f"Invalid edge type: {type(item)}")
 
   return graph_edges

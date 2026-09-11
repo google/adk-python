@@ -48,9 +48,11 @@ class ScheduleDynamicNode(Protocol):
       node's output.
     run_id: Optional unique ID for this specific execution of the node.
       If None, the scheduler assigns a sequential run ID.
-    use_sub_branch: Whether the node should execute in an isolated sub-branch
-      to prevent message history pollution.
+    use_sub_branch: Whether the node should execute in an isolated sub-branch to
+      prevent message history pollution.
     override_branch: Optional specific branch name to use, overriding defaults.
+    override_isolation_scope: Optional scope tag for the node's conversation
+      view, overriding the scope that would otherwise be computed for it.
 
   Returns:
     Awaitable[Context]: A future that resolves to the child node's Context,
