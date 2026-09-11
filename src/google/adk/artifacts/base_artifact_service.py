@@ -109,11 +109,11 @@ class BaseArtifactService(ABC):
       user_id: The user ID.
       filename: The filename of the artifact.
       artifact: The artifact to save. Accepts a ``types.Part`` instance or a
-        plain dictionary (camelCase or snake_case keys) which will be
-        normalized via ``ensure_part``. If the artifact consists of
-        ``file_data``, the artifact service assumes its content has been
-        uploaded separately, and this method will associate the ``file_data``
-        with the artifact if necessary.
+        plain dictionary (camelCase or snake_case keys) which will be normalized
+        via ``ensure_part``. If the artifact consists of ``file_data``, the
+        artifact service assumes its content has been uploaded separately, and
+        this method will associate the ``file_data`` with the artifact if
+        necessary.
       session_id: The session ID. If `None`, the artifact is user-scoped.
       custom_metadata: custom metadata to associate with the artifact.
 
@@ -165,6 +165,14 @@ class BaseArtifactService(ABC):
         both session-scoped and user-scoped artifact filenames. If `session_id`
         is `None`, returns
         user-scoped artifact filenames.
+
+        The list must be complete: anything readable in this scope appears in
+        it. Callers use it to decide what may be loaded, so a name it omits is
+        treated as out of scope.
+
+        A listed name is not guaranteed to load verbatim: an implementation may
+        list a user-scoped artifact under its bare name, which resolves only
+        once the `user:` prefix is added back.
     """
 
   @abstractmethod

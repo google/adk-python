@@ -55,7 +55,12 @@ class ExampleTool(BaseTool):
   async def process_llm_request(
       self, *, tool_context: ToolContext, llm_request: LlmRequest
   ) -> None:
-    parts = tool_context.user_content.parts
+    # Nothing to select when there is no user content.
+    user_content = tool_context.user_content
+    if not user_content:
+      return
+
+    parts = user_content.parts
     if not parts or not parts[0].text:
       return
 

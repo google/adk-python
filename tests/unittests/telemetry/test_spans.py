@@ -63,8 +63,6 @@ from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import errors as genai_errors
 from google.genai import types
-from mcp import ClientSession as McpClientSession
-from mcp import ListToolsResult as McpListToolsResult
 from mcp import Tool as McpTool
 from opentelemetry._logs import LogRecord
 from opentelemetry._logs import SeverityNumber

@@ -20,6 +20,7 @@ from typing import Any
 
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows import _tool_call_rearranger
+from google.adk.flows.llm_flows._tool_call_rearranger import drop_orphaned_function_calls
 from google.adk.flows.llm_flows._tool_call_rearranger import drop_orphaned_function_responses
 from google.adk.flows.llm_flows._tool_call_rearranger import merge_function_response_events
 from google.adk.flows.llm_flows._tool_call_rearranger import rearrange_events_for_async_function_responses_in_history
@@ -102,6 +103,210 @@ def test_drop_orphaned_responses_removes_event_when_all_parts_orphaned():
   result = drop_orphaned_function_responses(events)
 
   assert result == [call]
+
+
+def test_drop_orphaned_calls_prunes_unpaired_and_preserves_valid():
+  """Unpaired function call IDs are pruned while matched and ID-less calls survive."""
+  valid_call = _call_event("c1", "lookup")
+  valid_resp = _resp_event("c1", "lookup", "found")
+  no_id_call = Event(
+      author="test_agent",
+      content=types.Content(
+          role="model",
+          parts=[types.Part(function_call=types.FunctionCall(name="legacy"))],
+      ),
+  )
+  orphan_call = _call_event("orphan_99", "ghost")
+  events = [valid_call, valid_resp, no_id_call, orphan_call]
+
+  result = drop_orphaned_function_calls(events)
+
+  assert result == [valid_call, valid_resp, no_id_call]
+
+
+def test_drop_orphaned_calls_removes_event_when_all_parts_orphaned():
+  """An event whose parts are all orphaned function calls is omitted completely."""
+  user_turn = Event(
+      author="user",
+      content=types.Content(
+          role="user",
+          parts=[types.Part(text="hello")],
+      ),
+  )
+  orphan_event = Event(
+      author="test_agent",
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(id="o1", name="t1", args={})
+              ),
+              types.Part(
+                  function_call=types.FunctionCall(id="o2", name="t2", args={})
+              ),
+          ],
+      ),
+  )
+  events = [user_turn, orphan_event]
+
+  result = drop_orphaned_function_calls(events)
+
+  assert result == [user_turn]
+
+
+def test_drop_orphaned_calls_preserves_non_call_parts_in_mixed_event():
+  """Non-call parts like text are preserved when an orphaned call is dropped."""
+  model_event = Event(
+      author="test_agent",
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(text="Checking inventory..."),
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="c1", name="check_stock", args={}
+                  )
+              ),
+          ],
+      ),
+  )
+  user_event = Event(
+      author="user",
+      content=types.Content(
+          role="user",
+          parts=[types.Part(text="cancel")],
+      ),
+  )
+  events = [model_event, user_event]
+
+  result = drop_orphaned_function_calls(events)
+
+  assert len(result) == 2
+  assert result[0].content.parts == [types.Part(text="Checking inventory...")]
+  assert result[0].get_function_calls() == []
+  assert result[1] == user_event
+
+
+def test_drop_orphaned_calls_prunes_unanswered_in_parallel_tool_calls():
+  """Unanswered call in a parallel batch is dropped while answered call survives."""
+  model_event = Event(
+      author="test_agent",
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="c1", name="tool_1", args={}
+                  )
+              ),
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="c2", name="tool_2", args={}
+                  )
+              ),
+          ],
+      ),
+  )
+  resp_1 = _resp_event("c1", "tool_1", "ok")
+  events = [model_event, resp_1]
+
+  result = drop_orphaned_function_calls(events)
+
+  assert len(result) == 2
+  calls = result[0].get_function_calls()
+  assert len(calls) == 1
+  assert calls[0].id == "c1"
+  assert result[1] == resp_1
+
+
+def test_drop_orphaned_calls_prevents_unclosed_tool_use_in_anthropic_conversion():
+  """Pruned events converted for Anthropic contain no unclosed tool_use blocks."""
+  from google.adk.models.anthropic_llm import content_to_message_param
+
+  orphan_call = _call_event("fc_interrupted", "slow_tool")
+  user_turn = Event(
+      author="user",
+      content=types.Content(
+          role="user",
+          parts=[types.Part(text="interrupted, do something else")],
+      ),
+  )
+
+  pruned_events = drop_orphaned_function_calls([orphan_call, user_turn])
+
+  messages = [
+      content_to_message_param(e.content) for e in pruned_events if e.content
+  ]
+  assert len(messages) == 1
+  assert messages[0]["role"] == "user"
+
+
+def test_drop_orphaned_calls_preserves_pending_long_running_tool():
+  """Calls marked in long_running_tool_ids are preserved even without response."""
+  lr_call = Event(
+      author="test_agent",
+      long_running_tool_ids={"lr_1"},
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="lr_1", name="long_tool", args={}
+                  )
+              )
+          ],
+      ),
+  )
+  orphan_call = _call_event("orphan_99", "ghost")
+  events = [lr_call, orphan_call]
+
+  result = drop_orphaned_function_calls(events)
+
+  assert result == [lr_call]
+
+
+def test_drop_orphaned_calls_preserves_pending_auth_and_confirmation_calls():
+  """Pending auth and confirmation calls with long_running_tool_ids are preserved."""
+  auth_call = Event(
+      author="test_agent",
+      long_running_tool_ids={"auth_1"},
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="auth_1", name="request_euc", args={}
+                  )
+              )
+          ],
+      ),
+  )
+  confirm_call = Event(
+      author="test_agent",
+      long_running_tool_ids={"confirm_1"},
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="confirm_1", name="request_confirmation", args={}
+                  )
+              )
+          ],
+      ),
+  )
+  user_message = Event(
+      author="user",
+      content=types.Content(
+          role="user",
+          parts=[types.Part(text="interleaved message")],
+      ),
+  )
+  events = [auth_call, confirm_call, user_message]
+
+  result = drop_orphaned_function_calls(events)
+
+  assert result == [auth_call, confirm_call, user_message]
 
 
 def test_merge_function_response_events_updates_existing_and_appends_distinct():

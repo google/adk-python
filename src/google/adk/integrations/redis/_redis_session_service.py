@@ -20,6 +20,7 @@ import asyncio
 import copy
 import json
 import logging
+import re
 import time
 from typing import Any
 from typing import cast
@@ -42,6 +43,11 @@ except ImportError:
   redis_asyncio = None
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+def _escape_glob(value: str) -> str:
+  """Escapes Redis glob metacharacters so that `value` matches only itself."""
+  return re.sub(r"([\\*?\[\]])", r"\\\1", value)
 
 
 class RedisSessionService(BaseSessionService):
@@ -268,16 +274,17 @@ class RedisSessionService(BaseSessionService):
   ) -> ListSessionsResponse:
     """Lists sessions matching the given app_name and optional user_id."""
     client = self._get_redis()
+    escaped_app_name = _escape_glob(app_name)
     pattern = (
-        f"{self.config.key_prefix}{app_name}:{user_id}:*"
-        if user_id
-        else f"{self.config.key_prefix}{app_name}:*"
+        f"{self.config.key_prefix}{escaped_app_name}:{_escape_glob(user_id)}:*"
+        if user_id is not None
+        else f"{self.config.key_prefix}{escaped_app_name}:*"
     )
     app_raw = await client.get(self._app_state_key(app_name))
     app_state = json.loads(app_raw) if app_raw else {}
 
     user_states_map: dict[str, dict[str, Any]] = {}
-    if user_id:
+    if user_id is not None:
       user_raw = await client.get(self._user_state_key(app_name, user_id))
       if user_raw:
         user_states_map[user_id] = json.loads(user_raw)
@@ -288,6 +295,13 @@ class RedisSessionService(BaseSessionService):
       if raw:
         try:
           s = Session.model_validate_json(raw)
+          # Key segments are ':'-joined and the trailing wildcard spans ':', so
+          # a matched key can belong to another app or user whose id embeds a
+          # ':'. Confirm ownership from the stored session itself.
+          if s.app_name != app_name or (
+              user_id is not None and s.user_id != user_id
+          ):
+            continue
           u_id = s.user_id
           if u_id not in user_states_map:
             u_raw = await client.get(self._user_state_key(app_name, u_id))

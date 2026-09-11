@@ -30,6 +30,7 @@ import warnings
 from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.models.lite_llm import _aggregate_streaming_thought_parts
 from google.adk.models.lite_llm import _append_fallback_user_content_if_missing
+from google.adk.models.lite_llm import _apply_provider_finish_reason
 from google.adk.models.lite_llm import _BraceDepthTracker
 from google.adk.models.lite_llm import _content_to_message_param
 from google.adk.models.lite_llm import _convert_reasoning_value_to_parts
@@ -71,6 +72,7 @@ from google.adk.models.lite_llm import ReasoningChunk
 from google.adk.models.lite_llm import TextChunk
 from google.adk.models.lite_llm import UsageMetadataChunk
 from google.adk.models.llm_request import LlmRequest
+from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 import litellm
 from litellm import ChatCompletionAssistantMessage
@@ -2903,18 +2905,18 @@ def test_message_to_generate_content_response_tool_call_accepts_unquoted_json_ke
   }
 
 
-def test_message_to_generate_content_response_tool_call_malformed_arguments_returns_empty():
-  """Unparseable tool-call argument JSON degrades to empty args, not a crash."""
+def test_message_to_generate_content_response_reports_malformed_tool_call():
+  """A caller gets MALFORMED_FUNCTION_CALL and keeps the text the model sent."""
   message = ChatCompletionAssistantMessage(
       role="assistant",
-      content=None,
+      content="Looking that up.",
       tool_calls=[
           ChatCompletionMessageToolCall(
               type="function",
               id="test_tool_call_id",
               function=Function(
                   name="test_function",
-                  arguments='{"city":"unterminated',
+                  arguments='{"test_arg": "unterminated',
               ),
           )
       ],
@@ -2922,67 +2924,160 @@ def test_message_to_generate_content_response_tool_call_malformed_arguments_retu
 
   response = _message_to_generate_content_response(message)
 
-  function_call = response.content.parts[0].function_call
-  assert response.content.role == "model"
-  assert function_call.name == "test_function"
-  assert isinstance(function_call.args, dict)
-  assert not function_call.args
-  assert function_call.id == "test_tool_call_id"
+  assert response.finish_reason == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert "test_function" in response.error_message
+  assert [part.text for part in response.content.parts] == ["Looking that up."]
 
 
-def test_message_to_generate_content_response_tool_call_malformed_arguments_logs_warning(
-    caplog,
+@pytest.mark.parametrize(
+    "arguments",
+    ['["test_arg", "test_value"]', '"test_arg"', "42"],
+)
+def test_message_to_generate_content_response_reports_non_object_tool_call(
+    arguments,
 ):
-  """The warning names the function but keeps the raw arguments out of it."""
+  """Arguments that decode cleanly but are not an object are unusable too."""
   message = ChatCompletionAssistantMessage(
       role="assistant",
-      content=None,
+      content="Looking that up.",
       tool_calls=[
           ChatCompletionMessageToolCall(
               type="function",
               id="test_tool_call_id",
               function=Function(
                   name="test_function",
-                  arguments='{"city":"unterminated',
+                  arguments=arguments,
               ),
           )
       ],
   )
 
-  with caplog.at_level(
-      logging.WARNING, logger="google_adk.google.adk.models.lite_llm"
-  ):
-    _message_to_generate_content_response(message)
+  response = _message_to_generate_content_response(message)
 
-  assert "test_function" in caplog.text
-  assert '{"city":"unterminated' not in caplog.text
+  assert response.finish_reason == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert "test_function" in response.error_message
+  assert [part.text for part in response.content.parts] == ["Looking that up."]
 
 
-def test_message_to_generate_content_response_tool_call_malformed_arguments_logs_raw_at_debug(
-    caplog,
+@pytest.mark.parametrize("arguments", [42, 3.14, True, ["test_arg"]])
+def test_message_to_generate_content_response_reports_non_string_arguments(
+    arguments,
 ):
-  """The raw arguments are only logged at DEBUG."""
+  """LiteLLM types promise a string, a provider can still send anything."""
+  tool_call = ChatCompletionMessageToolCall(
+      type="function",
+      id="test_tool_call_id",
+      function=Function(name="test_function", arguments="{}"),
+  )
+  # Assigning past the declared str is the only way to reproduce a payload
+  # that the annotation forbids and a provider sends anyway.
+  tool_call.function.arguments = arguments
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content="Looking that up.",
+      tool_calls=[tool_call],
+  )
+
+  response = _message_to_generate_content_response(message)
+
+  assert response.finish_reason == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert "test_function" in response.error_message
+  assert [part.text for part in response.content.parts] == ["Looking that up."]
+
+
+@pytest.mark.parametrize("name", [42, 3.14, True, ["test_function"]])
+def test_message_to_generate_content_response_reports_non_string_name(name):
+  """A truthy non-string name would otherwise break joining the report."""
+  tool_call = ChatCompletionMessageToolCall(
+      type="function",
+      id="test_tool_call_id",
+      function=Function(
+          name="test_function", arguments='{"test_arg": "unterminated'
+      ),
+  )
+  # Assigning past the declared str is the only way to reproduce a name that
+  # the annotation forbids and a provider sends anyway.
+  tool_call.function.name = name
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content="Looking that up.",
+      tool_calls=[tool_call],
+  )
+
+  response = _message_to_generate_content_response(message)
+
+  assert response.finish_reason == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert "<unnamed>" in response.error_message
+  assert [part.text for part in response.content.parts] == ["Looking that up."]
+
+
+def test_apply_provider_finish_reason_clears_error_when_provider_says_stop():
+  """A clean provider reason leaves behind no error from the one it replaced."""
+  llm_response = LlmResponse(
+      finish_reason=types.FinishReason.MALFORMED_FUNCTION_CALL,
+      error_code=types.FinishReason.MALFORMED_FUNCTION_CALL,
+      error_message=(
+          "Arguments for the following function calls were not a"
+          " valid JSON object: test_function"
+      ),
+  )
+
+  _apply_provider_finish_reason(llm_response, types.FinishReason.STOP)
+
+  assert llm_response.finish_reason == types.FinishReason.STOP
+  assert llm_response.error_code is None
+  assert llm_response.error_message is None
+
+
+def test_message_to_generate_content_response_keeps_parsable_tool_call():
+  """Only the malformed call is dropped, a sibling that parses still arrives."""
   message = ChatCompletionAssistantMessage(
       role="assistant",
       content=None,
       tool_calls=[
           ChatCompletionMessageToolCall(
               type="function",
-              id="test_tool_call_id",
+              id="bad_call",
               function=Function(
-                  name="test_function",
-                  arguments='{"city":"unterminated',
+                  name="broken_function",
+                  arguments='{"test_arg": "unterminated',
               ),
-          )
+          ),
+          ChatCompletionMessageToolCall(
+              type="function",
+              id="good_call",
+              function=Function(
+                  name="working_function",
+                  arguments='{"test_arg": "test_value"}',
+              ),
+          ),
       ],
   )
 
-  with caplog.at_level(
-      logging.DEBUG, logger="google_adk.google.adk.models.lite_llm"
-  ):
-    _message_to_generate_content_response(message)
+  response = _message_to_generate_content_response(message)
 
-  assert '{"city":"unterminated' in caplog.text
+  assert response.finish_reason == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert len(response.content.parts) == 1
+  assert response.content.parts[0].function_call.id == "good_call"
+
+
+def test_message_to_generate_content_response_leaves_partial_unstamped():
+  """A partial keeps no terminal reason, the assembled response carries it."""
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content='{"name": "test_function", "arguments": "{broken"}',
+  )
+
+  response = _message_to_generate_content_response(message, is_partial=True)
+
+  assert response.partial
+  assert response.finish_reason is None
+  assert response.error_code is None
+  assert response.error_message is None
 
 
 def test_message_to_generate_content_response_inline_tool_call_text():
@@ -4708,7 +4803,7 @@ async def test_completion_additional_args(mock_completion, mock_client):
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 4
+  assert len(responses) == 6
   mock_completion.assert_called_once()
 
   _, kwargs = mock_completion.call_args
@@ -4736,7 +4831,7 @@ async def test_completion_with_drop_params(mock_completion, mock_client):
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 4
+  assert len(responses) == 6
 
   mock_completion.assert_called_once()
 
@@ -4806,7 +4901,7 @@ async def test_generate_content_async_stream_tool_call_includes_aggregated_text(
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 4
+  assert len(responses) == 6
   assert responses[0].content.role == "model"
   assert responses[0].content.parts[0].text == "zero, "
   assert responses[0].model_version == "test_model"
@@ -4816,16 +4911,16 @@ async def test_generate_content_async_stream_tool_call_includes_aggregated_text(
   assert responses[2].content.role == "model"
   assert responses[2].content.parts[0].text == "two:"
   assert responses[2].model_version == "test_model"
-  assert responses[3].content.role == "model"
-  assert len(responses[3].content.parts) == 2
-  assert responses[3].content.parts[0].text == "zero, one, two:"
-  assert responses[3].content.parts[1].function_call.name == "test_function"
-  assert responses[3].content.parts[-1].function_call.args == {
+  assert responses[5].content.role == "model"
+  assert len(responses[5].content.parts) == 2
+  assert responses[5].content.parts[0].text == "zero, one, two:"
+  assert responses[5].content.parts[1].function_call.name == "test_function"
+  assert responses[5].content.parts[-1].function_call.args == {
       "test_arg": "test_value"
   }
-  assert responses[3].content.parts[-1].function_call.id == "test_tool_call_id"
-  assert responses[3].finish_reason == types.FinishReason.STOP
-  assert responses[3].model_version == "test_model"
+  assert responses[5].content.parts[-1].function_call.id == "test_tool_call_id"
+  assert responses[5].finish_reason == types.FinishReason.STOP
+  assert responses[5].model_version == "test_model"
   mock_completion.assert_called_once()
 
   _, kwargs = mock_completion.call_args
@@ -5079,25 +5174,25 @@ async def test_generate_content_async_stream_with_reasoning_tokens(
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 4
+  assert len(responses) == 6
   assert responses[0].content.role == "model"
   assert responses[0].content.parts[0].text == "zero, "
   assert responses[1].content.role == "model"
   assert responses[1].content.parts[0].text == "one, "
   assert responses[2].content.role == "model"
   assert responses[2].content.parts[0].text == "two:"
-  assert responses[3].content.role == "model"
-  assert responses[3].content.parts[-1].function_call.name == "test_function"
-  assert responses[3].content.parts[-1].function_call.args == {
+  assert responses[5].content.role == "model"
+  assert responses[5].content.parts[-1].function_call.name == "test_function"
+  assert responses[5].content.parts[-1].function_call.args == {
       "test_arg": "test_value"
   }
-  assert responses[3].content.parts[-1].function_call.id == "test_tool_call_id"
-  assert responses[3].finish_reason == types.FinishReason.STOP
+  assert responses[5].content.parts[-1].function_call.id == "test_tool_call_id"
+  assert responses[5].finish_reason == types.FinishReason.STOP
 
-  assert responses[3].usage_metadata.prompt_token_count == 10
-  assert responses[3].usage_metadata.candidates_token_count == 5
-  assert responses[3].usage_metadata.total_token_count == 15
-  assert responses[3].usage_metadata.thoughts_token_count == 5
+  assert responses[5].usage_metadata.prompt_token_count == 10
+  assert responses[5].usage_metadata.candidates_token_count == 5
+  assert responses[5].usage_metadata.total_token_count == 15
+  assert responses[5].usage_metadata.thoughts_token_count == 5
 
   mock_completion.assert_called_once()
 
@@ -5151,12 +5246,12 @@ async def test_generate_content_async_stream_with_usage_metadata(
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 4
-  assert responses[3].usage_metadata.prompt_token_count == 10
-  assert responses[3].usage_metadata.candidates_token_count == 5
-  assert responses[3].usage_metadata.total_token_count == 15
-  assert responses[3].usage_metadata.cached_content_token_count == 8
-  assert responses[3].usage_metadata.thoughts_token_count == 5
+  assert len(responses) == 6
+  assert responses[5].usage_metadata.prompt_token_count == 10
+  assert responses[5].usage_metadata.candidates_token_count == 5
+  assert responses[5].usage_metadata.total_token_count == 15
+  assert responses[5].usage_metadata.cached_content_token_count == 8
+  assert responses[5].usage_metadata.thoughts_token_count == 5
 
 
 @pytest.mark.asyncio
@@ -5191,12 +5286,12 @@ async def test_generate_content_async_stream_with_bedrock_cache_tokens(
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 4
-  assert responses[3].usage_metadata.prompt_token_count == 10
-  assert responses[3].usage_metadata.candidates_token_count == 5
-  assert responses[3].usage_metadata.total_token_count == 15
-  assert responses[3].usage_metadata.cached_content_token_count == 8
-  assert responses[3].usage_metadata.cache_creation_input_tokens == 4
+  assert len(responses) == 6
+  assert responses[5].usage_metadata.prompt_token_count == 10
+  assert responses[5].usage_metadata.candidates_token_count == 5
+  assert responses[5].usage_metadata.total_token_count == 15
+  assert responses[5].usage_metadata.cached_content_token_count == 8
+  assert responses[5].usage_metadata.cache_creation_input_tokens == 4
 
 
 @pytest.mark.asyncio
@@ -5360,8 +5455,8 @@ async def test_generate_content_async_stream_with_empty_chunk(
       )
   ]
 
-  assert len(responses) == 1
-  final_response = responses[0]
+  assert len(responses) == 3
+  final_response = responses[2]
   assert final_response.content.role == "model"
 
   # Crucially, assert that only ONE tool call was generated,
@@ -5414,12 +5509,162 @@ async def test_streaming_tool_call_truncated_by_max_tokens(
       )
   ]
 
-  assert len(responses) == 1
-  error_response = responses[0]
+  assert len(responses) == 2
+  error_response = responses[1]
   assert error_response.error_code == types.FinishReason.MAX_TOKENS
   assert error_response.finish_reason == types.FinishReason.MAX_TOKENS
   assert "truncated" in error_response.error_message
   assert "max_output_tokens" in error_response.error_message
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_cut_off_reports_malformed_function_call(
+    mock_completion, lite_llm_instance
+):
+  """A stream that stops mid-tool-call refuses the call instead of running it."""
+  stream_chunks = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_123",
+                              function=Function(
+                                  name="test_function",
+                                  arguments='{"test_arg": ',
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+      # No terminal chunk follows: the stream simply stops, the way it does
+      # when a proxy times out or the provider drops the connection.
+  ]
+  mock_completion.return_value = iter(stream_chunks)
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert len(responses) == 2
+  error_response = responses[1]
+  assert error_response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert (
+      error_response.finish_reason == types.FinishReason.MALFORMED_FUNCTION_CALL
+  )
+  # The token limit had nothing to do with it, so it must not be blamed.
+  assert "max_output_tokens" not in error_response.error_message
+  # Above all, the half-built call must not reach the caller as a real call.
+  assert error_response.content is None
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_cut_off_after_complete_arguments_is_kept(
+    mock_completion, lite_llm_instance
+):
+  """A stream missing only its terminal chunk still yields the finished call."""
+  stream_chunks = [
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_123",
+                              function=Function(
+                                  name="test_function",
+                                  arguments='{"test_arg": "test_value"}',
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ],
+      ),
+  ]
+  mock_completion.return_value = iter(stream_chunks)
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  final_response = responses[-1]
+  assert final_response.error_code is None
+  function_call = final_response.content.parts[0].function_call
+  assert function_call.name == "test_function"
+  assert function_call.args == {"test_arg": "test_value"}
+
+
+@pytest.mark.asyncio
+async def test_streaming_inline_tool_call_malformed_arguments(
+    mock_completion, lite_llm_instance
+):
+  """A tool call parsed out of text keeps its malformed verdict over "stop"."""
+  stream_chunks = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      content='{"name": "test_function", "argum',
+                  ),
+              )
+          ]
+      ),
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      content='ents": "{broken"}',
+                  ),
+              )
+          ]
+      ),
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason="stop",
+                  delta=Delta(role="assistant", content=""),
+              )
+          ]
+      ),
+  ]
+  mock_completion.return_value = iter(stream_chunks)
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  final_response = responses[-1]
+  assert (
+      final_response.finish_reason == types.FinishReason.MALFORMED_FUNCTION_CALL
+  )
+  assert final_response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert "test_function" in final_response.error_message
 
 
 @pytest.mark.asyncio
@@ -5462,8 +5707,8 @@ async def test_streaming_tool_call_complete_with_length_finish_reason(
       )
   ]
 
-  assert len(responses) == 1
-  final_response = responses[0]
+  assert len(responses) == 2
+  final_response = responses[1]
   assert final_response.content.role == "model"
   assert len(final_response.content.parts) == 1
 
@@ -5476,10 +5721,14 @@ async def test_streaming_tool_call_complete_with_length_finish_reason(
 
 
 @pytest.mark.asyncio
-async def test_streaming_tool_call_malformed_arguments_returns_empty(
+async def test_streaming_tool_call_malformed_arguments_is_refused(
     mock_completion, lite_llm_instance
 ):
-  """Malformed streamed tool-call args (finish_reason='tool_calls') degrade to empty args."""
+  """Streamed args that do not parse are refused even on a clean finish_reason.
+
+  LiteLLM substitutes "stop" when a provider ends a stream without sending a
+  reason, so a clean-looking reason is no evidence the call arrived whole.
+  """
   stream_chunks = [
       ModelResponseStream(
           choices=[
@@ -5515,15 +5764,11 @@ async def test_streaming_tool_call_malformed_arguments_returns_empty(
       )
   ]
 
-  assert len(responses) == 1
-  final_response = responses[0]
-  assert final_response.content.role == "model"
-  function_call = final_response.content.parts[0].function_call
-  assert function_call.name == "test_function"
-  assert function_call.id == "call_789"
-  assert isinstance(function_call.args, dict)
-  assert not function_call.args
-  assert final_response.error_code != types.FinishReason.MAX_TOKENS
+  assert len(responses) == 2
+  final_response = responses[1]
+  assert final_response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  # The tool must not run with arguments the model never finished sending.
+  assert final_response.content is None
 
 
 @pytest.mark.asyncio
@@ -5587,6 +5832,7 @@ async def test_get_completion_inputs_generation_params():
           max_output_tokens=123,
           top_p=0.88,
           top_k=7,
+          seed=42,
           stop_sequences=["foo", "bar"],
           presence_penalty=0.1,
           frequency_penalty=0.2,
@@ -5600,6 +5846,7 @@ async def test_get_completion_inputs_generation_params():
   assert generation_params["max_completion_tokens"] == 123
   assert generation_params["top_p"] == 0.88
   assert generation_params["top_k"] == 7
+  assert generation_params["seed"] == 42
   assert generation_params["stop"] == ["foo", "bar"]
   assert generation_params["presence_penalty"] == 0.1
   assert generation_params["frequency_penalty"] == 0.2
@@ -5935,6 +6182,79 @@ def test_model_response_to_generate_content_response_empty_message_dict():
   assert len(llm_response.content.parts) == 0
   assert llm_response.finish_reason == types.FinishReason.STOP
   assert llm_response.usage_metadata is not None
+
+
+@pytest.mark.parametrize("finish_reason", ["tool_calls", "end_turn"])
+def test_model_response_to_generate_content_response_malformed_tool_call(
+    finish_reason,
+):
+  """A provider reason that explains nothing keeps the malformed verdict."""
+  response = ModelResponse(
+      model="test_model",
+      choices=[{
+          "finish_reason": finish_reason,
+          "message": {
+              "role": "assistant",
+              "content": None,
+              "tool_calls": [{
+                  "type": "function",
+                  "id": "call_1",
+                  "function": {
+                      "name": "test_function",
+                      "arguments": '{"test_arg": "unterminated',
+                  },
+              }],
+          },
+      }],
+  )
+
+  llm_response = _model_response_to_generate_content_response(response)
+
+  assert (
+      llm_response.finish_reason == types.FinishReason.MALFORMED_FUNCTION_CALL
+  )
+  assert llm_response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
+  assert not llm_response.content.parts
+
+
+@pytest.mark.parametrize(
+    ("finish_reason", "expected", "expected_message"),
+    [
+        ("length", types.FinishReason.MAX_TOKENS, "Maximum tokens reached"),
+        ("content_filter", types.FinishReason.SAFETY, "Finished with SAFETY"),
+    ],
+)
+def test_model_response_to_generate_content_response_provider_end_reason(
+    finish_reason, expected, expected_message
+):
+  """A provider that ended the response early explains the bad arguments."""
+  response = ModelResponse(
+      model="test_model",
+      choices=[{
+          "finish_reason": finish_reason,
+          "message": {
+              "role": "assistant",
+              "content": None,
+              "tool_calls": [{
+                  "type": "function",
+                  "id": "call_1",
+                  "function": {
+                      "name": "test_function",
+                      "arguments": '{"test_arg": "unterminated',
+                  },
+              }],
+          },
+      }],
+  )
+
+  llm_response = _model_response_to_generate_content_response(response)
+
+  assert llm_response.finish_reason == expected
+  assert llm_response.error_code == expected
+  assert llm_response.error_message == (
+      f"{expected_message}. Arguments for the following function calls were"
+      " not a valid JSON object: test_function"
+  )
 
 
 def test_model_response_to_generate_content_response_safety_finish_reason():
@@ -7353,8 +7673,28 @@ async def test_streaming_tool_call_args_assembled_from_many_fragments(
       )
   ]
 
-  assert len(responses) == 1
-  function_call = responses[0].content.parts[0].function_call
+  assert len(responses) == 13
+  assert all(r.partial is True for r in responses[:12])
+  assert responses[12].partial is False
+  assert all(
+      r.content.parts[0].function_call.will_continue is True
+      for r in responses[:12]
+  )
+
+  all_partial_args = [
+      p
+      for r in responses[:12]
+      if r.content.parts[0].function_call.partial_args
+      for p in r.content.parts[0].function_call.partial_args
+  ]
+  assert all_partial_args
+  paths = {p.json_path for p in all_partial_args}
+  assert "$.city" in paths
+  assert "$.details.radius" in paths
+  assert "$.details.tags[0]" in paths
+  assert "$.details.tags[1]" in paths
+
+  function_call = responses[12].content.parts[0].function_call
   assert function_call.name == "my_func"
   assert function_call.id == "call_xyz"
   assert function_call.args == json.loads(full_args)
@@ -7439,8 +7779,26 @@ async def test_streaming_tool_call_brace_in_string_does_not_falsely_complete(
       )
   ]
 
-  assert len(responses) == 1
-  parts = responses[0].content.parts
+  assert len(responses) == 26
+  assert all(r.partial is True for r in responses[:25])
+  assert responses[25].partial is False
+  assert all(
+      r.content.parts[0].function_call.will_continue is True
+      for r in responses[:25]
+  )
+
+  all_partial_args_2 = [
+      p
+      for r in responses[:25]
+      if r.content.parts[0].function_call.partial_args
+      for p in r.content.parts[0].function_call.partial_args
+  ]
+  assert all_partial_args_2
+  paths_2 = {p.json_path for p in all_partial_args_2}
+  assert "$.text" in paths_2
+  assert "$.x" in paths_2
+
+  parts = responses[25].content.parts
   assert len(parts) == 2
   args_by_name = {p.function_call.name: p.function_call.args for p in parts}
   assert args_by_name["my_func"] == json.loads(full_args_a)
@@ -7509,6 +7867,10 @@ async def test_streaming_buffers_hold_fragments_instead_of_growing_copies(
       LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
   )
   try:
+    # Skip the 3 partial function call responses
+    await responses.__anext__()
+    await responses.__anext__()
+    await responses.__anext__()
     # Suspends on the first partial text response, with both buffers filled.
     await responses.__anext__()
     buffers = responses.ag_frame.f_locals
@@ -7996,3 +8358,231 @@ def test_to_litellm_response_format_strict_openai_schema_for_genai_schema():
       {"type": "string"},
       {"type": "integer"},
   ]
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_aborted_by_length(
+    mock_completion, lite_llm_instance
+):
+  """If finish_reason=length on a chunk with args, partial will_continue remains True."""
+  fragments = ['{"city": "San ', 'Francisco"}']
+  stream = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_xyz",
+                              function=Function(
+                                  name="my_func", arguments=fragments[0]
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason="length",
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id=None,
+                              function=Function(
+                                  name=None, arguments=fragments[1]
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+  ]
+  mock_completion.return_value = iter(stream)
+
+  responses = [
+      r
+      async for r in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert len(responses) == 3
+
+  fc1 = responses[0].content.parts[0].function_call
+  assert fc1.will_continue is True
+  assert [pa.string_value for pa in fc1.partial_args] == ["San "]
+  assert [pa.json_path for pa in fc1.partial_args] == ["$.city"]
+
+  fc2 = responses[1].content.parts[0].function_call
+  assert fc2.will_continue is True
+  assert [pa.string_value for pa in fc2.partial_args] == ["Francisco"]
+  assert [pa.json_path for pa in fc2.partial_args] == ["$.city"]
+
+  final_fc = responses[2].content.parts[0].function_call
+  assert final_fc.will_continue is None
+  assert final_fc.args == {"city": "San Francisco"}
+  assert responses[2].finish_reason == types.FinishReason.MAX_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_stop_with_args_does_not_flip_will_continue(
+    mock_completion, lite_llm_instance
+):
+  """If finish_reason=stop on a chunk with args, will_continue should remain True.
+
+  This is because we don't finalize on stop with args, but wait for a stop-only
+  chunk.
+  """
+  fragments = ['{"city": "San ', 'Francisco"}']
+  stream = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_xyz",
+                              function=Function(
+                                  name="my_func", arguments=fragments[0]
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason="stop",
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id=None,
+                              function=Function(
+                                  name=None, arguments=fragments[1]
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason="stop",
+                  delta=Delta(),
+              )
+          ]
+      ),
+  ]
+  mock_completion.return_value = iter(stream)
+
+  responses = [
+      r
+      async for r in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert len(responses) == 3
+
+  fc1 = responses[0].content.parts[0].function_call
+  assert fc1.will_continue is True
+  assert [pa.string_value for pa in fc1.partial_args] == ["San "]
+  assert [pa.json_path for pa in fc1.partial_args] == ["$.city"]
+
+  fc2 = responses[1].content.parts[0].function_call
+  assert fc2.will_continue is True  # Crucial: remains True
+  assert [pa.string_value for pa in fc2.partial_args] == ["Francisco"]
+  assert [pa.json_path for pa in fc2.partial_args] == ["$.city"]
+
+  final_fc = responses[2].content.parts[0].function_call
+  assert final_fc.will_continue is None
+  assert final_fc.args == {"city": "San Francisco"}
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_partial_response_will_continue_true_on_tool_calls_chunk(
+    mock_completion, lite_llm_instance
+):
+  fragments = ['{"city": "San ', 'Francisco"}']
+  stream = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_xyz",
+                              function=Function(
+                                  name="my_func", arguments=fragments[0]
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason="tool_calls",
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id=None,
+                              function=Function(
+                                  name=None, arguments=fragments[1]
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+  ]
+  mock_completion.return_value = iter(stream)
+
+  responses = [
+      r
+      async for r in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert len(responses) == 3
+  partial_responses = [r for r in responses if r.partial]
+  assert len(partial_responses) == 2
+  for r in partial_responses:
+    assert r.content.parts[0].function_call.will_continue is True
+
+  final_fc = responses[2].content.parts[0].function_call
+  assert final_fc.will_continue is None
+  assert final_fc.args == {"city": "San Francisco"}

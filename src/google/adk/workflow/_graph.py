@@ -33,6 +33,7 @@ from pydantic import SerializeAsAny
 
 from ..tools.base_tool import BaseTool
 from ._base_node import BaseNode
+from ._errors import WorkflowConfigurationError
 
 RouteValue: TypeAlias = bool | int | str
 """Type alias for valid routing values used in conditional graph edges."""
@@ -106,7 +107,11 @@ class Graph(BaseModel):
   """The edges in the workflow graph."""
 
   _terminal_node_names: set[str] = PrivateAttr(default_factory=set)
-  """Nodes with no outgoing edges. Computed by validate_graph."""
+  """Nodes with no outgoing edges. Computed by validate_graph.
+
+  Empty until ``validate_graph`` has run, so an empty set means "not computed
+  yet" as well as "no terminal nodes". Read it only after validating.
+  """
 
   @classmethod
   def from_edge_items(cls, edge_items: list[EdgeItem]) -> Graph:
@@ -118,7 +123,7 @@ class Graph(BaseModel):
   def model_post_init(self, context: Any) -> None:
     """Populates nodes from edges."""
     if "nodes" in self.model_fields_set and self.nodes:
-      raise ValueError(
+      raise WorkflowConfigurationError(
           "Nodes are inferred from edges, do not set nodes explicitly."
       )
     if self.edges:

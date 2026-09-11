@@ -134,6 +134,16 @@ _CREDENTIAL_ARG_FUNCTION_CALL_NAMES = frozenset(
     {REQUEST_EUC_FUNCTION_CALL_NAME}
 )
 
+# Task states that are neither terminal nor a deliberate pause, so a stream that
+# ends there was cut short. A task awaiting input or auth is not in this set:
+# there the remote agent stops streaming on purpose and waits for the caller. An
+# unknown state is, because the spec gives it no reading that ends a stream.
+_UNFINISHED_TASK_STATES = frozenset({
+    _compat.TS_UNKNOWN,
+    _compat.TS_SUBMITTED,
+    _compat.TS_WORKING,
+})
+
 _RESULT_KEY = "result"
 
 # Top-level keys of a serialized AuthConfig, the shape an adk_request_credential
@@ -932,6 +942,19 @@ class RemoteA2aAgent(BaseAgent):
 
     # Determine if source is URL or file path
     if agent_card_source.startswith(("http://", "https://")):
+      # The card request interceptors attach the credential resolved for this
+      # invocation, so the scheme is checked before the fetch rather than with
+      # the card's RPC targets afterwards -- by then the credential has already
+      # gone out on the wire. Plain http stays allowed on a loopback host, the
+      # same carve-out `_validate_card_rpc_targets` applies.
+      parsed_source = urlparse(agent_card_source)
+      if parsed_source.scheme.lower() != "https" and not _is_loopback_host(
+          parsed_source.hostname
+      ):
+        raise AgentCardResolutionError(
+            "Agent card URL must use https, or http on a loopback host:"
+            f" {agent_card_source}"
+        )
       return await self._resolve_agent_card_from_url(agent_card_source, ctx)
     else:
       return await self._resolve_agent_card_from_file(agent_card_source)
@@ -1623,6 +1646,7 @@ class RemoteA2aAgent(BaseAgent):
         # status/artifact updates are aggregated into a running task (matching the
         # 0.3.x client behavior).
         normalize_stream_item = _compat.make_stream_normalizer()
+        last_task = None
         async with Aclosing(
             _compat.send_message(
                 a2a_client,
@@ -1641,6 +1665,7 @@ class RemoteA2aAgent(BaseAgent):
               task = a2a_response[0]
               if task:
                 metadata = task.metadata
+                last_task = task
             else:
               metadata = a2a_response.metadata
 
@@ -1739,6 +1764,24 @@ class RemoteA2aAgent(BaseAgent):
                 yield failure_event
                 should_release_task_control = True
                 return
+
+        if (
+            last_task
+            and last_task.status
+            and last_task.status.state in _UNFINISHED_TASK_STATES
+        ):
+          task_error_message = (
+              "A2A response stream ended before task"
+              f" {last_task.id} reached a terminal state."
+          )
+          logger.error(task_error_message)
+          should_release_task_control = True
+          yield Event(
+              author=self.name,
+              error_message=task_error_message,
+              invocation_id=ctx.invocation_id,
+              branch=ctx.branch,
+          )
 
       except _compat.A2A_HTTP_ERRORS as e:
         error_message = f"A2A request failed: {e}"

@@ -46,10 +46,13 @@ class ScheduleDynamicNode(Protocol):
       critical for matching events on resume.
     use_as_output: If True, the child node's output will replace the calling
       node's output.
-    run_id: A unique ID for this specific execution of the node.
-    use_sub_branch: Whether the node should execute in an isolated sub-branch
-      to prevent message history pollution.
+    run_id: Optional unique ID for this specific execution of the node.
+      If None, the scheduler assigns a sequential run ID.
+    use_sub_branch: Whether the node should execute in an isolated sub-branch to
+      prevent message history pollution.
     override_branch: Optional specific branch name to use, overriding defaults.
+    override_isolation_scope: Optional scope tag for the node's conversation
+      view, overriding the scope that would otherwise be computed for it.
 
   Returns:
     Awaitable[Context]: A future that resolves to the child node's Context,
@@ -71,7 +74,7 @@ class ScheduleDynamicNode(Protocol):
       *,
       node_name: str | None = None,
       use_as_output: bool = False,
-      run_id: str,
+      run_id: str | None = None,
       use_sub_branch: bool = False,
       override_branch: str | None = None,
       override_isolation_scope: str | None = None,
