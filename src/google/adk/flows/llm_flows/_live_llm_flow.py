@@ -820,6 +820,12 @@ async def run_live_flow(
                 # instead of calling `transfer_to_agent`.
                 transfer_to_agent = event.actions.transfer_to_agent
                 if transfer_to_agent:
+                  # Stop background tools before the transfer delay so:
+                  # 1. In-flight responses are not forwarded to the parent agent
+                  #    during the delay while the request queue drains.
+                  # 2. Function responses are not sent to the sub-agent after
+                  #    the transfer occurs.
+                  await flow._stop_background_tool_tasks(invocation_context)
                   await asyncio.sleep(
                       base_llm_flow.DEFAULT_TRANSFER_AGENT_DELAY
                   )
@@ -828,13 +834,6 @@ async def run_live_flow(
                   logger.debug('Closing live connection')
                   await llm_connection.close()
                   logger.debug('Live connection closed.')
-                  # The sub agent takes over the live request queue, so this
-                  # agent's background tools have to stop here rather than
-                  # when this run_live eventually returns: it does not return
-                  # until the sub agent is done, and until then a tool of this
-                  # agent would keep feeding function responses to a model
-                  # that never made those calls.
-                  await flow._stop_background_tool_tasks(invocation_context)
                   # transfer to the sub agent.
                   logger.debug('Transferring to agent: %s', transfer_to_agent)
                   agent_to_run = flow._get_agent_to_run(

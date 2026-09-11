@@ -4803,7 +4803,7 @@ async def test_completion_additional_args(mock_completion, mock_client):
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 4
+  assert len(responses) == 6
   mock_completion.assert_called_once()
 
   _, kwargs = mock_completion.call_args
@@ -4831,7 +4831,7 @@ async def test_completion_with_drop_params(mock_completion, mock_client):
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 4
+  assert len(responses) == 6
 
   mock_completion.assert_called_once()
 
@@ -4901,7 +4901,7 @@ async def test_generate_content_async_stream_tool_call_includes_aggregated_text(
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 4
+  assert len(responses) == 6
   assert responses[0].content.role == "model"
   assert responses[0].content.parts[0].text == "zero, "
   assert responses[0].model_version == "test_model"
@@ -4911,16 +4911,16 @@ async def test_generate_content_async_stream_tool_call_includes_aggregated_text(
   assert responses[2].content.role == "model"
   assert responses[2].content.parts[0].text == "two:"
   assert responses[2].model_version == "test_model"
-  assert responses[3].content.role == "model"
-  assert len(responses[3].content.parts) == 2
-  assert responses[3].content.parts[0].text == "zero, one, two:"
-  assert responses[3].content.parts[1].function_call.name == "test_function"
-  assert responses[3].content.parts[-1].function_call.args == {
+  assert responses[5].content.role == "model"
+  assert len(responses[5].content.parts) == 2
+  assert responses[5].content.parts[0].text == "zero, one, two:"
+  assert responses[5].content.parts[1].function_call.name == "test_function"
+  assert responses[5].content.parts[-1].function_call.args == {
       "test_arg": "test_value"
   }
-  assert responses[3].content.parts[-1].function_call.id == "test_tool_call_id"
-  assert responses[3].finish_reason == types.FinishReason.STOP
-  assert responses[3].model_version == "test_model"
+  assert responses[5].content.parts[-1].function_call.id == "test_tool_call_id"
+  assert responses[5].finish_reason == types.FinishReason.STOP
+  assert responses[5].model_version == "test_model"
   mock_completion.assert_called_once()
 
   _, kwargs = mock_completion.call_args
@@ -5174,25 +5174,25 @@ async def test_generate_content_async_stream_with_reasoning_tokens(
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 4
+  assert len(responses) == 6
   assert responses[0].content.role == "model"
   assert responses[0].content.parts[0].text == "zero, "
   assert responses[1].content.role == "model"
   assert responses[1].content.parts[0].text == "one, "
   assert responses[2].content.role == "model"
   assert responses[2].content.parts[0].text == "two:"
-  assert responses[3].content.role == "model"
-  assert responses[3].content.parts[-1].function_call.name == "test_function"
-  assert responses[3].content.parts[-1].function_call.args == {
+  assert responses[5].content.role == "model"
+  assert responses[5].content.parts[-1].function_call.name == "test_function"
+  assert responses[5].content.parts[-1].function_call.args == {
       "test_arg": "test_value"
   }
-  assert responses[3].content.parts[-1].function_call.id == "test_tool_call_id"
-  assert responses[3].finish_reason == types.FinishReason.STOP
+  assert responses[5].content.parts[-1].function_call.id == "test_tool_call_id"
+  assert responses[5].finish_reason == types.FinishReason.STOP
 
-  assert responses[3].usage_metadata.prompt_token_count == 10
-  assert responses[3].usage_metadata.candidates_token_count == 5
-  assert responses[3].usage_metadata.total_token_count == 15
-  assert responses[3].usage_metadata.thoughts_token_count == 5
+  assert responses[5].usage_metadata.prompt_token_count == 10
+  assert responses[5].usage_metadata.candidates_token_count == 5
+  assert responses[5].usage_metadata.total_token_count == 15
+  assert responses[5].usage_metadata.thoughts_token_count == 5
 
   mock_completion.assert_called_once()
 
@@ -5246,12 +5246,12 @@ async def test_generate_content_async_stream_with_usage_metadata(
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 4
-  assert responses[3].usage_metadata.prompt_token_count == 10
-  assert responses[3].usage_metadata.candidates_token_count == 5
-  assert responses[3].usage_metadata.total_token_count == 15
-  assert responses[3].usage_metadata.cached_content_token_count == 8
-  assert responses[3].usage_metadata.thoughts_token_count == 5
+  assert len(responses) == 6
+  assert responses[5].usage_metadata.prompt_token_count == 10
+  assert responses[5].usage_metadata.candidates_token_count == 5
+  assert responses[5].usage_metadata.total_token_count == 15
+  assert responses[5].usage_metadata.cached_content_token_count == 8
+  assert responses[5].usage_metadata.thoughts_token_count == 5
 
 
 @pytest.mark.asyncio
@@ -5286,12 +5286,12 @@ async def test_generate_content_async_stream_with_bedrock_cache_tokens(
           LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
       )
   ]
-  assert len(responses) == 4
-  assert responses[3].usage_metadata.prompt_token_count == 10
-  assert responses[3].usage_metadata.candidates_token_count == 5
-  assert responses[3].usage_metadata.total_token_count == 15
-  assert responses[3].usage_metadata.cached_content_token_count == 8
-  assert responses[3].usage_metadata.cache_creation_input_tokens == 4
+  assert len(responses) == 6
+  assert responses[5].usage_metadata.prompt_token_count == 10
+  assert responses[5].usage_metadata.candidates_token_count == 5
+  assert responses[5].usage_metadata.total_token_count == 15
+  assert responses[5].usage_metadata.cached_content_token_count == 8
+  assert responses[5].usage_metadata.cache_creation_input_tokens == 4
 
 
 @pytest.mark.asyncio
@@ -5455,8 +5455,8 @@ async def test_generate_content_async_stream_with_empty_chunk(
       )
   ]
 
-  assert len(responses) == 1
-  final_response = responses[0]
+  assert len(responses) == 3
+  final_response = responses[2]
   assert final_response.content.role == "model"
 
   # Crucially, assert that only ONE tool call was generated,
@@ -5509,8 +5509,8 @@ async def test_streaming_tool_call_truncated_by_max_tokens(
       )
   ]
 
-  assert len(responses) == 1
-  error_response = responses[0]
+  assert len(responses) == 2
+  error_response = responses[1]
   assert error_response.error_code == types.FinishReason.MAX_TOKENS
   assert error_response.finish_reason == types.FinishReason.MAX_TOKENS
   assert "truncated" in error_response.error_message
@@ -5556,8 +5556,8 @@ async def test_streaming_tool_call_cut_off_reports_malformed_function_call(
       )
   ]
 
-  assert len(responses) == 1
-  error_response = responses[0]
+  assert len(responses) == 2
+  error_response = responses[1]
   assert error_response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
   assert (
       error_response.finish_reason == types.FinishReason.MALFORMED_FUNCTION_CALL
@@ -5707,8 +5707,8 @@ async def test_streaming_tool_call_complete_with_length_finish_reason(
       )
   ]
 
-  assert len(responses) == 1
-  final_response = responses[0]
+  assert len(responses) == 2
+  final_response = responses[1]
   assert final_response.content.role == "model"
   assert len(final_response.content.parts) == 1
 
@@ -5764,8 +5764,8 @@ async def test_streaming_tool_call_malformed_arguments_is_refused(
       )
   ]
 
-  assert len(responses) == 1
-  final_response = responses[0]
+  assert len(responses) == 2
+  final_response = responses[1]
   assert final_response.error_code == types.FinishReason.MALFORMED_FUNCTION_CALL
   # The tool must not run with arguments the model never finished sending.
   assert final_response.content is None
@@ -7673,8 +7673,28 @@ async def test_streaming_tool_call_args_assembled_from_many_fragments(
       )
   ]
 
-  assert len(responses) == 1
-  function_call = responses[0].content.parts[0].function_call
+  assert len(responses) == 13
+  assert all(r.partial is True for r in responses[:12])
+  assert responses[12].partial is False
+  assert all(
+      r.content.parts[0].function_call.will_continue is True
+      for r in responses[:12]
+  )
+
+  all_partial_args = [
+      p
+      for r in responses[:12]
+      if r.content.parts[0].function_call.partial_args
+      for p in r.content.parts[0].function_call.partial_args
+  ]
+  assert all_partial_args
+  paths = {p.json_path for p in all_partial_args}
+  assert "$.city" in paths
+  assert "$.details.radius" in paths
+  assert "$.details.tags[0]" in paths
+  assert "$.details.tags[1]" in paths
+
+  function_call = responses[12].content.parts[0].function_call
   assert function_call.name == "my_func"
   assert function_call.id == "call_xyz"
   assert function_call.args == json.loads(full_args)
@@ -7759,8 +7779,26 @@ async def test_streaming_tool_call_brace_in_string_does_not_falsely_complete(
       )
   ]
 
-  assert len(responses) == 1
-  parts = responses[0].content.parts
+  assert len(responses) == 26
+  assert all(r.partial is True for r in responses[:25])
+  assert responses[25].partial is False
+  assert all(
+      r.content.parts[0].function_call.will_continue is True
+      for r in responses[:25]
+  )
+
+  all_partial_args_2 = [
+      p
+      for r in responses[:25]
+      if r.content.parts[0].function_call.partial_args
+      for p in r.content.parts[0].function_call.partial_args
+  ]
+  assert all_partial_args_2
+  paths_2 = {p.json_path for p in all_partial_args_2}
+  assert "$.text" in paths_2
+  assert "$.x" in paths_2
+
+  parts = responses[25].content.parts
   assert len(parts) == 2
   args_by_name = {p.function_call.name: p.function_call.args for p in parts}
   assert args_by_name["my_func"] == json.loads(full_args_a)
@@ -7829,6 +7867,10 @@ async def test_streaming_buffers_hold_fragments_instead_of_growing_copies(
       LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
   )
   try:
+    # Skip the 3 partial function call responses
+    await responses.__anext__()
+    await responses.__anext__()
+    await responses.__anext__()
     # Suspends on the first partial text response, with both buffers filled.
     await responses.__anext__()
     buffers = responses.ag_frame.f_locals
@@ -8316,3 +8358,231 @@ def test_to_litellm_response_format_strict_openai_schema_for_genai_schema():
       {"type": "string"},
       {"type": "integer"},
   ]
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_aborted_by_length(
+    mock_completion, lite_llm_instance
+):
+  """If finish_reason=length on a chunk with args, partial will_continue remains True."""
+  fragments = ['{"city": "San ', 'Francisco"}']
+  stream = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_xyz",
+                              function=Function(
+                                  name="my_func", arguments=fragments[0]
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason="length",
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id=None,
+                              function=Function(
+                                  name=None, arguments=fragments[1]
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+  ]
+  mock_completion.return_value = iter(stream)
+
+  responses = [
+      r
+      async for r in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert len(responses) == 3
+
+  fc1 = responses[0].content.parts[0].function_call
+  assert fc1.will_continue is True
+  assert [pa.string_value for pa in fc1.partial_args] == ["San "]
+  assert [pa.json_path for pa in fc1.partial_args] == ["$.city"]
+
+  fc2 = responses[1].content.parts[0].function_call
+  assert fc2.will_continue is True
+  assert [pa.string_value for pa in fc2.partial_args] == ["Francisco"]
+  assert [pa.json_path for pa in fc2.partial_args] == ["$.city"]
+
+  final_fc = responses[2].content.parts[0].function_call
+  assert final_fc.will_continue is None
+  assert final_fc.args == {"city": "San Francisco"}
+  assert responses[2].finish_reason == types.FinishReason.MAX_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_stop_with_args_does_not_flip_will_continue(
+    mock_completion, lite_llm_instance
+):
+  """If finish_reason=stop on a chunk with args, will_continue should remain True.
+
+  This is because we don't finalize on stop with args, but wait for a stop-only
+  chunk.
+  """
+  fragments = ['{"city": "San ', 'Francisco"}']
+  stream = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_xyz",
+                              function=Function(
+                                  name="my_func", arguments=fragments[0]
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason="stop",
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id=None,
+                              function=Function(
+                                  name=None, arguments=fragments[1]
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason="stop",
+                  delta=Delta(),
+              )
+          ]
+      ),
+  ]
+  mock_completion.return_value = iter(stream)
+
+  responses = [
+      r
+      async for r in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert len(responses) == 3
+
+  fc1 = responses[0].content.parts[0].function_call
+  assert fc1.will_continue is True
+  assert [pa.string_value for pa in fc1.partial_args] == ["San "]
+  assert [pa.json_path for pa in fc1.partial_args] == ["$.city"]
+
+  fc2 = responses[1].content.parts[0].function_call
+  assert fc2.will_continue is True  # Crucial: remains True
+  assert [pa.string_value for pa in fc2.partial_args] == ["Francisco"]
+  assert [pa.json_path for pa in fc2.partial_args] == ["$.city"]
+
+  final_fc = responses[2].content.parts[0].function_call
+  assert final_fc.will_continue is None
+  assert final_fc.args == {"city": "San Francisco"}
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_partial_response_will_continue_true_on_tool_calls_chunk(
+    mock_completion, lite_llm_instance
+):
+  fragments = ['{"city": "San ', 'Francisco"}']
+  stream = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_xyz",
+                              function=Function(
+                                  name="my_func", arguments=fragments[0]
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason="tool_calls",
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id=None,
+                              function=Function(
+                                  name=None, arguments=fragments[1]
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+  ]
+  mock_completion.return_value = iter(stream)
+
+  responses = [
+      r
+      async for r in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert len(responses) == 3
+  partial_responses = [r for r in responses if r.partial]
+  assert len(partial_responses) == 2
+  for r in partial_responses:
+    assert r.content.parts[0].function_call.will_continue is True
+
+  final_fc = responses[2].content.parts[0].function_call
+  assert final_fc.will_continue is None
+  assert final_fc.args == {"city": "San Francisco"}

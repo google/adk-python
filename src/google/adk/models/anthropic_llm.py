@@ -52,6 +52,7 @@ from typing_extensions import override
 
 from . import _prompt_cache
 from ..utils import _json_utils
+from ..utils import streaming_utils
 from ..utils._google_client_headers import get_tracking_headers
 from ..utils._schema_utils import lowercase_schema_types
 from .base_llm import BaseLlm
@@ -132,6 +133,7 @@ class _ToolUseAccumulator:
   id: str
   name: str
   args_json: str
+  tracker: streaming_utils._JsonPathTracker | None = None
 
 
 @dataclasses.dataclass
@@ -1159,6 +1161,22 @@ class AnthropicLlm(BaseLlm):
               name=block.name,
               args_json="",
           )
+          yield LlmResponse(
+              partial=True,
+              content=types.Content(
+                  role="model",
+                  parts=[
+                      types.Part(
+                          function_call=types.FunctionCall(
+                              id=block.id,
+                              name=block.name,
+                              will_continue=True,
+                          )
+                      )
+                  ],
+              ),
+              model_version=llm_request.model or self.model,
+          )
 
       elif event.type == "content_block_delta":
         delta = event.delta
@@ -1204,6 +1222,31 @@ class AnthropicLlm(BaseLlm):
         elif isinstance(delta, anthropic_types.InputJSONDelta):
           if event.index in tool_use_blocks:
             tool_use_blocks[event.index].args_json += delta.partial_json
+            accumulator = tool_use_blocks[event.index]
+            partial_args = None
+            if delta.partial_json:
+              if accumulator.tracker is None:
+                accumulator.tracker = streaming_utils._JsonPathTracker()
+              partial_args = accumulator.tracker.handle_chunk(
+                  delta.partial_json
+              )
+            yield LlmResponse(
+                partial=True,
+                content=types.Content(
+                    role="model",
+                    parts=[
+                        types.Part(
+                            function_call=types.FunctionCall(
+                                id=accumulator.id,
+                                name=accumulator.name,
+                                partial_args=partial_args or None,
+                                will_continue=True,
+                            )
+                        )
+                    ],
+                ),
+                model_version=llm_request.model or self.model,
+            )
 
       elif event.type == "message_delta":
         # ``message_delta`` carries the authoritative cumulative counts, so the

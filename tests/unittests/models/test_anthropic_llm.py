@@ -1606,9 +1606,33 @@ async def test_streaming_tool_use_yields_function_call():
     ]
 
   # 1 text partial + 1 final
-  assert len(responses) == 2
+  assert len(responses) == 4
 
-  final = responses[-1]
+  # responses[0]: text partial
+  assert responses[0].partial is True
+  assert responses[0].content.parts[0].text == "Checking."
+
+  # responses[1]: tool use block start
+  assert responses[1].partial is True
+  assert responses[1].content.parts[0].function_call.id == "toolu_abc"
+  assert responses[1].content.parts[0].function_call.name == "get_weather"
+  assert responses[1].content.parts[0].function_call.will_continue is True
+
+  # responses[2]: input JSON delta
+  assert responses[2].partial is True
+  assert responses[2].content.parts[0].function_call.id == "toolu_abc"
+  assert (
+      responses[2].content.parts[0].function_call.partial_args[0].json_path
+      == "$.city"
+  )
+  assert (
+      responses[2].content.parts[0].function_call.partial_args[0].string_value
+      == "Paris"
+  )
+  assert responses[2].content.parts[0].function_call.will_continue is True
+
+  # responses[3]: final
+  final = responses[3]
   assert final.partial is False
   assert len(final.content.parts) == 2
   assert final.content.parts[0].text == "Checking."

@@ -177,22 +177,15 @@ async def _convert_tool_union_to_tools(
 
     if isinstance(tool_union, BaseAgent):
       raise ValueError(
-          f"Agent '{tool_union.name}' cannot be wrapped as a NodeTool. Agents"
+          f"Agent '{tool_union.name}' cannot be used directly as a tool. Agents"
           ' should be invoked as sub-agents.'
-      )
-
-    description = tool_union.description
-    if not description:
-      raise ValueError(
-          f"Workflow/Node '{tool_union.name}' must have a description to be"
-          ' wrapped as a tool.'
       )
 
     return [
         NodeTool(
             node=tool_union,
             name=tool_union.name,
-            description=description,
+            description=tool_union.description,
         )
     ]
 
@@ -1242,17 +1235,11 @@ class LlmAgent(BaseAgent, abc.ABC):
       for t in data['tools']:
         if isinstance(t, BaseAgent):
           raise ValueError(
-              f"Agent '{t.name}' cannot be wrapped as a NodeTool. Agents should"
-              ' be invoked as sub-agents.'
+              f"Agent '{t.name}' cannot be used directly as a tool. Agents"
+              ' should be invoked as sub-agents.'
           )
         elif isinstance(t, BaseNode):
-          description = t.description
-          if not description:
-            raise ValueError(
-                f"Workflow/Node '{t.name}' must have a description to be"
-                ' wrapped as a tool.'
-            )
-          new_tools.append(NodeTool(node=t, description=description))
+          new_tools.append(NodeTool(node=t, description=t.description))
         else:
           new_tools.append(t)
       data['tools'] = new_tools

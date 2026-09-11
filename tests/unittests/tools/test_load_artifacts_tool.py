@@ -32,14 +32,31 @@ import pytest
 class _StubToolContext:
   """Minimal ToolContext stub for LoadArtifactsTool tests."""
 
-  def __init__(self, artifacts_by_name: dict[str, types.Part]):
+  def __init__(
+      self,
+      artifacts_by_name: dict[str, types.Part],
+      out_of_scope_artifacts_by_name: dict[str, types.Part] | None = None,
+  ):
+    """Stubs the artifact service.
+
+    Args:
+        artifacts_by_name: Artifacts in scope, which list_artifacts reports.
+        out_of_scope_artifacts_by_name: Artifacts the backend would return for a
+          name outside the current scope but that list_artifacts does not
+          report, modelling a backend whose keying does not isolate scopes.
+    """
     self._artifacts_by_name = artifacts_by_name
+    self._out_of_scope_artifacts_by_name = out_of_scope_artifacts_by_name or {}
+    self.loaded_names: list[str] = []
 
   async def list_artifacts(self) -> list[str]:
     return list(self._artifacts_by_name.keys())
 
   async def load_artifact(self, name: str) -> types.Part | None:
-    return self._artifacts_by_name.get(name)
+    self.loaded_names.append(name)
+    if name in self._artifacts_by_name:
+      return self._artifacts_by_name[name]
+    return self._out_of_scope_artifacts_by_name.get(name)
 
 
 @pytest.mark.asyncio
@@ -822,8 +839,13 @@ async def test_load_artifacts_custom_filter_returns_none_skips_artifact():
 
 
 @pytest.mark.asyncio
-async def test_load_artifacts_custom_callback_user_prefixed_fallback():
-  """Custom callback receives the unprefixed artifact name during user: fallback."""
+async def test_load_artifacts_callback_gets_resolver_prefixed_name():
+  """Custom callback receives the prefixed name the resolver matched.
+
+  The artifact is listed as user:doc.txt, so the resolver maps the model's
+  bare request onto it and the first load succeeds; the user: retry below is
+  covered by test_load_artifacts_callback_gets_retried_user_prefixed_name.
+  """
   called_args = []
 
   def custom_filter(artifact: types.Part, artifact_name: str) -> types.Part:
@@ -855,11 +877,12 @@ async def test_load_artifacts_custom_callback_user_prefixed_fallback():
 
   assert len(called_args) == 1
   assert called_args[0][0] is artifact
-  assert called_args[0][1] == 'doc.txt'
+  assert called_args[0][1] == 'user:doc.txt'
 
   assert len(llm_request.contents) == 2
+  # The prompt text keeps the name the model used, the callback does not.
   assert llm_request.contents[1].parts[0].text == 'Artifact doc.txt is:'
-  assert llm_request.contents[1].parts[1].text == 'Transformed doc.txt'
+  assert llm_request.contents[1].parts[1].text == 'Transformed user:doc.txt'
 
 
 @pytest.mark.asyncio
@@ -1162,3 +1185,241 @@ async def test_load_artifacts_spreadsheet_unparsed_by_default():
   assert artifact_part.inline_data is None
   assert '[Binary artifact: test.xlsx' in artifact_part.text
   assert 'Content cannot be displayed inline' in artifact_part.text
+
+
+def _load_artifacts_request(artifact_names: Any) -> LlmRequest:
+  """Builds a request whose last part is a load_artifacts function response."""
+  return LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': artifact_names},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_skips_name_not_listed_for_this_session():
+  """A name the session does not have is never loaded, even if it resolves."""
+  tool_context = _StubToolContext(
+      {'mine.txt': types.Part.from_text(text='mine')},
+      out_of_scope_artifacts_by_name={
+          '../../otherUser/otherSession/secret.bin': types.Part.from_text(
+              text='secret'
+          )
+      },
+  )
+  llm_request = _load_artifacts_request(
+      ['../../otherUser/otherSession/secret.bin']
+  )
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert not tool_context.loaded_names
+  assert len(llm_request.contents) == 1
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_loads_only_the_listed_names():
+  """Listed names are still loaded when mixed with an unlisted one."""
+  tool_context = _StubToolContext(
+      {'mine.txt': types.Part.from_text(text='mine')},
+      out_of_scope_artifacts_by_name={
+          'theirs.txt': types.Part.from_text(text='theirs')
+      },
+  )
+  llm_request = _load_artifacts_request(['theirs.txt', 'mine.txt'])
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert tool_context.loaded_names == ['mine.txt']
+  assert llm_request.contents[-1].parts[0].text == 'Artifact mine.txt is:'
+  assert llm_request.contents[-1].parts[1].text == 'mine'
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_resolves_listed_user_scoped_name():
+  """A user-scoped name the model echoed without its prefix still loads."""
+  tool_context = _StubToolContext(
+      {'user:notes.txt': types.Part.from_text(text='notes')},
+  )
+  llm_request = _load_artifacts_request(['notes.txt'])
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert tool_context.loaded_names == ['user:notes.txt']
+  # The request keeps the name the model used, as the other ADK languages do.
+  assert llm_request.contents[-1].parts[0].text == 'Artifact notes.txt is:'
+  assert llm_request.contents[-1].parts[1].text == 'notes'
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_does_not_add_user_prefix_to_reach_out_of_scope():
+  """The user: fallback only applies to names the session actually listed."""
+  tool_context = _StubToolContext(
+      {'mine.txt': types.Part.from_text(text='mine')},
+      out_of_scope_artifacts_by_name={
+          'user:theirs.txt': types.Part.from_text(text='theirs')
+      },
+  )
+  llm_request = _load_artifacts_request(['theirs.txt'])
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert not tool_context.loaded_names
+  assert len(llm_request.contents) == 1
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_ignores_response_with_a_non_string_name():
+  """A response holding a non-string name is ignored rather than raising."""
+  tool_context = _StubToolContext(
+      {'mine.txt': types.Part.from_text(text='mine')},
+  )
+  llm_request = _load_artifacts_request([{'not': 'a string'}, 'mine.txt'])
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert not tool_context.loaded_names
+  assert len(llm_request.contents) == 1
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_retries_user_scope_for_listed_bare_name():
+  """A listed bare name still falls back to user scope when not session-scoped.
+
+  FileArtifactService lists an artifact saved with session_id=None under the
+  bare name it was saved with, so the name is in scope but only resolves in the
+  user namespace.
+  """
+  tool_context = _StubToolContext(
+      {'notes.txt': None},
+      out_of_scope_artifacts_by_name={
+          'user:notes.txt': types.Part.from_text(text='notes')
+      },
+  )
+  llm_request = _load_artifacts_request(['notes.txt'])
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert tool_context.loaded_names == ['notes.txt', 'user:notes.txt']
+  assert llm_request.contents[-1].parts[0].text == 'Artifact notes.txt is:'
+  assert llm_request.contents[-1].parts[1].text == 'notes'
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_callback_gets_retried_user_prefixed_name():
+  """The callback receives the user: name the retry actually loaded under."""
+  called_args = []
+
+  def custom_filter(artifact: types.Part, artifact_name: str) -> types.Part:
+    called_args.append((artifact, artifact_name))
+    return types.Part.from_text(text=f'Transformed {artifact_name}')
+
+  tool = LoadArtifactsTool(process_artifact=custom_filter)
+  artifact = types.Part.from_text(text='notes')
+  tool_context = _StubToolContext(
+      {'notes.txt': None},
+      out_of_scope_artifacts_by_name={'user:notes.txt': artifact},
+  )
+  llm_request = _load_artifacts_request(['notes.txt'])
+
+  await tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert tool_context.loaded_names == ['notes.txt', 'user:notes.txt']
+  assert len(called_args) == 1
+  assert called_args[0][0] is artifact
+  assert called_args[0][1] == 'user:notes.txt'
+
+  # The prompt text keeps the name the model used, the callback does not.
+  assert llm_request.contents[-1].parts[0].text == 'Artifact notes.txt is:'
+  assert llm_request.contents[-1].parts[1].text == 'Transformed user:notes.txt'
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_placeholder_keeps_the_name_the_model_used():
+  """The binary placeholder shows the model's wording, not the resolved name.
+
+  The name handed to as_safe_part_for_llm ends up in text the model reads, so
+  it must not pick up a user: prefix the model never used.
+  """
+  artifact = types.Part(
+      inline_data=types.Blob(
+          data=b'\x00\x01binary', mime_type='application/zip'
+      )
+  )
+  tool_context = _StubToolContext({'user:notes.zip': artifact})
+  llm_request = _load_artifacts_request(['notes.zip'])
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert tool_context.loaded_names == ['user:notes.zip']
+  prompt_part, artifact_part = llm_request.contents[-1].parts
+  assert prompt_part.text == 'Artifact notes.zip is:'
+  assert '[Binary artifact: notes.zip' in artifact_part.text
+  assert 'user:' not in artifact_part.text
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_strips_user_prefix_for_listed_bare_name():
+  """A user: prefixed request resolves against a bare listed name.
+
+  When FileArtifactService lists an artifact saved with session_id=None under
+  its bare name, a model requesting user:notes.txt should still resolve and
+  load.
+  """
+  tool_context = _StubToolContext(
+      {'notes.txt': None},
+      out_of_scope_artifacts_by_name={
+          'user:notes.txt': types.Part.from_text(text='notes')
+      },
+  )
+  llm_request = _load_artifacts_request(['user:notes.txt'])
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert tool_context.loaded_names == ['user:notes.txt']
+  assert llm_request.contents[-1].parts[0].text == 'Artifact user:notes.txt is:'
+  assert llm_request.contents[-1].parts[1].text == 'notes'
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_ignores_non_list_artifact_names():
+  """A non-list artifact_names value is ignored rather than raising."""
+  tool_context = _StubToolContext(
+      {'mine.txt': types.Part.from_text(text='mine')},
+  )
+  llm_request = _load_artifacts_request(None)
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert not tool_context.loaded_names
+  assert len(llm_request.contents) == 1
