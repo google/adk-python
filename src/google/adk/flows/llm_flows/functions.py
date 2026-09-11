@@ -1150,7 +1150,11 @@ async def _emit_intermediate_tool_result(
     tool_context: ToolContext,
     invocation_context: InvocationContext,
 ) -> None:
-  """Streams one intermediate result of a generator tool to the client.
+  """Streams one value a generator tool yielded to the client.
+
+  Marked ``will_continue``, because a further FunctionResponse for the same
+  call always follows: either the tool's next yield, or the result event that
+  answers the call for the model.
 
   Args:
     function_result: The value the tool yielded.
@@ -1193,10 +1197,15 @@ async def _drain_tool_result_stream(
   """Streams a generator tool's progress and returns the result for the model.
 
   A tool that yields instead of returning reports progress. Every value it
-  yields but the last is streamed to the client as a partial event and is
-  never shown to the model; the last one is the tool result, and is the only
-  one the model sees. A yielded ``Event`` is a user-facing message rather than
-  a result, so it is streamed and then does not compete to be the last value.
+  yields is streamed to the client as a partial event the moment it is
+  yielded, and none of them is shown to the model; the last one is also the
+  tool result, and is the only one the model sees. A yielded ``Event`` is a
+  user-facing message rather than a result, so it is streamed and then does
+  not compete to be the last value.
+
+  The last value is delivered twice, once as progress and once as the
+  result; ``will_continue`` tells the two apart, and is true on the progress
+  copy because a further FunctionResponse for that call does follow.
 
   Args:
     function_response: The tool's return value. Anything that is not a
@@ -1224,46 +1233,26 @@ async def _drain_tool_result_stream(
     )
 
   result: object = None
-  has_result = False
-  try:
-    async with Aclosing(_iter_tool_yields(function_response)) as stream:
-      async for value in stream:
-        if isinstance(value, Event):
-          if can_stream:
-            await _emit_streaming_tool_event(
-                value,
-                tool=tool,
-                tool_context=tool_context,
-                invocation_context=invocation_context,
-            )
-          continue
-        if has_result and can_stream:
-          await _emit_intermediate_tool_result(
-              result,
+  async with Aclosing(_iter_tool_yields(function_response)) as stream:
+    async for value in stream:
+      if isinstance(value, Event):
+        if can_stream:
+          await _emit_streaming_tool_event(
+              value,
               tool=tool,
               tool_context=tool_context,
               invocation_context=invocation_context,
           )
-        result = value
-        has_result = True
-
-  except Exception:
-    if has_result and can_stream:
-      try:
+        continue
+      result = value
+      if can_stream:
         await _emit_intermediate_tool_result(
-            result,
+            value,
             tool=tool,
             tool_context=tool_context,
             invocation_context=invocation_context,
         )
-      except Exception:  # pylint: disable=broad-except
-        # Never masks the tool's own failure, which is what the caller has to
-        # see, with a failure to report progress about it.
-        logger.exception(
-            'Failed to report the last progress of failing tool `%s`.',
-            tool.name,
-        )
-    raise
+
   return result
 
 

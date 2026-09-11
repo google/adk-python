@@ -50,7 +50,7 @@ def _tool_progress(events: list[Event]) -> list[tuple[bool, Any]]:
 
 
 @pytest.mark.asyncio
-async def test_async_generator_tool_streams_every_yield_but_the_last():
+async def test_async_generator_tool_streams_every_yield():
   function_call = types.Part.from_function_call(
       name='search', args={'q': 'adk'}
   )
@@ -65,15 +65,18 @@ async def test_async_generator_tool_streams_every_yield_but_the_last():
   runner = testing_utils.InMemoryRunner(agent)
   events = await runner.run_async('test')
 
+  # The last yield is both the last report and the result, so it appears
+  # twice: once streamed as it was yielded, once as the answer to the call.
   assert _tool_progress(events) == [
       (True, {'status': 'inProgress', 'message': 'searching adk'}),
       (True, {'status': 'inProgress', 'message': 'reading pages'}),
+      (True, {'status': 'ok', 'result': ['page1', 'page2']}),
       (False, {'status': 'ok', 'result': ['page1', 'page2']}),
   ]
 
 
 @pytest.mark.asyncio
-async def test_only_intermediate_results_are_marked_will_continue():
+async def test_only_the_answer_to_the_call_is_not_marked_will_continue():
   function_call = types.Part.from_function_call(name='search', args={})
   mock_model = testing_utils.MockModel.create(responses=[function_call, 'done'])
 
@@ -90,7 +93,9 @@ async def test_only_intermediate_results_are_marked_will_continue():
       for event in events
       for function_response in _function_responses(event)
   ]
-  assert will_continue == [True, None]
+  # Every streamed value is followed by a further FunctionResponse for the
+  # same call, so only the one answering the call is not marked.
+  assert will_continue == [True, True, None]
 
 
 @pytest.mark.asyncio
@@ -141,7 +146,7 @@ async def test_intermediate_results_carry_the_call_id_and_tool_name():
       for event in events
       for function_response in _function_responses(event)
   ]
-  assert addressing == [('call-1', 'search'), ('call-1', 'search')]
+  assert addressing == [('call-1', 'search')] * 3
 
 
 @pytest.mark.asyncio
@@ -186,7 +191,7 @@ async def test_intermediate_results_are_not_sent_to_the_model():
 
 
 @pytest.mark.asyncio
-async def test_sync_generator_tool_streams_every_yield_but_the_last():
+async def test_sync_generator_tool_streams_every_yield():
   function_call = types.Part.from_function_call(name='count', args={})
   mock_model = testing_utils.MockModel.create(responses=[function_call, 'done'])
 
@@ -202,6 +207,7 @@ async def test_sync_generator_tool_streams_every_yield_but_the_last():
   assert _tool_progress(events) == [
       (True, {'status': 'inProgress', 'done': 1}),
       (True, {'status': 'inProgress', 'done': 2}),
+      (True, {'status': 'ok', 'done': 3}),
       (False, {'status': 'ok', 'done': 3}),
   ]
 
@@ -221,12 +227,13 @@ async def test_non_dict_yields_are_wrapped_like_a_returned_value():
 
   assert _tool_progress(events) == [
       (True, {'result': 1}),
+      (True, {'result': 2}),
       (False, {'result': 2}),
   ]
 
 
 @pytest.mark.asyncio
-async def test_tool_yielding_once_reports_no_intermediate_result():
+async def test_tool_yielding_once_streams_that_yield_and_answers_with_it():
   function_call = types.Part.from_function_call(name='search', args={})
   mock_model = testing_utils.MockModel.create(responses=[function_call, 'done'])
 
@@ -237,7 +244,10 @@ async def test_tool_yielding_once_reports_no_intermediate_result():
   runner = testing_utils.InMemoryRunner(agent)
   events = await runner.run_async('test')
 
-  assert _tool_progress(events) == [(False, {'status': 'ok'})]
+  assert _tool_progress(events) == [
+      (True, {'status': 'ok'}),
+      (False, {'status': 'ok'}),
+  ]
 
 
 @pytest.mark.asyncio
@@ -271,7 +281,10 @@ async def test_yielded_event_is_delivered_as_a_user_message():
 
   # The Event is a message for the user, so it is not a function response and
   # does not displace the result the model sees.
-  assert _tool_progress(events) == [(False, {'status': 'ok'})]
+  assert _tool_progress(events) == [
+      (True, {'status': 'ok'}),
+      (False, {'status': 'ok'}),
+  ]
   messages = [
       event
       for event in events
@@ -281,6 +294,41 @@ async def test_yielded_event_is_delivered_as_a_user_message():
       (event.content.role, event.content.parts[0].text) for event in messages
   ] == [('user', 'looking it up'), ('model', 'done')]
   assert messages[0].branch.startswith('search@')
+
+
+@pytest.mark.asyncio
+async def test_a_yield_is_reported_before_the_tool_takes_its_next_step():
+  """A progress report reaches the client while the work it describes still runs.
+
+  The tool blocks after its first yield until the consumer has seen that yield
+  reported. Holding a value back until the following one arrives -- which is
+  the only way to know it was not the last -- deadlocks here instead, and the
+  `wait_for` turns that regression into a failure rather than a hang.
+  """
+  function_call = types.Part.from_function_call(name='search', args={})
+  mock_model = testing_utils.MockModel.create(responses=[function_call, 'done'])
+  reported = asyncio.Event()
+
+  async def search() -> AsyncGenerator[dict[str, Any], None]:
+    yield {'status': 'inProgress'}
+    await asyncio.wait_for(reported.wait(), timeout=10)
+    yield {'status': 'ok'}
+
+  agent = Agent(name='root_agent', model=mock_model, tools=[search])
+  runner = testing_utils.InMemoryRunner(agent)
+  session = runner.session
+
+  seen = []
+  async for event in runner.runner.run_async(
+      user_id=session.user_id,
+      session_id=session.id,
+      new_message=testing_utils.get_user_content('test'),
+  ):
+    seen.extend(_tool_progress([event]))
+    if seen:
+      reported.set()
+
+  assert seen[0] == (True, {'status': 'inProgress'})
 
 
 @pytest.mark.asyncio
@@ -359,7 +407,12 @@ async def test_parallel_generator_tools_stream_independently():
   final = [
       payload for partial, payload in _tool_progress(events) if not partial
   ]
-  assert sorted(payload['tool'] for payload in intermediate) == ['fast', 'slow']
+  assert sorted(payload['tool'] for payload in intermediate) == [
+      'fast',
+      'fast',
+      'slow',
+      'slow',
+  ]
   # Both calls answer in one merged non-partial event, as parallel calls always
   # have.
   assert len(final) == 2
@@ -402,9 +455,10 @@ async def test_state_a_generator_tool_sets_is_applied_once_at_the_end():
   runner = testing_utils.InMemoryRunner(agent)
   events = await runner.run_async('test')
 
-  # An intermediate event is never applied, so it must not carry the delta.
+  # A streamed event is never applied, so it must not carry the delta.
   assert [event.actions.state_delta for event in events if event.partial] == [
-      {}
+      {},
+      {},
   ]
   assert runner.session.state['hits'] == 2
 
