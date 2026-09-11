@@ -330,6 +330,30 @@ async def test_run_async_before_agent_callback_bypass_agent(
 
 
 @pytest.mark.asyncio
+async def test_run_async_before_agent_callback_state_delta_is_not_final(
+    request: pytest.FixtureRequest,
+):
+  def update_state(callback_context: CallbackContext) -> None:
+    callback_context.state['callback_state'] = 'before'
+
+  agent = _TestingAgent(
+      name=f'{request.function.__name__}_test_agent',
+      before_agent_callback=update_state,
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, agent
+  )
+
+  events = [event async for event in agent.run_async(parent_ctx)]
+
+  assert len(events) == 2
+  assert events[0].content is None
+  assert events[0].actions.state_delta == {'callback_state': 'before'}
+  assert events[0].is_final_response() is False
+  assert events[1].is_final_response() is True
+
+
+@pytest.mark.asyncio
 async def test_run_async_with_async_before_agent_callback_bypass_agent(
     request: pytest.FixtureRequest,
     mocker: pytest_mock.MockerFixture,
@@ -692,6 +716,30 @@ async def test_run_async_after_agent_callback_append_reply(
       events[1].content.parts[0].text
       == 'Agent reply from after agent callback.'
   )
+
+
+@pytest.mark.asyncio
+async def test_run_async_after_agent_callback_state_delta_is_not_final(
+    request: pytest.FixtureRequest,
+):
+  def update_state(callback_context: CallbackContext) -> None:
+    callback_context.state['callback_state'] = 'after'
+
+  agent = _TestingAgent(
+      name=f'{request.function.__name__}_test_agent',
+      after_agent_callback=update_state,
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, agent
+  )
+
+  events = [event async for event in agent.run_async(parent_ctx)]
+
+  assert len(events) == 2
+  assert events[0].is_final_response() is True
+  assert events[1].content is None
+  assert events[1].actions.state_delta == {'callback_state': 'after'}
+  assert events[1].is_final_response() is False
 
 
 @pytest.mark.asyncio
