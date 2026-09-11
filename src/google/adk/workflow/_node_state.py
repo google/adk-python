@@ -45,13 +45,6 @@ class NodeState(BaseModel):
   resume_inputs: dict[str, Any] = Field(default_factory=dict)
   """The responses for resuming the node, keyed by interrupt id."""
 
-  run_counter: int = Field(default=0, exclude_if=lambda v: v == 0)
-  """Sequential counter incremented each time the node gets a fresh run.
-
-  Preserving this count independently of run_id prevents path collisions
-  if a node switches between custom string IDs and auto-generated numeric IDs.
-  """
-
   run_id: str | None = None
   """The run ID of this node run."""
 

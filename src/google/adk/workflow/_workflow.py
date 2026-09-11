@@ -520,10 +520,11 @@ class Workflow(BaseNode):
     return trigger
 
   @staticmethod
-  def _next_run_id(node_state: NodeState) -> str:
+  def _next_run_id(
+      loop_state: _LoopState, node_name: str, parent_path: str = ""
+  ) -> str:
     """Increment and return the next sequential run_id for a node."""
-    node_state.run_counter += 1
-    return str(node_state.run_counter)
+    return loop_state.next_run_id(node_name, parent_path=parent_path)
 
   @staticmethod
   def _compute_isolation_scope_for_node(
@@ -559,33 +560,21 @@ class Workflow(BaseNode):
       return f"{parent_path}/{segment}" if parent_path else segment
     return None
 
-  @classmethod
-  def _create_node_state_for_new_run(cls, old_state: NodeState) -> NodeState:
-    """Create a fresh NodeState for a new run, preserving the run counter."""
-    return NodeState(run_counter=old_state.run_counter)
-
   def _prepare_node_state_for_starting(
       self, loop_state: _LoopState, node_name: str, trigger: Trigger
   ) -> None:
     """Prepare NodeState for starting a node.
 
-    This method determines whether to reuse or recreate the node's state:
-    *   Creates a brand new `NodeState` if none exists.
-    *   Creates a fresh `NodeState` (preserving `run_counter`) if this is a new execution
-        (not resuming and not waiting) to avoid state carryover.
-    *   Reuses the existing `NodeState` if resuming from interrupt or waiting for inputs.
+    Always installs a brand new `NodeState`, so nothing carries over from a
+    previous execution of the same node. Sequential run IDs live in
+    `_LoopState.run_counters`, not in the per-node state, so no field needs to
+    survive across runs here.
 
     Outcome: The node's state is updated with the trigger's input and source,
     and its status is set to `RUNNING`.
     """
-    if node_name not in loop_state.nodes:
-      node_state = NodeState()
-      loop_state.nodes[node_name] = node_state
-    else:
-      node_state = loop_state.nodes[node_name]
-      # Create a new NodeState for a fresh execution to avoid carryover bugs.
-      node_state = self._create_node_state_for_new_run(node_state)
-      loop_state.nodes[node_name] = node_state
+    node_state = NodeState()
+    loop_state.nodes[node_name] = node_state
 
     node_state.input = trigger.input
     node_state.status = NodeStatus.RUNNING
@@ -612,7 +601,9 @@ class Workflow(BaseNode):
     # Reuse run_id on resume; assign a new sequential id for fresh runs.
     run_id = node_state.run_id
     if not run_id:
-      run_id = self._next_run_id(node_state)
+      run_id = self._next_run_id(
+          loop_state, node_name, parent_path=ctx.node_path or ""
+      )
     node_state.run_id = run_id
 
     # Intercept execution based on historical session events.
