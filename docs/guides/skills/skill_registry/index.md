@@ -203,7 +203,9 @@ per result, skipping and logging any entry that fails validation.
 *   **A registry cannot list its whole catalog.** The interface has no
     `list_skills`, and the model's `list_skills` tool reports only the toolset's
     local skills. A model that never thinks to search never learns the registry
-    is there at all.
+    is there at all. `include_list_skills=False` injects those local skills into
+    the system instruction instead; registry skills are still discovered only
+    through `search_skills`.
 *   **Skill names must satisfy the frontmatter rules.** A store whose keys are
     not kebab-case cannot round-trip through `Frontmatter` validation, so map
     them at the boundary.
