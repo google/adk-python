@@ -24,7 +24,6 @@ from google.adk.tools.bigquery.bigquery_skill import get_bigquery_skill
 from google.adk.tools.skill_toolset import ListSkillsTool
 from google.adk.tools.skill_toolset import LoadSkillResourceTool
 from google.adk.tools.skill_toolset import LoadSkillTool
-from google.adk.tools.skill_toolset import RunSkillScriptTool
 from google.adk.tools.skill_toolset import SkillToolset
 import pytest
 
@@ -80,19 +79,18 @@ def test_skill_has_expected_references():
 
 @pytest.mark.asyncio
 async def test_skill_works_with_skill_toolset():
-  """Verify the skill integrates with SkillToolset and produces 4 tools."""
+  """Verify the skill integrates with SkillToolset and produces 3 tools."""
   skill = get_bigquery_skill()
   toolset = SkillToolset(skills=[skill])
 
   tools = await toolset.get_tools()
-  assert len(tools) == 4
+  assert len(tools) == 3
 
   tool_types = {type(t) for t in tools}
   expected_types = {
       ListSkillsTool,
       LoadSkillTool,
       LoadSkillResourceTool,
-      RunSkillScriptTool,
   }
   assert tool_types == expected_types
 
