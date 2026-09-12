@@ -968,6 +968,155 @@ class TestRestApiTool:
 
     assert request_params["cookies"]["session_id"] == "cookie_value"
 
+  def test_prepare_request_params_omits_none_header_param(
+      self,
+      sample_endpoint,
+      sample_auth_credential,
+      sample_auth_scheme,
+      sample_operation,
+  ):
+    """An unset optional header parameter is omitted from the request.
+
+    httpx refuses to encode a None header value, so keeping it would fail the
+    whole call with "Header value must be str or bytes, not NoneType".
+    """
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+    params = [
+        ApiParameter(
+            original_name="X-Custom-Header",
+            py_name="x_custom_header",
+            param_location="header",
+            param_schema=OpenAPISchema(type="string"),
+        )
+    ]
+    kwargs = {"x_custom_header": None}
+
+    request_params = tool._prepare_request_params(params, kwargs)
+
+    assert "X-Custom-Header" not in request_params["headers"]
+
+  def test_prepare_request_params_omits_none_cookie_param(
+      self,
+      sample_endpoint,
+      sample_auth_credential,
+      sample_auth_scheme,
+      sample_operation,
+  ):
+    """An unset optional cookie parameter is omitted from the request.
+
+    httpx serializes a None cookie as a bare, valueless ``Cookie: session_id``
+    pair rather than rejecting it, so keeping it corrupts the request silently.
+    """
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+    params = [
+        ApiParameter(
+            original_name="session_id",
+            py_name="session_id",
+            param_location="cookie",
+            param_schema=OpenAPISchema(type="string"),
+        )
+    ]
+    kwargs = {"session_id": None}
+
+    request_params = tool._prepare_request_params(params, kwargs)
+
+    assert "session_id" not in request_params["cookies"]
+
+  def test_prepare_request_params_keeps_falsy_header_and_cookie_params(
+      self,
+      sample_endpoint,
+      sample_auth_credential,
+      sample_auth_scheme,
+      sample_operation,
+  ):
+    """Only None is dropped: an explicit empty string is still sent."""
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+    params = [
+        ApiParameter(
+            original_name="X-Custom-Header",
+            py_name="x_custom_header",
+            param_location="header",
+            param_schema=OpenAPISchema(type="string"),
+        ),
+        ApiParameter(
+            original_name="session_id",
+            py_name="session_id",
+            param_location="cookie",
+            param_schema=OpenAPISchema(type="string"),
+        ),
+    ]
+    kwargs = {"x_custom_header": "", "session_id": ""}
+
+    request_params = tool._prepare_request_params(params, kwargs)
+
+    assert request_params["headers"]["X-Custom-Header"] == ""
+    assert request_params["cookies"]["session_id"] == ""
+
+  @patch(
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
+  )
+  @pytest.mark.asyncio
+  async def test_call_succeeds_when_model_sends_null_optional_header(
+      self,
+      mock_request,
+      mock_tool_context,
+      sample_endpoint,
+      sample_auth_scheme,
+      sample_auth_credential,
+  ):
+    """The call still goes through when the model sends null for a header."""
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"result": "success"}
+    mock_request.return_value = mock_response
+
+    operation = Operation(
+        operationId="test_op",
+        parameters=[
+            OpenAPIParameter(**{
+                "name": "X-Custom-Header",
+                "in": "header",
+                "required": False,
+                "schema": OpenAPISchema(type="string"),
+            })
+        ],
+    )
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=operation,
+        auth_scheme=sample_auth_scheme,
+        auth_credential=sample_auth_credential,
+    )
+
+    result = await tool.call(
+        args={"x_custom_header": None}, tool_context=mock_tool_context
+    )
+
+    assert result == {"result": "success"}
+    assert "X-Custom-Header" not in mock_request.call_args[1]["headers"]
+
   def test_prepare_request_params_quota_project_id(
       self,
       sample_endpoint,
