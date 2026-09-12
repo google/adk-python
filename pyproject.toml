@@ -125,6 +125,7 @@ optional-dependencies.all = [
   "pillow>=10.3",
   "protobuf>=6",
   "pyarrow>=14",
+  "pymongo>=4.9,<5",
   "pypika>=0.50",
   "python-dateutil>=2.9.0.post0,<3",
   "redis>=4.2",
@@ -221,6 +222,7 @@ optional-dependencies.extensions = [
   "lxml>=5.3",
   "nltk!=3.10.1",                                                    # Transitive via llama-index-core; 3.10.1's import hook breaks any venv living inside the working directory (reverted upstream in nltk/nltk#3732).
   "openai>=2.20,<3",
+  "pymongo>=4.9,<5",                                                 # For MongoDB tools.
   "pypika>=0.50",
   "toolbox-adk>=1,<2",
 ]
@@ -264,6 +266,7 @@ optional-dependencies.mcp = [
   "anyio>=4.9,<5",
   "mcp>=1.24,<3",
 ]
+optional-dependencies.mongodb = [ "pymongo>=4.9,<5" ]
 optional-dependencies.oci = [
   "oci>=2.126", # OCI Generative AI native SDK (OCIGenAILlm)
 ]
