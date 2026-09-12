@@ -28,6 +28,7 @@ from .app_details import AppDetails
 from .common import EvalBaseModel
 from .conversation_scenarios import ConversationScenario as ConversationScenario
 from .eval_rubrics import Rubric
+from ..events.event import Event
 
 
 class IntermediateData(EvalBaseModel):
@@ -139,6 +140,9 @@ class SessionInput(EvalBaseModel):
 
   state: SessionState = Field(default_factory=dict)
   """The state of the session."""
+
+  events: Optional[list[Event]] = Field(default=None)
+  """Optional pre-populated events to initialize the session with."""
 
 
 StaticConversation: TypeAlias = list[Invocation]

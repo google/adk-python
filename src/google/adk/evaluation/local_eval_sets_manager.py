@@ -28,6 +28,7 @@ from pydantic import ValidationError
 from typing_extensions import override
 
 from ..errors.not_found_error import NotFoundError
+from ..events.event import Event
 from ._eval_sets_manager_utils import add_eval_case_to_eval_set
 from ._eval_sets_manager_utils import delete_eval_case_from_eval_set
 from ._eval_sets_manager_utils import get_eval_case_from_eval_set
@@ -151,10 +152,20 @@ def convert_eval_set_to_pydantic_schema(
         "initial_session" in old_eval_case
         and len(old_eval_case["initial_session"]) > 0
     ):
+      initial_session_data = old_eval_case["initial_session"]
+      raw_events = initial_session_data.get("events")
+      events = None
+      if raw_events:
+        events = [
+            Event.model_validate(e) if isinstance(e, dict) else e
+            for e in raw_events
+        ]
       session_input = SessionInput(
-          app_name=old_eval_case["initial_session"].get("app_name", ""),
-          user_id=old_eval_case["initial_session"].get("user_id", ""),
-          state=old_eval_case["initial_session"].get("state", {}),
+          app_name=initial_session_data.get("app_name", ""),
+          user_id=initial_session_data.get("user_id", ""),
+          session_id=initial_session_data.get("session_id"),
+          state=initial_session_data.get("state", {}),
+          events=events,
       )
 
     new_eval_case = EvalCase(

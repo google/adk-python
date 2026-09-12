@@ -27,6 +27,7 @@ from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_case import get_all_tool_calls
 from google.adk.evaluation.eval_case import SessionInput
 from google.adk.evaluation.eval_set import EvalSet
+from google.adk.evaluation.evaluation_generator import _get_or_create_eval_session
 from google.adk.evaluation.evaluation_generator import _LiveSession
 from google.adk.evaluation.evaluation_generator import _send_audio_to_live
 from google.adk.evaluation.evaluation_generator import EvaluationGenerator
@@ -831,6 +832,64 @@ class TestGenerateInferencesForSingleUserInvocationLive:
     assert sent_blob.data == b"fake-audio"
 
 
+class TestGetOrCreateEvalSession:
+  """Test cases for _get_or_create_eval_session."""
+
+  @pytest.mark.asyncio
+  async def test_appends_initial_events_on_create(self):
+    session_service = InMemorySessionService()
+    seed_event = _build_event(
+        "user", [types.Part(text="prior seed event")], "inv_seed"
+    )
+    initial_session = SessionInput(
+        app_name="test_app",
+        user_id="test_user",
+        session_id="s1",
+        events=[seed_event],
+    )
+
+    session = await _get_or_create_eval_session(
+        session_service=session_service,
+        initial_session=initial_session,
+        fallback_session_id=None,
+    )
+
+    assert len(session.events) == 1
+    assert session.events[0].content.parts[0].text == "prior seed event"
+
+  @pytest.mark.asyncio
+  async def test_pinned_session_skips_appending_events_if_already_exists(self):
+    session_service = InMemorySessionService()
+    existing = await session_service.create_session(
+        app_name="test_app",
+        user_id="test_user",
+        session_id="s1",
+    )
+    existing_event = _build_event(
+        "user", [types.Part(text="existing")], "inv0"
+    )
+    await session_service.append_event(existing, existing_event)
+
+    seed_event = _build_event(
+        "user", [types.Part(text="new seed")], "inv_seed"
+    )
+    initial_session = SessionInput(
+        app_name="test_app",
+        user_id="test_user",
+        session_id="s1",
+        events=[seed_event],
+    )
+
+    session = await _get_or_create_eval_session(
+        session_service=session_service,
+        initial_session=initial_session,
+        fallback_session_id=None,
+    )
+
+    assert len(session.events) == 1
+    assert session.events[0].content.parts[0].text == "existing"
+
+
 class TestSendAudioToLive:
   """Test cases for _send_audio_to_live."""
 
@@ -1045,6 +1104,41 @@ class TestGenerateInferencesFromRootAgent:
     assert [e.content.parts[0].text for e in reloaded.events] == [
         "earlier turn"
     ]
+
+  @pytest.mark.asyncio
+  async def test_initial_session_prepopulates_events(
+      self, mocker, mock_runner
+  ):
+    """SessionInput.events are appended to the session on creation."""
+    session_service = InMemorySessionService()
+    seed_event = _build_event(
+        "user", [types.Part(text="prior context")], "inv_seed"
+    )
+    mock_user_sim = mocker.MagicMock(spec=UserSimulator)
+    mock_user_sim.get_next_user_message = mocker.AsyncMock(
+        return_value=NextUserMessage(
+            status=UserSimulatorStatus.STOP_SIGNAL_DETECTED
+        )
+    )
+
+    await EvaluationGenerator._generate_inferences_from_root_agent(
+        root_agent=mocker.MagicMock(),
+        user_simulator=mock_user_sim,
+        initial_session=SessionInput(
+            app_name="test_app",
+            user_id="u",
+            session_id="fixed",
+            events=[seed_event],
+        ),
+        session_service=session_service,
+    )
+
+    reloaded = await session_service.get_session(
+        app_name="test_app", user_id="u", session_id="fixed"
+    )
+    assert reloaded is not None
+    assert len(reloaded.events) == 1
+    assert reloaded.events[0].content.parts[0].text == "prior context"
 
   @pytest.mark.asyncio
   async def test_generates_inferences_with_user_simulator_live(

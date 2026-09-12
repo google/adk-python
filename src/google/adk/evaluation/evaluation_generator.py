@@ -142,19 +142,24 @@ async def _get_or_create_eval_session(
 
   if pinned_session_id:
     # A pinned id may name a session the caller prepared, so reuse it instead
-    # of replacing it; `initial_session.state` then applies only on create.
+    # of replacing it; `initial_session.state` and `initial_session.events`
+    # then apply only on create.
     session = await session_service.get_session(
         app_name=app_name, user_id=user_id, session_id=pinned_session_id
     )
     if session:
       return session
 
-  return await session_service.create_session(
+  session = await session_service.create_session(
       app_name=app_name,
       user_id=user_id,
       state=initial_session.state if initial_session else {},
       session_id=pinned_session_id or fallback_session_id or str(uuid.uuid4()),
   )
+  if initial_session and initial_session.events:
+    for event in initial_session.events:
+      await session_service.append_event(session=session, event=event)
+  return session
 
 
 # Keyword-argument names accepted by `Runner`, used when building the eval
