@@ -1737,6 +1737,62 @@ def test_patch_session_not_found(test_app, test_session_info):
   logger.info("Patch session not found test passed")
 
 
+def test_rewind_session_endpoint(test_app, create_test_session, monkeypatch):
+  """POST .../sessions/{id}/rewind calls runner.rewind_async and returns session."""
+  info = create_test_session
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/"
+      f"{info['session_id']}/rewind"
+  )
+  captured: dict[str, str] = {}
+
+  async def rewind_async_capture(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      rewind_before_invocation_id: str,
+      run_config: Optional[RunConfig] = None,
+  ):
+    del self, run_config
+    captured["user_id"] = user_id
+    captured["session_id"] = session_id
+    captured["rewind_before_invocation_id"] = rewind_before_invocation_id
+
+  monkeypatch.setattr(Runner, "rewind_async", rewind_async_capture)
+
+  response = test_app.post(
+      url, json={"rewind_before_invocation_id": "inv-to-rewind"}
+  )
+
+  assert response.status_code == 200
+  assert captured == {
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "rewind_before_invocation_id": "inv-to-rewind",
+  }
+  body = response.json()
+  assert body["id"] == info["session_id"]
+  assert (
+      body.get("userId") == info["user_id"]
+      or body.get("user_id") == info["user_id"]
+  )
+
+
+def test_rewind_session_not_found(test_app, test_session_info):
+  """Rewind on a missing session returns 404."""
+  info = test_session_info
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/"
+      "missing-session/rewind"
+  )
+  response = test_app.post(
+      url, json={"rewind_before_invocation_id": "inv-missing"}
+  )
+  assert response.status_code == 404
+  assert "Session not found" in response.json()["detail"]
+
+
 def test_agent_run(test_app, create_test_session):
   """Test running an agent with a message."""
   info = create_test_session
@@ -4083,6 +4139,56 @@ def test_gemini_reasoning_engine_success(test_app_with_gemini_enterprise):
   assert response.status_code == 200
   assert response.json() == {
       "output": {"result": "success", "kwargs": {"arg1": 1}}
+  }
+
+
+def test_gemini_reasoning_engine_async_rewind(
+    test_app_with_gemini_enterprise,
+):
+  """Agent Engine class_method async_rewind is allowed and rewinds via runner."""
+  mock_adk_app = test_app_with_gemini_enterprise.mock_adk_app_instance
+  mock_runner = AsyncMock()
+  mock_adk_app._tmpl_attrs["runner"] = mock_runner
+
+  async def get_session_impl(**kwargs):
+    return {"id": kwargs["session_id"], "user_id": kwargs["user_id"]}
+
+  mock_adk_app.async_get_session = get_session_impl
+
+  response = test_app_with_gemini_enterprise.post(
+      "/api/reasoning_engine",
+      json={
+          "class_method": "async_rewind",
+          "input": {
+              "user_id": "u1",
+              "session_id": "s1",
+              "rewind_before_invocation_id": "inv-1",
+          },
+      },
+  )
+
+  assert response.status_code == 200
+  mock_runner.rewind_async.assert_awaited_once()
+  await_kwargs = mock_runner.rewind_async.await_args.kwargs
+  assert await_kwargs["user_id"] == "u1"
+  assert await_kwargs["session_id"] == "s1"
+  assert await_kwargs["rewind_before_invocation_id"] == "inv-1"
+  assert response.json()["output"] == {"id": "s1", "user_id": "u1"}
+
+
+def test_async_rewind_is_registered_agent_engine_class_method():
+  """Deploy metadata advertises async_rewind for Agent Engine REST."""
+  from google.adk.cli.cli_deploy import _AGENT_ENGINE_CLASS_METHODS
+
+  rewind = next(
+      m for m in _AGENT_ENGINE_CLASS_METHODS if m["name"] == "async_rewind"
+  )
+  assert rewind["api_mode"] == "async"
+  assert "rewind_before_invocation_id" in rewind["parameters"]["properties"]
+  assert set(rewind["parameters"]["required"]) == {
+      "user_id",
+      "session_id",
+      "rewind_before_invocation_id",
   }
 
 
