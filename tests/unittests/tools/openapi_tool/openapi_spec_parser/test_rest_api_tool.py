@@ -647,6 +647,49 @@ class TestRestApiTool:
     assert request_params["data"] == "test_value"
     assert request_params["headers"]["Content-Type"] == "text/plain"
 
+  def test_prepare_request_params_oneof_body(
+      self, sample_endpoint, sample_auth_credential, sample_auth_scheme
+  ):
+    """A oneOf/anyOf/allOf body is named 'body' by the parser and must
+    still be sent as the JSON payload, not silently dropped."""
+    oneof_schema = OpenAPISchema(
+        oneOf=[
+            OpenAPISchema(
+                type="object", properties={"card": OpenAPISchema(type="string")}
+            ),
+            OpenAPISchema(
+                type="object", properties={"iban": OpenAPISchema(type="string")}
+            ),
+        ]
+    )
+    mock_operation = Operation(
+        operationId="test_op",
+        requestBody=RequestBody(
+            content={"application/json": MediaType(schema=oneof_schema)}
+        ),
+    )
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=mock_operation,
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+    params = [
+        ApiParameter(
+            original_name="body",
+            py_name="body",
+            param_location="body",
+            param_schema=oneof_schema,
+        )
+    ]
+    kwargs = {"body": {"card": "4111-1111"}}
+
+    request_params = tool._prepare_request_params(params, kwargs)
+
+    assert request_params["json"] == {"card": "4111-1111"}
+
   def test_prepare_request_params_form_data(
       self, sample_endpoint, sample_auth_scheme, sample_auth_credential
   ):
