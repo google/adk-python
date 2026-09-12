@@ -45,6 +45,7 @@ from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from google.adk.tools.mcp_tool.mcp_tool import MCPTool
+from google.adk.tools.mcp_tool.mcp_toolset import _set_allow_config_stdio_servers
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolsetConfig
 from google.adk.tools.tool_configs import ToolArgsConfig
@@ -269,7 +270,11 @@ class TestMcpToolset:
         auth_scheme=auth_scheme,
         credential_key="my_custom_key",
     )
-    toolset = McpToolset.from_config(config, "")
+    _set_allow_config_stdio_servers(True)
+    try:
+      toolset = McpToolset.from_config(config, "")
+    finally:
+      _set_allow_config_stdio_servers(False)
 
     assert isinstance(toolset._auth_scheme, OAuth2)
     assert toolset._auth_config.credential_key == "my_custom_key"
