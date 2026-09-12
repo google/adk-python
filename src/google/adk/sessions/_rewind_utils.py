@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 
 from google.genai import types
 
+from ..errors.invocation_not_found_error import InvocationNotFoundError
 from ..events.event import Event
 from ..events.event_actions import EventActions
 from ..platform import uuid as platform_uuid
@@ -168,7 +169,9 @@ async def rewind_session(
       break
 
   if rewind_event_index == -1:
-    raise ValueError(f"Invocation ID not found: {rewind_before_invocation_id}")
+    raise InvocationNotFoundError(
+        f"Invocation ID not found: {rewind_before_invocation_id}"
+    )
 
   # Compute state delta to reverse changes
   if compute_state_delta is not None:
