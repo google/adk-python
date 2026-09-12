@@ -764,6 +764,11 @@ class MCPSessionManager:
     self._session_id_to_key: dict[str, str] = {}
     self._active_debug_lists: dict[str, list[dict[str, Any]]] = {}
 
+    # Session keys that have been explicitly invalidated (e.g. after a
+    # server-side session loss).  ``create_session`` treats any key in this
+    # set as disconnected, builds a fresh session, and then removes the key.
+    self._invalidated_sessions: set[str] = set()
+
     # Cache for mTLS transports per event loop to avoid re-creation.
     self._mtls_transports: dict[
         asyncio.AbstractEventLoop, _GoogleAuthAsyncTransport
@@ -920,8 +925,10 @@ class MCPSessionManager:
 
     return base_headers
 
-  def _is_session_disconnected(self, session: ClientSession) -> bool:
-    """Checks if a session is disconnected or closed.
+  def _is_session_disconnected(
+      self, session: ClientSession, session_key: str | None = None
+  ) -> bool:
+    """Checks if a session is disconnected, closed, or explicitly invalidated.
 
     Reads two attributes ADK does not own: the SDK holds the transport streams
     on the session privately, and each stream reports its own closed flag. A
@@ -935,12 +942,22 @@ class MCPSessionManager:
     runs under `_MCP_GRACEFUL_ERROR_HANDLING`, which is on by default. The
     kill switch drops it and leaves this probe on its own.
 
+    When a session key has been added to ``_invalidated_sessions`` via
+    ``invalidate_session``, this method returns ``True`` unconditionally so
+    that ``create_session`` replaces the cached session even though its
+    transport streams still look healthy.
+
     Args:
         session: The ClientSession to check.
+        session_key: The pool key for this session. When provided, the
+          method also checks whether the key has been explicitly
+          invalidated.
 
     Returns:
         True if the session is known to be disconnected, False otherwise.
     """
+    if session_key is not None and session_key in self._invalidated_sessions:
+      return True
     read_stream = getattr(session, '_read_stream', None)
     write_stream = getattr(session, '_write_stream', None)
     return bool(
@@ -1001,6 +1018,25 @@ class MCPSessionManager:
     # Start the idle clock now, at the end of the call.
     if session_key in self._sessions:
       self._session_last_used[session_key] = time.monotonic()
+
+  def invalidate_session(
+      self, headers: Optional[Dict[str, str]] = None
+  ) -> None:
+    """Marks the pooled session for these headers as invalid.
+
+    The next ``create_session`` call for the same headers will discard the
+    cached session and build a fresh one, even if the transport streams
+    still look open.  This is the correct response when the remote MCP
+    server has lost its session state (e.g. after a Cloud Run
+    scale-to-zero event) but the HTTP connection itself is fine.
+
+    Args:
+        headers: The headers that identify the session to invalidate.
+          ``None`` invalidates the default (no-header) session.
+    """
+    session_key = self._generate_session_key(self._merge_headers(headers))
+    self._invalidated_sessions.add(session_key)
+    logger.info('Session %s marked for invalidation', session_key)
 
   async def _cleanup_session(
       self,
@@ -1282,7 +1318,7 @@ class MCPSessionManager:
           ctx_alive = True  # Pre-fix: do not consult task aliveness
         if (
             stored_loop is current_loop
-            and not self._is_session_disconnected(session)
+            and not self._is_session_disconnected(session, session_key)
             and ctx_alive
         ):
           # Session is still good, return it
@@ -1349,6 +1385,7 @@ class MCPSessionManager:
         # shape of `_sessions` (which is a public-ish internal surface).
         self._session_contexts[session_key] = session_context
         self._session_last_used[session_key] = time.monotonic()
+        self._invalidated_sessions.discard(session_key)
         logger.debug('Created new session: %s', session_key)
         return session
 
@@ -1376,6 +1413,7 @@ class MCPSessionManager:
     state['_mtls_transports'] = {}
     state['_session_id_to_key'] = {}
     state['_active_debug_lists'] = {}
+    state['_invalidated_sessions'] = set()
 
     # Locks and file-like objects cannot be pickled
     state.pop('_lock_map_lock', None)
@@ -1397,6 +1435,7 @@ class MCPSessionManager:
     self._mtls_transports = {}
     self._session_id_to_key = {}
     self._active_debug_lists = {}
+    self._invalidated_sessions = set()
     self._lock_map_lock = threading.Lock()
     self._use_count_lock = threading.Lock()
     # If _errlog was removed during pickling, default to sys.stderr

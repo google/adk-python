@@ -417,6 +417,12 @@ class McpToolset(BaseToolset):
         logger.exception(
             f"Exception during MCP session execution: {error_message}: {e}"
         )
+        # Mark the session as invalid so the retry from @retry_on_errors
+        # builds a fresh session instead of reusing the cached one.  This
+        # handles the case where the remote MCP server has lost its
+        # session state (e.g. after a Cloud Run scale-to-zero event) but
+        # the HTTP transport still looks healthy.
+        self._mcp_session_manager.invalidate_session(session_headers)
         raise ConnectionError(f"{error_message}: {e}") from e
       finally:
         self._mcp_session_manager._end_session_use(session_headers)  # pylint: disable=protected-access

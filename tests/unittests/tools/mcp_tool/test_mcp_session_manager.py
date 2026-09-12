@@ -468,6 +468,82 @@ class TestMCPSessionManager:
     manager = MCPSessionManager(self.mock_stdio_connection_params)
     assert not manager._is_session_disconnected(SessionWithBareStreams())
 
+  def test_is_session_disconnected_with_invalidated_key(self):
+    """An explicitly invalidated session key reads as disconnected."""
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+    session = MockClientSession()
+
+    # Without invalidation, session is connected.
+    assert not manager._is_session_disconnected(session, session_key='k')
+
+    # After invalidation, the same session reads as disconnected.
+    manager._invalidated_sessions.add('k')
+    assert manager._is_session_disconnected(session, session_key='k')
+
+    # A different key is unaffected.
+    assert not manager._is_session_disconnected(session, session_key='other')
+
+    # Without a key the invalidation set is not consulted.
+    assert not manager._is_session_disconnected(session)
+
+  def test_invalidate_session_marks_key(self):
+    """invalidate_session adds the session key to the invalidation set."""
+    manager = MCPSessionManager(
+        StreamableHTTPConnectionParams(url='http://example.com/mcp')
+    )
+
+    headers = {'Authorization': 'Bearer token'}
+    expected_key = manager._generate_session_key(
+        manager._merge_headers(headers)
+    )
+
+    manager.invalidate_session(headers)
+    assert expected_key in manager._invalidated_sessions
+
+  @pytest.mark.asyncio
+  async def test_invalidated_session_is_replaced_on_next_create(self):
+    """A session marked invalid is discarded by the next create_session call."""
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+
+    # Pre-populate a healthy-looking session.
+    old_session = MockClientSession()
+    old_exit_stack = MockAsyncExitStack()
+    manager._sessions['stdio_session'] = (
+        old_session,
+        old_exit_stack,
+        asyncio.get_running_loop(),
+    )
+    manager._session_last_used['stdio_session'] = time.monotonic()
+
+    # Mark it invalid.
+    manager._invalidated_sessions.add('stdio_session')
+
+    # Patch creation path so we get a fresh session.
+    new_session = MockClientSession()
+    with patch(
+        'google.adk.tools.mcp_tool.mcp_session_manager.stdio_client'
+    ):
+      with patch(
+          'google.adk.tools.mcp_tool.mcp_session_manager.AsyncExitStack'
+      ) as mock_exit_stack_class:
+        with patch(
+            'google.adk.tools.mcp_tool.mcp_session_manager.SessionContext'
+        ) as mock_session_context_class:
+          mock_exit_stack = MockAsyncExitStack()
+          mock_exit_stack_class.return_value = mock_exit_stack
+          mock_session_context_class.return_value = MockSessionContext(
+              session=new_session
+          )
+          mock_exit_stack.enter_async_context.return_value = new_session
+
+          session = await manager.create_session()
+
+    # The invalidated session was replaced.
+    assert session is new_session
+    assert session is not old_session
+    # The invalidation flag was cleared.
+    assert 'stdio_session' not in manager._invalidated_sessions
+
   @pytest.mark.asyncio
   async def test_create_session_stdio_new(self):
     """Test creating a new stdio session."""
@@ -1398,6 +1474,7 @@ class TestMCPSessionManager:
     # Verify transient/unpicklable members are re-initialized or cleared
     assert unpickled._sessions == {}
     assert unpickled._session_last_used == {}
+    assert unpickled._invalidated_sessions == set()
     assert unpickled._session_lock_map == {}
     assert isinstance(unpickled._lock_map_lock, type(manager._lock_map_lock))
     assert unpickled._lock_map_lock is not manager._lock_map_lock
