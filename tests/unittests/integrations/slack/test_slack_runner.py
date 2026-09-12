@@ -75,6 +75,39 @@ class TestSlackRunner(unittest.IsolatedAsyncioTestCase):
     )
 
   @patch("google.adk.integrations.slack.slack_runner.logger")
+  async def test_handle_message_sanitizes_slack_thread_ts_session_id(
+      self, mock_logger
+  ):
+    mock_say = AsyncMock()
+    mock_say.return_value = {"ts": "thinking_ts"}
+    event = {
+        "text": "Hello bot",
+        "user": "U12345",
+        "channel": "C67890",
+        "thread_ts": "1234567890.123456",
+        "ts": "1234567899.999999",
+    }
+
+    async def mock_run_async(*args, **kwargs):
+      return
+      yield
+
+    self.mock_runner.run_async.side_effect = mock_run_async
+
+    await self.slack_runner._handle_message(event, mock_say)
+
+    self.mock_runner.run_async.assert_called_once_with(
+        user_id="U12345",
+        session_id="C67890-1234567890_123456",
+        new_message=types.Content(
+            role="user", parts=[types.Part(text="Hello bot")]
+        ),
+    )
+    mock_say.assert_called_once_with(
+        text="_Thinking..._", thread_ts="1234567890.123456"
+    )
+
+  @patch("google.adk.integrations.slack.slack_runner.logger")
   async def test_handle_message_multi_turn(self, mock_logger):
     # Setup mocks
     mock_say = AsyncMock()
