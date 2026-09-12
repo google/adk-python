@@ -97,6 +97,7 @@ class JudgeModelOptions(EvalBaseModel):
 
   num_samples: int = Field(
       default=5,
+      ge=1,
       description=(
           "The number of times to sample the model for each invocation"
           " evaluation. Given that models tend to have certain degree of"
