@@ -26,7 +26,11 @@ unary (``run_async``) and live (``run_live``) modes, through the ordinary
 from __future__ import annotations
 
 import logging
+from typing import Any
 from typing import Optional
+
+from ...tools.base_tool import BaseTool
+from ...tools.tool_context import ToolContext
 
 from google.api_core.client_options import ClientOptions
 from google.api_core.gapic_v1.client_info import ClientInfo
@@ -87,7 +91,9 @@ class ModelArmorPlugin(BasePlugin):
     self._credentials = credentials
 
     self._location = _shared_template_location(
-        config.prompt_template_name, config.response_template_name
+        config.prompt_template_name,
+        config.response_template_name,
+        config.tool_output_template_name,
     )
 
   async def before_model_callback(
@@ -186,6 +192,47 @@ class ModelArmorPlugin(BasePlugin):
     )
     return response.sanitization_result
 
+  async def after_tool_callback(
+      self,
+      *,
+      tool: BaseTool,
+      tool_args: dict[str, Any],
+      tool_context: ToolContext,
+      result: dict[str, Any],
+  ) -> Optional[dict[str, Any]]:
+    """Screens tool output text against the configured tool output template."""
+    if not self._config.tool_output_template_name:
+      return None
+
+    text = _extract_tool_result_text(result)
+    if not text:
+      return None
+
+    try:
+      sanitization_result = await self._sanitize_user_prompt(
+          text, self._config.tool_output_template_name
+      )
+    except Exception:  # pylint: disable=broad-except
+      logger.exception('Model Armor tool output screening call failed.')
+      if self._config.block_on_screening_failure:
+        return {'error': self._config.tool_output_blocked_message}
+      return None
+
+    if sanitization_result.invocation_result != modelarmor_v1.InvocationResult.SUCCESS:
+      logger.error(
+          'Model Armor tool output sanitization did not succeed: invocation_result=%r',
+          sanitization_result.invocation_result,
+      )
+      if self._config.block_on_screening_failure:
+        return {'error': self._config.tool_output_blocked_message}
+      return None
+
+    if sanitization_result.filter_match_state == modelarmor_v1.FilterMatchState.MATCH_FOUND:
+      logger.warning('Model Armor tool output sanitization match found.')
+      return {'error': self._config.tool_output_blocked_message}
+
+    return None
+
   async def close(self) -> None:
     """Closes the underlying client."""
     if self._client:
@@ -270,6 +317,22 @@ def _content_text(content: Optional[types.Content]) -> Optional[str]:
   if not texts:
     return None
   return '\n'.join(texts)
+
+
+def _extract_tool_result_text(result: dict) -> Optional[str]:
+  """Extracts screenable text from a tool result dict."""
+  if not result:
+    return None
+  for key in ('result', 'output', 'text', 'content'):
+    val = result.get(key)
+    if isinstance(val, str) and val.strip():
+      return val
+  import json
+  try:
+    serialized = json.dumps(result, default=str)
+    return serialized if serialized not in ('{}', 'null', '[]') else None
+  except Exception:  # pylint: disable=broad-except
+    return str(result) or None
 
 
 def _regional_endpoint(location: str) -> str:

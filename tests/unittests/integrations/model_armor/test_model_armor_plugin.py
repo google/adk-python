@@ -20,6 +20,7 @@ from typing import Optional
 from unittest import mock
 
 from google.adk.integrations.model_armor import ModelArmorConfig
+from google.adk.integrations.model_armor._config import _DEFAULT_BLOCKED_MESSAGE
 from google.adk.integrations.model_armor import ModelArmorPlugin
 from google.adk.integrations.model_armor._plugin import _regional_endpoint
 from google.adk.integrations.model_armor._plugin import _shared_template_location
@@ -471,3 +472,135 @@ async def test_close_only_closes_own_client():
   await plugin.close()
 
   built_client.transport.close.assert_awaited_once()
+
+
+# --- Tool output screening --------------------------------------------------
+
+_TOOL_OUTPUT_TEMPLATE_PATH = (
+    'projects/test-project/locations/us-central1/templates/test-tool-output'
+)
+
+
+def _tool_plugin(*, result=None, raises: bool = False, **config_overrides):
+  """Returns a (plugin, client) pair configured for tool output screening."""
+  client = _sdk_client(result=result, raises=raises)
+  config = ModelArmorConfig(
+      tool_output_template_name=_TOOL_OUTPUT_TEMPLATE_PATH,
+      **config_overrides,
+  )
+  plugin = ModelArmorPlugin(config=config, client=client)
+  return plugin, client
+
+
+async def _screen_tool_output(plugin, result: dict):
+  return await plugin.after_tool_callback(
+      tool=mock.Mock(),
+      tool_args={},
+      tool_context=mock.Mock(),
+      result=result,
+  )
+
+
+@pytest.mark.asyncio
+async def test_matched_tool_output_is_blocked():
+  """Tool output matching the template is replaced with the blocked message."""
+  plugin, client = _tool_plugin(result=_sanitization_result(match=True))
+
+  result = await _screen_tool_output(plugin, {'result': 'malicious content'})
+
+  assert result == {'error': _DEFAULT_BLOCKED_MESSAGE}
+  assert _screened(client) == [('input', 'malicious content')]
+
+
+@pytest.mark.asyncio
+async def test_clean_tool_output_passes_through():
+  """Tool output that does not match the template returns None."""
+  plugin, client = _tool_plugin()
+
+  result = await _screen_tool_output(plugin, {'result': 'safe content'})
+
+  assert result is None
+  assert _screened(client) == [('input', 'safe content')]
+
+
+@pytest.mark.asyncio
+async def test_tool_output_not_screened_without_template():
+  """If tool_output_template_name is unset, after_tool_callback is a no-op."""
+  client = _sdk_client(result=_sanitization_result(match=True))
+  plugin = ModelArmorPlugin(
+      config=_config(),  # no tool_output_template_name
+      client=client,
+  )
+
+  result = await _screen_tool_output(plugin, {'result': 'anything'})
+
+  assert result is None
+  assert _screened(client) == []
+
+
+@pytest.mark.asyncio
+async def test_empty_tool_result_is_not_screened():
+  """An empty tool result dict is skipped without calling Model Armor."""
+  plugin, client = _tool_plugin()
+
+  result = await _screen_tool_output(plugin, {})
+
+  assert result is None
+  assert _screened(client) == []
+
+
+@pytest.mark.asyncio
+async def test_tool_output_fallback_to_json_serialization():
+  """Tool results without known keys are JSON-serialized for screening."""
+  plugin, client = _tool_plugin()
+
+  await _screen_tool_output(plugin, {'foo': 'bar', 'baz': 123})
+
+  screened = _screened(client)
+  assert len(screened) == 1
+  assert screened[0][0] == 'input'
+  import json
+  parsed = json.loads(screened[0][1])
+  assert parsed == {'foo': 'bar', 'baz': 123}
+
+
+@pytest.mark.asyncio
+async def test_tool_output_screening_failure_blocks_by_default():
+  """A screening failure blocks tool output when block_on_screening_failure=True."""
+  plugin, _ = _tool_plugin(raises=True, block_on_screening_failure=True)
+
+  result = await _screen_tool_output(plugin, {'result': 'content'})
+
+  assert result == {'error': _DEFAULT_BLOCKED_MESSAGE}
+
+
+@pytest.mark.asyncio
+async def test_tool_output_screening_failure_passes_when_configured():
+  """A screening failure passes through when block_on_screening_failure=False."""
+  plugin, _ = _tool_plugin(raises=True, block_on_screening_failure=False)
+
+  result = await _screen_tool_output(plugin, {'result': 'content'})
+
+  assert result is None
+
+
+@pytest.mark.parametrize('screening', _SCREENING_FAILURE)
+@pytest.mark.asyncio
+async def test_tool_output_non_success_invocation_blocks_by_default(screening):
+  """Non-SUCCESS invocation results block tool output by default."""
+  plugin, _ = _tool_plugin(**screening)
+
+  result = await _screen_tool_output(plugin, {'result': 'content'})
+
+  assert result == {'error': _DEFAULT_BLOCKED_MESSAGE}
+
+
+@pytest.mark.asyncio
+async def test_tool_output_template_location_validated():
+  """tool_output_template_name must share location with other templates."""
+  from google.adk.integrations.model_armor._plugin import _shared_template_location
+  with pytest.raises(ValueError, match='same location'):
+    _shared_template_location(
+        'projects/test-project/locations/us-central1/templates/prompt',
+        'projects/test-project/locations/europe-west1/templates/tool',
+    )
