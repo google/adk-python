@@ -498,6 +498,7 @@ class LocalEvalService(BaseEvalService):
       self, overall_eval_metric_results: list[EvalMetricResult]
   ) -> EvalStatus:
     final_eval_status = EvalStatus.NOT_EVALUATED
+    has_not_evaluated_metric = False
     # Go over all the eval statuses and mark the final eval status as
     # passed if all of them pass; otherwise, mark the final eval status to
     # failed.
@@ -506,12 +507,20 @@ class LocalEvalService(BaseEvalService):
       if overall_eval_status == EvalStatus.PASSED:
         final_eval_status = EvalStatus.PASSED
       elif overall_eval_status == EvalStatus.NOT_EVALUATED:
+        has_not_evaluated_metric = True
         continue
       elif overall_eval_status == EvalStatus.FAILED:
         final_eval_status = EvalStatus.FAILED
         break
       else:
         raise ValueError(f"Unknown eval status: {overall_eval_status}.")
+
+    # A metric that never produced a verdict (e.g. a judge call that crashed)
+    # must not be silently masked by another metric that happened to pass --
+    # only report PASSED when every requested metric was actually evaluated.
+    # A genuine FAILED is real evidence and still takes precedence.
+    if has_not_evaluated_metric and final_eval_status == EvalStatus.PASSED:
+      final_eval_status = EvalStatus.NOT_EVALUATED
 
     return final_eval_status
 
