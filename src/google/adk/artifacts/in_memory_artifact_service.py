@@ -208,10 +208,8 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
           version=parsed_uri.version,
       )
 
-    if (
-        artifact_data == types.Part()
-        or artifact_data == types.Part(text="")
-        or (artifact_data.inline_data and not artifact_data.inline_data.data)
+    if artifact_data == types.Part() or (
+        artifact_data.inline_data and not artifact_data.inline_data.data
     ):
       return None
     return artifact_data
