@@ -272,12 +272,29 @@ def test_claude_does_not_support_output_schema_and_tools(
     ).capabilities.output_schema_and_tools
 
 
-def test_litellm_supports_output_schema_and_tools():
-  """LiteLLM reconciles schema and tools for every provider it fronts."""
+def test_litellm_defaults_to_conservative_output_schema_and_tools():
+  """LiteLLM cannot infer support for combining schemas and tools."""
   with _assert_no_warning():
-    assert LiteLlm(model='openai/gpt-4o').capabilities.output_schema_and_tools
+    assert not LiteLlm(
+        model='openai/gpt-4o'
+    ).capabilities.output_schema_and_tools
 
 
-def test_gemma3_ollama_inherits_litellm_capabilities():
-  """Gemma3Ollama extends LiteLlm and inherits its capability."""
-  assert Gemma3Ollama().capabilities.output_schema_and_tools
+def test_litellm_can_declare_output_schema_and_tools_support():
+  """A caller can opt in when a provider/model supports the combination."""
+  with _assert_no_warning():
+    assert LiteLlm(
+        model='openai/gpt-4o', output_schema_and_tools=True
+    ).capabilities.output_schema_and_tools
+
+
+def test_gemma3_ollama_defaults_to_conservative_capabilities():
+  """Gemma3Ollama inherits LiteLlm's conservative default."""
+  assert not Gemma3Ollama().capabilities.output_schema_and_tools
+
+
+def test_gemma3_ollama_can_declare_output_schema_and_tools_support():
+  """Gemma3Ollama accepts the same explicit capability override."""
+  assert Gemma3Ollama(
+      output_schema_and_tools=True
+  ).capabilities.output_schema_and_tools
