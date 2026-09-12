@@ -1046,20 +1046,29 @@ def _use_extra_generate_content_attributes(
 
     return
 
-  ctx = otel_context.set_value(
-      GENERATE_CONTENT_EXTRA_ATTRIBUTES_CONTEXT_KEY, extra_attributes
-  )
+  # When EVENT_ONLY key is missing from opentelemetry-instrumentation-google-genai
+  # (through 1.0b0), fall back to merging log-only attrs (incl. user.id) into the
+  # span extras channel so they still reach generate_content spans.
+  # See https://github.com/google/adk-python/issues/6361
+  span_attrs = dict(extra_attributes)
+  event_only_key = None
   if log_only_extra_attributes:
     try:
-      from opentelemetry.instrumentation.google_genai import GENERATE_CONTENT_EVENT_ONLY_EXTRA_ATTRIBUTES_CONTEXT_KEY
-
-      ctx = otel_context.set_value(
-          GENERATE_CONTENT_EVENT_ONLY_EXTRA_ATTRIBUTES_CONTEXT_KEY,
-          log_only_extra_attributes,
-          context=ctx,
+      from opentelemetry.instrumentation.google_genai import (
+          GENERATE_CONTENT_EVENT_ONLY_EXTRA_ATTRIBUTES_CONTEXT_KEY as event_only_key,
       )
     except (ImportError, AttributeError):
-      pass
+      span_attrs.update(log_only_extra_attributes)
+
+  ctx = otel_context.set_value(
+      GENERATE_CONTENT_EXTRA_ATTRIBUTES_CONTEXT_KEY, span_attrs
+  )
+  if log_only_extra_attributes and event_only_key is not None:
+    ctx = otel_context.set_value(
+        event_only_key,
+        log_only_extra_attributes,
+        context=ctx,
+    )
 
   tok = otel_context.attach(ctx)
   try:
