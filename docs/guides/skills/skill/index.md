@@ -190,7 +190,9 @@ model: `list_skills`, `load_skill`, `load_skill_resource`, and
 configured. The model reaches the three levels by calling those tools in order:
 
 1.  `list_skills` returns the name and description of every installed skill,
-    which is level 1.
+    which is level 1. Pass `include_list_skills=False` on `SkillToolset` to skip
+    this turn: the catalog is injected as `<available_skills>` XML in the system
+    instruction, and the model can call `load_skill` directly.
 2.  `load_skill` returns the body of the one it picked, which is level 2.
 3.  `load_skill_resource` or `run_skill_script` reaches a single file or
     script, which is level 3.
@@ -330,6 +332,20 @@ support_hours_skill = Skill(
 from google.adk.skills import load_skills_from_dir
 
 skills = load_skills_from_dir(pathlib.Path(__file__).parent / "skills")
+```
+
+### Inject the L1 catalog instead of calling list_skills
+
+*   **Problem solved**: `list_skills` costs an extra model turn before
+    `load_skill`. With a small, stable local catalog that tax is not worth it.
+*   **Implementation**: `SkillToolset(..., include_list_skills=False)` hides
+    the `list_skills` tool and injects the names and descriptions as
+    `<available_skills>` XML in the system instruction. The model still calls
+    `load_skill` for the body. Registry skills, if a registry is configured, are
+    still discovered only through `search_skills`.
+
+```python
+SkillToolset(skills=[weather_skill], include_list_skills=False)
 ```
 
 ### List without loading

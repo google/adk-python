@@ -250,6 +250,25 @@ async def test_clone_with_updated_skills_keeps_filter_and_prefix(
   assert clone_names == original_names == ["list_skills"]
 
 
+@pytest.mark.asyncio
+async def test_clone_with_updated_skills_keeps_include_list_skills(
+    mock_skill1, mock_skill2, tool_context_instance
+):
+  """The clone keeps include_list_skills=False, so list_skills stays hidden."""
+  toolset = skill_toolset.SkillToolset([mock_skill1], include_list_skills=False)
+
+  new_toolset = toolset.clone_with_updated_skills([mock_skill2])
+
+  original_names = [
+      t.name for t in await toolset.get_tools(tool_context_instance)
+  ]
+  clone_names = [
+      t.name for t in await new_toolset.get_tools(tool_context_instance)
+  ]
+  assert "list_skills" not in original_names
+  assert clone_names == original_names
+
+
 def test_init_accepts_environment(mock_skill1):
   """SkillToolset stores the provided environment."""
   mock_env = mock.create_autospec(BaseEnvironment, instance=True)
@@ -3113,6 +3132,68 @@ async def test_process_llm_request_injects_skills_xml_when_list_skills_filtered(
   assert "<available_skills>" in instructions[1]
   assert "skill1" in instructions[1]
   assert "skill2" in instructions[1]
+
+
+@pytest.mark.asyncio
+async def test_get_tools_omits_list_skills_when_disabled(mock_skill1):
+  """include_list_skills=False hides list_skills and keeps the other tools."""
+  toolset = skill_toolset.SkillToolset([mock_skill1], include_list_skills=False)
+
+  tool_names = [t.name for t in await toolset.get_tools()]
+
+  assert "list_skills" not in tool_names
+  assert "load_skill" in tool_names
+  assert "load_skill_resource" in tool_names
+  assert "run_skill_script" in tool_names
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_injects_skills_xml_when_list_skills_disabled(
+    mock_skill1, mock_skill2, tool_context_instance
+):
+  """include_list_skills=False injects the L1 catalog into the system prompt."""
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1, mock_skill2], include_list_skills=False
+  )
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+
+  args, _ = llm_req.append_instructions.call_args
+  instructions = args[0]
+  assert len(instructions) == 2
+  assert "NOT available: `list_skills`" in instructions[0]
+  assert "<available_skills>" in instructions[1]
+  assert "skill1" in instructions[1]
+  assert "skill2" in instructions[1]
+
+
+@pytest.mark.asyncio
+async def test_include_list_skills_false_keeps_search_skills(
+    mock_skill1, mock_registry, tool_context_instance
+):
+  """Disabling list_skills still exposes search_skills when a registry is set."""
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1],
+      registry=mock_registry,
+      include_list_skills=False,
+  )
+
+  tool_names = [t.name for t in await toolset.get_tools(tool_context_instance)]
+  assert "list_skills" not in tool_names
+  assert "search_skills" in tool_names
+  assert "load_skill" in tool_names
+
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+  await toolset.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+  args, _ = llm_req.append_instructions.call_args
+  instructions = args[0]
+  assert "<available_skills>" in instructions[1]
+  assert "search_skills" in instructions[2]
 
 
 @pytest.mark.asyncio
