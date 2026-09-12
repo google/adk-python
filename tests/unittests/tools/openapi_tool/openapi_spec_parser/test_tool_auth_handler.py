@@ -119,6 +119,68 @@ def openid_connect_credential():
 
 
 @pytest.mark.asyncio
+async def test_openid_connect_public_client_without_secret(
+    openid_connect_scheme,
+):
+  public_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
+      oauth2=OAuth2Auth(
+          client_id='public-client',
+          redirect_uri='https://app/cb',
+      ),
+  )
+  tool_context = create_mock_tool_context()
+  handler = ToolAuthHandler(
+      tool_context,
+      openid_connect_scheme,
+      public_credential,
+  )
+  result = await handler.prepare_auth_credentials()
+  assert result.state == 'pending'
+  assert result.auth_credential == public_credential
+
+
+@pytest.mark.asyncio
+async def test_openid_connect_public_client_exchanges_auth_response(
+    openid_connect_scheme, monkeypatch
+):
+  public_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
+      oauth2=OAuth2Auth(
+          client_id='public-client',
+          redirect_uri='https://app/cb',
+      ),
+  )
+  stored = public_credential.model_copy(deep=True)
+  stored.oauth2.auth_code = 'public-auth-code'
+  stored.oauth2.auth_response_uri = 'https://app/cb?code=public-auth-code'
+
+  tool_context = create_mock_tool_context()
+  handler = ToolAuthHandler(
+      tool_context,
+      openid_connect_scheme,
+      public_credential,
+  )
+  auth_config = handler._build_auth_config()
+  tool_context.state['temp:' + auth_config.credential_key] = stored
+
+  mock_client = MagicMock()
+  mock_client.fetch_token.return_value = {
+      'access_token': 'public_access_token',
+      'token_type': 'bearer',
+  }
+  monkeypatch.setattr(
+      'google.adk.auth.oauth2_credential_util.OAuth2Session',
+      lambda *args, **kwargs: mock_client,
+  )
+
+  result = await handler.prepare_auth_credentials()
+  assert result.state == 'done'
+  assert result.auth_credential.auth_type == AuthCredentialTypes.HTTP
+  assert result.auth_credential.http.credentials.token == 'public_access_token'
+
+
+@pytest.mark.asyncio
 async def test_openid_connect_no_auth_response(
     openid_connect_scheme, openid_connect_credential
 ):

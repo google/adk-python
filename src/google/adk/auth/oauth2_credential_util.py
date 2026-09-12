@@ -83,9 +83,20 @@ def create_oauth2_session(
       not auth_credential
       or not auth_credential.oauth2
       or not auth_credential.oauth2.client_id
-      or not auth_credential.oauth2.client_secret
   ):
     return None, None
+
+  # Public clients have no client_secret. The model default is
+  # client_secret_basic, which would send an empty Basic header. RFC 6749
+  # token endpoint auth method "none" is the public-client value.
+  token_endpoint_auth_method: str | None = (
+      auth_credential.oauth2.token_endpoint_auth_method
+  )
+  if (
+      not auth_credential.oauth2.client_secret
+      and token_endpoint_auth_method == "client_secret_basic"
+  ):
+    token_endpoint_auth_method = "none"
 
   # Scope is intentionally omitted: token exchange and refresh don't require
   # it per RFC 6749, and some providers reject it on these requests.
@@ -94,7 +105,7 @@ def create_oauth2_session(
       auth_credential.oauth2.client_secret,
       redirect_uri=auth_credential.oauth2.redirect_uri,
       state=auth_credential.oauth2.state,
-      token_endpoint_auth_method=auth_credential.oauth2.token_endpoint_auth_method,
+      token_endpoint_auth_method=token_endpoint_auth_method,
       code_challenge_method=auth_credential.oauth2.code_challenge_method,
       default_timeout=_TOKEN_REQUEST_TIMEOUT_SECONDS,
   )

@@ -295,11 +295,6 @@ class ToolAuthHandler:
             "OAuth2 credentials client_id is missing."
         )
 
-      if not self.auth_credential.oauth2.client_secret:
-        raise AuthCredentialMissingError(
-            "OAuth2 credentials client_secret is missing."
-        )
-
     self.tool_context.request_credential(self._build_auth_config())
     return None
 
