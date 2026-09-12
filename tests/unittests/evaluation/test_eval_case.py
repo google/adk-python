@@ -23,6 +23,7 @@ from google.adk.evaluation.eval_case import IntermediateData
 from google.adk.evaluation.eval_case import InvocationEvent
 from google.adk.evaluation.eval_case import InvocationEvents
 from google.adk.evaluation.eval_case import SessionInput
+from google.adk.events.event import Event
 from google.genai import types as genai_types
 import pytest
 
@@ -77,6 +78,33 @@ def test_session_input_accepts_session_id():
 def test_session_input_session_id_defaults_to_none():
   """Tests that session_id is optional and defaults to None."""
   assert SessionInput(app_name='a', user_id='u').session_id is None
+
+
+def test_session_input_accepts_events():
+  """Tests that SessionInput accepts events and round-trips them."""
+  event = Event(
+      content=genai_types.Content(
+          parts=[genai_types.Part.from_text(text='hello')]
+      ),
+      author='user',
+  )
+  session_input = SessionInput(app_name='a', user_id='u', events=[event])
+
+  assert session_input.events is not None
+  assert len(session_input.events) == 1
+  assert session_input.events[0].content.parts[0].text == 'hello'
+
+  round_tripped = SessionInput.model_validate_json(
+      session_input.model_dump_json()
+  )
+  assert round_tripped.events is not None
+  assert len(round_tripped.events) == 1
+  assert round_tripped.events[0].content.parts[0].text == 'hello'
+
+
+def test_session_input_events_defaults_to_none():
+  """Tests that events is optional and defaults to None."""
+  assert SessionInput(app_name='a', user_id='u').events is None
 
 
 def test_get_all_tool_calls_with_none_input():
