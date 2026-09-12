@@ -4524,6 +4524,88 @@ def test_in_memory_exporter_clear_drops_spans_but_keeps_session_index():
   assert session_trace_dict == {"session-a": [505]}
 
 
+def test_api_server_span_exporter_evicts_oldest_events():
+  """Event attributes are FIFO-capped so a long-lived web UI cannot OOM."""
+  from google.adk.cli.api_server import ApiServerSpanExporter
+
+  trace_dict = {}
+  exporter = ApiServerSpanExporter(trace_dict, max_events=2)
+
+  exporter.export([
+      _readable_span(
+          "call_llm",
+          trace_id=1,
+          attributes={"gcp.vertex.agent.event_id": "event-a"},
+      ),
+      _readable_span(
+          "call_llm",
+          trace_id=2,
+          attributes={"gcp.vertex.agent.event_id": "event-b"},
+      ),
+      _readable_span(
+          "call_llm",
+          trace_id=3,
+          attributes={"gcp.vertex.agent.event_id": "event-c"},
+      ),
+  ])
+
+  assert list(trace_dict) == ["event-b", "event-c"]
+
+
+def test_in_memory_exporter_evicts_oldest_spans():
+  """Finished spans are deque-capped; lookups only see what still fits."""
+  from google.adk.cli.api_server import InMemoryExporter
+
+  session_trace_dict = {}
+  exporter = InMemoryExporter(session_trace_dict, max_spans=2)
+
+  span_1 = _readable_span(
+      "call_llm",
+      trace_id=1,
+      attributes={"gcp.vertex.agent.session_id": "session-a"},
+  )
+  span_2 = _readable_span(
+      "call_llm",
+      trace_id=2,
+      attributes={"gcp.vertex.agent.session_id": "session-a"},
+  )
+  span_3 = _readable_span(
+      "call_llm",
+      trace_id=3,
+      attributes={"gcp.vertex.agent.session_id": "session-a"},
+  )
+  exporter.export([span_1, span_2, span_3])
+
+  assert exporter.get_finished_spans("session-a") == [span_2, span_3]
+
+
+def test_in_memory_exporter_evicts_oldest_sessions():
+  """The session -> trace-id index is capped the same way as the span buffer."""
+  from google.adk.cli.api_server import InMemoryExporter
+
+  session_trace_dict = {}
+  exporter = InMemoryExporter(session_trace_dict, max_sessions=2)
+  exporter.export([
+      _readable_span(
+          "call_llm",
+          trace_id=1,
+          attributes={"gcp.vertex.agent.session_id": "session-a"},
+      ),
+      _readable_span(
+          "call_llm",
+          trace_id=2,
+          attributes={"gcp.vertex.agent.session_id": "session-b"},
+      ),
+      _readable_span(
+          "call_llm",
+          trace_id=3,
+          attributes={"gcp.vertex.agent.session_id": "session-c"},
+      ),
+  ])
+
+  assert list(session_trace_dict) == ["session-b", "session-c"]
+
+
 #################################################
 # Request-body plumbing tests
 #################################################
@@ -4620,6 +4702,46 @@ def test_dev_only_endpoints_absent_when_web_disabled(
   # The production endpoints are still there.
   assert client.get("/health").status_code == 200
   assert client.get("/list-apps").status_code == 200
+
+
+def test_debug_trace_exporters_only_registered_for_dev_server(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """web=False has no reader for debug traces, so it must not retain them."""
+  from google.adk.cli import api_server as api_server_module
+
+  with patch.object(
+      api_server_module, "_setup_telemetry", autospec=True
+  ) as mock_setup_telemetry:
+    _create_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+        web=False,
+    )
+    assert mock_setup_telemetry.call_args.kwargs["internal_exporters"] == []
+
+  with patch.object(
+      api_server_module, "_setup_telemetry", autospec=True
+  ) as mock_setup_telemetry:
+    _create_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+        web=True,
+    )
+    assert len(mock_setup_telemetry.call_args.kwargs["internal_exporters"]) == 2
 
 
 def test_app_info_rejects_special_agent_only_in_api_server_mode(
