@@ -220,8 +220,12 @@ async def test_run_node_internal_workflow_scheduler_validates_numeric_run_id():
   assert res == 'bypassed'
 
 
-async def test_run_node_internal_workflow_scheduler_autogenerates_run_id():
-  """Workflow scheduler assigns auto-incrementing run_ids when run_id is omitted."""
+async def test_run_node_internal_delegates_run_id_allocation_to_scheduler():
+  """Executor forwards run_id=None so the scheduler allocates sequential IDs.
+
+  The sequential allocation itself is covered by
+  test_dynamic_node_scheduler.py::test_dynamic_node_scheduler_auto_generates_sequential_run_id.
+  """
   # Arrange
   mock_scheduler = AsyncMock()
   parent_ctx = _make_context(workflow_scheduler=mock_scheduler)
@@ -243,8 +247,8 @@ async def test_run_node_internal_workflow_scheduler_autogenerates_run_id():
   assert res1 == 'out1'
   assert res2 == 'out2'
   assert mock_scheduler.call_count == 2
-  assert mock_scheduler.call_args_list[0].kwargs['run_id'] == '1'
-  assert mock_scheduler.call_args_list[1].kwargs['run_id'] == '2'
+  assert mock_scheduler.call_args_list[0].kwargs['run_id'] is None
+  assert mock_scheduler.call_args_list[1].kwargs['run_id'] is None
 
 
 async def test_run_node_internal_propagates_child_error():

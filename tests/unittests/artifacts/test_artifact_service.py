@@ -1437,6 +1437,37 @@ async def test_file_save_artifact_rejects_out_of_scope_paths(
     )
 
 
+@pytest.mark.asyncio
+async def test_file_rejects_user_id_that_collides_with_session_scope(
+    tmp_path,
+):
+  """A user_id embedding "/sessions/<id>" must not resolve into another
+  caller's session-scoped directory.
+  """
+  artifact_service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  await artifact_service.save_artifact(
+      app_name="app",
+      user_id="victim",
+      session_id="s1",
+      filename="notes.txt",
+      artifact=types.Part(text="victim data"),
+  )
+  with pytest.raises(InputValidationError):
+    await artifact_service.save_artifact(
+        app_name="app",
+        user_id="victim/sessions/s1",
+        filename="user:notes.txt",
+        artifact=types.Part(text="attacker data"),
+    )
+  loaded = await artifact_service.load_artifact(
+      app_name="app",
+      user_id="victim",
+      session_id="s1",
+      filename="notes.txt",
+  )
+  assert loaded.text == "victim data"
+
+
 INVALID_PATH_SEGMENT_CASES = (
     ("../escape", "must not contain traversal segments"),
     ("../../etc", "must not contain traversal segments"),
@@ -1454,6 +1485,11 @@ INVALID_PATH_SEGMENT_CASES = (
     (r"C:\absolute", "must not be drive-qualified"),
     ("C:/absolute", "must not be drive-qualified"),
     ("C:drive-relative", "must not be drive-qualified"),
+    ("victim/sessions/s1", "must not contain reserved path segments"),
+    ("victim/artifacts", "must not contain reserved path segments"),
+    ("victim/apps", "must not contain reserved path segments"),
+    ("victim/users", "must not contain reserved path segments"),
+    ("victim/versions", "must not contain reserved path segments"),
 )
 
 
@@ -1466,22 +1502,30 @@ INVALID_PATH_SEGMENT_CASES = (
         ArtifactServiceType.FILE,
     ],
 )
+@pytest.mark.parametrize(
+    "user_id",
+    [
+        "group/user123",
+        "mdbuser/username",
+    ],
+)
 async def test_save_and_load_namespaced_user_id_succeeds(
-    service_type, artifact_service_factory
+    service_type, user_id, artifact_service_factory
 ):
   """ArtifactService implementations permit namespaced user IDs."""
   service = artifact_service_factory(service_type)
   artifact = types.Part.from_bytes(data=b"data", mime_type="text/plain")
+  app_name = "projects/123/locations/us-central1/reasoningEngines/456"
   await service.save_artifact(
-      app_name="myapp",
-      user_id="group/user123",
+      app_name=app_name,
+      user_id=user_id,
       session_id="sess123",
       filename="safe.txt",
       artifact=artifact,
   )
   loaded = await service.load_artifact(
-      app_name="myapp",
-      user_id="group/user123",
+      app_name=app_name,
+      user_id=user_id,
       session_id="sess123",
       filename="safe.txt",
   )

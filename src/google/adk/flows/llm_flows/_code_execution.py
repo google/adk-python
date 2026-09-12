@@ -79,6 +79,25 @@ _DATA_FILE_UTIL_MAP = {
     ),
 }
 
+_NON_BUILTIN_EXECUTOR_INSTRUCTION = """\
+# CRITICAL: Code execution format
+
+You have access to an external Python sandbox managed by the host
+application. To run Python code, output it inside a fenced markdown
+block exactly like this:
+
+{code_fence_start}print("hello")
+{code_fence_end}
+
+DO NOT emit native executable_code parts.
+DO NOT attempt to call a code_execution tool — no such tool is
+registered for this request and the API will reject the response with
+UNEXPECTED_TOOL_CALL or MALFORMED_FUNCTION_CALL.
+
+Always wrap Python code in the markdown fence shown above.
+"""
+
+
 _DATA_FILE_HELPER_LIB = '''
 import pandas as pd
 
@@ -127,7 +146,7 @@ Total columns: {df.shape[1]}
 '''
 
 
-class _CodeExecutionRequestProcessor(BaseLlmRequestProcessor):
+class _CodeExecutionRequestProcessor(BaseLlmRequestProcessor):  # type: ignore[misc]
   """Processes code execution requests."""
 
   @override
@@ -164,7 +183,7 @@ class _CodeExecutionRequestProcessor(BaseLlmRequestProcessor):
 request_processor = _CodeExecutionRequestProcessor()
 
 
-class _CodeExecutionResponseProcessor(BaseLlmResponseProcessor):
+class _CodeExecutionResponseProcessor(BaseLlmResponseProcessor):  # type: ignore[misc]
   """Processes code execution responses."""
 
   @override
@@ -205,6 +224,23 @@ async def _run_pre_processor(
 
   if not code_executor.optimize_data_file:
     return
+
+  code_block_delimiter = (
+      code_executor.code_block_delimiters[0]
+      if code_executor.code_block_delimiters
+      else ('```tool_code\n', '\n```')
+  )
+  # Steer Gemini 2.x (and other modern models) away from emitting a
+  # native `executable_code` / code_execution tool call. When the
+  # configured executor is *not* the built-in one, no `code_execution`
+  # tool is declared on the request, and a native emission would be
+  # rejected by the API as UNEXPECTED_TOOL_CALL / MALFORMED_FUNCTION_CALL.
+  llm_request.append_instructions([
+      _NON_BUILTIN_EXECUTOR_INSTRUCTION.format(
+          code_fence_start=code_block_delimiter[0],
+          code_fence_end=code_block_delimiter[1],
+      )
+  ])
 
   code_executor_context = CodeExecutorContext(invocation_context.session.state)
 
@@ -402,7 +438,7 @@ def _extract_and_replace_inline_files(
     llm_request: LlmRequest,
 ) -> list[File]:
   """Extracts and replaces inline files with file names in the LLM request."""
-  all_input_files = code_executor_context.get_input_files()
+  all_input_files: list[File] = code_executor_context.get_input_files()
   saved_file_names = set(f.name for f in all_input_files)
 
   # [Step 1] Process input files from LlmRequest and cache them in CodeExecutor.
@@ -456,7 +492,7 @@ def _get_or_set_execution_id(
   if not code_executor.stateful:
     return None
 
-  execution_id = code_executor_context.get_execution_id()
+  execution_id: Optional[str] = code_executor_context.get_execution_id()
   if not execution_id:
     execution_id = invocation_context.session.id
     code_executor_context.set_execution_id(execution_id)

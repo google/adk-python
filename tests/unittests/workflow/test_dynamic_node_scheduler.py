@@ -30,6 +30,7 @@ from google.adk.workflow._dynamic_node_scheduler import DynamicNodeScheduler
 from google.adk.workflow._dynamic_node_scheduler import DynamicNodeState
 from google.adk.workflow._node_state import NodeState
 from google.adk.workflow._workflow import _LoopState
+from google.adk.workflow._workflow import Workflow
 from pydantic import BaseModel
 from pydantic import ValidationError
 import pytest
@@ -938,3 +939,119 @@ async def test_node_with_clone_preserves_parent_agent():
   # Verify parent_agent was restored
   assert called_node.parent_agent is parent_node
   assert called_node.name == 'child'
+
+
+@pytest.mark.asyncio
+async def test_dynamic_node_scheduler_auto_generates_sequential_run_id():
+  """DynamicNodeScheduler assigns sequential run IDs when run_id is None."""
+
+  class SimpleNode(BaseNode):
+
+    async def _run_impl(self, *, ctx, node_input):
+      yield f'out: {node_input}'
+
+  ctx, _ = _make_parent_ctx()
+  state = DynamicNodeState()
+  scheduler = DynamicNodeScheduler(state=state)
+
+  mock_child_ctx1 = MagicMock(spec=Context)
+  mock_child_ctx1.error = None
+  mock_child_ctx1.interrupt_ids = set()
+  mock_child_ctx1.output = 'out: 1'
+  mock_child_ctx1.actions = MagicMock()
+  mock_child_ctx1.actions.transfer_to_agent = None
+
+  mock_child_ctx2 = MagicMock(spec=Context)
+  mock_child_ctx2.error = None
+  mock_child_ctx2.interrupt_ids = set()
+  mock_child_ctx2.output = 'out: 2'
+  mock_child_ctx2.actions = MagicMock()
+  mock_child_ctx2.actions.transfer_to_agent = None
+
+  ctx._run_node_standalone = AsyncMock(
+      side_effect=[mock_child_ctx1, mock_child_ctx2]
+  )
+
+  node = SimpleNode(name='worker')
+
+  # First execution without run_id -> assigns '1'
+  await scheduler(ctx, node, 'task1', node_name='worker')
+  assert ctx._run_node_standalone.call_count == 1
+  assert ctx._run_node_standalone.call_args_list[0].kwargs.get('run_id') == '1'
+  assert state.get_run_counter('worker', parent_path=ctx.node_path) == 1
+
+  # Second execution without run_id -> assigns '2'
+  await scheduler(ctx, node, 'task2', node_name='worker')
+  assert ctx._run_node_standalone.call_count == 2
+  assert ctx._run_node_standalone.call_args_list[1].kwargs.get('run_id') == '2'
+  assert state.get_run_counter('worker', parent_path=ctx.node_path) == 2
+
+
+@pytest.mark.asyncio
+async def test_dynamic_node_state_maintains_independent_run_counters():
+  """DynamicNodeState maintains independent counters for different nodes and parent paths."""
+  state = DynamicNodeState()
+  # Unscoped / root parent
+  assert state.next_run_id('agent_a') == '1'
+  assert state.next_run_id('agent_a') == '2'
+  assert state.next_run_id('agent_b') == '1'
+  assert state.next_run_id('agent_a') == '3'
+  assert state.next_run_id('agent_b') == '2'
+  assert state.get_run_counter('agent_a') == 3
+  assert state.get_run_counter('agent_b') == 2
+  assert state.run_counters[''] == {'agent_a': 3, 'agent_b': 2}
+
+  # Scoped parents (e.g. parallel branches)
+  assert state.next_run_id('child', parent_path='branch_1') == '1'
+  assert state.next_run_id('child', parent_path='branch_1') == '2'
+  assert state.next_run_id('child', parent_path='branch_2') == '1'
+  assert state.get_run_counter('child', parent_path='branch_1') == 2
+  assert state.get_run_counter('child', parent_path='branch_2') == 1
+
+
+@pytest.mark.asyncio
+async def test_static_and_dynamic_node_sharing_a_name_do_not_collide():
+  """A static graph node and a dynamic node of the same name get distinct run IDs.
+
+  Both allocators -- `Workflow._next_run_id` for static graph nodes and
+  `DynamicNodeScheduler` for `ctx.run_node()` -- draw from the same
+  `_LoopState` counter, so two runs of the same name under one parent can no
+  longer be assigned the same run_id (and therefore the same node_path).
+  """
+
+  class SimpleNode(BaseNode):
+
+    async def _run_impl(self, *, ctx, node_input):
+      yield f'out: {node_input}'
+
+  ctx, _ = _make_parent_ctx()
+  loop_state = _LoopState()
+  scheduler = DynamicNodeScheduler(state=loop_state)
+
+  mock_child_ctx = MagicMock(spec=Context)
+  mock_child_ctx.error = None
+  mock_child_ctx.interrupt_ids = set()
+  mock_child_ctx.output = 'out: task'
+  mock_child_ctx.actions = MagicMock()
+  mock_child_ctx.actions.transfer_to_agent = None
+  ctx._run_node_standalone = AsyncMock(return_value=mock_child_ctx)
+
+  # The static graph node 'worker' runs first and takes run_id '1'.
+  static_run_id = Workflow._next_run_id(
+      loop_state, 'worker', parent_path=ctx.node_path
+  )
+
+  # A dynamic node of the same name under the same parent continues the same
+  # sequence instead of restarting at '1'.
+  await scheduler(ctx, SimpleNode(name='worker'), 'task', node_name='worker')
+  dynamic_run_id = ctx._run_node_standalone.call_args.kwargs.get('run_id')
+
+  assert static_run_id == '1'
+  assert dynamic_run_id == '2'
+
+  # A later static run of the same name keeps advancing the shared counter.
+  assert (
+      Workflow._next_run_id(loop_state, 'worker', parent_path=ctx.node_path)
+      == '3'
+  )
+  assert loop_state.run_counters[ctx.node_path] == {'worker': 3}

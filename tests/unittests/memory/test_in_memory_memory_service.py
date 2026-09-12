@@ -14,6 +14,7 @@
 
 import asyncio
 import threading
+import unicodedata
 
 from google.adk.events.event import Event
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
@@ -384,8 +385,39 @@ async def test_search_memory_does_not_collide_on_slash_in_identifiers():
         # Mixed: non-Latin substring + Latin token in same event
         ('太郎 works at ABC Corp', '太郎', 1),
         ('太郎 works at ABC Corp', 'ABC', 1),
+        # Latin word inside an unspaced script (no space to tokenize on)
+        ('私はPythonでADKを使っています', 'Python', 1),
+        ('私はPythonでADKを使っています', 'adk', 1),
+        ('我用Python写代码', 'python', 1),
+        ('私はPythonでADKを使っています', '使って', 1),
+        ('私はPythonでADKを使っています', 'Java', 0),
         # Latin partial-word must NOT match (regression guard)
         ('I like to code in Python.', 'thon', 0),
+        ('私はPythonでADKを使っています', 'thon', 0),
+        # Decomposed (NFD) text: NFC normalization ensures match
+        (
+            unicodedata.normalize('NFD', '私はCaféでADKを使っています'),
+            'Café',
+            1,
+        ),
+        (
+            unicodedata.normalize('NFD', '私はCaféでADKを使っています'),
+            'café',
+            1,
+        ),
+        (
+            unicodedata.normalize('NFD', '私はCaféでADKを使っています'),
+            'Ruby',
+            0,
+        ),
+        (unicodedata.normalize('NFD', 'Meet at the Café'), 'Café', 1),
+        ('Meet at the Café', unicodedata.normalize('NFD', 'Café'), 1),
+        (
+            unicodedata.normalize('NFD', 'プログラミングを学ぶ'),
+            'プログラミング',
+            1,
+        ),
+        (unicodedata.normalize('NFD', '제 이름은 민수입니다'), '민수입니다', 1),
     ],
 )
 async def test_search_memory_non_latin(event_text, query, expected_count):

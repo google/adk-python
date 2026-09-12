@@ -35,11 +35,23 @@ class ParsedArtifactUri(NamedTuple):
 
 _WINDOWS_DRIVE_RE = re.compile(r"[A-Za-z]:")
 
+_RESERVED_PATH_SEGMENTS = frozenset({
+    "apps",
+    "users",
+    "sessions",
+    "artifacts",
+    "versions",
+})
+_RESERVED_SEGMENTS_LOOKAHEAD = (
+    rf"(?!/(?:{'|'.join(sorted(_RESERVED_PATH_SEGMENTS))})/)"
+)
+_PATH_SEGMENT_PATTERN = rf"(?:{_RESERVED_SEGMENTS_LOOKAHEAD}.)+?"
+
 _SESSION_SCOPED_ARTIFACT_URI_RE = re.compile(
-    r"artifact://apps/([^/]+)/users/([^/]+)/sessions/([^/]+)/artifacts/(.+)/versions/(\d+)"
+    rf"artifact://apps/({_PATH_SEGMENT_PATTERN})/users/({_PATH_SEGMENT_PATTERN})/sessions/({_PATH_SEGMENT_PATTERN})/artifacts/(.+)/versions/(\d+)"
 )
 _USER_SCOPED_ARTIFACT_URI_RE = re.compile(
-    r"artifact://apps/([^/]+)/users/([^/]+)/artifacts/(.+)/versions/(\d+)"
+    rf"artifact://apps/({_PATH_SEGMENT_PATTERN})/users/({_PATH_SEGMENT_PATTERN})/artifacts/(.+)/versions/(\d+)"
 )
 
 
@@ -152,7 +164,8 @@ def validate_path_segment(value: str, field_name: str) -> None:
 
   Raises:
     InputValidationError: If the value contains traversal segments, null bytes,
-      is an absolute path / starts with a slash, or is drive-qualified.
+      is an absolute path / starts with a slash, is drive-qualified, or contains
+      slashes along with reserved path segments.
   """
   if not value:
     raise input_validation_error.InputValidationError(
@@ -177,3 +190,11 @@ def validate_path_segment(value: str, field_name: str) -> None:
     raise input_validation_error.InputValidationError(
         f"{field_name} {value!r} must not contain traversal segments."
     )
+  if isinstance(value, str) and ("/" in value or "\\" in value):
+    segments = {
+        segment.casefold() for segment in value.replace("\\", "/").split("/")
+    }
+    if not _RESERVED_PATH_SEGMENTS.isdisjoint(segments):
+      raise input_validation_error.InputValidationError(
+          f"{field_name} {value!r} must not contain reserved path segments."
+      )

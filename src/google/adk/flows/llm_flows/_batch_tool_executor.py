@@ -49,10 +49,19 @@ _T = TypeVar('_T')
 
 
 def deep_merge_dicts(d1: dict[str, Any], d2: dict[str, Any]) -> dict[str, Any]:
-  """Recursively merges d2 into d1."""
+  """Recursively merges d2 into d1.
+
+  For dict values, merges recursively. For list values, concatenates instead of
+  overwriting so that parallel tool calls don't silently drop list entries
+  (e.g. state_delta lists from concurrent function responses). Note that list
+  values are concatenated without deduplication; callers needing set or keyed
+  semantics should model state deltas using dicts.
+  """
   for key, value in d2.items():
     if key in d1 and isinstance(d1[key], dict) and isinstance(value, dict):
       d1[key] = deep_merge_dicts(d1[key], value)
+    elif key in d1 and isinstance(d1[key], list) and isinstance(value, list):
+      d1[key] = d1[key] + value
     else:
       d1[key] = value
   return d1

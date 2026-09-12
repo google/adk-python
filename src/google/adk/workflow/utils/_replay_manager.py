@@ -64,8 +64,13 @@ class ReplayManager:
     """Sequence barrier for deterministic replay ordering."""
     return self._sequence_barrier
 
-  def _ensure_index(self, ctx: Context) -> None:
+  def _ensure_index(self, ctx: Context) -> list[Event]:
     """Ensures event indexes are initialized and up-to-date with current session.
+
+    Returns the session events the index now describes. A caller that needs
+    those events should use the returned list rather than reading them off
+    `ctx` a second time, so the events it works with are the same ones the
+    index covers.
 
     Events are appended to the session as the run proceeds and across turns, so
     the index is extended with whatever arrived since it was last updated.
@@ -84,6 +89,7 @@ class ReplayManager:
         self._record_indexed_through(events)
     else:
       self._build_event_index(events)
+    return events
 
   def _indexed_prefix_is_intact(self, events: list[Event]) -> bool:
     """Whether the already-indexed events are still a prefix of `events`.
@@ -193,16 +199,16 @@ class ReplayManager:
     if not node_path:
       return []
 
-    self._ensure_index(ctx)
+    session_events = self._ensure_index(ctx)
     path_builder = _NodePathBuilder.from_string(node_path)
     parent_builder = path_builder.parent
     if not parent_builder or not str(parent_builder):
-      return ctx._invocation_context.session.events
+      return session_events
     parent_path = str(parent_builder)
 
     node_events = self._transitive_events_by_parent.get(parent_path, [])
     if not node_events:
-      return ctx._invocation_context.session.events
+      return session_events
 
     # Top-level user text prompts live under root key ("").
     # Merge them so multi-turn turn inputs remain visible during state reconstruction.
@@ -223,7 +229,6 @@ class ReplayManager:
       return node_events
 
     # Retain exact chronological ordering of session events.
-    session_events = ctx._invocation_context.session.events
     event_ids = node_event_ids.union(id(e) for e in user_prompts)
     return [e for e in session_events if id(e) in event_ids]
 

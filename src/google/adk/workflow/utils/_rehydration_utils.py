@@ -30,6 +30,7 @@ from pydantic import ValidationError
 from ...events._branch_path import _BranchPath
 from ...events._node_path_builder import _NodePathBuilder
 from ...events.event import Event
+from .._errors import WorkflowDataError
 from ._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
 
 if TYPE_CHECKING:
@@ -43,18 +44,45 @@ _RESULT_KEY = 'result'
 
 @dataclass
 class _ChildScanState:
-  """State accumulated for a child node during event scanning."""
+  """State accumulated for a child node during event scanning.
+
+  Every field starts empty and is filled in as the scan walks the event list,
+  so a field still at its default means no event carried that piece of state.
+  """
 
   run_id: str | None = None
+  """The child's run id, or None when the scan only knows its owner key."""
+
   output: Any = None
+  """The last output the child emitted, or None if it emitted none.
+
+  None is also written when a later event shows the child paused mid-run, so
+  "emitted nothing" and "emitted None" are the same state here.
+  """
+
   error_code: str | None = None
+  """The child's last error code, or None once it produced a result."""
+
   route: RouteValue | list[RouteValue] | None = None
+  """The route the child picked, or None if it picked none."""
+
   branch: str | None = None
+  """The branch carried by the output event, filled in alongside ``output``."""
+
   isolation_scope: str | None = None
+  """The isolation scope seen on the child's events, if any."""
+
   transfer_to_agent: str | None = None
+  """The agent the child asked to transfer to, or None if it asked for none."""
+
   interrupt_ids: set[str] = field(default_factory=set)
+  """Every interrupt the child raised."""
+
   resolved_ids: set[str] = field(default_factory=set)
+  """The subset of ``interrupt_ids`` a user response has come back for."""
+
   resolved_responses: dict[str, Any] = field(default_factory=dict)
+  """Responses keyed by interrupt id, for the ids in ``resolved_ids``."""
 
 
 def _wrap_response(value: Any) -> dict[str, Any]:
@@ -143,7 +171,7 @@ def _process_rehydrated_output(node: BaseNode, output: object) -> object:
         )
         return parsed
       except ValueError:
-        raise ValueError(
+        raise WorkflowDataError(
             f'Validation failed for rehydrated output against schema: {e}'
         ) from e
   else:
@@ -209,14 +237,18 @@ def _validate_resume_response(response_data: object, schema: object) -> object:
         )
         return model_instance.model_dump()
       except ValidationError as e:
-        raise ValueError(f'Validation failed for object schema: {e}') from e
+        raise WorkflowDataError(
+            f'Validation failed for object schema: {e}'
+        ) from e
 
     mapped_type = type_mapping.get(type_str) if type_str else None
     if mapped_type:
       try:
         return TypeAdapter(mapped_type).validate_python(response_data)
       except ValidationError as e:
-        raise ValueError(f'Failed to coerce data to {type_str}: {e}') from e
+        raise WorkflowDataError(
+            f'Failed to coerce data to {type_str}: {e}'
+        ) from e
 
     # Fallback: skip validation for complex schemas (similar to base node)
     return response_data
@@ -225,7 +257,7 @@ def _validate_resume_response(response_data: object, schema: object) -> object:
   try:
     return TypeAdapter(schema).validate_python(response_data)
   except ValidationError as e:
-    raise ValueError(f'Validation failed against schema: {e}') from e
+    raise WorkflowDataError(f'Validation failed against schema: {e}') from e
 
 
 def _reconstruct_node_states(
@@ -270,7 +302,7 @@ def _reconstruct_node_states(
             try:
               response_data = _validate_resume_response(response_data, schema)
             except ValueError as e:
-              raise ValueError(
+              raise WorkflowDataError(
                   f'Validation failed for interrupt {fr.id}: {e}'
               ) from e
 

@@ -67,12 +67,14 @@ jobs:
           fi
 
       # Action: CUT NEW RELEASE
+      # Full history and tags, so the step below can resolve the last release.
       - name: Checkout base ref (Cut)
         if: inputs.action == 'cut'
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ inputs.commit_sha || steps.config.outputs.base_ref }}
           token: ${{ secrets.RELEASE_PAT }}
+          fetch-depth: 0
 
       - name: Check for existing candidate branch (Cut)
         if: inputs.action == 'cut'
@@ -92,6 +94,60 @@ jobs:
           git checkout -b "$CANDIDATE_BRANCH"
           git push origin "$CANDIDATE_BRANCH"
           echo "Created and pushed branch: $CANDIDATE_BRANCH"
+
+      # The base branch only learns the released version from a merge-back that
+      # a maintainer has to land by hand, so it can sit behind for weeks. A
+      # stale copy makes the next release reuse a published version and rebuild
+      # a changelog that already shipped, so derive both from the last tag.
+      - name: Set release-please state from the last release tag (Cut)
+        if: inputs.action == 'cut' && inputs.branch == 'main'
+        env:
+          BASE_REF: ${{ steps.config.outputs.base_ref }}
+          CANDIDATE_BRANCH: ${{ steps.config.outputs.candidate_branch }}
+          CONFIG_FILE: ${{ steps.config.outputs.config_file }}
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          MANIFEST_FILE: ${{ steps.config.outputs.manifest_file }}
+        run: |
+          set -euo pipefail
+          git fetch --quiet --tags origin "$BASE_REF"
+
+          # The || true keeps a repo with no matching tag out of pipefail, so the
+          # empty case below is reachable.
+          LAST=$(git tag --list 'v[0-9]*' | sed 's/^v//' \
+            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort --version-sort | tail -1 || true)
+          HAVE_VERSION=$(jq -r '.["."]' "$MANIFEST_FILE")
+
+          # This step only ever moves the state forward; anything else it leaves
+          # alone, so it can correct a release but never block one.
+          if [ -z "$LAST" ]; then
+            echo "::warning::Found no release tag, so the release-please state is unchecked."
+            exit 0
+          fi
+          NEWER=$(printf '%s\n%s\n' "$LAST" "$HAVE_VERSION" | sort --version-sort | tail -1)
+          if [ "$NEWER" != "$LAST" ]; then
+            echo "::warning::$MANIFEST_FILE says $HAVE_VERSION, ahead of the last release tag v$LAST. Leaving it alone."
+            exit 0
+          fi
+
+          # Where the last release branched off, which is what last-release-sha means.
+          SHA=$(git merge-base "origin/$BASE_REF" "v$LAST^{commit}")
+          HAVE_SHA=$(jq -r '."last-release-sha" // ""' "$CONFIG_FILE")
+          if [ "$HAVE_VERSION" = "$LAST" ] && [ "$HAVE_SHA" = "$SHA" ]; then
+            echo "$BASE_REF is already in sync with v$LAST"
+            exit 0
+          fi
+
+          echo "::warning title=Stale release-please state on $BASE_REF::$BASE_REF says $HAVE_VERSION / ${HAVE_SHA:0:8}, but the last release is $LAST / ${SHA:0:8}. Correcting the candidate branch; $BASE_REF itself still needs its merge-back."
+
+          jq --arg v "$LAST" '.["."] = $v' "$MANIFEST_FILE" > tmp.json && mv tmp.json "$MANIFEST_FILE"
+          jq --arg sha "$SHA" '. + {"last-release-sha": $sha}' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
+
+          USER_JSON=$(gh api user)
+          git config user.name "$(echo "$USER_JSON" | jq -r '.login')"
+          git config user.email "$(echo "$USER_JSON" | jq -r '.id')+$(echo "$USER_JSON" | jq -r '.login')@users.noreply.github.com"
+          git add "$MANIFEST_FILE" "$CONFIG_FILE"
+          git commit -m "chore: pin release-please state to v$LAST"
+          git push origin "$CANDIDATE_BRANCH"
 
       # Action: REGENERATE EXISTING PR
       - name: Checkout existing candidate branch (Regenerate)

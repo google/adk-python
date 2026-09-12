@@ -1844,7 +1844,9 @@ def test_build_anthropic_thinking_param_automatic_budget_uses_adaptive():
       thinking_config=types.ThinkingConfig(thinking_budget=-1),
   )
   result = _build_anthropic_thinking_param(config)
-  assert result == anthropic_types.ThinkingConfigAdaptiveParam(type="adaptive")
+  assert result == anthropic_types.ThinkingConfigAdaptiveParam(
+      type="adaptive", display="summarized"
+  )
 
 
 def test_build_anthropic_thinking_param_other_negative_uses_adaptive():
@@ -1855,7 +1857,20 @@ def test_build_anthropic_thinking_param_other_negative_uses_adaptive():
       thinking_config=types.ThinkingConfig(thinking_budget=-5),
   )
   result = _build_anthropic_thinking_param(config)
-  assert result == anthropic_types.ThinkingConfigAdaptiveParam(type="adaptive")
+  assert result == anthropic_types.ThinkingConfigAdaptiveParam(
+      type="adaptive", display="summarized"
+  )
+
+
+def test_build_anthropic_thinking_param_manual_budget_omits_display():
+  """``display`` belongs to adaptive thinking only, not to a manual budget."""
+  from google.adk.models.anthropic_llm import _build_anthropic_thinking_param
+
+  config = types.GenerateContentConfig(
+      thinking_config=types.ThinkingConfig(thinking_budget=2048),
+  )
+  result = _build_anthropic_thinking_param(config)
+  assert "display" not in result
 
 
 def test_build_anthropic_thinking_param_no_config():
@@ -3342,7 +3357,10 @@ async def test_generate_content_async_with_thinking_level_warns_and_ignores(
       mock_client.messages.create.assert_called_once()
       _, kwargs = mock_client.messages.create.call_args
       # Verify that thinking_level was ignored (but budget -1 still enabled adaptive thinking).
-      assert kwargs["thinking"] == {"type": "adaptive"}
+      assert kwargs["thinking"] == {
+          "type": "adaptive",
+          "display": "summarized",
+      }
       assert "output_config" not in kwargs
 
 
