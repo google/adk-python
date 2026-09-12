@@ -34,6 +34,7 @@ from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from ..experimental import a2a_experimental
+from .from_adk_event import parts_from_event_output
 from .part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
 from .part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
 from .part_converter import A2A_DATA_PART_METADATA_TYPE_KEY
@@ -417,20 +418,31 @@ def convert_event_to_a2a_message(
   if not event:
     raise ValueError("Event cannot be None")
 
-  if not event.content or not event.content.parts:
-    return None
-
   try:
-    output_parts = []
-    for part in event.content.parts:
-      a2a_parts = part_converter(part)
-      if not isinstance(a2a_parts, list):
-        a2a_parts = [a2a_parts] if a2a_parts else []
-      for a2a_part in a2a_parts:
-        output_parts.append(a2a_part)
-        _process_long_running_tool(a2a_part, event)
+    # Prefer Event.output when there is no content, so Workflow output_schema
+    # finals become the A2A message / artifact. When content is present (e.g.
+    # finish_task function-call parts), keep converting content.
+    output_parts: list[A2APart] = []
+    if event.output is not None and (
+        not event.content or not event.content.parts
+    ):
+      output_parts = parts_from_event_output(
+          event.output, part_converter=part_converter
+      )
+    if not output_parts:
+      if not event.content or not event.content.parts:
+        return None
+      for part in event.content.parts:
+        a2a_parts = part_converter(part)
+        if not isinstance(a2a_parts, list):
+          a2a_parts = [a2a_parts] if a2a_parts else []
+        for a2a_part in a2a_parts:
+          if a2a_part is not None:
+            output_parts.append(a2a_part)
 
     if output_parts:
+      for a2a_part in output_parts:
+        _process_long_running_tool(a2a_part, event)
       return Message(
           message_id=platform_uuid.new_uuid(), role=role, parts=output_parts
       )
