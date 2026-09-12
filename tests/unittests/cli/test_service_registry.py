@@ -128,6 +128,27 @@ def test_create_artifact_service_gcs(registry, mock_services):
   )
 
 
+def test_sqlite_session_factory_normalizes_windows_sqlite_uri(
+    registry, mock_services, monkeypatch
+):
+  monkeypatch.setattr(
+      "google.adk.sessions.sqlite_session_service.os",
+      SimpleNamespace(name="nt"),
+  )
+  mocked_url2pathname = mock.Mock(return_value=r"C:\tmp\adk sessions.db")
+  monkeypatch.setattr(
+      "google.adk.sessions.sqlite_session_service.url2pathname",
+      mocked_url2pathname,
+  )
+
+  registry.create_session_service("sqlite:///C:/tmp/adk%20sessions.db")
+
+  mocked_url2pathname.assert_called_once_with("/C:/tmp/adk sessions.db")
+  mock_services["sqlite_session"].assert_called_once_with(
+      db_path=r"C:\tmp\adk sessions.db"
+  )
+
+
 def test_file_artifact_factory_normalizes_windows_file_uri(monkeypatch):
   monkeypatch.setattr(service_registry, "os", SimpleNamespace(name="nt"))
   mocked_url2pathname = mock.Mock(return_value=r"C:\tmp\adk artifacts")
