@@ -61,6 +61,11 @@ class InvocationEvent(EvalBaseModel):
   is intended for the Eval System.
   """
 
+  # The adk web eval editor serializes UI-only transcript indices
+  # (invocationIndex, toolUseIndex) onto each event. Those are not part of the
+  # persisted eval-case schema; ignore them so PUT /eval-cases does not 422.
+  model_config = pydantic.ConfigDict(extra="ignore")
+
   author: str
   """The name of the agent that authored/owned this event."""
 

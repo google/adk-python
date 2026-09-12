@@ -62,6 +62,92 @@ def test_invocation_event_content_defaults_to_none():
   assert InvocationEvent.model_validate(event.model_dump()).content is None
 
 
+def test_eval_case_put_accepts_web_ui_transcript_indices():
+  """Saving an eval case ignores UI-only event indices instead of 422ing.
+
+  The adk web eval editor sends invocationIndex/toolUseIndex on each
+  InvocationEvent. Those fields are view-model state, not eval schema.
+  """
+  payload = {
+      'evalId': 'Weather_in_chicago',
+      'conversation': [
+          {
+              'invocationId': 'e-716ee625-05b6-4a47-aeb2-d10a4a0bbdc0',
+              'userContent': {
+                  'parts': [{'text': 'Weather in chicago?'}],
+                  'role': 'user',
+              },
+              'finalResponse': {
+                  'parts': [{
+                      'text': (
+                          'The current weather in Chicago is clear with a'
+                          ' temperature of 24.4 degrees Celsius.'
+                      )
+                  }],
+                  'role': 'model',
+              },
+              'intermediateData': {
+                  'invocationEvents': [
+                      {
+                          'author': 'research_agent',
+                          'content': {
+                              'parts': [{
+                                  'functionCall': {
+                                      'id': 'call_xvno6vyr',
+                                      'args': {'city': 'chicago'},
+                                      'name': 'get_weather',
+                                  }
+                              }],
+                              'role': 'model',
+                          },
+                          'invocationIndex': 0,
+                          'toolUseIndex': 0,
+                      },
+                      {
+                          'author': 'research_agent',
+                          'content': {
+                              'parts': [{
+                                  'functionResponse': {
+                                      'id': 'call_xvno6vyr',
+                                      'name': 'get_weather',
+                                      'response': {
+                                          'status': 'ok',
+                                          'location': (
+                                              'Chicago, United States'
+                                          ),
+                                      },
+                                  }
+                              }],
+                              'role': 'user',
+                          },
+                          'invocationIndex': 0,
+                      },
+                  ]
+              },
+              'creationTimestamp': 1788817941.870899,
+          }
+      ],
+      'sessionInput': {
+          'appName': 'research_agent',
+          'userId': 'user',
+          'state': {},
+      },
+      'creationTimestamp': 1788817991.232703,
+  }
+
+  eval_case = EvalCase.model_validate(payload)
+
+  assert eval_case.eval_id == 'Weather_in_chicago'
+  invocation = eval_case.conversation[0]
+  events = invocation.intermediate_data.invocation_events
+  assert events[0].author == 'research_agent'
+  dumped_event = events[0].model_dump(by_alias=True, exclude_none=True)
+  assert 'invocationIndex' not in dumped_event
+  assert 'toolUseIndex' not in dumped_event
+  tool_calls = get_all_tool_calls(invocation.intermediate_data)
+  assert tool_calls[0].name == 'get_weather'
+
+
 def test_session_input_accepts_session_id():
   """Tests that SessionInput accepts a fixed session_id and round-trips it."""
   session_input = SessionInput(app_name='a', user_id='u', session_id='s1')
