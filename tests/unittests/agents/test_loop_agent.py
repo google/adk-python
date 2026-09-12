@@ -158,6 +158,61 @@ async def test_run_async(request: pytest.FixtureRequest, resumable: bool):
 
 
 @pytest.mark.asyncio
+async def test_run_async_annotates_loop_iteration(
+    request: pytest.FixtureRequest,
+):
+  agent = _TestingAgent(name=f'{request.function.__name__}_test_agent')
+  loop_agent = LoopAgent(
+      name=f'{request.function.__name__}_test_loop_agent',
+      max_iterations=3,
+      sub_agents=[agent],
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, loop_agent, resumable=False
+  )
+
+  events = [e async for e in loop_agent.run_async(parent_ctx)]
+
+  sub_agent_events = [e for e in events if e.author == agent.name]
+  assert len(sub_agent_events) == 3
+  assert [
+      e.custom_metadata[LoopAgent.LOOP_ITERATION_KEY]
+      for e in sub_agent_events
+  ] == [0, 1, 2]
+
+
+@pytest.mark.asyncio
+async def test_run_async_loop_iteration_survives_nested_loops(
+    request: pytest.FixtureRequest,
+):
+  # An inner LoopAgent annotates first (as events bubble up), so its iteration
+  # wins over the outer loop's for events it produced.
+  agent = _TestingAgent(name=f'{request.function.__name__}_test_agent')
+  inner = LoopAgent(
+      name=f'{request.function.__name__}_inner_loop',
+      max_iterations=2,
+      sub_agents=[agent],
+  )
+  outer = LoopAgent(
+      name=f'{request.function.__name__}_outer_loop',
+      max_iterations=2,
+      sub_agents=[inner],
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, outer, resumable=False
+  )
+
+  events = [e async for e in outer.run_async(parent_ctx)]
+
+  sub_agent_events = [e for e in events if e.author == agent.name]
+  # outer x2 * inner x2 = 4 events; each carries the inner loop's iteration.
+  assert [
+      e.custom_metadata[LoopAgent.LOOP_ITERATION_KEY]
+      for e in sub_agent_events
+  ] == [0, 1, 0, 1]
+
+
+@pytest.mark.asyncio
 async def test_resume_async(request: pytest.FixtureRequest):
   agent_1 = _TestingAgent(name=f'{request.function.__name__}_test_agent_1')
   agent_2 = _TestingAgent(name=f'{request.function.__name__}_test_agent_2')
