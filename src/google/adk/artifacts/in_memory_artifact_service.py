@@ -95,7 +95,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       raise InputValidationError(
           "Session ID must be provided for session-scoped artifacts."
       )
-    artifact_util.validate_path_segment(session_id, "session_id")
+    artifact_util.validate_session_id_segment(session_id)
     return f"{app_name}/{user_id}/{session_id}/{filename}"
 
   @override
@@ -223,7 +223,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     artifact_util.validate_path_segment(app_name, "app_name")
     artifact_util.validate_path_segment(user_id, "user_id")
     if session_id is not None:
-      artifact_util.validate_path_segment(session_id, "session_id")
+      artifact_util.validate_session_id_segment(session_id)
     usernamespace_prefix = f"{app_name}/{user_id}/user/"
     session_prefix = (
         f"{app_name}/{user_id}/{session_id}/" if session_id else None

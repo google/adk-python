@@ -306,6 +306,82 @@ async def test_save_load_delete(service_type, artifact_service_factory):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+    ],
+)
+async def test_save_artifact_rejects_reserved_user_as_session_id(
+    service_type, artifact_service_factory
+):
+  """IN_MEMORY and GCS lay session-scoped and user-scoped artifacts out in
+  the same flat namespace, using the literal segment "user" to mark
+  user-scoped ones. A session actually named "user" must be rejected rather
+  than silently colliding with that reserved segment."""
+  artifact_service = artifact_service_factory(service_type)
+
+  with pytest.raises(InputValidationError, match="reserved value 'user'"):
+    await artifact_service.save_artifact(
+        app_name="app0",
+        user_id="user0",
+        session_id="user",
+        filename="report.txt",
+        artifact=types.Part(text="hello"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_file_allows_reserved_user_as_session_id(
+    artifact_service_factory,
+):
+  """Unlike IN_MEMORY and GCS, FILE lays session-scoped artifacts out under
+  their own `sessions/<id>/` subtree, distinct from the user-scoped
+  `artifacts/` subtree, so a session literally named "user" cannot collide
+  with it and is not rejected."""
+  artifact_service = artifact_service_factory(ArtifactServiceType.FILE)
+
+  await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="user",
+      filename="report.txt",
+      artifact=types.Part(text="hello"),
+  )
+  loaded = await artifact_service.load_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="user",
+      filename="report.txt",
+  )
+  assert loaded == types.Part(text="hello")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+    ],
+)
+async def test_list_artifact_keys_rejects_reserved_user_as_session_id(
+    service_type, artifact_service_factory
+):
+  """A session literally named "user" must be rejected by
+  list_artifact_keys too, not just by save/load/delete -- otherwise a
+  caller's listing could silently return another session's (or the
+  user-scope's) filenames."""
+  artifact_service = artifact_service_factory(service_type)
+
+  with pytest.raises(InputValidationError, match="reserved value 'user'"):
+    await artifact_service.list_artifact_keys(
+        app_name="app0", user_id="user0", session_id="user"
+    )
+
+
+@pytest.mark.asyncio
 async def test_in_memory_loads_nested_artifact_reference(
     artifact_service_factory,
 ):
