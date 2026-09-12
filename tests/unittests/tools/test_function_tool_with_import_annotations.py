@@ -17,12 +17,16 @@ from __future__ import annotations
 from typing import Any
 from typing import Dict
 from typing import Optional
+from typing import TYPE_CHECKING
 
 from google.adk.tools import _automatic_function_calling_util
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
 import pydantic
+
+if TYPE_CHECKING:
+  from google.adk.tools.tool_context import ToolContext
 
 
 def test_string_annotation_none_return_vertex():
@@ -284,3 +288,25 @@ def test_preprocess_args_with_optional_list_of_pydantic_models_and_annotations()
   assert all(isinstance(item, ItemModel) for item in processed_args['items'])
   assert processed_args['items'][0].quantity == 10
   assert processed_args['items'][1].quantity == 5
+
+
+def test_type_checking_only_context_annotation_builds_declaration():
+  """A context parameter annotated with a TYPE_CHECKING-only import must not
+  break declaration building for the remaining parameters."""
+
+  def test_function(x: int, tool_context: ToolContext) -> str:
+    """A tool with a context parameter.
+
+    Args:
+      x: a number.
+    """
+    return str(x)
+
+  declaration = FunctionTool(test_function)._get_declaration()
+
+  assert declaration.name == 'test_function'
+  schema = declaration.parameters_json_schema
+  # The real parameter is described, the context parameter is excluded.
+  assert 'x' in schema['properties']
+  assert 'tool_context' not in schema['properties']
+  assert schema['required'] == ['x']
