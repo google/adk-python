@@ -14,6 +14,7 @@
 
 import asyncio
 from contextlib import aclosing
+import gc
 import importlib
 import logging
 from pathlib import Path
@@ -58,6 +59,21 @@ from tests.unittests import testing_utils
 TEST_APP_ID = "test_app"
 TEST_USER_ID = "test_user"
 TEST_SESSION_ID = "test_session"
+
+
+class CountingToolset(BaseToolset):
+  """Toolset that records how many times close() ran."""
+
+  def __init__(self):
+    super().__init__()
+    self.close_count = 0
+
+  async def get_tools(self, readonly_context=None):
+    del readonly_context
+    return []
+
+  async def close(self) -> None:
+    self.close_count += 1
 
 
 class MockAgent(BaseAgent):
@@ -1566,6 +1582,88 @@ class TestRunnerWithPlugins:
     assert close_task.cancelled() is True
     assert toolset.close_cancelled is False
     assert toolset.close_finished.is_set()
+
+  @pytest.mark.asyncio
+  async def test_shared_toolset_stays_open_until_last_runner_closes(self):
+    """A toolset shared by two Runners must not close with the first one."""
+
+    toolset = CountingToolset()
+    agent = LlmAgent(
+        name="shared_agent", model="gemini-1.5-pro", tools=[toolset]
+    )
+    runner_one = Runner(
+        app_name="test_app",
+        agent=agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+    runner_two = Runner(
+        app_name="test_app",
+        agent=agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    await runner_one.close()
+    assert toolset.close_count == 0
+    await runner_two.close()
+    assert toolset.close_count == 1
+
+  @pytest.mark.asyncio
+  async def test_single_runner_still_closes_its_toolset(self):
+    toolset = CountingToolset()
+    runner = Runner(
+        app_name="test_app",
+        agent=LlmAgent(
+            name="solo_agent", model="gemini-1.5-pro", tools=[toolset]
+        ),
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    await runner.close()
+    assert toolset.close_count == 1
+    await runner.close()
+    assert toolset.close_count == 1
+
+  @pytest.mark.asyncio
+  async def test_dropped_runner_does_not_pin_shared_toolset(self):
+    toolset = CountingToolset()
+    agent = LlmAgent(
+        name="shared_agent", model="gemini-1.5-pro", tools=[toolset]
+    )
+    dropped = Runner(
+        app_name="test_app",
+        agent=agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+    surviving = Runner(
+        app_name="test_app",
+        agent=agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+    del dropped
+    gc.collect()
+
+    await surviving.close()
+    assert toolset.close_count == 1
+
+  @pytest.mark.asyncio
+  async def test_late_added_toolset_is_closed(self):
+    toolset = CountingToolset()
+    agent = LlmAgent(name="late_agent", model="gemini-1.5-pro", tools=[])
+    runner = Runner(
+        app_name="test_app",
+        agent=agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+    agent.tools.append(toolset)
+
+    await runner.close()
+    assert toolset.close_count == 1
 
   @pytest.mark.asyncio
   async def test_runner_passes_plugin_close_timeout(self):
