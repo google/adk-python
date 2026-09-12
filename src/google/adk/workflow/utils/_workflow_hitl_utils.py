@@ -32,6 +32,7 @@ from ...auth.auth_tool import AuthToolArguments
 from ...events.event import Event
 from ...events.request_input import RequestInput
 from ...utils._schema_utils import schema_to_json_schema
+from .._errors import WorkflowDataError
 
 if TYPE_CHECKING:
   from ...auth.auth_credential import AuthCredential
@@ -288,8 +289,8 @@ async def process_auth_resume(
     interrupt_id: The interrupt ID of the auth request being resumed.
 
   Raises:
-    ValueError: If the response does not carry back the OAuth state that was
-      generated for this auth request.
+    WorkflowDataError: If the response does not carry back the OAuth state that
+      was generated for this auth request.
   """
   try:
     exchanged_credential = AuthConfig.model_validate(
@@ -304,7 +305,7 @@ async def process_auth_resume(
   if generated_state is not None:
     oauth2 = exchanged_credential.oauth2 if exchanged_credential else None
     if not oauth2 or oauth2.state != generated_state:
-      raise ValueError(
+      raise WorkflowDataError(
           'The auth response does not carry back the state generated for this'
           ' auth request. Return the auth config from the credential request'
           ' with the authorization result filled in.'

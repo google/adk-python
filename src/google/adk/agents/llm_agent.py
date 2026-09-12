@@ -63,7 +63,18 @@ from .base_agent_config import BaseAgentConfig as BaseAgentConfig
 from .callback_context import CallbackContext
 from .context import Context
 from .invocation_context import InvocationContext
-from .llm_agent_config import LlmAgentConfig as LlmAgentConfig
+
+with warnings.catch_warnings():
+  # LlmAgentConfig subclasses the deprecated BaseAgentConfig purely as an
+  # internal implementation detail, so this import alone should not warn
+  # applications that never touch the deprecated Agent Config APIs.
+  warnings.filterwarnings(
+      'ignore',
+      message=r'.*BaseAgentConfig is deprecated.*',
+      category=DeprecationWarning,
+  )
+  from .llm_agent_config import LlmAgentConfig as LlmAgentConfig
+
 from .readonly_context import ReadonlyContext
 
 logger = logging.getLogger('google_adk.' + __name__)

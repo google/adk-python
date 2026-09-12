@@ -31,6 +31,8 @@ from typing import TYPE_CHECKING
 from pydantic import ValidationError
 
 from ..events._node_path_builder import _NodePathBuilder
+from ._errors import WorkflowConfigurationError
+from ._errors import WorkflowInvariantError
 from ._node_state import NodeState
 from ._node_status import NodeStatus
 from ._schedule_dynamic_node import ScheduleDynamicNode
@@ -59,7 +61,7 @@ class DynamicNodeRun:
   """The final output of the node once it completes."""
 
   task: asyncio.Task[Context] | None = None
-  """The running asyncio Task for this node execution."""
+  """The running asyncio Task, or None for a run replayed from cache."""
 
   transfer_to_agent: str | None = None
   """The target agent name if this node execution transferred."""
@@ -80,6 +82,9 @@ class DynamicNodeState:
   runs: dict[str, DynamicNodeRun] = field(default_factory=dict)
   """Dynamic node runs keyed by unique node_path (e.g. /wf@1/node_a@1)."""
 
+  run_counters: dict[str, dict[str, int]] = field(default_factory=dict)
+  """Sequential execution counters per parent_path and node_name, used to allocate run IDs."""
+
   # --- Shared (static + dynamic) ---
 
   interrupt_ids: set[str] = field(default_factory=set)
@@ -98,6 +103,16 @@ class DynamicNodeState:
 
   replay_manager: ReplayManager = field(default_factory=ReplayManager)
   """The replay manager for this loop state, containing event indexes."""
+
+  def next_run_id(self, node_name: str, parent_path: str = '') -> str:
+    """Increment and return the next sequential run_id for a node name under parent_path."""
+    counters = self.run_counters.setdefault(parent_path, {})
+    counters[node_name] = counters.get(node_name, 0) + 1
+    return str(counters[node_name])
+
+  def get_run_counter(self, node_name: str, parent_path: str = '') -> int:
+    """Get the current run counter for a node name under parent_path."""
+    return self.run_counters.get(parent_path, {}).get(node_name, 0)
 
   def get_dynamic_tasks(self) -> list[asyncio.Task[Context]]:
     """Get all active dynamic node tasks."""
@@ -133,7 +148,7 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
       *,
       node_name: str | None = None,
       use_as_output: bool = False,
-      run_id: str,
+      run_id: str | None = None,
       use_sub_branch: bool = False,
       override_branch: str | None = None,
       override_isolation_scope: str | None = None,
@@ -149,24 +164,32 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
       use_as_output: If True, the child's output replaces the
         calling node's output.
       run_id: Custom run ID for the child node execution.
+        If None, the scheduler assigns a sequential run ID.
       use_sub_branch: Whether the node should use a sub-branch.
       override_branch: Optional branch to use instead of parent's branch.
 
     Returns:
       Child Context with output, route, and interrupt_ids set.
     """
-    curr_parent_path = ctx.node_path if ctx else None
+    curr_parent_path = ctx.node_path if ctx else ''
+    target_node_name = node_name or node.name
+    if not run_id:
+      run_id = self._state.next_run_id(
+          target_node_name, parent_path=curr_parent_path
+      )
+
     base_path_builder = (
         _NodePathBuilder.from_string(curr_parent_path)
         if curr_parent_path
         else _NodePathBuilder([])
     )
-    node_path = str(base_path_builder.append(node_name or node.name, run_id))
+    node_path = str(base_path_builder.append(target_node_name, run_id))
 
     # Rehydration chronological sequence barrier setup for the parent path
-    parent_path = ctx.node_path if ctx else ''
-    if parent_path:
-      self._replay_manager.prepare_parent_sequence_barrier(ctx, parent_path)
+    if curr_parent_path:
+      self._replay_manager.prepare_parent_sequence_barrier(
+          ctx, curr_parent_path
+      )
 
     # Runtime schema validation.
     if node_input is not None:
@@ -216,16 +239,15 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
       )
 
     if child_ctx is None:
-      raise RuntimeError(
+      raise WorkflowInvariantError(
           f'Dynamic node {node_path} completed without a child context.'
       )
 
     logger.debug('node %s schedule end.', node_path)
 
     # Advance chronological sequence for this parent path and key
-    parent_path = ctx.node_path if ctx else ''
-    key = f'{node_name or node.name}@{run_id}'
-    await self._replay_manager.advance_sequence(parent_path, key)
+    key = f'{target_node_name}@{run_id}'
+    await self._replay_manager.advance_sequence(curr_parent_path, key)
 
     return child_ctx
 
@@ -261,7 +283,7 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
       unresolved = recovered.interrupt_ids - recovered.resolved_ids
       if recovered.interrupt_ids and not unresolved:
         if curr_node.wait_for_output and not curr_node.rerun_on_resume:
-          raise ValueError(
+          raise WorkflowConfigurationError(
               f'Node {node_path} is waiting for output but was called again'
               ' with rerun_on_resume=False. This would cause it to'
               ' auto-complete with empty output, which is likely a'

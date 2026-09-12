@@ -7805,17 +7805,16 @@ async def test_streaming_tool_call_brace_in_string_does_not_falsely_complete(
   assert args_by_name["other_func"] == json.loads(full_args_b)
 
 
-def _text_stream_chunks(text_fragments, finish_reason="stop"):
+def _reasoning_stream_chunks(deltas, finish_reason="stop"):
   stream = [
       ModelResponseStream(
           choices=[
               StreamingChoices(
-                  finish_reason=None,
-                  delta=Delta(role="assistant", content=fragment),
+                  finish_reason=None, delta=Delta(role="assistant", **kwargs)
               )
           ]
       )
-      for fragment in text_fragments
+      for kwargs in deltas
   ]
   stream.append(
       ModelResponseStream(
@@ -7823,6 +7822,13 @@ def _text_stream_chunks(text_fragments, finish_reason="stop"):
       )
   )
   return stream
+
+
+def _text_stream_chunks(text_fragments, finish_reason="stop"):
+  return _reasoning_stream_chunks(
+      [{"content": fragment} for fragment in text_fragments],
+      finish_reason=finish_reason,
+  )
 
 
 @pytest.mark.asyncio
@@ -7845,6 +7851,135 @@ async def test_streaming_text_assembled_from_many_fragments(
   assert [p.content.parts[0].text for p in partials] == fragments
   assert len(aggregated) == 1
   assert aggregated[0].content.parts[0].text == full_text
+
+
+@pytest.mark.asyncio
+async def test_streaming_reasoning_assembled_from_many_fragments(
+    mock_completion, lite_llm_instance
+):
+  # Providers that carry no thought signature (xAI, OpenAI, Ollama) stream
+  # reasoning one delta per token. The aggregated response has to join them the
+  # way the text buffer does, or the stored event holds one part per token.
+  full_reasoning = "".join(f"token-{i} " for i in range(50))
+  fragments = _split_into_chunks(
+      full_reasoning, [7] * (len(full_reasoning) // 7)
+  )
+  mock_completion.return_value = iter(
+      _reasoning_stream_chunks(
+          [{"reasoning_content": fragment} for fragment in fragments]
+      )
+  )
+
+  responses = [
+      r
+      async for r in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  partials = [r for r in responses if r.partial]
+  aggregated = [r for r in responses if not r.partial]
+  assert [p.content.parts[0].text for p in partials] == fragments
+  assert len(aggregated) == 1
+  parts = aggregated[0].content.parts
+  assert len(parts) == 1
+  assert parts[0].thought is True
+  assert parts[0].text == full_reasoning
+
+
+@pytest.mark.asyncio
+async def test_streaming_reasoning_keeps_thinking_block_boundaries(
+    mock_completion, lite_llm_instance
+):
+  # Anthropic closes each thinking block with a signature-only delta, and the
+  # signature only matches the text of its own block, so blocks must aggregate
+  # one part each rather than collapsing into one.
+  mock_completion.return_value = iter(
+      _reasoning_stream_chunks([
+          {
+              "thinking_blocks": [
+                  {"type": "thinking", "thinking": "First half "}
+              ]
+          },
+          {
+              "thinking_blocks": [
+                  {"type": "thinking", "thinking": "of block one."}
+              ]
+          },
+          {
+              "thinking_blocks": [{
+                  "type": "thinking",
+                  "thinking": "",
+                  "signature": "c2lnLW9uZQ==",
+              }]
+          },
+          {"thinking_blocks": [{"type": "thinking", "thinking": "Block two."}]},
+          {
+              "thinking_blocks": [{
+                  "type": "thinking",
+                  "thinking": "",
+                  "signature": "c2lnLXR3bw==",
+              }]
+          },
+      ])
+  )
+
+  responses = [
+      r
+      async for r in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  aggregated = [r for r in responses if not r.partial]
+  assert len(aggregated) == 1
+  parts = aggregated[0].content.parts
+  assert len(parts) == 2
+  assert parts[0].text == "First half of block one."
+  assert parts[0].thought_signature == b"sig-one"
+  assert parts[1].text == "Block two."
+  assert parts[1].thought_signature == b"sig-two"
+
+
+@pytest.mark.asyncio
+async def test_streaming_reasoning_with_tool_call(
+    mock_completion, lite_llm_instance
+):
+  # Streamed reasoning preceding a tool call (e.g. Anthropic thinking with
+  # tool use) must aggregate into thought parts on the finalized tool call
+  # response.
+  thinking_deltas = [
+      {"thinking_blocks": [{"type": "thinking", "thinking": "Let's call "}]},
+      {"thinking_blocks": [{"type": "thinking", "thinking": "the tool."}]},
+      {
+          "thinking_blocks": [{
+              "type": "thinking",
+              "thinking": "",
+              "signature": "c2lnLXRvb2w=",
+          }]
+      },
+  ]
+  tool_chunks = _function_chunks_for_args(['{"city": "Paris"}'])
+  stream = _reasoning_stream_chunks(thinking_deltas)[:-1]
+  stream.extend(_stream_chunks_from_function_chunks(tool_chunks))
+  mock_completion.return_value = iter(stream)
+
+  responses = [
+      r
+      async for r in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  aggregated = [r for r in responses if not r.partial]
+  assert len(aggregated) == 1
+  parts = aggregated[0].content.parts
+  assert len(parts) == 2
+  assert parts[0].thought is True
+  assert parts[0].text == "Let's call the tool."
+  assert parts[0].thought_signature == b"sig-tool"
+  assert parts[1].function_call.name == "my_func"
+  assert parts[1].function_call.args == {"city": "Paris"}
 
 
 @pytest.mark.asyncio

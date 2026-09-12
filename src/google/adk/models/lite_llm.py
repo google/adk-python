@@ -1192,9 +1192,10 @@ def _extract_reasoning_tokens(usage: Any) -> int:
 def _merge_reasoning_texts(reasoning_parts: Iterable[types.Part]) -> str:
   """Merges reasoning text fragments into a single provider payload.
 
-  Streaming providers such as vLLM can emit reasoning as token-sized chunks.
-  ADK stores those chunks as consecutive thought parts, so inserting separators
-  here changes the model's original reasoning text.
+  Streaming providers such as vLLM emit reasoning as token-sized chunks, and
+  Anthropic splits one thinking block across many deltas. Both are joined
+  here without separators, because any separator would not be part of the
+  model's own reasoning text.
   """
   reasoning_texts = []
   for part in reasoning_parts:
@@ -3403,7 +3404,11 @@ class LiteLlm(BaseLlm):
                 tool_calls=tool_calls,
             ),
             model_version=model_version,
-            thought_parts=list(reasoning_parts) if reasoning_parts else None,
+            thought_parts=(
+                _aggregate_streaming_thought_parts(reasoning_parts)
+                if reasoning_parts
+                else None
+            ),
         )
         mapped_finish_reason = _map_finish_reason(finish_reason)
         if _malformed_args_outrank_provider(
@@ -3425,7 +3430,11 @@ class LiteLlm(BaseLlm):
                 content=message_content,
             ),
             model_version=model_version,
-            thought_parts=list(reasoning_parts) if reasoning_parts else None,
+            thought_parts=(
+                _aggregate_streaming_thought_parts(reasoning_parts)
+                if reasoning_parts
+                else None
+            ),
         )
         mapped_finish_reason = _map_finish_reason(finish_reason)
         if _malformed_args_outrank_provider(

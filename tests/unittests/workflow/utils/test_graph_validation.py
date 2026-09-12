@@ -18,6 +18,7 @@ import logging
 
 from google.adk.workflow import Edge
 from google.adk.workflow import START
+from google.adk.workflow._errors import GraphValidationError
 from google.adk.workflow._graph import DEFAULT_ROUTE
 from google.adk.workflow._graph import Graph
 from google.adk.workflow.utils._graph_validation import validate_graph
@@ -388,3 +389,15 @@ def test_chat_agent_wiring_validation_only_runs_on_llm_agent() -> None:
   validate_graph(
       graph.nodes, graph.edges
   )  # Should not raise because node_b is a TestingNode, not LlmAgent
+
+
+def test_validation_failures_are_graph_validation_errors() -> None:
+  """The specific type is catchable, and still catchable as a ValueError."""
+  node_a = TestingNode(name='NodeA')
+  node_b = TestingNode(name='NodeB')
+  graph = Graph(edges=[Edge(from_node=node_a, to_node=node_b)])  # no START
+
+  with pytest.raises(GraphValidationError):
+    validate_graph(graph.nodes, graph.edges)
+  with pytest.raises(ValueError):
+    validate_graph(graph.nodes, graph.edges)
