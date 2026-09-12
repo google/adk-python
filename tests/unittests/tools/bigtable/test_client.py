@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import typing
 from unittest import mock
 
 from google.adk.tools.bigtable import client
 from google.auth.credentials import Credentials
+from google.cloud.bigtable import data
 
 
 def test_get_bigtable_data_client():
@@ -48,3 +50,9 @@ def test_get_bigtable_admin_client():
         credentials=mock_creds,
         client_info=mock.ANY,
     )
+
+
+def test_get_bigtable_data_client_return_annotation_resolves():
+  """The data client return annotation must resolve to a real type."""
+  hints = typing.get_type_hints(client.get_bigtable_data_client)
+  assert hints["return"] is data.BigtableDataClient
