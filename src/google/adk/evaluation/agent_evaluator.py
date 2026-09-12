@@ -234,6 +234,13 @@ class AgentEvaluator:
         metric_evaluator_registry=metric_evaluator_registry,
     )
 
+    if not eval_results_by_eval_id:
+      raise ValueError(
+          "No eval cases were evaluated, so there is nothing to report a"
+          " pass or a failure for. This happens when `eval_set` has no eval"
+          " cases, or when `num_runs` is less than 1."
+      )
+
     # Step 2: Post-process the results!
 
     # We keep track of eval case failures, these are not infra failures but eval
