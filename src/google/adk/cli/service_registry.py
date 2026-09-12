@@ -268,15 +268,17 @@ def _register_builtin_services(registry: ServiceRegistry) -> None:
     return DatabaseSessionService(db_url=uri, **kwargs_copy)
 
   def sqlite_session_factory(uri: str, **kwargs: Any) -> BaseSessionService:
+    from ..sessions.sqlite_session_service import _parse_db_path
     from ..sessions.sqlite_session_service import SqliteSessionService
 
     parsed = urlparse(uri)
-    db_path = parsed.path
-    if not db_path:
+    if not parsed.path:
       # Treat sqlite:// without a path as an in-memory session service.
       return memory_session_factory("memory://", **kwargs)
-    elif db_path.startswith("/"):
-      db_path = db_path[1:]
+
+    # Same unquote / Windows drive rules as SqliteSessionService so a
+    # percent-encoded path is not stored as a literal "%20" filename.
+    db_path, _, _ = _parse_db_path(uri)
 
     # SqliteSessionService only accepts db_path, warn if extra kwargs provided
     ignored_kwargs = {k: v for k, v in kwargs.items() if k != "agents_dir"}

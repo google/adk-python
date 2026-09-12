@@ -26,6 +26,7 @@ from typing import cast
 from typing import Optional
 from urllib.parse import unquote
 from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 import aiosqlite
 from google.adk.platform import time as platform_time
@@ -118,6 +119,33 @@ CREATE_SCHEMA_SQL = "\n".join([
 ])
 
 
+def _windows_drive_path_from_url_path(raw_path: str) -> str | None:
+  """Returns a Windows filesystem path for a drive-letter sqlite URL path.
+
+  SQLAlchemy documents ``sqlite:///C:/path/to.db`` (three slashes plus the
+  drive). ``urlparse`` yields ``/C:/path/to.db``. Four slashes plus a drive
+  (``sqlite:////C:/path/to.db``) yields ``//C:/path/to.db``. ``file://``
+  artifact URIs already run those shapes through ``url2pathname``; sqlite
+  session URIs must do the same so a space-containing Windows path is not
+  left as a leading-slash URL path.
+  """
+  if os.name != "nt":
+    return None
+
+  path = raw_path.replace("\\", "/")
+  # Four slashes before a drive letter leave an extra leading slash.
+  if (
+      path.startswith("//")
+      and len(path) >= 4
+      and path[2].isalpha()
+      and path[3] == ":"
+  ):
+    path = path[1:]
+  if len(path) >= 3 and path[0] == "/" and path[1].isalpha() and path[2] == ":":
+    return url2pathname(path)
+  return None
+
+
 def _parse_db_path(db_path: str) -> tuple[str, str, bool]:
   """Normalizes a SQLite db path from a URL or filesystem path.
 
@@ -132,6 +160,7 @@ def _parse_db_path(db_path: str) -> tuple[str, str, bool]:
     conventions:
       - `sqlite:///relative.db` is a path relative to the current working dir.
       - `sqlite:////absolute.db` is an absolute filesystem path.
+      - `sqlite:///C:/path/to.db` is a Windows absolute path.
   """
   if not db_path.startswith(("sqlite:", "sqlite+aiosqlite:")):
     return db_path, db_path, False
@@ -141,11 +170,15 @@ def _parse_db_path(db_path: str) -> tuple[str, str, bool]:
   if not raw_path:
     return db_path, db_path, False
 
-  normalized_path = raw_path
-  if normalized_path.startswith("//"):
-    normalized_path = normalized_path[1:]
-  elif normalized_path.startswith("/"):
-    normalized_path = normalized_path[1:]
+  windows_path = _windows_drive_path_from_url_path(raw_path)
+  if windows_path is not None:
+    normalized_path = windows_path
+  elif raw_path.startswith("//"):
+    normalized_path = raw_path[1:]
+  elif raw_path.startswith("/"):
+    normalized_path = raw_path[1:]
+  else:
+    normalized_path = raw_path
 
   if parsed.query:
     # sqlite3 only treats the filename as a URI when it starts with `file:`.
