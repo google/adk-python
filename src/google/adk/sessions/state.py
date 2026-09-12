@@ -85,6 +85,8 @@ class State:
   def __getitem__(self, key: str) -> Any:
     """Returns the value of the state dict for the given key."""
     if key in self._delta:
+      if self._delta[key] is None:
+        raise KeyError(key)
       return self._delta[key]
     return self._value[key]
 
@@ -97,9 +99,28 @@ class State:
     self._value[key] = value
     self._delta[key] = value
 
+  def __delitem__(self, key: str) -> None:
+    """Removes a key from the state, recording a tombstone in the delta."""
+    if key not in self:
+      raise KeyError(key)
+    self._value.pop(key, None)
+    self._delta[key] = None
+
+  def pop(self, key: str, default: Any = ...) -> Any:
+    """Removes the specified key and returns the corresponding value."""
+    if key in self:
+      val = self[key]
+      del self[key]
+      return val
+    if default is not ...:
+      return default
+    raise KeyError(key)
+
   def __contains__(self, key: object) -> bool:
     """Whether the state dict contains the given key."""
-    return key in self._value or key in self._delta
+    if key in self._delta:
+      return self._delta[key] is not None
+    return key in self._value
 
   def setdefault(self, key: str, default: Any = None) -> Any:
     """Gets the value of a key, or sets it to a default if the key doesn't exist."""
@@ -131,5 +152,9 @@ class State:
     """Returns the state dict."""
     result: dict[str, Any] = {}
     result.update(self._value)
-    result.update(self._delta)
+    for k, v in self._delta.items():
+      if v is None:
+        result.pop(k, None)
+      else:
+        result[k] = v
     return result
