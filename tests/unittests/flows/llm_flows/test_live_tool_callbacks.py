@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextvars
 from enum import Enum
 from functools import partial
 from typing import Any
@@ -567,3 +568,47 @@ async def test_live_non_blocking_tool_before_tool_callback_raising_does_not_kill
       and f"{tool.name}_{fc.id}"
       in invocation_context.active_non_blocking_tool_tasks
   )
+
+
+_live_ambient_value: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "live_ambient_value", default="unset"
+)
+
+
+@pytest.mark.asyncio
+async def test_live_before_tool_callback_contextvar_reaches_the_tool():
+  """A contextvar set in before_tool_callback is still set when the tool runs."""
+
+  def read_ambient_value() -> Dict[str, Any]:
+    return {"result": _live_ambient_value.get()}
+
+  def before_cb(tool, args, tool_context) -> None:
+    _live_ambient_value.set("set-by-callback")
+    return None
+
+  tool = FunctionTool(read_ambient_value)
+  agent = Agent(
+      name="agent",
+      model=testing_utils.MockModel.create(responses=[]),
+      tools=[tool],
+      before_tool_callback=before_cb,
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=""
+  )
+  fc = types.FunctionCall(name=tool.name, args={}, id="fc_1")
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=fc)]),
+  )
+
+  result_event = await handle_function_calls_live(
+      invocation_context, event, {tool.name: tool}
+  )
+
+  assert result_event is not None
+  assert result_event.content.parts[0].function_response.response == {
+      "result": "set-by-callback"
+  }
+  assert _live_ambient_value.get() == "unset"

@@ -113,6 +113,7 @@ async def run_node_live(
       except DynamicNodeFailError as e:
         raise e.error
     finally:
+      root_ctx._workflow_scheduler = None  # pylint: disable=protected-access
       # Narrowing for mypy: the queue is assigned unconditionally above, but
       # the attribute is Optional and the narrowing does not survive into this
       # closure. Assertion only -- it is not a runtime behaviour change.

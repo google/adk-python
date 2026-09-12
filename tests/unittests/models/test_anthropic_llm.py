@@ -1288,6 +1288,28 @@ def test_part_to_message_block_nested_dict_result():
   assert parsed["results"][0]["tags"] == ["a", "b"]
 
 
+def test_part_to_message_block_keys_beside_result_are_kept():
+  """A tool's own dict travels whole even when one of its keys is 'result'."""
+  response_part = types.Part.from_function_response(
+      name="run_code",
+      response={
+          "result": "ok",
+          "files": ["report.csv"],
+          "stdout": "wrote report.csv",
+      },
+  )
+  response_part.function_response.id = "test_id"
+
+  result = part_to_message_block(response_part)
+
+  parsed = json.loads(result["content"])
+  assert parsed == {
+      "result": "ok",
+      "files": ["report.csv"],
+      "stdout": "wrote report.csv",
+  }
+
+
 # --- Tests for arbitrary dict fallback (e.g. SkillToolset load_skill) ---
 
 
@@ -1584,9 +1606,33 @@ async def test_streaming_tool_use_yields_function_call():
     ]
 
   # 1 text partial + 1 final
-  assert len(responses) == 2
+  assert len(responses) == 4
 
-  final = responses[-1]
+  # responses[0]: text partial
+  assert responses[0].partial is True
+  assert responses[0].content.parts[0].text == "Checking."
+
+  # responses[1]: tool use block start
+  assert responses[1].partial is True
+  assert responses[1].content.parts[0].function_call.id == "toolu_abc"
+  assert responses[1].content.parts[0].function_call.name == "get_weather"
+  assert responses[1].content.parts[0].function_call.will_continue is True
+
+  # responses[2]: input JSON delta
+  assert responses[2].partial is True
+  assert responses[2].content.parts[0].function_call.id == "toolu_abc"
+  assert (
+      responses[2].content.parts[0].function_call.partial_args[0].json_path
+      == "$.city"
+  )
+  assert (
+      responses[2].content.parts[0].function_call.partial_args[0].string_value
+      == "Paris"
+  )
+  assert responses[2].content.parts[0].function_call.will_continue is True
+
+  # responses[3]: final
+  final = responses[3]
   assert final.partial is False
   assert len(final.content.parts) == 2
   assert final.content.parts[0].text == "Checking."
@@ -1798,7 +1844,9 @@ def test_build_anthropic_thinking_param_automatic_budget_uses_adaptive():
       thinking_config=types.ThinkingConfig(thinking_budget=-1),
   )
   result = _build_anthropic_thinking_param(config)
-  assert result == anthropic_types.ThinkingConfigAdaptiveParam(type="adaptive")
+  assert result == anthropic_types.ThinkingConfigAdaptiveParam(
+      type="adaptive", display="summarized"
+  )
 
 
 def test_build_anthropic_thinking_param_other_negative_uses_adaptive():
@@ -1809,7 +1857,20 @@ def test_build_anthropic_thinking_param_other_negative_uses_adaptive():
       thinking_config=types.ThinkingConfig(thinking_budget=-5),
   )
   result = _build_anthropic_thinking_param(config)
-  assert result == anthropic_types.ThinkingConfigAdaptiveParam(type="adaptive")
+  assert result == anthropic_types.ThinkingConfigAdaptiveParam(
+      type="adaptive", display="summarized"
+  )
+
+
+def test_build_anthropic_thinking_param_manual_budget_omits_display():
+  """``display`` belongs to adaptive thinking only, not to a manual budget."""
+  from google.adk.models.anthropic_llm import _build_anthropic_thinking_param
+
+  config = types.GenerateContentConfig(
+      thinking_config=types.ThinkingConfig(thinking_budget=2048),
+  )
+  result = _build_anthropic_thinking_param(config)
+  assert "display" not in result
 
 
 def test_build_anthropic_thinking_param_no_config():
@@ -1857,6 +1918,83 @@ def test_content_block_to_part_redacted_thinking():
   assert part.thought is True
   assert part.text is None
   assert part.thought_signature == b"redacted_data"
+
+
+def test_content_to_message_param_drops_content_free_signature():
+  """A signature with no content of its own used to wedge the session.
+
+  It matched no branch in `_part_to_message_block`, so the turn raised
+  NotImplementedError. The part stays in session history, so every later turn
+  raised again and the session was dead for good. It came from another model,
+  carries nothing, and Claude cannot verify it, so it is dropped.
+  """
+  from google.adk.models.anthropic_llm import content_to_message_param
+
+  content = types.Content(
+      role="model",
+      parts=[
+          types.Part(text="", thought_signature=b"\x01\x8f=k_\xae@L"),  # binary
+          types.Part(thought_signature=b"AY89a18D"),  # and one that is text
+          types.Part(text="hello"),
+      ],
+  )
+
+  message = content_to_message_param(content)
+
+  assert [block["type"] for block in message["content"]] == ["text"]
+
+
+@pytest.mark.asyncio
+async def test_turn_of_only_dropped_parts_is_not_sent_as_empty_message():
+  """A turn that is nothing but a foreign signature must not become `content: []`.
+
+  Dropping the part is right -- there is nothing Claude can be given -- but
+  emitting the message anyway trades NotImplementedError for a 400 that
+  repeats on every later turn, which is the same permanent wedge.
+  """
+  request = _cache_test_request(
+      contents=[
+          Content(role="user", parts=[Part.from_text(text="Question")]),
+          Content(
+              role="model",
+              parts=[types.Part(thought_signature=b"\x01\x8f=k_")],
+          ),
+      ]
+  )
+
+  kwargs = await _sent_anthropic_kwargs(request)
+
+  assert all(m["content"] for m in kwargs["messages"])
+  assert [m["role"] for m in kwargs["messages"]] == ["user"]
+
+
+def test_content_to_message_param_keeps_signature_on_real_content():
+  """A signature riding along with content must not take the part with it."""
+  from google.adk.models.anthropic_llm import content_to_message_param
+
+  content = types.Content(
+      role="model",
+      parts=[
+          types.Part(
+              function_call=types.FunctionCall(id="c1", name="do_it", args={}),
+              thought_signature=b"\x01\x8f=k_",
+          ),
+          types.Part(text="hi", thought=True, thought_signature=b"sig"),
+          # Claude's own redacted thinking: no content, but the flag is intact,
+          # so it must be sent back rather than dropped.
+          types.Part(thought=True, thought_signature=b"opaque"),
+          # An annotation is not content, so this one still goes.
+          types.Part(thought_signature=b"gone", part_metadata={"a": 1}),
+      ],
+  )
+
+  message = content_to_message_param(content)
+
+  assert [block["type"] for block in message["content"]] == [
+      "tool_use",
+      "thinking",
+      "redacted_thinking",
+  ]
 
 
 def test_message_to_generate_content_response_with_thinking():
@@ -3219,7 +3357,10 @@ async def test_generate_content_async_with_thinking_level_warns_and_ignores(
       mock_client.messages.create.assert_called_once()
       _, kwargs = mock_client.messages.create.call_args
       # Verify that thinking_level was ignored (but budget -1 still enabled adaptive thinking).
-      assert kwargs["thinking"] == {"type": "adaptive"}
+      assert kwargs["thinking"] == {
+          "type": "adaptive",
+          "display": "summarized",
+      }
       assert "output_config" not in kwargs
 
 
@@ -3906,7 +4047,11 @@ async def test_cache_breakpoint_skips_a_reasoning_block(
 
 @pytest.mark.asyncio
 async def test_cache_breakpoint_skips_a_turn_left_with_no_blocks():
-  """An assistant turn holding only an image is dropped, so it cannot carry one."""
+  """An assistant turn holding only an image is dropped, so it cannot carry one.
+
+  It used to be sent as a message with empty content, which Anthropic rejects;
+  the turn is now left out of the request entirely.
+  """
   request = _cache_test_request(
       contents=[
           Content(role="user", parts=[Part.from_text(text="Question")]),
@@ -3921,7 +4066,8 @@ async def test_cache_breakpoint_skips_a_turn_left_with_no_blocks():
 
   kwargs = await _sent_anthropic_kwargs(request)
 
-  assert kwargs["messages"][-1]["content"] == []
+  assert [m["role"] for m in kwargs["messages"]] == ["user"]
+  assert all(m["content"] for m in kwargs["messages"])
   assert _breakpoints(kwargs) == {
       "system[0]": _EPHEMERAL,
       "tools[1]": _EPHEMERAL,

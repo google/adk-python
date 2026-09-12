@@ -65,6 +65,10 @@ class TestAgentCardBuilder:
     assert builder._agent == mock_agent
     assert builder._rpc_url == "http://localhost:80/a2a"
     assert isinstance(builder._capabilities, AgentCapabilities)
+    # The card is served alongside a DefaultRequestHandler that always
+    # implements message/stream, so the default capabilities must advertise
+    # streaming support rather than leaving peers to assume it is missing.
+    assert builder._capabilities.streaming is True
     assert builder._doc_url is None
     assert builder._provider is None
     assert builder._security_schemes is None

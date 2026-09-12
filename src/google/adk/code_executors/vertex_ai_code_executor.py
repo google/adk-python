@@ -17,11 +17,11 @@ from __future__ import annotations
 import logging
 import mimetypes
 import os
+import threading
 from typing import cast
 from typing import TYPE_CHECKING
 from typing import TypedDict
 
-from pydantic import PrivateAttr
 from typing_extensions import override
 
 from ..agents.invocation_context import InvocationContext
@@ -35,6 +35,8 @@ logger = logging.getLogger('google_adk.' + __name__)
 if TYPE_CHECKING:
   from vertexai.preview.extensions import Extension
 
+_EXTENSION_LOCK = threading.Lock()
+_EXTENSION_CLIENTS: dict[str, Extension] = {}
 _SUPPORTED_IMAGE_TYPES = ['png', 'jpg', 'jpeg']
 _SUPPORTED_DATA_FILE_TYPES = ['csv']
 
@@ -139,8 +141,6 @@ class VertexAiCodeExecutor(BaseCodeExecutor):
   Format: projects/123/locations/us-central1/extensions/456
   """
 
-  _code_interpreter_extension: Extension = PrivateAttr()
-
   def __init__(
       self,
       resource_name: str | None = None,
@@ -156,9 +156,27 @@ class VertexAiCodeExecutor(BaseCodeExecutor):
     """
     super().__init__(**data)
     self.resource_name = resource_name
-    self._code_interpreter_extension = _get_code_interpreter_extension(
-        self.resource_name
+
+  @property
+  def _extension_client(self) -> Extension:
+    """Lazy loads the Vertex AI Extension client."""
+    name = self.resource_name or os.environ.get(
+        'CODE_INTERPRETER_EXTENSION_NAME'
     )
+    if not name or name not in _EXTENSION_CLIENTS:
+      with _EXTENSION_LOCK:
+        name = self.resource_name or os.environ.get(
+            'CODE_INTERPRETER_EXTENSION_NAME'
+        )
+        if not name or name not in _EXTENSION_CLIENTS:
+          client = _get_code_interpreter_extension(self.resource_name)
+          name = self.resource_name or os.environ.get(
+              'CODE_INTERPRETER_EXTENSION_NAME'
+          )
+          if name:
+            _EXTENSION_CLIENTS[name] = client
+          return client
+    return _EXTENSION_CLIENTS[name]
 
   @override
   def execute_code(
@@ -239,7 +257,8 @@ class VertexAiCodeExecutor(BaseCodeExecutor):
       ]
     if session_id:
       operation_params['session_id'] = session_id
-    response: object = self._code_interpreter_extension.execute(
+    # Use the lazy-loaded client property
+    response: object = self._extension_client.execute(
         operation_id='execute',
         operation_params=operation_params,
     )

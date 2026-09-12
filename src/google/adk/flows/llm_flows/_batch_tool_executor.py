@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Coroutine
 import inspect
 import logging
 from typing import Any
@@ -137,6 +138,24 @@ def _merge_and_trace_function_response_events(
   return merged_event
 
 
+def _start_execute_task(
+    prepared_call: _PreparedFunctionCall,
+    coro: Coroutine[Any, Any, _T],
+) -> asyncio.Task[_T]:
+  """Starts the execute phase of one call in the context its prepare left behind.
+
+  asyncio hands every new task a copy of the context that was current when the
+  task was created, and whatever the task sets stays in that copy. The prepare
+  phase runs in a task of its own, so a contextvar a before-tool callback sets
+  there -- an auth token, a tracing span -- is not set in an execute task
+  created by the caller. Creating that task from inside the prepare phase's
+  snapshot gives it a copy of the snapshot instead, so the tool sees what the
+  callbacks set. Copying rather than sharing also keeps each call to itself:
+  what the tool sets reaches neither its sibling calls nor the caller.
+  """
+  return prepared_call.contextvars_snapshot.run(asyncio.create_task, coro)
+
+
 async def _gather_or_cancel(tasks: list[asyncio.Task[_T]]) -> list[_T]:
   """Awaits every task, cancelling the rest as soon as one of them fails."""
   try:
@@ -251,10 +270,11 @@ async def _execute_prepared_function_calls_async(
 
   # Create tasks for parallel execution
   tasks = [
-      asyncio.create_task(
+      _start_execute_task(
+          prepared_call,
           _execute_single_prepared_call_async(
               invocation_context, prepared_call, agent
-          )
+          ),
       )
       for prepared_call in prepared_calls
   ]
@@ -291,13 +311,14 @@ async def _execute_prepared_function_calls_live(
 
   # Create tasks for parallel execution
   tasks = [
-      asyncio.create_task(
+      _start_execute_task(
+          prepared_call,
           _execute_single_prepared_call_live(
               invocation_context,
               prepared_call,
               agent,
               active_tools_lock,
-          )
+          ),
       )
       for prepared_call in prepared_calls
   ]

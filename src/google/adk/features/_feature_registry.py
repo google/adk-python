@@ -50,6 +50,7 @@ class FeatureName(str, Enum):
   GOOGLE_CREDENTIALS_CONFIG = "GOOGLE_CREDENTIALS_CONFIG"
   GOOGLE_TOOL = "GOOGLE_TOOL"
   JSON_SCHEMA_FOR_FUNC_DECL = "JSON_SCHEMA_FOR_FUNC_DECL"
+  LIVEKIT = "LIVEKIT"
   MCP_AGENT_SERVER = "MCP_AGENT_SERVER"
   # Private (leading underscore): not part of the public API surface.
   # GE flips this on by setting the env var
@@ -172,6 +173,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.JSON_SCHEMA_FOR_FUNC_DECL: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.LIVEKIT: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.MCP_AGENT_SERVER: FeatureConfig(
