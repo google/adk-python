@@ -62,7 +62,13 @@ from .simulation.user_simulator_provider import UserSimulatorProvider
 
 logger = logging.getLogger("google_adk." + __name__)
 
-EVAL_SESSION_ID_PREFIX = "___eval___session___"
+# Note: must only contain lowercase letters, digits and hyphens, and start
+# and end with an alphanumeric character once the UUID is appended. Custom
+# session IDs are passed to the configured SessionService (e.g. Vertex
+# AiSessionService), which forwards them to remote backends such as Agent
+# Engine that enforce this constraint. See
+# https://github.com/google/adk-python/issues/6683
+EVAL_SESSION_ID_PREFIX = "eval-session-"
 
 
 def _get_session_id() -> str:

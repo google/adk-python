@@ -53,7 +53,12 @@ FINAL_RESPONSE_MATCH_V2 = "final_response_match_v2"
 # This is always optional unless explicitly specified.
 RESPONSE_EVALUATION_SCORE_KEY = "response_evaluation_score"
 
-EVAL_SESSION_ID_PREFIX = "___eval___session___"
+# Must stay in sync with google.adk.evaluation.local_eval_service. The prefix
+# is only allowed to contain lowercase letters, digits and hyphens so the
+# generated eval session IDs satisfy the custom-session-ID constraints of
+# remote backends such as Vertex AI Agent Engine. See
+# https://github.com/google/adk-python/issues/6683
+EVAL_SESSION_ID_PREFIX = "eval-session-"
 DEFAULT_CRITERIA = {
     TOOL_TRAJECTORY_SCORE_KEY: 1.0,  # 1-point scale; 1.0 is perfect.
     RESPONSE_MATCH_SCORE_KEY: 0.8,
