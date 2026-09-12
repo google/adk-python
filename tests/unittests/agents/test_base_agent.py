@@ -760,6 +760,61 @@ async def test_run_live_with_branch(request: pytest.FixtureRequest):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('entrypoint', ['run_async', 'run_live'])
+@pytest.mark.parametrize('end_invocation', [False, True])
+async def test_after_agent_callbacks_respect_end_invocation(
+    request: pytest.FixtureRequest,
+    mocker: pytest_mock.MockerFixture,
+    entrypoint: str,
+    end_invocation: bool,
+):
+  """Ending either execution mode skips plugin and agent after callbacks."""
+
+  class _EndingAgent(_TestingAgent):
+
+    @override
+    async def _run_async_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      async for event in super()._run_async_impl(ctx):
+        yield event
+      ctx.end_invocation = end_invocation
+
+    @override
+    async def _run_live_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      async for event in super()._run_live_impl(ctx):
+        yield event
+      ctx.end_invocation = end_invocation
+
+  plugin = MockPlugin()
+  agent = _EndingAgent(
+      name='agent',
+      after_agent_callback=_after_agent_callback_append_agent_reply,
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, agent, plugins=[plugin]
+  )
+  plugin_callback = mocker.spy(plugin, 'after_agent_callback')
+  agent_callback = mocker.spy(agent, 'after_agent_callback')
+
+  events = [event async for event in getattr(agent, entrypoint)(parent_ctx)]
+
+  if end_invocation:
+    plugin_callback.assert_not_called()
+    agent_callback.assert_not_called()
+    assert len(events) == 1
+  else:
+    plugin_callback.assert_called_once()
+    agent_callback.assert_called_once()
+    assert len(events) == 2
+    assert events[-1].content.parts[0].text == (
+        'Agent reply from after agent callback.'
+    )
+
+
+@pytest.mark.asyncio
 async def test_run_live_incomplete_agent(request: pytest.FixtureRequest):
   agent = _IncompleteAgent(name=f'{request.function.__name__}_test_agent')
   parent_ctx = await _create_parent_invocation_context(
