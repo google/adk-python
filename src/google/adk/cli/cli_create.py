@@ -23,7 +23,7 @@ from ..apps.app import validate_app_name
 from .utils import _onboarding
 
 _INIT_PY_TEMPLATE = """\
-from . import agent
+from . import agent as agent
 """
 
 _AGENT_PY_TEMPLATE = """\
