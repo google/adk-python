@@ -304,14 +304,17 @@ def _parse_schema_from_parameter(
     _raise_if_schema_unsupported(variant, schema)
     return schema
   if isinstance(param.annotation, type) and issubclass(param.annotation, Enum):
+    # `schema.type` is always STRING here, so every enum value must be a
+    # string too (e.g. IntEnum members have int `.value`s otherwise).
     schema.type = types.Type.STRING
-    schema.enum = [e.value for e in param.annotation]
+    schema.enum = [str(e.value) for e in param.annotation]
     if param.default is not inspect.Parameter.empty:
       default_value = (
           param.default.value
           if isinstance(param.default, Enum)
           else param.default
       )
+      default_value = str(default_value)
       if default_value not in schema.enum:
         raise ValueError(default_value_error_msg)
       schema.default = default_value
