@@ -151,6 +151,9 @@ def test_is_artifact_ref_false(part):
         "myapp",
         "sess123",
         "group/user123",
+        "mdbuser/username",
+        "projects/123/locations/us-central1/reasoningEngines/456",
+        "nested/app/name",
         "has/slash",
         "back\\slash",
         mock.MagicMock(),
@@ -184,10 +187,16 @@ def test_validate_path_segment_valid(value, field_name):
         "C:\\absolute",
         "C:/absolute",
         "C:drive-relative",
+        "group/sessions/123",
+        "has/users/slash",
+        "back\\apps\\slash",
+        "victim/sessions/s1",
+        "victim/artifacts/a1",
+        "victim/versions/v1",
     ],
 )
 def test_validate_path_segment_invalid(value, field_name):
-  """Traversal segments, null bytes, and absolute paths should raise InputValidationError."""
+  """Traversal segments, null bytes, absolute paths, and reserved segments with slashes should raise InputValidationError."""
   with pytest.raises(InputValidationError):
     artifact_util.validate_path_segment(value, field_name)
 
@@ -313,3 +322,91 @@ def test_validate_artifact_reference_scope_session_uri_without_caller_session_ra
 def test_is_drive_qualified_matches_only_drive_letters(value, expected):
   """Only a single ASCII letter followed by a colon counts as a drive."""
   assert artifact_util._is_drive_qualified(value) is expected
+
+
+def test_parse_artifact_uri_with_namespaced_segments():
+  """Tests parsing artifact URIs when app_name and user_id contain slashes."""
+  app_name = "projects/123/locations/us-central1/reasoningEngines/456"
+  user_id = "group/user123"
+  session_id = "sess123"
+  filename = "safe.txt"
+  version = 1
+
+  session_uri = artifact_util.get_artifact_uri(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      version=version,
+  )
+  parsed_session = artifact_util.parse_artifact_uri(session_uri)
+  assert parsed_session == artifact_util.ParsedArtifactUri(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      version=version,
+  )
+
+  user_uri = artifact_util.get_artifact_uri(
+      app_name=app_name,
+      user_id=user_id,
+      filename=filename,
+      version=version,
+  )
+  parsed_user = artifact_util.parse_artifact_uri(user_uri)
+  assert parsed_user == artifact_util.ParsedArtifactUri(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=None,
+      filename=filename,
+      version=version,
+  )
+
+
+def test_parse_artifact_uri_with_namespaced_session_id():
+  """Tests parsing an artifact URI when session_id contains slashes."""
+  app_name = "projects/123/locations/us-central1/reasoningEngines/456"
+  user_id = "group/user123"
+  session_id = "team/sess123"
+  filename = "safe.txt"
+  version = 1
+
+  session_uri = artifact_util.get_artifact_uri(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      version=version,
+  )
+  parsed_session = artifact_util.parse_artifact_uri(session_uri)
+  assert parsed_session == artifact_util.ParsedArtifactUri(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      version=version,
+  )
+
+
+def test_parse_artifact_uri_user_scoped_with_sessions_in_filename():
+  """Tests parsing a user-scoped artifact URI whose filename contains sessions."""
+  app_name = "myapp"
+  user_id = "alice"
+  filename = "sessions/sess1/artifacts/data.txt"
+  version = 1
+
+  uri = artifact_util.get_artifact_uri(
+      app_name=app_name,
+      user_id=user_id,
+      filename=filename,
+      version=version,
+  )
+  parsed = artifact_util.parse_artifact_uri(uri)
+  assert parsed == artifact_util.ParsedArtifactUri(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=None,
+      filename=filename,
+      version=version,
+  )
