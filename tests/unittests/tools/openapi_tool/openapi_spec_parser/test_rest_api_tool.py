@@ -30,6 +30,7 @@ from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import HttpAuth
 from google.adk.auth.auth_credential import HttpCredentials
+from google.adk.errors.input_validation_error import InputValidationError
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.sessions.state import State
@@ -38,6 +39,7 @@ from google.adk.tools.openapi_tool.common.common import ApiParameter
 from google.adk.tools.openapi_tool.openapi_spec_parser.openapi_spec_parser import OperationEndpoint
 from google.adk.tools.openapi_tool.openapi_spec_parser.openapi_spec_parser import ParsedOperation
 from google.adk.tools.openapi_tool.openapi_spec_parser.operation_parser import OperationParser
+from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import _encode_path_param
 from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import RestApiTool
 from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import snake_to_lower_camel
 from google.adk.tools.tool_context import ToolContext
@@ -152,6 +154,29 @@ def sample_auth_credential():
       "apikey", "header", "", "sample_auth_credential_internal_test"
   )
   return credential
+
+
+@pytest.mark.parametrize(
+    "value",
+    [".", "..", "../../admin/v1/tenants", "foo/../bar", r"..\admin", "./x"],
+)
+def test_encode_path_param_rejects_dot_segments(value):
+  with pytest.raises(InputValidationError, match="parent-directory"):
+    _encode_path_param("name", value)
+
+
+@pytest.mark.parametrize(
+    "value,encoded",
+    [
+        ("foo/bar", "foo%2Fbar"),
+        ("file..txt", "file..txt"),
+        (".gitignore", ".gitignore"),
+        ("ok.txt", "ok.txt"),
+        ("me?x#", "me%3Fx%23"),
+    ],
+)
+def test_encode_path_param_encodes_safe_values(value, encoded):
+  assert _encode_path_param("name", value) == encoded
 
 
 class TestRestApiToolLegacy:
@@ -857,15 +882,14 @@ class TestRestApiTool:
   def test_prepare_request_params_path_param_is_percent_encoded(
       self, sample_endpoint, sample_auth_credential, sample_auth_scheme
   ):
-    """A path parameter value must not be able to introduce new path
-    segments, a query string, or a fragment into the constructed URL.
-
-    This ensures security by escaping user-controlled values.
+    """A path parameter value must not introduce a query string or fragment,
+    and slash-containing IDs must stay a single encoded segment.
 
     Path parameter values ultimately come from the model's tool-call
-    arguments. Without percent-encoding, a value such as '../../admin'
-    could redirect the request -- along with this tool's configured auth
-    credentials -- to an endpoint the OpenAPI spec never declared.
+    arguments. Reserved characters ('/', '?', '#') are percent-encoded.
+    RFC 3986 dot-segments ('.' / '..') are rejected separately: quote()
+    leaves '.' literal, so encoding alone cannot stop backends that
+    decode '%2F' and merge dot-segments from leaving the declared path.
     """
     mock_operation = Operation(operationId="test_op")
     tool = RestApiTool(
@@ -891,13 +915,12 @@ class TestRestApiTool:
     )
     tool.endpoint = endpoint_with_path
 
-    # Path traversal attempt: '/' must be escaped so this cannot leave the
-    # {user_id} path segment.
+    # Slash-containing IDs stay one segment after encoding.
     request_params = tool._prepare_request_params(
-        params, {"user_id": "../../admin/v1/tenants"}
+        params, {"user_id": "foo/bar"}
     )
     assert request_params["url"] == (
-        "https://example.com/users/..%2F..%2Fadmin%2Fv1%2Ftenants/messages"
+        "https://example.com/users/foo%2Fbar/messages"
     )
 
     # Query/fragment smuggling attempt: '?' and '#' must be escaped so a
@@ -909,6 +932,106 @@ class TestRestApiTool:
         "https://example.com/users/me%3Fimpersonate%3Dother-user%23/messages"
     )
     assert request_params["params"] == {}  # nothing smuggled into query params
+
+    request_params = tool._prepare_request_params(
+        params, {"user_id": "file..txt"}
+    )
+    assert request_params["url"] == (
+        "https://example.com/users/file..txt/messages"
+    )
+
+    request_params = tool._prepare_request_params(
+        params, {"user_id": ".gitignore"}
+    )
+    assert request_params["url"] == (
+        "https://example.com/users/.gitignore/messages"
+    )
+
+    request_params = tool._prepare_request_params(params, {"user_id": "ok.txt"})
+    assert request_params["url"] == "https://example.com/users/ok.txt/messages"
+
+  def test_prepare_request_params_path_param_rejects_dot_segments(
+      self, sample_endpoint, sample_auth_credential, sample_auth_scheme
+  ):
+    """Dot-segments must be rejected: quote() leaves '.' literal on the wire."""
+    mock_operation = Operation(operationId="test_op")
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=mock_operation,
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+    params = [
+        ApiParameter(
+            original_name="user_id",
+            py_name="user_id",
+            param_location="path",
+            param_schema=OpenAPISchema(type="string"),
+        )
+    ]
+    tool.endpoint = OperationEndpoint(
+        base_url="https://example.com",
+        path="/users/{user_id}/messages",
+        method="get",
+    )
+
+    for value in (
+        ".",
+        "..",
+        "../../admin/v1/tenants",
+        "foo/../bar",
+        r"..\admin",
+        "./x",
+    ):
+      with pytest.raises(InputValidationError, match="parent-directory"):
+        tool._prepare_request_params(params, {"user_id": value})
+
+  @patch(
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
+  )
+  @pytest.mark.asyncio
+  async def test_call_rejects_dot_segment_path_param(
+      self,
+      mock_request,
+      mock_tool_context,
+      sample_auth_scheme,
+      sample_auth_credential,
+  ):
+    """Traversal path args must fail closed without issuing an HTTP request."""
+    mock_operation = Operation(
+        operationId="test_op",
+        parameters=[
+            OpenAPIParameter(**{
+                "name": "name",
+                "in": "path",
+                "required": True,
+                "schema": OpenAPISchema(type="string"),
+            })
+        ],
+    )
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=OperationEndpoint(
+            base_url="https://example.com",
+            path="/files/{name}",
+            method="GET",
+        ),
+        operation=mock_operation,
+        auth_scheme=sample_auth_scheme,
+        auth_credential=sample_auth_credential,
+    )
+
+    result = await tool.call(
+        args={"name": "../../admin/secret"}, tool_context=mock_tool_context
+    )
+
+    assert "error" in result
+    assert "parent-directory" in result["error"]
+    assert not mock_request.called
+    assert tool._detect_error_in_response(result) == "HTTP_ERROR"
 
   def test_prepare_request_params_header_param(
       self,

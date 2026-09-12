@@ -39,6 +39,7 @@ from typing_extensions import override
 from ....agents.readonly_context import ReadonlyContext
 from ....auth.auth_credential import AuthCredential
 from ....auth.auth_schemes import AuthScheme
+from ....errors.input_validation_error import InputValidationError
 from ....features import FeatureName
 from ....features import is_feature_enabled
 from ..._gemini_schema_util import _to_gemini_schema
@@ -73,6 +74,40 @@ def snake_to_lower_camel(snake_case_string: str):
       s.lower() if i == 0 else s.capitalize()
       for i, s in enumerate(snake_case_string.split("_"))
   ])
+
+
+def _encode_path_param(name: str, value: str) -> str:
+  """Percent-encode a path parameter, rejecting RFC 3986 dot-segments.
+
+  ``quote(..., safe="")`` encodes reserved characters including ``/``, ``?``,
+  and ``#``, but leaves ``.`` literal because it is unreserved. A value of
+  ``.`` or ``..``, or a value whose ``/``- or ``\\``-separated segments include
+  those, is still a special path segment on the wire. Backends that decode
+  ``%2F`` and then merge dot-segments can then route the request onto a path
+  the OpenAPI spec never declared.
+
+  Slash-containing IDs (for example ``projects/p/locations/l``) are still
+  encoded as a single segment (``%2F``). Only exact ``.`` / ``..`` segments
+  are rejected, so names such as ``file..txt`` and ``.gitignore`` remain
+  valid.
+
+  Args:
+    name: Original OpenAPI parameter name, used in the error message.
+    value: Raw path parameter value from the tool call.
+
+  Returns:
+    The percent-encoded parameter value.
+
+  Raises:
+    InputValidationError: If any path segment is ``.`` or ``..``.
+  """
+  for segment in value.replace("\\", "/").split("/"):
+    if segment in (".", ".."):
+      raise InputValidationError(
+          f"Path parameter {name!r} must not contain current-directory or"
+          " parent-directory segments."
+      )
+  return quote(value, safe="")
 
 
 AuthPreparationState = Literal["pending", "done"]
@@ -407,14 +442,13 @@ class RestApiTool(BaseTool):
         # Percent-encode path parameter values (including '/') before they
         # are substituted into the URL template below. Path parameter
         # values ultimately originate from the model's tool-call
-        # arguments, so an unescaped value (e.g. containing '/', '..',
-        # '?', or '#') could redirect the request to a different,
-        # undeclared path -- or undeclared query parameters -- on the
-        # same host than the one the OpenAPI spec's path template and
-        # this tool's configured auth credentials were intended for.
-        # `safe=""` ensures '/' is escaped too, so a value can never
-        # introduce a new path segment.
-        path_params[original_k] = quote(str(v), safe="")
+        # arguments. quote() leaves '.' literal (RFC 3986 unreserved), so
+        # '.' / '..' segments are rejected first: otherwise backends that
+        # decode '%2F' and merge dot-segments can redirect the request --
+        # with this tool's configured auth -- onto an undeclared path.
+        # Reserved characters ('/', '?', '#') are still escaped so a
+        # value cannot introduce a query string or fragment.
+        path_params[original_k] = _encode_path_param(original_k, str(v))
       elif param_location == "query":
         if v is not None:
           query_params[original_k] = v
@@ -571,7 +605,17 @@ class RestApiTool(BaseTool):
         api_args.update(auth_args)
 
     # Got all parameters. Call the API.
-    request_params = self._prepare_request_params(api_params, api_args)
+    try:
+      request_params = self._prepare_request_params(api_params, api_args)
+    except InputValidationError as e:
+      return {
+          "error": (
+              f"Tool {self.name} execution failed. Analyze this execution error"
+              " and your inputs. Retry with adjustments if applicable. But"
+              " make sure don't retry more than 3 times. Execution Error:"
+              f" {e}"
+          )
+      }
     if self._ssl_verify is not None:
       request_params["verify"] = self._ssl_verify
 
