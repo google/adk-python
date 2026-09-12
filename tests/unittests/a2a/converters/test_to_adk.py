@@ -62,6 +62,64 @@ def _make_a2a_part_for_test(metadata=None):
     return m
 
 
+# One wire input per inbound converter, built from a shared A2A message.
+_LONG_RUNNING_INBOUND_CONVERTERS = {
+    "task": (
+        lambda message: _compat.make_task(
+            id="task-1",
+            context_id="context-1",
+            kind="task",
+            status=_compat.make_task_status(
+                _compat.TS_INPUT_REQUIRED, timestamp="now", message=message
+            ),
+        ),
+        convert_a2a_task_to_event,
+    ),
+    "status_update": (
+        lambda message: _compat.make_task_status_update_event(
+            task_id="task-1",
+            context_id="context-1",
+            final=False,
+            status=_compat.make_task_status(
+                _compat.TS_INPUT_REQUIRED, timestamp="now", message=message
+            ),
+        ),
+        convert_a2a_status_update_to_event,
+    ),
+    "task_artifact": (
+        lambda message: _compat.make_task(
+            id="task-1",
+            context_id="context-1",
+            kind="task",
+            status=_compat.make_task_status(
+                _compat.TS_INPUT_REQUIRED, timestamp="now"
+            ),
+            artifacts=[
+                _compat.make_artifact(
+                    artifact_id="art-1", parts=list(message.parts)
+                )
+            ],
+        ),
+        convert_a2a_task_to_event,
+    ),
+    "message": (lambda message: message, convert_a2a_message_to_event),
+    "artifact_update": (
+        lambda message: TaskArtifactUpdateEvent(
+            task_id="task-1",
+            context_id="context-1",
+            artifact=_compat.make_artifact(
+                artifact_id="art-1",
+                artifact_type="message",
+                parts=list(message.parts),
+            ),
+            append=True,
+            last_chunk=True,
+        ),
+        convert_a2a_artifact_update_to_event,
+    ),
+}
+
+
 class TestToAdk:
   """Test suite for to_adk functions."""
 
@@ -850,6 +908,83 @@ class TestToAdk:
     )
 
     assert event.content.role == "model"
+
+  @pytest.mark.parametrize(
+      "converter_key", list(_LONG_RUNNING_INBOUND_CONVERTERS)
+  )
+  def test_long_running_tool_ids_survive_every_inbound_converter(
+      self, converter_key
+  ):
+    """Every inbound converter must surface the ids it recovers."""
+    build_input, convert = _LONG_RUNNING_INBOUND_CONVERTERS[converter_key]
+    a2a_part = _make_a2a_part_for_test({
+        _get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY): True
+    })
+    message = Message(
+        message_id="m1", role=_compat.ROLE_AGENT, parts=[a2a_part]
+    )
+    mock_part_converter = Mock(
+        return_value=[
+            genai_types.Part(
+                function_call=genai_types.FunctionCall(
+                    name="wait_for_human_approval", args={}, id="call-1"
+                )
+            )
+        ]
+    )
+
+    event = convert(
+        build_input(message),
+        author="test-author",
+        invocation_context=self.mock_context,
+        part_converter=mock_part_converter,
+    )
+
+    assert event is not None
+    assert event.long_running_tool_ids == {"call-1"}
+
+  def test_input_required_task_keeps_its_own_long_running_call(self):
+    """A pending call must not be replaced by a synthesised one.
+
+    `_create_mock_function_call_for_required_user_input` synthesises a call
+    under a fresh uuid only when no ids survived. Dropping a real id here
+    would hand the caller an id that answers nothing.
+    """
+    a2a_part = _make_a2a_part_for_test({
+        _get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY): True
+    })
+    task = _compat.make_task(
+        id="task-1",
+        context_id="context-1",
+        kind="task",
+        status=_compat.make_task_status(
+            _compat.TS_INPUT_REQUIRED, timestamp="now"
+        ),
+        artifacts=[
+            _compat.make_artifact(artifact_id="art-1", parts=[a2a_part])
+        ],
+    )
+    mock_part_converter = Mock(
+        return_value=[
+            genai_types.Part(
+                function_call=genai_types.FunctionCall(
+                    name="wait_for_human_approval", args={}, id="call-1"
+                )
+            )
+        ]
+    )
+
+    event = convert_a2a_task_to_event(
+        task,
+        author="test-author",
+        invocation_context=self.mock_context,
+        part_converter=mock_part_converter,
+    )
+
+    assert event.long_running_tool_ids == {"call-1"}
+    assert event.content.parts[0].function_call.name == (
+        "wait_for_human_approval"
+    )
 
 
 class TestExtractGenaiMetadata:
