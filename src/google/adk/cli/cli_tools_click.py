@@ -994,6 +994,13 @@ def adk_services_options(*, default_use_local_storage: bool = True):
     help="Optional. Initial state for the run as a JSON string.",
 )
 @click.option(
+    "--state_file",
+    type=click.Path(
+        exists=True, dir_okay=False, file_okay=True, resolve_path=True
+    ),
+    help="Optional. Path to a JSON file containing initial state for the run.",
+)
+@click.option(
     "--timeout",
     type=str,
     help="Optional. Timeout for a single turn or query (e.g., 30s, 5m).",
@@ -1032,6 +1039,7 @@ def cli_run(
     replay: Optional[str],
     resume: Optional[str],
     state: Optional[str] = None,
+    state_file: Optional[str] = None,
     timeout: Optional[str] = None,
     in_memory: bool = False,
     jsonl: bool = False,
@@ -1057,6 +1065,20 @@ def cli_run(
   agent_parent_folder = os.path.dirname(agent)
   agent_folder_name = os.path.basename(agent)
 
+  if state is not None and state_file is not None:
+    raise click.UsageError(
+        "Options 'state' and 'state_file' cannot be set together."
+    )
+
+  state_str = state
+  if state_file is not None:
+    try:
+      state_str = Path(state_file).read_text(encoding="utf-8")
+    except OSError as e:
+      raise click.ClickException(
+          f"Failed to read --state_file '{state_file}': {e}"
+      ) from e
+
   # If query is provided, we run in single-step mode (JSONL output)
   if query is not None:
     from .cli import run_once_cli
@@ -1066,7 +1088,7 @@ def cli_run(
             agent_parent_dir=agent_parent_folder,
             agent_folder_name=agent_folder_name,
             query=query,
-            state_str=state,
+            state_str=state_str,
             session_id=session_id,
             replay=replay,
             timeout=timeout,
@@ -1092,7 +1114,7 @@ def cli_run(
             saved_session_file=resume,
             save_session=save_session,
             session_id=session_id,
-            state_str=state,
+            state_str=state_str,
             timeout=timeout,
             in_memory=in_memory,
             jsonl=jsonl,
