@@ -1,0 +1,77 @@
+{
+  "eval_set_id": "elicitation-integration-test-set",
+  "name": "elicitation-integration-test-set",
+  "description": "Integration test for stateless elicitation feature.",
+  "eval_cases": [
+    {
+      "eval_id": "tests/integration/fixture/elicitation_agent/elicitation_flow.test.json",
+      "conversation": [
+        {
+          "invocation_id": "turn-1-elicitation-trigger",
+          "user_content": {
+            "parts": [
+              {
+                "text": "Book a flight to London"
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "text": null
+              }
+            ],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "id": null,
+                "args": {
+                  "missing_entities": ["date", "passenger_name"],
+                  "elicitation_prompt": "To book your flight to London, please provide the date of travel and the passenger's full name."
+                },
+                "name": "trigger_elicitation"
+              }
+            ],
+            "intermediate_responses": []
+          }
+        },
+        {
+          "invocation_id": "turn-2-elicitation-resolve",
+          "user_content": {
+            "parts": [
+              {
+                "text": "The traveler is Alice and the date is 2026-05-15"
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "text": "Successfully booked flight to London on 2026-05-15 for Alice."
+              }
+            ],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "id": null,
+                "args": {
+                  "destination": "London",
+                  "date": "2026-05-15",
+                  "passenger_name": "Alice"
+                },
+                "name": "book_flight"
+              }
+            ],
+            "intermediate_responses": []
+          }
+        }
+      ]
+    }
+  ]
+}
