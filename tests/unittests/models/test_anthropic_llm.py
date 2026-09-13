@@ -928,6 +928,25 @@ def test_part_to_message_block_with_traditional_result():
   assert "This is the result from the tool" in result["content"]
 
 
+def test_part_to_message_block_preserves_sibling_keys_with_result():
+  """Issue #7073: sibling keys next to result must reach Claude."""
+  response_part = types.Part.from_function_response(
+      name="run_python_analysis",
+      response={
+          "result": {"matched": 33, "total": 49},
+          "files": [{"filename": "matching.xlsx", "bytes": 8684}],
+          "stdout": "Saved to /tmp/outputs/matching.xlsx\n",
+      },
+  )
+  response_part.function_response.id = "toolu_01"
+
+  result = part_to_message_block(response_part)
+  parsed = json.loads(result["content"])
+  assert parsed["result"] == {"matched": 33, "total": 49}
+  assert parsed["files"] == [{"filename": "matching.xlsx", "bytes": 8684}]
+  assert parsed["stdout"] == "Saved to /tmp/outputs/matching.xlsx\n"
+
+
 def test_part_to_message_block_with_multiple_content_items():
   """Test content with multiple items."""
   from google.adk.models.anthropic_llm import part_to_message_block
