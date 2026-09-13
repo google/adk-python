@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
 from typing import AsyncGenerator
 from typing import Optional
@@ -23,6 +25,133 @@ from google.genai import types
 from ..features import FeatureName
 from ..features import is_feature_enabled
 from ..models.llm_response import LlmResponse
+
+_MAX_ARRAY_INDEX = 10_000
+
+_JSON_PATH_TOKEN_RE = re.compile(
+    r"""
+    \[\s*(\d+)\s*\]
+    | \['((?:[^'\\]|\\.)*)'\]
+    | \["((?:[^"\\]|\\.)*)"\]
+    | (?:\.?((?:[^.\[\]\\]|\\.)+))
+    """,
+    re.VERBOSE,
+)
+
+
+def _unescape_json_path_string(s: str) -> str:
+  def replace(match: re.Match[str]) -> str:
+    if match.group(1):
+      return chr(int(match.group(1), 16))
+    ch = match.group(2)
+    escapes = {
+        'n': '\n',
+        'r': '\r',
+        't': '\t',
+        'b': '\b',
+        'f': '\f',
+    }
+    return escapes.get(ch, ch)
+
+  return re.sub(r'\\u([0-9a-fA-F]{4})|\\(.)', replace, s)
+
+
+def _parse_json_path(json_path: str) -> list[str | int]:
+  if json_path.startswith('$.'):
+    path = json_path[2:]
+  elif json_path.startswith('$'):
+    path = json_path[1:]
+  else:
+    path = json_path
+
+  result: list[str | int] = []
+  for match in _JSON_PATH_TOKEN_RE.finditer(path):
+    if match.group(1) is not None:
+      result.append(int(match.group(1)))
+    elif match.group(2) is not None:
+      result.append(_unescape_json_path_string(match.group(2)))
+    elif match.group(3) is not None:
+      result.append(_unescape_json_path_string(match.group(3)))
+    elif match.group(4) is not None:
+      result.append(_unescape_json_path_string(match.group(4)))
+  return result
+
+
+def _append_json_path_key(path: str, key: str) -> str:
+  if re.fullmatch(r'[a-zA-Z_][a-zA-Z0-9_]*', key):
+    return f'{path}.{key}'
+  escaped = (
+      key.replace('\\', '\\\\')
+      .replace("'", "\\'")
+      .replace('\n', '\\n')
+      .replace('\r', '\\r')
+      .replace('\t', '\\t')
+      .replace('\b', '\\b')
+      .replace('\f', '\\f')
+  )
+  return f"{path}['{escaped}']"
+
+
+def _get_value_by_json_path(
+    target: Any, parsed_path: list[str | int]
+) -> tuple[Any, bool]:
+  current = target
+  for part in parsed_path:
+    if isinstance(part, str):
+      if isinstance(current, dict) and part in current:
+        current = current[part]
+      else:
+        return None, False
+    elif isinstance(part, int):
+      if isinstance(current, list) and 0 <= part < len(current):
+        current = current[part]
+      else:
+        return None, False
+  return current, True
+
+
+def _set_value_by_json_path(
+    target: dict[str, Any] | list[Any],
+    parsed_path: list[str | int],
+    value: Any,
+) -> None:
+  if not parsed_path:
+    return
+
+  current = target
+  for i, part in enumerate(parsed_path[:-1]):
+    next_part = parsed_path[i + 1]
+
+    if isinstance(part, str):
+      if not isinstance(current, dict):
+        return
+      if part not in current:
+        current[part] = [] if isinstance(next_part, int) else {}
+      current = current[part]
+    elif isinstance(part, int):
+      if not isinstance(current, list) or part < 0 or part > _MAX_ARRAY_INDEX:
+        return
+      while len(current) <= part:
+        current.append(None)
+      if current[part] is None:
+        current[part] = [] if isinstance(next_part, int) else {}
+      current = current[part]
+
+  last_part = parsed_path[-1]
+  if isinstance(last_part, str):
+    if not isinstance(current, dict):
+      return
+    current[last_part] = value
+  elif isinstance(last_part, int):
+    if (
+        not isinstance(current, list)
+        or last_part < 0
+        or last_part > _MAX_ARRAY_INDEX
+    ):
+      return
+    while len(current) <= last_part:
+      current.append(None)
+    current[last_part] = value
 
 
 class StreamingResponseAggregator:
@@ -92,21 +221,15 @@ class StreamingResponseAggregator:
     """
     chunks = self._current_fc_arg_chunks.get(json_path)
     if chunks is None:
-      # Get current value for this path (if any)
-      path_without_prefix = (
-          json_path[2:] if json_path.startswith('$.') else json_path
+      parsed_path = _parse_json_path(json_path)
+      existing_value, found = _get_value_by_json_path(
+          self._current_fc_args, parsed_path
       )
-      path_parts = path_without_prefix.split('.')
-
-      # Try to get existing value
-      existing_value: Any = self._current_fc_args
-      for part in path_parts:
-        if isinstance(existing_value, dict) and part in existing_value:
-          existing_value = existing_value[part]
-        else:
-          break
-
-      chunks = [existing_value] if isinstance(existing_value, str) else []
+      chunks = (
+          [existing_value]
+          if (found and isinstance(existing_value, str))
+          else []
+      )
       self._current_fc_arg_chunks[json_path] = chunks
       # Reserve the key so the flushed args keep their arrival order.
       self._set_value_by_json_path(json_path, '')
@@ -117,6 +240,9 @@ class StreamingResponseAggregator:
       self, partial_arg: types.PartialArg
   ) -> tuple[Any, bool]:
     """Extract a non-string value from a partial argument.
+
+    Partial arguments without a populated value field (such as empty containers)
+    return has_value=False and are dropped from aggregation.
 
     Args:
       partial_arg: The partial argument object
@@ -146,24 +272,8 @@ class StreamingResponseAggregator:
       json_path: JSONPath string like "$.location" or "$.location.latitude"
       value: The value to set
     """
-    # Remove leading "$." from jsonPath
-    if json_path.startswith('$.'):
-      path = json_path[2:]
-    else:
-      path = json_path
-
-    # Split path into components
-    path_parts = path.split('.')
-
-    # Navigate to the correct location and set the value
-    current = self._current_fc_args
-    for part in path_parts[:-1]:
-      if part not in current:
-        current[part] = {}
-      current = current[part]
-
-    # Set the final value
-    current[path_parts[-1]] = value
+    parsed_path = _parse_json_path(json_path)
+    _set_value_by_json_path(self._current_fc_args, parsed_path, value)
 
   def _flush_function_call_to_sequence(self) -> None:
     """Flush current function call to parts sequence.
@@ -448,3 +558,291 @@ class StreamingResponseAggregator:
         partial=False,
         model_version=self._response.model_version,
     )
+
+
+class _JsonPathTracker:
+  """Tracks JSON paths and values from a streaming JSON string."""
+
+  def __init__(self) -> None:
+    self.accumulated_parts: list[str] = []
+    self.previous_dict: dict[str, Any] = {}
+    self.previous_completed = ''
+    self.need_reset = False
+    self._stack: list[str] = []
+    self._in_string = False
+    self._escaped = False
+    self._seen_open = False
+    self._current_path: str | None = None
+    self._parsed_current_path: list[str | int] | None = None
+    self._open_string_path: str | None = None
+
+  def handle_chunk(self, chunk: str) -> list[types.PartialArg]:
+    """Handles a new chunk of JSON and returns the detected PartialArgs."""
+    if not chunk:
+      return []
+
+    if self.need_reset:
+      self.accumulated_parts = []
+      self.previous_completed = ''
+      self.previous_dict = {}
+      self.need_reset = False
+      self._stack = []
+      self._in_string = False
+      self._escaped = False
+      self._seen_open = False
+      self._current_path = None
+      self._parsed_current_path = None
+      self._open_string_path = None
+
+    # Fast-path for incremental string streaming: avoids O(N^2) re-parsing
+    # and re-joining when appending plain characters to an open string.
+    if (
+        self._in_string
+        and not self._escaped
+        and self._current_path is not None
+        and self._parsed_current_path is not None
+        and '"' not in chunk
+        and '\\' not in chunk
+    ):
+      self.accumulated_parts.append(chunk)
+      existing_val, found = _get_value_by_json_path(
+          self.previous_dict, self._parsed_current_path
+      )
+      new_val = (
+          existing_val if (found and isinstance(existing_val, str)) else ''
+      ) + chunk
+      _set_value_by_json_path(
+          self.previous_dict, self._parsed_current_path, new_val
+      )
+      return [
+          types.PartialArg(
+              json_path=self._current_path,
+              string_value=chunk,
+              will_continue=True,
+          )
+      ]
+
+    self.accumulated_parts.append(chunk)
+    self._current_path = None
+    self._parsed_current_path = None
+
+    for char in chunk:
+      if self._in_string:
+        if self._escaped:
+          self._escaped = False
+        elif char == '\\':
+          self._escaped = True
+        elif char == '"':
+          self._in_string = False
+      else:
+        if char == '"':
+          self._in_string = True
+        elif char in '{[':
+          self._stack.append(char)
+          self._seen_open = True
+        elif char in '}]':
+          if self._stack and (
+              (char == '}' and self._stack[-1] == '{')
+              or (char == ']' and self._stack[-1] == '[')
+          ):
+            self._stack.pop()
+
+    if self._seen_open and not self._stack and not self._in_string:
+      self.need_reset = True
+
+    completed = self._complete_json()
+    if not completed:
+      return []
+
+    if completed == self.previous_completed:
+      if not self._in_string and self._open_string_path is not None:
+        closed_path = self._open_string_path
+        self._open_string_path = None
+        return [
+            types.PartialArg(
+                json_path=closed_path,
+                string_value='',
+                will_continue=False,
+            )
+        ]
+      return []
+    self.previous_completed = completed
+
+    try:
+      current_dict = json.loads(completed)
+    except (json.JSONDecodeError, RecursionError):
+      return []
+
+    if not isinstance(current_dict, dict):
+      return []
+
+    diffs = self._get_diff(self.previous_dict, current_dict)
+    self.previous_dict = current_dict
+
+    if self._open_string_path is not None and not any(
+        d.json_path == self._open_string_path for d in diffs
+    ):
+      diffs.insert(
+          0,
+          types.PartialArg(
+              json_path=self._open_string_path,
+              string_value='',
+              will_continue=False,
+          ),
+      )
+      self._open_string_path = None
+
+    if self._in_string:
+      if diffs:
+        for d in reversed(diffs):
+          if d.string_value is not None and d.json_path is not None:
+            self._current_path = d.json_path
+            self._parsed_current_path = _parse_json_path(d.json_path)
+            self._open_string_path = d.json_path
+            d.will_continue = True
+            break
+    else:
+      self._current_path = None
+      self._parsed_current_path = None
+      self._open_string_path = None
+
+    return diffs
+
+  def _complete_json(self) -> str:
+    if not self._seen_open:
+      return ''
+
+    if self._in_string:
+      if self._escaped:
+        return ''
+      suffix = '"' + ''.join(
+          '}' if op == '{' else ']' for op in reversed(self._stack)
+      )
+      return ''.join(self.accumulated_parts) + suffix
+
+    last_non_ws = ''
+    last_part_idx = -1
+    last_char_idx = -1
+    for i in range(len(self.accumulated_parts) - 1, -1, -1):
+      part = self.accumulated_parts[i]
+      stripped = part.rstrip()
+      if stripped:
+        last_non_ws = stripped[-1]
+        last_part_idx = i
+        last_char_idx = len(stripped) - 1
+        break
+
+    if not last_non_ws:
+      return ''
+
+    # A dangling colon or a trailing numeric literal not yet terminated by
+    # whitespace/delimiter must not be prematurely completed.
+    if last_non_ws == ':' or last_non_ws.isdigit():
+      return ''
+    elif (last_non_ws == '{' and len(self._stack) > 1) or last_non_ws == '[':
+      return ''
+    elif last_non_ws == ',':
+      prefix = ''.join(self.accumulated_parts[:last_part_idx]) + (
+          self.accumulated_parts[last_part_idx][:last_char_idx]
+      )
+      suffix = ''.join(
+          '}' if op == '{' else ']' for op in reversed(self._stack)
+      )
+      return prefix + suffix
+    else:
+      suffix = ''.join(
+          '}' if op == '{' else ']' for op in reversed(self._stack)
+      )
+      return ''.join(self.accumulated_parts) + suffix
+
+  def _get_diff(
+      self, prev: Any, curr: Any, path: str = '$'
+  ) -> list[types.PartialArg]:
+    diffs = []
+    if isinstance(curr, dict) and isinstance(prev, dict):
+      for k, v in curr.items():
+        curr_path = _append_json_path_key(path, k)
+        if k not in prev:
+          diffs.extend(self._get_diff_new_value(curr_path, v))
+        else:
+          diffs.extend(self._get_diff(prev[k], v, curr_path))
+    elif isinstance(curr, list) and isinstance(prev, list):
+      for i, v in enumerate(curr):
+        curr_path = f'{path}[{i}]'
+        if i >= len(prev):
+          diffs.extend(self._get_diff_new_value(curr_path, v))
+        else:
+          diffs.extend(self._get_diff(prev[i], v, curr_path))
+    else:
+      if prev != curr:
+        if isinstance(curr, str) and isinstance(prev, str):
+          if curr.startswith(prev):
+            delta = curr[len(prev) :]
+            if delta:
+              diffs.append(
+                  types.PartialArg(
+                      json_path=path,
+                      string_value=delta,
+                      will_continue=False,
+                  )
+              )
+          else:
+            diffs.append(
+                types.PartialArg(
+                    json_path=path,
+                    string_value=curr,
+                    will_continue=False,
+                )
+            )
+        else:
+          diffs.extend(self._get_diff_new_value(path, curr))
+    return diffs
+
+  def _get_diff_new_value(self, path: str, val: Any) -> list[types.PartialArg]:
+    diffs = []
+    if isinstance(val, dict) and val:
+      for k, v in val.items():
+        diffs.extend(
+            self._get_diff_new_value(_append_json_path_key(path, k), v)
+        )
+    elif isinstance(val, list) and val:
+      for i, v in enumerate(val):
+        diffs.extend(self._get_diff_new_value(f'{path}[{i}]', v))
+    else:
+      diffs.append(self._create_partial_arg(path, val))
+    return diffs
+
+  def _create_partial_arg(self, path: str, val: Any) -> types.PartialArg:
+    """Creates a PartialArg for a leaf value.
+
+    PartialArg only supports scalar values (string, number, bool, null) and
+    cannot represent empty containers ({}, []). Empty containers fall through
+    to a PartialArg with only json_path set, which downstream aggregators drop
+    because no value field is populated and a valueless leaf cannot distinguish
+    an empty dict from an empty list.
+
+    Args:
+      path: JSONPath for this argument.
+      val: The leaf value.
+
+    Returns:
+      A PartialArg with the corresponding value field set, or a valueless
+      PartialArg for unsupported non-scalar leaf values like empty containers.
+    """
+    if isinstance(val, str):
+      return types.PartialArg(
+          json_path=path, string_value=val, will_continue=False
+      )
+    elif isinstance(val, (int, float)) and not isinstance(val, bool):
+      return types.PartialArg(
+          json_path=path, number_value=val, will_continue=False
+      )
+    elif isinstance(val, bool):
+      return types.PartialArg(
+          json_path=path, bool_value=val, will_continue=False
+      )
+    elif val is None:
+      return types.PartialArg(
+          json_path=path, null_value='NULL_VALUE', will_continue=False
+      )
+    return types.PartialArg(json_path=path, will_continue=False)

@@ -1576,6 +1576,11 @@ def detect_anomalies(
     if trimmed_upper_target_data.startswith(
         "SELECT"
     ) or trimmed_upper_target_data.startswith("WITH"):
+      validation_error = _validate_subquery(
+          target_data, project_id, credentials, settings, "detect_anomalies"
+      )
+      if validation_error:
+        return validation_error
       target_data_source = f"({target_data})"
     else:
       if not _is_valid_table_identifier(target_data):

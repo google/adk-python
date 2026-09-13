@@ -26,7 +26,10 @@ from ._node_status import NodeStatus
 
 
 class NodeState(BaseModel):
-  """State of a node in the workflow."""
+  """State of a node in the workflow.
+
+  The run's output is not held here; the engine keeps it alongside.
+  """
 
   model_config = ConfigDict(extra='ignore', ser_json_bytes='base64')
 
@@ -40,21 +43,26 @@ class NodeState(BaseModel):
   """The attempt count for this node run (1-based)."""
 
   interrupts: list[str] = Field(default_factory=list)
-  """The interrupt ids that are pending to be resolved."""
+  """The interrupt ids that are pending to be resolved.
+
+  Only meaningful while ``status`` is ``WAITING``. A resumed run does not
+  clear the list, so a later ``COMPLETED`` status can sit next to the ids the
+  run was previously blocked on; read it only under a ``WAITING`` check.
+  """
 
   resume_inputs: dict[str, Any] = Field(default_factory=dict)
   """The responses for resuming the node, keyed by interrupt id."""
 
-  run_counter: int = Field(default=0, exclude_if=lambda v: v == 0)
-  """Sequential counter incremented each time the node gets a fresh run.
-
-  Preserving this count independently of run_id prevents path collisions
-  if a node switches between custom string IDs and auto-generated numeric IDs.
-  """
-
   run_id: str | None = None
-  """The run ID of this node run."""
+  """The run ID of this node run.
+
+  ``None`` until the run is scheduled, which is when the id is assigned.
+  """
 
   parent_run_id: str | None = None
   """The run ID of the parent node which dynamically
-  scheduled this node run."""
+  scheduled this node run.
+
+  ``None`` for a node the graph scheduled; set only for a node another node's
+  run started dynamically.
+  """

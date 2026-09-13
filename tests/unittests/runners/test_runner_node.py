@@ -456,6 +456,7 @@ async def test_standalone_node_resume():
   """A standalone node resumes with resume_inputs from function response."""
 
   class _Node(BaseNode):
+    rerun_on_resume: bool = True
 
     async def _run_impl(
         self, *, ctx: Context, node_input: Any
@@ -481,6 +482,7 @@ async def test_resume_preserves_original_user_content():
   """On resume, Runner passes the original text as node_input, not the FR."""
 
   class _Node(BaseNode):
+    rerun_on_resume: bool = True
 
     async def _run_impl(
         self, *, ctx: Context, node_input: Any
@@ -511,6 +513,7 @@ async def test_resume_populates_invocation_user_content():
   seen: list[Any] = []
 
   class _Node(BaseNode):
+    rerun_on_resume: bool = True
 
     async def _run_impl(
         self, *, ctx: Context, node_input: Any
@@ -537,6 +540,7 @@ async def test_resume_by_invocation_id_populates_user_content():
   seen: list[Any] = []
 
   class _Node(BaseNode):
+    rerun_on_resume: bool = True
 
     async def _run_impl(
         self, *, ctx: Context, node_input: Any
@@ -564,7 +568,10 @@ async def test_resume_by_invocation_id_populates_user_content():
   invocation_id = updated.events[0].invocation_id
 
   async for _ in runner.run_async(
-      user_id='u', session_id=session.id, invocation_id=invocation_id
+      user_id='u',
+      session_id=session.id,
+      invocation_id=invocation_id,
+      new_message=_make_resume_message(fc_name='tool', response={'v': 1}),
   ):
     pass
 

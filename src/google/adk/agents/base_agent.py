@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import abc
+import asyncio
 import inspect
 import logging
 from typing import Any
@@ -169,29 +170,38 @@ class BaseAgent(BaseNode, abc.ABC):
   """Callback or list of callbacks to be invoked before the agent run.
 
   When a list of callbacks is provided, the callbacks will be called in the
-  order they are listed until a callback does not return None.
+  order they are listed until a callback returns a truthy value.
+
+  Arguments are passed by keyword first. If keyword binding fails, ADK tries
+  positional binding in the argument order below. Keyword-only parameters must
+  use the documented names; positional parameters may use different names.
 
   Args:
-    callback_context: MUST be named 'callback_context' (enforced).
+    callback_context: The context of the agent invocation.
 
   Returns:
     Optional[types.Content]: The content to return to the user.
-      When the content is present, the agent run will be skipped and the
+      When the content is truthy, the agent run will be skipped and the
       provided content will be returned to user.
   """
   after_agent_callback: Optional[AfterAgentCallback] = None
   """Callback or list of callbacks to be invoked after the agent run.
 
   When a list of callbacks is provided, the callbacks will be called in the
-  order they are listed until a callback does not return None.
+  order they are listed until a callback returns a truthy value.
+
+  Arguments are passed by keyword first. If keyword binding fails, ADK tries
+  positional binding in the argument order below. Keyword-only parameters must
+  use the documented names; positional parameters may use different names.
 
   Args:
-    callback_context: MUST be named 'callback_context' (enforced).
+    callback_context: The context of the agent invocation.
 
   Returns:
     Optional[types.Content]: The content to return to the user.
-      When the content is present, an additional event with the provided content
-      will be appended to event history as an additional agent response.
+      When the content is truthy, an additional event with the provided
+      content will be appended to event history as an additional agent
+      response.
   """
 
   def _load_agent_state(
@@ -332,8 +342,12 @@ class BaseAgent(BaseNode, abc.ABC):
     async def _run() -> AsyncGenerator[Event, None]:
       ctx = self._create_invocation_context(parent_context)
       async with _instrumentation.record_agent_invocation(ctx, self):
+        before_callback_completed = False
+        after_callback_called = False
         try:
-          if event := await self._handle_before_agent_callback(ctx):
+          event = await self._handle_before_agent_callback(ctx)
+          before_callback_completed = True
+          if event:
             yield event
           if ctx.end_invocation:
             return
@@ -345,8 +359,25 @@ class BaseAgent(BaseNode, abc.ABC):
           if ctx.end_invocation:
             return
 
+          after_callback_called = True
           if event := await self._handle_after_agent_callback(ctx):
             yield event
+        except asyncio.CancelledError:
+          if (
+              before_callback_completed
+              and not after_callback_called
+              and not ctx.end_invocation
+          ):
+            try:
+              await self._handle_after_agent_callback(ctx)
+            except asyncio.CancelledError:
+              raise
+            except Exception:  # pylint: disable=broad-except
+              logger.exception(
+                  'after_agent_callback raised on cancellation;'
+                  ' suppressing so original cancellation propagates.'
+              )
+          raise
         except Exception as e:
           await self._handle_agent_error_callback(ctx, e)
           raise
@@ -394,8 +425,12 @@ class BaseAgent(BaseNode, abc.ABC):
     async def _run() -> AsyncGenerator[Event, None]:
       ctx = self._create_invocation_context(parent_context)
       async with _instrumentation.record_agent_invocation(ctx, self):
+        before_callback_completed = False
+        after_callback_called = False
         try:
-          if event := await self._handle_before_agent_callback(ctx):
+          event = await self._handle_before_agent_callback(ctx)
+          before_callback_completed = True
+          if event:
             yield event
           if ctx.end_invocation:
             return
@@ -404,8 +439,28 @@ class BaseAgent(BaseNode, abc.ABC):
             async for event in agen:
               yield event
 
+          if ctx.end_invocation:
+            return
+
+          after_callback_called = True
           if event := await self._handle_after_agent_callback(ctx):
             yield event
+        except asyncio.CancelledError:
+          if (
+              before_callback_completed
+              and not after_callback_called
+              and not ctx.end_invocation
+          ):
+            try:
+              await self._handle_after_agent_callback(ctx)
+            except asyncio.CancelledError:
+              raise
+            except Exception:  # pylint: disable=broad-except
+              logger.exception(
+                  'after_agent_callback raised on cancellation;'
+                  ' suppressing so original cancellation propagates.'
+              )
+          raise
         except Exception as e:
           await self._handle_agent_error_callback(ctx, e)
           raise

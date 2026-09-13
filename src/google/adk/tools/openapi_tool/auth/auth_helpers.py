@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import base64
 from typing import Any
 from typing import Dict
 from typing import List
@@ -352,6 +353,7 @@ def credential_to_param(
 
   This function now supports all credential types returned by the exchangers:
   - API Key
+  - HTTP Basic
   - HTTP Bearer (for Bearer tokens, OAuth2, Service Account, OpenID Connect)
   - OAuth2 and OpenID Connect (returns None, None, as the token is now a Bearer
   token)
@@ -363,6 +365,9 @@ def credential_to_param(
 
   Returns:
       Tuple: (ApiParameter, Dict[str, Any])
+
+  Raises:
+      ValueError: If the API key location or HTTP auth credentials are invalid.
   """
   if not auth_credential:
     return None, None
@@ -418,14 +423,37 @@ def credential_to_param(
     elif (
         auth_credential
         and auth_credential.http
+        and auth_credential.http.scheme
+        and auth_credential.http.scheme.lower() == "basic"
         and auth_credential.http.credentials
         and (
-            auth_credential.http.credentials.username
-            or auth_credential.http.credentials.password
+            auth_credential.http.credentials.username is not None
+            or auth_credential.http.credentials.password is not None
         )
     ):
-      # Basic Auth is explicitly NOT supported
-      raise NotImplementedError("Basic Authentication is not supported.")
+      credentials = auth_credential.http.credentials
+      username = credentials.username or ""
+      if ":" in username:
+        raise ValueError(
+            "Invalid HTTP auth credentials: username cannot contain colons"
+        )
+      password = credentials.password or ""
+      encoded_credentials = base64.b64encode(
+          f"{username}:{password}".encode("utf-8")
+      ).decode("ascii")
+      python_name = INTERNAL_AUTH_PREFIX + "Authorization"
+      param = ApiParameter(
+          original_name="Authorization",
+          param_location="header",
+          param_schema=Schema(type="string"),
+          description=(
+              getattr(auth_scheme, "description", None)
+              or "Basic authentication"
+          ),
+          py_name=python_name,
+      )
+      kwargs = {python_name: f"Basic {encoded_credentials}"}
+      return param, kwargs
     else:
       raise ValueError("Invalid HTTP auth credentials")
 

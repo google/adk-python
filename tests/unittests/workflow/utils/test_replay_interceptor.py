@@ -140,6 +140,88 @@ def test_cross_turn_completed():
   assert result.route == 'route-a'
 
 
+def test_cross_turn_failed_reruns():
+  """Cross-turn failed run is executed again instead of fast-forwarded."""
+  # Given a run that raised in a prior turn
+  recovered = _ChildScanState(run_id='1', error_code='ValueError')
+  node = BaseNode(name='node')
+
+  # When checked
+  result = check_interception(
+      node=node,
+      recovered=recovered,
+  )
+
+  # Then it reruns rather than replaying an empty output
+  assert result.should_run
+  assert result.output is None
+
+
+def test_cross_turn_failed_after_partial_output_reruns():
+  """A failure outranks output recorded before it, so the node reruns."""
+  # Given a run that emitted output and then raised
+  recovered = _ChildScanState(
+      run_id='1',
+      output='partial-out',
+      error_code='ValueError',
+  )
+  node = BaseNode(name='node')
+
+  # When checked
+  result = check_interception(
+      node=node,
+      recovered=recovered,
+  )
+
+  # Then the stale output is not fast-forwarded
+  assert result.should_run
+  assert result.output is None
+
+
+def test_cross_turn_failed_with_unresolved_interrupts_keeps_waiting():
+  """A failure must not pull a node out of waiting for the user."""
+  # Given a failed run that is still waiting on human input
+  recovered = _ChildScanState(
+      run_id='1',
+      error_code='ValueError',
+      interrupt_ids={'fc-1'},
+  )
+  node = BaseNode(name='node', rerun_on_resume=False)
+
+  # When checked
+  result = check_interception(
+      node=node,
+      recovered=recovered,
+  )
+
+  # Then it stays waiting on the unresolved interrupt
+  assert not result.should_run
+  assert result.interrupts == {'fc-1'}
+
+
+def test_cross_turn_failed_reruns_with_resolved_responses():
+  """A node that answered its interrupts then failed reruns with them."""
+  # Given a failed run whose interrupts were all resolved
+  recovered = _ChildScanState(
+      run_id='1',
+      error_code='ValueError',
+      interrupt_ids={'fc-1'},
+      resolved_ids={'fc-1'},
+      resolved_responses={'fc-1': 'ans'},
+  )
+  node = BaseNode(name='node')
+
+  # When checked
+  result = check_interception(
+      node=node,
+      recovered=recovered,
+  )
+
+  # Then it reruns with the responses it already collected
+  assert result.should_run
+  assert result.resume_inputs == {'fc-1': 'ans'}
+
+
 def test_cross_turn_all_resolved_no_rerun():
   """Cross-turn all resolved run without rerun auto-completes with responses."""
   # Given all resolved interrupts and node without rerun_on_resume

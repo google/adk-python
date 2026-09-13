@@ -175,50 +175,50 @@
                     }
                   }
                 ]
-              },
-              {
-                "name": "execute_tool some_tool",
-                "attributes": {
-                  "gen_ai.operation.name": "execute_tool",
-                  "gen_ai.tool.description": "Echoes back its input.",
-                  "gen_ai.tool.name": "some_tool",
-                  "gen_ai.tool.type": "MCPTool",
-                  "gen_ai.agent.name": "some_root_agent",
-                  "gcp.vertex.agent.llm_request": "{}",
-                  "gcp.vertex.agent.llm_response": "{}",
-                  "gcp.vertex.agent.tool_call_args": "{}",
-                  "gen_ai.tool.call.id": "PRESENT",
-                  "gcp.vertex.agent.event_id": "PRESENT",
-                  "gcp.vertex.agent.tool_response": "{}"
-                },
-                "status": "UNSET",
-                "children": [],
-                "logs": [
-                  {
-                    "event_name": "adk.experimental.mcp.http.client.response.end",
-                    "body": {
-                      "http.request.body.content": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"tools/call\", \"params\": {\"name\": \"some_tool\"}}",
-                      "http.response.body.content": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"result\": {\"isError\": false}}"
-                    },
-                    "attributes": {
-                      "http.request.method": "POST",
-                      "url.full": "https://mcp.example.com/mcp",
-                      "http.response.status_code": 200,
-                      "server.address": "mcp.example.com",
-                      "mcp.session.id": "mcp-session-1",
-                      "mcp.protocol.version": "2025-06-18",
-                      "http.request.header.authorization": [
-                        "<redacted>"
-                      ],
-                      "http.response.header.content-type": [
-                        "application/json"
-                      ]
-                    }
-                  }
-                ]
               }
             ],
             "logs": []
+          },
+          {
+            "name": "execute_tool some_tool",
+            "attributes": {
+              "gen_ai.operation.name": "execute_tool",
+              "gen_ai.tool.description": "Echoes back its input.",
+              "gen_ai.tool.name": "some_tool",
+              "gen_ai.tool.type": "MCPTool",
+              "gen_ai.agent.name": "some_root_agent",
+              "gcp.vertex.agent.llm_request": "{}",
+              "gcp.vertex.agent.llm_response": "{}",
+              "gcp.vertex.agent.tool_call_args": "{}",
+              "gen_ai.tool.call.id": "PRESENT",
+              "gcp.vertex.agent.event_id": "PRESENT",
+              "gcp.vertex.agent.tool_response": "{}"
+            },
+            "status": "UNSET",
+            "children": [],
+            "logs": [
+              {
+                "event_name": "adk.experimental.mcp.http.client.response.end",
+                "body": {
+                  "http.request.body.content": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"tools/call\", \"params\": {\"name\": \"some_tool\"}}",
+                  "http.response.body.content": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"result\": {\"isError\": false}}"
+                },
+                "attributes": {
+                  "http.request.method": "POST",
+                  "url.full": "https://mcp.example.com/mcp",
+                  "http.response.status_code": 200,
+                  "server.address": "mcp.example.com",
+                  "mcp.session.id": "mcp-session-1",
+                  "mcp.protocol.version": "2025-06-18",
+                  "http.request.header.authorization": [
+                    "<redacted>"
+                  ],
+                  "http.response.header.content-type": [
+                    "application/json"
+                  ]
+                }
+              }
+            ]
           },
           {
             "name": "call_llm",

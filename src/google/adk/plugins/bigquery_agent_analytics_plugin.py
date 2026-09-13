@@ -4280,6 +4280,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self.parser: Optional[HybridContentParser] = None
     self._schema: list[bq_schema.SchemaField] | None = None
     self.arrow_schema: pa.Schema | None = None
+    # True once the table and its views have been confirmed ready. Readiness
+    # is a property of the dataset rather than of this process, so unlike the
+    # client and the executor it is not invalidated by shutdown, fork, or
+    # pickling, and the check is not repeated once it has passed.
+    self._schema_ready = False
     self._init_pid = os.getpid()
     _LIVE_PLUGINS.add(self)
 
@@ -4778,12 +4783,18 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       # Project out denied payload columns schema-first, so the table
       # schema, Arrow schema, row dict, and views all stay consistent.
       self._schema = _project_schema(_get_events_schema(), self._denied_columns)
-    # Run table readiness on EVERY setup attempt until one succeeds: the
+    # Run table readiness on every setup attempt until one succeeds: the
     # cached _schema must not gate it, or a failed first attempt would skip
     # the table check on retry and mark the plugin started against a
-    # missing/unready table. Once _started is True,
-    # _lazy_setup returns early above, so the steady state pays no extra RPC.
-    await loop.run_in_executor(executor, self._ensure_schema_exists)
+    # missing/unready table. A success is remembered in _schema_ready rather
+    # than in _started, which every close() clears: a host that builds a
+    # short-lived Runner per request over one shared plugin closes it on each
+    # request, and replaying the pass there costs one CREATE OR REPLACE VIEW
+    # per analytics view, on the request path, against a daily quota. A view
+    # that failed leaves the flag False, so the pass runs again.
+    if not self._schema_ready:
+      if await loop.run_in_executor(executor, self._ensure_schema_exists):
+        self._schema_ready = True
 
     if not self.parser:
       self.arrow_schema = to_arrow_schema(self._require_schema())
@@ -4858,12 +4869,24 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           remaining,
       )
 
-  def _ensure_schema_exists(self) -> None:
+  def _ensure_schema_exists(self) -> bool:
     """Ensures the BigQuery table exists with the correct schema.
 
     When ``config.auto_schema_upgrade`` is True and the table already
     exists, missing columns are added automatically (additive only).
     A ``adk_schema_version`` label is written for governance.
+
+    A missing or unready table raises. View creation does not, so its
+    outcome is reported here instead.
+
+    Returns:
+      True if the table is ready and every requested view was created,
+      False if a view failed and the pass is worth repeating.
+
+    Raises:
+      RuntimeError: The client or the schema is not initialized.
+      google.cloud.exceptions.GoogleCloudError: The table could not be read
+        or created, or a required schema upgrade failed.
     """
     client = self._require_client()
     try:
@@ -4871,7 +4894,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       if self.config.auto_schema_upgrade:
         self._maybe_upgrade_schema(existing_table)
       if self.config.create_views:
-        self._create_analytics_views()
+        return self._create_analytics_views()
+      return True
     except cloud_exceptions.NotFound:
       logger.info("Table %s not found, creating table.", self.full_table_id)
       tbl = bigquery.Table(self.full_table_id, schema=self._schema)
@@ -4904,7 +4928,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         )
         raise
       if self.config.create_views:
-        self._create_analytics_views()
+        return self._create_analytics_views()
+      return True
     except Exception as e:
       # Fail setup: swallowing control-plane errors here let
       # the plugin mark itself started against a missing/unready table.
@@ -5091,15 +5116,19 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       kept.append(expr)
     return kept
 
-  def _create_analytics_views(self) -> None:
+  def _create_analytics_views(self) -> bool:
     """Creates per-event-type BigQuery views (idempotent).
 
     Each view filters the events table by ``event_type`` and
     extracts JSON columns into typed, queryable columns.  Uses
     ``CREATE OR REPLACE VIEW`` so it is safe to call repeatedly.
     Errors are logged but never raised.
+
+    Returns:
+      True if every view was created, False if any of them failed.
     """
     client = self._require_client()
+    created_all = True
     for event_type, extra_cols in _EVENT_VIEW_DEFS.items():
       view_name = self.config.view_prefix + "_" + event_type.lower()
       # Projection-aware views -- drop any derived column whose SQL
@@ -5123,12 +5152,14 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             view_name,
         )
       except Exception as e:
+        created_all = False
         logger.error(
             "Failed to create view %s: %s",
             view_name,
             e,
             exc_info=True,
         )
+    return created_all
 
   async def create_analytics_views(self) -> None:
     """Public async helper to (re-)create all analytics views.
@@ -5143,7 +5174,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           "Plugin initialization failed; cannot create analytics views."
       ) from self._startup_error
     loop = asyncio.get_running_loop()
-    await loop.run_in_executor(self._executor, self._create_analytics_views)
+    self._schema_ready = await loop.run_in_executor(
+        self._executor, self._create_analytics_views
+    )
 
   @staticmethod
   def _schedule_remote_drain(
@@ -5527,6 +5560,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state.setdefault("_local_drop_counts", {})
     state.setdefault("_setup_failures", 0)
     state.setdefault("_setup_retry_at", 0.0)
+    state.setdefault("_schema_ready", False)
     state.pop("_setup_lock", None)  # replaced by cross-loop future
     state.pop("_setup_locks", None)
     state.pop("_setup_locks_guard", None)
@@ -5819,6 +5853,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       # created outlives a shutdown that already returned — release it,
       # holding the rendezvous until the
       # teardown completes.
+      logger.info(
+          "BigQuery plugin setup finished after shutdown and was discarded;"
+          " releasing what it created."
+      )
       try:
         await self._teardown_aborted_setup()
       finally:

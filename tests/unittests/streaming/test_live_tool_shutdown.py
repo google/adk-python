@@ -28,6 +28,7 @@ from contextlib import aclosing
 from typing import Any
 from typing import AsyncGenerator
 from typing import Callable
+from unittest import mock
 
 from google.adk.agents.active_streaming_tool import ActiveStreamingTool
 from google.adk.agents.invocation_context import InvocationContext
@@ -469,3 +470,187 @@ async def test_non_blocking_tool_stops_when_the_live_turn_ends():
 
   assert ended
   assert cancelled.is_set()
+
+
+def _late_tool_agents(tool: Any, call_name: str) -> Agent:
+  """A root agent that calls ``tool`` and then hands off to a sub agent."""
+
+  def report() -> str:
+    """The sub agent's own tool, proving it took over the queue."""
+    return 'sub agent is live'
+
+  sub_agent = Agent(
+      name='sub_agent',
+      model=testing_utils.MockModel.create([_call('report')]),
+      tools=[report],
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create([
+          _call(call_name),
+          LlmResponse(
+              content=types.Content(
+                  role='model',
+                  parts=[
+                      types.Part.from_function_call(
+                          name='transfer_to_agent',
+                          args={'agent_name': 'sub_agent'},
+                      )
+                  ],
+              ),
+              turn_complete=False,
+          ),
+      ]),
+      tools=[tool],
+      sub_agents=[sub_agent],
+  )
+  return root_agent
+
+
+async def _handoff_with_background_tool(
+    *,
+    streaming: bool = False,
+) -> tuple[bool, bool, list[str]]:
+  """Hands off while a background tool of the root agent is still in flight.
+
+  Returns whether the tool ever started, whether the tool was cancelled
+  before the transfer delay began, and the names of the function responses
+  that reached the model connection after the transfer event was yielded.
+  """
+  started = asyncio.Event()
+  cancelled = asyncio.Event()
+  complete_tool = asyncio.Event()
+  transferred = asyncio.Event()
+  transfer_delay_done = asyncio.Event()
+  cancelled_before_delay = False
+  sent: list[tuple[bool, types.Content]] = []
+
+  async def _record_send_content(self, content, *, partial=False) -> None:
+    sent.append((transferred.is_set(), content))
+
+  async def late_lookup() -> str:
+    started.set()
+    try:
+      await complete_tool.wait()
+    except asyncio.CancelledError:
+      cancelled.set()
+      raise
+    return 'late'
+
+  async def late_stream() -> AsyncGenerator[Any, None]:
+    started.set()
+    try:
+      await complete_tool.wait()
+      yield {'late': True}
+      await asyncio.Event().wait()
+    except asyncio.CancelledError:
+      cancelled.set()
+      raise
+
+  if streaming:
+    tool: Any = late_stream
+    call_name = 'late_stream'
+  else:
+    scheduled = FunctionTool(func=late_lookup)
+    scheduled.response_scheduling = types.FunctionResponseScheduling.SILENT
+    tool = scheduled
+    call_name = 'late_lookup'
+
+  root_agent = _late_tool_agents(tool, call_name)
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(app_name='app', user_id='u')
+  runner = Runner(
+      app_name='app', agent=root_agent, session_service=session_service
+  )
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      types.Blob(data=b'question', mime_type='audio/pcm')
+  )
+
+  async def _consume() -> None:
+    async with aclosing(
+        runner.run_live(
+            user_id='u',
+            session_id=session.id,
+            live_request_queue=live_request_queue,
+            run_config=RunConfig(response_modalities=['TEXT']),
+        )
+    ) as agen:
+      async for event in agen:
+        if event.actions and event.actions.transfer_to_agent:
+          transferred.set()
+        if transfer_delay_done.is_set():
+          return
+
+  original_sleep = asyncio.sleep
+
+  async def _mock_sleep(delay: float, *args: Any, **kwargs: Any) -> None:
+    nonlocal cancelled_before_delay
+    if delay == base_llm_flow.DEFAULT_TRANSFER_AGENT_DELAY:
+      # Ensure the background tool task has started.
+      await started.wait()
+      # Record whether the tool was cancelled BEFORE the transfer delay began.
+      cancelled_before_delay = cancelled.is_set()
+      # Signal the tool to complete if it was not cancelled (as in the unfixed code).
+      complete_tool.set()
+      # Yield to let any uncancelled tool task run and attempt to send.
+      await original_sleep(0)
+      transfer_delay_done.set()
+      return
+    await original_sleep(delay, *args, **kwargs)
+
+  with (
+      mock.patch.object(
+          testing_utils.MockLlmConnection, '_send_content', _record_send_content
+      ),
+      mock.patch(
+          'google.adk.flows.llm_flows._live_llm_flow.asyncio.sleep',
+          side_effect=_mock_sleep,
+      ),
+  ):
+    try:
+      await asyncio.wait_for(_consume(), timeout=5.0)
+    except asyncio.TimeoutError:
+      pass
+
+  forwarded = [
+      part.function_response.name
+      for after_transfer, content in sent
+      if after_transfer
+      for part in content.parts or []
+      if part.function_response
+  ]
+  return started.is_set(), cancelled_before_delay, forwarded
+
+
+@pytest.mark.asyncio
+async def test_handoff_stops_tools_before_the_transfer_delay():
+  """A tool in flight during handoff is cancelled before the transfer delay."""
+  started, cancelled_before_delay, forwarded = (
+      await _handoff_with_background_tool()
+  )
+
+  assert started
+  assert (
+      cancelled_before_delay
+  ), 'background tool task was not cancelled before the transfer delay began'
+  assert 'late_lookup' not in forwarded, (
+      "the handing-off agent's tool response was forwarded during the transfer"
+      ' delay'
+  )
+
+
+@pytest.mark.asyncio
+async def test_handoff_stops_streaming_tools_before_the_transfer_delay():
+  """A streaming tool in flight during handoff is cancelled before the transfer delay."""
+  started, cancelled_before_delay, forwarded = (
+      await _handoff_with_background_tool(streaming=True)
+  )
+
+  assert started
+  assert (
+      cancelled_before_delay
+  ), 'streaming tool task was not cancelled before the transfer delay began'
+  assert (
+      'late_stream' not in forwarded
+  ), "the handing-off agent's streaming tool yielded during the transfer delay"

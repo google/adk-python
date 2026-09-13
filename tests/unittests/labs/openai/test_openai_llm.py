@@ -491,3 +491,128 @@ async def test_generate_content_async_routes_through_provided_client():
   mock_client_class.assert_not_called()
   mock_client_create.assert_called_once()
   assert responses[0].content.parts[0].text == "Hello there!"
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_streaming_tool_call():
+  openai_llm = OpenAILlm(model="gpt-4o", api_key="k")
+  llm_request = LlmRequest(
+      model="gpt-4o",
+      contents=[Content(role="user", parts=[Part.from_text(text="Weather?")])],
+      config=types.GenerateContentConfig(
+          tools=[
+              types.Tool(
+                  function_declarations=[
+                      types.FunctionDeclaration(
+                          name="get_weather",
+                          description="Get weather",
+                          parameters=types.Schema(
+                              type=types.Type.OBJECT,
+                              properties={
+                                  "location": types.Schema(
+                                      type=types.Type.STRING
+                                  )
+                              },
+                          ),
+                      )
+                  ]
+              )
+          ]
+      ),
+  )
+
+  chunk_1 = mock.MagicMock()
+  choice_1 = mock.MagicMock()
+  delta_1 = mock.MagicMock()
+  delta_1.content = None
+  tc_1 = mock.MagicMock()
+  tc_1.index = 0
+  tc_1.id = "call_123"
+  tc_1.function = mock.MagicMock()
+  tc_1.function.name = "get_weather"
+  tc_1.function.arguments = ""
+  delta_1.tool_calls = [tc_1]
+  choice_1.delta = delta_1
+  chunk_1.choices = [choice_1]
+
+  chunk_2 = mock.MagicMock()
+  choice_2 = mock.MagicMock()
+  delta_2 = mock.MagicMock()
+  delta_2.content = None
+  tc_2 = mock.MagicMock()
+  tc_2.index = 0
+  tc_2.id = None
+  tc_2.function = mock.MagicMock()
+  tc_2.function.name = None
+  tc_2.function.arguments = '{"location":'
+  delta_2.tool_calls = [tc_2]
+  choice_2.delta = delta_2
+  chunk_2.choices = [choice_2]
+
+  chunk_3 = mock.MagicMock()
+  choice_3 = mock.MagicMock()
+  delta_3 = mock.MagicMock()
+  delta_3.content = None
+  tc_3 = mock.MagicMock()
+  tc_3.index = 0
+  tc_3.id = None
+  tc_3.function = mock.MagicMock()
+  tc_3.function.name = None
+  tc_3.function.arguments = ' "Paris"}'
+  delta_3.tool_calls = [tc_3]
+  choice_3.delta = delta_3
+  chunk_3.choices = [choice_3]
+
+  chunks = [chunk_1, chunk_2, chunk_3]
+
+  async def mock_stream():
+    for c in chunks:
+      yield c
+
+  with mock.patch(
+      "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+  ) as mock_client_class:
+    mock_client = mock.MagicMock()
+    mock_client_class.return_value = mock_client
+    mock_client.chat.completions.create = mock.AsyncMock(
+        return_value=mock_stream()
+    )
+
+    responses = [
+        resp
+        async for resp in openai_llm.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+
+  assert len(responses) == 4
+
+  assert responses[0].partial is True
+  assert responses[0].content.parts[0].function_call.id == "call_123"
+  assert responses[0].content.parts[0].function_call.name == "get_weather"
+  assert responses[0].content.parts[0].function_call.will_continue is True
+  assert responses[0].content.parts[0].function_call.partial_args is None
+
+  assert responses[1].partial is True
+  assert responses[1].content.parts[0].function_call.id == "call_123"
+  assert responses[1].content.parts[0].function_call.partial_args is None
+  assert responses[1].content.parts[0].function_call.will_continue is True
+
+  assert responses[2].partial is True
+  assert responses[2].content.parts[0].function_call.id == "call_123"
+  assert (
+      responses[2].content.parts[0].function_call.partial_args[0].json_path
+      == "$.location"
+  )
+  assert (
+      responses[2].content.parts[0].function_call.partial_args[0].string_value
+      == "Paris"
+  )
+  assert responses[2].content.parts[0].function_call.will_continue is True
+
+  assert responses[3].partial is False
+  assert responses[3].content.parts[0].function_call.id == "call_123"
+  assert responses[3].content.parts[0].function_call.name == "get_weather"
+  assert responses[3].content.parts[0].function_call.args == {
+      "location": "Paris"
+  }
