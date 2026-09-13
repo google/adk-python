@@ -149,6 +149,11 @@ BACKENDS = [
                 ' padded copy of an existing id is stored as a second session'
                 ' instead of colliding with the first one.'
             ),
+            'test_create_session_with_blank_id_generates_one': (
+                'DatabaseSessionService stores the session id verbatim, so a'
+                ' whitespace-only id is stored as given instead of being'
+                ' replaced with a generated one.'
+            ),
         },
     ),
     _Backend('sqlite', _make_sqlite),
@@ -176,6 +181,11 @@ BACKENDS = [
                 'RedisSessionService stores the session id verbatim, so a'
                 ' padded copy of an existing id is stored as a second session'
                 ' instead of colliding with the first one.'
+            ),
+            'test_create_session_with_blank_id_generates_one': (
+                'RedisSessionService stores the session id verbatim, so a'
+                ' whitespace-only id is stored as given instead of being'
+                ' replaced with a generated one.'
             ),
             'test_append_event_to_unknown_session_raises_session_not_found': (
                 'Redis writes the session key unconditionally on append, so'

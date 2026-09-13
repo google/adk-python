@@ -1272,16 +1272,18 @@ async def test_padded_session_id_reads_and_deletes(session_service):
 
 
 @pytest.mark.asyncio
-async def test_create_session_with_blank_id_generates_one():
+async def test_create_session_with_blank_id_generates_one(session_service):
   """Tests that a whitespace-only session id is treated the same as no id
   at all, rather than being stored verbatim."""
-  service = InMemorySessionService()
-
-  session = await service.create_session(
+  session = await session_service.create_session(
       app_name='my_app', user_id='test_user', session_id='   '
   )
 
   assert session.id.strip()
+  sessions = await session_service.list_sessions(
+      app_name='my_app', user_id='test_user'
+  )
+  assert [s.id for s in sessions.sessions] == [session.id]
 
 
 @pytest.mark.asyncio
