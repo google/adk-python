@@ -15,6 +15,7 @@
 """Testings for the BaseAgent."""
 
 import abc
+import asyncio
 from enum import Enum
 from functools import partial
 import logging
@@ -717,6 +718,349 @@ async def test_run_async_with_async_after_agent_callback_append_reply(
       events[1].content.parts[0].text
       == 'Agent reply from after agent callback.'
   )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('method_name', ['run_async', 'run_live'])
+@pytest.mark.parametrize('exit_type', ['cancelled', 'generator_exit'])
+async def test_after_agent_callback_runs_on_cancellation_or_exit(
+    request: pytest.FixtureRequest,
+    mocker: pytest_mock.MockerFixture,
+    method_name: str,
+    exit_type: str,
+):
+  """after_agent_callback executes for side-effects when execution is cancelled or closed."""
+
+  class _InterruptibleAgent(BaseAgent):
+
+    async def _run_async_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      yield Event(author=self.name, invocation_id=ctx.invocation_id)
+      await asyncio.sleep(100)
+
+    async def _run_live_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      yield Event(author=self.name, invocation_id=ctx.invocation_id)
+      await asyncio.sleep(100)
+
+  callback_completed = False
+
+  async def _async_callback(callback_context: CallbackContext) -> None:
+    nonlocal callback_completed
+    await asyncio.sleep(0.01)
+    callback_completed = True
+
+  agent = _InterruptibleAgent(
+      name=f'{request.function.__name__}_agent',
+      after_agent_callback=_async_callback,
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, agent
+  )
+  spy_callback = mocker.spy(agent, 'after_agent_callback')
+
+  agen = getattr(agent, method_name)(parent_ctx)
+  _ = await anext(agen)
+
+  if exit_type == 'cancelled':
+
+    async def _consume() -> None:
+      async for _ in agen:
+        pass
+
+    task = asyncio.create_task(_consume())
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+      await task
+
+    assert callback_completed
+    spy_callback.assert_called_once()
+  else:
+    await agen.aclose()
+    assert not callback_completed
+    spy_callback.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_after_agent_callback_error_does_not_mask_cancellation(
+    request: pytest.FixtureRequest,
+    mocker: pytest_mock.MockerFixture,
+):
+  """Exceptions raised by after_agent_callback are logged and do not mask cancellation."""
+
+  def _failing_callback(callback_context: CallbackContext) -> None:
+    del callback_context
+    raise RuntimeError('cleanup failed in callback')
+
+  class _CancellingAgent(BaseAgent):
+
+    async def _run_async_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      yield Event(author=self.name, invocation_id=ctx.invocation_id)
+      await asyncio.sleep(100)
+
+  agent = _CancellingAgent(
+      name=f'{request.function.__name__}_agent',
+      after_agent_callback=_failing_callback,
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, agent
+  )
+  mock_logger = mocker.patch('google.adk.agents.base_agent.logger.exception')
+
+  agen = agent.run_async(parent_ctx)
+  _ = await anext(agen)
+
+  async def _consume() -> None:
+    async for _ in agen:
+      pass
+
+  task = asyncio.create_task(_consume())
+  await asyncio.sleep(0)
+  task.cancel()
+
+  with pytest.raises(asyncio.CancelledError):
+    await task
+
+  mock_logger.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_after_agent_callback_cancellation_does_not_hang(
+    request: pytest.FixtureRequest,
+):
+  """A hanging after_agent_callback remains cancellable if cancelled again."""
+
+  async def _hanging_callback(callback_context: CallbackContext) -> None:
+    del callback_context
+    await asyncio.sleep(100)
+
+  class _HangingAgent(BaseAgent):
+
+    async def _run_async_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      yield Event(author=self.name, invocation_id=ctx.invocation_id)
+      await asyncio.sleep(100)
+
+  agent = _HangingAgent(
+      name=f'{request.function.__name__}_agent',
+      after_agent_callback=_hanging_callback,
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, agent
+  )
+
+  agen = agent.run_async(parent_ctx)
+  _ = await anext(agen)
+
+  async def _consume() -> None:
+    async for _ in agen:
+      pass
+
+  task = asyncio.create_task(_consume())
+  await asyncio.sleep(0)
+  task.cancel()  # Cancels the agent sleep, entering after_agent_callback.
+  await asyncio.sleep(0)
+  task.cancel()  # Cancels the hanging after_agent_callback await.
+
+  with pytest.raises(asyncio.CancelledError):
+    await task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('method_name', ['run_async', 'run_live'])
+async def test_after_agent_callback_not_called_on_cancellation_during_before_callback(
+    request: pytest.FixtureRequest,
+    mocker: pytest_mock.MockerFixture,
+    method_name: str,
+):
+  """Cancellation during before_agent_callback does not trigger after_agent_callback."""
+
+  async def _slow_before_callback(
+      callback_context: CallbackContext,
+  ) -> None:
+    del callback_context
+    await asyncio.sleep(100)
+
+  agent = _TestingAgent(
+      name=f'{request.function.__name__}_agent',
+      before_agent_callback=_slow_before_callback,
+      after_agent_callback=_after_agent_callback_noop,
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, agent
+  )
+  spy_after_callback = mocker.spy(agent, 'after_agent_callback')
+
+  agen = getattr(agent, method_name)(parent_ctx)
+
+  async def _consume() -> None:
+    async for _ in agen:
+      pass
+
+  task = asyncio.create_task(_consume())
+  await asyncio.sleep(0)  # Advances into _slow_before_callback
+  task.cancel()
+
+  with pytest.raises(asyncio.CancelledError):
+    await task
+
+  spy_after_callback.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('method_name', ['run_async', 'run_live'])
+@pytest.mark.parametrize('exit_type', ['cancelled', 'aclose'])
+async def test_after_agent_callback_called_on_cancellation_at_before_callback_event(
+    request: pytest.FixtureRequest,
+    mocker: pytest_mock.MockerFixture,
+    method_name: str,
+    exit_type: str,
+):
+  """Cancellation after yielding before_agent_callback event still triggers after_agent_callback."""
+
+  def _state_before_callback(
+      callback_context: CallbackContext,
+  ) -> None:
+    callback_context.state['before_ran'] = True
+
+  class _SleepAgent(BaseAgent):
+
+    async def _run_async_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      yield Event(author=self.name, invocation_id=ctx.invocation_id)
+      await asyncio.sleep(100)
+
+    async def _run_live_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      yield Event(author=self.name, invocation_id=ctx.invocation_id)
+      await asyncio.sleep(100)
+
+  agent = _SleepAgent(
+      name=f'{request.function.__name__}_agent',
+      before_agent_callback=_state_before_callback,
+      after_agent_callback=_after_agent_callback_noop,
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, agent
+  )
+  spy_after_callback = mocker.spy(agent, 'after_agent_callback')
+
+  agen = getattr(agent, method_name)(parent_ctx)
+  first_event = await anext(agen)
+  assert first_event.actions.state_delta['before_ran'] is True
+
+  if exit_type == 'cancelled':
+
+    async def _consume() -> None:
+      async for _ in agen:
+        pass
+
+    task = asyncio.create_task(_consume())
+    await asyncio.sleep(0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+      await task
+
+    spy_after_callback.assert_called_once()
+  else:
+    await agen.aclose()
+    spy_after_callback.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('method_name', ['run_async', 'run_live'])
+@pytest.mark.parametrize(
+    'short_circuit_source', ['before_callback', 'in_agent']
+)
+async def test_after_agent_callback_suppressed_on_end_invocation(
+    request: pytest.FixtureRequest,
+    mocker: pytest_mock.MockerFixture,
+    method_name: str,
+    short_circuit_source: str,
+):
+  """Short-circuited invocations with end_invocation=True do not trigger after_agent_callback."""
+
+  class _ShortCircuitAgent(BaseAgent):
+
+    async def _run_async_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      if short_circuit_source == 'in_agent':
+        ctx.end_invocation = True
+      yield Event(
+          author=self.name,
+          invocation_id=ctx.invocation_id,
+          content=types.Content(parts=[types.Part(text='event')]),
+      )
+
+    async def _run_live_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      if short_circuit_source == 'in_agent':
+        ctx.end_invocation = True
+      yield Event(
+          author=self.name,
+          invocation_id=ctx.invocation_id,
+          content=types.Content(parts=[types.Part(text='event')]),
+      )
+
+  agent = _ShortCircuitAgent(
+      name=f'{request.function.__name__}_agent',
+      before_agent_callback=(
+          _before_agent_callback_bypass_agent
+          if short_circuit_source == 'before_callback'
+          else None
+      ),
+      after_agent_callback=_after_agent_callback_append_agent_reply,
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, agent
+  )
+  spy_callback = mocker.spy(agent, 'after_agent_callback')
+
+  agen = getattr(agent, method_name)(parent_ctx)
+  _ = await anext(agen)
+  await agen.aclose()
+
+  spy_callback.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('method_name', ['run_async', 'run_live'])
+async def test_after_agent_callback_not_called_twice_on_generator_exit(
+    request: pytest.FixtureRequest,
+    mocker: pytest_mock.MockerFixture,
+    method_name: str,
+):
+  """Closing the generator after yielding the callback event does not re-run after_agent_callback."""
+  agent = _TestingAgent(
+      name=f'{request.function.__name__}_agent',
+      after_agent_callback=_after_agent_callback_append_agent_reply,
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, agent
+  )
+  spy_callback = mocker.spy(agent, 'after_agent_callback')
+
+  agen = getattr(agent, method_name)(parent_ctx)
+  _ = await anext(agen)
+  callback_event = await anext(agen)
+  assert (
+      callback_event.content.parts[0].text
+      == 'Agent reply from after agent callback.'
+  )
+
+  await agen.aclose()
+  spy_callback.assert_called_once()
 
 
 @pytest.mark.asyncio

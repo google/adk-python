@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from .._errors import WorkflowDataError
+
 if TYPE_CHECKING:
   from ...agents.base_agent import BaseAgent
   from ...agents.context import Context
@@ -41,11 +43,12 @@ def resolve_and_derive_transfer_context(
 
   Returns:
     A tuple of (target_agent, next_parent_context) or (None, None) if target not
-    found. If target is found but cannot be logically routed (unrelated transfer),
+    found. If target is found but cannot be logically routed (unrelated
+    transfer),
     returns (target_agent, None).
 
   Raises:
-    ValueError: If target_agent is the same as current_agent, or if
+    WorkflowDataError: If target_agent is the same as current_agent, or if
       current_agent forbids transferring to the target.
   """
   target_agent = root_agent.find_agent(target_name)
@@ -54,7 +57,7 @@ def resolve_and_derive_transfer_context(
 
   # Case 1: SELF (invalid transfer target)
   if target_agent.name == current_agent.name:
-    raise ValueError(f"Agent '{target_name}' cannot transfer to itself.")
+    raise WorkflowDataError(f"Agent '{target_name}' cannot transfer to itself.")
 
   # Case 2: Direct CHILD (nests deeper under the current context)
   if (
@@ -70,7 +73,7 @@ def resolve_and_derive_transfer_context(
       and target_agent.parent_agent.name == current_agent.parent_agent.name
   ):
     if getattr(current_agent, "disallow_transfer_to_peers", False):
-      raise ValueError(
+      raise WorkflowDataError(
           f"Cannot transfer from '{current_agent.name}' to peer agent"
           f" '{target_name}': disallow_transfer_to_peers is set."
       )
@@ -82,7 +85,7 @@ def resolve_and_derive_transfer_context(
       and current_agent.parent_agent.name == target_agent.name
   ):
     if getattr(current_agent, "disallow_transfer_to_parent", False):
-      raise ValueError(
+      raise WorkflowDataError(
           f"Cannot transfer from '{current_agent.name}' to parent agent"
           f" '{target_name}': disallow_transfer_to_parent is set."
       )
