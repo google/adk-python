@@ -1239,6 +1239,50 @@ async def test_file_list_artifact_versions(tmp_path, artifact_service_factory):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "session_id,filename",
+    [
+        ("session", "report.txt"),
+        ("session", "user:report.txt"),
+        (None, "report.txt"),
+    ],
+)
+@pytest.mark.parametrize(
+    "artifact",
+    [
+        types.Part(text="report"),
+        types.Part.from_bytes(data=b"report", mime_type="text/plain"),
+    ],
+)
+async def test_file_artifact_versions_preserve_create_time(
+    tmp_path, session_id, filename, artifact
+):
+  """Metadata reads preserve each saved timestamp after reopening the service."""
+  service = FileArtifactService(root_dir=tmp_path)
+  scope = dict(
+      app_name="app", user_id="user", session_id=session_id, filename=filename
+  )
+  create_times = [0.0, FIXED_DATETIME.timestamp()]
+  with patch(
+      "google.adk.artifacts.base_artifact_service.platform_time.get_time"
+  ) as get_time:
+    for create_time in create_times:
+      get_time.return_value = create_time
+      await service.save_artifact(**scope, artifact=artifact)
+
+    service = FileArtifactService(root_dir=tmp_path)
+    for read_time in [create_times[-1] + 10, create_times[-1] + 20]:
+      get_time.return_value = read_time
+      versions = await service.list_artifact_versions(**scope)
+      first = await service.get_artifact_version(**scope, version=0)
+      latest = await service.get_artifact_version(**scope)
+
+      assert [version.create_time for version in versions] == create_times
+      assert first.create_time == create_times[0]
+      assert latest.create_time == create_times[-1]
+
+
+@pytest.mark.asyncio
 async def test_file_save_artifact_reserves_concurrent_versions(tmp_path):
   service = FileArtifactService(root_dir=tmp_path / "artifacts")
   original_list_versions = file_artifact_service._list_versions_on_disk
