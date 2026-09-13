@@ -2841,6 +2841,55 @@ async def test_get_user_state_copies_to_session_state_depth(light_copy):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('light_copy', [False, True])
+@pytest.mark.parametrize('session_source', ['create', 'get', 'list'])
+async def test_returned_session_scoped_state_uses_configured_copy_depth(
+    light_copy, session_source
+):
+  """Returned sessions copy nested scoped state to the configured depth."""
+  override_feature_enabled(
+      FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY, light_copy
+  )
+  try:
+    service = InMemorySessionService()
+    created = await service.create_session(
+        app_name='my_app',
+        user_id='u1',
+        session_id='s1',
+        state={
+            'app:config': {'theme': 'light'},
+            'user:profile': {'name': 'Alice'},
+        },
+    )
+
+    if session_source == 'create':
+      returned = created
+    elif session_source == 'get':
+      returned = await service.get_session(
+          app_name='my_app', user_id='u1', session_id='s1'
+      )
+    else:
+      returned = (
+          await service.list_sessions(app_name='my_app', user_id='u1')
+      ).sessions[0]
+
+    returned.state['app:config']['theme'] = 'dark'
+    returned.state['user:profile']['name'] = 'Mallory'
+    later = await service.create_session(
+        app_name='my_app', user_id='u1', session_id='s2'
+    )
+
+    expected_theme = 'dark' if light_copy else 'light'
+    expected_name = 'Mallory' if light_copy else 'Alice'
+    assert later.state['app:config']['theme'] == expected_theme
+    assert later.state['user:profile']['name'] == expected_name
+  finally:
+    override_feature_enabled(
+        FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY, False
+    )
+
+
+@pytest.mark.asyncio
 async def test_vertex_ai_session_service_raises_not_implemented_for_get_user_state():
   """Verifies VertexAiSessionService raises NotImplementedError."""
   service = VertexAiSessionService(project='proj', location='us-central1')
