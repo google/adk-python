@@ -23,6 +23,7 @@ from .._base_node import START
 from .._errors import GraphValidationError
 from .._graph import DEFAULT_ROUTE
 from .._graph import Edge
+from .._graph import RouteValue
 
 
 def _detect_unconditional_cycles(
@@ -117,17 +118,37 @@ def _validate_connectivity(edges: list[Edge], node_names: set[str]) -> None:
     )
 
 
+def _normalize_route(
+    route: RouteValue | list[RouteValue] | None,
+) -> set[RouteValue | None]:
+  if route is None:
+    return {None}
+  if isinstance(route, list):
+    return set(route)
+  return {route}
+
+
 def _validate_duplicate_edges(edges: list[Edge]) -> None:
   """Checks for duplicate edges."""
-  seen_edges = set()
+  seen_routes: dict[tuple[str, str], set[RouteValue | None]] = {}
   for edge in edges:
-    edge_tuple = (edge.from_node.name, edge.to_node.name)
-    if edge_tuple in seen_edges:
-      raise GraphValidationError(
-          "Graph validation failed. Duplicate edge found: from="
-          f"{edge.from_node.name}, to={edge.to_node.name}"
-      )
-    seen_edges.add(edge_tuple)
+    edge_key = (edge.from_node.name, edge.to_node.name)
+    new_routes = _normalize_route(edge.route)
+
+    if edge_key in seen_routes:
+      existing_routes = seen_routes[edge_key]
+      if (
+          None in existing_routes
+          or None in new_routes
+          or not existing_routes.isdisjoint(new_routes)
+      ):
+        raise GraphValidationError(
+            "Graph validation failed. Duplicate edge found: from="
+            f"{edge.from_node.name}, to={edge.to_node.name}"
+        )
+      existing_routes.update(new_routes)
+    else:
+      seen_routes[edge_key] = set(new_routes)
 
 
 def _validate_start_edges(edges: list[Edge]) -> None:
