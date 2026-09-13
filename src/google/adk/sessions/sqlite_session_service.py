@@ -206,8 +206,7 @@ class SqliteSessionService(BaseSessionService):
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
   ) -> Session:
-    if session_id:
-      session_id = session_id.strip()
+    session_id = _session_util.normalize_session_id(session_id)
     if not session_id:
       session_id = platform_uuid.new_uuid()
     now = platform_time.get_time()
@@ -285,6 +284,7 @@ class SqliteSessionService(BaseSessionService):
       session_id: str,
       config: Optional[GetSessionConfig] = None,
   ) -> Optional[Session]:
+    session_id = _session_util.normalize_session_id(session_id)
     async with self._get_db_connection() as db:
       async with db.execute(
           "SELECT state, update_time FROM sessions WHERE app_name=? AND"
@@ -408,6 +408,7 @@ class SqliteSessionService(BaseSessionService):
   async def delete_session(
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
+    session_id = _session_util.normalize_session_id(session_id)
     async with self._get_db_connection() as db:
       await db.execute(
           "DELETE FROM sessions WHERE app_name=? AND user_id=? AND id=?",
