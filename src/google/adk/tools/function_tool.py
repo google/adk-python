@@ -183,7 +183,7 @@ class FunctionTool(BaseTool):
     # When registered in _process_function_live_helper, the framework attaches
     # the dedicated stream to invocation_context.active_streaming_tools[name].
     # If the tool signature expects 'input_stream', we inject that active stream.
-    if "input_stream" in valid_params:
+    if "input_stream" in valid_params and "input_stream" not in args_to_call:
       active_tools = tool_context._invocation_context.active_streaming_tools
       if (
           active_tools is not None

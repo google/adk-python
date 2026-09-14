@@ -2472,10 +2472,10 @@ async def test_streaming_tool_raising_reports_error_e2e_live():
   # The raw exception text is not leaked to the model.
   assert 'sensitive_detail' not in function_response.response['error']
   assert function_response.id == 'fc_raises'
-  # The task completes instead of dying with an unretrieved exception.
-  task = invocation_context.active_streaming_tools[tool.name].task
-  assert task.done()
-  assert task.exception() is None
+  # The task completes and releases its registry references.
+  active_tool = invocation_context.active_streaming_tools[tool.name]
+  await asyncio.sleep(0)
+  assert active_tool.task is None
 
 
 def _model_call_event(invocation_id: str, call_id: str) -> Event:
