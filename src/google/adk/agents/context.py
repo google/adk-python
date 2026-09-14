@@ -201,6 +201,9 @@ class Context(ReadonlyContext):
     self._resume_inputs = resume_inputs or {}
     self._workflow_scheduler = _derive_scheduler(parent_ctx)
     self._node_rerun_on_resume = node.rerun_on_resume if node else True
+    # TODO: Remove. Superseded by DynamicNodeState.run_counters, which is now
+    # the authoritative sequential run_id allocator. Kept until the
+    # transfer-loop refactor lands to avoid churning that change.
     self._child_run_counters: dict[str, int] = {}
     self._attempt_count = attempt_count
     self._output_delegated = False

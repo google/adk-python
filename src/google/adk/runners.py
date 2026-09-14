@@ -84,6 +84,10 @@ _ = tracer
 # App names already told that agent transfer runs without a context cache.
 _UNCACHED_TRANSFER_APPS: set[str] = set()
 
+# Sentinel cancellation message indicating synchronous run() caller stopped
+# iterating early.
+_CALLER_CLOSED_EARLY_MSG = 'adk-runner-caller-closed-early'
+
 
 def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
   """Walk session backwards; find the active paused task agent's scope.
@@ -809,16 +813,25 @@ class Runner:
     early (e.g., break in async for). In that case we must cancel
     to avoid a leaked task.
     """
+    cancelled_by_cleanup = False
     if not task.done():
       logger.debug(
           'Cancelling root node %s (caller stopped early).',
           node_name,
       )
       task.cancel()
+      cancelled_by_cleanup = True
     try:
       await task
     except asyncio.CancelledError:
-      logger.warning('Root node %s was cancelled.', node_name)
+      if cancelled_by_cleanup:
+        logger.info('Root node %s was cancelled.', node_name)
+      else:
+        # Root task was cancelled prior to cleanup.
+        logger.warning(
+            'Root node %s was cancelled by an external cancellation.',
+            node_name,
+        )
     except Exception:
       logger.error('Root node %s failed.', node_name, exc_info=True)
       raise
@@ -1001,13 +1014,13 @@ class Runner:
           yield item
     finally:
       if not exhausted:
-        # The caller stopped iterating early, so cancel the invocation before
-        # it can run further tools or append more events to the session.
+        # Caller stopped iterating early; cancel background task with sentinel
+        # so after_run callbacks still execute.
         caller_closed_early = True
         loop, task = invocation_handle.get()
         if task is not None:
           try:
-            loop.call_soon_threadsafe(task.cancel)
+            loop.call_soon_threadsafe(task.cancel, _CALLER_CLOSED_EARLY_MSG)
           except RuntimeError:
             # The background loop already finished; nothing to cancel.
             pass
@@ -1415,6 +1428,8 @@ class Runner:
     """
 
     plugin_manager = invocation_context.plugin_manager
+    run_error: BaseException | None = None
+    closing_early = False
 
     try:
       # Step 1: Run the before_run callbacks to see if we should early exit.
@@ -1465,27 +1480,45 @@ class Runner:
                 )
 
             yield output_event
+    except GeneratorExit:
+      # Early generator close is treated as a clean completion.
+      closing_early = True
+      raise
     except Exception as e:
+      run_error = e
       # Notify plugins of the unhandled execution error. Covers failures in
       # before_run_callback, early-exit, and the main execution loop.
       # Notification-only; the original exception is always re-raised.
       await _notify_run_error(plugin_manager, invocation_context, e)
       raise
-
-    # Step 4: Run the after_run callbacks to perform global cleanup tasks or
-    # finalizing logs and metrics data.
-    # This does NOT emit any event. Only runs on success. A failure here (e.g.
-    # an after_run plugin raising, which PluginManager surfaces as a
-    # RuntimeError) is still an unhandled runner error, so notify
-    # on_run_error_callback once and re-raise. on_run_error is
-    # notification-only and never raises, so there is no recursive notification.
-    try:
-      await plugin_manager.run_after_run_callback(
-          invocation_context=invocation_context
-      )
-    except Exception as e:
-      await _notify_run_error(plugin_manager, invocation_context, e)
+    except asyncio.CancelledError as e:
+      if e.args and e.args[0] == _CALLER_CLOSED_EARLY_MSG:
+        closing_early = True
+      else:
+        run_error = e
       raise
+    except BaseException as e:
+      # Interrupts or aborts; skip after_run callbacks.
+      run_error = e
+      raise
+    finally:
+      # Step 4: Run after_run callbacks on successful completion or early exit.
+      if run_error is None:
+        try:
+          await plugin_manager.run_after_run_callback(
+              invocation_context=invocation_context
+          )
+        except Exception as e:
+          await _notify_run_error(plugin_manager, invocation_context, e)
+          if closing_early:
+            # Avoid masking the in-flight GeneratorExit or early-exit cancellation.
+            logger.error(
+                'after_run callback failed while closing invocation %s early.',
+                invocation_context.invocation_id,
+                exc_info=True,
+            )
+          else:
+            raise
 
   async def _append_new_message_to_session(
       self,

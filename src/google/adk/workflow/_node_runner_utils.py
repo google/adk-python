@@ -38,6 +38,7 @@ from ..utils._runner_utils import _with_caller_context
 from ._dynamic_node_scheduler import DynamicNodeScheduler
 from ._errors import DynamicNodeFailError
 from ._errors import NodeInterruptedError
+from ._errors import WorkflowInvariantError
 from ._workflow import _LoopState
 
 if TYPE_CHECKING:
@@ -249,8 +250,14 @@ async def run_node_async(
                   raise e.error
               finally:
                 root_ctx._workflow_scheduler = None  # pylint: disable=protected-access
-                assert ic._event_queue is not None  # pylint: disable=protected-access
-                await ic._event_queue.put((done_sentinel, None))  # pylint: disable=protected-access
+                # Bound to a local because narrowing does not reach into this
+                # closure.
+                event_queue = ic._event_queue  # pylint: disable=protected-access
+                if event_queue is None:
+                  raise WorkflowInvariantError(
+                      "Root node finished without an initialized event queue."
+                  )
+                await event_queue.put((done_sentinel, None))
 
             task = asyncio.create_task(_drive_root_node())
 

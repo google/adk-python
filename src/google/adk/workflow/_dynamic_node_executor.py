@@ -98,19 +98,14 @@ async def run_node_internal(
       # The node is running as part of a Workflow graph. We must delegate execution
       # to the workflow scheduler to handle graph dependencies and state.
 
-      # Validate or auto-generate run_id for this scheduler execution.
-      if curr_run_id:
-        if curr_run_id.isdigit() and not skip_run_id_validation:
-          raise ValueError(
-              f'Explicit run_id "{curr_run_id}" for node "{curr_node.name}"'
-              ' must contain non-numeric characters to prevent collision'
-              ' with auto-generated IDs.'
-          )
-      elif not curr_run_id:
-        curr_parent_ctx._child_run_counters[curr_node.name] = (
-            curr_parent_ctx._child_run_counters.get(curr_node.name, 0) + 1
+      # Validate the caller-supplied run_id. A None run_id is passed through
+      # unchanged: the scheduler owns sequential run_id allocation.
+      if curr_run_id and curr_run_id.isdigit() and not skip_run_id_validation:
+        raise ValueError(
+            f'Explicit run_id "{curr_run_id}" for node "{curr_node.name}"'
+            ' must contain non-numeric characters to prevent collision'
+            ' with auto-generated IDs.'
         )
-        curr_run_id = str(curr_parent_ctx._child_run_counters[curr_node.name])
 
       scheduler = cast(
           'ScheduleDynamicNode', curr_parent_ctx._workflow_scheduler
