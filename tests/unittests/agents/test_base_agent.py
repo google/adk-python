@@ -1248,7 +1248,7 @@ def test_validate_sub_agents_unique_names_single_duplicate(
         name=f'{request.function.__name__}_parent',
         sub_agents=[sub_agent_1, sub_agent_2],
     )
-  assert f'Found duplicate sub-agent names: `{duplicate_name}`' in caplog.text
+  assert f'Found duplicate agent names: `{duplicate_name}`' in caplog.text
 
 
 def test_validate_sub_agents_unique_names_multiple_duplicates(
@@ -1326,6 +1326,35 @@ def test_validate_sub_agents_unique_names_no_duplicates(
   assert parent.sub_agents[0].name == f'{request.function.__name__}_sub_agent_1'
   assert parent.sub_agents[1].name == f'{request.function.__name__}_sub_agent_2'
   assert parent.sub_agents[2].name == f'{request.function.__name__}_sub_agent_3'
+
+
+def test_validate_sub_agents_unique_names_across_parents(
+    request: pytest.FixtureRequest,
+    caplog: pytest.LogCaptureFixture,
+):
+  """Cousins under different parents that share a name must warn."""
+  shared = f'{request.function.__name__}_shared'
+  left = _TestingAgent(
+      name=f'{request.function.__name__}_left',
+      sub_agents=[_TestingAgent(name=shared)],
+  )
+  right = _TestingAgent(
+      name=f'{request.function.__name__}_right',
+      sub_agents=[_TestingAgent(name=shared)],
+  )
+
+  with caplog.at_level(logging.WARNING):
+    root = _TestingAgent(
+        name=f'{request.function.__name__}_root',
+        sub_agents=[left, right],
+    )
+
+  assert f'Found duplicate agent names: `{shared}`' in caplog.text
+  assert 'unique names' in caplog.text
+  # First DFS match wins; the other cousin is unreachable by name.
+  found = root.find_agent(shared)
+  assert found is not None
+  assert found is left.sub_agents[0]
 
 
 def test_validate_sub_agents_unique_names_empty_list(
