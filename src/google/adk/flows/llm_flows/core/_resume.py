@@ -198,6 +198,8 @@ def _needs_call_replay(
   Coverage is all-or-nothing: an answer to one parallel call is not
   evidence the others ran. Names and ids both have to be covered --
   two calls can share a name, so names alone cannot see a missing twin.
+  `answers` is every function response after the call, not only the last
+  matching event: parallel answers often arrive separately.
   """
   if not call_names:
     return False
@@ -262,6 +264,13 @@ def decide_resume(
     # short-circuits both unanswered tests rather than being repeated in each.
     from_sub_branch = _is_sub_branch_answer(answer_event, call_event)
     answers = answer_event.get_function_responses()
+    # Coverage looks at every response after the call, not only the last
+    # matching event: parallel answers often arrive as separate events.
+    all_answers = [
+        fr
+        for ev in events[call_idx + 1 :]
+        for fr in ev.get_function_responses()
+    ]
     concrete_call_ids = {i for i in call_ids if i is not None}
     # `issubset`, not `&`: one answered id does not cover a sibling that
     # never ran. Pause only when nothing matched (no id and no name);
@@ -276,7 +285,7 @@ def decide_resume(
       pause = True
     elif _needs_call_replay(
         call_names,
-        answers,
+        all_answers,
         from_sub_branch,
         call_ids=concrete_call_ids,
         answered_ids=answered_ids,
