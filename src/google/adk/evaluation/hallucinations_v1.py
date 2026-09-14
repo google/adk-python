@@ -46,6 +46,7 @@ from .evaluator import Evaluator
 from .evaluator import PerInvocationResult
 from .llm_as_judge_utils import get_eval_status
 from .llm_as_judge_utils import get_text_from_content
+from .llm_as_judge_utils import get_text_parts
 from .llm_as_judge_utils import get_tool_declarations_as_json_str
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -461,7 +462,7 @@ class HallucinationsV1Evaluator(Evaluator):
           for part in event.content.parts
           if part.function_response
       ]
-      nl_responses = [part.text for part in event.content.parts if part.text]
+      nl_responses = get_text_parts(event.content)
 
       if nl_responses:
         context_parts.append("\n".join(nl_responses) + "\n")
@@ -650,11 +651,7 @@ class HallucinationsV1Evaluator(Evaluator):
 
     if self._criterion.evaluate_intermediate_nl_responses:
       for event in all_events:
-        nl_parts = (
-            [p.text for p in event.content.parts if p.text]
-            if event.content and event.content.parts
-            else []
-        )
+        nl_parts = get_text_parts(event.content)
         if nl_parts:
           context = self._create_context_for_step(
               actual.app_details, actual, events_for_context
