@@ -24,6 +24,7 @@ from fastapi.openapi.models import OAuth2
 from fastapi.openapi.models import OAuthFlowAuthorizationCode
 from fastapi.openapi.models import OAuthFlowClientCredentials
 from fastapi.openapi.models import OAuthFlows
+from fastapi.openapi.models import OpenIdConnect
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
@@ -235,6 +236,36 @@ class TestGenerateAuthUri:
     assert "client_id=mock_client_id" in result.oauth2.auth_uri
     assert "audience" not in result.oauth2.auth_uri
     assert result.oauth2.state == "mock_state"
+
+  def test_generate_auth_uri_rejects_scheme_without_flows(
+      self, oauth2_credentials
+  ):
+    """A scheme carrying no OAuth2 flows is reported, not an AttributeError."""
+    config = AuthConfig(
+        auth_scheme=OpenIdConnect(
+            openIdConnectUrl=(
+                "https://example.com/.well-known/openid-configuration"
+            )
+        ),
+        raw_auth_credential=oauth2_credentials,
+    )
+    handler = AuthHandler(config)
+
+    with pytest.raises(ValueError, match="no OAuth2 flows"):
+      handler.generate_auth_uri()
+
+  def test_generate_auth_uri_rejects_flows_without_endpoint(
+      self, oauth2_credentials
+  ):
+    """Flows declaring no endpoint are reported, not a TypeError from authlib."""
+    config = AuthConfig(
+        auth_scheme=OAuth2(flows=OAuthFlows()),
+        raw_auth_credential=oauth2_credentials,
+    )
+    handler = AuthHandler(config)
+
+    with pytest.raises(ValueError, match="no flow declares an authorization"):
+      handler.generate_auth_uri()
 
   @patch("google.adk.auth.auth_handler.OAuth2Session", MockOAuth2Session)
   def test_generate_auth_uri_with_audience_and_prompt(

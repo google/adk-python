@@ -318,7 +318,12 @@ class InMemorySessionService(BaseSessionService):
   async def get_user_state(
       self, *, app_name: str, user_id: str
   ) -> dict[str, Any]:
-    return dict(self.user_state.get(app_name, {}).get(user_id, {}))
+    user_state = self.user_state.get(app_name, {}).get(user_id, {})
+    # Copy as deeply as _copy_session copies a session's own state, so user
+    # state is no more reachable through the result than session state is.
+    if is_feature_enabled(FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY):
+      return dict(user_state)
+    return copy.deepcopy(user_state)
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:

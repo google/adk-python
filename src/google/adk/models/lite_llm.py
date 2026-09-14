@@ -58,6 +58,7 @@ from typing_extensions import override
 from typing_extensions import Required
 
 from . import _prompt_cache
+from ..utils import streaming_utils
 from ..utils._google_client_headers import merge_tracking_headers
 from ..utils._schema_utils import lowercase_schema_types
 from ._capabilities import LlmCapabilities
@@ -328,6 +329,27 @@ def _map_finish_reason(
     return finish_reason
   finish_reason_str = str(finish_reason).lower()
   return _FINISH_REASON_MAPPING.get(finish_reason_str, types.FinishReason.OTHER)
+
+
+def _malformed_args_outrank_provider(
+    *,
+    response_finish_reason: types.FinishReason | None,
+    provider_finish_reason: types.FinishReason | None,
+) -> bool:
+  """Whether unparseable arguments explain a response better than the provider.
+
+  A provider does not parse the arguments it forwards, so it reports a
+  malformed tool call as an ordinary completion, and that clean reason must not
+  replace the one derived from the arguments. A word this adapter does not
+  recognize becomes ``OTHER``, which says nothing about the response either.
+  Only a reason saying the provider cut the response short explains arguments
+  that do not parse.
+  """
+  return (
+      response_finish_reason == types.FinishReason.MALFORMED_FUNCTION_CALL
+      and provider_finish_reason
+      in (None, types.FinishReason.STOP, types.FinishReason.OTHER)
+  )
 
 
 def _strip_proxy_prefix(model: str) -> str:
@@ -1170,9 +1192,10 @@ def _extract_reasoning_tokens(usage: Any) -> int:
 def _merge_reasoning_texts(reasoning_parts: Iterable[types.Part]) -> str:
   """Merges reasoning text fragments into a single provider payload.
 
-  Streaming providers such as vLLM can emit reasoning as token-sized chunks.
-  ADK stores those chunks as consecutive thought parts, so inserting separators
-  here changes the model's original reasoning text.
+  Streaming providers such as vLLM emit reasoning as token-sized chunks, and
+  Anthropic splits one thinking block across many deltas. Both are joined
+  here without separators, because any separator would not be part of the
+  model's own reasoning text.
   """
   reasoning_texts = []
   for part in reasoning_parts:
@@ -2469,13 +2492,11 @@ def _model_response_to_generate_content_response(
     )
 
   mapped_finish_reason = _map_finish_reason(finish_reason)
-  if mapped_finish_reason:
-    llm_response.finish_reason = mapped_finish_reason
-    if mapped_finish_reason != types.FinishReason.STOP:
-      llm_response.error_code = mapped_finish_reason
-      llm_response.error_message = _finish_reason_to_error_message(
-          mapped_finish_reason
-      )
+  if mapped_finish_reason and not _malformed_args_outrank_provider(
+      response_finish_reason=llm_response.finish_reason,
+      provider_finish_reason=mapped_finish_reason,
+  ):
+    _apply_provider_finish_reason(llm_response, mapped_finish_reason)
   if response.get("usage", None):
     usage_dict = response["usage"]
     reasoning_tokens = _extract_reasoning_tokens(usage_dict)
@@ -2516,7 +2537,8 @@ def _message_to_generate_content_response(
     model_version: The model version used to generate the response.
 
   Returns:
-    The LlmResponse.
+    The LlmResponse. A tool call whose arguments are not a valid JSON object is
+    left out of the content and reported as MALFORMED_FUNCTION_CALL.
   """
   _ensure_litellm_imported()
 
@@ -2531,6 +2553,7 @@ def _message_to_generate_content_response(
   if isinstance(message_content, str) and message_content:
     parts.append(types.Part.from_text(text=message_content))
 
+  malformed_tool_calls: list[tuple[str, int]] = []
   if tool_calls:
     for tool_call in tool_calls:
       if tool_call.type == "function":
@@ -2538,18 +2561,25 @@ def _message_to_generate_content_response(
         try:
           args = _parse_tool_call_arguments(tool_call.function.arguments)
         except json.JSONDecodeError:
-          logger.warning(
-              "Malformed JSON in tool call arguments for function '%s';"
-              " dispatching with empty arguments so the tool can return a"
-              " structured error and the model can retry.",
-              tool_call.function.name,
-          )
-          logger.debug(
-              "Malformed tool call arguments for function '%s': %s",
-              tool_call.function.name,
-              tool_call.function.arguments,
-          )
-          args = {}
+          args = None
+        # Report the condition the way Gemini reports it natively instead of
+        # unwinding the invocation, so a retry policy can act on it and any
+        # text the model did produce still reaches the caller. Arguments that
+        # decode to something other than an object are just as unusable, and
+        # would otherwise fail further in, during part validation.
+        if not isinstance(args, dict):
+          # A provider can hand back a name or a payload that is not the
+          # string the OpenAI types promise, so only a string is reported as
+          # a name, and only a string has a length to report.
+          raw_name = tool_call.function.name
+          raw_arguments = tool_call.function.arguments
+          malformed_tool_calls.append((
+              raw_name
+              if isinstance(raw_name, str) and raw_name
+              else "<unnamed>",
+              len(raw_arguments) if isinstance(raw_arguments, str) else 0,
+          ))
+          continue
         part = types.Part.from_function_call(
             name=tool_call.function.name,
             args=args,
@@ -2564,11 +2594,32 @@ def _message_to_generate_content_response(
           part.thought_signature = thought_signature
         parts.append(part)
 
-  return LlmResponse(
+  llm_response = LlmResponse(
       content=types.Content(role="model", parts=parts),
       partial=is_partial,
       model_version=model_version,
   )
+  # A partial holds one chunk of a stream, and the finalizer reports the same
+  # call again once the whole message is assembled, so only the assembled
+  # response is stamped. Stamping a partial too would show a retry policy two
+  # failures for one bad tool call.
+  if malformed_tool_calls and not is_partial:
+    for name, argument_length in malformed_tool_calls:
+      # The arguments themselves are never logged: they can be arbitrarily
+      # large and may carry user data.
+      logger.warning(
+          "Discarding tool call %r with unparseable arguments (%d chars).",
+          name,
+          argument_length,
+      )
+    llm_response.finish_reason = types.FinishReason.MALFORMED_FUNCTION_CALL
+    llm_response.error_code = types.FinishReason.MALFORMED_FUNCTION_CALL
+    llm_response.error_message = (
+        "Arguments for the following function calls were not a valid JSON"
+        " object: "
+        + ", ".join(name for name, _ in malformed_tool_calls)
+    )
+  return llm_response
 
 
 def _finish_reason_to_error_message(
@@ -2578,6 +2629,47 @@ def _finish_reason_to_error_message(
   if finish_reason == types.FinishReason.MAX_TOKENS:
     return "Maximum tokens reached"
   return f"Finished with {finish_reason.name}"
+
+
+def _apply_provider_finish_reason(
+    llm_response: LlmResponse,
+    provider_finish_reason: Optional[types.FinishReason],
+) -> None:
+  """Stamps the provider's finish reason onto an already built response.
+
+  Whether the provider's reason should win at all is decided before this is
+  called, with ``_malformed_args_outrank_provider``: a provider does not parse
+  the arguments it forwards, so a clean reason from it explains nothing about
+  arguments that do not parse.
+
+  Once it does win, a reason of None or ``STOP`` is the whole verdict and
+  clears the error outright, a malformed-arguments report included. Any other
+  reason keeps that report, since only the message built from the arguments
+  names the tool calls that could not be parsed, so that detail is appended
+  rather than dropped.
+  """
+  malformed_args_message = (
+      llm_response.error_message
+      if llm_response.finish_reason
+      == types.FinishReason.MALFORMED_FUNCTION_CALL
+      else None
+  )
+  llm_response.finish_reason = provider_finish_reason
+  if (
+      provider_finish_reason is None
+      or provider_finish_reason == types.FinishReason.STOP
+  ):
+    # The stamped reason is the whole verdict, so an error left over from the
+    # reason it replaced would outlive what it described.
+    llm_response.error_code = None
+    llm_response.error_message = None
+    return
+  llm_response.error_code = provider_finish_reason
+  llm_response.error_message = _finish_reason_to_error_message(
+      provider_finish_reason
+  )
+  if malformed_args_message:
+    llm_response.error_message += ". " + malformed_args_message
 
 
 def _enforce_strict_openai_schema(schema: dict[str, Any]) -> None:
@@ -2800,6 +2892,7 @@ async def _get_completion_inputs(
         "max_output_tokens",
         "top_p",
         "top_k",
+        "seed",
         "stop_sequences",
         "presence_penalty",
         "frequency_penalty",
@@ -3255,17 +3348,19 @@ class LiteLlm(BaseLlm):
       def _finalize_tool_call_response(
           *, model_version: str, finish_reason: str
       ) -> LlmResponse:
+        # The finish reason cannot reveal a truncated call: LiteLLM
+        # substitutes "stop" when a provider ends a stream without sending
+        # one. Whether the arguments parse is the only evidence left.
         tool_calls = []
         has_incomplete_tool_call_args = False
         for index, func_data in function_calls.items():
           if func_data["id"]:
             args = "".join(func_data["args_parts"])
-            if finish_reason == "length":
-              try:
-                _parse_tool_call_arguments(args)
-              except json.JSONDecodeError:
-                has_incomplete_tool_call_args = True
-                continue
+            try:
+              _parse_tool_call_arguments(args)
+            except json.JSONDecodeError:
+              has_incomplete_tool_call_args = True
+              continue
             tool_calls.append(
                 ChatCompletionMessageToolCall(
                     type="function",
@@ -3279,14 +3374,26 @@ class LiteLlm(BaseLlm):
             )
 
         if has_incomplete_tool_call_args:
+          if finish_reason == "length":
+            return LlmResponse(
+                error_code=types.FinishReason.MAX_TOKENS,
+                error_message=(
+                    "Tool call arguments were truncated while streaming and"
+                    " could not be parsed as valid JSON. Increase"
+                    " `max_output_tokens` and retry."
+                ),
+                finish_reason=types.FinishReason.MAX_TOKENS,
+                model_version=model_version,
+            )
+          # Any other ending blames no token limit, so saying MAX_TOKENS here
+          # would send the caller off to raise a limit that was not involved.
           return LlmResponse(
-              error_code=types.FinishReason.MAX_TOKENS,
+              error_code=types.FinishReason.MALFORMED_FUNCTION_CALL,
               error_message=(
-                  "Tool call arguments were truncated while streaming and"
-                  " could not be parsed as valid JSON. Increase"
-                  " `max_output_tokens` and retry."
+                  "A tool call's arguments could not be parsed as valid JSON."
+                  " The stream carrying them most likely ended early."
               ),
-              finish_reason=types.FinishReason.MAX_TOKENS,
+              finish_reason=types.FinishReason.MALFORMED_FUNCTION_CALL,
               model_version=model_version,
           )
 
@@ -3297,18 +3404,20 @@ class LiteLlm(BaseLlm):
                 tool_calls=tool_calls,
             ),
             model_version=model_version,
-            thought_parts=list(reasoning_parts) if reasoning_parts else None,
+            thought_parts=(
+                _aggregate_streaming_thought_parts(reasoning_parts)
+                if reasoning_parts
+                else None
+            ),
         )
         mapped_finish_reason = _map_finish_reason(finish_reason)
-        llm_response.finish_reason = mapped_finish_reason
-        if (
-            mapped_finish_reason is not None
-            and mapped_finish_reason != types.FinishReason.STOP
+        if _malformed_args_outrank_provider(
+            response_finish_reason=llm_response.finish_reason,
+            provider_finish_reason=mapped_finish_reason,
         ):
-          llm_response.error_code = mapped_finish_reason
-          llm_response.error_message = _finish_reason_to_error_message(
-              mapped_finish_reason
-          )
+          return llm_response
+
+        _apply_provider_finish_reason(llm_response, mapped_finish_reason)
         return llm_response
 
       def _finalize_text_response(
@@ -3321,18 +3430,20 @@ class LiteLlm(BaseLlm):
                 content=message_content,
             ),
             model_version=model_version,
-            thought_parts=list(reasoning_parts) if reasoning_parts else None,
+            thought_parts=(
+                _aggregate_streaming_thought_parts(reasoning_parts)
+                if reasoning_parts
+                else None
+            ),
         )
         mapped_finish_reason = _map_finish_reason(finish_reason)
-        llm_response.finish_reason = mapped_finish_reason
-        if (
-            mapped_finish_reason is not None
-            and mapped_finish_reason != types.FinishReason.STOP
+        if _malformed_args_outrank_provider(
+            response_finish_reason=llm_response.finish_reason,
+            provider_finish_reason=mapped_finish_reason,
         ):
-          llm_response.error_code = mapped_finish_reason
-          llm_response.error_message = _finish_reason_to_error_message(
-              mapped_finish_reason
-          )
+          return llm_response
+
+        _apply_provider_finish_reason(llm_response, mapped_finish_reason)
         return llm_response
 
       def _reset_stream_buffers() -> None:
@@ -3389,6 +3500,31 @@ class LiteLlm(BaseLlm):
 
             function_calls[index]["id"] = (
                 chunk.id or function_calls[index]["id"] or str(index)
+            )
+
+            partial_args = None
+            if chunk.args:
+              path_tracker = function_calls[index].setdefault(
+                  "path_tracker", streaming_utils._JsonPathTracker()
+              )
+              partial_args = path_tracker.handle_chunk(chunk.args)
+
+            yield LlmResponse(
+                partial=True,
+                content=types.Content(
+                    role="model",
+                    parts=[
+                        types.Part(
+                            function_call=types.FunctionCall(
+                                id=function_calls[index]["id"],
+                                name=function_calls[index]["name"] or None,
+                                partial_args=partial_args or None,
+                                will_continue=True,
+                            )
+                        )
+                    ],
+                ),
+                model_version=part.model,
             )
           elif isinstance(chunk, TextChunk):
             if chunk.text:

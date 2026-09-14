@@ -103,7 +103,7 @@ class TestBuildFunctionDeclarationLegacy:
       return {'result': input_str}
 
     function_decl = _automatic_function_calling_util.build_function_declaration(
-        func=simple_function
+        func=simple_function, variant=GoogleLLMVariant.VERTEX_AI
     )
 
     assert function_decl.name == 'simple_function'
@@ -121,7 +121,7 @@ class TestBuildFunctionDeclarationLegacy:
       return {'result': input_str}
 
     function_decl = _automatic_function_calling_util.build_function_declaration(
-        func=simple_function
+        func=simple_function, variant=GoogleLLMVariant.VERTEX_AI
     )
 
     assert function_decl.name == 'simple_function'
@@ -139,7 +139,7 @@ class TestBuildFunctionDeclarationLegacy:
       return {'result': input_str}
 
     function_decl = _automatic_function_calling_util.build_function_declaration(
-        func=simple_function
+        func=simple_function, variant=GoogleLLMVariant.VERTEX_AI
     )
 
     assert function_decl.name == 'simple_function'
@@ -151,6 +151,34 @@ class TestBuildFunctionDeclarationLegacy:
         ].additional_properties.type
         is None
     )
+
+  def test_dict_input_omits_additional_properties_on_google_ai(self):
+    """Google AI rejects a declaration that carries additional_properties."""
+
+    def simple_function(input_str: dict[str, str]) -> str:
+      return str(input_str)
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=simple_function, variant=GoogleLLMVariant.GEMINI_API
+    )
+
+    schema = function_decl.parameters.properties['input_str']
+    assert schema.type == 'OBJECT'
+    assert schema.additional_properties is None
+
+  def test_list_of_dict_input_omits_additional_properties_on_google_ai(self):
+    """The dict nested inside a list is declared the same way."""
+
+    def simple_function(fruits: list[dict[str, str]]) -> str:
+      return str(fruits)
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=simple_function, variant=GoogleLLMVariant.GEMINI_API
+    )
+
+    schema = function_decl.parameters.properties['fruits'].items
+    assert schema.type == 'OBJECT'
+    assert schema.additional_properties is None
 
   def test_untyped_dict_input(self):
     def simple_function(input_str: dict) -> str:
@@ -175,7 +203,7 @@ class TestBuildFunctionDeclarationLegacy:
       return str(fruits)
 
     function_decl = _automatic_function_calling_util.build_function_declaration(
-        func=simple_function
+        func=simple_function, variant=GoogleLLMVariant.VERTEX_AI
     )
 
     assert function_decl.name == 'simple_function'
@@ -389,7 +417,7 @@ class TestBuildFunctionDeclarationLegacy:
       return {'result': input_str}
 
     function_decl = _automatic_function_calling_util.build_function_declaration(
-        func=simple_function
+        func=simple_function, variant=GoogleLLMVariant.VERTEX_AI
     )
 
     assert function_decl.name == 'simple_function'

@@ -1584,6 +1584,8 @@ class SkillToolset(BaseToolset):
         skills_folder=self._skills_folder,
         script_timeout=self._script_timeout,
         additional_tools=additional_tools,
+        tool_name_prefix=self.tool_name_prefix,
+        tool_filter=self.tool_filter,
     )
 
   async def process_llm_request(

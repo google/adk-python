@@ -799,6 +799,62 @@ class TestMCPTool:
       await tool._get_headers(tool_context, auth_credential)
 
   @pytest.mark.asyncio
+  async def test_get_headers_api_key_with_scheme_lacking_location(self):
+    """A scheme with no API key location is reported, not an AttributeError."""
+    from fastapi.openapi.models import HTTPBase
+
+    auth_scheme = HTTPBase(**{"type": "http", "scheme": "basic"})
+    auth_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.API_KEY, api_key="my_api_key"
+    )
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        auth_scheme=auth_scheme,
+        auth_credential=auth_credential,
+    )
+
+    tool_context = Mock(spec=ToolContext)
+
+    with pytest.raises(
+        ValueError,
+        match=r"Configured location: None \(scheme: HTTPBase\)",
+    ):
+      await tool._get_headers(tool_context, auth_credential)
+
+  @pytest.mark.asyncio
+  async def test_get_headers_api_key_with_scheme_lacking_name(self):
+    """A header scheme carrying no key name is reported, not a bad header."""
+    from fastapi.openapi.models import APIKeyIn
+    from google.adk.auth.auth_schemes import CustomAuthScheme
+
+    # APIKey requires `name`, so only a custom scheme can declare a header
+    # location without one.
+    auth_scheme = CustomAuthScheme(**{
+        "type": "apiKey",
+        "in_": APIKeyIn.header,
+    })
+    auth_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.API_KEY, api_key="my_api_key"
+    )
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        auth_scheme=auth_scheme,
+        auth_credential=auth_credential,
+    )
+
+    tool_context = Mock(spec=ToolContext)
+
+    with pytest.raises(
+        ValueError,
+        match="CustomAuthScheme carries no header name",
+    ):
+      await tool._get_headers(tool_context, auth_credential)
+
+  @pytest.mark.asyncio
   async def test_get_headers_api_key_with_cookie_scheme_raises_error(self):
     """Test that API Key with cookie-based auth scheme raises ValueError."""
     from fastapi.openapi.models import APIKey

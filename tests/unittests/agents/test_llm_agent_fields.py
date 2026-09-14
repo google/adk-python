@@ -38,6 +38,7 @@ from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.google_search_tool import google_search
 from google.adk.tools.google_search_tool import GoogleSearchTool
 from google.adk.tools.vertex_ai_search_tool import VertexAiSearchTool
+from google.adk.workflow._function_node import FunctionNode
 from google.genai import types
 from pydantic import BaseModel
 import pytest
@@ -449,6 +450,24 @@ def test_validate_generate_content_config_http_options_base_url_throw():
     )
 
 
+def test_validate_generate_content_config_candidate_count_one_allowed():
+  """candidate_count=1 remains settable on generate_content_config."""
+  agent = LlmAgent(
+      name='test_agent',
+      generate_content_config=types.GenerateContentConfig(candidate_count=1),
+  )
+  assert agent.generate_content_config.candidate_count == 1
+
+
+def test_validate_generate_content_config_candidate_count_greater_than_one_allowed():
+  """candidate_count greater than 1 remains settable on generate_content_config."""
+  agent = LlmAgent(
+      name='test_agent',
+      generate_content_config=types.GenerateContentConfig(candidate_count=8),
+  )
+  assert agent.generate_content_config.candidate_count == 8
+
+
 def test_validate_generate_content_config_http_options_allowed():
   """Tests that request-time http options remain settable in config."""
   extra_body = {'tool_config': {'function_calling_config': {'mode': 'AUTO'}}}
@@ -809,6 +828,35 @@ class TestCanonicalTools:
     # The traceback is what identifies where inside the toolset it broke.
     assert record.exc_info is not None
 
+  @pytest.mark.parametrize(
+      'docstring, expected_desc',
+      [
+          (None, 'Executes the node: compute'),
+          ('Doubles the input value.', 'Doubles the input value.'),
+      ],
+  )
+  async def test_handle_base_node_in_tools(self, docstring, expected_desc):
+    """Test that BaseNode in agent.tools is adapted into a NodeTool with fallback description."""
+
+    def compute(x: int) -> int:
+      return x * 2
+
+    compute.__doc__ = docstring
+    compute_node = FunctionNode(func=compute)
+    agent = LlmAgent(name='test_agent', tools=[compute_node])
+
+    assert len(agent.tools) == 1
+    assert agent.tools[0].__class__.__name__ == 'NodeTool'
+    assert agent.tools[0].node.name == compute_node.name
+
+    ctx = await _create_readonly_context(agent)
+    tools = await agent.canonical_tools(ctx)
+    assert len(tools) == 1
+    decl = tools[0]._get_declaration()
+    assert decl is not None
+    assert decl.name == 'compute'
+    assert decl.description == expected_desc
+
 
 # Tests for multi-provider model support via string model names
 @pytest.mark.parametrize(
@@ -1085,3 +1133,53 @@ async def test_canonical_tools_without_context_passes_none_to_toolset():
       '_toolset_tool_2',
   ]
   assert toolset.received_context is None
+
+
+@pytest.mark.asyncio
+async def test_canonical_model_async_matches_the_property():
+  # A model name rather than an instance, so that canonical_model and
+  # canonical_live_model resolve to distinct objects and the assertion can
+  # tell which one came back.
+  agent = LlmAgent(name='test_agent', model='gemini-pro')
+  ctx = await _create_readonly_context(agent)
+
+  assert await agent.canonical_model_async(ctx) is agent.canonical_model
+
+
+@pytest.mark.asyncio
+async def test_canonical_model_async_inherits_from_an_ancestor():
+  sub_agent = LlmAgent(name='sub_agent')
+  parent_agent = LlmAgent(
+      name='parent_agent', model='gemini-pro', sub_agents=[sub_agent]
+  )
+  ctx = await _create_readonly_context(sub_agent)
+
+  assert (
+      await sub_agent.canonical_model_async(ctx) is parent_agent.canonical_model
+  )
+
+
+@pytest.mark.asyncio
+async def test_canonical_model_async_reuses_the_resolved_instance():
+  # It goes through the property, so a name is still resolved only once.
+  agent = LlmAgent(name='test_agent', model='gemini-pro')
+  ctx = await _create_readonly_context(agent)
+
+  with mock.patch.object(
+      LLMRegistry, 'new_llm', wraps=LLMRegistry.new_llm
+  ) as new_llm:
+    first = await agent.canonical_model_async(ctx)
+    second = await agent.canonical_model_async(ctx)
+
+  assert new_llm.call_count == 1
+  assert first is second
+
+
+@pytest.mark.asyncio
+async def test_canonical_live_model_async_matches_the_property():
+  agent = LlmAgent(name='test_agent', model='gemini-pro')
+  ctx = await _create_readonly_context(agent)
+
+  assert (
+      await agent.canonical_live_model_async(ctx) is agent.canonical_live_model
+  )

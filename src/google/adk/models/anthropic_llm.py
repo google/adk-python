@@ -52,6 +52,7 @@ from typing_extensions import override
 
 from . import _prompt_cache
 from ..utils import _json_utils
+from ..utils import streaming_utils
 from ..utils._google_client_headers import get_tracking_headers
 from ..utils._schema_utils import lowercase_schema_types
 from .base_llm import BaseLlm
@@ -132,6 +133,7 @@ class _ToolUseAccumulator:
   id: str
   name: str
   args_json: str
+  tracker: streaming_utils._JsonPathTracker | None = None
 
 
 @dataclasses.dataclass
@@ -159,11 +161,12 @@ def _build_anthropic_thinking_param(
       explicit (mirroring the Anthropic API).
     * ``0``: thinking is DISABLED (``thinking.type: "disabled"``).
     * negative (e.g. ``-1`` AUTOMATIC): maps to Anthropic's adaptive thinking
-      (``thinking.type: "adaptive"``). The model picks the depth itself
-      (controlled by the separate ``output_config.effort`` parameter when
-      set). REQUIRED for Claude Opus 4.7 and later models that reject
-      ``"enabled"`` with a 400 error; also recommended for Opus 4.6 and
-      Sonnet 4.6 where ``"enabled"`` is deprecated.
+      (``thinking.type: "adaptive"``, ``thinking.display: "summarized"``). The
+      model picks the depth itself (controlled by the separate
+      ``output_config.effort`` parameter when set) and returns its reasoning
+      as summarized thoughts. REQUIRED for Claude Opus 4.7 and later models
+      that reject ``"enabled"`` with a 400 error; also recommended for Opus
+      4.6 and Sonnet 4.6 where ``"enabled"`` is deprecated.
     * positive int: budget in tokens for legacy manual mode
       (``thinking.type: "enabled"``; Anthropic requires ``>= 1024`` and
       ``< max_tokens``; validation is delegated to the Anthropic API so the
@@ -200,7 +203,11 @@ def _build_anthropic_thinking_param(
     # where ``"enabled"`` is deprecated. Adaptive does not accept a budget;
     # depth is controlled by the model itself (or by the separate
     # ``output_config.effort`` parameter when set).
-    return anthropic_types.ThinkingConfigAdaptiveParam(type="adaptive")
+    # Without ``display``, Claude redacts the reasoning it just billed for.
+    return anthropic_types.ThinkingConfigAdaptiveParam(
+        type="adaptive",
+        display="summarized",
+    )
 
   return anthropic_types.ThinkingConfigEnabledParam(
       type="enabled",
@@ -337,6 +344,34 @@ def _is_pdf_part(part: types.Part) -> bool:
       and inline_data.mime_type is not None
       and inline_data.mime_type.split(";", 1)[0].strip() == "application/pdf"
   )
+
+
+# The fields that mean a part carries something to send. The rest of a Part is
+# annotation -- `part_metadata`, `video_metadata`, `media_resolution` and the
+# like -- and ADK's own A2A converter sets some of them, so asking "is anything
+# else set?" would leave the part in place and the session wedged.
+_PART_CONTENT_FIELDS = (
+    "audio_transcription",
+    "code_execution_result",
+    "executable_code",
+    "file_data",
+    "function_call",
+    "function_response",
+    "inline_data",
+    "tool_call",
+    "tool_response",
+)
+
+
+def _is_content_free_signature(part: types.Part) -> bool:
+  """Whether a part is a thought signature with nothing to send beside it.
+
+  A part that still has its `thought` flag is redacted thinking Claude issued
+  itself, and the branches in `_part_to_message_block` handle it.
+  """
+  if not part.thought_signature or part.thought or part.text:
+    return False
+  return not any(getattr(part, f, None) for f in _PART_CONTENT_FIELDS)
 
 
 def _normalize_image_media_type(mime_type: str) -> _ImageMediaType:
@@ -478,7 +513,11 @@ def _part_to_message_block(
     # We serialize to str here
     # SDK ref: anthropic.types.tool_result_block_param
     # https://github.com/anthropics/anthropic-sdk-python/blob/main/src/anthropic/types/tool_result_block_param.py
-    elif "result" in response_data and response_data["result"] is not None:
+    # Exactly {"result": value} is ADK's wrapper for a non-dict tool return.
+    elif (
+        response_data.keys() == {"result"}
+        and response_data["result"] is not None
+    ):
       result = response_data["result"]
       if isinstance(result, (dict, list)):
         content = json.dumps(result)
@@ -576,6 +615,12 @@ def _content_to_message_param(
     # PDF data is not supported in Claude for assistant turns.
     if content.role != "user" and _is_pdf_part(part):
       logger.warning("PDF data is not supported in Claude for assistant turns.")
+      continue
+
+    # A signature with nothing to send beside it: there is no block to build
+    # from it, and it used to raise and wedge the session for good.
+    if _is_content_free_signature(part):
+      logger.warning("Dropping a thought signature from another model.")
       continue
 
     message_block.append(_part_to_message_block(part, sanitizer))
@@ -995,9 +1040,17 @@ class AnthropicLlm(BaseLlm):
       self, llm_request: LlmRequest, stream: bool = False
   ) -> AsyncGenerator[LlmResponse, None]:
     sanitizer = _ToolUseIdSanitizer()
+    # A turn whose parts are all dropped above leaves no blocks behind, and
+    # Anthropic rejects a message with empty content. Sending one re-wedges the
+    # session exactly as the NotImplementedError did: the offending part stays
+    # in history, so every later turn fails the same way.
     messages = [
-        _content_to_message_param(content, sanitizer)
-        for content in llm_request.contents or []
+        message
+        for message in (
+            _content_to_message_param(content, sanitizer)
+            for content in llm_request.contents or []
+        )
+        if message["content"]
     ]
     tools: Iterable[anthropic_types.ToolUnionParam] | NotGiven = NOT_GIVEN
     function_declarations: list[types.FunctionDeclaration] = []
@@ -1113,6 +1166,22 @@ class AnthropicLlm(BaseLlm):
               name=block.name,
               args_json="",
           )
+          yield LlmResponse(
+              partial=True,
+              content=types.Content(
+                  role="model",
+                  parts=[
+                      types.Part(
+                          function_call=types.FunctionCall(
+                              id=block.id,
+                              name=block.name,
+                              will_continue=True,
+                          )
+                      )
+                  ],
+              ),
+              model_version=llm_request.model or self.model,
+          )
 
       elif event.type == "content_block_delta":
         delta = event.delta
@@ -1158,6 +1227,31 @@ class AnthropicLlm(BaseLlm):
         elif isinstance(delta, anthropic_types.InputJSONDelta):
           if event.index in tool_use_blocks:
             tool_use_blocks[event.index].args_json += delta.partial_json
+            accumulator = tool_use_blocks[event.index]
+            partial_args = None
+            if delta.partial_json:
+              if accumulator.tracker is None:
+                accumulator.tracker = streaming_utils._JsonPathTracker()
+              partial_args = accumulator.tracker.handle_chunk(
+                  delta.partial_json
+              )
+            yield LlmResponse(
+                partial=True,
+                content=types.Content(
+                    role="model",
+                    parts=[
+                        types.Part(
+                            function_call=types.FunctionCall(
+                                id=accumulator.id,
+                                name=accumulator.name,
+                                partial_args=partial_args or None,
+                                will_continue=True,
+                            )
+                        )
+                    ],
+                ),
+                model_version=llm_request.model or self.model,
+            )
 
       elif event.type == "message_delta":
         # ``message_delta`` carries the authoritative cumulative counts, so the

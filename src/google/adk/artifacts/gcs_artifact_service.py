@@ -49,6 +49,7 @@ _GCS_IS_TEXT_METADATA_KEY = "adkIsText"
 _GCS_FILE_URI_METADATA_KEY = "adkFileUri"
 _GCS_FILE_MIME_TYPE_METADATA_KEY = "adkFileMimeType"
 _MAX_ARTIFACT_REFERENCE_DEPTH = 5
+_MAX_SAVE_VERSION_ATTEMPTS = 10
 
 
 def _parse_version(blob_name: str, prefix: str) -> Optional[int]:
@@ -253,19 +254,9 @@ class GcsArtifactService(BaseArtifactService):
       artifact: Union[types.Part, dict[str, Any]],
       custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
-    artifact = ensure_part(artifact)
-    versions = self._list_versions(
-        app_name=app_name,
-        user_id=user_id,
-        session_id=session_id,
-        filename=filename,
-    )
-    version = 0 if not versions else max(versions) + 1
+    from google.cloud import exceptions  # pylint: disable=g-import-not-at-top
 
-    blob_name = self._get_blob_name(
-        app_name, user_id, filename, version, session_id
-    )
-    blob = self.bucket.blob(blob_name)
+    artifact = ensure_part(artifact)
     blob_metadata = {k: str(v) for k, v in (custom_metadata or {}).items()}
     if artifact.inline_data and artifact.inline_data.display_name:
       blob_metadata[_GCS_DISPLAY_NAME_METADATA_KEY] = (
@@ -276,25 +267,19 @@ class GcsArtifactService(BaseArtifactService):
       # load instead of Part.from_bytes() (which would only populate
       # inline_data).
       blob_metadata[_GCS_IS_TEXT_METADATA_KEY] = "true"
-    if blob_metadata:
-      blob.metadata = blob_metadata
 
+    data: Union[str, bytes]
+    content_type: Optional[str]
     if artifact.inline_data:
-      data = artifact.inline_data.data
-      if data is None:
+      if artifact.inline_data.data is None:
         raise InputValidationError("Artifact inline_data must contain data.")
-      blob.upload_from_string(
-          data=data,
-          content_type=artifact.inline_data.mime_type,
-      )
+      data = artifact.inline_data.data
+      content_type = artifact.inline_data.mime_type
     elif artifact.text is not None:
-      blob.upload_from_string(
-          data=artifact.text,
-          content_type="text/plain",
-      )
+      data = artifact.text
+      content_type = "text/plain"
     elif artifact.file_data:
       file_data = artifact.file_data
-      assert file_data is not None
       file_uri = file_data.file_uri
       if not file_uri:
         raise InputValidationError("Artifact file_data must have a file_uri.")
@@ -311,23 +296,51 @@ class GcsArtifactService(BaseArtifactService):
             parsed_uri=parsed_uri,
         )
       # Store the URI and mime_type (if any) as blob metadata; no content to upload.
-      metadata = {
-          **(blob.metadata or {}),
-          _GCS_FILE_URI_METADATA_KEY: file_uri,
-      }
+      blob_metadata[_GCS_FILE_URI_METADATA_KEY] = file_uri
       if file_data.mime_type:
-        metadata[_GCS_FILE_MIME_TYPE_METADATA_KEY] = file_data.mime_type
-      blob.metadata = metadata
-      blob.upload_from_string(
-          b"",
-          content_type=file_data.mime_type or None,
-      )
+        blob_metadata[_GCS_FILE_MIME_TYPE_METADATA_KEY] = file_data.mime_type
+      data = b""
+      content_type = file_data.mime_type or None
     else:
       raise InputValidationError(
           "Artifact must have either inline_data or text."
       )
 
-    return version
+    versions = self._list_versions(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        filename=filename,
+    )
+    version = 0 if not versions else max(versions) + 1
+
+    # Listing the versions does not reserve one, so a concurrent save can pick
+    # the same number. if_generation_match=0 makes the upload a create, which
+    # fails instead of overwriting the version the other save just wrote; take
+    # the next number and try again. Every attempt re-uploads the payload, so
+    # the attempts are capped and sustained contention surfaces as the last
+    # precondition failure rather than as an unbounded retry loop.
+    attempts_left = _MAX_SAVE_VERSION_ATTEMPTS
+    while True:
+      blob_name = self._get_blob_name(
+          app_name, user_id, filename, version, session_id
+      )
+      blob = self.bucket.blob(blob_name)
+      if blob_metadata:
+        blob.metadata = blob_metadata
+      try:
+        blob.upload_from_string(
+            data=data,
+            content_type=content_type,
+            if_generation_match=0,
+        )
+      except exceptions.PreconditionFailed:
+        attempts_left -= 1
+        if not attempts_left:
+          raise
+        version += 1
+        continue
+      return version
 
   def _load_artifact(
       self,

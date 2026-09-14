@@ -63,7 +63,18 @@ from .base_agent_config import BaseAgentConfig as BaseAgentConfig
 from .callback_context import CallbackContext
 from .context import Context
 from .invocation_context import InvocationContext
-from .llm_agent_config import LlmAgentConfig as LlmAgentConfig
+
+with warnings.catch_warnings():
+  # LlmAgentConfig subclasses the deprecated BaseAgentConfig purely as an
+  # internal implementation detail, so this import alone should not warn
+  # applications that never touch the deprecated Agent Config APIs.
+  warnings.filterwarnings(
+      'ignore',
+      message=r'.*BaseAgentConfig is deprecated.*',
+      category=DeprecationWarning,
+  )
+  from .llm_agent_config import LlmAgentConfig as LlmAgentConfig
+
 from .readonly_context import ReadonlyContext
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -177,22 +188,15 @@ async def _convert_tool_union_to_tools(
 
     if isinstance(tool_union, BaseAgent):
       raise ValueError(
-          f"Agent '{tool_union.name}' cannot be wrapped as a NodeTool. Agents"
+          f"Agent '{tool_union.name}' cannot be used directly as a tool. Agents"
           ' should be invoked as sub-agents.'
-      )
-
-    description = tool_union.description
-    if not description:
-      raise ValueError(
-          f"Workflow/Node '{tool_union.name}' must have a description to be"
-          ' wrapped as a tool.'
       )
 
     return [
         NodeTool(
             node=tool_union,
             name=tool_union.name,
-            description=description,
+            description=tool_union.description,
         )
     ]
 
@@ -485,7 +489,7 @@ class LlmAgent(BaseAgent, abc.ABC):
   """Callback or list of callbacks to be called before calling the LLM.
 
   When a list of callbacks is provided, the callbacks will be called in the
-  order they are listed until a callback does not return None.
+  order they are listed until a callback returns a truthy value.
 
   Args:
     callback_context: CallbackContext,
@@ -493,22 +497,23 @@ class LlmAgent(BaseAgent, abc.ABC):
     request.
 
   Returns:
-    The content to return to the user. When present, the model call will be
-    skipped and the provided content will be returned to user.
+    Optional[LlmResponse]: A response to use instead of calling the model.
+      A truthy response skips the model call. Return None to continue.
   """
   after_model_callback: Optional[AfterModelCallback] = None
   """Callback or list of callbacks to be called after calling the LLM.
 
   When a list of callbacks is provided, the callbacks will be called in the
-  order they are listed until a callback does not return None.
+  order they are listed until a callback returns a truthy value.
 
   Args:
     callback_context: CallbackContext,
     llm_response: LlmResponse, the actual model response.
 
   Returns:
-    The content to return to the user. When present, the actual model response
-    will be ignored and the provided content will be returned to user.
+    Optional[LlmResponse]: A response to use instead of the actual model
+      response. A truthy response replaces the model response. Return None
+      to keep the original response.
   """
   on_model_error_callback: Optional[OnModelErrorCallback] = None
   """Callback or list of callbacks to be called when a model call encounters an error.
@@ -522,8 +527,9 @@ class LlmAgent(BaseAgent, abc.ABC):
     error: The error from the model call.
 
   Returns:
-    The content to return to the user. When present, the error will be
-    ignored and the provided content will be returned to user.
+    Optional[LlmResponse]: A recovery response to use instead of propagating
+      the model error. Any non-None response stops the callback chain. Return
+      None to allow subsequent callbacks to handle the error.
   """
   before_tool_callback: Optional[BeforeToolCallback] = None
   """Callback or list of callbacks to be called before calling the tool.
@@ -537,8 +543,9 @@ class LlmAgent(BaseAgent, abc.ABC):
     tool_context: ToolContext,
 
   Returns:
-    The tool response. When present, the returned tool response will be used and
-    the framework will skip calling the actual tool.
+    Optional[dict[str, Any]]: A response to use instead of calling the tool.
+      Any non-None response, including an empty dict, stops the callback chain
+      and skips the tool call. Return None to continue.
   """
   after_tool_callback: Optional[AfterToolCallback] = None
   """Callback or list of callbacks to be called after calling the tool.
@@ -553,7 +560,10 @@ class LlmAgent(BaseAgent, abc.ABC):
     tool_response: The response from the tool.
 
   Returns:
-    When present, the returned dict will be used as tool result.
+    Optional[dict[str, Any]]: A response to use instead of the tool result.
+      Any non-None response, including an empty dict, stops the callback chain
+      and replaces the tool result. Return None to keep the current result
+      and allow subsequent callbacks to run.
   """
   on_tool_error_callback: Optional[OnToolErrorCallback] = None
   """Callback or list of callbacks to be called when a tool call encounters an error.
@@ -568,7 +578,10 @@ class LlmAgent(BaseAgent, abc.ABC):
     error: The error from the tool call.
 
   Returns:
-    When present, the returned dict will be used as tool result.
+    Optional[dict[str, Any]]: A recovery response to use instead of propagating
+      the tool error. Any non-None response, including an empty dict, stops the
+      callback chain. Return None to allow subsequent callbacks to handle the
+      error.
   """
   # Callbacks - End
 
@@ -709,6 +722,41 @@ class LlmAgent(BaseAgent, abc.ABC):
           return ancestor_agent.canonical_live_model
         ancestor_agent = ancestor_agent.parent_agent
       return self._resolve_default_live_model()
+
+  async def canonical_model_async(self, ctx: ReadonlyContext) -> BaseLlm:
+    """The resolved self.model field as BaseLlm, for one invocation.
+
+    The async counterpart of :attr:`canonical_model`, and what the flow calls
+    to pick the model for a turn. Resolution may depend on the invocation and
+    may await.
+
+    This method is only for use by Agent Development Kit.
+
+    Args:
+      ctx: The invocation the model is being resolved for.
+
+    Returns:
+      The model to call.
+    """
+    del ctx  # No resolution yet depends on the invocation.
+    return self.canonical_model
+
+  async def canonical_live_model_async(self, ctx: ReadonlyContext) -> BaseLlm:
+    """The resolved self.model field as BaseLlm for live mode.
+
+    The async counterpart of :attr:`canonical_live_model`; see
+    :meth:`canonical_model_async`.
+
+    This method is only for use by Agent Development Kit.
+
+    Args:
+      ctx: The invocation the model is being resolved for.
+
+    Returns:
+      The model to open a live connection with.
+    """
+    del ctx  # No resolution yet depends on the invocation.
+    return self.canonical_live_model
 
   @classmethod
   def set_default_model(cls, model: Union[str, BaseLlm]) -> None:
@@ -1198,17 +1246,11 @@ class LlmAgent(BaseAgent, abc.ABC):
       for t in data['tools']:
         if isinstance(t, BaseAgent):
           raise ValueError(
-              f"Agent '{t.name}' cannot be wrapped as a NodeTool. Agents should"
-              ' be invoked as sub-agents.'
+              f"Agent '{t.name}' cannot be used directly as a tool. Agents"
+              ' should be invoked as sub-agents.'
           )
         elif isinstance(t, BaseNode):
-          description = t.description
-          if not description:
-            raise ValueError(
-                f"Workflow/Node '{t.name}' must have a description to be"
-                ' wrapped as a tool.'
-            )
-          new_tools.append(NodeTool(node=t, description=description))
+          new_tools.append(NodeTool(node=t, description=t.description))
         else:
           new_tools.append(t)
       data['tools'] = new_tools

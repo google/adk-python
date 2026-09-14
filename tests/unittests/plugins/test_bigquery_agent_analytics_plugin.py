@@ -19,6 +19,7 @@ import dataclasses
 import json
 import logging
 import os
+import pickle
 import sys
 import threading
 import time
@@ -6987,6 +6988,193 @@ class TestAnalyticsViews:
       self._make_plugin(view_prefix="")
 
 
+class TestSchemaReadinessMemo:
+  """Tests that a successful table readiness pass is not repeated."""
+
+  @pytest.mark.asyncio
+  async def test_readiness_pass_not_repeated_across_close(
+      self, mock_auth_default, mock_bq_client, mock_write_client
+  ):
+    """Closing and reusing a plugin must not replay the readiness pass.
+
+    Runner.close() closes every registered plugin, including one the caller
+    owns and shares. A host that builds a short-lived Runner per request
+    therefore re-enters setup on every request. The readiness pass issues one
+    CREATE OR REPLACE VIEW statement per analytics view against a daily
+    per-table quota, and it is awaited on the request path, so it has to be
+    remembered once it has succeeded.
+    """
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+    )
+
+    try:
+      assert await plugin._ensure_started() == "ok"
+      ddl_after_first_start = mock_bq_client.query.call_count
+      assert ddl_after_first_start == len(
+          bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS
+      )
+
+      for _ in range(3):
+        await plugin.shutdown()
+        assert plugin._started is False
+        assert await plugin._ensure_started() == "ok"
+
+      assert mock_bq_client.query.call_count == ddl_after_first_start
+    finally:
+      await plugin.shutdown()
+
+  @pytest.mark.asyncio
+  async def test_readiness_pass_retried_until_it_succeeds(
+      self, mock_auth_default, mock_bq_client, mock_write_client
+  ):
+    """A failed readiness pass is still retried on the next attempt.
+
+    The memo records success only, so it must not turn a transient control
+    plane failure into a plugin that reports itself ready against a table it
+    never verified.
+    """
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+    )
+    mock_bq_client.get_table.side_effect = [
+        RuntimeError("BQ down"),
+        mock.MagicMock(spec=bigquery.Table),
+    ]
+
+    try:
+      assert await plugin._ensure_started() == "failed"
+      assert plugin._schema_ready is False
+
+      # Clear the failure backoff so the retry is attempted immediately.
+      plugin._setup_retry_at = 0.0
+      assert await plugin._ensure_started() == "ok"
+      assert plugin._schema_ready is True
+      assert mock_bq_client.get_table.call_count == 2
+    finally:
+      await plugin.shutdown()
+
+  @pytest.mark.asyncio
+  async def test_failed_view_pass_is_not_memoised(
+      self, mock_auth_default, mock_bq_client, mock_write_client
+  ):
+    """A view pass that failed has to run again on the next attempt.
+
+    View creation logs and swallows, so the readiness pass returns normally
+    even when it created nothing. Remembering that as a success would leave
+    the dataset permanently short of its views.
+    """
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+    )
+    mock_bq_client.query.side_effect = RuntimeError("view DDL rejected")
+
+    try:
+      assert await plugin._ensure_started() == "ok"
+      assert plugin._schema_ready is False
+      ddl_after_first_start = mock_bq_client.query.call_count
+
+      mock_bq_client.query.side_effect = None
+      await plugin.shutdown()
+      assert await plugin._ensure_started() == "ok"
+
+      assert mock_bq_client.query.call_count > ddl_after_first_start
+      assert plugin._schema_ready is True
+    finally:
+      await plugin.shutdown()
+
+  @pytest.mark.asyncio
+  async def test_failed_view_refresh_clears_the_memo(
+      self, mock_auth_default, mock_bq_client, mock_write_client
+  ):
+    """An explicit refresh that failed hands the retry back to setup."""
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+    )
+
+    try:
+      assert await plugin._ensure_started() == "ok"
+      assert plugin._schema_ready is True
+
+      mock_bq_client.query.side_effect = RuntimeError("view DDL rejected")
+      await plugin.create_analytics_views()
+      assert plugin._schema_ready is False
+
+      mock_bq_client.query.side_effect = None
+      await plugin.shutdown()
+      ddl_before_reinit = mock_bq_client.query.call_count
+      assert await plugin._ensure_started() == "ok"
+
+      assert mock_bq_client.query.call_count == ddl_before_reinit + len(
+          bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS
+      )
+      assert plugin._schema_ready is True
+    finally:
+      await plugin.shutdown()
+
+  def test_readiness_memo_survives_fork(self, mock_auth_default):
+    """A fork clears runtime state, but readiness describes the dataset.
+
+    _reset_runtime_state reads as an exhaustive "clear everything" block, so
+    without this a later edit could add _schema_ready to it and quietly
+    restore the per-request view DDL.
+    """
+    del mock_auth_default
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+    )
+    plugin._schema_ready = True
+    plugin._started = True
+
+    plugin._reset_runtime_state()
+
+    assert plugin._schema_ready is True
+    assert plugin._started is False
+
+  def test_readiness_memo_survives_pickling(self):
+    """The memo describes the dataset, so it outlives this process."""
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+    )
+    plugin._schema_ready = True
+
+    restored = pickle.loads(pickle.dumps(plugin))
+
+    assert restored._schema_ready is True
+    assert restored._started is False
+
+  def test_readiness_memo_defaults_for_older_pickles(self):
+    """A pickle written before the memo existed must still unpickle."""
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+    )
+    state = plugin.__getstate__()
+    del state["_schema_ready"]
+
+    restored = (
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin.__new__(
+            bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin
+        )
+    )
+    restored.__setstate__(state)
+
+    assert restored._schema_ready is False
+
+
 # ==============================================================================
 # Trace-ID Continuity Tests
 # ==============================================================================
@@ -13807,6 +13995,33 @@ class TestSafetyLifecycleHardening:
       assert outcome2 == "ok"
       assert plugin._started is True
       assert plugin.client is not None
+
+  @pytest.mark.asyncio
+  async def test_generation_mismatch_abort_is_logged_once(self, caplog):
+    """An abort that discards a finished setup has to say so.
+
+    The path returned "aborted" silently, so an operator saw a plugin that
+    never started and nothing explaining why.
+    """
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID
+    )
+
+    async def _finish_setup_then_lose_the_race(**kwargs):
+      del kwargs
+      plugin._generation += 1
+
+    with (
+        mock.patch.object(
+            plugin, "_lazy_setup", _finish_setup_then_lose_the_race
+        ),
+        mock.patch.object(plugin, "_teardown_aborted_setup", mock.AsyncMock()),
+        caplog.at_level(logging.INFO),
+    ):
+      assert await plugin._ensure_started() == "aborted"
+
+    discarded = [r for r in caplog.records if "was discarded" in r.getMessage()]
+    assert len(discarded) == 1
 
   @pytest.mark.asyncio
   @pytest.mark.filterwarnings("error::RuntimeWarning")

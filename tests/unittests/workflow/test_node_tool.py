@@ -30,6 +30,8 @@ from google.adk.tools.long_running_tool import LongRunningFunctionTool
 from google.adk.workflow import JoinNode
 from google.adk.workflow import node
 from google.adk.workflow import START
+from google.adk.workflow._base_node import BaseNode
+from google.adk.workflow._function_node import FunctionNode
 from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow._workflow import Workflow
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
@@ -1414,3 +1416,117 @@ async def test_node_tool_returns_structured_dict(
   function_responses = [fr for e in events for fr in e.get_function_responses()]
   assert len(function_responses) == 1
   assert function_responses[0].response == {'id': 'user_123', 'role': 'admin'}
+
+
+@pytest.mark.asyncio
+async def test_function_node_with_arguments_as_tool_in_llm_agent(
+    request: pytest.FixtureRequest,
+):
+  """FunctionNode with arguments is automatically adapted and executed as an LlmAgent tool."""
+
+  @node
+  def calculate_sum(x: int, y: int) -> int:
+    """Calculates the sum of two integers.
+
+    Args:
+      x: The first integer.
+      y: The second integer.
+    """
+    return x + y
+
+  # Given an LlmAgent configured with the @node directly in tools
+  agent = LlmAgent(
+      name='math_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='calculate_sum',
+                  args={'x': 3, 'y': 5},
+              ),
+              types.Part.from_text(text='The sum is 8.'),
+          ]
+      ),
+      tools=[calculate_sum],
+  )
+
+  # When the agent runs a turn triggering the tool call
+  app = App(
+      name=request.function.__name__,
+      root_agent=agent,
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+  events = await runner.run_async(
+      testing_utils.get_user_content('Calculate 3 + 5')
+  )
+
+  # Then the tool response event contains the computed result
+  func_response_events = [
+      e
+      for e in events
+      if e.content and e.content.parts and e.content.parts[0].function_response
+  ]
+  assert len(func_response_events) == 1
+  assert func_response_events[0].content.parts[
+      0
+  ].function_response.response == {'result': 8}
+
+
+def test_node_tool_infers_schema_from_function_node():
+  """NodeTool automatically infers declaration and parameter schema from FunctionNode."""
+
+  def calculate(x: int, y: int) -> int:
+    """Calculates the sum of two integers.
+
+    Args:
+      x: The first integer.
+      y: The second integer.
+    """
+    return x + y
+
+  fn_node = FunctionNode(func=calculate, name='calc')
+  tool = NodeTool(node=fn_node)
+  decl = tool._get_declaration()
+
+  assert decl is not None
+  assert decl.name == 'calc'
+  assert 'Calculates the sum' in (decl.description or '')
+  assert decl.parameters_json_schema is not None
+  assert 'x' in decl.parameters_json_schema['properties']
+  assert 'y' in decl.parameters_json_schema['properties']
+  assert decl.parameters_json_schema['required'] == ['x', 'y']
+
+
+def test_node_tool_declaration_with_pydantic_schemas_and_overrides():
+  """NodeTool generates FunctionDeclaration from input_schema and output_schema and respects overrides."""
+
+  class QueryInput(BaseModel):
+    query: str
+
+  class QueryResult(BaseModel):
+    result: str
+
+  class CustomNode(BaseNode):
+
+    async def _run_impl(self, *, ctx, node_input):
+      yield node_input
+
+  node_instance = CustomNode(
+      name='backend_node',
+      description='Original description',
+      input_schema=QueryInput,
+      output_schema=QueryResult,
+  )
+  tool = NodeTool(
+      node=node_instance,
+      name='custom_tool_alias',
+      description='Custom tool description',
+  )
+  decl = tool._get_declaration()
+
+  assert decl is not None
+  assert decl.name == 'custom_tool_alias'
+  assert decl.description == 'Custom tool description'
+  assert decl.parameters_json_schema is not None
+  assert 'query' in decl.parameters_json_schema['properties']
+  assert decl.response_json_schema is not None
+  assert 'result' in decl.response_json_schema['properties']

@@ -106,27 +106,27 @@
                     }
                   }
                 ]
-              },
-              {
-                "name": "execute_tool some_tool",
-                "attributes": {
-                  "gen_ai.operation.name": "execute_tool",
-                  "gen_ai.tool.description": "A sample tool.",
-                  "gen_ai.tool.name": "some_tool",
-                  "gen_ai.tool.type": "FunctionTool",
-                  "gen_ai.agent.name": "some_root_agent",
-                  "gcp.vertex.agent.llm_request": "{}",
-                  "gcp.vertex.agent.llm_response": "{}",
-                  "gcp.vertex.agent.tool_call_args": "{}",
-                  "gen_ai.tool.call.id": "PRESENT",
-                  "gcp.vertex.agent.event_id": "PRESENT",
-                  "gcp.vertex.agent.tool_response": "{}"
-                },
-                "status": "UNSET",
-                "children": [],
-                "logs": []
               }
             ],
+            "logs": []
+          },
+          {
+            "name": "execute_tool some_tool",
+            "attributes": {
+              "gen_ai.operation.name": "execute_tool",
+              "gen_ai.tool.description": "A sample tool.",
+              "gen_ai.tool.name": "some_tool",
+              "gen_ai.tool.type": "FunctionTool",
+              "gen_ai.agent.name": "some_root_agent",
+              "gcp.vertex.agent.llm_request": "{}",
+              "gcp.vertex.agent.llm_response": "{}",
+              "gcp.vertex.agent.tool_call_args": "{}",
+              "gen_ai.tool.call.id": "PRESENT",
+              "gcp.vertex.agent.event_id": "PRESENT",
+              "gcp.vertex.agent.tool_response": "{}"
+            },
+            "status": "UNSET",
+            "children": [],
             "logs": []
           },
           {

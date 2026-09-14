@@ -15,9 +15,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from collections.abc import Sequence
+import itertools
 import re
 import threading
 from typing import TYPE_CHECKING
+import unicodedata
 
 from typing_extensions import override
 
@@ -38,9 +40,37 @@ def _user_key(app_name: str, user_id: str) -> tuple[str, str]:
   return (app_name, user_id)
 
 
+def _is_latin(c: str) -> bool:
+  if c.isascii():
+    return c.isalnum() or c == '_'
+  return unicodedata.name(c, '').startswith('LATIN')
+
+
 def _extract_words_lower(text: str) -> set[str]:
   """Extracts Unicode-aware tokens from a string in lowercase."""
+  text = unicodedata.normalize('NFC', text)
   return set(word.lower() for word in re.findall(r'\w+', text))
+
+
+def _extract_searchable_words(text: str) -> set[str]:
+  r"""Extracts the words an event can be matched on, in lowercase.
+
+  The tokens of _extract_words_lower, plus, for a token that mixes Latin and
+  non-Latin scripts, each of its single-script runs. Japanese and Chinese are
+  written without spaces, so 私はPythonを使う is a single \w+ token and a query
+  for Python matches nothing. Splitting on the boundary between Latin and
+  non-Latin scripts makes the embedded Latin word a token of its own, while
+  still keeping a partial word such as thon from matching.
+
+  Args:
+    text: The text of an event.
+  """
+  words = _extract_words_lower(text)
+  for word in list(words):
+    if not word.isascii():
+      for _, group in itertools.groupby(word, _is_latin):
+        words.add(''.join(group))
+  return words
 
 
 class InMemoryMemoryService(BaseMemoryService):
@@ -128,11 +158,11 @@ class InMemoryMemoryService(BaseMemoryService):
         event_text = ' '.join(
             [part.text for part in event.content.parts if part.text]
         )
-        words_in_event = _extract_words_lower(event_text)
+        words_in_event = _extract_searchable_words(event_text)
         if not words_in_event:
           continue
 
-        event_text_lower = event_text.lower()
+        event_text_lower = unicodedata.normalize('NFC', event_text).lower()
         matched_words = sum(
             1
             for query_word in words_in_query

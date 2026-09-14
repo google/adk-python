@@ -225,6 +225,89 @@ def drop_orphaned_function_responses(
   return result_events
 
 
+def _collect_function_response_ids(events: list[Event]) -> set[str]:
+  """Returns the ids of every function response recorded in ``events``."""
+  response_ids: set[str] = set()
+  for event in events:
+    for function_response in event.get_function_responses():
+      if function_response.id:
+        response_ids.add(function_response.id)
+  return response_ids
+
+
+def _collect_long_running_tool_ids(events: list[Event]) -> set[str]:
+  """Returns the ids of all long-running tool calls marked in ``events``."""
+  ids: set[str] = set()
+  for event in events:
+    if event.long_running_tool_ids:
+      ids.update(event.long_running_tool_ids)
+  return ids
+
+
+def drop_orphaned_function_calls(
+    events: list[Event],
+) -> list[Event]:
+  """Drops function_call parts that have no matching function_response.
+
+  When a turn is interrupted (e.g. user abort, process restart, or follow-up
+  user input prior to tool execution), unanswered function calls are pruned
+  so downstream providers (Anthropic, OpenAI) do not reject the conversation
+  history with HTTP 400 errors.
+
+  Calls without an id are left alone: ids are stripped on the way out for
+  some model families, so a missing id does not imply a missing response.
+
+  Pending long-running tool calls (including auth and confirmation requests)
+  marked in ``event.long_running_tool_ids`` are also left alone because they
+  legitimately emit no response until resumed.
+
+  Args:
+    events: The events being assembled into request contents.
+
+  Returns:
+    The events with orphaned function_call parts removed.
+  """
+  response_ids = _collect_function_response_ids(events)
+  long_running_ids = _collect_long_running_tool_ids(events)
+
+  orphaned_ids: list[str] = []
+  result_events: list[Event] = []
+  for event in events:
+    parts = event.content.parts if event.content else None
+    if not parts or not event.get_function_calls():
+      result_events.append(event)
+      continue
+
+    kept_parts: list[types.Part] = []
+    for part in parts:
+      call = part.function_call
+      if (
+          call
+          and call.id
+          and call.id not in response_ids
+          and call.id not in long_running_ids
+      ):
+        orphaned_ids.append(call.id)
+        continue
+      kept_parts.append(part)
+
+    if not kept_parts:
+      continue
+    if len(kept_parts) != len(parts):
+      event = event.model_copy(deep=True)
+      if event.content:
+        event.content.parts = kept_parts
+    result_events.append(event)
+
+  if orphaned_ids:
+    logger.warning(
+        'Dropping function calls with no matching function response: %s',
+        orphaned_ids,
+    )
+
+  return result_events
+
+
 def rearrange_events_for_latest_function_response(
     events: list[Event],
 ) -> list[Event]:

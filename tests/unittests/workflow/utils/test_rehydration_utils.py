@@ -517,6 +517,134 @@ class TestScanNodeEvents:
         "count": 42
     }
 
+  def test_scan_records_error_code(self):
+    """A node that raised is recovered as failed, not as an empty success."""
+    event = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        error_code="ValueError",
+        error_message="boom",
+        invocation_id="test_id",
+    )
+
+    results = _reconstruct_node_states(
+        [event], "/wf@1", invocation_id="test_id", group_by_direct_child=True
+    )
+
+    assert results["node_a@1"].error_code == "ValueError"
+    assert results["node_a@1"].output is None
+
+  def test_scan_later_output_clears_error_code(self):
+    """A retry that succeeded supersedes the failure that preceded it."""
+    error_event = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        error_code="ValueError",
+        error_message="boom",
+        invocation_id="test_id",
+    )
+    output_event = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        output="node_a output",
+        invocation_id="test_id",
+    )
+
+    results = _reconstruct_node_states(
+        [error_event, output_event],
+        "/wf@1",
+        invocation_id="test_id",
+        group_by_direct_child=True,
+    )
+
+    assert results["node_a@1"].error_code is None
+    assert results["node_a@1"].output == "node_a output"
+
+  def test_scan_later_route_clears_error_code(self):
+    """A node may signal only a route on the attempt that succeeded."""
+    error_event = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        error_code="ValueError",
+        error_message="boom",
+        invocation_id="test_id",
+    )
+    route_event = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        route="route-a",
+        invocation_id="test_id",
+    )
+
+    results = _reconstruct_node_states(
+        [error_event, route_event],
+        "/wf@1",
+        invocation_id="test_id",
+        group_by_direct_child=True,
+    )
+
+    assert results["node_a@1"].error_code is None
+    assert results["node_a@1"].route == "route-a"
+
+  def test_scan_error_after_output_records_error_code(self):
+    """The last attempt decides, so a failure after a result still fails."""
+    output_event = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        output="node_a output",
+        invocation_id="test_id",
+    )
+    error_event = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        error_code="ValueError",
+        error_message="boom",
+        invocation_id="test_id",
+    )
+
+    results = _reconstruct_node_states(
+        [output_event, error_event],
+        "/wf@1",
+        invocation_id="test_id",
+        group_by_direct_child=True,
+    )
+
+    assert results["node_a@1"].error_code == "ValueError"
+
+  def test_scan_output_on_the_error_event_is_not_a_failure(self):
+    """An LlmAgent node's output rides on the response event, which carries a
+    non-STOP finish reason as an error code. It still produced a result."""
+    event = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        output="truncated but real",
+        error_code="MAX_TOKENS",
+        invocation_id="test_id",
+    )
+
+    results = _reconstruct_node_states(
+        [event], "/wf@1", invocation_id="test_id", group_by_direct_child=True
+    )
+
+    assert results["node_a@1"].error_code is None
+    assert results["node_a@1"].output == "truncated but real"
+
+  def test_scan_sibling_failure_leaves_node_unaffected(self):
+    """One child's failure must not be attributed to another child."""
+    error_event = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        error_code="ValueError",
+        error_message="boom",
+        invocation_id="test_id",
+    )
+    output_event = Event(
+        node_info=NodeInfo(path="/wf@1/node_b@1"),
+        output="node_b output",
+        invocation_id="test_id",
+    )
+
+    results = _reconstruct_node_states(
+        [error_event, output_event],
+        "/wf@1",
+        invocation_id="test_id",
+        group_by_direct_child=True,
+    )
+
+    assert results["node_a@1"].error_code == "ValueError"
+    assert results["node_b@1"].error_code is None
+
 
 # --- is_terminal_event ---
 #

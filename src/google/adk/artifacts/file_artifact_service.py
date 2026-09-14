@@ -657,6 +657,11 @@ class FileArtifactService(BaseArtifactService):
       user_id: str,
       session_id: Optional[str] = None,
   ) -> list[str]:
+    """Lists artifact filenames for the given session/user.
+
+    An artifact saved with `session_id=None` is listed under the bare name it
+    was saved with, so loading it from a session needs the `user:` prefix.
+    """
     return await asyncio.to_thread(
         self._list_artifact_keys_sync,
         app_name,
@@ -670,7 +675,6 @@ class FileArtifactService(BaseArtifactService):
       user_id: str,
       session_id: Optional[str],
   ) -> list[str]:
-    """Lists artifact filenames for the given session/user."""
     filenames: set[str] = set()
     base_root = self._base_root(app_name, user_id)
 

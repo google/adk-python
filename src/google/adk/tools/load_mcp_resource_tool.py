@@ -124,32 +124,33 @@ before answering questions related to the resources.
 
     # Attach content
     if llm_request.contents and llm_request.contents[-1].parts:
-      function_response = llm_request.contents[-1].parts[0].function_response
-      if function_response and function_response.name == self.name:
-        response = function_response.response or {}
-        resource_names = response.get("resource_names", [])
-        for resource_name in resource_names:
-          try:
-            contents = await self._mcp_toolset.read_resource(resource_name)
+      for part in llm_request.contents[-1].parts:
+        function_response = part.function_response
+        if function_response and function_response.name == self.name:
+          response = function_response.response or {}
+          resource_names = response.get("resource_names", [])
+          for resource_name in resource_names:
+            try:
+              contents = await self._mcp_toolset.read_resource(resource_name)
 
-            for content in contents:
-              part = self._mcp_content_to_part(content, resource_name)
-              llm_request.contents.append(
-                  types.Content(
-                      role="user",
-                      parts=[
-                          types.Part.from_text(
-                              text=f"Resource {resource_name} is:"
-                          ),
-                          part,
-                      ],
-                  )
+              for content in contents:
+                part = self._mcp_content_to_part(content, resource_name)
+                llm_request.contents.append(
+                    types.Content(
+                        role="user",
+                        parts=[
+                            types.Part.from_text(
+                                text=f"Resource {resource_name} is:"
+                            ),
+                            part,
+                        ],
+                    )
+                )
+            except Exception as e:
+              logger.warning(
+                  "Failed to read MCP resource '%s': %s", resource_name, e
               )
-          except Exception as e:
-            logger.warning(
-                "Failed to read MCP resource '%s': %s", resource_name, e
-            )
-            continue
+              continue
 
   def _mcp_content_to_part(
       self, content: Any, resource_name: str
