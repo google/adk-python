@@ -609,24 +609,18 @@ async def _emit_streaming_tool_event(
 
 @dataclasses.dataclass
 class _PreparedFunctionCall:
-  """One function call taken as far as its before-tool callbacks.
+  """One function call resolved to the tool it names.
 
   Attributes:
     function_call: The call the model made.
     tool: The tool it names, or a placeholder tool when the name is unknown.
     tool_context: The context the tool and all of its callbacks share.
     function_args: The deep copy of the call arguments handed to the tool.
-    contextvars_snapshot: The `contextvars` context as the before-tool callbacks
-      left it. The execute phase runs the tool in this context, so a contextvar
-      one of those callbacks set is still set when the tool reads it.
-    override_response: A response that already answers the call, so the tool
-      does not run: either what a before-tool callback returned, or the
-      not-found payload for a tool name the model invented. None means the tool
-      still has to run.
+    contextvars_snapshot: The `contextvars` context the prepare phase ran in.
+      The execute phase runs in a copy of it.
+    tools_dict: The tools the call was resolved against, listed back to the
+      model when it names one that does not exist.
     tool_lookup_error: The lookup failure, when the tool name was unknown.
-    is_tool_lookup_failure: Whether `override_response` answers a failed lookup
-      rather than coming from a before-tool callback. Such a response skips the
-      after-tool callbacks, which describe a tool that never ran.
   """
 
   function_call: types.FunctionCall
@@ -634,9 +628,8 @@ class _PreparedFunctionCall:
   tool_context: ToolContext
   function_args: dict[str, Any]
   contextvars_snapshot: contextvars.Context
-  override_response: Optional[object] = None
+  tools_dict: dict[str, BaseTool] = dataclasses.field(default_factory=dict)
   tool_lookup_error: Optional[Exception] = None
-  is_tool_lookup_failure: bool = False
 
 
 async def _prepare_single(
@@ -646,11 +639,16 @@ async def _prepare_single(
     agent: LlmAgent,
     tool_confirmation: Optional[ToolConfirmation] = None,
 ) -> _PreparedFunctionCall:
-  """Resolves one call's tool and runs its before-tool callbacks.
+  """Resolves one call to the tool it names and the context it will run in.
 
-  This is steps 1 and 2 of the tool pipeline, plus the handling of a tool name
-  that resolves to nothing. Nothing here runs the tool.
+  No callback and no tool runs here. The before-tool callbacks belong to the
+  execute phase, next to the after-tool callbacks they pair with. Running them
+  here runs every call's before-tool callback before any tool runs, so a turn
+  in which nothing awaits no longer completes one call before starting the
+  next. Calls whose callbacks or tools do await still interleave, and each one
+  keeps its own state on its own `ToolContext`.
   """
+  del agent  # The callbacks it owns run in the execute phase.
   # Do not use "args" as the variable name, because it is a reserved keyword
   # in python debugger.
   # Make a deep copy to avoid being modified.
@@ -672,55 +670,14 @@ async def _prepare_single(
     # one of them can still answer the call.
     tool_lookup_error = tool_error
 
-  # Step 1: Check if plugin before_tool_callback overrides the function
-  # response.
-  override_response: object | None = (
-      await invocation_context.plugin_manager.run_before_tool_callback(
-          tool=tool, tool_args=function_args, tool_context=tool_context
-      )
-  )
-
-  # Step 2: If no overrides are provided from the plugins, further run the
-  # canonical callback.
-  if override_response is None:
-    override_response = await _run_callbacks(
-        agent.canonical_before_tool_callbacks,  # type: ignore[arg-type]
-        _stop_on_non_none,
-        tool=tool,
-        args=function_args,
-        tool_context=tool_context,
-    )
-
-  # Handle tool lookup failure if before-tool callbacks did not override the
-  # response.
-  is_tool_lookup_failure = False
-  if override_response is None and tool_lookup_error is not None:
-    is_tool_lookup_failure = True
-    override_response = await _tool_error_handler.run_on_tool_error_callbacks(
-        invocation_context=invocation_context,
-        agent=agent,
-        tool=tool,
-        tool_args=function_args,
-        tool_context=tool_context,
-        error=tool_lookup_error,
-    )
-    if override_response is None:
-      logger.warning('%s', tool_lookup_error)
-      override_response = _tool_error_handler.build_tool_not_found_response(
-          tool.name, tools_dict
-      )
-
   return _PreparedFunctionCall(
       function_call=function_call,
       tool=tool,
       tool_context=tool_context,
       function_args=function_args,
-      # Taken here, at the end of the prepare phase, so it carries whatever the
-      # before-tool callbacks just set.
       contextvars_snapshot=contextvars.copy_context(),
-      override_response=override_response,
+      tools_dict=tools_dict,
       tool_lookup_error=tool_lookup_error,
-      is_tool_lookup_failure=is_tool_lookup_failure,
   )
 
 
@@ -746,26 +703,61 @@ async def _execute_single_prepared_call(
   tool = prepared_call.tool
   tool_context = prepared_call.tool_context
   function_args = prepared_call.function_args
-  function_response = prepared_call.override_response
+  function_response: object | None = None
   detected_error_type: Optional[str] = None
 
   async def _run_with_trace() -> Event | None:
     """Executes the tool with full lifecycle management and telemetry.
 
-    This function orchestrates the rest of the tool execution pipeline,
-    including:
-    1. Executing the actual tool logic.
-    2. Running plugin and canonical after-tool callbacks.
-    3. Detecting error types for telemetry.
-    4. Building the final FunctionResponse Event to be returned.
+    This function orchestrates the tool execution pipeline, including:
+    1. Running plugin and canonical before-tool callbacks.
+    2. Executing the actual tool logic.
+    3. Running plugin and canonical after-tool callbacks.
+    4. Detecting error types for telemetry.
+    5. Building the final FunctionResponse Event to be returned.
     """
     nonlocal function_response, detected_error_type
 
-    # A response the prepare phase built for a tool that was never found
-    # answers the call as it is: the after-tool callbacks describe a tool run
-    # that did not happen.
-    if prepared_call.is_tool_lookup_failure:
+    # Step 1: Check if plugin before_tool_callback overrides the function
+    # response.
+    function_response = (
+        await invocation_context.plugin_manager.run_before_tool_callback(
+            tool=tool, tool_args=function_args, tool_context=tool_context
+        )
+    )
+
+    # Step 2: If no overrides are provided from the plugins, further run the
+    # canonical callback.
+    if function_response is None:
+      function_response = await _run_callbacks(
+          agent.canonical_before_tool_callbacks,  # type: ignore[arg-type]
+          _stop_on_non_none,
+          tool=tool,
+          args=function_args,
+          tool_context=tool_context,
+      )
+
+    # A tool name that resolved to nothing is answered once the before-tool
+    # callbacks have had their chance to answer it themselves. The after-tool
+    # callbacks are skipped: they describe a tool run that did not happen.
+    if (
+        function_response is None
+        and prepared_call.tool_lookup_error is not None
+    ):
       detected_error_type = type(prepared_call.tool_lookup_error).__name__
+      function_response = await _tool_error_handler.run_on_tool_error_callbacks(
+          invocation_context=invocation_context,
+          agent=agent,
+          tool=tool,
+          tool_args=function_args,
+          tool_context=tool_context,
+          error=prepared_call.tool_lookup_error,
+      )
+      if function_response is None:
+        logger.warning('%s', prepared_call.tool_lookup_error)
+        function_response = _tool_error_handler.build_tool_not_found_response(
+            tool.name, prepared_call.tools_dict
+        )
       return _build_response_event(
           tool, function_response, tool_context, invocation_context
       )
@@ -856,10 +848,10 @@ async def _execute_single_prepared_call_async(
 ) -> Optional[Event]:
   """Runs one prepared function call and builds its response event.
 
-  This is steps 3 to 6 of the tool pipeline: run the tool unless the prepare
-  phase already answered the call, run the after-tool callbacks, and turn the
-  result into an event. State modifications stay thread safe because each call
-  owns its own ToolContext.
+  This is steps 1 to 6 of the tool pipeline: run the before-tool callbacks, run
+  the tool unless one of them answered the call, run the after-tool callbacks,
+  and turn the result into an event. State modifications stay thread safe
+  because each call owns its own ToolContext.
   """
   return await _execute_single_prepared_call(
       invocation_context,
@@ -882,7 +874,7 @@ async def _execute_single_prepared_call_live(
   """Runs one prepared function call in live mode.
 
   This is the live counterpart of `_execute_single_prepared_call_async`: steps
-  3 to 6 of the tool pipeline, with the tool call itself going through
+  1 to 6 of the tool pipeline, with the tool call itself going through
   `_process_function_live_helper`.
   """
   return await _execute_single_prepared_call(

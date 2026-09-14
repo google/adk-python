@@ -131,7 +131,7 @@ class NodeRunner:
       try:
         # Start the span within try-except block to record exceptions on the span
         async with node_tracing.start_as_current_node_span(
-            self._parent_ctx, self._node
+            self._parent_ctx, self._node, ctx
         ) as telemetry_context:
           ctx._telemetry_context = telemetry_context
           await self._execute_node(ctx, node_input)

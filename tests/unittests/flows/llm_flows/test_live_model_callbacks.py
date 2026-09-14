@@ -205,6 +205,20 @@ def _content_request(text: str, *, partial: bool = False) -> LiveRequest:
   )
 
 
+def _function_response_request(*, text: Optional[str] = None) -> LiveRequest:
+  """A tool result, optionally carrying a text part alongside it."""
+  parts = [
+      types.Part(
+          function_response=types.FunctionResponse(
+              name='noop_tool', response={}
+          )
+      )
+  ]
+  if text is not None:
+    parts.append(types.Part(text=text))
+  return LiveRequest(content=types.Content(role='user', parts=parts))
+
+
 def noop_tool() -> dict:
   """A tool that does nothing."""
   return {}
@@ -303,8 +317,8 @@ async def test_before_model_callback_receives_connection_fields_for_text():
 
 
 @pytest.mark.asyncio
-async def test_before_model_callback_skips_partial_text_input():
-  """Partial typed messages do not run before_model_callback."""
+async def test_before_model_callback_fires_for_partial_text_input():
+  """A partial typed message reaches the model, so it runs the callback too."""
   before, seen = _recorder()
   invocation_context = await _make_context(before=before)
 
@@ -317,8 +331,39 @@ async def test_before_model_callback_skips_partial_text_input():
       ],
   )
 
-  assert len(seen) == 1
-  assert seen[0]['llm_request'].contents[0].parts[0].text == 'hello'
+  assert _content_texts(call['llm_request'].contents[0] for call in seen) == [
+      'hel',
+      'hello',
+  ]
+
+
+@pytest.mark.asyncio
+async def test_before_model_callback_fires_for_text_beside_a_tool_result():
+  """Text carried alongside a function response is screened like any text."""
+  before, seen = _recorder()
+  invocation_context = await _make_context(before=before)
+
+  await _drive_send(
+      _Flow(), invocation_context, [_function_response_request(text='hello')]
+  )
+
+  assert _content_texts(call['llm_request'].contents[0] for call in seen) == [
+      'hello'
+  ]
+
+
+@pytest.mark.asyncio
+async def test_before_model_callback_skips_a_plain_tool_result():
+  """A request that is only function responses answers the model's own call."""
+  before, seen = _recorder()
+  invocation_context = await _make_context(before=before)
+
+  connection, _ = await _drive_send(
+      _Flow(), invocation_context, [_function_response_request()]
+  )
+
+  assert seen == []
+  connection._send_content.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -353,6 +398,18 @@ async def test_blocked_text_input_is_not_sent_to_the_model():
 
   connection, _ = await _drive_send(
       _Flow(), invocation_context, [_content_request('hello')]
+  )
+
+  connection._send_content.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_blocked_partial_text_input_is_not_sent_to_the_model():
+  """Blocked partial input is never forwarded to the model either."""
+  invocation_context = await _make_context(before=_blocker('blocked'))
+
+  connection, _ = await _drive_send(
+      _Flow(), invocation_context, [_content_request('hello', partial=True)]
   )
 
   connection._send_content.assert_not_called()

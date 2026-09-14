@@ -222,6 +222,34 @@ def test_clone_with_updated_skills(mock_skill1, mock_skill2):
   assert "my_tool" in new_toolset._provided_tools_by_name
 
 
+@pytest.mark.asyncio
+async def test_clone_with_updated_skills_keeps_filter_and_prefix(
+    mock_skill1, tool_context_instance
+):
+  """The clone exposes the same tools, under the same names, as the original."""
+  mock_skill2 = mock.create_autospec(models.Skill, instance=True)
+  mock_skill2.name = "skill2"
+
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1],
+      tool_name_prefix="acme",
+      tool_filter=["list_skills"],
+  )
+
+  new_toolset = toolset.clone_with_updated_skills([mock_skill2])
+
+  assert new_toolset.tool_name_prefix == "acme"
+  assert new_toolset.tool_filter == ["list_skills"]
+
+  original_names = [
+      t.name for t in await toolset.get_tools(tool_context_instance)
+  ]
+  clone_names = [
+      t.name for t in await new_toolset.get_tools(tool_context_instance)
+  ]
+  assert clone_names == original_names == ["list_skills"]
+
+
 def test_init_accepts_environment(mock_skill1):
   """SkillToolset stores the provided environment."""
   mock_env = mock.create_autospec(BaseEnvironment, instance=True)

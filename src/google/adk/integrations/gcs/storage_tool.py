@@ -30,9 +30,8 @@ def _resolve_local_path(path: str, settings: GCSToolSettings | None) -> str:
   """Resolves a model-supplied local file path under the configured root.
 
   Raises:
-      ValueError: If no root is configured, if the path is absolute, if it names
-        the root itself, or if it resolves outside the root once symlinks are
-        followed.
+      ValueError: If no root is configured, if it names the root itself, or if
+        it resolves outside the root once symlinks are followed.
   """
   root = settings.local_file_root if settings else None
   if not root:
@@ -41,10 +40,16 @@ def _resolve_local_path(path: str, settings: GCSToolSettings | None) -> str:
         " settings to let these tools read from or write to the local"
         " filesystem."
     )
-  if Path(path).is_absolute():
-    raise ValueError(f"Local file path must be relative: {path}")
   resolved_root = Path(root).resolve()
-  resolved = (resolved_root / path).resolve()
+  # An absolute path is judged by where it lands, like a relative one: the
+  # containment check below is what confines either, and it runs after symlinks
+  # are followed.
+  candidate = Path(path)
+  if not candidate.is_absolute():
+    candidate = resolved_root / candidate
+  resolved = candidate.resolve()
+  # The root itself stays out of the message: it reaches the model, and the
+  # deployment's filesystem layout is not the model's business.
   if not resolved.is_relative_to(resolved_root):
     raise ValueError(f"Local file path escapes the configured root: {path}")
   if resolved == resolved_root:
@@ -188,8 +193,9 @@ def create_object(
       credentials (Credentials): The credentials to use for the request.
       data (str, optional): The content to write to the object.
       source_file_path (str, optional): The path of a local file to upload,
-        relative to the directory the tools are configured to use. Rejected
-        when no such directory is configured.
+        either absolute or relative to the directory the tools are configured
+        to use. Must name a file inside that directory. Rejected when no such
+        directory is configured.
 
   Returns:
       dict: Dictionary indicating success or error.
@@ -242,9 +248,10 @@ def get_object_data(
       generation (int, optional): If present, selects a specific generation of
         this object.
       destination_file_path (str, optional): The path to save the downloaded
-        file to, relative to the directory the tools are configured to use.
-        Rejected when no such directory is configured. Missing parent
-        directories are created.
+        file to, either absolute or relative to the directory the tools are
+        configured to use. Must name a file inside that directory. Rejected
+        when no such directory is configured. Missing parent directories are
+        created.
 
   Returns:
       dict: Dictionary containing the object data as a string or confirming file

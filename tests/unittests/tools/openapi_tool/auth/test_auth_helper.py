@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import base64
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -29,6 +30,7 @@ from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.auth.auth_credential import ServiceAccount
 from google.adk.auth.auth_credential import ServiceAccountCredential
 from google.adk.auth.auth_schemes import AuthSchemeType
+from google.adk.auth.auth_schemes import CustomAuthScheme
 from google.adk.auth.auth_schemes import OpenIdConnectWithConfig
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.auth.credential_manager import CredentialManager
@@ -459,7 +461,7 @@ def test_credential_to_param_http_bearer():
   assert kwargs == {INTERNAL_AUTH_PREFIX + "Authorization": "Bearer test_token"}
 
 
-def test_credential_to_param_http_basic_not_supported():
+def test_credential_to_param_http_basic():
   auth_scheme = HTTPBase(scheme="basic")
   auth_credential = AuthCredential(
       auth_type=AuthCredentialTypes.HTTP,
@@ -469,15 +471,137 @@ def test_credential_to_param_http_basic_not_supported():
       ),
   )
 
-  with pytest.raises(
-      NotImplementedError, match="Basic Authentication is not supported."
-  ):
+  param, kwargs = credential_to_param(auth_scheme, auth_credential)
+
+  expected_credentials = base64.b64encode(b"user:password").decode("ascii")
+  assert param.original_name == "Authorization"
+  assert param.param_location == "header"
+  assert kwargs == {
+      INTERNAL_AUTH_PREFIX + "Authorization": f"Basic {expected_credentials}"
+  }
+
+
+def test_credential_to_param_http_basic_missing_password():
+  auth_scheme = HTTPBase(scheme="basic")
+  auth_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.HTTP,
+      http=HttpAuth(
+          scheme="basic",
+          credentials=HttpCredentials(username="user"),
+      ),
+  )
+
+  param, kwargs = credential_to_param(auth_scheme, auth_credential)
+
+  expected_credentials = base64.b64encode(b"user:").decode("ascii")
+  assert param.original_name == "Authorization"
+  assert param.param_location == "header"
+  assert kwargs == {
+      INTERNAL_AUTH_PREFIX + "Authorization": f"Basic {expected_credentials}"
+  }
+
+
+def test_credential_to_param_http_basic_missing_username():
+  auth_scheme = HTTPBase(scheme="basic")
+  auth_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.HTTP,
+      http=HttpAuth(
+          scheme="basic",
+          credentials=HttpCredentials(password="password"),
+      ),
+  )
+
+  param, kwargs = credential_to_param(auth_scheme, auth_credential)
+
+  expected_credentials = base64.b64encode(b":password").decode("ascii")
+  assert param.original_name == "Authorization"
+  assert param.param_location == "header"
+  assert kwargs == {
+      INTERNAL_AUTH_PREFIX + "Authorization": f"Basic {expected_credentials}"
+  }
+
+
+def test_credential_to_param_http_basic_missing_username_and_password():
+  auth_scheme = HTTPBase(scheme="basic")
+  auth_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.HTTP,
+      http=HttpAuth(
+          scheme="basic",
+          credentials=HttpCredentials(),
+      ),
+  )
+
+  with pytest.raises(ValueError, match="Invalid HTTP auth credentials"):
     credential_to_param(auth_scheme, auth_credential)
+
+
+def test_credential_to_param_http_basic_colon_in_username():
+  auth_scheme = HTTPBase(scheme="basic")
+  auth_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.HTTP,
+      http=HttpAuth(
+          scheme="basic",
+          credentials=HttpCredentials(
+              username="user:name", password="password"
+          ),
+      ),
+  )
+
+  with pytest.raises(ValueError, match="Invalid HTTP auth credentials"):
+    credential_to_param(auth_scheme, auth_credential)
+
+
+def test_credential_to_param_http_digest():
+  auth_scheme = HTTPBase(scheme="digest")
+  auth_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.HTTP,
+      http=HttpAuth(
+          scheme="digest",
+          credentials=HttpCredentials(username="user", password="password"),
+      ),
+  )
+
+  with pytest.raises(ValueError, match="Invalid HTTP auth credentials"):
+    credential_to_param(auth_scheme, auth_credential)
+
+
+def test_credential_to_param_http_basic_custom_auth_scheme():
+  auth_scheme = CustomAuthScheme(type="http")
+  auth_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.HTTP,
+      http=HttpAuth(
+          scheme="basic",
+          credentials=HttpCredentials(username="user", password="password"),
+      ),
+  )
+
+  param, kwargs = credential_to_param(auth_scheme, auth_credential)
+
+  expected_credentials = base64.b64encode(b"user:password").decode("ascii")
+  assert param.original_name == "Authorization"
+  assert param.description == "Basic authentication"
+  assert kwargs == {
+      INTERNAL_AUTH_PREFIX + "Authorization": f"Basic {expected_credentials}"
+  }
 
 
 def test_credential_to_param_http_invalid_credentials_no_http():
   auth_scheme = HTTPBase(scheme="basic")
   auth_credential = AuthCredential(auth_type=AuthCredentialTypes.HTTP)
+
+  with pytest.raises(ValueError, match="Invalid HTTP auth credentials"):
+    credential_to_param(auth_scheme, auth_credential)
+
+
+def test_credential_to_param_http_basic_scheme_none():
+  auth_scheme = HTTPBase(scheme="basic")
+  auth_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.HTTP,
+      http=HttpAuth.model_construct(
+          scheme=None,
+          credentials=HttpCredentials(username="user", password="password"),
+      ),
+  )
 
   with pytest.raises(ValueError, match="Invalid HTTP auth credentials"):
     credential_to_param(auth_scheme, auth_credential)

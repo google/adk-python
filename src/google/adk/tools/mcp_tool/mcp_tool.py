@@ -774,23 +774,30 @@ class McpTool(BaseAuthenticatedTool):
           )
           logger.error(error_msg)
           raise ValueError(error_msg)
-        elif (
-            self._credentials_manager._auth_config.auth_scheme.in_
-            != APIKeyIn.header
-        ):
-          error_msg = (
-              "McpTool only supports header-based API key authentication."
-              " Configured location:"
-              f" {self._credentials_manager._auth_config.auth_scheme.in_}"
-          )
-          logger.error(error_msg)
-          raise ValueError(error_msg)
         else:
-          headers = {
-              self._credentials_manager._auth_config.auth_scheme.name: (
-                  credential.api_key
-              )
-          }
+          # `in_` and `name` are declared on APIKey; a CustomAuthScheme may
+          # carry them too, so read them off the scheme rather than requiring
+          # an APIKey instance. A scheme with neither used to raise
+          # AttributeError here.
+          scheme = self._credentials_manager._auth_config.auth_scheme
+          key_location = getattr(scheme, "in_", None)
+          key_name = getattr(scheme, "name", None)
+          if key_location != APIKeyIn.header:
+            error_msg = (
+                "McpTool only supports header-based API key authentication."
+                f" Configured location: {key_location} (scheme:"
+                f" {type(scheme).__name__})"
+            )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+          if not isinstance(key_name, str):
+            error_msg = (
+                "API key auth scheme"
+                f" {type(scheme).__name__} carries no header name."
+            )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+          headers = {key_name: credential.api_key}
       elif credential.service_account:
         # Service accounts should be exchanged for access tokens before reaching this point
         logger.warning(

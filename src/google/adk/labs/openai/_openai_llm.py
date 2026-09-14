@@ -46,6 +46,7 @@ from typing_extensions import override
 from ...models.base_llm import BaseLlm
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
+from ...utils import streaming_utils
 from ...utils._schema_utils import lowercase_schema_types
 from ._openai_schema import enforce_strict_openai_schema
 
@@ -411,13 +412,43 @@ class OpenAILlm(BaseLlm):
           if index not in tool_calls_accumulated:
             tool_calls_accumulated[index] = {
                 "id": tc_delta.id,
-                "name": tc_delta.function.name,
+                "name": tc_delta.function.name if tc_delta.function else None,
                 "arguments": "",
             }
-          if tc_delta.function.arguments:
-            tool_calls_accumulated[index][
-                "arguments"
-            ] += tc_delta.function.arguments
+          else:
+            if tc_delta.id:
+              tool_calls_accumulated[index]["id"] = tc_delta.id
+            if tc_delta.function and tc_delta.function.name:
+              tool_calls_accumulated[index]["name"] = tc_delta.function.name
+
+          arguments_delta = (
+              tc_delta.function.arguments if tc_delta.function else None
+          )
+          partial_args = None
+          if arguments_delta:
+            tool_calls_accumulated[index]["arguments"] += arguments_delta
+            tracker = tool_calls_accumulated[index].setdefault(
+                "tracker", streaming_utils._JsonPathTracker()
+            )
+            partial_args = tracker.handle_chunk(arguments_delta)
+
+          yield LlmResponse(
+              partial=True,
+              content=types.Content(
+                  role="model",
+                  parts=[
+                      types.Part(
+                          function_call=types.FunctionCall(
+                              id=tool_calls_accumulated[index]["id"],
+                              name=tool_calls_accumulated[index]["name"]
+                              or None,
+                              partial_args=partial_args or None,
+                              will_continue=True,
+                          )
+                      )
+                  ],
+              ),
+          )
 
     # Yield final response with all accumulated content
     parts = []

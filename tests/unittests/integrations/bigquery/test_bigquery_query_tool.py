@@ -1903,6 +1903,49 @@ def test_detect_anomalies_with_str_table_id(
   )
 
 
+@mock.patch.object(query_tool, "_validate_subquery", autospec=True)
+@mock.patch.object(query_tool, "_execute_sql", autospec=True)
+def test_detect_anomalies_returns_target_data_subquery_validation_error(
+    mock_execute_sql, mock_validate_subquery
+):
+  """Test that a target data subquery is dry run validated before execution."""
+  mock_validate_subquery.return_value = {
+      "status": "ERROR",
+      "error_details": "Subquery must be a SELECT statement.",
+  }
+  mock_credentials = mock.MagicMock(spec=Credentials)
+  mock_settings = BigQueryToolConfig(write_mode=WriteMode.PROTECTED)
+  mock_tool_context = mock.create_autospec(ToolContext, instance=True)
+  mock_execute_sql.return_value = {"status": "SUCCESS"}
+  target_data_query = (
+      "SELECT 1) ; DROP TABLE my_dataset.my_table; SELECT * FROM (SELECT 1"
+  )
+
+  result = query_tool.detect_anomalies(
+      project_id="test-project",
+      history_data="test-dataset.history-table",
+      times_series_timestamp_col="ts_timestamp",
+      times_series_data_col="ts_data",
+      target_data=target_data_query,
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+  )
+
+  mock_validate_subquery.assert_called_once_with(
+      target_data_query,
+      "test-project",
+      mock_credentials,
+      mock_settings,
+      "detect_anomalies",
+  )
+  assert result == {
+      "status": "ERROR",
+      "error_details": "Subquery must be a SELECT statement.",
+  }
+  mock_execute_sql.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "param_overrides, expected_error_substring",
     [

@@ -52,6 +52,7 @@ from typing_extensions import override
 
 from . import _prompt_cache
 from ..utils import _json_utils
+from ..utils import streaming_utils
 from ..utils._google_client_headers import get_tracking_headers
 from ..utils._schema_utils import lowercase_schema_types
 from .base_llm import BaseLlm
@@ -132,6 +133,7 @@ class _ToolUseAccumulator:
   id: str
   name: str
   args_json: str
+  tracker: streaming_utils._JsonPathTracker | None = None
 
 
 @dataclasses.dataclass
@@ -159,11 +161,12 @@ def _build_anthropic_thinking_param(
       explicit (mirroring the Anthropic API).
     * ``0``: thinking is DISABLED (``thinking.type: "disabled"``).
     * negative (e.g. ``-1`` AUTOMATIC): maps to Anthropic's adaptive thinking
-      (``thinking.type: "adaptive"``). The model picks the depth itself
-      (controlled by the separate ``output_config.effort`` parameter when
-      set). REQUIRED for Claude Opus 4.7 and later models that reject
-      ``"enabled"`` with a 400 error; also recommended for Opus 4.6 and
-      Sonnet 4.6 where ``"enabled"`` is deprecated.
+      (``thinking.type: "adaptive"``, ``thinking.display: "summarized"``). The
+      model picks the depth itself (controlled by the separate
+      ``output_config.effort`` parameter when set) and returns its reasoning
+      as summarized thoughts. REQUIRED for Claude Opus 4.7 and later models
+      that reject ``"enabled"`` with a 400 error; also recommended for Opus
+      4.6 and Sonnet 4.6 where ``"enabled"`` is deprecated.
     * positive int: budget in tokens for legacy manual mode
       (``thinking.type: "enabled"``; Anthropic requires ``>= 1024`` and
       ``< max_tokens``; validation is delegated to the Anthropic API so the
@@ -200,7 +203,11 @@ def _build_anthropic_thinking_param(
     # where ``"enabled"`` is deprecated. Adaptive does not accept a budget;
     # depth is controlled by the model itself (or by the separate
     # ``output_config.effort`` parameter when set).
-    return anthropic_types.ThinkingConfigAdaptiveParam(type="adaptive")
+    # Without ``display``, Claude redacts the reasoning it just billed for.
+    return anthropic_types.ThinkingConfigAdaptiveParam(
+        type="adaptive",
+        display="summarized",
+    )
 
   return anthropic_types.ThinkingConfigEnabledParam(
       type="enabled",
@@ -506,7 +513,11 @@ def _part_to_message_block(
     # We serialize to str here
     # SDK ref: anthropic.types.tool_result_block_param
     # https://github.com/anthropics/anthropic-sdk-python/blob/main/src/anthropic/types/tool_result_block_param.py
-    elif "result" in response_data and response_data["result"] is not None:
+    # Exactly {"result": value} is ADK's wrapper for a non-dict tool return.
+    elif (
+        response_data.keys() == {"result"}
+        and response_data["result"] is not None
+    ):
       result = response_data["result"]
       if isinstance(result, (dict, list)):
         content = json.dumps(result)
@@ -1155,6 +1166,22 @@ class AnthropicLlm(BaseLlm):
               name=block.name,
               args_json="",
           )
+          yield LlmResponse(
+              partial=True,
+              content=types.Content(
+                  role="model",
+                  parts=[
+                      types.Part(
+                          function_call=types.FunctionCall(
+                              id=block.id,
+                              name=block.name,
+                              will_continue=True,
+                          )
+                      )
+                  ],
+              ),
+              model_version=llm_request.model or self.model,
+          )
 
       elif event.type == "content_block_delta":
         delta = event.delta
@@ -1200,6 +1227,31 @@ class AnthropicLlm(BaseLlm):
         elif isinstance(delta, anthropic_types.InputJSONDelta):
           if event.index in tool_use_blocks:
             tool_use_blocks[event.index].args_json += delta.partial_json
+            accumulator = tool_use_blocks[event.index]
+            partial_args = None
+            if delta.partial_json:
+              if accumulator.tracker is None:
+                accumulator.tracker = streaming_utils._JsonPathTracker()
+              partial_args = accumulator.tracker.handle_chunk(
+                  delta.partial_json
+              )
+            yield LlmResponse(
+                partial=True,
+                content=types.Content(
+                    role="model",
+                    parts=[
+                        types.Part(
+                            function_call=types.FunctionCall(
+                                id=accumulator.id,
+                                name=accumulator.name,
+                                partial_args=partial_args or None,
+                                will_continue=True,
+                            )
+                        )
+                    ],
+                ),
+                model_version=llm_request.model or self.model,
+            )
 
       elif event.type == "message_delta":
         # ``message_delta`` carries the authoritative cumulative counts, so the

@@ -20,8 +20,10 @@ from collections import Counter
 
 from .._base_node import BaseNode
 from .._base_node import START
+from .._errors import GraphValidationError
 from .._graph import DEFAULT_ROUTE
 from .._graph import Edge
+from .._graph import RouteValue
 
 
 def _detect_unconditional_cycles(
@@ -43,7 +45,7 @@ def _detect_unconditional_cycles(
       if neighbor in in_stack:
         cycle_start = path.index(neighbor)
         cycle = path[cycle_start:] + [neighbor]
-        raise ValueError(
+        raise GraphValidationError(
             "Graph validation failed. Unconditional cycle detected:"
             f" {' -> '.join(cycle)}. Cycles must include at"
             " least one conditional (routed) edge to avoid"
@@ -68,7 +70,7 @@ def _validate_duplicate_node_names(nodes: list[BaseNode]) -> set[str]:
   )
 
   if duplicates:
-    raise ValueError(
+    raise GraphValidationError(
         "Graph validation failed. Duplicate node names found:"
         f" {duplicates}. This means multiple distinct node objects"
         " have the same name. If you intended to reuse the same node, ensure"
@@ -81,7 +83,7 @@ def _validate_duplicate_node_names(nodes: list[BaseNode]) -> set[str]:
 def _validate_start_node(node_names: set[str]) -> None:
   """Checks for existence of START node."""
   if START.name not in node_names:
-    raise ValueError(
+    raise GraphValidationError(
         "Graph validation failed. START node (name: "
         f"'{START.name}') not found in graph nodes."
     )
@@ -106,34 +108,54 @@ def _validate_connectivity(edges: list[Edge], node_names: set[str]) -> None:
 
   unreachable_nodes = node_names - reachable
   if unreachable_nodes:
-    raise ValueError(
+    raise GraphValidationError(
         "Graph validation failed. The following nodes are unreachable"
         f" from START: {sorted(unreachable_nodes)}"
     )
   if START.name in to_nodes:
-    raise ValueError(
+    raise GraphValidationError(
         "Graph validation failed. START node must not have incoming edges."
     )
 
 
+def _normalize_route(
+    route: RouteValue | list[RouteValue] | None,
+) -> set[RouteValue | None]:
+  if route is None:
+    return {None}
+  if isinstance(route, list):
+    return set(route)
+  return {route}
+
+
 def _validate_duplicate_edges(edges: list[Edge]) -> None:
   """Checks for duplicate edges."""
-  seen_edges = set()
+  seen_routes: dict[tuple[str, str], set[RouteValue | None]] = {}
   for edge in edges:
-    edge_tuple = (edge.from_node.name, edge.to_node.name)
-    if edge_tuple in seen_edges:
-      raise ValueError(
-          "Graph validation failed. Duplicate edge found: from="
-          f"{edge.from_node.name}, to={edge.to_node.name}"
-      )
-    seen_edges.add(edge_tuple)
+    edge_key = (edge.from_node.name, edge.to_node.name)
+    new_routes = _normalize_route(edge.route)
+
+    if edge_key in seen_routes:
+      existing_routes = seen_routes[edge_key]
+      if (
+          None in existing_routes
+          or None in new_routes
+          or not existing_routes.isdisjoint(new_routes)
+      ):
+        raise GraphValidationError(
+            "Graph validation failed. Duplicate edge found: from="
+            f"{edge.from_node.name}, to={edge.to_node.name}"
+        )
+      existing_routes.update(new_routes)
+    else:
+      seen_routes[edge_key] = set(new_routes)
 
 
 def _validate_start_edges(edges: list[Edge]) -> None:
   """Checks that edges from START do not have routes."""
   for edge in edges:
     if edge.from_node.name == START.name and edge.route is not None:
-      raise ValueError(
+      raise GraphValidationError(
           "Graph validation failed. Edges from START must not have routes"
           f" (edge to {edge.to_node.name} has route {edge.route})."
       )
@@ -144,7 +166,7 @@ def _validate_default_routes(edges: list[Edge]) -> None:
   default_route_edges: dict[str, str] = {}
   for edge in edges:
     if isinstance(edge.route, list) and DEFAULT_ROUTE in edge.route:
-      raise ValueError(
+      raise GraphValidationError(
           "Graph validation failed. DEFAULT_ROUTE cannot be combined"
           " with other routes in a list (edge from="
           f"{edge.from_node.name}, to={edge.to_node.name})."
@@ -153,7 +175,7 @@ def _validate_default_routes(edges: list[Edge]) -> None:
     if edge.route == DEFAULT_ROUTE:
       from_node_name = edge.from_node.name
       if from_node_name in default_route_edges:
-        raise ValueError(
+        raise GraphValidationError(
             "Graph validation failed. Multiple DEFAULT_ROUTE edges found"
             f" from node {from_node_name} to"
             f" {default_route_edges[from_node_name]} and"
@@ -169,7 +191,7 @@ def _validate_static_schemas(edges: list[Edge]) -> None:
     to_node = edge.to_node
     if from_node.output_schema and to_node.input_schema:
       if from_node.output_schema != to_node.input_schema:
-        raise ValueError(
+        raise GraphValidationError(
             "Graph validation failed. Schema mismatch on edge"
             f" {from_node.name} -> {to_node.name}."
             f" Output schema {from_node.output_schema} does not match"
@@ -188,7 +210,7 @@ def _validate_chat_agent_wiring(edges: list[Edge]) -> None:
         and getattr(to_node, "mode", None) == "chat"
     ):
       if edge.from_node.name != START.name:
-        raise ValueError(
+        raise GraphValidationError(
             f"The agent '{to_node.name}' has been added to the workflow with"
             f" mode='chat' following node '{edge.from_node.name}'. This is"
             " not supported because chat-mode agents rely on conversational"

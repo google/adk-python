@@ -162,6 +162,7 @@ class MockPlugin(BasePlugin):
     super().__init__(name="mock_plugin")
     self.enable_user_message_callback = False
     self.enable_event_callback = False
+    self.before_run_response: Optional[types.Content] = None
     self.user_content_seen_in_before_run_callback = None
 
   async def on_user_message_callback(
@@ -181,10 +182,11 @@ class MockPlugin(BasePlugin):
       self,
       *,
       invocation_context: InvocationContext,
-  ) -> None:
+  ) -> Optional[types.Content]:
     self.user_content_seen_in_before_run_callback = (
         invocation_context.user_content
     )
+    return self.before_run_response
 
   async def on_event_callback(
       self, *, invocation_context: InvocationContext, event: Event
@@ -1446,6 +1448,68 @@ class TestRunnerWithPlugins:
     assert (
         persisted_event.custom_metadata == MockPlugin.ON_EVENT_CALLBACK_METADATA
     )
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      ("agent_cls", "is_live"),
+      [
+          (MockAgent, False),
+          (MockLlmAgent, False),
+          (MockLiveAgent, True),
+      ],
+      ids=("legacy", "node", "live"),
+  )
+  async def test_runner_processes_before_run_early_exit_with_event_callback(
+      self, agent_cls, is_live
+  ):
+    """Before-run early exits still pass through on-event hooks."""
+    from google.adk.live import LiveRequestQueue
+
+    plugin = MockPlugin()
+    plugin.before_run_response = types.Content(
+        role="model", parts=[types.Part(text="blocked by before_run")]
+    )
+    plugin.enable_event_callback = True
+    session_service = InMemorySessionService()
+    runner = Runner(
+        app=App(
+            name=TEST_APP_ID,
+            root_agent=agent_cls("test_agent"),
+            plugins=[plugin],
+        ),
+        session_service=session_service,
+    )
+    session = await session_service.create_session(
+        app_name=TEST_APP_ID,
+        user_id=TEST_USER_ID,
+        session_id=TEST_SESSION_ID,
+    )
+
+    if is_live:
+      event_stream = runner.run_live(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          live_request_queue=LiveRequestQueue(),
+      )
+    else:
+      event_stream = runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=types.Content(
+              role="user", parts=[types.Part(text="hello")]
+          ),
+      )
+    events = [event async for event in event_stream]
+    persisted_session = await session_service.get_session(
+        app_name=TEST_APP_ID,
+        user_id=TEST_USER_ID,
+        session_id=session.id,
+    )
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == MockPlugin.ON_EVENT_CALLBACK_MSG
+    assert events[0].custom_metadata == MockPlugin.ON_EVENT_CALLBACK_METADATA
+    assert persisted_session.events[-1] == events[0]
 
   @pytest.mark.asyncio
   async def test_runner_close_calls_plugin_close(self):
@@ -4018,6 +4082,232 @@ async def test_retry_is_deduplicated_even_when_a_plugin_rewrote_the_message():
   )
   assert len(_user_events_for(stored, "inv-retry")) == 1
   assert plugin.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_run_async_early_close_executes_after_run_plugin():
+  """Closing runner.run_async early executes after_run callbacks."""
+  after_run_called = False
+
+  class _TestPlugin(BasePlugin):
+
+    async def after_run_callback(
+        self, *, invocation_context: InvocationContext
+    ) -> None:
+      nonlocal after_run_called
+      after_run_called = True
+
+  class EchoAgent(BaseAgent):
+
+    def __init__(self, name: str):
+      super().__init__(name=name, sub_agents=[])
+
+    async def _run_async_impl(
+        self, invocation_context: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      yield Event(
+          invocation_id=invocation_context.invocation_id,
+          author=self.name,
+          content=types.Content(
+              role="model", parts=[types.Part(text="step 1")]
+          ),
+      )
+      yield Event(
+          invocation_id=invocation_context.invocation_id,
+          author=self.name,
+          content=types.Content(
+              role="model", parts=[types.Part(text="step 2")]
+          ),
+      )
+
+  app = App(
+      name="test_app",
+      root_agent=EchoAgent("echo"),
+      plugins=[_TestPlugin(name="test_plugin")],
+  )
+  ss = InMemorySessionService()
+  runner = Runner(app=app, session_service=ss)
+  session = await ss.create_session(app_name="test_app", user_id=TEST_USER_ID)
+
+  async with aclosing(
+      runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=session.id,
+          new_message=types.Content(parts=[types.Part(text="go")], role="user"),
+      )
+  ) as agen:
+    async for _ in agen:
+      break
+
+  assert after_run_called is True
+
+
+@pytest.mark.asyncio
+async def test_run_async_cancellation_does_not_execute_after_run_plugin():
+  """External task cancellation skips after_run callbacks."""
+  after_run_called = False
+
+  class _TestPlugin(BasePlugin):
+
+    async def after_run_callback(
+        self, *, invocation_context: InvocationContext
+    ) -> None:
+      nonlocal after_run_called
+      after_run_called = True
+
+  class WaitingAgent(BaseAgent):
+
+    def __init__(self, name: str):
+      super().__init__(name=name, sub_agents=[])
+
+    async def _run_async_impl(
+        self, invocation_context: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      yield Event(
+          invocation_id=invocation_context.invocation_id,
+          author=self.name,
+          content=types.Content(
+              role="model", parts=[types.Part(text="started")]
+          ),
+      )
+      await asyncio.sleep(100)
+
+  app = App(
+      name="test_app",
+      root_agent=WaitingAgent("waiting"),
+      plugins=[_TestPlugin(name="test_plugin")],
+  )
+  ss = InMemorySessionService()
+  runner = Runner(app=app, session_service=ss)
+  session = await ss.create_session(app_name="test_app", user_id=TEST_USER_ID)
+
+  started_event = asyncio.Event()
+
+  async def consumer():
+    async for _ in runner.run_async(
+        user_id=TEST_USER_ID,
+        session_id=session.id,
+        new_message=types.Content(parts=[types.Part(text="go")], role="user"),
+    ):
+      started_event.set()
+
+  task = asyncio.create_task(consumer())
+  await started_event.wait()
+  task.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await task
+
+  assert after_run_called is False
+
+
+@pytest.mark.asyncio
+async def test_run_async_after_run_failure_on_early_close_does_not_escape():
+  """after_run failure on early close does not escape aclose()."""
+  reported_errors: list[Exception] = []
+
+  class _FailingAfterRunPlugin(BasePlugin):
+
+    async def after_run_callback(
+        self, *, invocation_context: InvocationContext
+    ) -> None:
+      raise ValueError("after_run boom")
+
+    async def on_run_error_callback(
+        self, *, invocation_context: InvocationContext, error: Exception
+    ) -> None:
+      reported_errors.append(error)
+
+  class EchoAgent(BaseAgent):
+
+    def __init__(self, name: str):
+      super().__init__(name=name, sub_agents=[])
+
+    async def _run_async_impl(
+        self, invocation_context: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      yield Event(
+          invocation_id=invocation_context.invocation_id,
+          author=self.name,
+          content=types.Content(role="model", parts=[types.Part(text="one")]),
+      )
+      yield Event(
+          invocation_id=invocation_context.invocation_id,
+          author=self.name,
+          content=types.Content(role="model", parts=[types.Part(text="two")]),
+      )
+
+  app = App(
+      name="test_app",
+      root_agent=EchoAgent("echo"),
+      plugins=[_FailingAfterRunPlugin(name="failing_plugin")],
+  )
+  ss = InMemorySessionService()
+  runner = Runner(app=app, session_service=ss)
+  session = await ss.create_session(app_name="test_app", user_id=TEST_USER_ID)
+
+  # Failure is reported through on_run_error rather than escaping aclose().
+  async with aclosing(
+      runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=session.id,
+          new_message=types.Content(parts=[types.Part(text="go")], role="user"),
+      )
+  ) as agen:
+    async for _ in agen:
+      break
+
+  assert len(reported_errors) == 1
+
+
+def test_run_sync_early_break_executes_after_run_plugin():
+  """Breaking out of synchronous run() executes after_run callbacks."""
+  after_run_called = False
+
+  class _TestPlugin(BasePlugin):
+
+    async def after_run_callback(
+        self, *, invocation_context: InvocationContext
+    ) -> None:
+      nonlocal after_run_called
+      after_run_called = True
+
+  class _SteppingAgent(BaseAgent):
+
+    async def _run_async_impl(
+        self, invocation_context: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      for i in range(5):
+        yield Event(
+            invocation_id=invocation_context.invocation_id,
+            author=self.name,
+            content=types.Content(
+                role="model", parts=[types.Part(text=f"step {i}")]
+            ),
+        )
+        await asyncio.sleep(0.05)
+
+  app = App(
+      name="test_app",
+      root_agent=_SteppingAgent(name="stepping"),
+      plugins=[_TestPlugin(name="test_plugin")],
+  )
+  runner = Runner(
+      app=app,
+      session_service=InMemorySessionService(),
+      auto_create_session=True,
+  )
+
+  consumed = 0
+  for _ in runner.run(
+      user_id=TEST_USER_ID,
+      session_id="session_sync_break",
+      new_message=types.Content(role="user", parts=[types.Part(text="go")]),
+  ):
+    consumed += 1
+    break
+
+  assert consumed == 1
+  assert after_run_called is True
 
 
 if __name__ == "__main__":

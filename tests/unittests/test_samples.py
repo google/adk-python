@@ -170,6 +170,8 @@ _DUMMY_ENV = {
     "GOOGLE_CLOUD_LOCATION": "us-central1",
     "OPENAI_API_KEY": "dummy-key",
     "ANTHROPIC_API_KEY": "dummy-key",
+    "AZURE_API_KEY": "dummy-key",
+    "AZURE_RESOURCE_NAME": "dummy-resource",
     "GITHUB_TOKEN": "dummy-token",
     "VERTEXAI_DATASTORE_ID": "dummy-datastore",
 }

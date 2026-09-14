@@ -42,7 +42,9 @@ def test_resolve_local_path_without_local_file_root():
 @pytest.mark.parametrize(
     "path, expected_error",
     [
-        pytest.param("/etc/passwd", "must be relative", id="absolute"),
+        pytest.param(
+            "/etc/passwd", "escapes the configured root", id="absolute-outside"
+        ),
         pytest.param(
             "../outside.txt", "escapes the configured root", id="dotdot"
         ),
@@ -66,6 +68,31 @@ def test_resolve_local_path_rejects(tmp_path, path, expected_error):
     storage_tool._resolve_local_path(
         path, GCSToolSettings(local_file_root=str(root))
     )
+
+
+def test_resolve_local_path_accepts_an_absolute_path_inside_the_root(tmp_path):
+  """Test _resolve_local_path accepts an absolute path that lands in the root."""
+  root = tmp_path / "root"
+  root.mkdir()
+
+  resolved = storage_tool._resolve_local_path(
+      str(root / "report.csv"), GCSToolSettings(local_file_root=str(root))
+  )
+
+  assert resolved == str(root.resolve() / "report.csv")
+
+
+def test_resolve_local_path_keeps_the_root_out_of_the_message(tmp_path):
+  """Test the rejection does not disclose the configured root, which the model reads."""
+  root = tmp_path / "root"
+  root.mkdir()
+
+  with pytest.raises(ValueError) as excinfo:
+    storage_tool._resolve_local_path(
+        "/etc/passwd", GCSToolSettings(local_file_root=str(root))
+    )
+
+  assert str(root.resolve()) not in str(excinfo.value)
 
 
 def test_list_objects():
@@ -259,8 +286,10 @@ def test_create_object_from_file_without_local_file_root():
     mock_blob.upload_from_filename.assert_not_called()
 
 
-def test_create_object_from_file_rejects_absolute_path(tmp_path):
-  """Test create_object refuses an absolute source_file_path."""
+def test_create_object_from_file_rejects_absolute_path_outside_the_root(
+    tmp_path,
+):
+  """Test create_object refuses a source_file_path outside the configured root."""
   with mock.patch.object(
       client, "get_gcs_client", autospec=True
   ) as mock_get_client:
@@ -271,17 +300,51 @@ def test_create_object_from_file_rejects_absolute_path(tmp_path):
     mock_blob = mock.MagicMock()
     mock_bucket.blob.return_value = mock_blob
 
+    root = tmp_path / "root"
+    root.mkdir()
+
     creds = mock.create_autospec(Credentials, instance=True)
     result = storage_tool.create_object(
         bucket_name="test-bucket",
         object_name="test-object",
         source_file_path=str(tmp_path / "secrets.json"),
         credentials=creds,
-        settings=GCSToolSettings(local_file_root=str(tmp_path)),
+        settings=GCSToolSettings(local_file_root=str(root)),
     )
     assert result["status"] == "ERROR"
-    assert "must be relative" in result["error_details"]
+    assert "escapes the configured root" in result["error_details"]
     mock_blob.upload_from_filename.assert_not_called()
+
+
+def test_create_object_from_file_accepts_absolute_path_inside_the_root(
+    tmp_path,
+):
+  """Test create_object uploads from an absolute path under the configured root."""
+  with mock.patch.object(
+      client, "get_gcs_client", autospec=True
+  ) as mock_get_client:
+    mock_client = mock.MagicMock()
+    mock_get_client.return_value = mock_client
+    mock_bucket = mock.MagicMock()
+    mock_client.get_bucket.return_value = mock_bucket
+    mock_blob = mock.MagicMock()
+    mock_bucket.blob.return_value = mock_blob
+
+    source = tmp_path / "report.csv"
+    source.write_text("a,b\n1,2\n")
+
+    creds = mock.create_autospec(Credentials, instance=True)
+    result = storage_tool.create_object(
+        bucket_name="test-bucket",
+        object_name="test-object",
+        source_file_path=str(source),
+        credentials=creds,
+        settings=GCSToolSettings(local_file_root=str(tmp_path)),
+    )
+    assert result["status"] == "SUCCESS"
+    mock_blob.upload_from_filename.assert_called_once_with(
+        str(source.resolve())
+    )
 
 
 def test_create_object_no_data():

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import abc
+import asyncio
 import inspect
 import logging
 from typing import Any
@@ -341,8 +342,12 @@ class BaseAgent(BaseNode, abc.ABC):
     async def _run() -> AsyncGenerator[Event, None]:
       ctx = self._create_invocation_context(parent_context)
       async with _instrumentation.record_agent_invocation(ctx, self):
+        before_callback_completed = False
+        after_callback_called = False
         try:
-          if event := await self._handle_before_agent_callback(ctx):
+          event = await self._handle_before_agent_callback(ctx)
+          before_callback_completed = True
+          if event:
             yield event
           if ctx.end_invocation:
             return
@@ -354,8 +359,25 @@ class BaseAgent(BaseNode, abc.ABC):
           if ctx.end_invocation:
             return
 
+          after_callback_called = True
           if event := await self._handle_after_agent_callback(ctx):
             yield event
+        except asyncio.CancelledError:
+          if (
+              before_callback_completed
+              and not after_callback_called
+              and not ctx.end_invocation
+          ):
+            try:
+              await self._handle_after_agent_callback(ctx)
+            except asyncio.CancelledError:
+              raise
+            except Exception:  # pylint: disable=broad-except
+              logger.exception(
+                  'after_agent_callback raised on cancellation;'
+                  ' suppressing so original cancellation propagates.'
+              )
+          raise
         except Exception as e:
           await self._handle_agent_error_callback(ctx, e)
           raise
@@ -403,8 +425,12 @@ class BaseAgent(BaseNode, abc.ABC):
     async def _run() -> AsyncGenerator[Event, None]:
       ctx = self._create_invocation_context(parent_context)
       async with _instrumentation.record_agent_invocation(ctx, self):
+        before_callback_completed = False
+        after_callback_called = False
         try:
-          if event := await self._handle_before_agent_callback(ctx):
+          event = await self._handle_before_agent_callback(ctx)
+          before_callback_completed = True
+          if event:
             yield event
           if ctx.end_invocation:
             return
@@ -413,8 +439,28 @@ class BaseAgent(BaseNode, abc.ABC):
             async for event in agen:
               yield event
 
+          if ctx.end_invocation:
+            return
+
+          after_callback_called = True
           if event := await self._handle_after_agent_callback(ctx):
             yield event
+        except asyncio.CancelledError:
+          if (
+              before_callback_completed
+              and not after_callback_called
+              and not ctx.end_invocation
+          ):
+            try:
+              await self._handle_after_agent_callback(ctx)
+            except asyncio.CancelledError:
+              raise
+            except Exception:  # pylint: disable=broad-except
+              logger.exception(
+                  'after_agent_callback raised on cancellation;'
+                  ' suppressing so original cancellation propagates.'
+              )
+          raise
         except Exception as e:
           await self._handle_agent_error_callback(ctx, e)
           raise

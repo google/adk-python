@@ -63,7 +63,18 @@ from .base_agent_config import BaseAgentConfig as BaseAgentConfig
 from .callback_context import CallbackContext
 from .context import Context
 from .invocation_context import InvocationContext
-from .llm_agent_config import LlmAgentConfig as LlmAgentConfig
+
+with warnings.catch_warnings():
+  # LlmAgentConfig subclasses the deprecated BaseAgentConfig purely as an
+  # internal implementation detail, so this import alone should not warn
+  # applications that never touch the deprecated Agent Config APIs.
+  warnings.filterwarnings(
+      'ignore',
+      message=r'.*BaseAgentConfig is deprecated.*',
+      category=DeprecationWarning,
+  )
+  from .llm_agent_config import LlmAgentConfig as LlmAgentConfig
+
 from .readonly_context import ReadonlyContext
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -177,22 +188,15 @@ async def _convert_tool_union_to_tools(
 
     if isinstance(tool_union, BaseAgent):
       raise ValueError(
-          f"Agent '{tool_union.name}' cannot be wrapped as a NodeTool. Agents"
+          f"Agent '{tool_union.name}' cannot be used directly as a tool. Agents"
           ' should be invoked as sub-agents.'
-      )
-
-    description = tool_union.description
-    if not description:
-      raise ValueError(
-          f"Workflow/Node '{tool_union.name}' must have a description to be"
-          ' wrapped as a tool.'
       )
 
     return [
         NodeTool(
             node=tool_union,
             name=tool_union.name,
-            description=description,
+            description=tool_union.description,
         )
     ]
 
@@ -1242,17 +1246,11 @@ class LlmAgent(BaseAgent, abc.ABC):
       for t in data['tools']:
         if isinstance(t, BaseAgent):
           raise ValueError(
-              f"Agent '{t.name}' cannot be wrapped as a NodeTool. Agents should"
-              ' be invoked as sub-agents.'
+              f"Agent '{t.name}' cannot be used directly as a tool. Agents"
+              ' should be invoked as sub-agents.'
           )
         elif isinstance(t, BaseNode):
-          description = t.description
-          if not description:
-            raise ValueError(
-                f"Workflow/Node '{t.name}' must have a description to be"
-                ' wrapped as a tool.'
-            )
-          new_tools.append(NodeTool(node=t, description=description))
+          new_tools.append(NodeTool(node=t, description=t.description))
         else:
           new_tools.append(t)
       data['tools'] = new_tools
