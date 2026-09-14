@@ -39,8 +39,8 @@ from google.adk.tools.computer_use.computer_use_tool import ComputerUseTool
 from google.genai import types
 
 from . import _tool_error_handler
-from ...agents.active_streaming_tool import ActiveStreamingTool
 from ...events.event import Event
+from ...live._active_streaming_tool import ActiveStreamingTool
 from ...live.live_request_queue import LiveRequestQueue
 from ...telemetry import _instrumentation
 from ...tools.base_tool import BaseTool

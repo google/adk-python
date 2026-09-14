@@ -997,7 +997,15 @@ class LlmAgent(BaseAgent, abc.ABC):
     return None
 
   def __get_agent_to_run(self, agent_name: str) -> BaseAgent:
-    """Find the agent to run under the root agent by name."""
+    """Find the agent this agent transferred to, by name."""
+    from ..flows.llm_flows.agent_transfer import _get_transfer_targets
+
+    # Prefer this agent's own declared targets, so that resuming a transfer
+    # cannot run a same-named agent from an unrelated branch of the tree.
+    for target in _get_transfer_targets(self):
+      if target.name == agent_name:
+        return target
+
     agent_to_run = self.root_agent.find_agent(agent_name)
     if not agent_to_run:
       available = self._get_available_agent_names()

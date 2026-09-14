@@ -6,6 +6,7 @@ This directory contains specific developer guides for the ADK Python implementat
 
 ### Agents
 * [BaseAgent](agents/base_agent/index.md) - The foundational base class for custom agents, container orchestrators, and lifecycle callbacks.
+* [Context](agents/context/index.md) - The runtime interface for state, artifacts, memory, credentials, and dynamic execution.
 * [Creating Agents with Configurations](agents/config/index.md) - Building and wiring multi-agent graphs from external YAML configuration files.
 * [LlmAgent Single-Turn Mode](agents/llm_agent/single_turn.md) - Guide on using LlmAgent in single-turn mode.
 * [LlmAgent Task Mode](agents/llm_agent/task.md) - Guide on using LlmAgent in task mode.
@@ -33,6 +34,7 @@ This directory contains specific developer guides for the ADK Python implementat
 
 ### Integrations
 * [Model Armor](integrations/model_armor/index.md) - Screening user input and model output with Google Cloud Model Armor.
+* [MongoDbToolset](integrations/mongodb/mongodb_toolset/index.md) - Vector and hybrid search over a MongoDB database, with the query text embedded on the way through.
 
 ### Labs
 * [AntigravityAgent](labs/antigravity/index.md) - Runs a Google Antigravity SDK agent as an ADK agent node.

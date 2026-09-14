@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+from enum import Enum
 import json
 import logging
 import mimetypes
@@ -30,6 +31,7 @@ from typing import Any
 from typing import cast
 from typing import Optional
 from typing import TYPE_CHECKING
+import warnings
 
 from google.genai import types
 from typing_extensions import override
@@ -71,6 +73,26 @@ _SEARCH_SKILLS_TOOL_NAME = "search_skills"
 _LOAD_SKILL_TOOL_NAME = "load_skill"
 _LOAD_SKILL_RESOURCE_TOOL_NAME = "load_skill_resource"
 _RUN_SKILL_SCRIPT_TOOL_NAME = "run_skill_script"
+
+
+class SkillDiscoveryMode(Enum):
+  """How the local skill catalog is disclosed to the model."""
+
+  LAZY = "lazy"
+  """The model discovers skills by calling `list_skills` (default).
+
+  Costs a model turn before the first `load_skill`, and keeps the system
+  instruction free of skill names. Preferable for a large or changing catalog.
+  """
+
+  EAGER = "eager"
+  """The catalog is injected into the system instruction as XML.
+
+  The `list_skills` tool is not offered, and the model can call `load_skill`
+  straight away. Preferable for a small, stable catalog, where the discovery
+  turn costs more than the names do. Registry skills are unaffected: they are
+  still reachable only through `search_skills`.
+  """
 
 
 def _build_skill_system_instruction(
@@ -1331,6 +1353,7 @@ class SkillToolset(BaseToolset):
       additional_tools: list[ToolUnion] | None = None,
       tool_name_prefix: str | None = None,
       tool_filter: ToolPredicate | list[str] | None = None,
+      discovery_mode: SkillDiscoveryMode = SkillDiscoveryMode.LAZY,
   ):
     """Initializes the SkillToolset.
 
@@ -1349,6 +1372,9 @@ class SkillToolset(BaseToolset):
         to be made available to the agent when certain skills are activated.
       tool_name_prefix: Optional prefix to prepend to tool names.
       tool_filter: Optional filter to select specific tools.
+      discovery_mode: How the local catalog reaches the model. Defaults to
+        `LAZY`, where it calls `list_skills`. `EAGER` drops that tool and
+        injects the catalog into the system instruction instead.
     """
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
 
@@ -1401,13 +1427,18 @@ class SkillToolset(BaseToolset):
         ft = FunctionTool(tool_union)
         self._provided_tools_by_name[ft.name] = ft
 
+    self._discovery_mode = discovery_mode
+    self._warned_on_filtered_list_skills = False
+
     # Initialize core skill tools
-    self._tools = [
-        ListSkillsTool(self),
+    self._tools: list[BaseTool] = []
+    if discovery_mode is SkillDiscoveryMode.LAZY:
+      self._tools.append(ListSkillsTool(self))
+    self._tools.extend([
         LoadSkillTool(self),
         LoadSkillResourceTool(self),
         RunSkillScriptTool(self),
-    ]
+    ])
     if self._registry:
       self._tools.append(SearchSkillsTool(self))
 
@@ -1586,7 +1617,30 @@ class SkillToolset(BaseToolset):
         additional_tools=additional_tools,
         tool_name_prefix=self.tool_name_prefix,
         tool_filter=self.tool_filter,
+        discovery_mode=self._discovery_mode,
     )
+
+  def _inject_catalog(self, selected_core_tools: set[str]) -> bool:
+    """Whether to write the local catalog into the system instruction."""
+    if self._discovery_mode is SkillDiscoveryMode.EAGER:
+      return True
+    if _LIST_SKILLS_TOOL_NAME in selected_core_tools:
+      return False
+    # A tool_filter that hides list_skills used to imply eager disclosure.
+    # Kept so those callers keep a way to discover skills, but the mode is now
+    # how you ask for this.
+    # FutureWarning rather than DeprecationWarning so callers see it by default.
+    if not self._warned_on_filtered_list_skills:
+      self._warned_on_filtered_list_skills = True
+      warnings.warn(
+          "Filtering out `list_skills` to inject the skill catalog into the"
+          " system instruction is deprecated. Pass"
+          " `discovery_mode=SkillDiscoveryMode.EAGER` instead; a future release"
+          " will let tool_filter remove the tool without changing the prompt.",
+          FutureWarning,
+          stacklevel=2,
+      )
+    return True
 
   async def process_llm_request(
       self, *, tool_context: ToolContext, llm_request: LlmRequest
@@ -1607,9 +1661,7 @@ class SkillToolset(BaseToolset):
         )
     ]
 
-    has_list_skills = _LIST_SKILLS_TOOL_NAME in selected_core_tools
-
-    if not has_list_skills:
+    if self._inject_catalog(selected_core_tools):
       skills = self._list_skills()
       skills_xml = prompt.format_skills_as_xml(skills)
       instructions.append(skills_xml)

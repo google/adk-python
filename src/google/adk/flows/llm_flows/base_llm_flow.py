@@ -750,14 +750,20 @@ class BaseLlmFlow(ABC):
     from .agent_transfer import _get_transfer_targets
 
     # Restrict transfers to declared targets (or itself) to prevent
-    # unauthorized escalation.
-    if isinstance(agent, LlmAgent) and agent_to_run.name != agent.name:
-      allowed_names = {target.name for target in _get_transfer_targets(agent)}
-      if agent_to_run.name not in allowed_names:
-        raise ValueError(
-            f'Agent {agent.name} is not allowed to transfer to agent'
-            f' {agent_name}.'
-        )
+    # unauthorized escalation. The agent that runs is taken from those
+    # declarations rather than from the tree-wide search above, so an agent
+    # elsewhere in the tree that happens to share the name cannot stand in for
+    # the declared one.
+    if isinstance(agent, LlmAgent):
+      if agent_name == agent.name:
+        return agent
+      for target in _get_transfer_targets(agent):
+        if target.name == agent_name:
+          return target
+      raise ValueError(
+          f'Agent {agent.name} is not allowed to transfer to agent'
+          f' {agent_name}.'
+      )
     return agent_to_run
 
   async def _call_llm_async(
