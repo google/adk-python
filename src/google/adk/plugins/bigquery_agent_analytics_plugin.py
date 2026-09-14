@@ -7421,13 +7421,29 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     span_id, duration = TraceManager.pop_span()
     parent_span_id, _ = TraceManager.get_current_span_and_parent()
 
+    # MCP CallToolResult (isError) and plugin-rewritten failures
+    # (error_details) reach here as ordinary results. Classify them as
+    # TOOL_ERROR so status/error_message match on_tool_error_callback;
+    # otherwise audits treat them as successes.
+    error_message = None
+    if isinstance(result, dict):
+      if result.get("error_details"):
+        error_message = str(result["error_details"])
+      elif result.get("isError") or result.get("is_error"):
+        content = result.get("content")
+        first = content[0] if isinstance(content, list) and content else None
+        text = first.get("text") if isinstance(first, dict) else None
+        error_message = str(text) if text else "Tool returned an error"
+
     event_data = EventData(
         latency_ms=duration,
         span_id_override=span_id,
         parent_span_id_override=parent_span_id,
+        status="ERROR" if error_message is not None else "OK",
+        error_message=error_message,
     )
     await self._log_event(
-        "TOOL_COMPLETED",
+        "TOOL_ERROR" if error_message is not None else "TOOL_COMPLETED",
         tool_context,
         raw_content=content_dict,
         is_truncated=is_truncated,
@@ -7441,7 +7457,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # args (the final-answer payload the model supplied) as AGENT_RESPONSE so
     # the visible response text is captured.  Opt-in via
     # ``config.final_response_tool_names`` (empty by default).
-    if tool.name in self.config.final_response_tool_names:
+    if (
+        error_message is None
+        and tool.name in self.config.final_response_tool_names
+    ):
       args_truncated, args_is_truncated = _recursive_smart_truncate(
           tool_args, self.config.max_content_length
       )
