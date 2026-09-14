@@ -110,9 +110,8 @@ def _pause_left_calls_unanswered(
       fr.id for ev in events for fr in ev.get_function_responses() if fr.id
   }
   # `issubset`, not `&`: this asks whether *any* awaited id is still open, so a
-  # partially answered pause keeps waiting. `decide_resume` asks the opposite
-  # question of its own ids -- whether *none* are answered -- and drops
-  # `issubset` for that reason. The two are not interchangeable.
+  # partially answered pause keeps waiting. Intersection would treat one
+  # sibling answer as coverage for the rest.
   return bool(awaited) and not awaited.issubset(answered)
 
 
@@ -191,20 +190,26 @@ def _needs_call_replay(
     call_names: set[str | None],
     answers: list[types.FunctionResponse],
     from_sub_branch: bool,
+    call_ids: set[str | None] | None = None,
+    answered_ids: set[str] | None = None,
 ) -> bool:
   """Whether the calls named by `call_names` still have to be run.
 
-  `call_names` holds every name on the call event, not just the first: one
-  event can carry parallel calls, and an answer to the second is not evidence
-  the first never ran.
+  Coverage is all-or-nothing: an answer to one parallel call is not
+  evidence the others ran. Names and ids both have to be covered --
+  two calls can share a name, so names alone cannot see a missing twin.
   """
   if not call_names:
     return False
-  return (
-      not answers
-      or any(fr.name not in call_names for fr in answers)
-      or from_sub_branch
-  )
+  answered_names = {fr.name for fr in answers}
+  names_uncovered = not call_names.issubset(answered_names)
+  ids_uncovered = False
+  if call_ids is not None and answered_ids is not None:
+    concrete_ids = {i for i in call_ids if i is not None}
+    ids_uncovered = bool(concrete_ids) and not concrete_ids.issubset(
+        answered_ids
+    )
+  return names_uncovered or ids_uncovered or from_sub_branch
 
 
 def decide_resume(
@@ -257,18 +262,25 @@ def decide_resume(
     # short-circuits both unanswered tests rather than being repeated in each.
     from_sub_branch = _is_sub_branch_answer(answer_event, call_event)
     answers = answer_event.get_function_responses()
-    # `ids & answered` alone decides these: a set that is a subset of the
-    # answered ids necessarily intersects it, so testing `issubset` as well
-    # never changes the outcome.
-    lro_unanswered = bool(lro_ids) and not lro_ids & answered_ids
+    concrete_call_ids = {i for i in call_ids if i is not None}
+    # `issubset`, not `&`: one answered id does not cover a sibling that
+    # never ran. Pause only when nothing matched (no id and no name);
+    # leftover ids after a sibling answer are a replay, not a pause.
+    lro_unanswered = bool(lro_ids) and not lro_ids.issubset(answered_ids)
     call_unanswered = (
-        bool(call_ids)
-        and not call_ids & answered_ids
+        bool(concrete_call_ids)
+        and not concrete_call_ids.issubset(answered_ids)
         and not any(fr.name in call_names for fr in answers)
     )
     if not from_sub_branch and (lro_unanswered or call_unanswered):
       pause = True
-    elif _needs_call_replay(call_names, answers, from_sub_branch):
+    elif _needs_call_replay(
+        call_names,
+        answers,
+        from_sub_branch,
+        call_ids=concrete_call_ids,
+        answered_ids=answered_ids,
+    ):
       return ResumeDecision(ResumeAction.REPLAY_CALLS, call_event)
 
   return ResumeDecision(ResumeAction.PAUSE if pause else ResumeAction.CONTINUE)
