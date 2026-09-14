@@ -52,6 +52,22 @@ def _call_event(name: str, call_id: str, *, lro: bool = False) -> Event:
   )
 
 
+def _parallel_call_event(pairs: list[tuple[str, str]]) -> Event:
+  return Event(
+      author='agent',
+      invocation_id='inv-1',
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(id=i, name=n, args={})
+              )
+              for i, n in pairs
+          ],
+      ),
+  )
+
+
 def _response_event(
     name: str,
     response_id: str | None,
@@ -262,25 +278,7 @@ class TestDecideResume:
     # One event can carry parallel calls. Matching answers against only the
     # first call's name reads the second answer as a foreign name, so a fully
     # answered event is replayed and both tools run a second time.
-    call = Event(
-        author='agent',
-        invocation_id='inv-1',
-        content=types.Content(
-            role='model',
-            parts=[
-                types.Part(
-                    function_call=types.FunctionCall(
-                        id='c1', name='ask', args={}
-                    )
-                ),
-                types.Part(
-                    function_call=types.FunctionCall(
-                        id='c2', name='fetch', args={}
-                    )
-                ),
-            ],
-        ),
-    )
+    call = _parallel_call_event([('c1', 'ask'), ('c2', 'fetch')])
     events = [
         call,
         _response_event('ask', 'c1'),
@@ -290,6 +288,29 @@ class TestDecideResume:
         self._ctx(), events, {'ask': object(), 'fetch': object()}
     )
     assert decision.action is ResumeAction.CONTINUE
+
+  def test_parallel_calls_partially_answered_replay(self):
+    # A sibling answer is not coverage for a call that never ran. Any-answered
+    # (name match or id intersection) would CONTINUE here and drop fetch.
+    call = _parallel_call_event([('c1', 'ask'), ('c2', 'fetch')])
+    events = [call, _response_event('ask', 'c1')]
+
+    decision = decide_resume(
+        self._ctx(), events, {'ask': object(), 'fetch': object()}
+    )
+
+    assert decision.action is ResumeAction.REPLAY_CALLS
+    assert decision.event is call
+
+  def test_parallel_same_name_partially_answered_replay(self):
+    # Two calls can share a name, so names alone cannot see the missing twin.
+    call = _parallel_call_event([('c1', 'ask'), ('c2', 'ask')])
+    events = [call, _response_event('ask', 'c1')]
+
+    decision = decide_resume(self._ctx(), events, {'ask': object()})
+
+    assert decision.action is ResumeAction.REPLAY_CALLS
+    assert decision.event is call
 
   def test_sub_branch_answer_replays_instead_of_pausing(self):
     # A HITL answer returned against the branch the call opened resolves it,
@@ -379,3 +400,15 @@ class TestDecideStepResume:
     decision = decide_step_resume(self._ctx(events), {'ask': object()})
     assert decision.action is ResumeAction.REPLAY_CALLS
     assert decision.replay_event() is tail
+
+  def test_a_partially_answered_parallel_step_is_replayed(self):
+    # The entry point must not CONTINUE just because a sibling was answered.
+    call = _parallel_call_event([('c1', 'ask'), ('c2', 'fetch')])
+    events = [call, _response_event('ask', 'c1')]
+
+    decision = decide_step_resume(
+        self._ctx(events), {'ask': object(), 'fetch': object()}
+    )
+
+    assert decision.action is ResumeAction.REPLAY_CALLS
+    assert decision.replay_event() is call
