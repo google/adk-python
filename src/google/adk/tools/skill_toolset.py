@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import enum
 import json
 import logging
 import mimetypes
@@ -71,6 +72,22 @@ _SEARCH_SKILLS_TOOL_NAME = "search_skills"
 _LOAD_SKILL_TOOL_NAME = "load_skill"
 _LOAD_SKILL_RESOURCE_TOOL_NAME = "load_skill_resource"
 _RUN_SKILL_SCRIPT_TOOL_NAME = "run_skill_script"
+
+
+class SkillDiscoveryMode(enum.Enum):
+  """How the model learns the L1 catalog of locally registered skills.
+
+  Omitting ``list_skills`` also injects the catalog into the system prompt, so
+  this enum names the discovery strategy rather than only the tool presence.
+  """
+
+  LAZY = "lazy"
+  """Expose ``list_skills``; the model discovers the L1 catalog via a tool call."""
+
+  EAGER = "eager"
+  """Hide ``list_skills`` and inject ``<available_skills>`` into the system
+  instruction so the model can call ``load_skill`` without a discovery turn.
+  """
 
 
 def _build_skill_system_instruction(
@@ -1331,7 +1348,7 @@ class SkillToolset(BaseToolset):
       additional_tools: list[ToolUnion] | None = None,
       tool_name_prefix: str | None = None,
       tool_filter: ToolPredicate | list[str] | None = None,
-      include_list_skills: bool = True,
+      discovery_mode: SkillDiscoveryMode = SkillDiscoveryMode.LAZY,
   ):
     """Initializes the SkillToolset.
 
@@ -1350,12 +1367,18 @@ class SkillToolset(BaseToolset):
         to be made available to the agent when certain skills are activated.
       tool_name_prefix: Optional prefix to prepend to tool names.
       tool_filter: Optional filter to select specific tools.
-      include_list_skills: Whether to expose the `list_skills` discovery tool.
-        When True (default), the model lists the L1 catalog through a tool
-        call. When False, the catalog is injected into the system instruction
-        as `<available_skills>` XML so the model can call `load_skill`
+      discovery_mode: How the model learns the L1 catalog of local skills.
+        ``LAZY`` (default) exposes ``list_skills``. ``EAGER`` hides
+        ``list_skills`` and injects the catalog into the system instruction as
+        ``<available_skills>`` XML so the model can call ``load_skill``
         directly, without a discovery turn.
     """
+    if not isinstance(discovery_mode, SkillDiscoveryMode):
+      raise TypeError(
+          "discovery_mode must be a SkillDiscoveryMode, got"
+          f" {type(discovery_mode).__name__}."
+      )
+
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
 
     skills = skills or []
@@ -1407,16 +1430,16 @@ class SkillToolset(BaseToolset):
         ft = FunctionTool(tool_union)
         self._provided_tools_by_name[ft.name] = ft
 
-    # Initialize core skill tools. Omitting list_skills injects the L1 catalog
-    # into the system instruction in process_llm_request, so the model can call
-    # load_skill without a discovery turn.
-    self._include_list_skills = include_list_skills
+    # Initialize core skill tools. EAGER omits list_skills and injects the L1
+    # catalog into the system instruction in process_llm_request, so the model
+    # can call load_skill without a discovery turn.
+    self._discovery_mode = discovery_mode
     self._tools = [
         LoadSkillTool(self),
         LoadSkillResourceTool(self),
         RunSkillScriptTool(self),
     ]
-    if include_list_skills:
+    if discovery_mode is SkillDiscoveryMode.LAZY:
       self._tools.insert(0, ListSkillsTool(self))
     if self._registry:
       self._tools.append(SearchSkillsTool(self))
@@ -1596,7 +1619,7 @@ class SkillToolset(BaseToolset):
         additional_tools=additional_tools,
         tool_name_prefix=self.tool_name_prefix,
         tool_filter=self.tool_filter,
-        include_list_skills=self._include_list_skills,
+        discovery_mode=self._discovery_mode,
     )
 
   async def process_llm_request(

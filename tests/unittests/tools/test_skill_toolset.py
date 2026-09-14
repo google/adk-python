@@ -250,12 +250,20 @@ async def test_clone_with_updated_skills_keeps_filter_and_prefix(
   assert clone_names == original_names == ["list_skills"]
 
 
+def test_init_rejects_non_enum_discovery_mode(mock_skill1):
+  """discovery_mode must be a SkillDiscoveryMode instance."""
+  with pytest.raises(TypeError, match="SkillDiscoveryMode"):
+    skill_toolset.SkillToolset([mock_skill1], discovery_mode="eager")
+
+
 @pytest.mark.asyncio
-async def test_clone_with_updated_skills_keeps_include_list_skills(
+async def test_clone_with_updated_skills_keeps_discovery_mode(
     mock_skill1, mock_skill2, tool_context_instance
 ):
-  """The clone keeps include_list_skills=False, so list_skills stays hidden."""
-  toolset = skill_toolset.SkillToolset([mock_skill1], include_list_skills=False)
+  """The clone keeps discovery_mode=EAGER, so list_skills stays hidden."""
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1], discovery_mode=skill_toolset.SkillDiscoveryMode.EAGER
+  )
 
   new_toolset = toolset.clone_with_updated_skills([mock_skill2])
 
@@ -267,6 +275,7 @@ async def test_clone_with_updated_skills_keeps_include_list_skills(
   ]
   assert "list_skills" not in original_names
   assert clone_names == original_names
+  assert new_toolset._discovery_mode is skill_toolset.SkillDiscoveryMode.EAGER
 
 
 def test_init_accepts_environment(mock_skill1):
@@ -3135,9 +3144,11 @@ async def test_process_llm_request_injects_skills_xml_when_list_skills_filtered(
 
 
 @pytest.mark.asyncio
-async def test_get_tools_omits_list_skills_when_disabled(mock_skill1):
-  """include_list_skills=False hides list_skills and keeps the other tools."""
-  toolset = skill_toolset.SkillToolset([mock_skill1], include_list_skills=False)
+async def test_get_tools_omits_list_skills_when_eager(mock_skill1):
+  """EAGER hides list_skills and keeps the other tools."""
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1], discovery_mode=skill_toolset.SkillDiscoveryMode.EAGER
+  )
 
   tool_names = [t.name for t in await toolset.get_tools()]
 
@@ -3148,12 +3159,13 @@ async def test_get_tools_omits_list_skills_when_disabled(mock_skill1):
 
 
 @pytest.mark.asyncio
-async def test_process_llm_request_injects_skills_xml_when_list_skills_disabled(
+async def test_process_llm_request_injects_skills_xml_when_eager(
     mock_skill1, mock_skill2, tool_context_instance
 ):
-  """include_list_skills=False injects the L1 catalog into the system prompt."""
+  """EAGER injects the L1 catalog into the system prompt."""
   toolset = skill_toolset.SkillToolset(
-      [mock_skill1, mock_skill2], include_list_skills=False
+      [mock_skill1, mock_skill2],
+      discovery_mode=skill_toolset.SkillDiscoveryMode.EAGER,
   )
   llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
 
@@ -3171,14 +3183,14 @@ async def test_process_llm_request_injects_skills_xml_when_list_skills_disabled(
 
 
 @pytest.mark.asyncio
-async def test_include_list_skills_false_keeps_search_skills(
+async def test_eager_discovery_keeps_search_skills(
     mock_skill1, mock_registry, tool_context_instance
 ):
-  """Disabling list_skills still exposes search_skills when a registry is set."""
+  """EAGER still exposes search_skills when a registry is set."""
   toolset = skill_toolset.SkillToolset(
       [mock_skill1],
       registry=mock_registry,
-      include_list_skills=False,
+      discovery_mode=skill_toolset.SkillDiscoveryMode.EAGER,
   )
 
   tool_names = [t.name for t in await toolset.get_tools(tool_context_instance)]
