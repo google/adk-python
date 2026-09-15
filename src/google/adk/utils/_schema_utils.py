@@ -186,6 +186,12 @@ def lowercase_schema_types(value: object) -> None:
       lowercase_schema_types(child_list)
 
 
+# Anchored, linear-time removal of an optional leading language tag
+# (e.g. the "json" in ```json). No overlapping whitespace quantifiers,
+# so it cannot backtrack catastrophically.
+_FENCE_LANG_RE = re.compile(r"^[A-Za-z0-9_]*[ \t]*\n?")
+
+
 def _strip_json_code_fence(json_text: str) -> str:
   """Removes a markdown code fence wrapping the entire JSON payload, if present.
 
@@ -195,8 +201,16 @@ def _strip_json_code_fence(json_text: str) -> str:
   never starts with a fence, so this is a no-op on valid input.
   """
   stripped = json_text.strip()
-  match = re.fullmatch(r"```\w*\s*(.*?)\s*```", stripped, re.DOTALL)
-  return match.group(1).strip() if match else json_text
+  # NOTE: do NOT use a single regex such as r"```\w*\s*(.*?)\s*```" here.
+  # Its overlapping whitespace quantifiers (leading \s*, the DOTALL-lazy
+  # (.*?), and the trailing \s*) make re.fullmatch backtrack in O(n^3) on an
+  # unclosed fence whose body is whitespace -- a ReDoS reachable from
+  # (attacker-influenced) model output. Use O(n) string operations instead.
+  if len(stripped) >= 6 and stripped.startswith("```") and stripped.endswith("```"):
+    inner = stripped[3:-3]
+    inner = _FENCE_LANG_RE.sub("", inner, count=1)
+    return inner.strip()
+  return json_text
 
 
 def validate_schema(schema: SchemaType, json_text: str) -> Any:
