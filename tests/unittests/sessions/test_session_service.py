@@ -1201,11 +1201,13 @@ async def test_create_session_with_existing_id_raises_error(session_service):
 
 
 @pytest.mark.asyncio
-async def test_create_session_with_padded_duplicate_id_raises_error():
-  """Tests that InMemorySessionService checks the duplicate id after
-  stripping it, so a whitespace-padded id maps to the same session as its
-  trimmed form instead of silently overwriting it."""
-  service = InMemorySessionService()
+async def test_create_session_with_padded_duplicate_id_raises_error(
+    session_service,
+):
+  """Tests that the duplicate id check runs after stripping it, so a
+  whitespace-padded id maps to the same session as its trimmed form instead of
+  creating a second one."""
+  service = session_service
   app_name = 'my_app'
   user_id = 'test_user'
   session_id = 'existing_session'
@@ -1230,18 +1232,58 @@ async def test_create_session_with_padded_duplicate_id_raises_error():
   )
   assert session.state['keep'] == 'original'
 
+  listed = await service.list_sessions(app_name=app_name, user_id=user_id)
+  assert [session.id for session in listed.sessions] == [session_id]
+
 
 @pytest.mark.asyncio
-async def test_create_session_with_blank_id_generates_one():
+async def test_padded_session_id_reads_and_deletes(session_service):
+  """Tests that the id normalization applied on create also applies on read
+  and delete, so a caller passing one padded id throughout keeps reaching the
+  session it created."""
+  app_name = 'my_app'
+  user_id = 'test_user'
+  padded_id = 'order-42\n'
+
+  created = await session_service.create_session(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=padded_id,
+      state={'cart': 'book'},
+  )
+  assert created.id == 'order-42'
+
+  session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=padded_id
+  )
+  assert session is not None
+  assert session.id == 'order-42'
+  assert session.state['cart'] == 'book'
+
+  await session_service.delete_session(
+      app_name=app_name, user_id=user_id, session_id=padded_id
+  )
+  assert (
+      await session_service.get_session(
+          app_name=app_name, user_id=user_id, session_id='order-42'
+      )
+      is None
+  )
+
+
+@pytest.mark.asyncio
+async def test_create_session_with_blank_id_generates_one(session_service):
   """Tests that a whitespace-only session id is treated the same as no id
   at all, rather than being stored verbatim."""
-  service = InMemorySessionService()
-
-  session = await service.create_session(
+  session = await session_service.create_session(
       app_name='my_app', user_id='test_user', session_id='   '
   )
 
   assert session.id.strip()
+  sessions = await session_service.list_sessions(
+      app_name='my_app', user_id='test_user'
+  )
+  assert [s.id for s in sessions.sessions] == [session.id]
 
 
 @pytest.mark.asyncio
