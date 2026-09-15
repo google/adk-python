@@ -22,6 +22,9 @@ from unittest.mock import patch
 
 from fastapi.openapi.models import APIKey
 from fastapi.openapi.models import MediaType
+from fastapi.openapi.models import OAuth2
+from fastapi.openapi.models import OAuthFlowAuthorizationCode
+from fastapi.openapi.models import OAuthFlows
 from fastapi.openapi.models import Operation
 from fastapi.openapi.models import Parameter as OpenAPIParameter
 from fastapi.openapi.models import RequestBody
@@ -30,6 +33,7 @@ from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import HttpAuth
 from google.adk.auth.auth_credential import HttpCredentials
+from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.sessions.state import State
@@ -2082,3 +2086,143 @@ class TestRestApiToolAuthConfiguration:
     tool.configure_auth_credential(None)
 
     assert tool.auth_credential is None
+
+
+class TestRestApiTool401Eviction:
+  """Tests for HTTP 401 handling and credential eviction in RestApiTool.call."""
+
+  @pytest.fixture
+  def oauth2_scheme(self) -> OAuth2:
+    return OAuth2(
+        flows=OAuthFlows(
+            authorizationCode=OAuthFlowAuthorizationCode(
+                authorizationUrl="https://example.com/auth",
+                tokenUrl="https://example.com/token",
+                scopes={},
+            )
+        )
+    )
+
+  @pytest.fixture
+  def oauth2_credential(self) -> AuthCredential:
+    return AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="test-client-id",
+            client_secret="test-client-secret",
+            access_token="existing-token",
+        ),
+    )
+
+  async def test_call_401_with_auth_scheme_evicts_credential_and_requests_reauth(
+      self,
+      sample_endpoint,
+      sample_operation,
+      oauth2_scheme,
+      oauth2_credential,
+      mock_tool_context,
+  ):
+    """HTTP 401 on an authenticated tool evicts stale credential and returns pending."""
+    from google.adk.tools.openapi_tool.openapi_spec_parser.tool_auth_handler import ToolContextCredentialStore
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_scheme=oauth2_scheme,
+        auth_credential=oauth2_credential,
+    )
+
+    store = ToolContextCredentialStore(mock_tool_context)
+    key = store.get_credential_key(oauth2_scheme, oauth2_credential)
+    store.store_credential(key, oauth2_credential)
+
+    assert key in mock_tool_context.state
+
+    mock_resp = httpx.Response(
+        status_code=401,
+        request=httpx.Request("GET", "https://example.com/test"),
+        content=b'{"error": "Unauthorized"}',
+    )
+    with patch(
+        "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request",
+        AsyncMock(return_value=mock_resp),
+    ):
+      result = await tool.call(args={}, tool_context=mock_tool_context)
+
+    assert result.get("pending") is True
+    assert "Your authorization has expired" in result.get("message", "")
+    assert key not in mock_tool_context.state
+    mock_tool_context.request_credential.assert_called_once()
+
+  async def test_call_401_without_auth_scheme_returns_error(
+      self,
+      sample_endpoint,
+      sample_operation,
+      mock_tool_context,
+  ):
+    """HTTP 401 on an unauthenticated tool returns error without attempting eviction."""
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_scheme=None,
+        auth_credential=None,
+    )
+
+    mock_resp = httpx.Response(
+        status_code=401,
+        request=httpx.Request("GET", "https://example.com/test"),
+        content=b'{"error": "Unauthorized"}',
+    )
+    with patch(
+        "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request",
+        AsyncMock(return_value=mock_resp),
+    ):
+      result = await tool.call(args={}, tool_context=mock_tool_context)
+
+    assert "error" in result
+    assert result.get("pending") is not True
+    mock_tool_context.request_credential.assert_not_called()
+
+  async def test_call_403_with_auth_scheme_does_not_evict_credential(
+      self,
+      sample_endpoint,
+      sample_operation,
+      oauth2_scheme,
+      oauth2_credential,
+      mock_tool_context,
+  ):
+    """HTTP 403 returns error and does NOT evict the credential."""
+    from google.adk.tools.openapi_tool.openapi_spec_parser.tool_auth_handler import ToolContextCredentialStore
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_scheme=oauth2_scheme,
+        auth_credential=oauth2_credential,
+    )
+
+    store = ToolContextCredentialStore(mock_tool_context)
+    key = store.get_credential_key(oauth2_scheme, oauth2_credential)
+    store.store_credential(key, oauth2_credential)
+
+    mock_resp = httpx.Response(
+        status_code=403,
+        request=httpx.Request("GET", "https://example.com/test"),
+        content=b'{"error": "Forbidden"}',
+    )
+    with patch(
+        "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request",
+        AsyncMock(return_value=mock_resp),
+    ):
+      result = await tool.call(args={}, tool_context=mock_tool_context)
+
+    assert "error" in result
+    assert result.get("pending") is not True
+    assert key in mock_tool_context.state
+    mock_tool_context.request_credential.assert_not_called()
