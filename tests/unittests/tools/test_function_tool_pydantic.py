@@ -14,6 +14,7 @@
 
 # Pydantic model conversion tests
 
+from typing import Annotated
 from typing import Optional
 from typing import Union
 from unittest.mock import MagicMock
@@ -23,6 +24,7 @@ from google.adk.sessions.session import Session
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 import pydantic
+from pydantic import Field
 import pytest
 
 
@@ -521,3 +523,192 @@ async def test_run_async_with_union_of_basemodels():
       tool_context=tool_context_mock,
   )
   assert company_result == {"entity_type": "company", "name": "Acme Corp"}
+
+
+# Annotated parameters, with type hints resolving normally.
+
+
+def test_preprocess_args_with_annotated_pydantic_model():
+  """Test _preprocess_args converts a dict for Annotated[Model, Field]."""
+
+  def fn(user: Annotated[UserModel, Field(description="A user")]):
+    return user.name
+
+  processed_args = FunctionTool(fn)._preprocess_args(
+      {"user": {"name": "Alice", "age": 30}}
+  )
+
+  assert isinstance(processed_args["user"], UserModel)
+  assert processed_args["user"].name == "Alice"
+
+
+def test_preprocess_args_with_annotated_optional_model():
+  """Test _preprocess_args converts a dict for Annotated[Optional[Model], Field]."""
+
+  def fn(
+      preferences: Annotated[
+          Optional[PreferencesModel], Field(description="Prefs")
+      ] = None,
+  ):
+    return preferences
+
+  processed_args = FunctionTool(fn)._preprocess_args(
+      {"preferences": {"theme": "dark"}}
+  )
+
+  assert isinstance(processed_args["preferences"], PreferencesModel)
+  assert processed_args["preferences"].theme == "dark"
+
+
+def test_preprocess_args_with_optional_annotated_model():
+  """Test _preprocess_args converts a dict for Optional[Annotated[Model, Field]].
+
+  Here the Annotated sits inside the union, so unwrapping the outer annotation
+  is not enough.
+  """
+
+  def fn(
+      user: Optional[Annotated[UserModel, Field(description="A user")]] = None,
+  ):
+    return user
+
+  processed_args = FunctionTool(fn)._preprocess_args(
+      {"user": {"name": "Bob", "age": 25}}
+  )
+
+  assert isinstance(processed_args["user"], UserModel)
+  assert processed_args["user"].name == "Bob"
+
+
+def test_preprocess_args_with_annotated_union_of_basemodels():
+  """Test _preprocess_args picks the right member of a union of Annotated models."""
+
+  def fn(
+      entity: Union[
+          Annotated[UserModel, Field(description="A user")],
+          Annotated[CompanyModel, Field(description="A company")],
+      ],
+  ):
+    return entity
+
+  processed_args = FunctionTool(fn)._preprocess_args({
+      "entity": {
+          "company_name": "Acme Corp",
+          "industry": "tech",
+          "employee_count": 50,
+      }
+  })
+
+  assert isinstance(processed_args["entity"], CompanyModel)
+  assert processed_args["entity"].company_name == "Acme Corp"
+
+
+def test_preprocess_args_with_annotated_list_of_models():
+  """Test _preprocess_args converts dicts for Annotated[list[Model], Field]."""
+
+  def fn(
+      users: Annotated[list[UserModel], Field(description="Users")],
+  ):
+    return users
+
+  processed_args = FunctionTool(fn)._preprocess_args(
+      {"users": [{"name": "Alice", "age": 30}, {"name": "Bob", "age": 25}]}
+  )
+
+  assert all(isinstance(user, UserModel) for user in processed_args["users"])
+  assert processed_args["users"][1].name == "Bob"
+
+
+def test_preprocess_args_with_annotated_primitive_unchanged():
+  """Test _preprocess_args leaves an Annotated primitive alone."""
+
+  def fn(count: Annotated[int, Field(ge=1)]):
+    return count
+
+  processed_args = FunctionTool(fn)._preprocess_args({"count": 7})
+
+  assert processed_args["count"] == 7
+
+
+# In each test below, the locally-scoped recursive alias can't be resolved from
+# module globals, so get_type_hints() raises NameError and _preprocess_args
+# falls back to the raw, still-Annotated param.annotation.
+
+
+def test_preprocess_args_annotated_model_unresolvable_signature():
+  """Test Annotated[Model, Field] converts on the param.annotation fallback."""
+  Recursive = Union[int, str, list["Recursive"]]
+
+  def fn(
+      user: Annotated[UserModel, Field(description="A user")],
+      data: Recursive = None,
+  ) -> dict:
+    return {"name": user.name, "type": type(user).__name__}
+
+  processed_args = FunctionTool(fn)._preprocess_args(
+      {"user": {"name": "Alice", "age": 30}}
+  )
+
+  assert isinstance(processed_args["user"], UserModel)
+  assert processed_args["user"].name == "Alice"
+
+
+def test_preprocess_args_optional_annotated_model_unresolvable_signature():
+  """Test Optional[Annotated[Model, Field]] converts on the fallback too."""
+  Recursive = Union[int, str, list["Recursive"]]
+
+  def fn(
+      user: Optional[Annotated[UserModel, Field(description="A user")]] = None,
+      data: Recursive = None,
+  ):
+    return user
+
+  processed_args = FunctionTool(fn)._preprocess_args(
+      {"user": {"name": "Bob", "age": 25}}
+  )
+
+  assert isinstance(processed_args["user"], UserModel)
+  assert processed_args["user"].name == "Bob"
+
+
+def test_preprocess_args_bare_model_unresolvable_signature():
+  """Control: a bare model on the same signature shape already converted."""
+  Recursive = Union[int, str, list["Recursive"]]
+
+  def fn(
+      user: UserModel,
+      data: Recursive = None,
+  ):
+    return user
+
+  processed_args = FunctionTool(fn)._preprocess_args(
+      {"user": {"name": "Charlie", "age": 35}}
+  )
+
+  assert isinstance(processed_args["user"], UserModel)
+
+
+async def test_run_async_with_annotated_model_unresolvable_signature():
+  """run_async end-to-end passes a model instance, not a dict, to the function."""
+  Recursive = Union[int, str, list["Recursive"]]
+
+  def fn(
+      user: Annotated[UserModel, Field(description="A user")],
+      data: Recursive = None,
+  ) -> dict:
+    return {"name": user.name, "type": type(user).__name__}
+
+  tool = FunctionTool(fn)
+
+  tool_context_mock = MagicMock(spec=ToolContext)
+  invocation_context_mock = MagicMock(spec=InvocationContext)
+  session_mock = MagicMock(spec=Session)
+  invocation_context_mock.session = session_mock
+  tool_context_mock.invocation_context = invocation_context_mock
+
+  result = await tool.run_async(
+      args={"user": {"name": "Diana", "age": 32}},
+      tool_context=tool_context_mock,
+  )
+
+  assert result == {"name": "Diana", "type": "UserModel"}
