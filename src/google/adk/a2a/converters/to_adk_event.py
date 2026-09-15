@@ -321,10 +321,21 @@ def _extract_event_actions(metadata: Any) -> EventActions:
       for key, value in parsed_actions.items()
       if key in _PEER_SETTABLE_ACTION_FIELDS
   }
-  if len(peer_actions) != len(parsed_actions):
+  dropped_fields = set(parsed_actions) - set(peer_actions)
+  state_delta_alias = EventActions.model_fields["state_delta"].alias
+  state_delta_fields = {"state_delta"}
+  if state_delta_alias:
+    state_delta_fields.add(state_delta_alias)
+  if dropped_fields & state_delta_fields:
+    logger.warning(
+        "Ignoring a session state delta from a remote A2A peer. Session state"
+        " is local to each agent; return values needed by the caller as event"
+        " content or task output instead."
+    )
+  if dropped_fields:
     logger.debug(
         "Dropping ADK actions metadata fields that a peer may not set: %s",
-        sorted(set(parsed_actions) - set(peer_actions)),
+        sorted(dropped_fields),
     )
 
   try:
