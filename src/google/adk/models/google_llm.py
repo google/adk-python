@@ -426,6 +426,12 @@ class Gemini(BaseLlm):
 
     from google.genai import Client
 
+    from ..utils.env_utils import apply_gcp_runtime_defaults
+
+    # Fill unset Vertex project/location/enterprise flags from the GCP metadata
+    # server before constructing the client (explicit env / `.env` still win).
+    apply_gcp_runtime_defaults()
+
     base_url, api_version = self._base_url_and_api_version
     if api_version is None:
       api_version = self._configured_api_version()
