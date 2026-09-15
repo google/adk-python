@@ -52,6 +52,7 @@ from ...dependencies._mcp import StdioServerParameters
 
 # pylint: disable=g-import-not-at-top
 try:
+  from a2a.types import AgentCapabilities
   from a2a.types import AgentSkill
   from google.adk.a2a import _compat
   from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
@@ -667,6 +668,8 @@ class AgentRegistry:
       )
 
     binding = protocol_binding or _compat.TP_HTTP_JSON
+    # Registry metadata has no capability details. Pass streaming explicitly so
+    # constructed cards do not advertise streaming:false.
     agent_card = _compat.build_agent_card(
         name=name,
         description=description,
@@ -675,6 +678,7 @@ class AgentRegistry:
         protocol_binding=getattr(binding, "value", binding),
         protocol_version=protocol_version,
         skills=skills,
+        capabilities=AgentCapabilities(streaming=True),
         default_input_modes=["text"],
         default_output_modes=["text"],
     )
