@@ -40,6 +40,7 @@ import pydantic
 from pydantic import create_model
 from pydantic import fields as pydantic_fields
 
+from ..utils._callable_utils import unwrap_callable
 from ..utils.variant_utils import get_google_llm_variant
 from ..utils.variant_utils import GoogleLLMVariant
 
@@ -66,7 +67,7 @@ def _get_function_fields(
 
   # Get type hints with forward reference resolution
   try:
-    type_hints = get_type_hints(func)
+    type_hints = get_type_hints(unwrap_callable(func))
   except TypeError:
     # Can happen with mock objects or complex annotations
     type_hints = {}
@@ -234,7 +235,7 @@ def _build_response_json_schema(
   # Handle string annotations (forward references)
   if isinstance(return_annotation, str):
     try:
-      type_hints = get_type_hints(func)
+      type_hints = get_type_hints(unwrap_callable(func))
       return_annotation = type_hints.get('return', return_annotation)
     except TypeError:
       pass
@@ -264,7 +265,7 @@ def _build_response_json_schema(
       logging.debug(
           'Failed to build schema with config, retrying without config for'
           ' %s: %s',
-          func.__name__,
+          get_callable_name(func),
           e,
       )
       adapter = pydantic.TypeAdapter(return_annotation)
@@ -272,7 +273,7 @@ def _build_response_json_schema(
   except Exception:
     logging.warning(
         'Failed to build response JSON schema for %s',
-        func.__name__,
+        get_callable_name(func),
         exc_info=True,
     )
     # Fall back to untyped response
