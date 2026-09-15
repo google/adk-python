@@ -74,11 +74,85 @@ Returns:
 """
 
 
+def _serialize_output_value(value: Any) -> Optional[Any]:
+  """JSON-safe serialization for ``Event.output`` values sent over A2A.
+
+  Uses Pydantic JSON mode so types like ``datetime`` / ``Decimal`` become
+  JSON-native values instead of Python objects that break wire encoding.
+  """
+  if value is None:
+    return None
+
+  if hasattr(value, "model_dump"):
+    try:
+      dumped = value.model_dump(mode="json", exclude_none=True, by_alias=True)
+      return dumped if dumped else None
+    except Exception as e:
+      logger.warning("Failed to serialize event.output model: %s", e)
+      return str(value)
+
+  if isinstance(value, dict):
+    return {
+        (k if isinstance(k, str) else str(k)): _serialize_output_value(v)
+        for k, v in value.items()
+    }
+  if isinstance(value, list):
+    return [_serialize_output_value(item) for item in value]
+  if isinstance(value, (int, float, bool, str)):
+    return value
+  return str(value)
+
+
+def parts_from_event_output(
+    output: Any,
+    part_converter: GenAIPartToA2APartConverter = convert_genai_part_to_a2a_part,
+) -> List[A2APart]:
+  """Converts an ADK ``Event.output`` value into A2A parts.
+
+  Structured outputs (Pydantic models / dicts) become DataParts. GenAI
+  ``Content`` outputs are converted part-by-part. Scalars become TextParts.
+  Returns an empty list when ``output`` is None or serializes to nothing.
+  """
+  if output is None:
+    return []
+
+  # GenAI Content (e.g. finish_task unwrapping that sets output=content).
+  parts = getattr(output, "parts", None)
+  if parts is not None and hasattr(output, "role"):
+    output_parts: list[A2APart] = []
+    for part in parts:
+      a2a_parts = part_converter(part)
+      if not isinstance(a2a_parts, list):
+        a2a_parts = [a2a_parts] if a2a_parts else []
+      output_parts.extend(p for p in a2a_parts if p is not None)
+    return output_parts
+
+  if isinstance(output, str):
+    return [_compat.make_text_part(output)]
+
+  serialized = _serialize_output_value(output)
+  if serialized is None:
+    return []
+  if isinstance(serialized, str):
+    return [_compat.make_text_part(serialized)]
+  if isinstance(serialized, dict):
+    return [_compat.make_data_part(data=serialized)]
+  if isinstance(serialized, list):
+    return [_compat.make_data_part(data={"items": serialized})]
+  if isinstance(serialized, (int, float, bool)):
+    return [_compat.make_text_part(str(serialized))]
+  return [_compat.make_text_part(str(serialized))]
+
+
 def _convert_adk_parts_to_a2a_parts(
     event: Event,
     part_converter: GenAIPartToA2APartConverter = convert_genai_part_to_a2a_part,
 ) -> Optional[List[A2APart]]:
   """Converts an ADK event to an A2A parts list.
+
+  Prefers ``event.output`` when set so Workflow ``output_schema`` results
+  (and other structured node outputs) become the A2A artifact instead of
+  being dropped in favor of the last agent node's text ``content``.
 
   Args:
     event: The ADK event to convert.
@@ -93,19 +167,33 @@ def _convert_adk_parts_to_a2a_parts(
   if not event:
     raise ValueError("Event cannot be None")
 
-  if not event.content or not event.content.parts:
-    return []
-
   try:
-    output_parts = []
+    # Prefer structured ``event.output`` when the event has no content parts.
+    # Workflow ``output_schema`` finals are emitted as Event(output=...) with
+    # empty content; without this they are dropped and to_a2a() keeps only the
+    # last agent node's text. When content is present (e.g. finish_task FC
+    # parts), keep converting content so tool-call metadata is preserved.
+    if event.output is not None and (
+        not event.content or not event.content.parts
+    ):
+      output_parts = parts_from_event_output(
+          event.output, part_converter=part_converter
+      )
+      if output_parts:
+        return output_parts
+
+    if not event.content or not event.content.parts:
+      return []
+
+    content_parts = []
     for part in event.content.parts:
       a2a_parts = part_converter(part)
       if not isinstance(a2a_parts, list):
         a2a_parts = [a2a_parts] if a2a_parts else []
       for a2a_part in a2a_parts:
-        output_parts.append(a2a_part)
+        content_parts.append(a2a_part)
 
-    return output_parts
+    return content_parts
 
   except Exception as e:
     logger.error("Failed to convert event to status message: %s", e)
