@@ -130,7 +130,13 @@ class FunctionTool(BaseTool):
     # `ignore_params` drops the function context and input_stream (for streaming
     # tools), which the model doesn't understand. Return a copy: the cached
     # declaration is shared and callers (e.g. toolset prefixing) mutate it.
-    declaration = _build_declaration_cached(
+    try:
+      hash(self.func)
+    except TypeError:
+      build_declaration = _build_declaration_cached.__wrapped__
+    else:
+      build_declaration = _build_declaration_cached
+    declaration = build_declaration(
         self.func,
         tuple(self._ignore_params),
         self._api_variant,
