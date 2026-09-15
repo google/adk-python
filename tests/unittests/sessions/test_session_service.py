@@ -39,6 +39,7 @@ from google.adk.sessions.schemas.shared import DynamicJSON
 from google.adk.sessions.schemas.v0 import DynamicPickleType
 from google.adk.sessions.schemas.v1 import StorageSession
 from google.adk.sessions.session import Session
+from google.adk.sessions.sqlite_session_service import _parse_db_path
 from google.adk.sessions.sqlite_session_service import SqliteSessionService
 from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
 from google.adk.tools.tool_confirmation import ToolConfirmation
@@ -294,7 +295,9 @@ async def test_sqlite_session_service_preserves_uri_query_parameters(
     conn.execute('CREATE TABLE IF NOT EXISTS t (id INTEGER)')
     conn.commit()
 
-  service = SqliteSessionService(f'sqlite+aiosqlite:///{db_path}?mode=ro')
+  service = SqliteSessionService(
+      f'sqlite+aiosqlite:///{db_path.as_posix()}?mode=ro'
+  )
   # `mode=ro` opens the DB read-only; schema creation should fail.
   with pytest.raises(sqlite3.OperationalError, match=r'readonly'):
     await service.create_session(app_name='app', user_id='user')
@@ -303,10 +306,71 @@ async def test_sqlite_session_service_preserves_uri_query_parameters(
 @pytest.mark.asyncio
 async def test_sqlite_session_service_accepts_absolute_sqlite_urls(tmp_path):
   abs_db_path = tmp_path / 'absolute.db'
-  abs_url = 'sqlite+aiosqlite:////' + str(abs_db_path).lstrip('/')
+  # Three slashes plus a POSIX path: Unix stays `////tmp/...`, Windows
+  # becomes the documented `sqlite:///C:/path/to.db` form.
+  abs_url = f'sqlite+aiosqlite:///{abs_db_path.as_posix()}'
   service = SqliteSessionService(abs_url)
   await service.create_session(app_name='app', user_id='user')
   assert abs_db_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_sqlite_session_service_decodes_windows_percent_encoded_path(
+    tmp_path,
+):
+  if os.name != 'nt':
+    pytest.skip('Windows drive-letter sqlite URIs')
+
+  abs_db_path = tmp_path / 'adk sessions.db'
+  encoded_path = abs_db_path.as_posix().replace(' ', '%20')
+  service = SqliteSessionService(f'sqlite+aiosqlite:///{encoded_path}')
+  await service.create_session(app_name='app', user_id='user')
+  assert abs_db_path.exists()
+  assert not (tmp_path / 'adk%20sessions.db').exists()
+
+
+def test_parse_db_path_keeps_relative_sqlite_url_on_windows(monkeypatch):
+  monkeypatch.setattr(
+      'google.adk.sessions.sqlite_session_service.os.name',
+      'nt',
+  )
+  mocked_url2pathname = mock.Mock(
+      side_effect=AssertionError(
+          'relative sqlite URIs must not go through url2pathname'
+      )
+  )
+  monkeypatch.setattr(
+      'google.adk.sessions.sqlite_session_service.url2pathname',
+      mocked_url2pathname,
+  )
+  fs_path, connect_path, is_uri = _parse_db_path('sqlite:///test.db')
+  assert fs_path == 'test.db'
+  assert connect_path == 'test.db'
+  assert is_uri is False
+  mocked_url2pathname.assert_not_called()
+
+
+def test_parse_db_path_windows_drive_and_percent_encoding(monkeypatch):
+  monkeypatch.setattr(
+      'google.adk.sessions.sqlite_session_service.os.name',
+      'nt',
+  )
+  monkeypatch.setattr(
+      'google.adk.sessions.sqlite_session_service.url2pathname',
+      lambda path: r'C:\tmp\adk sessions.db',
+  )
+
+  fs_path, connect_path, is_uri = _parse_db_path(
+      'sqlite:///C:/tmp/adk%20sessions.db'
+  )
+  assert fs_path == r'C:\tmp\adk sessions.db'
+  assert connect_path == r'C:\tmp\adk sessions.db'
+  assert is_uri is False
+
+  fs_path, _, _ = _parse_db_path(
+      'sqlite+aiosqlite:////C:/tmp/adk%20sessions.db'
+  )
+  assert fs_path == r'C:\tmp\adk sessions.db'
 
 
 @pytest.mark.asyncio
