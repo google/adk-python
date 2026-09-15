@@ -19,11 +19,13 @@ from typing import Optional
 from typing import Union
 
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.run_config import RunConfig
 from google.adk.artifacts.base_artifact_service import ensure_part
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
 from google.adk.events.event import EventActions
 from google.adk.runners import Runner
+from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.genai import types
@@ -281,6 +283,128 @@ class TestRunnerRewind:
         session_id=session_id,
         filename="f2",
     ) == types.Part.from_text(text="f2v0")
+
+  @pytest.mark.asyncio
+  async def test_rewind_async_preserves_initial_session_state(self):
+    """Rewind keeps state passed to create_session and undoes later events.
+
+    Setup: session created with initial state; invocation1 sets k1 and
+      invocation2 sets k2.
+    Act: rewind before invocation2.
+    Assert: initial state and k1 are kept, k2 is cleared.
+    """
+    runner = self.runner
+    user_id = "test_user"
+    session_id = "test_session"
+    session = await runner.session_service.create_session(
+        app_name=runner.app_name,
+        user_id=user_id,
+        session_id=session_id,
+        state={"tenant_id": "t1", "user_pref": "dark"},
+    )
+    for invocation_id, state_delta in (
+        ("invocation1", {"k1": "v1"}),
+        ("invocation2", {"k2": "v2"}),
+    ):
+      await runner.session_service.append_event(
+          session=session,
+          event=Event(
+              invocation_id=invocation_id,
+              author="agent",
+              actions=EventActions(state_delta=state_delta),
+          ),
+      )
+
+    await runner.rewind_async(
+        user_id=user_id,
+        session_id=session_id,
+        rewind_before_invocation_id="invocation2",
+    )
+
+    session = await runner.session_service.get_session(
+        app_name=runner.app_name, user_id=user_id, session_id=session_id
+    )
+    assert session.state == {
+        "tenant_id": "t1",
+        "user_pref": "dark",
+        "k1": "v1",
+        "k2": None,
+    }
+
+  @pytest.mark.asyncio
+  async def test_rewind_async_before_first_invocation_preserves_initial_state(
+      self,
+  ):
+    """Rewinding before the first invocation keeps create_session state."""
+    runner = self.runner
+    user_id = "test_user"
+    session_id = "test_session"
+    session = await runner.session_service.create_session(
+        app_name=runner.app_name,
+        user_id=user_id,
+        session_id=session_id,
+        state={"config_key": "config_val"},
+    )
+    await runner.session_service.append_event(
+        session=session,
+        event=Event(
+            invocation_id="invocation1",
+            author="agent",
+            actions=EventActions(state_delta={"k1": "v1"}),
+        ),
+    )
+
+    await runner.rewind_async(
+        user_id=user_id,
+        session_id=session_id,
+        rewind_before_invocation_id="invocation1",
+    )
+
+    session = await runner.session_service.get_session(
+        app_name=runner.app_name, user_id=user_id, session_id=session_id
+    )
+    assert session.state == {"config_key": "config_val", "k1": None}
+
+  @pytest.mark.asyncio
+  async def test_rewind_async_with_recent_events_config_keeps_earlier_state(
+      self,
+  ):
+    """Rewind loading only recent events keeps state from unloaded events.
+
+    Setup: invocations 1-3 each set their own key.
+    Act: rewind before invocation3 with a session config that loads only the
+      most recent event.
+    Assert: keys from invocations 1 and 2 are kept, k3 is cleared.
+    """
+    runner = self.runner
+    user_id = "test_user"
+    session_id = "test_session"
+    session = await runner.session_service.create_session(
+        app_name=runner.app_name, user_id=user_id, session_id=session_id
+    )
+    for i in range(1, 4):
+      await runner.session_service.append_event(
+          session=session,
+          event=Event(
+              invocation_id=f"invocation{i}",
+              author="agent",
+              actions=EventActions(state_delta={f"k{i}": f"v{i}"}),
+          ),
+      )
+
+    await runner.rewind_async(
+        user_id=user_id,
+        session_id=session_id,
+        rewind_before_invocation_id="invocation3",
+        run_config=RunConfig(
+            get_session_config=GetSessionConfig(num_recent_events=1)
+        ),
+    )
+
+    session = await runner.session_service.get_session(
+        app_name=runner.app_name, user_id=user_id, session_id=session_id
+    )
+    assert session.state == {"k1": "v1", "k2": "v2", "k3": None}
 
 
 class TestRunnerRewindNoFileData:

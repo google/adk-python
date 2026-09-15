@@ -30,6 +30,7 @@ from ..events.event_actions import EventActions
 from ..platform import uuid as platform_uuid
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
+from ..sessions.state import State
 
 if TYPE_CHECKING:
   from ..artifacts.base_artifact_service import BaseArtifactService
@@ -37,36 +38,58 @@ if TYPE_CHECKING:
 logger = logging.getLogger("google_adk." + __name__)
 
 
+def _is_session_scoped_key(key: str) -> bool:
+  """Returns whether a state key is scoped to the session being rewound."""
+  return not key.startswith((State.APP_PREFIX, State.USER_PREFIX))
+
+
 async def compute_state_delta_for_rewind(
     session: Session, rewind_event_index: int
 ) -> dict[str, Any]:
-  """Computes the state delta to reverse changes."""
+  """Computes the state delta that reverses changes made after a rewind point.
+
+  Only session-scoped keys that an event at or after the rewind point changed
+  are reverted. Every other key keeps its current value.
+
+  Args:
+    session: The session to rewind, with the events it was loaded with.
+    rewind_event_index: Index in `session.events` of the first event to undo.
+
+  Returns:
+    A state delta that restores each changed key to its value at the rewind
+    point, or sets it to None when no earlier event recorded a value for it.
+  """
   state_at_rewind_point: dict[str, Any] = {}
-  for i in range(rewind_event_index):
-    if session.events[i].actions.state_delta:
-      for k, v in session.events[i].actions.state_delta.items():
-        if k.startswith("app:") or k.startswith("user:"):
-          continue
-        if v is None:
-          state_at_rewind_point.pop(k, None)
-        else:
-          state_at_rewind_point[k] = v
+  for event in session.events[:rewind_event_index]:
+    for key, value in (event.actions.state_delta or {}).items():
+      if not _is_session_scoped_key(key):
+        continue
+      if value is None:
+        state_at_rewind_point.pop(key, None)
+      else:
+        state_at_rewind_point[key] = value
+
+  # Initial state passed to `create_session`, and state from events that were
+  # not loaded, never appears in the event stream being replayed. Deriving the
+  # delta from every key in `session.state` would clear that state, so only
+  # keys that the undone events wrote are considered.
+  keys_changed_after_rewind_point: dict[str, None] = {}
+  for event in session.events[rewind_event_index:]:
+    for key in event.actions.state_delta or {}:
+      if _is_session_scoped_key(key):
+        keys_changed_after_rewind_point[key] = None
 
   current_state = session.state
-  rewind_state_delta = {}
-
-  # 1. Add/update keys in rewind_state_delta to match state_at_rewind_point.
-  for key, value_at_rewind in state_at_rewind_point.items():
-    if key not in current_state or current_state[key] != value_at_rewind:
-      rewind_state_delta[key] = value_at_rewind
-
-  # 2. Set keys to None in rewind_state_delta if they are in current_state
-  #    but not in state_at_rewind_point. These keys were added after the
-  #    rewind point and need to be removed.
-  for key in current_state:
-    if key.startswith("app:") or key.startswith("user:"):
-      continue
-    if key not in state_at_rewind_point:
+  rewind_state_delta: dict[str, Any] = {}
+  for key in keys_changed_after_rewind_point:
+    if key in state_at_rewind_point:
+      value_at_rewind = state_at_rewind_point[key]
+      if key not in current_state or current_state[key] != value_at_rewind:
+        rewind_state_delta[key] = value_at_rewind
+    elif key in current_state:
+      # No replayed event recorded a value before the rewind point. If the key
+      # came from initial state and an undone event overwrote it, the original
+      # value is not stored anywhere, so the key is cleared.
       rewind_state_delta[key] = None
 
   return rewind_state_delta

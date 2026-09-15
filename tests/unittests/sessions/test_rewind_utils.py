@@ -50,6 +50,30 @@ async def test_compute_state_delta_reverts_state_to_rewind_point():
   assert "app:stay" not in delta
 
 
+async def test_compute_state_delta_leaves_state_without_events_untouched():
+  """Keys that no undone event wrote are left out of the rewind delta."""
+  session = Session(
+      id="s1",
+      app_name="app",
+      user_id="u1",
+      state={"tenant_id": "t1", "k1": "v1", "k2": "v2"},
+      events=[
+          Event(
+              invocation_id="inv1",
+              actions=EventActions(state_delta={"k1": "v1"}),
+          ),
+          Event(
+              invocation_id="inv2",
+              actions=EventActions(state_delta={"k2": "v2"}),
+          ),
+      ],
+  )
+
+  delta = await _rewind_utils.compute_state_delta_for_rewind(session, 1)
+
+  assert delta == {"k2": None}
+
+
 async def test_compute_artifact_delta_returns_empty_when_no_artifact_service():
   """Without an artifact service, artifact delta computation returns empty dict."""
   session = Session(id="s1", app_name="app", user_id="u1", events=[])
