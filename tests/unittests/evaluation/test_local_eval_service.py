@@ -1244,3 +1244,64 @@ async def test_perform_inference_single_eval_item_failure(
   assert result.status == InferenceStatus.FAILURE
   assert result.error_message == "model crashed"
   assert result.inferences is None
+
+
+@pytest.mark.asyncio
+async def test_eval_injects_session_input_state_into_instruction(
+    mock_eval_sets_manager, mock_eval_set_results_manager
+):
+  """EvalCase.session_input.state must populate `{placeholders}` in instructions.
+
+  Tools already see this state; instruction templates must too (google/adk-python#5037).
+  """
+  from tests.unittests.testing_utils import MockModel
+
+  mock_model = MockModel.create(responses=["ok"])
+  agent = LlmAgent(
+      model=mock_model,
+      name="stateful_agent",
+      instruction="You will receive {some_key}.",
+  )
+  eval_case = EvalCase(
+      eval_id="state_case",
+      conversation=[
+          Invocation(
+              user_content=genai_types.Content(
+                  parts=[genai_types.Part(text="hello")]
+              )
+          )
+      ],
+      session_input=SessionInput(
+          app_name="test_app",
+          user_id="test_user",
+          state={"some_key": "secret-value"},
+      ),
+  )
+  mock_eval_sets_manager.get_eval_set.return_value = EvalSet(
+      eval_set_id="set-1",
+      eval_cases=[eval_case],
+  )
+  service = LocalEvalService(
+      root_agent=agent,
+      eval_sets_manager=mock_eval_sets_manager,
+      eval_set_results_manager=mock_eval_set_results_manager,
+  )
+  request = InferenceRequest(
+      app_name="test_app",
+      eval_set_id="set-1",
+      eval_case_ids=["state_case"],
+      inference_config=InferenceConfig(),
+  )
+
+  results = []
+  async for result in service.perform_inference(inference_request=request):
+    results.append(result)
+
+  assert results
+  assert results[0].status == InferenceStatus.SUCCESS, results[0].error_message
+  assert results[0].inferences
+  app_details = results[0].inferences[0].app_details
+  assert app_details
+  instruction_text = app_details.get_developer_instructions("stateful_agent")
+  assert "secret-value" in instruction_text
+  assert "{some_key}" not in instruction_text
