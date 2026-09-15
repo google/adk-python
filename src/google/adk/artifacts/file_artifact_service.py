@@ -568,6 +568,133 @@ class FileArtifactService(BaseArtifactService):
     return next_version
 
   @override
+  async def save_media_frames(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      collection_name: str,
+      frames: list[tuple[types.Blob, float]],
+      session_id: Optional[str] = None,
+      custom_metadata: Optional[dict[str, Any]] = None,
+  ) -> int:
+    """Saves a sequence of media frames beneath a collection directory."""
+    return await asyncio.to_thread(
+        self._save_media_frames_sync,
+        app_name,
+        user_id,
+        collection_name,
+        frames,
+        session_id,
+        custom_metadata,
+    )
+
+  def _save_media_frames_sync(
+      self,
+      app_name: str,
+      user_id: str,
+      collection_name: str,
+      frames: list[tuple[types.Blob, float]],
+      session_id: Optional[str],
+      custom_metadata: Optional[dict[str, Any]],
+  ) -> int:
+    """Saves media frame sequence to disk and returns its version."""
+    if not frames:
+      raise InputValidationError("Cannot save empty frames list.")
+
+    artifact_dir = self._artifact_dir(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        filename=collection_name,
+    )
+    if _is_reserved_artifact_name(artifact_dir.name):
+      raise InputValidationError(
+          f"Collection filename {collection_name!r} is reserved."
+      )
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+
+    next_version, staging_dir, version_dir = _reserve_version_dir(artifact_dir)
+
+    try:
+      frames_dir = staging_dir / "frames"
+      frames_dir.mkdir(parents=True, exist_ok=True)
+
+      start_ts = frames[0][1]
+      end_ts = frames[-1][1]
+      duration_ms = int((end_ts - start_ts) * 1000)
+      frame_count = len(frames)
+      estimated_fps = (
+          round((frame_count - 1) / (end_ts - start_ts), 2)
+          if duration_ms > 0 and frame_count > 1
+          else 0.0
+      )
+
+      frame_indices = []
+      primary_mime_type = "image/jpeg"
+
+      for idx, (blob, ts) in enumerate(frames):
+        if not blob.data:
+          raise InputValidationError(f"Frame {idx} has no byte data.")
+        mime = (blob.mime_type or "image/jpeg").lower()
+        if idx == 0:
+          primary_mime_type = mime
+        ext = mime.split("/")[-1].split(";")[0].strip() or "jpeg"
+        frame_filename = f"frame_{idx:04d}.{ext}"
+        frame_path = frames_dir / frame_filename
+        frame_path.write_bytes(blob.data)
+
+        # For preview / load_artifact compatibility: copy frame 0 to staging_dir / artifact_dir.name
+        if idx == 0:
+          preview_path = staging_dir / artifact_dir.name
+          preview_path.write_bytes(blob.data)
+
+        offset_ms = int((ts - start_ts) * 1000)
+        frame_indices.append({
+            "frameIndex": idx,
+            "offsetMs": offset_ms,
+            "fileName": f"frames/{frame_filename}",
+            "mimeType": mime,
+            "sizeBytes": len(blob.data),
+        })
+
+      canonical_uri = _canonical_uri(artifact_dir, next_version)
+
+      merged_custom_metadata = dict(custom_metadata or {})
+      merged_custom_metadata.update({
+          "type": "video_frame_sequence",
+          "frameCount": frame_count,
+          "startTimestampMs": int(start_ts * 1000),
+          "endTimestampMs": int(end_ts * 1000),
+          "durationMs": duration_ms,
+          "estimatedFps": estimated_fps,
+          "frames": frame_indices,
+      })
+
+      _write_metadata(
+          staging_dir / _METADATA_FILENAME,
+          filename=collection_name,
+          mime_type=primary_mime_type,
+          version=next_version,
+          canonical_uri=canonical_uri,
+          custom_metadata=merged_custom_metadata,
+          display_name=None,
+      )
+      os.replace(staging_dir, version_dir)
+    except BaseException:
+      shutil.rmtree(staging_dir, ignore_errors=True)
+      raise
+
+    logger.debug(
+        "Saved media frames %s version %d (%d frames) to %s",
+        collection_name,
+        next_version,
+        len(frames),
+        version_dir,
+    )
+    return next_version
+
+  @override
   async def load_artifact(
       self,
       *,
