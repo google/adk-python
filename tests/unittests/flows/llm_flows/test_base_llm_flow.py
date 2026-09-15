@@ -2564,6 +2564,48 @@ async def test_transfer_to_unoffered_agent_raises_value_error():
 
 
 @pytest.mark.asyncio
+async def test_transfer_to_duplicate_name_returns_declared_target():
+  """Transfer resolves the declared target, not a same-named agent elsewhere."""
+  # Arrange
+  undeclared = Agent(name='shared_name')
+  other_branch = Agent(name='other_branch', sub_agents=[undeclared])
+  declared = Agent(name='shared_name')
+  caller = Agent(
+      name='caller',
+      sub_agents=[declared],
+      disallow_transfer_to_parent=True,
+      disallow_transfer_to_peers=True,
+  )
+  Agent(name='root', sub_agents=[other_branch, caller])
+  ctx = await testing_utils.create_invocation_context(caller)
+  flow = BaseLlmFlow()
+
+  # Act
+  agent = flow._get_agent_to_run(ctx, 'shared_name')
+
+  # Assert
+  assert agent is declared
+
+
+@pytest.mark.asyncio
+async def test_transfer_to_self_returns_caller_when_name_is_duplicated():
+  """Transfer to self returns the caller, not a same-named agent elsewhere."""
+  # Arrange
+  namesake = Agent(name='caller')
+  other_branch = Agent(name='other_branch', sub_agents=[namesake])
+  caller = Agent(name='caller')
+  Agent(name='root', sub_agents=[other_branch, caller])
+  ctx = await testing_utils.create_invocation_context(caller)
+  flow = BaseLlmFlow()
+
+  # Act
+  agent = flow._get_agent_to_run(ctx, 'caller')
+
+  # Assert
+  assert agent is caller
+
+
+@pytest.mark.asyncio
 async def test_transfer_to_parent_disallowed_raises_value_error():
   """Transfer to parent raises ValueError when disallow_transfer_to_parent is True."""
   # Arrange

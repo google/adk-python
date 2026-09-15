@@ -187,6 +187,9 @@ def _latest_prompt_token_count(
 ) -> int | None:
   """Returns the most recently observed prompt token count, if available."""
   for event in reversed(events):
+    if event.actions and event.actions.compaction:
+      # Counts at or before a summarization describe a prompt it replaced.
+      break
     if (
         event.usage_metadata
         and event.usage_metadata.prompt_token_count is not None

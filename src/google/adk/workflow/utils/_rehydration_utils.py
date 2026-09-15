@@ -350,16 +350,16 @@ def _reconstruct_node_states(
       owner_path_builder = _NodePathBuilder.from_string(owner_key)
       scan_states[owner_key] = _ChildScanState(run_id=owner_path_builder.run_id)
 
-    child = scan_states[owner_key]
-    if event.isolation_scope:
-      child.isolation_scope = event.isolation_scope
-
     # 4. Determine if event is direct child or delegated output
     is_direct = False
     if group_by_direct_child:
       is_direct = event_path_builder.is_direct_child_of(base_path_builder)
     else:
       is_direct = event_path_builder == base_path_builder
+
+    child = scan_states[owner_key]
+    if is_direct and event.isolation_scope:
+      child.isolation_scope = event.isolation_scope
 
     has_output = event.output is not None
     use_message_as_output = False

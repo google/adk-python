@@ -48,6 +48,8 @@ from google.adk.telemetry.tracing import _use_extra_generate_content_attributes
 from google.adk.telemetry.tracing import ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS
 from google.adk.telemetry.tracing import GCP_MCP_SERVER_DESTINATION_ID
 from google.adk.telemetry.tracing import GenerateContentSpan
+from google.adk.telemetry.tracing import MCP_PROTOCOL_VERSION
+from google.adk.telemetry.tracing import MCP_SESSION_ID
 from google.adk.telemetry.tracing import resolve_error_type
 from google.adk.telemetry.tracing import safe_json_serialize
 from google.adk.telemetry.tracing import trace_agent_invocation
@@ -77,8 +79,6 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_SYSTEM_INSTRUCTIONS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_INPUT_TOKENS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_OUTPUT_TOKENS
-from opentelemetry.semconv._incubating.attributes.mcp_attributes import MCP_PROTOCOL_VERSION
-from opentelemetry.semconv._incubating.attributes.mcp_attributes import MCP_SESSION_ID
 from opentelemetry.semconv._incubating.attributes.user_attributes import USER_ID
 from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
 from opentelemetry.semconv.attributes.http_attributes import HTTP_REQUEST_METHOD
@@ -896,6 +896,16 @@ def test_trace_mcp_http_exchange_emits_debug_log_record(
       _HTTP_REQUEST_BODY_CONTENT: '{"method": "tools/call"}',
       _HTTP_RESPONSE_BODY_CONTENT: '{"result": {}}',
   }
+
+
+def test_mcp_attribute_names_match_semconv():
+  """The names are spelled out locally, so nothing else would catch drift."""
+  mcp_attributes = pytest.importorskip(
+      'opentelemetry.semconv._incubating.attributes.mcp_attributes'
+  )
+
+  assert MCP_SESSION_ID == mcp_attributes.MCP_SESSION_ID
+  assert MCP_PROTOCOL_VERSION == mcp_attributes.MCP_PROTOCOL_VERSION
 
 
 @mock.patch('google.adk.telemetry.tracing.otel_logger')

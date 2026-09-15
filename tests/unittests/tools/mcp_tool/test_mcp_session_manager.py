@@ -2015,6 +2015,25 @@ class TestRefreshableAsyncCredentials:
     assert urllib.parse.urlparse(url).hostname in warnings[0].getMessage()
 
   @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
+  @pytest.mark.asyncio
+  async def test_before_request_skips_token_for_plaintext_google_host(self):
+    mock_creds = Mock()
+    mock_creds.expired = True
+    mock_creds.token = "new_token"
+    mock_creds.refresh = Mock()
+
+    url = "http://example.googleapis.com/mcp"
+    credentials = _RefreshableAsyncCredentials(
+        mock_creds, target_host=urllib.parse.urlparse(url).netloc
+    )
+    headers = {}
+
+    await credentials.before_request(None, "GET", url, headers)
+
+    mock_creds.refresh.assert_not_called()
+    assert headers == {}
+
+  @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
   @pytest.mark.parametrize(
       "existing_header_key",
       ["Authorization", "authorization", "AUTHORIZATION", "authORIZATION"],

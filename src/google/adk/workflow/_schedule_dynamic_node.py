@@ -36,6 +36,8 @@ class ScheduleDynamicNode(Protocol):
   3. Resumption: Rehydrating state from session events when execution is
      resumed after an interrupt, and resolving or propagating remaining
      interrupts.
+  4. Agent Transfer: Following `transfer_to_agent` requests, running each
+     target agent in turn until one produces a terminal result.
 
   Args:
     ctx: The calling node's Context.
@@ -53,6 +55,8 @@ class ScheduleDynamicNode(Protocol):
     override_branch: Optional specific branch name to use, overriding defaults.
     override_isolation_scope: Optional scope tag for the node's conversation
       view, overriding the scope that would otherwise be computed for it.
+    resume_inputs: Optional inputs resolving interrupts raised by a previous
+      execution of the node.
 
   Returns:
     Awaitable[Context]: A future that resolves to the child node's Context,
@@ -78,5 +82,6 @@ class ScheduleDynamicNode(Protocol):
       use_sub_branch: bool = False,
       override_branch: str | None = None,
       override_isolation_scope: str | None = None,
+      resume_inputs: dict[str, Any] | None = None,
   ) -> Awaitable[Context]:
     ...

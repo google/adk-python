@@ -535,9 +535,11 @@ class _RefreshableAsyncCredentials(AsyncCredentials):
       return
 
     # Application Default Credentials are issued to the caller by Google, so
-    # the bearer token only goes to Google API hosts. Other MCP servers are
-    # still reached over the mTLS channel, just without the token.
-    if not _is_google_api_host(parsed_url.hostname):
+    # the bearer token only goes to Google API hosts over https. Other MCP
+    # servers are still reached over the mTLS channel, just without the token.
+    if parsed_url.scheme != 'https' or not _is_google_api_host(
+        parsed_url.hostname
+    ):
       if not self._warned_non_google_host:
         self._warned_non_google_host = True
         logger.warning(
