@@ -4622,6 +4622,48 @@ def test_dev_only_endpoints_absent_when_web_disabled(
   assert client.get("/list-apps").status_code == 200
 
 
+def test_debug_trace_exporters_only_registered_for_dev_server(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """web=False (ApiServer) has no reader for debug trace spans, so it must
+  not register the exporters that retain them for the life of the process.
+  Only DevServer's /dev/apps/.../debug/trace endpoint reads that data."""
+  from google.adk.cli import api_server as api_server_module
+
+  with patch.object(
+      api_server_module, "_setup_telemetry", autospec=True
+  ) as mock_setup_telemetry:
+    _create_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+        web=False,
+    )
+    assert mock_setup_telemetry.call_args.kwargs["internal_exporters"] == []
+
+  with patch.object(
+      api_server_module, "_setup_telemetry", autospec=True
+  ) as mock_setup_telemetry:
+    _create_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+        web=True,
+    )
+    assert len(mock_setup_telemetry.call_args.kwargs["internal_exporters"]) == 2
+
+
 def test_app_info_rejects_special_agent_only_in_api_server_mode(
     test_app,
     mock_session_service,
