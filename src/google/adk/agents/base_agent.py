@@ -737,20 +737,26 @@ class BaseAgent(BaseNode, abc.ABC):
     seen_names: set[str] = set()
     duplicates: set[str] = set()
 
-    for sub_agent in value:
-      name = sub_agent.name
+    def visit(agent: BaseAgent) -> None:
+      name = agent.name
       if name in seen_names:
         duplicates.add(name)
       else:
         seen_names.add(name)
+      for child in agent.sub_agents:
+        visit(child)
+
+    for sub_agent in value:
+      visit(sub_agent)
 
     if duplicates:
       duplicate_names_str = ', '.join(
           f'`{name}`' for name in sorted(duplicates)
       )
       logger.warning(
-          'Found duplicate sub-agent names: %s. '
-          'All sub-agents must have unique names.',
+          'Found duplicate agent names: %s. '
+          'All agents in the tree must have unique names. '
+          'find_agent() returns the first match in a depth-first walk.',
           duplicate_names_str,
       )
 
