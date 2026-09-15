@@ -3,6 +3,12 @@
 ## [2.9.1](https://github.com/google/adk-python/compare/v2.9.0...v2.9.1) (2026-09-15)
 
 
+### Highlights
+
+This release focuses on improving visibility into model reasoning steps when utilizing Claude's adaptive thinking capabilities.
+
+* **Claude Integration**: Access the step-by-step reasoning process of Claude models by ensuring visible thoughts are requested during adaptive thinking tasks. ([ba0d542](https://github.com/google/adk-python/commit/ba0d542181df87b6e1da9709fa0410082484443a))
+
 ### Bug Fixes
 
 * request visible thoughts for Claude adaptive thinking ([ba0d542](https://github.com/google/adk-python/commit/ba0d542181df87b6e1da9709fa0410082484443a))
