@@ -91,7 +91,9 @@ class RougeEvaluator(Evaluator):
 
 def _get_text_from_content(content: Optional[genai_types.Content]) -> str:
   if content and content.parts:
-    return "\n".join([part.text for part in content.parts if part.text])
+    return "\n".join(
+        [part.text for part in content.parts if part.text and not part.thought]
+    )
 
   return ""
 

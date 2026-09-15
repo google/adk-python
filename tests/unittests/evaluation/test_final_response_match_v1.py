@@ -19,7 +19,6 @@ import unicodedata
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_metrics import BaseCriterion
 from google.adk.evaluation.eval_metrics import EvalMetric
-from google.adk.evaluation.eval_metrics import PrebuiltMetrics
 from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.final_response_match_v1 import _calculate_rouge_1_scores
 from google.adk.evaluation.final_response_match_v1 import _is_cjk
@@ -56,6 +55,62 @@ def _create_test_invocations(
       final_response=genai_types.Content(
           parts=[genai_types.Part(text=reference)]
       ),
+  )
+
+
+@pytest.mark.parametrize(
+    "actual_parts, expected_parts, score",
+    [
+        (
+            [
+                genai_types.Part(
+                    text="Consider the capital of France.", thought=True
+                ),
+                genai_types.Part(text="Paris"),
+            ],
+            [genai_types.Part(text="Paris")],
+            1.0,
+        ),
+        (
+            [genai_types.Part(text="Paris", thought=False)],
+            [
+                genai_types.Part(
+                    text="Consider the capital of France.", thought=True
+                ),
+                genai_types.Part(text="Paris"),
+            ],
+            1.0,
+        ),
+        (
+            [genai_types.Part(text="Paris", thought=True)],
+            [genai_types.Part(text="Paris")],
+            0.0,
+        ),
+        (
+            [
+                genai_types.Part(text="Paris", thought=True),
+                genai_types.Part(text="London"),
+            ],
+            [genai_types.Part(text="Paris")],
+            0.0,
+        ),
+    ],
+)
+def test_response_match_scores_visible_text_only(
+    actual_parts, expected_parts, score
+):
+  """Thought summaries neither dilute correct answers nor credit wrong ones."""
+  actual, expected = _create_test_invocations("", "")
+  actual.final_response.parts = actual_parts
+  expected.final_response.parts = expected_parts
+  evaluator = _create_test_rouge_evaluator(threshold=0.5)
+
+  result = evaluator.evaluate_invocations([actual], [expected])
+
+  assert result.overall_score == pytest.approx(score)
+  assert result.per_invocation_results[0].score == pytest.approx(score)
+  assert result.overall_eval_status == (
+      EvalStatus.PASSED if score == 1.0 else EvalStatus.FAILED
   )
 
 
