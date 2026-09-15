@@ -158,9 +158,13 @@ class GCPSkillRegistry(SkillRegistry):
 
   def _create_httpx_client(self) -> httpx.AsyncClient:
     """Creates a new httpx.AsyncClient with appropriate SSL/mTLS configuration."""
+    # The Agent Registry media download (alt=media) replies with a 302 to a
+    # short-lived GCS signed URL, so the client must follow redirects; httpx
+    # drops the Authorization header on cross-origin redirects, so the OAuth
+    # token is not forwarded to the signed-URL host.
     if self._ssl_context is not None:
-      return httpx.AsyncClient(verify=self._ssl_context)
-    return httpx.AsyncClient()
+      return httpx.AsyncClient(verify=self._ssl_context, follow_redirects=True)
+    return httpx.AsyncClient(follow_redirects=True)
 
   async def get_skill(self, *, name: str) -> models.Skill:
     """Fetches a skill from the registry.
