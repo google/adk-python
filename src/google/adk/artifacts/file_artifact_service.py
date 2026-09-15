@@ -473,7 +473,9 @@ class FileArtifactService(BaseArtifactService):
     (``"images/photo.png"``), or explicitly user-scoped
     (``"user:shared/diagram.png"``). All values are interpreted relative to the
     computed scope root; absolute paths or inputs that traverse outside that
-    root (for example ``"../../secret.txt"``) raise ``ValueError``.
+    root (for example ``"../../secret.txt"``) raise ``ValueError``. The final
+    name ``metadata.json`` and any ``versions`` path component are reserved for
+    the service's storage layout and are rejected in any casing.
     """
     return await asyncio.to_thread(
         self._save_artifact_sync,
@@ -511,6 +513,17 @@ class FileArtifactService(BaseArtifactService):
           f" named {_METADATA_FILENAME!r} (in any casing) because its payload"
           " is stored under the artifact's own name and would overwrite the"
           " metadata document."
+      )
+    if any(
+        part.casefold() == "versions"
+        for part in _to_posix_path(
+            _strip_user_namespace(filename).strip()
+        ).parts
+    ):
+      raise InputValidationError(
+          f"Artifact filename {filename!r} is reserved: an artifact path may"
+          " not contain a 'versions' component (in any casing) because that"
+          " directory stores artifact versions."
       )
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
