@@ -2120,6 +2120,52 @@ class TestBigQueryAgentAnalyticsPlugin:
     assert content_dict["result"] == {"res": "success"}
 
   @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      ("result", "expected_error_message"),
+      [
+          (
+              {
+                  "content": [
+                      {"type": "text", "text": "Git reset to remote failed."}
+                  ],
+                  "isError": True,
+              },
+              "Git reset to remote failed.",
+          ),
+          (
+              {"error_details": "MCP request failed with code 403"},
+              "MCP request failed with code 403",
+          ),
+      ],
+  )
+  async def test_after_tool_callback_logs_error_bearing_result_as_tool_error(
+      self, bq_plugin_inst, tool_context, result, expected_error_message
+  ):
+    """Error-bearing tool results are recorded as TOOL_ERROR, not TOOL_COMPLETED."""
+    mock_tool = mock.create_autospec(
+        base_tool_lib.BaseTool, instance=True, spec_set=True
+    )
+    type(mock_tool).name = mock.PropertyMock(return_value="MyTool")
+    type(mock_tool).description = mock.PropertyMock(return_value="Description")
+    log_event = mock.AsyncMock()
+    bq_plugin_inst._log_event = log_event
+    bigquery_agent_analytics_plugin.TraceManager.push_span(tool_context)
+
+    await bq_plugin_inst.after_tool_callback(
+        tool=mock_tool,
+        tool_args={"arg1": "val1"},
+        tool_context=tool_context,
+        result=result,
+    )
+
+    log_event.assert_awaited_once()
+    assert log_event.await_args.args[0] == "TOOL_ERROR"
+    event_data = log_event.await_args.kwargs["event_data"]
+    assert event_data.status == "ERROR"
+    assert event_data.error_message == expected_error_message
+    assert log_event.await_args.kwargs["raw_content"]["tool"] == "MyTool"
+
+  @pytest.mark.asyncio
   async def test_after_tool_callback_no_state_delta_logging(
       self, bq_plugin_inst, mock_write_client, tool_context, dummy_arrow_schema
   ):
