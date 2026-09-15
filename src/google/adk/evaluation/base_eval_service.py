@@ -45,6 +45,7 @@ class EvaluateConfig(BaseModel):
 
   parallelism: int = Field(
       default=4,
+      ge=1,
       description="""Number of parallel evaluations to run during an Eval. Few
 factors to consider while changing this value:
 
@@ -71,6 +72,7 @@ charges.""",
 
   parallelism: int = Field(
       default=4,
+      ge=1,
       description="""Number of parallel inferences to run during an Eval. Few
 factors to consider while changing this value:
 
