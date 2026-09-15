@@ -577,6 +577,116 @@ def agent_tree_data():
   return invocation, expected_invocation
 
 
+class TestCreateContextExcludesThoughts:
+  """Test cases ensuring thought parts do not leak into the context."""
+
+  def test_create_context_excludes_thought_from_nl_response(
+      self, hallucinations_metric
+  ):
+    """A thought part must not appear in the assembled context string."""
+    app_details = AppDetails(
+        agent_details={
+            "root": AgentDetails(
+                name="root", instructions="Root agent instructions."
+            )
+        },
+    )
+    user_content = genai_types.Content(
+        parts=[genai_types.Part(text="User query.")]
+    )
+    events = [
+        InvocationEvent(
+            author="root",
+            content=genai_types.Content(
+                parts=[
+                    genai_types.Part(
+                        text="Considering the query.", thought=True
+                    ),
+                    genai_types.Part(text="Visible NL response."),
+                ]
+            ),
+        ),
+    ]
+    invocation = Invocation(
+        app_details=app_details,
+        user_content=user_content,
+        intermediate_data=InvocationEvents(invocation_events=events),
+    )
+
+    context = hallucinations_metric._create_context_for_step(
+        app_details, invocation, events
+    )
+
+    assert "Considering the query." not in context
+    assert "Visible NL response." in context
+
+
+class TestGetStepsToEvaluateExcludesThoughts:
+  """Test cases ensuring thought parts do not become their own eval steps."""
+
+  def test_thought_only_event_yields_no_step(self, hallucinations_metric):
+    """A thought-only intermediate event must not produce an evaluation step."""
+    app_details = AppDetails(agent_details={})
+    user_content = genai_types.Content(
+        parts=[genai_types.Part(text="User query.")]
+    )
+    events = [
+        InvocationEvent(
+            author="root",
+            content=genai_types.Content(
+                parts=[genai_types.Part(text="Just thinking.", thought=True)]
+            ),
+        ),
+    ]
+    invocation = Invocation(
+        app_details=app_details,
+        user_content=user_content,
+        intermediate_data=InvocationEvents(invocation_events=events),
+        final_response=genai_types.Content(
+            parts=[genai_types.Part(text="Final response.")]
+        ),
+    )
+
+    steps = hallucinations_metric._get_steps_to_evaluate(invocation)
+
+    assert [step.nl_response for step in steps] == ["Final response."]
+
+  def test_mixed_event_does_not_split_thought_into_its_own_step(
+      self, hallucinations_metric
+  ):
+    """A thought alongside visible text yields one step, not two."""
+    app_details = AppDetails(agent_details={})
+    user_content = genai_types.Content(
+        parts=[genai_types.Part(text="User query.")]
+    )
+    events = [
+        InvocationEvent(
+            author="root",
+            content=genai_types.Content(
+                parts=[
+                    genai_types.Part(text="Reasoning aloud.", thought=True),
+                    genai_types.Part(text="Visible NL response."),
+                ]
+            ),
+        ),
+    ]
+    invocation = Invocation(
+        app_details=app_details,
+        user_content=user_content,
+        intermediate_data=InvocationEvents(invocation_events=events),
+        final_response=genai_types.Content(
+            parts=[genai_types.Part(text="Final response.")]
+        ),
+    )
+
+    steps = hallucinations_metric._get_steps_to_evaluate(invocation)
+
+    assert [step.nl_response for step in steps] == [
+        "Visible NL response.",
+        "Final response.",
+    ]
+
+
 class TestEvaluateInvocationsAgentTree:
   """Test cases for agent tree."""
 
