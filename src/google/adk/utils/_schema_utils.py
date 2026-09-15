@@ -374,6 +374,29 @@ def preprocess_args(
             )
           continue
 
+        # The same round-trip turns every element of a list[int] argument into
+        # a float, so coerce integral elements back as well.
+        if (
+            get_origin(target_type) is list
+            and get_args(target_type)[:1] == (int,)
+            and isinstance(args[param_name], list)
+        ):
+          coerced_items = []
+          for item in args[param_name]:
+            if type(item) is float:
+              if item.is_integer():
+                item = int(item)
+              else:
+                logger.warning(
+                    "Argument '%s' is typed list[int] but contains non-integral"
+                    " %r; passing it through unchanged.",
+                    param_name,
+                    item,
+                )
+            coerced_items.append(item)
+          converted_args[param_name] = coerced_items
+          continue
+
         if inspect.isclass(target_type) and issubclass(target_type, BaseModel):
           if args[param_name] is None:
             continue
