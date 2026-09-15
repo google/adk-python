@@ -22,6 +22,7 @@ from typing import Iterator
 from typing import List
 from typing import Literal
 
+import google.oauth2.credentials
 from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
@@ -319,3 +320,133 @@ class AuthCredential(BaseModelWithConfig):
   http: HttpAuth | None = None
   service_account: ServiceAccount | None = None
   oauth2: OAuth2Auth | None = None
+  kms_key_name: str | None = None
+
+
+class KmsEncryptedCredentials(google.oauth2.credentials.Credentials):
+  """Subclass of Google Credentials that supports encrypting sensitive fields using KMS."""
+
+  def __init__(
+      self,
+      token,
+      refresh_token=None,
+      id_token=None,
+      token_uri=None,
+      client_id=None,
+      client_secret=None,
+      scopes=None,
+      default_scopes=None,
+      quota_project_id=None,
+      expiry=None,
+      rapt_token=None,
+      kms_key_name: str | None = None,
+  ):
+    import inspect
+
+    import google.oauth2.credentials
+
+    sig = inspect.signature(google.oauth2.credentials.Credentials.__init__)
+    kwargs = {
+        "token": token,
+        "refresh_token": refresh_token,
+        "id_token": id_token,
+        "token_uri": token_uri,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "scopes": scopes,
+        "default_scopes": default_scopes,
+        "quota_project_id": quota_project_id,
+        "expiry": expiry,
+    }
+    if "rapt_token" in sig.parameters:
+      kwargs["rapt_token"] = rapt_token
+    super().__init__(**kwargs)
+    self.kms_key_name = kms_key_name
+
+  def to_json(self, strip=None):
+    """Serialize credentials to JSON, encrypting sensitive fields if kms_key_name is present."""
+    serialized_json = super().to_json(strip=strip)
+    import json
+
+    from ._kms_encryptor import encrypt_credentials
+
+    data = json.loads(serialized_json)
+
+    if self.kms_key_name:
+      token = data.get("token")
+      refresh_token = data.get("refresh_token")
+      client_secret = data.get("client_secret")
+
+      enc_token, enc_refresh, enc_secret, wrapped_dek = encrypt_credentials(
+          self.kms_key_name, token, refresh_token, client_secret
+      )
+
+      if enc_token:
+        data["token"] = "kms:" + enc_token
+      if enc_refresh:
+        data["refresh_token"] = "kms:" + enc_refresh
+      if enc_secret:
+        data["client_secret"] = "kms:" + enc_secret
+
+      if wrapped_dek:
+        data["wrapped_dek"] = wrapped_dek
+      data["kms_key_name"] = self.kms_key_name
+
+    return json.dumps(data)
+
+  @classmethod
+  def from_authorized_user_info(cls, info, scopes=None):
+    """Deserialize credentials from user info, decrypting sensitive fields if encrypted."""
+    kms_key_name = info.get("kms_key_name")
+    wrapped_dek = info.get("wrapped_dek")
+    info_copy = dict(info)
+
+    if kms_key_name:
+      from ._kms_encryptor import decrypt_credentials
+
+      token = info_copy.get("token")
+      refresh_token = info_copy.get("refresh_token")
+      client_secret = info_copy.get("client_secret")
+
+      enc_token = (
+          token[4:]
+          if isinstance(token, str) and token.startswith("kms:")
+          else token
+      )
+      enc_refresh = (
+          refresh_token[4:]
+          if isinstance(refresh_token, str) and refresh_token.startswith("kms:")
+          else refresh_token
+      )
+      enc_secret = (
+          client_secret[4:]
+          if isinstance(client_secret, str) and client_secret.startswith("kms:")
+          else client_secret
+      )
+
+      dec_token, dec_refresh, dec_secret = decrypt_credentials(
+          kms_key_name, enc_token, enc_refresh, enc_secret, wrapped_dek
+      )
+
+      info_copy["token"] = dec_token
+      info_copy["refresh_token"] = dec_refresh
+      info_copy["client_secret"] = dec_secret
+
+    # Some versions of google-auth might return google.oauth2.credentials.Credentials
+    import google.oauth2.credentials
+
+    creds = google.oauth2.credentials.Credentials.from_authorized_user_info(
+        info_copy, scopes=scopes
+    )
+
+    return cls(
+        token=creds.token,
+        refresh_token=creds.refresh_token,
+        id_token=creds.id_token,
+        token_uri=creds.token_uri,
+        client_id=creds.client_id,
+        client_secret=creds.client_secret,
+        scopes=creds.scopes,
+        expiry=creds.expiry,
+        kms_key_name=kms_key_name,
+    )
