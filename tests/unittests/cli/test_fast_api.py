@@ -554,6 +554,52 @@ def _create_test_client(
     return TestClient(app)
 
 
+@pytest.mark.parametrize(
+    "url_prefix,expected_root_path",
+    [
+        (None, ""),
+        ("/agents/myagent", "/agents/myagent"),
+        ("/agents/myagent/", "/agents/myagent"),
+        ("agents/myagent", "/agents/myagent"),
+        ("agents/myagent/", "/agents/myagent"),
+        ("https://host/agents/myagent", "/agents/myagent"),
+        ("https://host/agents/myagent/", "/agents/myagent"),
+        ("https://host", ""),
+        ("https://host/", ""),
+    ],
+)
+def test_url_prefix_sets_fastapi_root_path(
+    url_prefix,
+    expected_root_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """`url_prefix` (a bare path or a full absolute URL) must translate into
+  the FastAPI app's `root_path`, so that URLs generated behind it -- notably
+  the `/openapi.json` reference embedded in `/docs` -- resolve under the
+  proxied prefix instead of the bare domain root."""
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      url_prefix=url_prefix,
+  )
+
+  assert client.app.root_path == expected_root_path
+
+  docs_response = client.get("/docs")
+  assert docs_response.status_code == 200
+  expected_openapi_url = f"{expected_root_path}/openapi.json"
+  assert expected_openapi_url in docs_response.text
+
+
 def test_agent_with_bigquery_analytics_plugin(
     tmp_path,
     mock_session_service,
