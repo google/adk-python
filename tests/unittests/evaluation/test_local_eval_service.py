@@ -629,6 +629,96 @@ def test_generate_final_eval_status_doesn_t_throw_on(eval_service):
     eval_service._generate_final_eval_status([eval_metric_result])
 
 
+def test_generate_final_eval_status_not_evaluated_then_passed_is_not_evaluated(
+    eval_service,
+):
+  """A metric that never produced a verdict must not be masked by a later PASSED.
+
+  If metric_1 crashed (NOT_EVALUATED) and metric_2 passed, the eval case did
+  not actually pass every requested metric -- it should be reported as
+  NOT_EVALUATED, not PASSED.
+  """
+  results = [
+      EvalMetricResult(
+          metric_name="metric1",
+          threshold=0.5,
+          eval_status=EvalStatus.NOT_EVALUATED,
+      ),
+      EvalMetricResult(
+          metric_name="metric2", threshold=0.5, eval_status=EvalStatus.PASSED
+      ),
+  ]
+
+  assert (
+      eval_service._generate_final_eval_status(results)
+      == EvalStatus.NOT_EVALUATED
+  )
+
+
+def test_generate_final_eval_status_passed_then_not_evaluated_is_not_evaluated(
+    eval_service,
+):
+  """Same as above with the metrics in the opposite order.
+
+  Both orderings of [PASSED, NOT_EVALUATED] must produce the same final
+  status. Prior to this fix they didn't: this ordering silently returned
+  PASSED, which is exactly the evidence that the old behavior was a bug
+  and not intended.
+  """
+  results = [
+      EvalMetricResult(
+          metric_name="metric1", threshold=0.5, eval_status=EvalStatus.PASSED
+      ),
+      EvalMetricResult(
+          metric_name="metric2",
+          threshold=0.5,
+          eval_status=EvalStatus.NOT_EVALUATED,
+      ),
+  ]
+
+  assert (
+      eval_service._generate_final_eval_status(results)
+      == EvalStatus.NOT_EVALUATED
+  )
+
+
+def test_generate_final_eval_status_failed_dominates_not_evaluated(
+    eval_service,
+):
+  """A genuine FAILED is real evidence and must still win over NOT_EVALUATED,
+  regardless of order -- only the PASSED-vs-NOT_EVALUATED case was buggy.
+  """
+  failed_then_not_evaluated = [
+      EvalMetricResult(
+          metric_name="metric1", threshold=0.5, eval_status=EvalStatus.FAILED
+      ),
+      EvalMetricResult(
+          metric_name="metric2",
+          threshold=0.5,
+          eval_status=EvalStatus.NOT_EVALUATED,
+      ),
+  ]
+  not_evaluated_then_failed = [
+      EvalMetricResult(
+          metric_name="metric1",
+          threshold=0.5,
+          eval_status=EvalStatus.NOT_EVALUATED,
+      ),
+      EvalMetricResult(
+          metric_name="metric2", threshold=0.5, eval_status=EvalStatus.FAILED
+      ),
+  ]
+
+  assert (
+      eval_service._generate_final_eval_status(failed_then_not_evaluated)
+      == EvalStatus.FAILED
+  )
+  assert (
+      eval_service._generate_final_eval_status(not_evaluated_then_failed)
+      == EvalStatus.FAILED
+  )
+
+
 @pytest.mark.asyncio
 async def test_mcp_stdio_agent_no_runtime_error(mocker):
   """Test that LocalEvalService can handle MCP stdio agents without RuntimeError.
