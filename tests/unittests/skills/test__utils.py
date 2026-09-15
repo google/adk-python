@@ -423,6 +423,31 @@ def test__load_skill_from_gcs_dir(mock_client_class):
 
 
 @mock.patch("google.cloud.storage.Client")
+@pytest.mark.parametrize(
+    "skill_id",
+    [
+        "../../other-tenant/secrets",
+        "skills/../../other-tenant/secrets",
+        "..",
+        "skills/..",
+    ],
+)
+def test__load_skill_from_gcs_dir_rejects_traversal(
+    mock_client_class, skill_id
+):
+  """A traversal-shaped skill_id must be rejected before any blob lookup."""
+  mock_client = mock.MagicMock()
+  mock_client_class.return_value = mock_client
+  mock_bucket = mock.MagicMock()
+  mock_client.bucket.return_value = mock_bucket
+
+  with pytest.raises(ValueError, match="skill_id"):
+    _load_skill_from_gcs_dir("my-bucket", skill_id, skills_base_path="skills")
+
+  mock_bucket.blob.assert_not_called()
+
+
+@mock.patch("google.cloud.storage.Client")
 def test__load_skill_from_gcs_dir_binary_resources(mock_client_class):
   """Tests that non-UTF-8 GCS blobs are loaded as bytes, and scripts skipped."""
 
