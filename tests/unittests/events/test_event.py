@@ -69,6 +69,16 @@ def test_is_final_response_empty_event_is_final():
   assert event.is_final_response() is True
 
 
+def test_is_final_response_state_delta_only_event_is_not_final():
+  event = _event(actions=EventActions(state_delta={'key': 'value'}))
+  assert event.is_final_response() is False
+
+
+def test_is_final_response_empty_content_with_state_delta_is_final():
+  event = _event(parts=[], actions=EventActions(state_delta={'key': 'value'}))
+  assert event.is_final_response() is True
+
+
 def test_is_final_response_with_function_call_is_not_final():
   event = _event(parts=[_text_part(), _function_call_part()])
   assert event.is_final_response() is False

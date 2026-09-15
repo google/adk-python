@@ -302,6 +302,15 @@ class Event(LlmResponse):
         and not self.get_function_calls()
     ):
       return True
+    # A state-only event persists framework state; it is not an agent response.
+    # Keep empty Content events final because a model may legitimately complete
+    # a turn without producing any parts.
+    if (
+        self.content is None
+        and self.output is None
+        and self.actions.state_delta
+    ):
+      return False
     return (
         not self.get_function_calls()
         and not self.get_function_responses()
