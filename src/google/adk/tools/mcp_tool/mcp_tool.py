@@ -35,6 +35,8 @@ from ...agents.readonly_context import ReadonlyContext
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
 from ...auth.auth_tool import AuthConfig
+from ...dependencies._mcp import CallToolResult
+from ...dependencies._mcp import ClaimContext
 from ...dependencies._mcp import ClientSession
 from ...dependencies._mcp import IS_MCP_SDK_V2
 from ...dependencies._mcp import McpError
@@ -591,11 +593,20 @@ class McpTool(BaseAuthenticatedTool):
     # Resolve progress callback (may be a factory that needs runtime context)
     resolved_callback = self._resolve_progress_callback(tool_context)
 
+    # allow_claimed lets a registered extension's result shape come back
+    # instead of raising. Only pass it when a claim is actually registered, so
+    # an unclaimed non-core result keeps failing validation as it does today.
+    # The isinstance check is here for the same reason as the one further
+    # down: a mock session manager answers every attribute with a truthy Mock,
+    # and that must not look like a registered claim.
+    claims = getattr(self._mcp_session_manager, "_claims_by_model", None)
+    claims_registered = isinstance(claims, dict) and bool(claims)
     call_coro = session.call_tool(
         self._mcp_tool.name,
         arguments=args,
         progress_callback=resolved_callback,
         meta=meta_trace_context,
+        **({"allow_claimed": True} if claims_registered else {}),
     )
 
     # Hold the session out of the pool's idle sweep for as long as the call
@@ -603,6 +614,7 @@ class McpTool(BaseAuthenticatedTool):
     # only looks idle because its call has not come back yet must not have
     # its transport closed underneath it.
     self._mcp_session_manager._begin_session_use(final_headers)  # pylint: disable=protected-access
+    session_context = None
     try:
       if is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):  # pylint: disable=protected-access
         # Race the tool call against the background session task so that
@@ -629,6 +641,11 @@ class McpTool(BaseAuthenticatedTool):
         # Pre-fix behavior: await the call directly. This is what causes the
         # ~300s hang when the underlying transport crashes.
         response = await call_coro
+
+      if claims_registered and not isinstance(response, CallToolResult):
+        response = await self._resolve_claimed(
+            response, session, session_context
+        )
     finally:
       self._mcp_session_manager._end_session_use(final_headers)  # pylint: disable=protected-access
 
@@ -663,6 +680,61 @@ class McpTool(BaseAuthenticatedTool):
           )
       )
     return result
+
+  async def _resolve_claimed(
+      self,
+      response: Any,
+      session: ClientSession,
+      session_context: SessionContext | None,
+  ) -> CallToolResult:
+    """Turns an extension's claimed `tools/call` result into a normal one.
+
+    `ClientSession` parses a claimed result but stops there; resolving it is
+    the caller's job, and for the tasks extension resolving means polling
+    until the task reaches a terminal state. Cancellation therefore has to
+    reach the resolver rather than orphaning it, which is what
+    `propagate_cancel` is for -- a resolver that never learns it was
+    cancelled never gets to tell the server.
+
+    Args:
+      response: The claimed result, already parsed into its claim's model.
+      session: The session the call was made on.
+      session_context: The context guarding that session, when there is one.
+
+    Returns:
+      The `CallToolResult` the claim resolved to.
+
+    Raises:
+      RuntimeError: If no registered claim owns this result's type.
+    """
+    claim = self._mcp_session_manager._claim_for(response)  # pylint: disable=protected-access
+    if claim is None:
+      raise RuntimeError(
+          f"MCP server returned an unclaimed result of type {type(response)!r}"
+      )
+
+    read_timeout = getattr(session, "read_timeout_seconds", None)
+    resolve_coro = claim.resolve(
+        response,
+        ClaimContext(
+            session=session,
+            tool_name=self._mcp_tool.name,
+            read_timeout_seconds=read_timeout,
+        ),
+    )
+    if isinstance(session_context, SessionContext):
+      resolved = await session_context._run_guarded(  # pylint: disable=protected-access
+          resolve_coro, propagate_cancel=True
+      )
+    else:
+      resolved = await resolve_coro
+
+    # Mirror the schema enforcement the direct path gets from `call_tool`, so
+    # a result that arrived by way of an extension is held to the same
+    # contract as one that arrived inline.
+    if not resolved.is_error:
+      await session.validate_tool_result(self._mcp_tool.name, resolved)
+    return resolved
 
   def _detect_error_in_response(self, response: Any) -> str | None:
     """Telemetry hook: returns an error type if the response indicates an error."""

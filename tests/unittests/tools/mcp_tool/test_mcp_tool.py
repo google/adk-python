@@ -50,6 +50,7 @@ import pytest
 
 from ._sdk_compat import expected_tool_result
 from ._sdk_compat import make_mcp_error
+from ._sdk_compat import requires_sdk_v2
 from ._sdk_compat import sdk_progress_fn_t
 
 
@@ -1825,6 +1826,183 @@ class TestMCPTool:
     assert len(debug_info) == 1
     assert debug_info[0]["url"] == "https://example.com/api"
     assert debug_info[0]["status_code"] == 403
+
+
+@requires_sdk_v2
+class TestMCPToolClaimedResults:
+  """Tests for resolving an extension's claimed `tools/call` result.
+
+  `ClientSession` parses a claimed result but never resolves it, so the
+  toolset has to do that itself or the extension seam carries nothing.
+  """
+
+  def setup_method(self):
+    self.mock_mcp_tool = MockMCPTool(name="test_tool")
+    self.mock_session = AsyncMock()
+    self.mock_session.validate_tool_result = AsyncMock()
+    self.mock_session_manager = Mock(spec=MCPSessionManager)
+    self.mock_session_manager.create_session = AsyncMock(
+        return_value=self.mock_session
+    )
+    self.mock_session_manager._get_session_context = Mock(return_value=None)
+
+  def _tool_context(self):
+    tool_context = ToolContext(invocation_context=Mock())
+    tool_context.function_call_id = "test-call-id"
+    return tool_context
+
+  def _register_claim(self, resolve, model):
+    claim = SimpleNamespace(model=model, resolve=resolve)
+    self.mock_session_manager._claims_by_model = {model: claim}
+    self.mock_session_manager._claim_for = Mock(
+        side_effect=lambda r: {model: claim}.get(type(r))
+    )
+    return claim
+
+  @pytest.mark.asyncio
+  async def test_claimed_result_is_resolved_before_the_agent_sees_it(self):
+    """The agent gets the resolved CallToolResult, not the claim's model."""
+
+    class _Claimed:
+      pass
+
+    resolved = CallToolResult(
+        content=[TextContent(type="text", text="resolved")]
+    )
+    resolve = AsyncMock(return_value=resolved)
+    self._register_claim(resolve, _Claimed)
+    claimed = _Claimed()
+    self.mock_session.call_tool = AsyncMock(return_value=claimed)
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+    result = await tool._run_async_impl(
+        args={}, tool_context=self._tool_context(), credential=None
+    )
+
+    # The same dict a result that arrived inline would have produced: going
+    # through an extension changes how it travelled, not what the agent gets.
+    assert result == expected_tool_result(resolved)
+    # The claim gets the parsed result plus the context it needs to poll.
+    passed_result, ctx = resolve.await_args.args
+    assert passed_result is claimed
+    assert ctx.tool_name == "test_tool"
+    assert ctx.session is self.mock_session
+    # A resolved result is held to the same output schema as a direct one.
+    self.mock_session.validate_tool_result.assert_awaited_once_with(
+        "test_tool", resolved
+    )
+
+  @pytest.mark.asyncio
+  async def test_allow_claimed_is_passed_only_when_a_claim_exists(self):
+    """Without claims the call is unchanged, so unclaimed results still fail."""
+    self.mock_session_manager._claims_by_model = {}
+    self.mock_session.call_tool = AsyncMock(
+        return_value=CallToolResult(content=[])
+    )
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+    await tool._run_async_impl(
+        args={}, tool_context=self._tool_context(), credential=None
+    )
+
+    assert "allow_claimed" not in self.mock_session.call_tool.await_args.kwargs
+
+  @pytest.mark.asyncio
+  async def test_allow_claimed_is_passed_when_a_claim_exists(self):
+    """A registered claim opts the call into non-core result shapes."""
+
+    class _Claimed:
+      pass
+
+    self._register_claim(AsyncMock(), _Claimed)
+    self.mock_session.call_tool = AsyncMock(
+        return_value=CallToolResult(content=[])
+    )
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+    await tool._run_async_impl(
+        args={}, tool_context=self._tool_context(), credential=None
+    )
+
+    assert self.mock_session.call_tool.await_args.kwargs["allow_claimed"]
+
+  @pytest.mark.asyncio
+  async def test_an_ordinary_result_is_not_sent_through_a_claim(self):
+    """A core result short-circuits resolution even when claims exist."""
+
+    class _Claimed:
+      pass
+
+    resolve = AsyncMock()
+    self._register_claim(resolve, _Claimed)
+    plain = CallToolResult(content=[TextContent(type="text", text="plain")])
+    self.mock_session.call_tool = AsyncMock(return_value=plain)
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+    result = await tool._run_async_impl(
+        args={}, tool_context=self._tool_context(), credential=None
+    )
+
+    resolve.assert_not_awaited()
+    assert result == expected_tool_result(plain)
+
+  @pytest.mark.asyncio
+  async def test_unclaimed_non_core_result_raises(self):
+    """A result no claim owns is a server bug, and must not pass silently."""
+
+    class _Claimed:
+      pass
+
+    class _Unknown:
+      pass
+
+    self._register_claim(AsyncMock(), _Claimed)
+    self.mock_session.call_tool = AsyncMock(return_value=_Unknown())
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+    with pytest.raises(RuntimeError, match="unclaimed result"):
+      await tool._run_async_impl(
+          args={}, tool_context=self._tool_context(), credential=None
+      )
+
+  @pytest.mark.asyncio
+  async def test_failed_resolution_is_not_schema_checked(self):
+    """An error result has no structured output to validate."""
+
+    class _Claimed:
+      pass
+
+    failed = CallToolResult(
+        content=[TextContent(type="text", text="boom")], is_error=True
+    )
+    self._register_claim(AsyncMock(return_value=failed), _Claimed)
+    self.mock_session.call_tool = AsyncMock(return_value=_Claimed())
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+    result = await tool._run_async_impl(
+        args={}, tool_context=self._tool_context(), credential=None
+    )
+
+    self.mock_session.validate_tool_result.assert_not_awaited()
+    assert result["isError"] is True
 
 
 class TestMCPToolGracefulErrorHandling:
