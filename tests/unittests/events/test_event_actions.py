@@ -22,6 +22,7 @@ import logging
 from google.adk.events.event_actions import _make_json_serializable
 from google.adk.events.event_actions import EventActions
 from pydantic import BaseModel
+from pydantic import ConfigDict
 
 
 class _Sample(BaseModel):
@@ -70,6 +71,24 @@ class TestStateDeltaSerialization:
     actions = EventActions(state_delta={'a': 1, 'b': [1, 2], 'c': {'d': 'e'}})
     dumped = actions.model_dump(mode='json')
     assert dumped['state_delta'] == {'a': 1, 'b': [1, 2], 'c': {'d': 'e'}}
+
+  def test_deferred_pydantic_state_delta_round_trips(self):
+    """Nested deferred Pydantic models remain serializable in state."""
+
+    class _DeferredModel(BaseModel):
+      model_config = ConfigDict(defer_build=True)
+
+      value: str
+
+    class _Container(BaseModel):
+      model: _DeferredModel
+
+    deferred = _Container.model_validate({'model': {'value': 'ready'}}).model
+    actions = EventActions(state_delta={'deferred': deferred})
+
+    dumped = actions.model_dump(mode='json')
+
+    assert dumped['state_delta']['deferred'] == {'value': 'ready'}
 
   def test_non_serializable_state_delta_does_not_raise(self):
     actions = EventActions(state_delta={'cb': lambda: 1, 'ok': 2})
