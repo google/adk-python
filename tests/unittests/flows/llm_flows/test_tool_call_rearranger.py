@@ -435,6 +435,34 @@ def test_rearrange_history_reused_id_keeps_last_progress_update():
   }
 
 
+def test_rearrange_history_drops_model_reply_to_superseded_tool_update():
+  """A reply generated from an old tool update is removed with that update."""
+  stale_reply = Event(
+      author="test_agent",
+      content=types.Content(role="model", parts=[types.Part(text="Still working.")]),
+  )
+  final_reply = Event(
+      author="test_agent",
+      content=types.Content(role="model", parts=[types.Part(text="Finished.")]),
+  )
+  user_followup = Event(author="user", content=types.UserContent("What happened?"))
+  events = [
+      _call_event("call_1", "watch"),
+      _resp_event("call_1", "watch", "progress"),
+      stale_reply,
+      _resp_event("call_1", "watch", "done"),
+      final_reply,
+      user_followup,
+  ]
+
+  result = rearrange_events_for_async_function_responses_in_history(events)
+
+  assert len(result) == 4
+  assert result[1].get_function_responses()[0].response == {"result": "done"}
+  assert result[2] == final_reply
+  assert result[3] == user_followup
+
+
 def test_rearrange_history_async_parallel_responses_merged_next_to_call():
   """Parallel async responses arriving in separate events are merged next to their call."""
   parallel_call = Event(
