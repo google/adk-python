@@ -128,8 +128,8 @@ class TestOAuth2CredentialUtil:
     assert client is None
     assert token_endpoint is None
 
-  def test_create_oauth2_session_missing_credentials(self):
-    """Test create_oauth2_session with missing credentials."""
+  def test_create_oauth2_session_missing_client_id(self):
+    """Test create_oauth2_session with missing client_id."""
     scheme = OpenIdConnectWithConfig(
         type_="openIdConnect",
         openId_connect_url=(
@@ -142,8 +142,7 @@ class TestOAuth2CredentialUtil:
     credential = AuthCredential(
         auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
         oauth2=OAuth2Auth(
-            client_id="test_client_id",
-            # Missing client_secret
+            client_secret="test_client_secret",
         ),
     )
 
@@ -151,6 +150,33 @@ class TestOAuth2CredentialUtil:
 
     assert client is None
     assert token_endpoint is None
+
+  def test_create_oauth2_session_public_client_without_secret(self):
+    """Public clients have a client_id and no client_secret."""
+    scheme = OpenIdConnectWithConfig(
+        type_="openIdConnect",
+        openId_connect_url=(
+            "https://example.com/.well-known/openid_configuration"
+        ),
+        authorization_endpoint="https://example.com/auth",
+        token_endpoint="https://example.com/token",
+        scopes=["openid"],
+    )
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
+        oauth2=OAuth2Auth(
+            client_id="public-client",
+            redirect_uri="https://app/cb",
+        ),
+    )
+
+    client, token_endpoint = create_oauth2_session(scheme, credential)
+
+    assert client is not None
+    assert token_endpoint == "https://example.com/token"
+    assert client.client_id == "public-client"
+    assert client.client_secret is None
+    assert client.token_endpoint_auth_method == "none"
 
   def _google_openid_scheme(self) -> OpenIdConnectWithConfig:
     """OpenID Connect scheme that uses Google's OAuth2 token endpoint."""
