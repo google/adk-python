@@ -865,13 +865,13 @@ class ApiServer:
     self.auto_create_session = auto_create_session
     self.trigger_sources = trigger_sources
     if (
-        trigger_oidc_service_accounts
+        trigger_sources
         and not trigger_oidc_audience
         and not trigger_auth_verifier
     ):
       raise ValueError(
-          "trigger_oidc_service_accounts requires trigger_oidc_audience to be"
-          " set."
+          "trigger_sources requires trigger_oidc_audience or "
+          "trigger_auth_verifier to be set."
       )
     self.trigger_oidc_audience = trigger_oidc_audience
     self.trigger_oidc_service_accounts = trigger_oidc_service_accounts
