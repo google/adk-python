@@ -199,8 +199,10 @@ class McpToolset(BaseToolset):
       errlog: TextIO stream for error logging.
       auth_scheme: The auth scheme of the tool for tool calling
       auth_credential: The auth credential of the tool for tool calling
-      require_confirmation: Whether tools in this toolset require confirmation.
-        Can be a single boolean or a callable to apply to all tools.
+        require_confirmation: Whether tools in this toolset require confirmation.
+        Can be a single boolean or a callable to apply to all tools. Forwarded
+        as-is to each McpTool this toolset builds (see McpTool.require_confirmation
+        for how a non-bool callable return is handled).
       header_provider: A callable that takes a ReadonlyContext and returns a
         dictionary of headers to be used for the MCP session.
       progress_callback: Optional callback to receive progress notifications

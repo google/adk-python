@@ -110,7 +110,9 @@ class FunctionTool(BaseTool):
       require_confirmation: Whether this tool requires confirmation. A boolean or
         a callable that takes the function's arguments and returns a boolean. If
         the callable returns True, the tool will require confirmation from the
-        user.
+        user. Any return value that is not a bool (including None, e.g. from a
+        function that falls through without an explicit return, or an
+        un-awaited awaitable) is treated as requiring confirmation.
     """
     self._spec = CallableSpec(func)
     name = _function_tool_declarations.get_callable_name(func)
@@ -199,10 +201,28 @@ class FunctionTool(BaseTool):
   ) -> bool:
     if callable(self._require_confirmation):
       args_to_call = self._prepare_invocation_args(args, tool_context)
-      return cast(
-          bool,
-          await self._invoke_callable(self._require_confirmation, args_to_call),
+      result = await self._invoke_callable(
+          self._require_confirmation, args_to_call
       )
+      if inspect.isawaitable(result):
+        logger.warning(
+            "require_confirmation predicate for tool '%s' returned an"
+            " un-awaited awaitable (%s); the predicate did not actually run."
+            " Treating this as requiring confirmation.",
+            self.name,
+            type(result).__name__,
+        )
+        return True
+      if isinstance(result, bool):
+        return result
+      logger.warning(
+          "require_confirmation predicate for tool '%s' returned %r (%s),"
+          " which is not a bool. Treating this as requiring confirmation.",
+          self.name,
+          result,
+          type(result).__name__,
+      )
+      return True
     return bool(self._require_confirmation)
 
   def _is_invocation_type_error(

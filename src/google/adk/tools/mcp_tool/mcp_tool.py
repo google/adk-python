@@ -302,10 +302,13 @@ class McpTool(BaseAuthenticatedTool):
         mcp_session_manager: The MCP session manager to use for communication.
         auth_scheme: The authentication scheme to use.
         auth_credential: The authentication credential to use.
-        require_confirmation: Whether this tool requires confirmation. A boolean
-          or a callable that takes the function's arguments and returns a
-          boolean. If the callable returns True, the tool will require
-          confirmation from the user.
+        func: The function to wrap.
+        require_confirmation: Whether this tool requires confirmation. A boolean or
+        a callable that takes the function's arguments and returns a boolean. If
+        the callable returns True, the tool will require confirmation from the
+        user. Any return value that is not a bool (including None, e.g. from a
+        function that falls through without an explicit return, or an
+        un-awaited awaitable) is treated as requiring confirmation.
         header_provider: Optional function to provide dynamic headers.
         progress_callback: Optional callback to receive progress notifications
           from MCP server during long-running tool execution. Can be either:
@@ -467,10 +470,28 @@ class McpTool(BaseAuthenticatedTool):
       args_to_call = self._prepare_callable_args(
           self._require_confirmation, args, tool_context
       )
-      return cast(
-          bool,
-          await self._invoke_callable(self._require_confirmation, args_to_call),
+      result = await self._invoke_callable(
+          self._require_confirmation, args_to_call
       )
+      if inspect.isawaitable(result):
+        logger.warning(
+            "require_confirmation predicate for tool '%s' returned an"
+            " un-awaited awaitable (%s); the predicate did not actually run."
+            " Treating this as requiring confirmation.",
+            self.name,
+            type(result).__name__,
+        )
+        return True
+      if isinstance(result, bool):
+        return result
+      logger.warning(
+          "require_confirmation predicate for tool '%s' returned %r (%s),"
+          " which is not a bool. Treating this as requiring confirmation.",
+          self.name,
+          result,
+          type(result).__name__,
+      )
+      return True
     return bool(self._require_confirmation)
 
   @override
