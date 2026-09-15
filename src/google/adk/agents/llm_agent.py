@@ -167,10 +167,19 @@ async def _convert_tool_union_to_tools(
   # other tools.
   # TODO: Remove once the workaround is no longer needed.
   if multiple_tools and isinstance(tool_union, VertexAiSearchTool):
-    from ..tools.discovery_engine_search_tool import DiscoveryEngineSearchTool
-
     vais_tool = tool_union
     if vais_tool.bypass_multi_tools_limit:
+      # Imported lazily and only on the bypass path: the Discovery Engine
+      # client is an optional dependency, and agents that leave the flag off
+      # must not be forced to install it.
+      try:
+        from ..tools.discovery_engine_search_tool import DiscoveryEngineSearchTool
+      except ImportError as e:
+        raise ImportError(
+            'bypass_multi_tools_limit=True requires the Discovery Engine'
+            ' client. Install it with `pip install google-adk[gcp]`.'
+        ) from e
+
       return [
           DiscoveryEngineSearchTool(
               data_store_id=vais_tool.data_store_id,
@@ -178,6 +187,8 @@ async def _convert_tool_union_to_tools(
               search_engine_id=vais_tool.search_engine_id,
               filter=vais_tool.filter,
               max_results=vais_tool.max_results,
+              name=vais_tool._name_override,
+              description=vais_tool._description_override,
           )
       ]
   from ..workflow._base_node import BaseNode

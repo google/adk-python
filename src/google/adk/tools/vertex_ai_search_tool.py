@@ -71,6 +71,8 @@ class VertexAiSearchTool(BaseTool):
       filter: Optional[str] = None,
       max_results: Optional[int] = None,
       bypass_multi_tools_limit: bool = False,
+      name: Optional[str] = None,
+      description: Optional[str] = None,
   ):
     """Initializes the Vertex AI Search tool.
 
@@ -86,6 +88,10 @@ class VertexAiSearchTool(BaseTool):
       max_results: The maximum number of results to return.
       bypass_multi_tools_limit: Whether to bypass the multi tools limitation,
         so that the tool can be used with other tools in the same agent.
+      name: Optional tool name. Only takes effect when
+        bypass_multi_tools_limit=True, where it renames the substituted
+        DiscoveryEngineSearchTool. Ignored on the built-in grounding path.
+      description: Optional tool description.
 
     Raises:
       ValueError: If both data_store_id and search_engine_id are not specified
@@ -109,6 +115,8 @@ class VertexAiSearchTool(BaseTool):
     self.filter = filter
     self.max_results = max_results
     self.bypass_multi_tools_limit = bypass_multi_tools_limit
+    self._name_override = name
+    self._description_override = description
 
   def _build_vertex_ai_search_config(
       self, readonly_context: ReadonlyContext
