@@ -418,10 +418,18 @@ class RestApiTool(BaseTool):
       elif param_location == "query":
         if v is not None:
           query_params[original_k] = v
+      # A model routinely fills an optional parameter it decided not to use
+      # with null, which arrives here as None. For a header that reaches httpx
+      # as a value it refuses to encode, failing the whole call with
+      # "Header value must be str or bytes"; for a cookie it is serialized as
+      # a bare, valueless `Cookie: <name>` pair. Omit the parameter instead,
+      # the same way an unset query parameter is omitted above.
       elif param_location == "header":
-        header_params[original_k] = v
+        if v is not None:
+          header_params[original_k] = v
       elif param_location == "cookie":
-        cookie_params[original_k] = v
+        if v is not None:
+          cookie_params[original_k] = v
 
     # Construct URL
     base_url = self.endpoint.base_url or ""
