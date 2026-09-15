@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.9.1](https://github.com/google/adk-python/compare/v2.9.0...v2.9.1) (2026-09-15)
+
+
+### Bug Fixes
+
+* request visible thoughts for Claude adaptive thinking ([ba0d542](https://github.com/google/adk-python/commit/ba0d542181df87b6e1da9709fa0410082484443a))
+
 ## [2.9.0](https://github.com/google/adk-python/compare/v2.8.0...v2.9.0) (2026-09-10)
 
 
