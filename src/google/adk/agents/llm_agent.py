@@ -178,6 +178,8 @@ async def _convert_tool_union_to_tools(
               search_engine_id=vais_tool.search_engine_id,
               filter=vais_tool.filter,
               max_results=vais_tool.max_results,
+              name=vais_tool._bypass_tool_name,
+              description=vais_tool._bypass_tool_description,
           )
       ]
   from ..workflow._base_node import BaseNode

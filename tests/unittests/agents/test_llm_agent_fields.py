@@ -723,6 +723,135 @@ class TestCanonicalTools:
     assert tools[0].name == 'vertex_ai_search'
     assert tools[0].__class__.__name__ == 'VertexAiSearchTool'
 
+  @mock.patch(
+      'google.auth.default',
+      mock.MagicMock(return_value=('credentials', 'project')),
+  )
+  async def test_vais_bypass_custom_name_forwarded(self):
+    """Custom name on VertexAiSearchTool is forwarded to DiscoveryEngineSearchTool."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-pro',
+        tools=[
+            self._my_tool,
+            VertexAiSearchTool(
+                data_store_id='test_data_store_id',
+                bypass_multi_tools_limit=True,
+                name='knowledge_base_search',
+            ),
+        ],
+    )
+    ctx = await _create_readonly_context(agent)
+    tools = await agent.canonical_tools(ctx)
+
+    assert len(tools) == 2
+    assert tools[1].name == 'knowledge_base_search'
+    assert tools[1].__class__.__name__ == 'DiscoveryEngineSearchTool'
+
+  @mock.patch(
+      'google.auth.default',
+      mock.MagicMock(return_value=('credentials', 'project')),
+  )
+  async def test_vais_bypass_custom_description_forwarded(self):
+    """Custom description on VertexAiSearchTool is forwarded to DiscoveryEngineSearchTool."""
+    custom_desc = 'Search the internal knowledge base for product information.'
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-pro',
+        tools=[
+            self._my_tool,
+            VertexAiSearchTool(
+                data_store_id='test_data_store_id',
+                bypass_multi_tools_limit=True,
+                description=custom_desc,
+            ),
+        ],
+    )
+    ctx = await _create_readonly_context(agent)
+    tools = await agent.canonical_tools(ctx)
+
+    assert len(tools) == 2
+    assert tools[1].description == custom_desc
+    assert tools[1].__class__.__name__ == 'DiscoveryEngineSearchTool'
+
+  @mock.patch(
+      'google.auth.default',
+      mock.MagicMock(return_value=('credentials', 'project')),
+  )
+  async def test_vais_bypass_custom_name_and_description_forwarded(self):
+    """Both custom name and description are forwarded to DiscoveryEngineSearchTool."""
+    custom_name = 'product_search'
+    custom_desc = 'Search the product catalogue.'
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-pro',
+        tools=[
+            self._my_tool,
+            VertexAiSearchTool(
+                data_store_id='test_data_store_id',
+                bypass_multi_tools_limit=True,
+                name=custom_name,
+                description=custom_desc,
+            ),
+        ],
+    )
+    ctx = await _create_readonly_context(agent)
+    tools = await agent.canonical_tools(ctx)
+
+    assert len(tools) == 2
+    assert tools[1].name == custom_name
+    assert tools[1].description == custom_desc
+    assert tools[1].__class__.__name__ == 'DiscoveryEngineSearchTool'
+
+  @mock.patch(
+      'google.auth.default',
+      mock.MagicMock(return_value=('credentials', 'project')),
+  )
+  async def test_vais_bypass_default_name_unchanged_when_no_custom_name(self):
+    """Default name is still 'discovery_engine_search' when no custom name provided."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-pro',
+        tools=[
+            self._my_tool,
+            VertexAiSearchTool(
+                data_store_id='test_data_store_id',
+                bypass_multi_tools_limit=True,
+            ),
+        ],
+    )
+    ctx = await _create_readonly_context(agent)
+    tools = await agent.canonical_tools(ctx)
+
+    assert len(tools) == 2
+    assert tools[1].name == 'discovery_engine_search'
+    assert tools[1].__class__.__name__ == 'DiscoveryEngineSearchTool'
+
+  @mock.patch(
+      'google.auth.default',
+      mock.MagicMock(return_value=('credentials', 'project')),
+  )
+  async def test_vais_no_bypass_custom_name_does_not_affect_builtin_name(self):
+    """name param has no effect on the built-in grounding tool name (bypass=False)."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-pro',
+        tools=[
+            VertexAiSearchTool(
+                data_store_id='test_data_store_id',
+                bypass_multi_tools_limit=False,
+                name='should_be_ignored',
+            ),
+        ],
+    )
+    ctx = await _create_readonly_context(agent)
+    tools = await agent.canonical_tools(ctx)
+
+    assert len(tools) == 1
+    # The built-in grounding tool always reports 'vertex_ai_search'
+    assert tools[0].name == 'vertex_ai_search'
+    assert tools[0].__class__.__name__ == 'VertexAiSearchTool'
+
   async def test_handle_enterprise_web_search_in_hierarchy(self):
     """Enterprise web search without bypass remains a built-in search tool in a hierarchy."""
     search_agent = LlmAgent(
