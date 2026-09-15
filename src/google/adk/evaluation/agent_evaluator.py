@@ -849,17 +849,54 @@ class AgentEvaluator:
           for m in eval_metric_results_with_invocations
           if m.eval_metric_result.score is not None
       ]
+      overall_score = statistics.mean(scores) if scores else None
 
-      if scores:
-        overall_score = statistics.mean(scores)
-        overall_eval_status = (
-            EvalStatus.PASSED
-            if overall_score >= threshold
-            else EvalStatus.FAILED
+      # Determine this metric's pass/fail POLARITY (higher-is-better vs.
+      # lower-is-better) from one invocation's own (score, eval_status)
+      # pair -- set correctly by the registered Evaluator itself (see
+      # LocalEvalService._evaluate_metric, which copies
+      # `PerInvocationResult.eval_status` verbatim onto each
+      # `EvalMetricResult`) -- rather than hardcoding a higher-is-better
+      # `>=` comparison for every metric uniformly, which is backwards for
+      # any metric an Evaluator defines as lower-is-better (e.g. a cost or
+      # latency metric, PASSED when `score <= threshold`).
+      # `Evaluator`/`EvalMetric`/`BaseCriterion` have no separate
+      # "polarity" field anywhere in this module, so this recovers it from
+      # the one place a metric's own correct pass/fail semantics are
+      # already recorded per invocation, then applies that SAME direction
+      # to the aggregate mean -- preserving the original mean-vs-threshold
+      # aggregation exactly, only correcting which comparison operator it
+      # uses. A sample exactly AT the threshold is skipped when inferring
+      # direction (both directions agree there, so it's uninformative);
+      # if every invocation sits exactly at the threshold, the mean does
+      # too, and the arbitrary default below still yields the correct
+      # verdict either way.
+      higher_is_better = True
+      for (
+          eval_metric_result_with_invocation
+      ) in eval_metric_results_with_invocations:
+        result = eval_metric_result_with_invocation.eval_metric_result
+        if (
+            result.score is None
+            or result.score == threshold
+            or result.eval_status not in (EvalStatus.PASSED, EvalStatus.FAILED)
+        ):
+          continue
+        higher_is_better = (result.score > threshold) == (
+            result.eval_status == EvalStatus.PASSED
         )
-      else:
-        overall_score = None
+        break
+
+      if overall_score is None:
         overall_eval_status = EvalStatus.NOT_EVALUATED
+      elif (
+          overall_score >= threshold
+          if higher_is_better
+          else overall_score <= threshold
+      ):
+        overall_eval_status = EvalStatus.PASSED
+      else:
+        overall_eval_status = EvalStatus.FAILED
 
       # Gather all the failures.
       if overall_eval_status != EvalStatus.PASSED:
