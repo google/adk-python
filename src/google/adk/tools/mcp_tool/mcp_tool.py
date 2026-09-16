@@ -42,6 +42,7 @@ from ...dependencies._mcp import Tool as McpBaseTool
 from ...events.ui_widget import UiWidget
 from ...features import FeatureName
 from ...features import is_feature_enabled
+from ...flows.llm_flows._fencing import fence_tool_description
 from ...flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from ...flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from ...flows.llm_flows.functions import REQUEST_INPUT_FUNCTION_CALL_NAME
@@ -352,10 +353,15 @@ class McpTool(BaseAuthenticatedTool):
     """
     input_schema = _read_field(self._mcp_tool, "inputSchema", "input_schema")
     output_schema = _read_field(self._mcp_tool, "outputSchema", "output_schema")
+    # self.description is left as the server's own text for any other
+    # consumer (dev UI listings, logging); it is fenced only here, at the
+    # point it is placed where the model reads it. See
+    # fence_tool_description's docstring for why.
+    fenced_description = fence_tool_description(self.description)
     if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
       function_decl = FunctionDeclaration(
           name=self.name,
-          description=self.description,
+          description=fenced_description,
           parameters_json_schema=input_schema,
           response_json_schema=output_schema,
       )
@@ -363,7 +369,7 @@ class McpTool(BaseAuthenticatedTool):
       parameters = _to_gemini_schema(input_schema)
       function_decl = FunctionDeclaration(
           name=self.name,
-          description=self.description,
+          description=fenced_description,
           parameters=parameters,
       )
     return function_decl
