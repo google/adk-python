@@ -382,9 +382,23 @@ class RedisSessionService(BaseSessionService):
     )
 
     key = self._session_key(session.app_name, session.user_id, session.id)
-    await client.set(
-        key,
-        storage_session.model_dump_json(),
-        ex=self.config.ttl_seconds if self.config.ttl_seconds > 0 else None,
-    )
+
+    async def append_to_storage(pipe: Any) -> None:
+      raw = await pipe.get(key)
+      if raw:
+        # The caller may hold a filtered view. Reload on every transaction
+        # attempt so concurrent appends are preserved as well.
+        storage_session.events = Session.model_validate_json(raw).events
+        if not event.partial:
+          storage_session.events.append(event)
+      else:
+        storage_session.events = session.events
+      pipe.multi()
+      pipe.set(
+          key,
+          storage_session.model_dump_json(),
+          ex=self.config.ttl_seconds if self.config.ttl_seconds > 0 else None,
+      )
+
+    await client.transaction(append_to_storage, key)
     return event
