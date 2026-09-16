@@ -14,6 +14,7 @@
 
 from unittest.mock import patch
 
+from google.adk.agents.caller_principal import CallerPrincipal
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
@@ -1319,3 +1320,237 @@ async def test_resolve_confirmation_targets_requires_adk_name():
 
   assert set(tool_confirmation_dict) == {"requested_fc_id"}
   assert set(original_fcs_dict) == {"requested_fc_id"}
+
+
+def _build_pending_confirmation_events(agent_name: str) -> list[Event]:
+  """Builds a gated tool call followed by an approval on the user turn.
+
+  Args:
+    agent_name: Author to use for the agent-authored events.
+
+  Returns:
+    The session events, in order.
+  """
+  original_function_call = types.FunctionCall(
+      name=MOCK_TOOL_NAME, args={"param1": "test"}, id=MOCK_FUNCTION_CALL_ID
+  )
+  tool_confirmation = ToolConfirmation(confirmed=False, hint="test hint")
+  return [
+      Event(
+          author=agent_name,
+          content=types.Content(
+              parts=[types.Part(function_call=original_function_call)]
+          ),
+      ),
+      Event(
+          author=agent_name,
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                          args={
+                              "originalFunctionCall": (
+                                  original_function_call.model_dump(
+                                      exclude_none=True, by_alias=True
+                                  )
+                              ),
+                              "toolConfirmation": (
+                                  tool_confirmation.model_dump(
+                                      by_alias=True, exclude_none=True
+                                  )
+                              ),
+                          },
+                          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
+                      )
+                  )
+              ]
+          ),
+      ),
+      Event(
+          author="user",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
+                          response={
+                              "response": ToolConfirmation(
+                                  confirmed=True
+                              ).model_dump_json()
+                          },
+                      )
+                  )
+              ]
+          ),
+      ),
+  ]
+
+
+async def _run_with_caller_principal(caller_principal):
+  """Runs the processor over a pending approval under one caller principal.
+
+  Args:
+    caller_principal: The principal to put on the invocation context.
+
+  Returns:
+    A tuple of the yielded events and the ToolConfirmation the processor
+    handed to tool execution, or None for the confirmation if execution was
+    never reached.
+  """
+  agent = LlmAgent(
+      name="test_agent",
+      tools=[FunctionTool(mock_tool, require_confirmation=True)],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.caller_principal = caller_principal
+  invocation_context.session.events.extend(
+      _build_pending_confirmation_events(agent.name)
+  )
+
+  resolved_event = Event(
+      author="agent",
+      content=types.Content(
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      name=MOCK_TOOL_NAME,
+                      id=MOCK_FUNCTION_CALL_ID,
+                      response={"result": "Mock tool result with test"},
+                  )
+              )
+          ]
+      ),
+  )
+
+  with patch(
+      "google.adk.flows.llm_flows.functions.handle_function_call_list_async"
+  ) as mock_handle_function_call_list_async:
+    mock_handle_function_call_list_async.return_value = resolved_event
+
+    events = []
+    async for event in request_processor.run_async(
+        invocation_context, LlmRequest()
+    ):
+      events.append(event)
+
+    if not mock_handle_function_call_list_async.call_args:
+      return events, None
+    args, _ = mock_handle_function_call_list_async.call_args
+    return events, args[4][MOCK_FUNCTION_CALL_ID]
+
+
+@pytest.mark.asyncio
+async def test_confirmation_honored_without_caller_principal():
+  """No principal means no remote boundary was crossed, so nothing changes."""
+  events, confirmation = await _run_with_caller_principal(None)
+
+  assert len(events) == 1
+  assert confirmation is not None
+  assert confirmation.confirmed
+
+
+@pytest.mark.asyncio
+async def test_confirmation_honored_for_authenticated_caller():
+  """An authenticated remote caller keeps its approval.
+
+  This is the half a transport-keyed guard gets wrong in the permissive
+  direction being wrong the other way: arriving over A2A is not by itself a
+  reason to refuse.
+  """
+  events, confirmation = await _run_with_caller_principal(
+      CallerPrincipal(authenticated=True, user_name="alice", source="a2a")
+  )
+
+  assert len(events) == 1
+  assert confirmation is not None
+  assert confirmation.confirmed
+
+
+@pytest.mark.asyncio
+async def test_confirmation_honored_for_unauthenticated_caller_by_default():
+  """Default is warn, not refuse.
+
+  Upgrading must not break a deployment that runs its A2A server without an
+  authenticator. Those operators get a log line; the behavior is unchanged
+  until they opt in.
+  """
+  events, confirmation = await _run_with_caller_principal(
+      CallerPrincipal(authenticated=False, source="a2a")
+  )
+
+  assert len(events) == 1
+  assert confirmation is not None
+  assert confirmation.confirmed
+
+
+@pytest.mark.asyncio
+async def test_confirmation_refused_for_unauthenticated_caller_when_strict(
+    monkeypatch,
+):
+  """Strict mode refuses, and the refusal is explicit rather than a stall.
+
+  The call still reaches tool execution, carrying confirmed=False. That is the
+  state a human decline produces, so the pending adk_request_confirmation call
+  resolves with a rejection the caller can see. Dropping the confirmation
+  instead is what made the earlier transport-keyed guard hang every
+  human-in-the-loop tool.
+  """
+  monkeypatch.setenv("ADK_STRICT_CALLER_PRINCIPAL", "true")
+
+  events, confirmation = await _run_with_caller_principal(
+      CallerPrincipal(authenticated=False, source="a2a")
+  )
+
+  assert len(events) == 1
+  assert confirmation is not None
+  assert not confirmation.confirmed
+
+
+@pytest.mark.asyncio
+async def test_strict_mode_does_not_touch_in_process_callers(monkeypatch):
+  """Strict mode must not refuse an invocation that crossed no boundary."""
+  monkeypatch.setenv("ADK_STRICT_CALLER_PRINCIPAL", "true")
+
+  events, confirmation = await _run_with_caller_principal(None)
+
+  assert len(events) == 1
+  assert confirmation is not None
+  assert confirmation.confirmed
+
+
+@pytest.mark.asyncio
+async def test_strict_mode_keeps_multi_turn_reentry_a_noop(monkeypatch):
+  """Re-entry within a turn stays a no-op, principal or not.
+
+  The processor re-runs on every LLM step and the approval stays the last user
+  event for the rest of the turn. The gate deliberately runs after the
+  consumed-confirmation dedup, so a second pass over an approval that was
+  already acted on yields nothing rather than refusing or re-executing it.
+  This is the regression that got the previous guard reverted.
+  """
+  monkeypatch.setenv("ADK_STRICT_CALLER_PRINCIPAL", "true")
+  agent = LlmAgent(
+      name="test_agent",
+      tools=[FunctionTool(mock_tool, require_confirmation=False)],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.caller_principal = CallerPrincipal(
+      authenticated=False, source="a2a"
+  )
+  invocation_context.session.events.extend(
+      _build_consumed_dynamic_confirmation_events(agent.name)
+  )
+
+  events = []
+  async for event in request_processor.run_async(
+      invocation_context, LlmRequest()
+  ):
+    events.append(event)
+
+  assert not events
