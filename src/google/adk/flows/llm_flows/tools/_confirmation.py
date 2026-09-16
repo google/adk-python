@@ -26,11 +26,12 @@ from .. import functions
 from ....agents.invocation_context import InvocationContext
 from ....agents.readonly_context import ReadonlyContext
 from ....events.event import Event
+from ....features import FeatureName
+from ....features import is_feature_enabled
 from ....models.llm_request import LlmRequest
 from ....tools.base_tool import BaseTool
 from ....tools.tool_confirmation import ToolConfirmation
 from ....tools.tool_context import ToolContext
-from ....utils.feature_decorator import _is_truthy_env
 from .._base_llm_processor import BaseLlmRequestProcessor
 from ..agent_transfer import _build_transfer_tool
 from ..agent_transfer import _get_transfer_targets
@@ -255,9 +256,6 @@ def _map_confirmation_to_original_fc_ids(
   return mapping
 
 
-_STRICT_CALLER_PRINCIPAL_ENV = "ADK_STRICT_CALLER_PRINCIPAL"
-
-
 def _apply_caller_principal_gate(
     invocation_context: InvocationContext,
     confirmations_by_fc_id: dict[str, ToolConfirmation],
@@ -286,9 +284,10 @@ def _apply_caller_principal_gate(
   produces -- so the tool returns its rejection response and the turn ends with
   a reason the caller can see.
 
-  Strict mode is opt-in for now, so upgrading cannot break a working
-  deployment that runs its A2A server without an authenticator; those get a
-  warning instead. The intent is to flip the default at the next major version.
+  Strict mode is the STRICT_CALLER_PRINCIPAL feature, off by default for now
+  so that upgrading cannot break a working deployment that runs its A2A server
+  without an authenticator; those get a warning instead. The intent is to flip
+  the registry default at the next major version.
 
   Args:
     invocation_context: Current invocation context.
@@ -302,24 +301,22 @@ def _apply_caller_principal_gate(
   if principal is None or principal.authenticated:
     return confirmations_by_fc_id
 
-  if not _is_truthy_env(_STRICT_CALLER_PRINCIPAL_ENV):
+  if not is_feature_enabled(FeatureName.STRICT_CALLER_PRINCIPAL):
     logger.warning(
         "Honoring a tool confirmation from an unauthenticated caller"
         " (principal source %r). The serving layer could not say who sent this"
-        " approval, so it is not known to be the operator's. Set %s to refuse"
-        " these instead; that is intended to become the default in a future"
-        " major version.",
+        " approval, so it is not known to be the operator's. Enable the"
+        " STRICT_CALLER_PRINCIPAL feature to refuse these instead; that is"
+        " intended to become the default in a future major version.",
         principal.source,
-        _STRICT_CALLER_PRINCIPAL_ENV,
     )
     return confirmations_by_fc_id
 
   logger.error(
       "Refusing a tool confirmation from an unauthenticated caller (principal"
-      " source %r). Enable authentication on the serving layer, or unset %s to"
-      " downgrade this to a warning.",
+      " source %r). Enable authentication on the serving layer, or disable the"
+      " STRICT_CALLER_PRINCIPAL feature to downgrade this to a warning.",
       principal.source,
-      _STRICT_CALLER_PRINCIPAL_ENV,
   )
   return {
       confirmation_fc_id: confirmation.model_copy(update={"confirmed": False})
