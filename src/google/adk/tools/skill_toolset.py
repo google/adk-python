@@ -108,8 +108,8 @@ class SkillDiscoveryMode(Enum):
 
   The `list_skills` tool is not offered, and the model can call `load_skill`
   straight away. Preferable for a small, stable catalog, where the discovery
-  turn costs more than the names do. Registry skills are unaffected: they are
-  still reachable only through `search_skills`.
+  turn costs more than the names do. Unpinned registry skills are unaffected:
+  they are still reachable only through `search_skills`.
   """
 
 
@@ -325,7 +325,10 @@ class SearchSkillsTool(BaseTool):
       results = await self._toolset._registry.search_skills(query=query)
       formatted_results = []
       for r in results:
-        if r.name in self._toolset._skills:
+        if (
+            r.name in self._toolset._skills
+            or r.name in self._toolset._registry_skill_aliases
+        ):
           logger.warning(
               "Skill naming conflict: skill '%s' already exists locally."
               " Registry skill is filtered.",
@@ -1362,6 +1365,7 @@ class SkillToolset(BaseToolset):
       skills: list[models.Skill] | None = None,
       *,
       registry: SkillRegistry | None = None,
+      registry_skills: list[str] | None = None,
       code_executor: BaseCodeExecutor | None = None,
       environment: BaseEnvironment | None = None,
       skills_folder: Path | str | None = None,
@@ -1376,6 +1380,12 @@ class SkillToolset(BaseToolset):
     Args:
       skills: List of skills to register.
       registry: Optional skill registry for dynamic loading.
+      registry_skills: Optional list of skill names in the registry to pin.
+        Pinned skills are fetched once per process on first use, then appear in
+        `list_skills` / the EAGER catalog and are served locally without further
+        registry calls; unpinned registry skills are still reachable via
+        `search_skills`. The skill is stored under the name in the archive's
+        frontmatter, which may differ from the registry resource name.
       code_executor: Optional code executor for script execution.
       environment: Optional environment for executing scripts.
       skills_folder: Optional absolute path where skills are stored in the
@@ -1405,6 +1415,15 @@ class SkillToolset(BaseToolset):
 
     self._skills = {skill.name: skill for skill in skills}
     self._registry = registry
+    if registry_skills and registry is None:
+      raise ValueError("Cannot specify registry_skills without a registry")
+    self._registry_skills: list[str] | None = (
+        list(dict.fromkeys(registry_skills)) if registry_skills else None
+    )
+    self._registry_skills_loaded = False
+    self._fetched_registry_skills: set[str] = set()
+    self._registry_skill_aliases: dict[str, str] = {}
+    self._registry_skills_lock: asyncio.Lock | None = None
     self._code_executor = code_executor
     self._env = environment
     if code_executor and environment:
@@ -1467,6 +1486,68 @@ class SkillToolset(BaseToolset):
       return self._env.working_dir / "skills"
     return None
 
+  @property
+  def registry_skills(self) -> list[str]:
+    """The list of pinned registry skills."""
+    return list(self._registry_skills) if self._registry_skills else []
+
+  def _get_registry_skills_lock(self) -> asyncio.Lock:
+    if self._registry_skills_lock is None:
+      self._registry_skills_lock = asyncio.Lock()
+    return self._registry_skills_lock
+
+  async def prefetch(self) -> None:
+    """Fetches pinned registry skills into the local skill catalog."""
+    if (
+        self._registry_skills_loaded
+        or not self._registry_skills
+        or not self._registry
+    ):
+      return
+
+    async with self._get_registry_skills_lock():
+      if self._registry_skills_loaded:
+        return
+      missing = [
+          n
+          for n in self._registry_skills
+          if n not in self._fetched_registry_skills
+      ]
+      if not missing:
+        self._registry_skills_loaded = True
+        return
+
+      results = await asyncio.gather(
+          *(self._registry.get_skill(name=n) for n in missing),
+          return_exceptions=True,
+      )
+      for name, result in zip(missing, results):
+        if isinstance(result, asyncio.CancelledError):
+          raise result
+        if isinstance(result, BaseException):
+          logger.warning(
+              "Failed to fetch registry skill '%s': %s",
+              name,
+              result,
+              exc_info=result,
+          )
+          continue
+
+        skill = result
+        if skill.name in self._skills:
+          logger.warning(
+              "Skill naming conflict: skill '%s' already exists locally."
+              " Registry skill is filtered.",
+              skill.name,
+          )
+        else:
+          self._skills[skill.name] = skill
+        self._registry_skill_aliases[name] = skill.name
+        self._fetched_registry_skills.add(name)
+
+      if len(self._fetched_registry_skills) == len(self._registry_skills):
+        self._registry_skills_loaded = True
+
   def _has_script_execution(self, context: ReadonlyContext | None) -> bool:
     """Whether scripts can be run; an unknown agent counts as yes."""
     if self._env is not None or self._code_executor is not None:
@@ -1482,6 +1563,7 @@ class SkillToolset(BaseToolset):
       self, readonly_context: ReadonlyContext | None = None
   ) -> list[BaseTool]:
     """Returns the list of tools in this toolset."""
+    await self.prefetch()
     dynamic_tools = await self._resolve_additional_tools_from_state(
         readonly_context
     )
@@ -1569,9 +1651,14 @@ class SkillToolset(BaseToolset):
       self, skill_name: str, invocation_id: str | None = None
   ) -> models.Skill | None:
     """Retrieves a skill by name, falling back to the registry if configured."""
+    await self.prefetch()
     skill = self._get_skill(skill_name)
     if skill:
       return skill
+
+    if aliased_name := self._registry_skill_aliases.get(skill_name):
+      if skill := self._get_skill(aliased_name):
+        return skill
 
     if not self._registry:
       return None
@@ -1700,6 +1787,7 @@ class SkillToolset(BaseToolset):
     return SkillToolset(
         skills=skills,
         registry=self._registry,
+        registry_skills=self._registry_skills,
         code_executor=self._code_executor,
         environment=self._env,
         skills_folder=self._skills_folder,
@@ -1736,6 +1824,7 @@ class SkillToolset(BaseToolset):
       self, *, tool_context: ToolContext, llm_request: LlmRequest
   ) -> None:
     """Processes the outgoing LLM request to include available skills."""
+    await self.prefetch()
     if self._env is not None and not self._env.is_initialized:
       await self._env.initialize()
     selected_core_tools = {
