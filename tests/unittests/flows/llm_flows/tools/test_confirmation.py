@@ -14,7 +14,7 @@
 
 from unittest.mock import patch
 
-from google.adk.agents.caller_principal import CallerPrincipal
+from google.adk.agents._caller_principal import CallerPrincipal
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
@@ -1335,6 +1335,23 @@ def _build_pending_confirmation_events(agent_name: str) -> list[Event]:
       name=MOCK_TOOL_NAME, args={"param1": "test"}, id=MOCK_FUNCTION_CALL_ID
   )
   tool_confirmation = ToolConfirmation(confirmed=False, hint="test hint")
+  confirmation_request = types.FunctionCall(
+      name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+      args={
+          "originalFunctionCall": original_function_call.model_dump(
+              exclude_none=True, by_alias=True
+          ),
+          "toolConfirmation": tool_confirmation.model_dump(
+              by_alias=True, exclude_none=True
+          ),
+      },
+      id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
+  )
+  approval = types.FunctionResponse(
+      name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+      id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
+      response={"response": ToolConfirmation(confirmed=True).model_dump_json()},
+  )
   return [
       Event(
           author=agent_name,
@@ -1345,48 +1362,14 @@ def _build_pending_confirmation_events(agent_name: str) -> list[Event]:
       Event(
           author=agent_name,
           content=types.Content(
-              parts=[
-                  types.Part(
-                      function_call=types.FunctionCall(
-                          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
-                          args={
-                              "originalFunctionCall": (
-                                  original_function_call.model_dump(
-                                      exclude_none=True, by_alias=True
-                                  )
-                              ),
-                              "toolConfirmation": (
-                                  tool_confirmation.model_dump(
-                                      by_alias=True, exclude_none=True
-                                  )
-                              ),
-                          },
-                          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
-                      )
-                  )
-              ]
+              parts=[types.Part(function_call=confirmation_request)]
           ),
       ),
       Event(
           author="user",
-          content=types.Content(
-              parts=[
-                  types.Part(
-                      function_response=types.FunctionResponse(
-                          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
-                          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
-                          response={
-                              "response": ToolConfirmation(
-                                  confirmed=True
-                              ).model_dump_json()
-                          },
-                      )
-                  )
-              ]
-          ),
+          content=types.Content(parts=[types.Part(function_response=approval)]),
       ),
   ]
-
 
 async def _run_with_caller_principal(caller_principal):
   """Runs the processor over a pending approval under one caller principal.
@@ -1499,7 +1482,7 @@ async def test_confirmation_refused_for_unauthenticated_caller_when_strict(
   instead is what made the earlier transport-keyed guard hang every
   human-in-the-loop tool.
   """
-  monkeypatch.setenv("ADK_STRICT_CALLER_PRINCIPAL", "true")
+  monkeypatch.setenv("ADK_ENABLE_STRICT_CALLER_PRINCIPAL", "1")
 
   events, confirmation = await _run_with_caller_principal(
       CallerPrincipal(authenticated=False, source="a2a")
@@ -1513,7 +1496,7 @@ async def test_confirmation_refused_for_unauthenticated_caller_when_strict(
 @pytest.mark.asyncio
 async def test_strict_mode_does_not_touch_in_process_callers(monkeypatch):
   """Strict mode must not refuse an invocation that crossed no boundary."""
-  monkeypatch.setenv("ADK_STRICT_CALLER_PRINCIPAL", "true")
+  monkeypatch.setenv("ADK_ENABLE_STRICT_CALLER_PRINCIPAL", "1")
 
   events, confirmation = await _run_with_caller_principal(None)
 
@@ -1532,7 +1515,7 @@ async def test_strict_mode_keeps_multi_turn_reentry_a_noop(monkeypatch):
   already acted on yields nothing rather than refusing or re-executing it.
   This is the regression that got the previous guard reverted.
   """
-  monkeypatch.setenv("ADK_STRICT_CALLER_PRINCIPAL", "true")
+  monkeypatch.setenv("ADK_ENABLE_STRICT_CALLER_PRINCIPAL", "1")
   agent = LlmAgent(
       name="test_agent",
       tools=[FunctionTool(mock_tool, require_confirmation=False)],
