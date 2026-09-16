@@ -42,9 +42,9 @@ from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
 from ..tools.base_tool import BaseTool
 from ..workflow._base_node import BaseNode
+from ._caller_principal import CallerPrincipal
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
-from .caller_principal import CallerPrincipal
 from .context_cache_config import ContextCacheConfig
 from .run_config import RunConfig
 
