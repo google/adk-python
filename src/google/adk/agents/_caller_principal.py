@@ -23,7 +23,7 @@ from pydantic import ConfigDict
 
 
 class CallerPrincipal(BaseModel):
-  """Who submitted this invocation, and whether the serving layer vouched for them.
+  """Who sent this invocation, and whether a serving layer vouched for them.
 
   A serving edge (for example the A2A executor) sets this from the
   authentication it actually performed on the inbound request. It is never
