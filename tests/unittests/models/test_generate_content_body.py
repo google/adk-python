@@ -16,6 +16,7 @@
 
 import pytest
 from google.adk.models.llm_request import LlmRequest
+from google.genai import models as _genai_models
 from google.genai import types
 
 from google.adk.models._generate_content_body import to_generate_content_body
@@ -275,6 +276,27 @@ def test_every_config_field_is_classified():
       "GenerateContentConfig gained field(s) with no known destination:"
       f" {sorted(unclassified)}. Add them to TOP_LEVEL or CLIENT_ONLY and"
       " confirm where the converter puts them."
+  )
+
+
+@pytest.mark.parametrize(
+    "module, symbol",
+    [
+        (types, "_GenerateContentParameters"),
+        (_genai_models, "_GenerateContentParameters_to_vertex"),
+        (_genai_models, "_GenerateContentParameters_to_mldev"),
+    ],
+)
+def test_private_genai_symbols_still_exist(module, symbol):
+  """Fail in CI when a google-genai release renames a converter we call.
+
+  These are underscore prefixed, so they sit outside genai's semver contract
+  while our pin allows any 2.x. Without this, a rename would surface as an
+  AttributeError inside someone's BaseLlm at request time.
+  """
+  assert hasattr(module, symbol), (
+      f"google-genai no longer exposes {module.__name__}.{symbol}, which"
+      " to_generate_content_body depends on."
   )
 
 
