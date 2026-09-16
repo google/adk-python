@@ -3669,3 +3669,193 @@ def test_unload_skill_api_leaves_other_skills_active(
 
   assert toolset.unload_skill(stateful_context, "skill1") is True
   assert toolset.list_active_skills(stateful_context) == ["skill2"]
+
+
+def test_skill_toolset_init_registry_skills_without_registry_raises():
+  with pytest.raises(
+      ValueError,
+      match="Cannot specify registry_skills without a registry",
+  ):
+    skill_toolset.SkillToolset(registry_skills=["skill1"])
+
+
+@pytest.mark.asyncio
+async def test_skill_toolset_prefetch_pins_registry_skills(
+    mock_registry, mock_skill1, mock_skill2
+):
+  mock_registry.get_skill.side_effect = (
+      lambda name: mock_skill1 if name == "skill1" else mock_skill2
+  )
+  toolset = skill_toolset.SkillToolset(
+      registry=mock_registry, registry_skills=["skill1", "skill2"]
+  )
+  assert toolset.registry_skills == ["skill1", "skill2"]
+  assert toolset.skills == []
+
+  await toolset.prefetch()
+
+  assert mock_registry.get_skill.call_count == 2
+  assert toolset.skills == [mock_skill1, mock_skill2]
+
+  # Subsequent prefetch calls should be a no-op
+  await toolset.prefetch()
+  assert mock_registry.get_skill.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_skill_toolset_prefetch_called_by_get_tools(
+    mock_registry, mock_skill1
+):
+  mock_registry.get_skill.return_value = mock_skill1
+  toolset = skill_toolset.SkillToolset(
+      registry=mock_registry, registry_skills=["skill1"]
+  )
+
+  tools = await toolset.get_tools()
+  mock_registry.get_skill.assert_called_once_with(name="skill1")
+  assert mock_skill1 in toolset.skills
+  assert len(tools) == 5
+
+
+@pytest.mark.asyncio
+async def test_skill_toolset_prefetch_called_by_process_llm_request_in_eager_mode(
+    mock_registry, mock_skill1, tool_context_instance
+):
+  mock_registry.get_skill.return_value = mock_skill1
+  toolset = skill_toolset.SkillToolset(
+      registry=mock_registry,
+      registry_skills=["skill1"],
+      discovery_mode=skill_toolset.SkillDiscoveryMode.EAGER,
+  )
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+
+  mock_registry.get_skill.assert_called_once_with(name="skill1")
+  llm_req.append_instructions.assert_called_once()
+  args, _ = llm_req.append_instructions.call_args
+  instructions = args[0]
+  assert "<available_skills>" in instructions[1]
+  assert "skill1" in instructions[1]
+
+
+@pytest.mark.asyncio
+async def test_skill_toolset_prefetch_collision_with_local_skill(
+    mock_registry, mock_skill1
+):
+  mock_skill_reg = mock.create_autospec(models.Skill, instance=True)
+  mock_skill_reg.name = "skill1"
+  mock_registry.get_skill.return_value = mock_skill_reg
+
+  toolset = skill_toolset.SkillToolset(
+      skills=[mock_skill1],
+      registry=mock_registry,
+      registry_skills=["skill1"],
+  )
+
+  await toolset.prefetch()
+
+  mock_registry.get_skill.assert_called_once_with(name="skill1")
+  assert toolset._skills["skill1"] is mock_skill1
+
+
+@pytest.mark.asyncio
+async def test_skill_toolset_prefetch_failure_is_logged_and_retried(
+    mock_registry, mock_skill1, mock_skill2
+):
+  call_counts = {"fail_skill": 0, "ok_skill": 0}
+
+  async def get_skill_impl(*, name):
+    if name == "fail_skill":
+      call_counts["fail_skill"] += 1
+      if call_counts["fail_skill"] == 1:
+        raise RuntimeError("Transient network error")
+      return mock_skill1
+    call_counts["ok_skill"] += 1
+    return mock_skill2
+
+  mock_registry.get_skill.side_effect = get_skill_impl
+
+  toolset = skill_toolset.SkillToolset(
+      registry=mock_registry,
+      registry_skills=["fail_skill", "ok_skill"],
+  )
+
+  # First prefetch attempt: fail_skill raises exception, ok_skill succeeds
+  await toolset.prefetch()
+
+  assert toolset.skills == [mock_skill2]
+  assert toolset._registry_skills_loaded is False
+  assert call_counts["fail_skill"] == 1
+  assert call_counts["ok_skill"] == 1
+
+  # Second prefetch attempt: only fail_skill is retried and succeeds
+  await toolset.prefetch()
+
+  assert set(s.name for s in toolset.skills) == {"skill1", "skill2"}
+  assert toolset._registry_skills_loaded is True
+  assert call_counts["fail_skill"] == 2
+  assert call_counts["ok_skill"] == 1
+
+
+@pytest.mark.asyncio
+async def test_skill_toolset_search_skills_filters_pinned_registry_skill(
+    mock_registry, mock_skill1, tool_context_instance
+):
+  mock_frontmatter1 = mock.create_autospec(models.Frontmatter, instance=True)
+  mock_frontmatter1.name = "skill1"
+  mock_frontmatter1.model_dump.return_value = {"name": "skill1"}
+
+  mock_frontmatter2 = mock.create_autospec(models.Frontmatter, instance=True)
+  mock_frontmatter2.name = "skill2"
+  mock_frontmatter2.model_dump.return_value = {"name": "skill2"}
+
+  mock_registry.get_skill.return_value = mock_skill1
+  mock_registry.search_skills.return_value = [
+      mock_frontmatter1,
+      mock_frontmatter2,
+  ]
+
+  toolset = skill_toolset.SkillToolset(
+      registry=mock_registry, registry_skills=["skill1"]
+  )
+  tool = skill_toolset.SearchSkillsTool(toolset)
+
+  result = await tool.run_async(
+      args={"query": "test"}, tool_context=tool_context_instance
+  )
+
+  # skill1 should be prefetched and filtered out of search results
+  assert result == [{"name": "skill2"}]
+
+
+def test_skill_toolset_clone_with_updated_skills_forwards_registry_skills(
+    mock_registry, mock_skill1
+):
+  toolset = skill_toolset.SkillToolset(
+      registry=mock_registry, registry_skills=["skill1"]
+  )
+  cloned = toolset.clone_with_updated_skills([mock_skill1])
+
+  assert cloned.registry_skills == ["skill1"]
+  assert cloned._registry == mock_registry
+
+
+@pytest.mark.asyncio
+async def test_skill_toolset_prefetch_concurrent_calls(
+    mock_registry, mock_skill1
+):
+  mock_registry.get_skill.return_value = mock_skill1
+  toolset = skill_toolset.SkillToolset(
+      registry=mock_registry, registry_skills=["skill1"]
+  )
+
+  await asyncio.gather(
+      toolset.prefetch(),
+      toolset.prefetch(),
+      toolset.prefetch(),
+  )
+
+  mock_registry.get_skill.assert_called_once_with(name="skill1")
