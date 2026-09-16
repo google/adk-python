@@ -222,7 +222,11 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
               )
           ],
           config=self._judge_model_options.judge_model_config
-          or genai_types.GenerateContentConfig(),
+          or genai_types.GenerateContentConfig(
+              automatic_function_calling=genai_types.AutomaticFunctionCallingConfig(
+                  disable=True
+              )
+          ),
       )
       add_default_retry_options_if_not_present(llm_request)
       num_samples = self._judge_model_options.num_samples
