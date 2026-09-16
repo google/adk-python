@@ -23,7 +23,7 @@ from google.genai import types as genai_types
 from pydantic import BaseModel
 
 from .. import _compat
-from ...agents.caller_principal import CallerPrincipal
+from ...agents._caller_principal import CallerPrincipal
 from ...agents.run_config import RunConfig
 from ..experimental import a2a_experimental
 from .part_converter import A2APartToGenAIPartConverter
