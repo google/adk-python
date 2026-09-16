@@ -69,6 +69,7 @@ class FeatureName(str, Enum):
   SPANNER_ADMIN_TOOLSET = "SPANNER_ADMIN_TOOLSET"
   SPANNER_TOOL_SETTINGS = "SPANNER_TOOL_SETTINGS"
   SPANNER_VECTOR_STORE = "SPANNER_VECTOR_STORE"
+  STRICT_CALLER_PRINCIPAL = "STRICT_CALLER_PRINCIPAL"
   TOOL_CONFIG = "TOOL_CONFIG"
   TOOL_CONFIRMATION = "TOOL_CONFIRMATION"
   PLUGGABLE_AUTH = "PLUGGABLE_AUTH"
@@ -219,6 +220,14 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     ),
     FeatureName.SPANNER_VECTOR_STORE: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    # Refuse, rather than warn about, a human-in-the-loop tool confirmation
+    # from a caller the serving layer did not authenticate. Off by default so
+    # that upgrading cannot break a deployment that runs without an
+    # authenticator; flipping default_on is the whole of the planned change
+    # at the next major version.
+    FeatureName.STRICT_CALLER_PRINCIPAL: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=False
     ),
     FeatureName.TOOL_CONFIG: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
