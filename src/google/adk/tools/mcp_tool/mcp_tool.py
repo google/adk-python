@@ -79,6 +79,12 @@ _RESERVED_TOOL_NAMES = frozenset({
     REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
     REQUEST_INPUT_FUNCTION_CALL_NAME,
     transfer_to_agent.__name__,
+    # Injected by the output-schema processor whenever output_schema is set
+    # alongside other tools (flows/llm_flows/prompt/_schema.py) and read back
+    # by name in base_llm_flow.py, so it is a framework-owned wire name too.
+    # Spelled out because the function is defined inside
+    # SetModelResponseTool.__init__ and is not importable.
+    'set_model_response',
 })
 
 _UNSET = object()
