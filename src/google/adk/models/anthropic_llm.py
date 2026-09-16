@@ -161,11 +161,12 @@ def _build_anthropic_thinking_param(
       explicit (mirroring the Anthropic API).
     * ``0``: thinking is DISABLED (``thinking.type: "disabled"``).
     * negative (e.g. ``-1`` AUTOMATIC): maps to Anthropic's adaptive thinking
-      (``thinking.type: "adaptive"``). The model picks the depth itself
-      (controlled by the separate ``output_config.effort`` parameter when
-      set). REQUIRED for Claude Opus 4.7 and later models that reject
-      ``"enabled"`` with a 400 error; also recommended for Opus 4.6 and
-      Sonnet 4.6 where ``"enabled"`` is deprecated.
+      (``thinking.type: "adaptive"``, ``thinking.display: "summarized"``). The
+      model picks the depth itself (controlled by the separate
+      ``output_config.effort`` parameter when set) and returns its reasoning
+      as summarized thoughts. REQUIRED for Claude Opus 4.7 and later models
+      that reject ``"enabled"`` with a 400 error; also recommended for Opus
+      4.6 and Sonnet 4.6 where ``"enabled"`` is deprecated.
     * positive int: budget in tokens for legacy manual mode
       (``thinking.type: "enabled"``; Anthropic requires ``>= 1024`` and
       ``< max_tokens``; validation is delegated to the Anthropic API so the
@@ -202,7 +203,11 @@ def _build_anthropic_thinking_param(
     # where ``"enabled"`` is deprecated. Adaptive does not accept a budget;
     # depth is controlled by the model itself (or by the separate
     # ``output_config.effort`` parameter when set).
-    return anthropic_types.ThinkingConfigAdaptiveParam(type="adaptive")
+    # Without ``display``, Claude redacts the reasoning it just billed for.
+    return anthropic_types.ThinkingConfigAdaptiveParam(
+        type="adaptive",
+        display="summarized",
+    )
 
   return anthropic_types.ThinkingConfigEnabledParam(
       type="enabled",

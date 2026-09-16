@@ -13,12 +13,12 @@
 # limitations under the License.
 
 from google.adk.agents.llm_agent import Agent
-from google.adk.flows.llm_flows import identity
+from google.adk.flows.llm_flows.prompt import _identity as identity
 from google.adk.models.llm_request import LlmRequest
 from google.genai import types
 import pytest
 
-from ... import testing_utils
+from .... import testing_utils
 
 
 @pytest.mark.asyncio

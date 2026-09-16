@@ -19,12 +19,12 @@ from __future__ import annotations
 from typing import Any
 
 from google.adk.events.event import Event
-from google.adk.flows.llm_flows import _tool_call_rearranger
-from google.adk.flows.llm_flows._tool_call_rearranger import drop_orphaned_function_calls
-from google.adk.flows.llm_flows._tool_call_rearranger import drop_orphaned_function_responses
-from google.adk.flows.llm_flows._tool_call_rearranger import merge_function_response_events
-from google.adk.flows.llm_flows._tool_call_rearranger import rearrange_events_for_async_function_responses_in_history
-from google.adk.flows.llm_flows._tool_call_rearranger import rearrange_events_for_latest_function_response
+from google.adk.flows.llm_flows.tools import _rearranger as _tool_call_rearranger
+from google.adk.flows.llm_flows.tools._rearranger import drop_orphaned_function_calls
+from google.adk.flows.llm_flows.tools._rearranger import drop_orphaned_function_responses
+from google.adk.flows.llm_flows.tools._rearranger import merge_function_response_events
+from google.adk.flows.llm_flows.tools._rearranger import rearrange_events_for_async_function_responses_in_history
+from google.adk.flows.llm_flows.tools._rearranger import rearrange_events_for_latest_function_response
 from google.genai import types
 import pytest
 

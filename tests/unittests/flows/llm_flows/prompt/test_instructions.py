@@ -21,19 +21,19 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.agents.run_config import RunConfig
 from google.adk.events.event import Event
-from google.adk.flows.llm_flows import instructions
 from google.adk.flows.llm_flows.contents import _add_instructions_to_user_content
 from google.adk.flows.llm_flows.contents import request_processor as contents_processor
-from google.adk.flows.llm_flows.instructions import _INSTRUCTION_BEGIN
-from google.adk.flows.llm_flows.instructions import _INSTRUCTION_END
-from google.adk.flows.llm_flows.instructions import request_processor
+from google.adk.flows.llm_flows.prompt import _instructions as instructions
+from google.adk.flows.llm_flows.prompt._instructions import _INSTRUCTION_BEGIN
+from google.adk.flows.llm_flows.prompt._instructions import _INSTRUCTION_END
+from google.adk.flows.llm_flows.prompt._instructions import request_processor
 from google.adk.models.llm_request import LlmRequest
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.genai import types
 import pytest
 
-from ... import testing_utils
+from .... import testing_utils
 
 
 async def _create_invocation_context(

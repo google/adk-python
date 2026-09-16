@@ -32,8 +32,11 @@ from google.adk.workflow import FunctionNode
 from google.adk.workflow import Workflow
 from google.adk.workflow._dynamic_node_executor import run_node_internal
 from google.adk.workflow._dynamic_node_executor import run_node_standalone
+from google.adk.workflow._dynamic_node_scheduler import DynamicNodeScheduler
 from google.adk.workflow._errors import DynamicNodeFailError
 from google.adk.workflow._errors import NodeInterruptedError
+from pydantic import BaseModel
+from pydantic import ValidationError
 import pytest
 
 
@@ -71,7 +74,6 @@ def _make_context(
   )
   ctx._node_rerun_on_resume = rerun_on_resume
   ctx._workflow_scheduler = workflow_scheduler
-  ctx._child_run_counters = {}
   return ctx
 
 
@@ -220,6 +222,42 @@ async def test_run_node_internal_workflow_scheduler_validates_numeric_run_id():
   assert res == 'bypassed'
 
 
+async def test_run_node_internal_standalone_allows_numeric_run_id():
+  """Standalone dynamic runs allow explicit numeric run_ids across repeated calls."""
+  # Arrange
+  parent_ctx = _make_context(workflow_scheduler=None)
+  child_node = FunctionNode(
+      func=lambda: 'standalone_numeric_ok', name='child', rerun_on_resume=True
+  )
+
+  # Act - first call installs standalone scheduler with enable_replay=False
+  res1 = await run_node_internal(parent_ctx, child_node, run_id='123')
+  # Act - subsequent call on same parent_ctx still permits numeric run_id
+  res2 = await run_node_internal(parent_ctx, child_node, run_id='456')
+
+  # Assert
+  assert res1 == 'standalone_numeric_ok'
+  assert res2 == 'standalone_numeric_ok'
+
+
+async def test_run_node_internal_standalone_repeat_runs_default_run_id_to_1():
+  """Standalone dynamic runs always default run_id to '1' across repeated runs."""
+  # Arrange
+  parent_ctx = _make_context(workflow_scheduler=None)
+  child_node = FunctionNode(
+      func=lambda: 'ok', name='child', rerun_on_resume=True
+  )
+
+  # Act
+  child_ctx1 = await run_node_internal(parent_ctx, child_node, return_ctx=True)
+  child_ctx2 = await run_node_internal(parent_ctx, child_node, return_ctx=True)
+
+  # Assert: both runs default to '1', keeping node path identical to pre-refactor
+  assert child_ctx1.run_id == '1'
+  assert child_ctx2.run_id == '1'
+  assert child_ctx1.node_path == child_ctx2.node_path
+
+
 async def test_run_node_internal_delegates_run_id_allocation_to_scheduler():
   """Executor forwards run_id=None so the scheduler allocates sequential IDs.
 
@@ -271,6 +309,51 @@ async def test_run_node_internal_propagates_child_error():
       DynamicNodeFailError, match='Dynamic node failing_node failed'
   ):
     await run_node_internal(parent_ctx, child_node)
+
+
+async def test_run_node_internal_standalone_validation_error_surfaces_as_ctx_error():
+  """Standalone runs with bad input return a child Context with .error set when return_ctx=True."""
+
+  class _InputModel(BaseModel):
+    required_field: int
+
+  parent_ctx = _make_context()
+  child_node = FunctionNode(
+      func=lambda node_input: node_input,
+      name='schema_node',
+      rerun_on_resume=True,
+  )
+  child_node.input_schema = _InputModel
+
+  child_ctx = await run_node_internal(
+      parent_ctx, child_node, node_input='invalid_input', return_ctx=True
+  )
+
+  assert child_ctx.error is not None
+  assert isinstance(child_ctx.error, ValidationError)
+
+
+async def test_run_node_internal_standalone_validation_error_raises_fail_error():
+  """Standalone runs with bad input raise DynamicNodeFailError when return_ctx=False."""
+
+  class _InputModel(BaseModel):
+    required_field: int
+
+  parent_ctx = _make_context()
+  child_node = FunctionNode(
+      func=lambda node_input: node_input,
+      name='schema_node',
+      rerun_on_resume=True,
+  )
+  child_node.input_schema = _InputModel
+
+  with pytest.raises(
+      DynamicNodeFailError, match='Dynamic node schema_node failed'
+  ) as exc_info:
+    await run_node_internal(
+        parent_ctx, child_node, node_input='invalid_input', return_ctx=False
+    )
+  assert isinstance(exc_info.value.error, ValidationError)
 
 
 async def test_run_node_internal_merges_interrupt_ids_and_raises(mocker):
@@ -353,7 +436,7 @@ async def test_run_node_internal_raise_on_wait_raises_when_child_waiting(
     )
 
 
-async def test_run_node_internal_executes_sequential_agent_transfers():
+async def test_run_node_internal_executes_sequential_agent_transfers(mocker):
   """run_node_internal loops through sequential agent transfers until terminal output."""
   # Arrange
   agent_b = LlmAgent(name='agent_b', rerun_on_resume=True)
@@ -383,15 +466,17 @@ async def test_run_node_internal_executes_sequential_agent_transfers():
   )
   child_ctx_b.output = 'terminal_output'
 
-  mock_scheduler = AsyncMock(side_effect=[child_ctx_a, child_ctx_b])
-  root_ctx._workflow_scheduler = mock_scheduler
+  mock_run_standalone = mocker.patch(
+      'google.adk.workflow._dynamic_node_executor.run_node_standalone',
+      side_effect=[child_ctx_a, child_ctx_b],
+  )
 
   # Act
   result = await run_node_internal(root_ctx, agent_a, node_input='init')
 
   # Assert
   assert result == 'terminal_output'
-  assert mock_scheduler.call_count == 2
+  assert mock_run_standalone.call_count == 2
 
 
 async def test_run_node_standalone_runs_node_directly():
@@ -436,7 +521,9 @@ async def test_run_node_standalone_passes_resume_inputs_to_node_runner():
   assert result_ctx.resume_inputs == {'intr_key': 'intr_val'}
 
 
-async def test_run_node_internal_parent_transfer_routes_to_parent_agent():
+async def test_run_node_internal_parent_transfer_routes_to_parent_agent(
+    mocker,
+):
   """Parent transfer routes execution to parent agent climbing up the context tree."""
   # Arrange
   child = LlmAgent(name='child', rerun_on_resume=True)
@@ -446,7 +533,6 @@ async def test_run_node_internal_parent_transfer_routes_to_parent_agent():
   parent.parent_agent = root
 
   root_ctx = _make_context(node=root)
-  root_ctx._child_run_counters = {'parent': 1}
 
   parent_ctx = Context(
       root_ctx._invocation_context,
@@ -454,11 +540,6 @@ async def test_run_node_internal_parent_transfer_routes_to_parent_agent():
       node=parent,
       run_id='1',
   )
-  parent_ctx._child_run_counters = {'child': 1}
-
-  mock_scheduler = AsyncMock()
-  root_ctx._workflow_scheduler = mock_scheduler
-  parent_ctx._workflow_scheduler = mock_scheduler
 
   child_ctx = Context(
       root_ctx._invocation_context,
@@ -477,7 +558,10 @@ async def test_run_node_internal_parent_transfer_routes_to_parent_agent():
   )
   parent_ctx2.output = 'parent_output'
 
-  mock_scheduler.side_effect = [child_ctx, parent_ctx2]
+  mock_standalone = mocker.patch(
+      'google.adk.workflow._dynamic_node_executor.run_node_standalone',
+      side_effect=[child_ctx, parent_ctx2],
+  )
 
   # Act
   result = await run_node_internal(
@@ -486,15 +570,15 @@ async def test_run_node_internal_parent_transfer_routes_to_parent_agent():
 
   # Assert
   assert result == 'parent_output'
-  assert mock_scheduler.call_count == 2
-  calls = mock_scheduler.call_args_list
-  assert calls[0][0][0] is parent_ctx
-  assert calls[0][0][1].name == child.name
-  assert calls[0][1].get('use_as_output') is True
+  assert mock_standalone.call_count == 2
+  calls = mock_standalone.call_args_list
+  assert calls[0].args[0] is parent_ctx
+  assert calls[0].args[1].name == child.name
+  assert calls[0].kwargs.get('use_as_output') is True
 
-  assert calls[1][0][0] is root_ctx
-  assert calls[1][0][1].name == parent.name
-  assert calls[1][1].get('use_as_output') is False
+  assert calls[1].args[0] is root_ctx
+  assert calls[1].args[1].name == parent.name
+  assert calls[1].kwargs.get('use_as_output') is False
 
 
 async def test_run_node_internal_standalone_sibling_transfer(mocker):
@@ -509,7 +593,6 @@ async def test_run_node_internal_standalone_sibling_transfer(mocker):
   agent_b.parent_agent = root
 
   root_ctx = _make_context(node=root)
-  root_ctx._child_run_counters = {}
   root_ctx._workflow_scheduler = None
 
   child_ctx_a = Context(
@@ -542,7 +625,7 @@ async def test_run_node_internal_standalone_sibling_transfer(mocker):
   assert mock_run_standalone.call_count == 2
 
 
-async def test_run_node_internal_child_transfer_routes_downward():
+async def test_run_node_internal_child_transfer_routes_downward(mocker):
   """Child transfer routes execution to a sub-agent downward in the agent hierarchy."""
   # Arrange
   child = LlmAgent(name='child', rerun_on_resume=True)
@@ -550,8 +633,6 @@ async def test_run_node_internal_child_transfer_routes_downward():
   child.parent_agent = parent
 
   parent_ctx = _make_context(node=None)
-  mock_scheduler = AsyncMock()
-  parent_ctx._workflow_scheduler = mock_scheduler
 
   parent_run_ctx = Context(
       parent_ctx._invocation_context,
@@ -570,7 +651,10 @@ async def test_run_node_internal_child_transfer_routes_downward():
   )
   child_run_ctx.output = 'child_output'
 
-  mock_scheduler.side_effect = [parent_run_ctx, child_run_ctx]
+  mock_standalone = mocker.patch(
+      'google.adk.workflow._dynamic_node_executor.run_node_standalone',
+      side_effect=[parent_run_ctx, child_run_ctx],
+  )
 
   # Act
   result = await run_node_internal(
@@ -579,15 +663,15 @@ async def test_run_node_internal_child_transfer_routes_downward():
 
   # Assert
   assert result == 'child_output'
-  assert mock_scheduler.call_count == 2
-  calls = mock_scheduler.call_args_list
-  assert calls[0][0][0] is parent_ctx
-  assert calls[0][0][1].name == parent.name
-  assert calls[1][0][0] is parent_run_ctx
-  assert calls[1][0][1].name == child.name
+  assert mock_standalone.call_count == 2
+  calls = mock_standalone.call_args_list
+  assert calls[0].args[0] is parent_ctx
+  assert calls[0].args[1].name == parent.name
+  assert calls[1].args[0] is parent_run_ctx
+  assert calls[1].args[1].name == child.name
 
 
-async def test_run_node_internal_three_layer_transfer_round_trip():
+async def test_run_node_internal_three_layer_transfer_round_trip(mocker):
   """Verifies 3-layer round trip transfer (Root -> Child -> Grandchild -> Child -> Root)."""
   # Arrange
   grandchild = LlmAgent(name='grandchild', rerun_on_resume=True)
@@ -597,8 +681,6 @@ async def test_run_node_internal_three_layer_transfer_round_trip():
   child.parent_agent = root
 
   root_ctx = _make_context(node=None)
-  mock_scheduler = AsyncMock()
-  root_ctx._workflow_scheduler = mock_scheduler
 
   root_run_ctx = Context(
       root_ctx._invocation_context,
@@ -637,29 +719,34 @@ async def test_run_node_internal_three_layer_transfer_round_trip():
   )
   root_run_ctx2.output = 'final_root_output'
 
-  mock_scheduler.side_effect = [
-      root_run_ctx,
-      child_run_ctx,
-      grandchild_run_ctx,
-      child_run_ctx2,
-      root_run_ctx2,
-  ]
+  mock_standalone = mocker.patch(
+      'google.adk.workflow._dynamic_node_executor.run_node_standalone',
+      side_effect=[
+          root_run_ctx,
+          child_run_ctx,
+          grandchild_run_ctx,
+          child_run_ctx2,
+          root_run_ctx2,
+      ],
+  )
 
   # Act
   result = await run_node_internal(root_ctx, root, node_input='start')
 
   # Assert
   assert result == 'final_root_output'
-  assert mock_scheduler.call_count == 5
-  calls = mock_scheduler.call_args_list
-  assert calls[0][0][0] is root_ctx
-  assert calls[1][0][0] is root_run_ctx
-  assert calls[2][0][0] is child_run_ctx
-  assert calls[3][0][0] is root_run_ctx
-  assert calls[4][0][0] is root_ctx
+  assert mock_standalone.call_count == 5
+  calls = mock_standalone.call_args_list
+  assert calls[0].args[0] is root_ctx
+  assert calls[1].args[0] is root_run_ctx
+  assert calls[2].args[0] is child_run_ctx
+  assert calls[3].args[0] is root_run_ctx
+  assert calls[4].args[0] is root_ctx
 
 
-async def test_run_node_internal_transfer_preserves_use_as_output_for_original_context():
+async def test_run_node_internal_transfer_preserves_use_as_output_for_original_context(
+    mocker,
+):
   """Verifies use_as_output is preserved when transferring back to the initial context."""
   # Arrange
   child = LlmAgent(name='child', rerun_on_resume=True)
@@ -667,8 +754,6 @@ async def test_run_node_internal_transfer_preserves_use_as_output_for_original_c
   child.parent_agent = root
 
   root_ctx = _make_context(node=None)
-  mock_scheduler = AsyncMock()
-  root_ctx._workflow_scheduler = mock_scheduler
 
   root_run_ctx1 = Context(
       root_ctx._invocation_context,
@@ -693,11 +778,14 @@ async def test_run_node_internal_transfer_preserves_use_as_output_for_original_c
   )
   root_run_ctx2.output = 'final_output'
 
-  mock_scheduler.side_effect = [
-      root_run_ctx1,
-      child_run_ctx,
-      root_run_ctx2,
-  ]
+  mock_standalone = mocker.patch(
+      'google.adk.workflow._dynamic_node_executor.run_node_standalone',
+      side_effect=[
+          root_run_ctx1,
+          child_run_ctx,
+          root_run_ctx2,
+      ],
+  )
 
   # Act
   result = await run_node_internal(
@@ -706,8 +794,264 @@ async def test_run_node_internal_transfer_preserves_use_as_output_for_original_c
 
   # Assert
   assert result == 'final_output'
-  assert mock_scheduler.call_count == 3
-  calls = mock_scheduler.call_args_list
-  assert calls[0][1].get('use_as_output') is True
-  assert calls[1][1].get('use_as_output') is False
-  assert calls[2][1].get('use_as_output') is True
+  assert mock_standalone.call_count == 3
+  calls = mock_standalone.call_args_list
+  assert calls[0].kwargs.get('use_as_output') is True
+  assert calls[1].kwargs.get('use_as_output') is False
+  assert calls[2].kwargs.get('use_as_output') is True
+
+
+async def test_run_node_internal_raise_on_wait_follows_transfer_target(mocker):
+  """raise_on_wait inspects the agent that actually ran, not the first one."""
+  # Arrange
+  agent_b = LlmAgent(name='agent_b', rerun_on_resume=True)
+  agent_b.wait_for_output = True
+  agent_a = LlmAgent(name='agent_a', rerun_on_resume=True)
+  root = LlmAgent(
+      name='root', sub_agents=[agent_a, agent_b], rerun_on_resume=True
+  )
+  agent_a.parent_agent = root
+  agent_b.parent_agent = root
+
+  root_ctx = _make_context(node=root)
+
+  child_ctx_a = Context(
+      invocation_context=root_ctx._invocation_context,
+      parent_ctx=root_ctx,
+      node=agent_a,
+      run_id='1',
+      event_actions=EventActions(transfer_to_agent='agent_b'),
+  )
+  # agent_b is waiting: it produced no output and requested no further
+  # transfer. agent_a, the originally requested node, is not waiting.
+  child_ctx_b = Context(
+      invocation_context=root_ctx._invocation_context,
+      parent_ctx=root_ctx,
+      node=agent_b,
+      run_id='1',
+      event_actions=EventActions(),
+  )
+  child_ctx_b.output = None
+
+  mocker.patch(
+      'google.adk.workflow._dynamic_node_executor.run_node_standalone',
+      side_effect=[child_ctx_a, child_ctx_b],
+  )
+
+  # Act & Assert
+  with pytest.raises(NodeInterruptedError):
+    await run_node_internal(
+        root_ctx, agent_a, node_input='init', raise_on_wait=True
+    )
+
+
+async def test_run_node_internal_default_scheduler_skips_event_replay(mocker):
+  """The scheduler used by the executor does not scan session events and leaves ctx untouched."""
+  # Arrange
+  parent_ctx = _make_context()
+  assert parent_ctx._workflow_scheduler is None
+  child_node = FunctionNode(
+      func=lambda node_input: f'hello {node_input}',
+      name='greeter',
+      rerun_on_resume=True,
+  )
+  mock_rehydrate = mocker.patch(
+      'google.adk.workflow._dynamic_node_scheduler.DynamicNodeScheduler'
+      '._rehydrate_from_events'
+  )
+
+  # Act
+  result = await run_node_internal(parent_ctx, child_node, node_input='world')
+
+  # Assert
+  assert result == 'hello world'
+  mock_rehydrate.assert_not_called()
+  # The executor uses a throwaway scheduler without attaching it to the context,
+  # keeping parent_ctx._workflow_scheduler strictly None outside of workflows.
+  assert parent_ctx._workflow_scheduler is None
+
+
+async def test_run_node_internal_transfer_defers_to_target_parent_scheduler(
+    mocker,
+):
+  """A transfer hands the chain to the scheduler owning the target's parent."""
+  # Arrange
+  child = LlmAgent(name='child', rerun_on_resume=True)
+  parent = LlmAgent(name='parent', sub_agents=[child], rerun_on_resume=True)
+  root = LlmAgent(name='root', sub_agents=[parent], rerun_on_resume=True)
+  child.parent_agent = parent
+  parent.parent_agent = root
+
+  root_ctx = _make_context(node=root)
+  parent_ctx = Context(
+      root_ctx._invocation_context,
+      parent_ctx=root_ctx,
+      node=parent,
+      run_id='1',
+  )
+
+  child_ctx = Context(
+      root_ctx._invocation_context,
+      parent_ctx=parent_ctx,
+      node=child,
+      run_id='1',
+      event_actions=EventActions(transfer_to_agent='parent'),
+  )
+  parent_ctx2 = Context(
+      root_ctx._invocation_context,
+      parent_ctx=root_ctx,
+      node=parent,
+      run_id='2',
+      event_actions=EventActions(),
+  )
+  parent_ctx2.output = 'parent_output'
+
+  # root_ctx owns a different scheduler; installed after parent_ctx is built
+  # so parent_ctx does not inherit it and gets the transfer-only default.
+  root_scheduler = MagicMock(spec=DynamicNodeScheduler)
+  root_scheduler._execute_step = AsyncMock(return_value=parent_ctx2)
+  root_ctx._workflow_scheduler = root_scheduler
+
+  mock_standalone = mocker.patch(
+      'google.adk.workflow._dynamic_node_executor.run_node_standalone',
+      return_value=child_ctx,
+  )
+
+  # Act
+  result = await run_node_internal(parent_ctx, child, node_input='child_input')
+
+  # Assert
+  assert result == 'parent_output'
+  # The hop after the transfer went through root_ctx's scheduler, not the
+  # one installed on parent_ctx.
+  assert mock_standalone.call_count == 1
+  root_scheduler._execute_step.assert_awaited_once()
+  assert root_scheduler._execute_step.await_args.args[0] is root_ctx
+  assert root_scheduler._execute_step.await_args.args[1] is parent
+
+
+async def test_run_node_internal_transfer_restores_use_as_output_on_hop_back_to_calling_ctx(
+    mocker,
+):
+  """A transfer chain that leaves the calling context and hops back restores use_as_output."""
+  # Arrange: root -> parent -> [child1, child2]
+  child1 = LlmAgent(name='child1', rerun_on_resume=True)
+  child2 = LlmAgent(name='child2', rerun_on_resume=True)
+  parent = LlmAgent(
+      name='parent', sub_agents=[child1, child2], rerun_on_resume=True
+  )
+  root = LlmAgent(name='root', sub_agents=[parent], rerun_on_resume=True)
+  child1.parent_agent = parent
+  child2.parent_agent = parent
+  parent.parent_agent = root
+
+  root_ctx = _make_context(node=root)
+  parent_ctx = Context(
+      root_ctx._invocation_context,
+      parent_ctx=root_ctx,
+      node=parent,
+      run_id='1',
+      event_actions=EventActions(transfer_to_agent='child2'),
+  )
+
+  child1_ctx = Context(
+      root_ctx._invocation_context,
+      parent_ctx=parent_ctx,
+      node=child1,
+      run_id='1',
+      event_actions=EventActions(transfer_to_agent='parent'),
+  )
+  child2_ctx = Context(
+      root_ctx._invocation_context,
+      parent_ctx=parent_ctx,
+      node=child2,
+      run_id='1',
+      event_actions=EventActions(),
+  )
+  child2_ctx.output = 'final_output'
+
+  # root_ctx has a different scheduler
+  root_scheduler = MagicMock(spec=DynamicNodeScheduler)
+  root_scheduler._execute_step = AsyncMock(return_value=parent_ctx)
+  root_ctx._workflow_scheduler = root_scheduler
+
+  # parent_ctx's standalone runs: child1 then child2
+  mock_standalone = mocker.patch(
+      'google.adk.workflow._dynamic_node_executor.run_node_standalone',
+      side_effect=[child1_ctx, child2_ctx],
+  )
+
+  # Act
+  result = await run_node_internal(
+      parent_ctx, child1, node_input='init', use_as_output=True
+  )
+
+  # Assert
+  assert result == 'final_output'
+  # Hop 1 (child1 on parent_ctx): use_as_output=True
+  assert mock_standalone.call_args_list[0].kwargs['use_as_output'] is True
+  # Hop 2 (parent on root_ctx via root_scheduler): use_as_output=False
+  root_scheduler._execute_step.assert_awaited_once()
+  assert (
+      root_scheduler._execute_step.await_args.kwargs['use_as_output'] is False
+  )
+  # Hop 3 (child2 hopped back to parent_ctx): use_as_output restored to True!
+  assert mock_standalone.call_args_list[1].kwargs['use_as_output'] is True
+
+
+async def test_run_node_internal_transfer_interrupt_lands_on_calling_ctx(
+    mocker,
+):
+  """Interrupts after an upward transfer reach the ctx the caller reads.
+
+  NodeRunner swallows NodeInterruptedError and relies on the calling node's
+  own Context already carrying the IDs, so they must land there rather than
+  on the transfer target's parent context.
+  """
+  # Arrange
+  child = LlmAgent(name='child', rerun_on_resume=True)
+  parent = LlmAgent(name='parent', sub_agents=[child], rerun_on_resume=True)
+  root = LlmAgent(name='root', sub_agents=[parent], rerun_on_resume=True)
+  child.parent_agent = parent
+  parent.parent_agent = root
+
+  root_ctx = _make_context(node=root)
+  parent_ctx = Context(
+      root_ctx._invocation_context,
+      parent_ctx=root_ctx,
+      node=parent,
+      run_id='1',
+  )
+
+  child_ctx = Context(
+      root_ctx._invocation_context,
+      parent_ctx=parent_ctx,
+      node=child,
+      run_id='1',
+      event_actions=EventActions(transfer_to_agent='parent'),
+  )
+  # The transfer target interrupts, e.g. it asked the user a question.
+  parent_ctx2 = Context(
+      root_ctx._invocation_context,
+      parent_ctx=root_ctx,
+      node=parent,
+      run_id='2',
+      event_actions=EventActions(),
+  )
+  parent_ctx2._interrupt_ids.add('ask_user')
+
+  mocker.patch(
+      'google.adk.workflow._dynamic_node_executor.run_node_standalone',
+      side_effect=[child_ctx, parent_ctx2],
+  )
+
+  # Act & Assert
+  with pytest.raises(NodeInterruptedError):
+    await run_node_internal(parent_ctx, child, node_input='child_input')
+
+  # The calling node's ctx carries the interrupt, so its NodeRunner reports
+  # it as WAITING instead of falsely COMPLETED.
+  assert 'ask_user' in parent_ctx.interrupt_ids
+  # root_ctx is the transfer target's parent, not the caller; nothing reads
+  # its interrupt IDs on this path.
+  assert 'ask_user' not in root_ctx.interrupt_ids

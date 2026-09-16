@@ -40,6 +40,7 @@ from google.genai import types
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy import text
+from sqlalchemy.exc import ArgumentError
 from sqlalchemy.orm import sessionmaker
 
 
@@ -160,6 +161,23 @@ class TestRedactDbUrl:
     assert "sup3r-s3cret" not in caplog.text
     assert "postgresql+asyncpg://user:***@host:5432/db" in caplog.text
 
+  def test_schema_version_connect_failure_hides_password(self):
+    """The schema check runs before any migration, so it reports first."""
+    db_url = "postgresql+asyncpg://user:sup3r-s3cret@host:5432/db"
+    error = ArgumentError(
+        f"Could not parse SQLAlchemy URL from string '{db_url}'"
+    )
+
+    with mock.patch.object(
+        _schema_check_utils, "create_sync_engine", side_effect=error
+    ):
+      with pytest.raises(RuntimeError) as exc_info:
+        _schema_check_utils.get_db_schema_version(db_url)
+
+    assert "sup3r-s3cret" not in str(exc_info.value)
+    assert "postgresql+asyncpg://user:***@host:5432/db" in str(exc_info.value)
+    assert "ArgumentError" in str(exc_info.value)
+
 
 _SOURCE_URL = "postgresql+asyncpg://user:sup3r-s3cret@host:5432/src"
 _DEST_URL = "postgresql+asyncpg://user:0ther-s3cret@host:5432/dst"
@@ -183,6 +201,37 @@ class TestMigrationLogsHidePassword:
     assert "postgresql+asyncpg://user:***@host:5432/src" in caplog.text
     assert "postgresql+asyncpg://user:***@host:5432/dst" in caplog.text
 
+  def test_pickle_migration_source_connect_failure_hides_password(self, caplog):
+    """A password containing '@' or '/' makes the URL parser quote it back."""
+    error = ArgumentError(
+        f"Could not parse SQLAlchemy URL from string '{_SOURCE_URL}'"
+    )
+    with mock.patch.object(mfsp, "create_engine", side_effect=error):
+      with caplog.at_level(logging.INFO):
+        with pytest.raises(RuntimeError) as exc_info:
+          mfsp.migrate(_SOURCE_URL, _DEST_URL)
+
+    assert "sup3r-s3cret" not in caplog.text
+    assert "sup3r-s3cret" not in str(exc_info.value)
+    assert "postgresql+asyncpg://user:***@host:5432/src" in str(exc_info.value)
+    assert "ArgumentError" in str(exc_info.value)
+
+  def test_pickle_migration_dest_connect_failure_hides_password(self, caplog):
+    error = ArgumentError(
+        f"Could not parse SQLAlchemy URL from string '{_DEST_URL}'"
+    )
+    with mock.patch.object(
+        mfsp, "create_engine", side_effect=[mock.MagicMock(), error]
+    ):
+      with caplog.at_level(logging.INFO):
+        with pytest.raises(RuntimeError) as exc_info:
+          mfsp.migrate(_SOURCE_URL, _DEST_URL)
+
+    assert "0ther-s3cret" not in caplog.text
+    assert "0ther-s3cret" not in str(exc_info.value)
+    assert "postgresql+asyncpg://user:***@host:5432/dst" in str(exc_info.value)
+    assert "ArgumentError" in str(exc_info.value)
+
   def test_sqlite_migration_connect_log_is_redacted(self, caplog, tmp_path):
     with mock.patch.object(
         mfss, "create_engine", side_effect=RuntimeError("boom")
@@ -193,6 +242,21 @@ class TestMigrationLogsHidePassword:
 
     assert "sup3r-s3cret" not in caplog.text
     assert "postgresql+asyncpg://user:***@host:5432/src" in caplog.text
+
+  def test_sqlite_migration_connect_failure_hides_password(
+      self, caplog, tmp_path
+  ):
+    error = ArgumentError(
+        f"Could not parse SQLAlchemy URL from string '{_SOURCE_URL}'"
+    )
+    with mock.patch.object(mfss, "create_engine", side_effect=error):
+      with caplog.at_level(logging.INFO):
+        with pytest.raises(SystemExit):
+          mfss.migrate(_SOURCE_URL, str(tmp_path / "dest.db"))
+
+    assert "sup3r-s3cret" not in caplog.text
+    assert "postgresql+asyncpg://user:***@host:5432/src" in caplog.text
+    assert "ArgumentError" in caplog.text
 
   def test_runner_up_to_date_log_is_redacted(self, caplog):
     with mock.patch.object(

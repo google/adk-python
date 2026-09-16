@@ -38,24 +38,24 @@ import weakref
 from google.adk.tools.computer_use.computer_use_tool import ComputerUseTool
 from google.genai import types
 
-from . import _tool_error_handler
-from ...agents.active_streaming_tool import ActiveStreamingTool
-from ...events.event import Event
-from ...live.live_request_queue import LiveRequestQueue
-from ...telemetry import _instrumentation
-from ...tools.base_tool import BaseTool
-from ...tools.function_tool import _use_sync_callable_runner
-from ...tools.function_tool import FunctionTool
-from ...tools.tool_confirmation import ToolConfirmation
-from ...tools.tool_context import ToolContext
-from ...utils._callback_pipeline import _run_callbacks
-from ...utils._callback_pipeline import _stop_on_non_none
-from ...utils.context_utils import Aclosing
-from ._invocation_utils import require_agent_name as _require_agent_name
+from . import _error_handler as _tool_error_handler
+from ....events.event import Event
+from ....live._active_streaming_tool import ActiveStreamingTool
+from ....live.live_request_queue import LiveRequestQueue
+from ....telemetry import _instrumentation
+from ....tools.base_tool import BaseTool
+from ....tools.function_tool import _use_sync_callable_runner
+from ....tools.function_tool import FunctionTool
+from ....tools.tool_confirmation import ToolConfirmation
+from ....tools.tool_context import ToolContext
+from ....utils._callback_pipeline import _run_callbacks
+from ....utils._callback_pipeline import _stop_on_non_none
+from ....utils.context_utils import Aclosing
+from .._invocation_utils import require_agent_name as _require_agent_name
 
 if TYPE_CHECKING:
-  from ...agents.invocation_context import InvocationContext
-  from ...agents.llm_agent import LlmAgent
+  from ....agents.invocation_context import InvocationContext
+  from ....agents.llm_agent import LlmAgent
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -499,7 +499,7 @@ def _build_response_event(
   ):
     # Imported lazily: AgentTool is only needed on the skip-summarization
     # path, so it is not worth pulling into every functions.py import.
-    from ...tools.agent_tool import AgentTool
+    from ....tools.agent_tool import AgentTool
 
     # This is scoped to AgentTool deliberately: other tools (e.g. UI/widget-
     # rendering tools) set skip_summarization precisely because their function

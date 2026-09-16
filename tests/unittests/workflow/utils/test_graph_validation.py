@@ -92,14 +92,16 @@ def test_disconnected_routed_subgraph_is_unreachable() -> None:
     [
         (None, None),
         ('route1', 'route1'),
-        ('route1', 'route2'),
         ('route1', None),
+        (None, 'route1'),
+        (['route1', 'route2'], 'route2'),
+        (['route1', 'route2'], ['route2', 'route3']),
     ],
 )
 def test_duplicate_edges_fail_validation(
-    routes: tuple[str | None, str | None],
+    routes: tuple[str | list[str] | None, str | list[str] | None],
 ) -> None:
-  """Tests that duplicate edges fail validation, regardless of routes."""
+  """Tests that duplicate edges (overlapping or unconditional) fail validation."""
   node_a = TestingNode(name='NodeA')
   node_b = TestingNode(name='NodeB')
   graph = Graph(
@@ -140,6 +142,39 @@ def test_routed_start_edge_fails_validation() -> None:
       match=r'Graph validation failed\. Edges from START must not have routes',
   ):
     validate_graph(graph.nodes, graph.edges)
+
+
+@pytest.mark.parametrize(
+    'routes',
+    [
+        ('route1', 'route2'),
+        (['route1', 'route2'], 'route3'),
+        (['route1', 'route2'], ['route3', 'route4']),
+    ],
+)
+def test_disjoint_routed_edges_pass_validation(
+    routes: tuple[str | list[str] | None, str | list[str] | None],
+) -> None:
+  """Tests that edges to same target with disjoint routes pass validation."""
+  node_a = TestingNode(name='NodeA')
+  node_b = TestingNode(name='NodeB')
+  graph = Graph(
+      edges=[
+          Edge(from_node=START, to_node=node_a),
+          Edge(
+              from_node=node_a,
+              to_node=node_b,
+              route=routes[0],
+          ),
+          Edge(
+              from_node=node_a,
+              to_node=node_b,
+              route=routes[1],
+          ),
+      ],
+  )
+  # Should not raise
+  validate_graph(graph.nodes, graph.edges)
 
 
 def test_start_node_with_incoming_edge() -> None:

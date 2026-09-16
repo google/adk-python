@@ -19,8 +19,8 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
-from google.adk.flows.llm_flows._output_schema_processor import get_structured_model_response
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
+from google.adk.flows.llm_flows.prompt._schema import get_structured_model_response
 from google.adk.flows.llm_flows.single_flow import SingleFlow
 from google.adk.models.llm_request import LlmRequest
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -31,7 +31,7 @@ from pydantic import BaseModel
 from pydantic import Field
 import pytest
 
-from ... import testing_utils
+from .... import testing_utils
 
 
 class PersonSchema(BaseModel):
@@ -159,7 +159,7 @@ async def test_basic_processor_sets_output_schema_without_tools():
 )
 async def test_output_schema_request_processor(output_schema_and_tools):
   """Test that output schema processor adds set_model_response tool."""
-  from google.adk.flows.llm_flows._output_schema_processor import _OutputSchemaRequestProcessor
+  from google.adk.flows.llm_flows.prompt._schema import _OutputSchemaRequestProcessor
 
   agent = LlmAgent(
       name='test_agent',
@@ -221,8 +221,8 @@ async def test_set_model_response_tool():
 async def test_output_schema_helper_functions():
   """Test the helper functions for handling set_model_response."""
   from google.adk.events.event import Event
-  from google.adk.flows.llm_flows._output_schema_processor import create_final_model_response_event
-  from google.adk.flows.llm_flows._output_schema_processor import get_structured_model_response
+  from google.adk.flows.llm_flows.prompt._schema import create_final_model_response_event
+  from google.adk.flows.llm_flows.prompt._schema import get_structured_model_response
   from google.genai import types
 
   agent = LlmAgent(
@@ -289,7 +289,7 @@ async def test_output_schema_helper_functions():
 async def test_get_structured_model_response_with_non_ascii():
   """Test get_structured_model_response with non-ASCII characters."""
   from google.adk.events.event import Event
-  from google.adk.flows.llm_flows._output_schema_processor import get_structured_model_response
+  from google.adk.flows.llm_flows.prompt._schema import get_structured_model_response
   from google.genai import types
 
   # Test with a dictionary containing non-ASCII characters
@@ -327,7 +327,7 @@ async def test_get_structured_model_response_with_wrapped_result():
   {'result': [...]}.  This test ensures we correctly unwrap the result.
   """
   from google.adk.events.event import Event
-  from google.adk.flows.llm_flows._output_schema_processor import get_structured_model_response
+  from google.adk.flows.llm_flows.prompt._schema import get_structured_model_response
   from google.genai import types
 
   # Simulate a list result wrapped by ADK's functions.py

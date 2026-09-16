@@ -22,14 +22,14 @@ from typing import cast
 from typing import Optional
 from typing import TYPE_CHECKING
 
-from ...tools.base_tool import BaseTool
-from ...tools.tool_context import ToolContext
-from ...utils._callback_pipeline import _run_callbacks
-from ...utils._callback_pipeline import _stop_on_non_none
+from ....tools.base_tool import BaseTool
+from ....tools.tool_context import ToolContext
+from ....utils._callback_pipeline import _run_callbacks
+from ....utils._callback_pipeline import _stop_on_non_none
 
 if TYPE_CHECKING:
-  from ...agents.invocation_context import InvocationContext
-  from ...agents.llm_agent import LlmAgent
+  from ....agents.invocation_context import InvocationContext
+  from ....agents.llm_agent import LlmAgent
 
 logger = logging.getLogger('google_adk.' + __name__)
 

@@ -20,10 +20,9 @@ from typing import Any
 from unittest import mock
 
 from google.adk.events.event_actions import EventActions
-from google.adk.flows.llm_flows import _tool_error_handler
+from google.adk.flows.llm_flows.tools import _error_handler as _tool_error_handler
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
-import pytest
 
 
 def test_detect_error_type_for_telemetry_no_hook() -> None:

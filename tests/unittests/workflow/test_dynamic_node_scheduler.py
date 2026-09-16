@@ -22,8 +22,10 @@ from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
 from google.adk.agents.context import Context
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.events.event import Event
 from google.adk.events.event import NodeInfo
+from google.adk.events.event_actions import EventActions
 from google.adk.workflow._base_node import BaseNode
 from google.adk.workflow._dynamic_node_scheduler import DynamicNodeRun
 from google.adk.workflow._dynamic_node_scheduler import DynamicNodeScheduler
@@ -62,7 +64,6 @@ def _make_parent_ctx(events=None):
   ctx._workflow_scheduler = None
   ctx._output_for_ancestors = []
   ctx._output_delegated = False
-  ctx._child_run_counters = {}
 
   return ctx, collected
 
@@ -988,6 +989,57 @@ async def test_dynamic_node_scheduler_auto_generates_sequential_run_id():
 
 
 @pytest.mark.asyncio
+async def test_dynamic_node_scheduler_standalone_defaults_run_id_to_1():
+  """When enable_replay=False, DynamicNodeScheduler defaults run_id to '1' without incrementing state."""
+
+  class SimpleNode(BaseNode):
+
+    async def _run_impl(self, *, ctx, node_input):
+      yield f'out: {node_input}'
+
+  ctx, _ = _make_parent_ctx()
+  state = DynamicNodeState()
+  scheduler = DynamicNodeScheduler(state=state, enable_replay=False)
+
+  mock_child_ctx1 = MagicMock(spec=Context)
+  mock_child_ctx1.error = None
+  mock_child_ctx1.interrupt_ids = set()
+  mock_child_ctx1.output = 'out: 1'
+  mock_child_ctx1.actions = MagicMock()
+  mock_child_ctx1.actions.transfer_to_agent = None
+
+  mock_child_ctx2 = MagicMock(spec=Context)
+  mock_child_ctx2.error = None
+  mock_child_ctx2.interrupt_ids = set()
+  mock_child_ctx2.output = 'out: 2'
+  mock_child_ctx2.actions = MagicMock()
+  mock_child_ctx2.actions.transfer_to_agent = None
+
+  ctx._run_node_standalone = AsyncMock(
+      side_effect=[mock_child_ctx1, mock_child_ctx2]
+  )
+
+  node = SimpleNode(name='worker')
+
+  # First execution without run_id -> defaults to '1'
+  await scheduler(ctx, node, 'task1', node_name='worker')
+  assert ctx._run_node_standalone.call_count == 1
+  assert ctx._run_node_standalone.call_args_list[0].kwargs.get('run_id') == '1'
+  # Node is passed through directly without cloning
+  assert ctx._run_node_standalone.call_args_list[0].args[0] is node
+
+  # Second execution of same node without run_id -> still '1'
+  await scheduler(ctx, node, 'task2', node_name='worker')
+  assert ctx._run_node_standalone.call_count == 2
+  assert ctx._run_node_standalone.call_args_list[1].kwargs.get('run_id') == '1'
+  assert ctx._run_node_standalone.call_args_list[1].args[0] is node
+
+  # State counters and runs remain empty with replay off
+  assert not state.run_counters
+  assert not state.runs
+
+
+@pytest.mark.asyncio
 async def test_dynamic_node_state_maintains_independent_run_counters():
   """DynamicNodeState maintains independent counters for different nodes and parent paths."""
   state = DynamicNodeState()
@@ -1055,3 +1107,113 @@ async def test_static_and_dynamic_node_sharing_a_name_do_not_collide():
       == '3'
   )
   assert loop_state.run_counters[ctx.node_path] == {'worker': 3}
+
+
+@pytest.mark.asyncio
+async def test_dynamic_node_scheduler_handles_agent_transfer_loop():
+  """DynamicNodeScheduler loops through sequential agent transfers natively."""
+  agent_b = LlmAgent(name='agent_b', rerun_on_resume=True)
+  agent_a = LlmAgent(name='agent_a', rerun_on_resume=True)
+  root = LlmAgent(
+      name='root', sub_agents=[agent_a, agent_b], rerun_on_resume=True
+  )
+  agent_a.parent_agent = root
+  agent_b.parent_agent = root
+
+  ctx, _ = _make_parent_ctx()
+  ctx.node = root
+  state = DynamicNodeState()
+  scheduler = DynamicNodeScheduler(state=state)
+
+  child_ctx_a = MagicMock(spec=Context)
+  child_ctx_a.error = None
+  child_ctx_a.interrupt_ids = set()
+  child_ctx_a.actions = EventActions(transfer_to_agent='agent_b')
+  child_ctx_a.output = None
+
+  child_ctx_b = MagicMock(spec=Context)
+  child_ctx_b.error = None
+  child_ctx_b.interrupt_ids = set()
+  child_ctx_b.actions = EventActions()
+  child_ctx_b.output = 'transferred_result'
+
+  ctx._run_node_standalone = AsyncMock(side_effect=[child_ctx_a, child_ctx_b])
+
+  final_ctx = await scheduler(
+      ctx, agent_a, 'initial_input', node_name='agent_a'
+  )
+
+  assert final_ctx is child_ctx_b
+  assert final_ctx.output == 'transferred_result'
+  assert ctx._run_node_standalone.call_count == 2
+  # First hop
+  assert ctx._run_node_standalone.call_args_list[0].kwargs.get('run_id') == '1'
+  # Second hop
+  assert ctx._run_node_standalone.call_args_list[1].kwargs.get('run_id') == '1'
+  assert state.get_run_counter('agent_a', parent_path=ctx.node_path) == 1
+  assert state.get_run_counter('agent_b', parent_path=ctx.node_path) == 1
+
+
+@pytest.mark.asyncio
+async def test_dynamic_node_scheduler_transfer_stops_on_interrupt():
+  """DynamicNodeScheduler stops transferring and returns context if target interrupts."""
+  agent_b = LlmAgent(name='agent_b', rerun_on_resume=True)
+  agent_a = LlmAgent(name='agent_a', rerun_on_resume=True)
+  root = LlmAgent(
+      name='root', sub_agents=[agent_a, agent_b], rerun_on_resume=True
+  )
+  agent_a.parent_agent = root
+  agent_b.parent_agent = root
+
+  ctx, _ = _make_parent_ctx()
+  ctx.node = root
+  state = DynamicNodeState()
+  scheduler = DynamicNodeScheduler(state=state)
+
+  child_ctx_a = MagicMock(spec=Context)
+  child_ctx_a.error = None
+  child_ctx_a.interrupt_ids = set()
+  child_ctx_a.actions = EventActions(transfer_to_agent='agent_b')
+  child_ctx_a.output = None
+
+  child_ctx_b = MagicMock(spec=Context)
+  child_ctx_b.error = None
+  child_ctx_b.interrupt_ids = {'hitl_1'}
+  child_ctx_b.actions = EventActions()
+  child_ctx_b.output = None
+
+  ctx._run_node_standalone = AsyncMock(side_effect=[child_ctx_a, child_ctx_b])
+
+  final_ctx = await scheduler(
+      ctx, agent_a, 'initial_input', node_name='agent_a'
+  )
+
+  assert final_ctx is child_ctx_b
+  assert 'hitl_1' in final_ctx.interrupt_ids
+  assert 'hitl_1' in state.interrupt_ids
+
+
+@pytest.mark.asyncio
+async def test_dynamic_node_scheduler_transfer_raises_on_invalid_target():
+  """DynamicNodeScheduler raises ValueError when transferring to an unknown agent."""
+  agent_a = LlmAgent(name='agent_a', rerun_on_resume=True)
+  root = LlmAgent(name='root', sub_agents=[agent_a], rerun_on_resume=True)
+  agent_a.parent_agent = root
+
+  ctx, _ = _make_parent_ctx()
+  ctx.node = root
+  state = DynamicNodeState()
+  scheduler = DynamicNodeScheduler(state=state)
+
+  child_ctx_a = MagicMock(spec=Context)
+  child_ctx_a.error = None
+  child_ctx_a.interrupt_ids = set()
+  child_ctx_a.actions = EventActions(transfer_to_agent='nonexistent_agent')
+  child_ctx_a.output = None
+
+  ctx._run_node_standalone = AsyncMock(return_value=child_ctx_a)
+
+  with pytest.raises(
+      ValueError, match="Transfer target agent 'nonexistent_agent' not found."
+  ):
+    await scheduler(ctx, agent_a, 'input', node_name='agent_a')

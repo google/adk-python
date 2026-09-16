@@ -522,6 +522,29 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
     # Visible text after compaction is: 'S' + ('c' * 20) = 21 chars.
     self.assertEqual(estimated_token_count, 21 // 4)
 
+  def test_latest_prompt_token_count_stops_at_compaction_event(self):
+    events = [
+        self._create_event(1.0, 'inv1', 'a' * 40, prompt_token_count=1000),
+        self._create_compacted_event(1.0, 1.0, 'S'),
+        self._create_event(2.0, 'inv2', 'b' * 20),
+    ]
+
+    estimated_token_count = compaction_module._latest_prompt_token_count(events)
+
+    # Prompt token count recorded before compaction describes the replaced prompt
+    # and must not be picked up; falls back to estimated count ('S' + 20 chars).
+    self.assertEqual(estimated_token_count, 21 // 4)
+
+    events_with_post_count = [
+        self._create_event(1.0, 'inv1', 'a' * 40, prompt_token_count=1000),
+        self._create_compacted_event(1.0, 1.0, 'S'),
+        self._create_event(2.0, 'inv2', 'b' * 20, prompt_token_count=50),
+    ]
+    self.assertEqual(
+        compaction_module._latest_prompt_token_count(events_with_post_count),
+        50,
+    )
+
   def test_latest_prompt_token_count_fallback_uses_effective_contents(self):
     events = [
         self._create_event(1.0, 'inv1', 'visible'),

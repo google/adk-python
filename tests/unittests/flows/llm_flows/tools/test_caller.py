@@ -24,15 +24,15 @@ from unittest import mock
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.events.event_actions import EventActions
-from google.adk.flows.llm_flows import _tool_caller
 from google.adk.flows.llm_flows import functions
+from google.adk.flows.llm_flows.tools import _caller as _tool_caller
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 import pytest
 
-from ... import testing_utils
+from .... import testing_utils
 
 
 def test_normalize_tool_result() -> None:

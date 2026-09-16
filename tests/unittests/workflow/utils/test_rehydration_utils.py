@@ -645,6 +645,74 @@ class TestScanNodeEvents:
     assert results["node_a@1"].error_code == "ValueError"
     assert results["node_b@1"].error_code is None
 
+  def test_scan_descendant_isolation_scope_does_not_pollute_parent(self):
+    """A descendant event's isolation_scope must not overwrite the parent's scope."""
+    parent_event = Event(
+        node_info=NodeInfo(path="/wf@1/task@1"),
+        isolation_scope=None,
+        invocation_id="test_id",
+    )
+    descendant_event = Event(
+        node_info=NodeInfo(path="/wf@1/task@1/agent@1"),
+        isolation_scope="agent_scope",
+        invocation_id="test_id",
+    )
+
+    results = _reconstruct_node_states(
+        [parent_event, descendant_event],
+        "/wf@1/task@1",
+        invocation_id="test_id",
+        group_by_direct_child=False,
+    )
+
+    assert results["/wf@1/task@1"].isolation_scope is None
+
+  def test_scan_descendant_isolation_scope_does_not_pollute_direct_child(self):
+    """A descendant event's isolation_scope must not overwrite a direct child's scope when group_by_direct_child=True."""
+    child_event = Event(
+        node_info=NodeInfo(path="/wf@1/task@1"),
+        isolation_scope=None,
+        invocation_id="test_id",
+    )
+    descendant_event = Event(
+        node_info=NodeInfo(path="/wf@1/task@1/agent@1"),
+        isolation_scope="agent_scope",
+        invocation_id="test_id",
+    )
+
+    results = _reconstruct_node_states(
+        [child_event, descendant_event],
+        "/wf@1",
+        invocation_id="test_id",
+        group_by_direct_child=True,
+    )
+
+    assert results["task@1"].isolation_scope is None
+
+  def test_scan_direct_child_isolation_scope_is_preserved_with_descendants(
+      self,
+  ):
+    """A direct child's own isolation_scope is preserved and not overwritten by descendants."""
+    child_event = Event(
+        node_info=NodeInfo(path="/wf@1/task@1"),
+        isolation_scope="direct_scope",
+        invocation_id="test_id",
+    )
+    descendant_event = Event(
+        node_info=NodeInfo(path="/wf@1/task@1/agent@1"),
+        isolation_scope="descendant_scope",
+        invocation_id="test_id",
+    )
+
+    results = _reconstruct_node_states(
+        [child_event, descendant_event],
+        "/wf@1",
+        invocation_id="test_id",
+        group_by_direct_child=True,
+    )
+
+    assert results["task@1"].isolation_scope == "direct_scope"
+
 
 # --- is_terminal_event ---
 #

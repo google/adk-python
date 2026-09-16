@@ -12,22 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
 from unittest.mock import patch
 
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.flows.llm_flows import functions
-from google.adk.flows.llm_flows.request_confirmation import _resolve_confirmation_targets
-from google.adk.flows.llm_flows.request_confirmation import request_processor
+from google.adk.flows.llm_flows.tools._confirmation import _resolve_confirmation_targets
+from google.adk.flows.llm_flows.tools._confirmation import request_processor
 from google.adk.models.llm_request import LlmRequest
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.genai import types
 import pytest
 
-from ... import testing_utils
+from .... import testing_utils
 
 MOCK_TOOL_NAME = "mock_tool"
 MOCK_FUNCTION_CALL_ID = "mock_function_call_id"

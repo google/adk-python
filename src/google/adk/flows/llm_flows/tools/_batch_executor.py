@@ -27,21 +27,21 @@ from typing import TypeVar
 
 from google.genai import types
 
-from ...events.event import Event
-from ...events.event_actions import EventActions
-from ...telemetry.tracing import trace_merged_tool_calls
-from ...telemetry.tracing import tracer
-from ...tools.base_tool import BaseTool
-from ...tools.tool_confirmation import ToolConfirmation
-from ._invocation_utils import as_llm_agent as _as_llm_agent
-from ._tool_caller import _execute_single_prepared_call_async
-from ._tool_caller import _execute_single_prepared_call_live
-from ._tool_caller import _prepare_single
-from ._tool_caller import _PreparedFunctionCall
+from ....events.event import Event
+from ....events.event_actions import EventActions
+from ....telemetry.tracing import trace_merged_tool_calls
+from ....telemetry.tracing import tracer
+from ....tools.base_tool import BaseTool
+from ....tools.tool_confirmation import ToolConfirmation
+from .._invocation_utils import as_llm_agent as _as_llm_agent
+from ._caller import _execute_single_prepared_call_async
+from ._caller import _execute_single_prepared_call_live
+from ._caller import _prepare_single
+from ._caller import _PreparedFunctionCall
 
 if TYPE_CHECKING:
-  from ...agents.invocation_context import InvocationContext
-  from ...agents.llm_agent import LlmAgent
+  from ....agents.invocation_context import InvocationContext
+  from ....agents.llm_agent import LlmAgent
 
 logger = logging.getLogger('google_adk.' + __name__)
 

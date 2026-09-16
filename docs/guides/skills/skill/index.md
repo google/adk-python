@@ -190,7 +190,10 @@ model: `list_skills`, `load_skill`, `load_skill_resource`, and
 configured. The model reaches the three levels by calling those tools in order:
 
 1.  `list_skills` returns the name and description of every installed skill,
-    which is level 1.
+    which is level 1. Pass `discovery_mode=SkillDiscoveryMode.EAGER` on
+    `SkillToolset` to skip this turn: the catalog is injected as
+    `<available_skills>` XML in the system instruction, and the model can call
+    `load_skill` directly.
 2.  `load_skill` returns the body of the one it picked, which is level 2.
 3.  `load_skill_resource` or `run_skill_script` reaches a single file or
     script, which is level 3.
@@ -331,6 +334,28 @@ from google.adk.skills import load_skills_from_dir
 
 skills = load_skills_from_dir(pathlib.Path(__file__).parent / "skills")
 ```
+
+### Inject the L1 catalog instead of calling list_skills
+
+*   **Problem solved**: `list_skills` costs an extra model turn before
+    `load_skill`. With a small, stable local catalog that tax is not worth it.
+*   **Implementation**: `discovery_mode=SkillDiscoveryMode.EAGER` hides the
+    `list_skills` tool and injects the names and descriptions as
+    `<available_skills>` XML in the system instruction. The model still calls
+    `load_skill` for the body. Registry skills, if a registry is configured, are
+    still discovered only through `search_skills`. The default,
+    `SkillDiscoveryMode.LAZY`, keeps the tool and leaves the system instruction
+    free of skill names — the better trade for a large or changing catalog.
+
+```python
+from google.adk.tools.skill_toolset import SkillDiscoveryMode
+
+SkillToolset(skills=[weather_skill], discovery_mode=SkillDiscoveryMode.EAGER)
+```
+
+Removing `list_skills` with `tool_filter` also injects the catalog today, but
+that is deprecated and warns: it makes a filter silently rewrite the prompt.
+Use the mode.
 
 ### List without loading
 

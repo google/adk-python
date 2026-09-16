@@ -22,8 +22,8 @@ from unittest import mock
 
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
-from google.adk.flows.llm_flows import _batch_tool_executor
-from google.adk.flows.llm_flows._tool_caller import _PreparedFunctionCall
+from google.adk.flows.llm_flows.tools import _batch_executor as _batch_tool_executor
+from google.adk.flows.llm_flows.tools._caller import _PreparedFunctionCall
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types

@@ -11,29 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Backward-compatibility module re-exporting TranscriptionEntry."""
 
 from __future__ import annotations
 
-from typing import Optional
-from typing import Union
+from ..live._transcription_entry import TranscriptionEntry as TranscriptionEntry
 
-from google.genai import types
-from pydantic import BaseModel
-from pydantic import ConfigDict
-
-
-class TranscriptionEntry(BaseModel):
-  """Store the data that can be used for transcription."""
-
-  model_config = ConfigDict(
-      arbitrary_types_allowed=True,
-      extra='forbid',
-  )
-  """The pydantic model config."""
-
-  role: Optional[str] = None
-  """The role that created this data, typically "user" or "model". For function
-  call, this is None."""
-
-  data: Union[types.Blob, types.Content]
-  """The data that can be used for transcription"""
+__all__ = [
+    'TranscriptionEntry',
+]

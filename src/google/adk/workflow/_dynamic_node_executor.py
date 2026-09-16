@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 from typing import Any
-from typing import cast
 from typing import TYPE_CHECKING
 
 from ..agents.base_agent import BaseAgent
@@ -27,12 +26,10 @@ from ._errors import NodeInterruptedError
 from ._graph import NodeLike
 from ._node_runner import NodeRunner
 from ._workflow import Workflow
-from .utils._transfer_utils import resolve_and_derive_transfer_context
 from .utils._workflow_graph_utils import build_node
 
 if TYPE_CHECKING:
   from ..agents.context import Context
-  from ._schedule_dynamic_node import ScheduleDynamicNode
 
 
 async def run_node_internal(
@@ -81,140 +78,82 @@ async def run_node_internal(
         )
       ctx._output_delegated = True
 
-  # Pointers to track the active execution state in the transfer loop.
-  # These will be updated dynamically if an agent transfers execution.
-  curr_parent_ctx = ctx
-  curr_node = built_node
-  curr_run_id = run_id
-  curr_input = node_input
-
-  # Active Execution Loop: Handles both standard execution and sequential Agent Transfers
-  # (e.g. Agent A transferring to Agent B). Instead of recursive execution, we use this
-  # loop to execute the target agent in-place, updating pointers and 'continuing' the loop.
-  while True:
-    curr_use_as_output = use_as_output if (curr_parent_ctx is ctx) else False
-    if ctx._workflow_scheduler:
-      # --- Mode 1: Workflow Execution ---
-      # The node is running as part of a Workflow graph. We must delegate execution
-      # to the workflow scheduler to handle graph dependencies and state.
-
-      # Validate the caller-supplied run_id. A None run_id is passed through
-      # unchanged: the scheduler owns sequential run_id allocation.
-      if curr_run_id and curr_run_id.isdigit() and not skip_run_id_validation:
-        raise ValueError(
-            f'Explicit run_id "{curr_run_id}" for node "{curr_node.name}"'
-            ' must contain non-numeric characters to prevent collision'
-            ' with auto-generated IDs.'
-        )
-
-      scheduler = cast(
-          'ScheduleDynamicNode', curr_parent_ctx._workflow_scheduler
-      )
-      child_ctx = await scheduler(
-          curr_parent_ctx,
-          curr_node,
-          curr_input,
-          node_name=curr_node.name,
-          use_as_output=curr_use_as_output,
-          run_id=curr_run_id,
-          use_sub_branch=use_sub_branch,
-          override_branch=override_branch,
-          override_isolation_scope=override_isolation_scope,
-      )
-    else:
-      # --- Mode 2: Standalone Execution ---
-      # The node is running independently (outside of a workflow).
-      # We run it directly using NodeRunner.
-      child_ctx = await run_node_standalone(
-          curr_parent_ctx,
-          curr_node,
-          curr_input,
-          use_as_output=curr_use_as_output,
-          use_sub_branch=use_sub_branch,
-          override_branch=override_branch,
-          override_isolation_scope=override_isolation_scope,
-          run_id=curr_run_id,
-          resume_inputs=resume_inputs,
+  # Validate the caller-supplied run_id when running inside a workflow.
+  # A None run_id is passed through unchanged: the scheduler owns sequential run_id allocation.
+  # Standalone runs (outside a workflow) allow explicit numeric IDs since there is no auto-allocation collision risk.
+  if ctx._workflow_scheduler is not None:
+    if run_id and run_id.isdigit() and not skip_run_id_validation:
+      raise ValueError(
+          f'Explicit run_id "{run_id}" for node "{built_node.name}"'
+          ' must contain non-numeric characters to prevent collision'
+          ' with auto-generated IDs.'
       )
 
-    # Extract the transfer target if the node requested an agent transfer.
-    transfer_to_agent = (
-        child_ctx.actions.transfer_to_agent if child_ctx else None
+  scheduler = ctx._workflow_scheduler
+  if scheduler is None:
+    from ._dynamic_node_scheduler import DynamicNodeScheduler
+    from ._dynamic_node_scheduler import DynamicNodeState
+
+    # No orchestrator installed one, so this call is not part of a replayable
+    # workflow. Use a transfer-only scheduler: it drives the sequential
+    # agent transfer loop but skips session event rehydration, keeping this
+    # path a direct pass-through to NodeRunner as it was before, without
+    # attaching a scheduler to ctx._workflow_scheduler.
+    #
+    # IMPORTANT: ctx._workflow_scheduler MUST remain None for standalone runs.
+    # Across ADK, `ctx._workflow_scheduler is not None` is the canonical check
+    # for whether execution is inside a workflow graph (e.g. for numeric run_id
+    # validation and replay semantics).
+    scheduler = DynamicNodeScheduler(
+        state=DynamicNodeState(), enable_replay=False
     )
 
-    # Post-Execution Validation: If the caller expects the raw output (not the Context),
-    # we check for errors or interrupts and raise them immediately.
-    if not return_ctx:
-      if child_ctx.error:
-        raise DynamicNodeFailError(
-            message=f'Dynamic node {curr_node.name} failed',
-            error=child_ctx.error,
-            error_node_path=child_ctx.error_node_path,
-        )
-      if child_ctx.interrupt_ids:
-        # Propagate child's interrupt_ids to this node's ctx
-        # so NodeRunner sees them after catching the error.
-        curr_parent_ctx._interrupt_ids.update(child_ctx.interrupt_ids)
-        raise NodeInterruptedError()
-      # When the caller passes raise_on_wait=True, surface a child
-      # execution that's WAITING (wait_for_output, no output, not transferring)
-      # as NodeInterruptedError so the parent's NodeRunner records
-      # the parent as WAITING instead of falsely COMPLETED.
-      if raise_on_wait and child_ctx.output is None and not transfer_to_agent:
-        if isinstance(curr_node, Workflow) or getattr(
-            curr_node, 'wait_for_output', False
-        ):
-          raise NodeInterruptedError()
+  child_ctx = await scheduler(
+      ctx,
+      built_node,
+      node_input,
+      node_name=built_node.name,
+      use_as_output=use_as_output,
+      run_id=run_id,
+      use_sub_branch=use_sub_branch,
+      override_branch=override_branch,
+      override_isolation_scope=override_isolation_scope,
+      resume_inputs=resume_inputs,
+  )
 
-    # Handle Agent Transfer: If a transfer was requested, we resolve the target agent
-    # and its parent context, update loop pointers, and continue to the next iteration.
-    if isinstance(transfer_to_agent, str):
-      if not isinstance(curr_node, BaseAgent):
-        raise ValueError('Only agents can request an agent transfer.')
-      target_name = transfer_to_agent
-      root_agent = getattr(curr_node, 'root_agent', None)
-      if not root_agent:
-        raise ValueError(f'Cannot find root_agent on node {curr_node.name}')
+  transfer_to_agent = child_ctx.actions.transfer_to_agent if child_ctx else None
 
-      target_agent, next_parent_ctx = resolve_and_derive_transfer_context(
-          target_name=target_name,
-          current_agent=curr_node,
-          root_agent=root_agent,
-          curr_ctx=child_ctx,
-          curr_parent_ctx=curr_parent_ctx,
+  # Post-Execution Validation: If the caller expects the raw output (not the Context),
+  # we check for errors or interrupts and raise them immediately.
+  if not return_ctx:
+    if child_ctx.error:
+      executed_name = child_ctx.node.name if child_ctx.node else built_node.name
+      raise DynamicNodeFailError(
+          message=f'Dynamic node {executed_name} failed',
+          error=child_ctx.error,
+          error_node_path=child_ctx.error_node_path,
       )
-      if not target_agent:
-        raise ValueError(f"Transfer target agent '{target_name}' not found.")
-      if not next_parent_ctx:
-        available = []
-        if hasattr(curr_node, '_get_available_agent_names'):
-          available = curr_node._get_available_agent_names()
-        available_str = (
-            f"\nAvailable agents: {', '.join(available)}" if available else ''
-        )
-        raise ValueError(
-            f"Cannot transfer from '{curr_node.name}' to unrelated agent"
-            f" '{target_name}'.{available_str}"
-        )
-      curr_parent_ctx = next_parent_ctx
+    if child_ctx.interrupt_ids:
+      # Propagate child's interrupt_ids to this node's ctx
+      # so NodeRunner sees them after catching the error.
+      ctx._interrupt_ids.update(child_ctx.interrupt_ids)
+      raise NodeInterruptedError()
+    # When the caller passes raise_on_wait=True, surface a child
+    # execution that's WAITING (wait_for_output, no output, not transferring)
+    # as NodeInterruptedError so the parent's NodeRunner records
+    # the parent as WAITING instead of falsely COMPLETED.
+    if raise_on_wait and child_ctx.output is None and not transfer_to_agent:
+      # After a transfer chain, child_ctx belongs to the last agent that ran,
+      # not to built_node, so the wait decision must follow child_ctx.node.
+      executed_node = child_ctx.node
+      if isinstance(executed_node, Workflow) or getattr(
+          executed_node, 'wait_for_output', False
+      ):
+        raise NodeInterruptedError()
 
-      # Set up parameters for next iteration (the transfer target).
-      curr_node = target_agent
-      curr_run_id = None
-      curr_input = None  # Input for transfer target is usually empty.
-      resume_inputs = None
-
-      if not curr_parent_ctx:
-        raise AssertionError(
-            'curr_parent_ctx cannot be None during active workflow execution'
-        )
-
-      continue
-
-    # If no transfer occurred, execution of the branch is complete.
-    if return_ctx:
-      return child_ctx
-    return child_ctx.output
+  if return_ctx:
+    return child_ctx
+  return child_ctx.output
 
 
 async def run_node_standalone(
