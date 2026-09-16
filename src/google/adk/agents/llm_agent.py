@@ -167,10 +167,16 @@ async def _convert_tool_union_to_tools(
   # other tools.
   # TODO: Remove once the workaround is no longer needed.
   if multiple_tools and isinstance(tool_union, VertexAiSearchTool):
-    from ..tools.discovery_engine_search_tool import DiscoveryEngineSearchTool
-
     vais_tool = tool_union
     if vais_tool.bypass_multi_tools_limit:
+      try:
+        from ..tools.discovery_engine_search_tool import DiscoveryEngineSearchTool
+      except ImportError as e:
+        raise ImportError(
+            'VertexAiSearchTool with bypass_multi_tools_limit=True requires'
+            ' the google-cloud-discoveryengine package. Install it with'
+            ' `pip install google-adk[gcp]`.'
+        ) from e
       return [
           DiscoveryEngineSearchTool(
               data_store_id=vais_tool.data_store_id,
@@ -866,7 +872,7 @@ class LlmAgent(BaseAgent, abc.ABC):
     # We may need to wrap some built-in tools if there are other tools
     # because the built-in tools cannot be used together with other tools.
     # TODO: Remove once the workaround is no longer needed.
-    from ..flows.llm_flows.agent_transfer import _get_transfer_targets
+    from ..flows.llm_flows.extensions._agent_transfer import _get_transfer_targets
 
     multiple_tools = len(self.tools) > 1 or bool(_get_transfer_targets(self))
     model = self.canonical_model
@@ -997,7 +1003,15 @@ class LlmAgent(BaseAgent, abc.ABC):
     return None
 
   def __get_agent_to_run(self, agent_name: str) -> BaseAgent:
-    """Find the agent to run under the root agent by name."""
+    """Find the agent this agent transferred to, by name."""
+    from ..flows.llm_flows.extensions._agent_transfer import _get_transfer_targets
+
+    # Prefer this agent's own declared targets, so that resuming a transfer
+    # cannot run a same-named agent from an unrelated branch of the tree.
+    for target in _get_transfer_targets(self):
+      if target.name == agent_name:
+        return target
+
     agent_to_run = self.root_agent.find_agent(agent_name)
     if not agent_to_run:
       available = self._get_available_agent_names()

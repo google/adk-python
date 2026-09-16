@@ -22,6 +22,7 @@ from google.adk import version
 from google.adk.telemetry import _adk_attributes
 from google.adk.telemetry import _hallucination
 from google.adk.telemetry import tracing
+from google.adk.telemetry._decorators import experimental_telemetry
 from google.adk.telemetry._token_usage import CACHE_READ_INPUT_TOKENS_MEANING
 from google.adk.telemetry._token_usage import INPUT_TOKENS_MEANING
 from google.adk.telemetry._token_usage import OUTPUT_TOKENS_MEANING
@@ -362,6 +363,7 @@ def record_invoke_agent_tool_calls(agent_name: str, count: int) -> None:
   _invoke_agent_tool_calls.record(count, attributes=attrs)
 
 
+@experimental_telemetry(gate="token_usage")
 def record_invoke_agent_token_usage(
     agent_name: str,
     totals: TokenUsage,
@@ -417,6 +419,7 @@ def _invoke_workflow_attrs(
   return attrs
 
 
+@experimental_telemetry(gate=["workflow", "token_usage"])
 def record_invoke_workflow_token_usage(
     *,
     root_agent_name: str,
@@ -454,6 +457,7 @@ def record_invoke_workflow_token_usage(
   )
 
 
+@experimental_telemetry(gate="workflow")
 def record_invoke_workflow_inference_calls(
     *,
     root_agent_name: str,
@@ -473,6 +477,7 @@ def record_invoke_workflow_inference_calls(
   _invoke_workflow_inference_calls.record(count, attributes=attrs)
 
 
+@experimental_telemetry(gate="workflow")
 def record_invoke_workflow_tool_calls(
     *,
     root_agent_name: str,
@@ -642,6 +647,7 @@ def get_elapsed_s(
   return time.monotonic() - fallback_start
 
 
+@experimental_telemetry(gate="skills")
 def record_skill_script_execution(
     agent_name: str,
     skill_name: _hallucination.MaybeHallucinated[str],
@@ -664,6 +670,7 @@ def record_skill_script_execution(
   _skill_script_executions.add(1, attributes=attrs)
 
 
+@experimental_telemetry(gate="skills")
 def record_skill_load(
     agent_name: str,
     skill_name: _hallucination.MaybeHallucinated[str],
@@ -680,6 +687,7 @@ def record_skill_load(
   _skill_loads.add(1, attributes=attrs)
 
 
+@experimental_telemetry(gate="skills")
 def record_invoke_agent_skill_loads(
     agent_name: str,
     count: int,
@@ -695,6 +703,7 @@ def record_invoke_agent_skill_loads(
   _invoke_agent_skill_loads.record(count, attributes=attrs)
 
 
+@experimental_telemetry(gate=["skills", "workflow"])
 def record_invoke_workflow_skill_loads(
     *,
     root_agent_name: str,

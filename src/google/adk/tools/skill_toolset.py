@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+from enum import Enum
 import json
 import logging
 import mimetypes
@@ -30,6 +31,7 @@ from typing import Any
 from typing import cast
 from typing import Optional
 from typing import TYPE_CHECKING
+import warnings
 
 from google.genai import types
 from typing_extensions import override
@@ -71,6 +73,44 @@ _SEARCH_SKILLS_TOOL_NAME = "search_skills"
 _LOAD_SKILL_TOOL_NAME = "load_skill"
 _LOAD_SKILL_RESOURCE_TOOL_NAME = "load_skill_resource"
 _RUN_SKILL_SCRIPT_TOOL_NAME = "run_skill_script"
+
+
+def _activated_skills_state_key(agent_name: str) -> str:
+  """Returns the session state key holding an agent's activated skill names."""
+  return f"_adk_activated_skill_{agent_name}"
+
+
+def _read_activated_skills(state: Any, agent_name: str) -> list[str]:
+  """Returns a mutable copy of an agent's activated skill names."""
+  return list(state.get(_activated_skills_state_key(agent_name)) or [])
+
+
+def _write_activated_skills(
+    state: Any, agent_name: str, skill_names: list[str]
+) -> None:
+  """Stores an agent's activated skill names."""
+  # Assign rather than mutate in place so the state delta is recorded.
+  state[_activated_skills_state_key(agent_name)] = skill_names
+
+
+class SkillDiscoveryMode(Enum):
+  """How the local skill catalog is disclosed to the model."""
+
+  LAZY = "lazy"
+  """The model discovers skills by calling `list_skills` (default).
+
+  Costs a model turn before the first `load_skill`, and keeps the system
+  instruction free of skill names. Preferable for a large or changing catalog.
+  """
+
+  EAGER = "eager"
+  """The catalog is injected into the system instruction as XML.
+
+  The `list_skills` tool is not offered, and the model can call `load_skill`
+  straight away. Preferable for a small, stable catalog, where the discovery
+  turn costs more than the names do. Registry skills are unaffected: they are
+  still reachable only through `search_skills`.
+  """
 
 
 def _build_skill_system_instruction(
@@ -367,12 +407,10 @@ class LoadSkillTool(BaseTool):
 
     # Record skill activation in agent state for tool resolution.
     agent_name = tool_context.agent_name
-    state_key = f"_adk_activated_skill_{agent_name}"
-
-    activated_skills = list(tool_context.state.get(state_key) or [])
+    activated_skills = _read_activated_skills(tool_context.state, agent_name)
     if skill_name not in activated_skills:
       activated_skills.append(skill_name)
-      tool_context.state[state_key] = activated_skills
+      _write_activated_skills(tool_context.state, agent_name, activated_skills)
 
     instructions = skill.instructions
     if skill.frontmatter.metadata.get("adk_inject_state"):
@@ -1331,6 +1369,7 @@ class SkillToolset(BaseToolset):
       additional_tools: list[ToolUnion] | None = None,
       tool_name_prefix: str | None = None,
       tool_filter: ToolPredicate | list[str] | None = None,
+      discovery_mode: SkillDiscoveryMode = SkillDiscoveryMode.LAZY,
   ):
     """Initializes the SkillToolset.
 
@@ -1349,6 +1388,9 @@ class SkillToolset(BaseToolset):
         to be made available to the agent when certain skills are activated.
       tool_name_prefix: Optional prefix to prepend to tool names.
       tool_filter: Optional filter to select specific tools.
+      discovery_mode: How the local catalog reaches the model. Defaults to
+        `LAZY`, where it calls `list_skills`. `EAGER` drops that tool and
+        injects the catalog into the system instruction instead.
     """
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
 
@@ -1401,13 +1443,18 @@ class SkillToolset(BaseToolset):
         ft = FunctionTool(tool_union)
         self._provided_tools_by_name[ft.name] = ft
 
+    self._discovery_mode = discovery_mode
+    self._warned_on_filtered_list_skills = False
+
     # Initialize core skill tools
-    self._tools = [
-        ListSkillsTool(self),
+    self._tools: list[BaseTool] = []
+    if discovery_mode is SkillDiscoveryMode.LAZY:
+      self._tools.append(ListSkillsTool(self))
+    self._tools.extend([
         LoadSkillTool(self),
         LoadSkillResourceTool(self),
         RunSkillScriptTool(self),
-    ]
+    ])
     if self._registry:
       self._tools.append(SearchSkillsTool(self))
 
@@ -1453,9 +1500,9 @@ class SkillToolset(BaseToolset):
     if not readonly_context:
       return []
 
-    agent_name = readonly_context.agent_name
-    state_key = f"_adk_activated_skill_{agent_name}"
-    activated_skills = readonly_context.state.get(state_key) or []
+    activated_skills = _read_activated_skills(
+        readonly_context.state, readonly_context.agent_name
+    )
 
     if not activated_skills:
       return []
@@ -1569,6 +1616,80 @@ class SkillToolset(BaseToolset):
     """Returns the list of available skills."""
     return self._list_skills()
 
+  def list_active_skills(self, ctx: ReadonlyContext) -> list[str]:
+    """Returns the skills active for `ctx`'s agent, oldest activation first.
+
+    Args:
+      ctx: A context for the running agent. `ToolContext` is one.
+
+    Returns:
+      The active skill names. Activation is recorded by name, so a name here
+      is not guaranteed to still resolve against the registry.
+    """
+    return _read_activated_skills(ctx.state, ctx.agent_name)
+
+  async def load_skill(self, ctx: ToolContext, skill_name: str) -> bool:
+    """Activates a skill for `ctx`'s agent without going through the model.
+
+    Activation is what registers the skill's `adk_additional_tools`. Unlike the
+    `load_skill` tool, this does not put the skill's instructions into the
+    conversation: the model gets the tools without being told what they are
+    for, so supply that guidance yourself.
+
+    Args:
+      ctx: A context for the running agent, e.g. the `ToolContext` a tool or
+        callback was handed.
+      skill_name: The skill to activate.
+
+    Returns:
+      True if the skill was activated, False if it already was. An already
+      active skill is reported without consulting the registry, so this works
+      for one that has since been removed from it.
+
+    Raises:
+      ValueError: If no such skill is available locally or in the registry.
+      Exception: Whatever the registry raises if the lookup itself fails.
+    """
+    activated_skills = _read_activated_skills(ctx.state, ctx.agent_name)
+    if skill_name in activated_skills:
+      return False
+
+    skill = await self._get_or_fetch_skill(skill_name, ctx.invocation_id)
+    if skill is None:
+      raise ValueError(f"Skill '{skill_name}' not found.")
+
+    # The fetch suspends, so re-read: a concurrent activation may have written
+    # the list since. Appending to the stale copy would drop its entry.
+    activated_skills = _read_activated_skills(ctx.state, ctx.agent_name)
+    if skill_name in activated_skills:
+      return False
+    activated_skills.append(skill_name)
+    _write_activated_skills(ctx.state, ctx.agent_name, activated_skills)
+    return True
+
+  def unload_skill(self, ctx: ToolContext, skill_name: str) -> bool:
+    """Deactivates a skill for `ctx`'s agent, releasing its dynamic tools.
+
+    The skill's instructions stay in the conversation history; only its tools
+    and its activation record go away. Synchronous, unlike `load_skill`,
+    because deactivation never consults the registry — so it also works for a
+    skill that has since been removed from one.
+
+    Args:
+      ctx: A context for the running agent, e.g. the `ToolContext` a tool or
+        callback was handed.
+      skill_name: The skill to deactivate.
+
+    Returns:
+      True if the skill was deactivated, False if it was not active.
+    """
+    activated_skills = _read_activated_skills(ctx.state, ctx.agent_name)
+    if skill_name not in activated_skills:
+      return False
+    activated_skills.remove(skill_name)
+    _write_activated_skills(ctx.state, ctx.agent_name, activated_skills)
+    return True
+
   def clone_with_updated_skills(
       self, skills: list[models.Skill]
   ) -> SkillToolset:
@@ -1586,7 +1707,30 @@ class SkillToolset(BaseToolset):
         additional_tools=additional_tools,
         tool_name_prefix=self.tool_name_prefix,
         tool_filter=self.tool_filter,
+        discovery_mode=self._discovery_mode,
     )
+
+  def _inject_catalog(self, selected_core_tools: set[str]) -> bool:
+    """Whether to write the local catalog into the system instruction."""
+    if self._discovery_mode is SkillDiscoveryMode.EAGER:
+      return True
+    if _LIST_SKILLS_TOOL_NAME in selected_core_tools:
+      return False
+    # A tool_filter that hides list_skills used to imply eager disclosure.
+    # Kept so those callers keep a way to discover skills, but the mode is now
+    # how you ask for this.
+    # FutureWarning rather than DeprecationWarning so callers see it by default.
+    if not self._warned_on_filtered_list_skills:
+      self._warned_on_filtered_list_skills = True
+      warnings.warn(
+          "Filtering out `list_skills` to inject the skill catalog into the"
+          " system instruction is deprecated. Pass"
+          " `discovery_mode=SkillDiscoveryMode.EAGER` instead; a future release"
+          " will let tool_filter remove the tool without changing the prompt.",
+          FutureWarning,
+          stacklevel=2,
+      )
+    return True
 
   async def process_llm_request(
       self, *, tool_context: ToolContext, llm_request: LlmRequest
@@ -1607,9 +1751,7 @@ class SkillToolset(BaseToolset):
         )
     ]
 
-    has_list_skills = _LIST_SKILLS_TOOL_NAME in selected_core_tools
-
-    if not has_list_skills:
+    if self._inject_catalog(selected_core_tools):
       skills = self._list_skills()
       skills_xml = prompt.format_skills_as_xml(skills)
       instructions.append(skills_xml)

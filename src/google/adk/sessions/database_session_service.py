@@ -32,10 +32,15 @@ from google.adk.platform import time as platform_time
 from google.adk.platform import uuid as platform_uuid
 
 try:
+  from sqlalchemy import Column
   from sqlalchemy import delete
   from sqlalchemy import event
+  from sqlalchemy import Index
+  from sqlalchemy import inspect
   from sqlalchemy import MetaData
   from sqlalchemy import select
+  from sqlalchemy import String
+  from sqlalchemy import Table
   from sqlalchemy.engine import Connection
   from sqlalchemy.engine import make_url
   from sqlalchemy.exc import ArgumentError
@@ -232,6 +237,9 @@ def _set_sqlite_pragma(
   cursor.close()
 
 
+_SUPERSEDED_INDEX_NAMES = frozenset({"idx_events_app_user_session_ts"})
+
+
 def _ensure_schema_indexes_exist(
     connection: Connection, metadata: MetaData
 ) -> None:
@@ -240,6 +248,18 @@ def _ensure_schema_indexes_exist(
   for table in metadata.sorted_tables:
     for index in sorted(table.indexes, key=lambda item: item.name or ""):
       index.create(bind=connection, checkfirst=True)
+
+  # Drop obsolete indexes that have been superseded by composite indexes.
+  inspector = inspect(connection)
+  if inspector.has_table("events"):
+    existing_indexes = {idx["name"] for idx in inspector.get_indexes("events")}
+    for superseded in _SUPERSEDED_INDEX_NAMES:
+      if superseded in existing_indexes:
+        logger.info(
+            "Dropping superseded index %s from events table.", superseded
+        )
+        isolated_table = Table("events", MetaData(), Column("id", String))
+        Index(superseded, isolated_table.c.id).drop(bind=connection)
 
 
 def _setup_database_schema(connection: Connection, metadata: MetaData) -> None:
@@ -649,8 +669,6 @@ class DatabaseSessionService(BaseSessionService):
 
       # Store the session
       now = datetime.fromtimestamp(platform_time.get_time(), tz=timezone.utc)
-      is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
-      is_postgresql = self.db_engine.dialect.name == _POSTGRESQL_DIALECT
       if self._uses_naive_datetime():
         now = now.replace(tzinfo=None)
 
@@ -681,9 +699,7 @@ class DatabaseSessionService(BaseSessionService):
         raise AlreadyExistsError(
             f"Session with id {session_id} already exists."
         )
-      session = storage_session.to_session(
-          state=merged_state, is_sqlite=is_sqlite, is_postgresql=is_postgresql
-      )
+      session = storage_session.to_session(state=merged_state)
       await sql_session.commit()
     return session
 
@@ -763,13 +779,9 @@ class DatabaseSessionService(BaseSessionService):
 
       # Convert storage session to session
       events = [e.to_event() for e in reversed(storage_events)]
-      is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
-      is_postgresql = self.db_engine.dialect.name == _POSTGRESQL_DIALECT
       session = storage_session.to_session(
           state=merged_state,
           events=events,
-          is_sqlite=is_sqlite,
-          is_postgresql=is_postgresql,
       )
     return session
 
@@ -824,19 +836,11 @@ class DatabaseSessionService(BaseSessionService):
           user_states_map[storage_user_state.user_id] = storage_user_state.state
 
       sessions = []
-      is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
-      is_postgresql = self.db_engine.dialect.name == _POSTGRESQL_DIALECT
       for storage_session in results:
         session_state = storage_session.state
         user_state = user_states_map.get(storage_session.user_id, {})
         merged_state = _merge_state(app_state, user_state, session_state)
-        sessions.append(
-            storage_session.to_session(
-                state=merged_state,
-                is_sqlite=is_sqlite,
-                is_postgresql=is_postgresql,
-            )
-        )
+        sessions.append(storage_session.to_session(state=merged_state))
       return ListSessionsResponse(sessions=sessions)
 
   @override
@@ -886,8 +890,6 @@ class DatabaseSessionService(BaseSessionService):
     # 2. Update session attributes based on event config.
     # 3. Store the new event.
     schema = self._get_schema_classes()
-    is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
-    is_postgresql = self.db_engine.dialect.name == _POSTGRESQL_DIALECT
     use_row_level_locking = self._supports_row_level_locking()
 
     state_delta = event.actions.state_delta if event.actions.state_delta else {}
@@ -914,9 +916,7 @@ class DatabaseSessionService(BaseSessionService):
         if storage_session_row is None:
           raise SessionNotFoundError(f"Session {session.id} not found.")
         storage_session = _require_storage_session(storage_session_row)
-        storage_update_time = storage_session.get_update_timestamp(
-            is_sqlite=is_sqlite, is_postgresql=is_postgresql
-        )
+        storage_update_time = storage_session.get_update_timestamp()
         storage_update_marker = storage_session.get_update_marker()
 
         storage_app_state = await _select_required_state(
@@ -976,7 +976,6 @@ class DatabaseSessionService(BaseSessionService):
         if state_deltas["session"]:
           storage_session.state.update(state_deltas["session"])
 
-        is_postgresql = self.db_engine.dialect.name == _POSTGRESQL_DIALECT
         update_time = datetime.fromtimestamp(event.timestamp, timezone.utc)
         if self._uses_naive_datetime():
           update_time = update_time.replace(tzinfo=None)
@@ -986,9 +985,7 @@ class DatabaseSessionService(BaseSessionService):
         # Read revision fields before commit. Post-commit ORM attribute access
         # can lazy-load expired columns and trigger MissingGreenlet with asyncpg
         # when pool_pre_ping is enabled.
-        last_update_time = storage_session.get_update_timestamp(
-            is_sqlite=is_sqlite, is_postgresql=is_postgresql
-        )
+        last_update_time = storage_session.get_update_timestamp()
         storage_update_marker = storage_session.get_update_marker()
         await sql_session.commit()
 

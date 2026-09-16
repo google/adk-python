@@ -34,13 +34,13 @@ from ._content_compaction import _recover_compacted_function_calls
 from ._fencing import _is_other_agent_reply
 from ._fencing import _present_other_agent_message
 from ._invocation_utils import as_llm_agent
-from ._tool_call_rearranger import _drop_orphaned_function_responses
-from ._tool_call_rearranger import _rearrange_events_for_async_function_responses_in_history
-from ._tool_call_rearranger import _rearrange_events_for_latest_function_response
-from ._tool_call_rearranger import drop_orphaned_function_calls
 from .functions import AF_FUNCTION_CALL_ID_PREFIX
 from .functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from .functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from .tools._rearranger import _drop_orphaned_function_responses
+from .tools._rearranger import _rearrange_events_for_async_function_responses_in_history
+from .tools._rearranger import _rearrange_events_for_latest_function_response
+from .tools._rearranger import drop_orphaned_function_calls
 
 logger = logging.getLogger('google_adk.' + __name__)
 

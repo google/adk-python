@@ -21,6 +21,7 @@ Agent Engine Computer Use Sandbox as the remote browser environment.
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 import time
 from typing import Any
@@ -41,9 +42,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("google_adk." + __name__)
 
-# Session state keys for sharing resources across sessions
+# Keys of the per-session resource record
 _STATE_KEY_AGENT_ENGINE_NAME = "_vmaas_agent_engine_name"
 _STATE_KEY_SANDBOX_NAME = "_vmaas_sandbox_name"
+
+# Number of sessions whose resources are remembered by one computer instance
+_MAX_REMEMBERED_SESSIONS = 1024
 
 # Default token timeout in seconds
 _DEFAULT_TOKEN_TIMEOUT = 3600
@@ -60,12 +64,13 @@ class AgentEngineSandboxComputer(BaseComputer):
   Computer Use Sandbox. It supports:
   - Auto-provisioning of agent engines and sandboxes
   - Bring-your-own-sandbox (BYOS) mode
-  - Session-aware resource sharing via session_state property
+  - Reuse of one sandbox across the invocations of a session
   - Automatic token refresh on expiry
 
-  When used with ComputerUseToolset, the session_state property is
-  automatically bound to tool_context.state before each tool call,
-  enabling state sharing across invocations and agent server instances.
+  When used with ComputerUseToolset, the sandbox of the invocation's session is
+  bound before each tool call, so the invocations of a session share a sandbox.
+  It is remembered by this instance, so a session served by another agent
+  server instance gets a sandbox of its own.
 
   Example usage:
     ```python
@@ -155,7 +160,16 @@ class AgentEngineSandboxComputer(BaseComputer):
     # Vertex client (lazy-initialized if not provided)
     self._client = vertexai_client
 
-    # Session state for sharing the sandbox across invocations
+    # Sandbox and agent engine of every session served so far, keyed by the
+    # identity of the session. They are kept here rather than in session state
+    # because session state is writable by the caller, and a sandbox name taken
+    # from there would attach these tools to the browser of whoever owns that
+    # sandbox.
+    self._resources_by_session: collections.OrderedDict[
+        tuple[str, str, str], dict[str, Any]
+    ] = collections.OrderedDict()
+
+    # Resources of the session being served, bound by prepare()
     self._session_state: dict[str, Any] | None = None
 
     # Access token cache. Held on the instance rather than in session state:
@@ -165,8 +179,14 @@ class AgentEngineSandboxComputer(BaseComputer):
     self._token_expiry: float = 0.0
 
   async def prepare(self, tool_context: "ToolContext") -> None:
-    """Bind session state for sandbox resource sharing."""
-    self._session_state = tool_context.state
+    """Bind the sandbox resources of the invocation's session."""
+    session = tool_context.session
+    key = (session.app_name, session.user_id, session.id)
+    if key not in self._resources_by_session:
+      self._resources_by_session[key] = {}
+      if len(self._resources_by_session) > _MAX_REMEMBERED_SESSIONS:
+        self._resources_by_session.popitem(last=False)
+    self._session_state = self._resources_by_session[key]
 
   def _get_client(self) -> "vertexai.Client":
     """Get or create the Vertex AI client."""

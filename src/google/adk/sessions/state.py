@@ -25,6 +25,9 @@ class StateSchemaError(TypeError):
   """Raised when a state mutation violates the declared state_schema."""
 
 
+_SCOPE_PREFIXES = ("app:", "user:", "temp:")
+
+
 def _validate_state_entry(
     schema: type[BaseModel],
     key: str,
@@ -33,10 +36,10 @@ def _validate_state_entry(
   """Validates a single state key-value pair against a Pydantic schema.
 
   Raises StateSchemaError if the key is not in the schema or the value
-  does not match the field's type annotation.  Prefixed keys (any key
-  containing ``:``) bypass validation.
+  does not match the field's type annotation. Prefixed keys (app:, user:,
+  temp:) bypass validation.
   """
-  if ":" in key:
+  if key.startswith(_SCOPE_PREFIXES):
     return
 
   fields = schema.model_fields

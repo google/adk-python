@@ -16,9 +16,12 @@
 
 import functools
 import inspect
+import signal
+import time
 from typing import Optional
 
 from google.adk.utils._callable_utils import get_type_hints_cached
+from google.adk.utils._schema_utils import _strip_json_code_fence
 from google.adk.utils._schema_utils import get_list_inner_type
 from google.adk.utils._schema_utils import is_basemodel_schema
 from google.adk.utils._schema_utils import is_list_of_basemodel
@@ -210,6 +213,39 @@ class TestValidateSchema:
     json_text = '{"name": "```", "value": 42}'
     result = validate_schema(SampleModel, json_text)
     assert result == {"name": "```", "value": 42}
+
+  def test_unclosed_code_fence_with_whitespace_does_not_hang(self):
+    """Test that an unclosed code fence with large whitespace runs does not ReDoS."""
+    payload = "```json\n" + " " * 5000 + "x"
+    if hasattr(signal, "SIGALRM"):
+      old_handler = signal.signal(
+          signal.SIGALRM,
+          lambda s, f: pytest.fail("Test timed out - possible ReDoS"),
+      )
+      signal.alarm(2)
+      try:
+        start = time.perf_counter()
+        result = _strip_json_code_fence(payload)
+        elapsed = time.perf_counter() - start
+      finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
+    else:
+      start = time.perf_counter()
+      result = _strip_json_code_fence(payload)
+      elapsed = time.perf_counter() - start
+    assert result == payload
+    assert elapsed < 1.0
+
+  def test_strip_json_code_fence_variations(self):
+    """Test various markdown fence configurations."""
+    assert _strip_json_code_fence('```json\n{"a": 1}\n```') == '{"a": 1}'
+    assert _strip_json_code_fence('```\n{"a": 1}\n```') == '{"a": 1}'
+    assert _strip_json_code_fence('```   \n{"a": 1}\n```') == '{"a": 1}'
+    assert _strip_json_code_fence('```json  {"a": 1}```') == '{"a": 1}'
+    assert _strip_json_code_fence('{"a": 1}') == '{"a": 1}'
+    assert _strip_json_code_fence("```") == "```"
+    assert _strip_json_code_fence("") == ""
 
 
 class TestValidateNodeData:
