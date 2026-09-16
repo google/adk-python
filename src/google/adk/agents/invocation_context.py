@@ -44,6 +44,7 @@ from ..tools.base_tool import BaseTool
 from ..workflow._base_node import BaseNode
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
+from .caller_principal import CallerPrincipal
 from .context_cache_config import ContextCacheConfig
 from .run_config import RunConfig
 
@@ -211,6 +212,18 @@ class InvocationContext(BaseModel):
 
   run_config: RunConfig | None = None
   """Configurations for live agents under this invocation."""
+
+  caller_principal: CallerPrincipal | None = None
+  """Who the serving layer says submitted this invocation.
+
+  ``None`` means no remote trust boundary was crossed for this invocation: it
+  was started in process (for example ``Runner.run_async`` called directly), so
+  the caller is the operator by construction.
+
+  A serving edge sets this from the authentication it actually performed on the
+  inbound request. It is never derived from message content, event authorship,
+  or transport metadata, because a remote caller controls all of those.
+  """
 
   resumability_config: ResumabilityConfig | None = None
   """The resumability config that applies to all agents under this invocation."""
