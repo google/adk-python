@@ -30,6 +30,7 @@ from ....models.llm_request import LlmRequest
 from ....tools.base_tool import BaseTool
 from ....tools.tool_confirmation import ToolConfirmation
 from ....tools.tool_context import ToolContext
+from ....utils.feature_decorator import _is_truthy_env
 from .._base_llm_processor import BaseLlmRequestProcessor
 from ..agent_transfer import _build_transfer_tool
 from ..agent_transfer import _get_transfer_targets
@@ -254,6 +255,78 @@ def _map_confirmation_to_original_fc_ids(
   return mapping
 
 
+_STRICT_CALLER_PRINCIPAL_ENV = "ADK_STRICT_CALLER_PRINCIPAL"
+
+
+def _apply_caller_principal_gate(
+    invocation_context: InvocationContext,
+    confirmations_by_fc_id: dict[str, ToolConfirmation],
+) -> dict[str, ToolConfirmation]:
+  """Decides whether the caller of this invocation may approve a tool call.
+
+  Three states, and only the middle one is a refusal:
+
+  - No principal: nothing vouched for the caller because nothing had to. The
+    invocation was started in process, so the caller is the operator.
+  - Principal present, not authenticated: a serving layer handled this request
+    and could not say who sent it, so the approval is not known to be the
+    operator's.
+  - Principal present and authenticated: the serving layer verified the caller.
+
+  The question asked here is deliberately about authentication and not about
+  transport. A transport is a proxy for identity, and a proxy for identity
+  fails in both directions: it refuses authenticated peers that happen to
+  arrive over the wire, and it admits anyone who reaches an ungated path.
+
+  A refusal rewrites the confirmation to ``confirmed=False`` instead of
+  dropping it. Dropping it leaves the ``adk_request_confirmation`` call pending
+  with nothing left to resolve it, which is what made an earlier attempt at
+  this guard stall every human-in-the-loop tool. ``confirmed=False`` is a state
+  the framework already has a contract for -- it is what a human decline
+  produces -- so the tool returns its rejection response and the turn ends with
+  a reason the caller can see.
+
+  Strict mode is opt-in for now, so upgrading cannot break a working
+  deployment that runs its A2A server without an authenticator; those get a
+  warning instead. The intent is to flip the default at the next major version.
+
+  Args:
+    invocation_context: Current invocation context.
+    confirmations_by_fc_id: Confirmations parsed from the last user event.
+
+  Returns:
+    The confirmations to act on, with refused ones forced to
+    ``confirmed=False``.
+  """
+  principal = invocation_context.caller_principal
+  if principal is None or principal.authenticated:
+    return confirmations_by_fc_id
+
+  if not _is_truthy_env(_STRICT_CALLER_PRINCIPAL_ENV):
+    logger.warning(
+        "Honoring a tool confirmation from an unauthenticated caller"
+        " (principal source %r). The serving layer could not say who sent this"
+        " approval, so it is not known to be the operator's. Set %s to refuse"
+        " these instead; that is intended to become the default in a future"
+        " major version.",
+        principal.source,
+        _STRICT_CALLER_PRINCIPAL_ENV,
+    )
+    return confirmations_by_fc_id
+
+  logger.error(
+      "Refusing a tool confirmation from an unauthenticated caller (principal"
+      " source %r). Enable authentication on the serving layer, or unset %s to"
+      " downgrade this to a warning.",
+      principal.source,
+      _STRICT_CALLER_PRINCIPAL_ENV,
+  )
+  return {
+      confirmation_fc_id: confirmation.model_copy(update={"confirmed": False})
+      for confirmation_fc_id, confirmation in confirmations_by_fc_id.items()
+  }
+
+
 class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
   """Handles tool confirmation information to build the LLM request."""
 
@@ -322,6 +395,13 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
 
     if not confirmations_by_fc_id:
       return
+
+    # An approval is only worth acting on if it came from the operator this
+    # agent answers to. Everything above this point establishes that a
+    # confirmation was sent; this establishes who sent it.
+    confirmations_by_fc_id = _apply_caller_principal_gate(
+        invocation_context, confirmations_by_fc_id
+    )
 
     # Resolve all canonical tools and build tools_dict. Deliberately after the
     # dedup above so a consumed confirmation does not force a toolset
