@@ -97,13 +97,19 @@ def build_caller_principal(request: RequestContext) -> CallerPrincipal:
     meaning that no boundary was crossed at all.
   """
   user = request.call_context.user if request.call_context else None
-  if user is not None and getattr(user, 'is_authenticated', False):
-    return CallerPrincipal(
-        authenticated=True,
-        user_name=getattr(user, 'user_name', None) or None,
-        source='a2a',
-    )
-  return CallerPrincipal(authenticated=False, source='a2a')
+  user_name = getattr(user, 'user_name', None) if user is not None else None
+  # Authenticated exactly when _get_user_id above takes its first branch, so
+  # the principal and the user id can never disagree about the same request,
+  # plus one extra check: an a2a User that reports is_authenticated False is
+  # not vouched for even if it carries a name. Stricter by one condition,
+  # never looser.
+  if not isinstance(user_name, str) or not user_name:
+    return CallerPrincipal(authenticated=False, source='a2a')
+  if getattr(user, 'is_authenticated', True) is False:
+    return CallerPrincipal(authenticated=False, source='a2a')
+  return CallerPrincipal(
+      authenticated=True, user_name=user_name, source='a2a'
+  )
 
 
 @a2a_experimental
