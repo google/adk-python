@@ -188,8 +188,9 @@ async def test_search_skills_success():
 @pytest.mark.parametrize(
     "bad_name, bad_description",
     [
-        # A real first-party catalog entry: dots are outside the name pattern.
-        ("cloud.google.com-agent-platform-eval-flywheel", "Description bad"),
+        # A bare traversal segment must still be rejected even though '.' is
+        # otherwise an allowed registry-id character.
+        ("..", "Description bad"),
         ("Skill-With-Caps", "Description bad"),
         ("a" * 65, "Description bad"),
         ("skill-no-description", ""),
@@ -235,6 +236,37 @@ async def test_search_skills_skips_entry_failing_validation(
   assert results[0].description == "Description 2"
   assert len(caplog.records) == 1
   assert bad_name in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_search_skills_accepts_dotted_registry_id():
+  """A Google-published registry id with dots must not be dropped.
+
+  Regression test for https://github.com/google/adk-python/issues/7136:
+  ids like "cloud.google.com-<name>" are registry resource ids, not
+  SKILL.md frontmatter names, so they must not be checked against the
+  stricter kebab/snake-case frontmatter naming rule.
+  """
+  registry = gcp_skill_registry.GCPSkillRegistry()
+
+  mock_response = mock.MagicMock()
+  mock_response.status_code = 200
+  mock_response.json.return_value = {
+      "skills": [{
+          "name": (
+              "projects/test-project/locations/global/skills/"
+              "cloud.google.com-agent-platform-eval-flywheel"
+          ),
+          "description": "A Google-published skill.",
+      }]
+  }
+
+  with mock.patch("httpx.AsyncClient.get", return_value=mock_response):
+    results = await registry.search_skills(query="query")
+
+  assert len(results) == 1
+  assert results[0].name == "cloud.google.com-agent-platform-eval-flywheel"
+  assert results[0].description == "A Google-published skill."
 
 
 @pytest.mark.parametrize("raw_name", [None, 7, ["a"]])
@@ -388,6 +420,9 @@ async def test_get_skill_raises_on_invalid_skill_name():
         "my-skill/revisions/rev-123",
         "My-Skill",
         "",
+        ".",
+        "..",
+        "a" * 65,
     ],
 )
 @pytest.mark.asyncio
@@ -402,7 +437,15 @@ async def test_get_skill_rejects_unsafe_name_before_any_request(unsafe_name):
   mock_get_called.assert_not_called()
 
 
-@pytest.mark.parametrize("valid_name", ["my-skill", "my_skill", "skill2"])
+@pytest.mark.parametrize(
+    "valid_name",
+    [
+        "my-skill",
+        "my_skill",
+        "skill2",
+        "cloud.google.com-agent-platform-eval-flywheel",
+    ],
+)
 @pytest.mark.asyncio
 async def test_get_skill_builds_expected_url_for_valid_name(valid_name):
   """Verifies that a valid name is still interpolated verbatim into the URL."""
