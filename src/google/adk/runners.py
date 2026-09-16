@@ -1081,7 +1081,11 @@ class Runner:
     """
     run_config = run_config or RunConfig()
 
-    if new_message and not new_message.role:
+    if new_message:
+      # Inbound caller content is user-authored regardless of transport; the
+      # A2A request converter already canonicalizes roles this way. A
+      # caller-supplied role ('model', 'system', ...) must not survive into
+      # session history or provider requests.
       new_message.role = 'user'
 
     from .agents.llm_agent import LlmAgent
