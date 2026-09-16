@@ -3821,7 +3821,8 @@ async def test_skill_toolset_search_skills_filters_pinned_registry_skill(
   toolset = skill_toolset.SkillToolset(
       registry=mock_registry, registry_skills=["skill1"]
   )
-  tool = skill_toolset.SearchSkillsTool(toolset)
+  tools = await toolset.get_tools()
+  tool = next(t for t in tools if isinstance(t, skill_toolset.SearchSkillsTool))
 
   result = await tool.run_async(
       args={"query": "test"}, tool_context=tool_context_instance
@@ -3859,3 +3860,136 @@ async def test_skill_toolset_prefetch_concurrent_calls(
   )
 
   mock_registry.get_skill.assert_called_once_with(name="skill1")
+
+
+@pytest.mark.asyncio
+async def test_skill_toolset_list_skills_tool_includes_pinned_registry_skill(
+    mock_registry, mock_skill1, tool_context_instance
+):
+  """LAZY mode: the list_skills tool output must contain pinned skills."""
+  mock_registry.get_skill.return_value = mock_skill1
+  toolset = skill_toolset.SkillToolset(
+      registry=mock_registry, registry_skills=["skill1"]
+  )
+  tools = await toolset.get_tools()
+  tool = next(t for t in tools if isinstance(t, skill_toolset.ListSkillsTool))
+
+  result = await tool.run_async(args={}, tool_context=tool_context_instance)
+
+  assert "<available_skills>" in result
+  assert "skill1" in result
+  mock_registry.get_skill.assert_called_once_with(name="skill1")
+
+
+@pytest.mark.asyncio
+async def test_skill_toolset_load_skill_does_not_refetch_pinned_registry_skill(
+    mock_registry, mock_skill1, tool_context_instance
+):
+  """After prefetch, load_skill for a pinned name is served locally."""
+  mock_registry.get_skill.return_value = mock_skill1
+  toolset = skill_toolset.SkillToolset(
+      registry=mock_registry, registry_skills=["skill1"]
+  )
+  tool_context_instance.state.get.return_value = None
+
+  await toolset.prefetch()
+  assert mock_registry.get_skill.call_count == 1
+
+  tool = skill_toolset.LoadSkillTool(toolset)
+  # Two invocations: the per-invocation cache must not be what serves this.
+  for invocation_id in ("inv-1", "inv-2"):
+    tool_context_instance.invocation_id = invocation_id
+    result = await tool.run_async(
+        args={"skill_name": "skill1"}, tool_context=tool_context_instance
+    )
+    assert result["skill_name"] == "skill1"
+
+  assert mock_registry.get_skill.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_skill_toolset_prefetch_stores_skill_under_frontmatter_name(
+    mock_registry, tool_context_instance
+):
+  """A pinned name is marked fetched even when the archive's frontmatter name
+  differs; the skill is stored under the frontmatter name, and can be resolved
+  by either name without refetching."""
+  fetched = mock.create_autospec(models.Skill, instance=True)
+  fetched.name = "bar"
+  fetched.instructions = "Instructions for bar"
+  fetched.frontmatter = mock.create_autospec(models.Frontmatter, instance=True)
+  fetched.frontmatter.metadata = {}
+  mock_registry.get_skill.return_value = fetched
+  toolset = skill_toolset.SkillToolset(
+      registry=mock_registry, registry_skills=["foo"]
+  )
+
+  await toolset.prefetch()
+
+  mock_registry.get_skill.assert_called_once_with(name="foo")
+  assert toolset._get_skill("bar") is fetched
+  assert toolset._get_skill("foo") is None
+  assert toolset._registry_skills_loaded is True
+
+  # Resolving via _get_or_fetch_skill with the requested registry id "foo"
+  # uses the alias map and does not call registry again.
+  resolved = await toolset._get_or_fetch_skill("foo")
+  assert resolved is fetched
+  assert mock_registry.get_skill.call_count == 1
+
+  # Also via LoadSkillTool using the registry id "foo"
+  tool_context_instance.state.get.return_value = None
+  load_tool = skill_toolset.LoadSkillTool(toolset)
+  res = await load_tool.run_async(
+      args={"skill_name": "foo"}, tool_context=tool_context_instance
+  )
+  assert res["skill_name"] == "foo"
+  assert res["instructions"] == "Instructions for bar"
+  assert mock_registry.get_skill.call_count == 1
+
+  # No refetch on the next prefetch.
+  await toolset.prefetch()
+  assert mock_registry.get_skill.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_skill_toolset_search_skills_filters_aliased_registry_skill(
+    mock_registry, tool_context_instance
+):
+  """SearchSkillsTool filters out pinned skills by both registry ID and frontmatter name."""
+  fetched = mock.create_autospec(models.Skill, instance=True)
+  fetched.name = "bar"
+  mock_registry.get_skill.return_value = fetched
+
+  mock_frontmatter_reg = mock.create_autospec(models.Frontmatter, instance=True)
+  mock_frontmatter_reg.name = "foo"
+  mock_frontmatter_reg.model_dump.return_value = {"name": "foo"}
+
+  mock_frontmatter_fm = mock.create_autospec(models.Frontmatter, instance=True)
+  mock_frontmatter_fm.name = "bar"
+  mock_frontmatter_fm.model_dump.return_value = {"name": "bar"}
+
+  mock_frontmatter_other = mock.create_autospec(
+      models.Frontmatter, instance=True
+  )
+  mock_frontmatter_other.name = "other"
+  mock_frontmatter_other.model_dump.return_value = {"name": "other"}
+
+  mock_registry.search_skills.return_value = [
+      mock_frontmatter_reg,
+      mock_frontmatter_fm,
+      mock_frontmatter_other,
+  ]
+
+  toolset = skill_toolset.SkillToolset(
+      registry=mock_registry, registry_skills=["foo"]
+  )
+  tools = await toolset.get_tools()
+  tool = next(t for t in tools if isinstance(t, skill_toolset.SearchSkillsTool))
+
+  result = await tool.run_async(
+      args={"query": "test"}, tool_context=tool_context_instance
+  )
+
+  # Both "foo" (aliased registry id) and "bar" (stored frontmatter name) filtered
+  assert result == [{"name": "other"}]

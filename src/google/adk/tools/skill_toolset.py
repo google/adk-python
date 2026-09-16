@@ -273,7 +273,6 @@ class ListSkillsTool(BaseTool):
   async def run_async(
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
-    await self._toolset.prefetch()
     skills = self._toolset._list_skills()
     return prompt.format_skills_as_xml(skills)
 
@@ -316,7 +315,6 @@ class SearchSkillsTool(BaseTool):
   async def run_async(
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
-    await self._toolset.prefetch()
     query = args.get("query")
     if not query:
       return {
@@ -327,7 +325,10 @@ class SearchSkillsTool(BaseTool):
       results = await self._toolset._registry.search_skills(query=query)
       formatted_results = []
       for r in results:
-        if r.name in self._toolset._skills:
+        if (
+            r.name in self._toolset._skills
+            or r.name in self._toolset._registry_skill_aliases
+        ):
           logger.warning(
               "Skill naming conflict: skill '%s' already exists locally."
               " Registry skill is filtered.",
@@ -1379,8 +1380,12 @@ class SkillToolset(BaseToolset):
     Args:
       skills: List of skills to register.
       registry: Optional skill registry for dynamic loading.
-      registry_skills: Optional list of skill names in the registry to pin and
-        fetch into the local catalog.
+      registry_skills: Optional list of skill names in the registry to pin.
+        Pinned skills are fetched once per process on first use, then appear in
+        `list_skills` / the EAGER catalog and are served locally without further
+        registry calls; unpinned registry skills are still reachable via
+        `search_skills`. The skill is stored under the name in the archive's
+        frontmatter, which may differ from the registry resource name.
       code_executor: Optional code executor for script execution.
       environment: Optional environment for executing scripts.
       skills_folder: Optional absolute path where skills are stored in the
@@ -1417,6 +1422,7 @@ class SkillToolset(BaseToolset):
     )
     self._registry_skills_loaded = False
     self._fetched_registry_skills: set[str] = set()
+    self._registry_skill_aliases: dict[str, str] = {}
     self._registry_skills_lock: asyncio.Lock | None = None
     self._code_executor = code_executor
     self._env = environment
@@ -1536,6 +1542,7 @@ class SkillToolset(BaseToolset):
           )
         else:
           self._skills[skill.name] = skill
+        self._registry_skill_aliases[name] = skill.name
         self._fetched_registry_skills.add(name)
 
       if len(self._fetched_registry_skills) == len(self._registry_skills):
@@ -1648,6 +1655,10 @@ class SkillToolset(BaseToolset):
     skill = self._get_skill(skill_name)
     if skill:
       return skill
+
+    if aliased_name := self._registry_skill_aliases.get(skill_name):
+      if skill := self._get_skill(aliased_name):
+        return skill
 
     if not self._registry:
       return None
