@@ -107,9 +107,7 @@ def build_caller_principal(request: RequestContext) -> CallerPrincipal:
     return CallerPrincipal(authenticated=False, source='a2a')
   if getattr(user, 'is_authenticated', True) is False:
     return CallerPrincipal(authenticated=False, source='a2a')
-  return CallerPrincipal(
-      authenticated=True, user_name=user_name, source='a2a'
-  )
+  return CallerPrincipal(authenticated=True, user_name=user_name, source='a2a')
 
 
 @a2a_experimental
