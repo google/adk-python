@@ -1371,6 +1371,7 @@ def _build_pending_confirmation_events(agent_name: str) -> list[Event]:
       ),
   ]
 
+
 async def _run_with_caller_principal(caller_principal):
   """Runs the processor over a pending approval under one caller principal.
 
