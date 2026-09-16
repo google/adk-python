@@ -36,8 +36,8 @@ from google.genai import types
 from opentelemetry import context
 from typing_extensions import Self
 
+from .agents._caller_principal import CallerPrincipal
 from .agents.base_agent import BaseAgent
-from .agents.caller_principal import CallerPrincipal
 from .agents.context_cache_config import ContextCacheConfig
 from .agents.invocation_context import InvocationContext
 from .agents.invocation_context import new_invocation_context_id
