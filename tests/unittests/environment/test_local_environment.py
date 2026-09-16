@@ -127,6 +127,45 @@ class TestReadFileWriteFile:
       await env.read_file(Path("does_not_exist.txt"))
 
 
+class TestReadFileLines:
+  """Verify read_file_lines streams a range without buffering the file."""
+
+  @pytest.mark.asyncio
+  async def test_returns_requested_range_and_total(self, env: LocalEnvironment):
+    """Selects the requested 1-based, inclusive line range."""
+    await env.write_file("lines.txt", "one\ntwo\nthree\nfour\n")
+
+    selected, total = await env.read_file_lines(
+        "lines.txt", start_line=2, end_line=3
+    )
+
+    assert selected == [b"two\n", b"three\n"]
+    assert total == 4
+
+  @pytest.mark.asyncio
+  async def test_does_not_read_the_whole_file_at_once(
+      self, env: LocalEnvironment, monkeypatch: pytest.MonkeyPatch
+  ):
+    """A ranged read must not go through the full-buffer `read_file` path."""
+    await env.write_file("lines.txt", "one\ntwo\nthree\nfour\n")
+
+    def _fail_full_read(path: Path) -> bytes:
+      raise AssertionError(
+          "read_file_lines must not buffer the whole file into memory"
+      )
+
+    monkeypatch.setattr(
+        LocalEnvironment, "_sync_read", staticmethod(_fail_full_read)
+    )
+
+    selected, total = await env.read_file_lines(
+        "lines.txt", start_line=2, end_line=2
+    )
+
+    assert selected == [b"two\n"]
+    assert total == 4
+
+
 class TestExecuteTimeout:
   """Timeout and cancellation must reach the whole process tree."""
 

@@ -31,6 +31,7 @@ class _StubEnvironment(BaseEnvironment):
   def __init__(self, files: dict[str, bytes]):
     self._files = files
     self.execute_calls: list[str] = []
+    self.read_file_calls: list[str] = []
 
   @property
   def working_dir(self) -> Path:
@@ -48,9 +49,28 @@ class _StubEnvironment(BaseEnvironment):
 
   async def read_file(self, path: Path) -> bytes:
     key = str(path)
+    self.read_file_calls.append(key)
     if key not in self._files:
       raise FileNotFoundError(key)
     return self._files[key]
+
+  async def read_file_lines(
+      self,
+      path: Path,
+      start_line: int = 1,
+      end_line: Optional[int] = None,
+  ) -> tuple[list[bytes], int]:
+    """Slices the in-memory file without ever calling `read_file`."""
+    key = str(path)
+    if key not in self._files:
+      raise FileNotFoundError(key)
+    lines = self._files[key].splitlines(keepends=True)
+    total = len(lines)
+    start = max(1, start_line)
+    end = total if end_line is None else min(total, end_line)
+    if start > end:
+      return [], total
+    return lines[start - 1 : end], total
 
   async def write_file(self, path: Path, content: str | bytes) -> None:
     del path, content
@@ -75,6 +95,7 @@ async def test_read_file_with_line_range_uses_direct_file_read():
       'total_lines': 4,
   }
   assert environment.execute_calls == []
+  assert environment.read_file_calls == []
 
 
 @pytest.mark.asyncio

@@ -208,6 +208,21 @@ class LocalEnvironment(BaseEnvironment):
     return await asyncio.to_thread(self._sync_read, resolved)
 
   @override
+  async def read_file_lines(
+      self,
+      path: str | Path,
+      start_line: int = 1,
+      end_line: int | None = None,
+  ) -> tuple[list[bytes], int]:
+    if self._working_dir is None:
+      raise RuntimeError('`working_dir` is not set. Call initialize() first.')
+
+    resolved = self._resolve_path(path)
+    return await asyncio.to_thread(
+        self._sync_read_lines, resolved, start_line, end_line
+    )
+
+  @override
   async def write_file(self, path: str | Path, content: str | bytes) -> None:
     if self._working_dir is None:
       raise RuntimeError('`working_dir` is not set. Call initialize() first.')
@@ -231,6 +246,22 @@ class LocalEnvironment(BaseEnvironment):
   def _sync_read(path: Path) -> bytes:
     with open(path, 'rb') as f:
       return f.read()
+
+  @staticmethod
+  def _sync_read_lines(
+      path: Path, start_line: int, end_line: int | None
+  ) -> tuple[list[bytes], int]:
+    """Streams *path* line-by-line, keeping only the requested range."""
+    start = max(1, start_line)
+    selected: list[bytes] = []
+    total = 0
+    with open(path, 'rb') as f:
+      for line in f:
+        total += 1
+        if total < start or (end_line is not None and total > end_line):
+          continue
+        selected.append(line)
+    return selected, total
 
   @staticmethod
   def _sync_write(path: Path, content: str | bytes) -> None:
