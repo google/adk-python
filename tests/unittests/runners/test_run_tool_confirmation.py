@@ -211,7 +211,7 @@ class TestHITLConfirmationFlowWithSingleAgent(BaseHITLTest):
                     name=tools[0].name,
                     response={"result": f"confirmed={tool_call_confirmed}"}
                     if tool_call_confirmed
-                    else {"error": "This tool call is rejected."},
+                      else {"error": "Tool execution not confirmed"},
                 )
             ),
         ),
@@ -352,10 +352,14 @@ class TestHITLConfirmationFlowWithCustomPayloadSchema(BaseHITLTest):
     )
     events = await runner.run_async(user_confirmation)
 
-    expected_response = {
-        "result": f"confirmed={tool_call_confirmed}",
-        "custom_payload": custom_payload,
-    }
+    expected_response = (
+        {
+            "result": "confirmed=True",
+            "custom_payload": custom_payload,
+        }
+        if tool_call_confirmed
+        else {"error": "Tool execution not confirmed"}
+    )
     expected_parts_final = [
         (
             agent.name,

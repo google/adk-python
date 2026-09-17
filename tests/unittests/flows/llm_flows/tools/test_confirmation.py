@@ -301,21 +301,6 @@ async def test_request_confirmation_processor_tool_not_confirmed():
   with patch(
       "google.adk.flows.llm_flows.functions.handle_function_call_list_async"
   ) as mock_handle_function_call_list_async:
-    mock_handle_function_call_list_async.return_value = Event(
-        author="agent",
-        content=types.Content(
-            parts=[
-                types.Part(
-                    function_response=types.FunctionResponse(
-                        name=MOCK_TOOL_NAME,
-                        id=MOCK_FUNCTION_CALL_ID,
-                        response={"error": "Tool execution not confirmed"},
-                    )
-                )
-            ]
-        ),
-    )
-
     events = []
     async for event in request_processor.run_async(
         invocation_context, llm_request
@@ -323,11 +308,10 @@ async def test_request_confirmation_processor_tool_not_confirmed():
       events.append(event)
 
     assert len(events) == 1
-    mock_handle_function_call_list_async.assert_called_once()
-    args, _ = mock_handle_function_call_list_async.call_args
-    assert (
-        args[4][MOCK_FUNCTION_CALL_ID] == user_confirmation
-    )  # tool_confirmation_dict
+    mock_handle_function_call_list_async.assert_not_called()
+    assert events[0].content.parts[0].function_response.response == {
+        "error": "Tool execution not confirmed"
+    }
 
 
 TRANSFER_TOOL_NAME = "transfer_to_agent"
@@ -509,10 +493,10 @@ async def test_request_confirmation_transfer_to_agent_rejected():
       events.append(event)
 
     assert len(events) == 1
-    mock_handle.assert_called_once()
-    args, _ = mock_handle.call_args
-    tools_dict = args[2]
-    assert TRANSFER_TOOL_NAME in tools_dict
+    mock_handle.assert_not_called()
+    assert events[0].content.parts[0].function_response.response == {
+        "error": "Tool execution not confirmed"
+    }
 
 
 @pytest.mark.asyncio
