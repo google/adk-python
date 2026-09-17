@@ -5528,6 +5528,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state["offloader"] = None
     state["parser"] = None
     state["_started"] = False
+    # Readiness is a claim about the destination dataset existing, not
+    # local data, so a pickle restored into another environment must
+    # re-verify it rather than assume it (see __setstate__ backfill).
+    state["_schema_ready"] = False
     state["_startup_error"] = None
     state["_setup_failures"] = 0
     state["_setup_retry_at"] = 0.0

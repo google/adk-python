@@ -6627,9 +6627,13 @@ class TestForkSafety:
   def test_getstate_resets_pid(self):
     """Pickle state should have _init_pid = 0 to force re-init."""
     plugin = self._make_plugin()
+    plugin._schema_ready = True
     state = plugin.__getstate__()
     assert state["_init_pid"] == 0
     assert state["_started"] is False
+    # Readiness is a claim about the destination dataset, so a pickle
+    # restored elsewhere must verify it again rather than assume it.
+    assert state["_schema_ready"] is False
 
   @pytest.mark.asyncio
   async def test_unpickle_legacy_state_missing_init_pid(
