@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 from typing import Any
 from typing import MutableMapping
 from typing import Optional
@@ -36,6 +37,8 @@ from ...features import FeatureName
 from ...memory.in_memory_memory_service import InMemoryMemoryService
 from ...runners import Runner
 from ...sessions.in_memory_session_service import InMemorySessionService
+
+logger = logging.getLogger("google_adk." + __name__)
 
 _MCP_USER_ID = "mcp_user"
 _INLINE_RESOURCE_URI = "resource://adk-agent/inline-data"
@@ -109,11 +112,57 @@ def _connection_key(ctx: Context[ServerSession, Any]) -> object:
   return getattr(session, "_connection", session)
 
 
+async def _reap_orphaned_sessions(
+    runner: Runner,
+    sessions: MutableMapping[object, str],
+    created: set[str],
+) -> None:
+  """Deletes ADK sessions whose MCP connection is gone.
+
+  ``sessions`` holds its connections weakly, so an entry vanishes when its
+  connection is garbage-collected; the ADK session it pointed to would stay
+  in the session service forever. Under a stateless streamable HTTP transport
+  the connection lives for a single request, which turns that into one leaked
+  session per tool call. Reaping runs lazily from the next tool call because
+  a GC callback may fire without a running event loop.
+
+  Args:
+    runner: The Runner whose session service owns the sessions.
+    sessions: Per-connection map from MCP connection to ADK session id.
+    created: Ids of every session ever entered into ``sessions``. Ids no
+      longer reachable through ``sessions`` are deleted and removed from it.
+  """
+  live = set(sessions.values())
+  for session_id in created - live:
+    if session_id not in created:
+      # A concurrent reap already took this one; the discard below and this
+      # check share one synchronous stretch, so each id is deleted once.
+      continue
+    created.discard(session_id)
+    try:
+      await runner.session_service.delete_session(
+          app_name=runner.app_name,
+          user_id=_MCP_USER_ID,
+          session_id=session_id,
+      )
+    except Exception:  # pylint: disable=broad-exception-caught
+      # Reaping is housekeeping; it must not fail the tool call that
+      # triggered it. Put the id back so a later call retries the delete.
+      created.add(session_id)
+      logger.warning(
+          "Failed to delete orphaned MCP agent session %s; will retry on a"
+          " later tool call.",
+          session_id,
+          exc_info=True,
+      )
+
+
 async def _run_agent(
     runner: Runner,
     request: str,
     ctx: Optional[Context[ServerSession, Any]] = None,
     sessions: Optional[MutableMapping[object, str]] = None,
+    created: Optional[set[str]] = None,
 ) -> list[mcp_types.ContentBlock]:
   """Runs the agent for one request and returns its final response content.
 
@@ -128,6 +177,8 @@ async def _run_agent(
     request: The user request text for this call.
     ctx: The MCP tool call context, used for progress and session reuse.
     sessions: Per-connection map from MCP connection to ADK session id.
+    created: Set recording the id of every session entered into ``sessions``,
+      so `_reap_orphaned_sessions` can delete the ones whose connection dies.
 
   Returns:
     The agent's final response as a list of MCP content blocks (text plus any
@@ -144,7 +195,11 @@ async def _run_agent(
     )
     session_id = session.id
     if sessions is not None and connection is not None:
+      # No await between the two writes: an id is either absent from both or
+      # present in both, so the reaper never sees a session it cannot delete.
       sessions[connection] = session_id
+      if created is not None:
+        created.add(session_id)
   new_message = types.Content(role="user", parts=[types.Part(text=request)])
   final_content: list[mcp_types.ContentBlock] = []
   async for event in runner.run_async(
@@ -183,11 +238,16 @@ def to_mcp_server(
   lets harnesses that speak MCP drive an ADK agent.
 
   One ADK session is kept per MCP connection, so successive tool calls on the
-  same connection form a single multi-turn conversation.
+  same connection form a single multi-turn conversation. When a connection
+  goes away its ADK session is deleted from the session service on a later
+  tool call, so a long-running server does not accumulate dead conversations.
 
   The caller chooses the transport, e.g. ``server.run(transport="stdio")`` for
   a local host or ``server.run(transport="streamable-http")`` for a networked
-  one.
+  one. A stateless streamable HTTP deployment (``stateless_http=True``, e.g.
+  behind an autoscaler) gets a fresh connection per request, so every tool
+  call is its own single-turn conversation whose session is likewise
+  reclaimed.
 
   Args:
     agent: The ADK agent to serve.
@@ -213,11 +273,17 @@ def to_mcp_server(
   # WeakKeyDictionary() instantiation below as abstract-class-instantiated.
   # pylint: disable-next=abstract-class-instantiated
   sessions: MutableMapping[object, str] = weakref.WeakKeyDictionary()
+  # Ids of every session in `sessions`, kept strongly so the sessions of
+  # collected connections can still be found and deleted.
+  created_session_ids: set[str] = set()
 
   async def call_agent(
       request: str, ctx: Context[ServerSession, Any]
   ) -> list[mcp_types.ContentBlock]:
-    return await _run_agent(agent_runner, request, ctx, sessions)
+    await _reap_orphaned_sessions(agent_runner, sessions, created_session_ids)
+    return await _run_agent(
+        agent_runner, request, ctx, sessions, created_session_ids
+    )
 
   server.add_tool(
       call_agent,
