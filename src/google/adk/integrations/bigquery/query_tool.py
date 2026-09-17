@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import collections
 import functools
 import json
@@ -21,6 +22,7 @@ import re
 import threading
 import types
 from typing import Any
+from typing import Awaitable
 from typing import Callable
 from typing import Optional
 import uuid
@@ -338,7 +340,7 @@ def _execute_sql(
     }
 
 
-def execute_sql(
+async def execute_sql(
     project_id: str,
     query: str,
     credentials: Credentials,
@@ -424,7 +426,8 @@ def execute_sql(
             }
           }
   """
-  return _execute_sql(
+  return await asyncio.to_thread(
+      _execute_sql,
       project_id=project_id,
       query=query,
       credentials=credentials,
@@ -870,7 +873,7 @@ def _execute_sql_protected_write_mode(
 
 def _execute_sql_with_docstring(
     docstring: str | None,
-) -> Callable[..., dict[str, Any]]:
+) -> Callable[..., Awaitable[dict[str, Any]]]:
   """Clone execute_sql, keeping its signature but replacing its docstring."""
   # Create a new function object using the original function's code and globals.
   # We pass the original code, globals, name, defaults, and closure.
@@ -907,7 +910,7 @@ _EXECUTE_SQL_PROTECTED_WRITE_MODE = _execute_sql_with_docstring(
 
 def get_execute_sql(
     settings: BigQueryToolConfig,
-) -> Callable[..., dict[str, Any]]:
+) -> Callable[..., Awaitable[dict[str, Any]]]:
   """Get the execute_sql tool customized as per the given tool settings.
 
   Args:
@@ -915,8 +918,8 @@ def get_execute_sql(
         execute_sql tool.
 
   Returns:
-      callable[..., dict]: A version of the execute_sql tool respecting the tool
-      settings.
+      callable[..., Awaitable[dict]]: A version of the execute_sql tool
+      respecting the tool settings.
   """
 
   if not settings or settings.write_mode == WriteMode.BLOCKED:
