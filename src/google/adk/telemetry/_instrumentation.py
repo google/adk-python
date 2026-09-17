@@ -33,6 +33,7 @@ from . import _hallucination
 from . import _metrics
 from . import _token_usage
 from . import tracing
+from ._decorators import experimental_telemetry
 from ._finish_reason import is_reported_finish_reason
 from ._schema_version import resolve_schema_version
 from ._schema_version import SCHEMA_VERSION_SEMCONV_ALIGNED
@@ -322,10 +323,9 @@ def _flush_invoke_agent_metrics(
     scope: The invocation's totals.
     tel_cfg: The config the invocation ran under, for the experimental gate.
   """
-  # `token_totals` is only set under opt-in, so it carries the gate already.
   if scope.token_totals is not None:
     _metrics.record_invoke_agent_token_usage(
-        scope.agent_name, scope.token_totals
+        tel_cfg, scope.agent_name, scope.token_totals
     )
   _metrics.record_invoke_agent_inference_calls(
       scope.agent_name, scope.inference_call_count
@@ -333,40 +333,41 @@ def _flush_invoke_agent_metrics(
   _metrics.record_invoke_agent_tool_calls(
       scope.agent_name, scope.tool_call_count
   )
-  if tel_cfg.should_emit_experimental_telemetry:
-    _metrics.record_invoke_agent_skill_loads(
-        scope.agent_name, scope.skill_load_count
-    )
+  _metrics.record_invoke_agent_skill_loads(
+      tel_cfg, scope.agent_name, scope.skill_load_count
+  )
 
 
 def _flush_workflow_metrics(scope: _WorkflowScope) -> None:
   """Flushes one workflow's metrics; called once, by the scope's owner."""
-  if not scope.telemetry_config.should_emit_experimental_telemetry:
-    return
   nested = scope.parent is not None
   # We always record call counts because a count of 0 is a valid, accurate
   # measurement. For tokens, nothing having reported usage isn't the same as
   # knowing the spend was exactly zero. So we skip tokens in that case.
   if scope.token_totals is not None:
     _metrics.record_invoke_workflow_token_usage(
+        scope.telemetry_config,
         root_agent_name=scope.root_agent_name,
         workflow_name=scope.workflow_name,
         totals=scope.token_totals,
         nested=nested,
     )
   _metrics.record_invoke_workflow_inference_calls(
+      scope.telemetry_config,
       root_agent_name=scope.root_agent_name,
       workflow_name=scope.workflow_name,
       count=scope.inference_call_count,
       nested=nested,
   )
   _metrics.record_invoke_workflow_tool_calls(
+      scope.telemetry_config,
       root_agent_name=scope.root_agent_name,
       workflow_name=scope.workflow_name,
       count=scope.tool_call_count,
       nested=nested,
   )
   _metrics.record_invoke_workflow_skill_loads(
+      scope.telemetry_config,
       root_agent_name=scope.root_agent_name,
       workflow_name=scope.workflow_name,
       count=scope.skill_load_count,
@@ -662,15 +663,9 @@ async def record_inference_telemetry(
   finally:
     inference_error = sys.exc_info()[1]
     _accumulate_inference_call(workflow_scope)
-    # Tokens only: the metrics keyed on them are experimental, so a run without
-    # the opt-in never builds the totals. The counts above accumulate either
-    # way, and each flush gates what it emits.
-    if tracing._telemetry_config_from_invocation_context(
-        invocation_context
-    ).should_emit_experimental_telemetry:
-      usage = _token_usage.TokenUsage.from_llm_responses(tel_ctx.llm_responses)
-      if usage is not None:
-        _accumulate_tokens(usage, workflow_scope)
+    usage = _token_usage.TokenUsage.from_llm_responses(tel_ctx.llm_responses)
+    if usage is not None:
+      _accumulate_tokens(usage, workflow_scope)
     agent = invocation_context.agent
     elapsed_s = _metrics.get_elapsed_s(tel_ctx.span, start_time)
     try:
@@ -720,9 +715,6 @@ def _dispatch_skill_telemetry(
   telemetry_config = tracing._telemetry_config_from_invocation_context(
       invocation_context
   )
-  if not telemetry_config.should_emit_experimental_telemetry:
-    return
-
   error_type = (
       tracing.resolve_error_type(error) if error is not None else error_type
   )
@@ -730,21 +722,23 @@ def _dispatch_skill_telemetry(
   match skill_telemetry:
     case SkillLoadTelemetry():
       _accumulate_skill_load(workflow_scope)
-      _trace_skill_load(span, skill_telemetry)
+      _trace_skill_load(telemetry_config, span, skill_telemetry)
       if invocation_context.agent is None:
         return
       _metrics.record_skill_load(
+          telemetry_config,
           invocation_context.agent.name,
           skill_telemetry.skill_name,
           error_type,
       )
     case SkillResourceLoadTelemetry():
-      _trace_skill_resource_load(span, skill_telemetry)
+      _trace_skill_resource_load(telemetry_config, span, skill_telemetry)
     case SkillScriptExecutionTelemetry():
-      _trace_skill_script_execution(span, skill_telemetry)
+      _trace_skill_script_execution(telemetry_config, span, skill_telemetry)
       if invocation_context.agent is None:
         return
       _metrics.record_skill_script_execution(
+          telemetry_config,
           invocation_context.agent.name,
           skill_telemetry.skill_name,
           skill_telemetry.script_path,
@@ -754,6 +748,7 @@ def _dispatch_skill_telemetry(
       assert_never(skill_telemetry)
 
 
+@experimental_telemetry(gate="skills")
 def _trace_skill_load(
     span: trace.Span,
     skill_telemetry: SkillLoadTelemetry,
@@ -781,6 +776,7 @@ def _trace_skill_load(
   span.set_attributes(attributes)
 
 
+@experimental_telemetry(gate="skills")
 def _trace_skill_resource_load(
     span: trace.Span,
     skill_telemetry: SkillResourceLoadTelemetry,
@@ -802,6 +798,7 @@ def _trace_skill_resource_load(
   span.set_attributes(attributes)
 
 
+@experimental_telemetry(gate="skills")
 def _trace_skill_script_execution(
     span: trace.Span,
     skill_telemetry: SkillScriptExecutionTelemetry,

@@ -28,13 +28,18 @@ class Trigger(BaseModel):
   model_config = ConfigDict(ser_json_bytes='base64')
 
   input: Any = None
-  """The input to pass to the triggered node."""
+  """The input to pass to the triggered node.
+
+  ``None`` is ambiguous here: a predecessor that produced no output and one
+  that produced ``None`` both arrive as ``None``.
+  """
 
   use_sub_branch: bool = False
   """Whether this trigger should use a sub-branch."""
 
   branch: str | None = None
-  """The branch inherited from the predecessor node."""
+  """The branch inherited from the predecessor node.
 
-  isolation_scope: str | None = None
-  """Scope tag explicitly propagated to this trigger."""
+  ``None`` inherits the parent's branch; the empty string is a distinct value
+  that overrides it with the root branch.
+  """

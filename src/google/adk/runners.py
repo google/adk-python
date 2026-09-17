@@ -52,6 +52,7 @@ from .errors.session_not_found_error import SessionNotFoundError
 from .events.event import Event
 from .events.event_actions import EventActions
 from .flows.llm_flows import contents
+from .flows.llm_flows.functions import find_matching_function_call as _find_matching_function_call
 from .live import _runner_utils as _live_runner_utils
 from .live.live_request_queue import LiveRequestQueue
 from .memory.base_memory_service import BaseMemoryService
@@ -83,6 +84,10 @@ _ = tracer
 
 # App names already told that agent transfer runs without a context cache.
 _UNCACHED_TRANSFER_APPS: set[str] = set()
+
+# Sentinel cancellation message indicating synchronous run() caller stopped
+# iterating early.
+_CALLER_CLOSED_EARLY_MSG = 'adk-runner-caller-closed-early'
 
 
 def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
@@ -170,6 +175,19 @@ def _can_transfer_between_agents(root: Any) -> bool:
   from .agents import _agent_router
 
   return _agent_router.can_transfer_between_agents(root)
+
+
+def _stamp_event_branch_context(ic: InvocationContext, event: Event) -> None:
+  """Stamps the event with the branch and isolation scope of its matching function call."""
+  if function_call := _find_matching_function_call(
+      ic._get_events(current_invocation=True), event
+  ):
+    event.branch = function_call.branch
+    if (
+        event.isolation_scope is None
+        and function_call.isolation_scope is not None
+    ):
+      event.isolation_scope = function_call.isolation_scope
 
 
 class Runner:
@@ -697,7 +715,7 @@ class Runner:
       if active_scope is not None:
         event.isolation_scope, _ = active_scope
     _apply_run_config_custom_metadata(event, ic.run_config)
-    ic.stamp_event_branch_context(event)
+    _stamp_event_branch_context(ic, event)
     return await self.session_service.append_event(
         session=ic.session, event=event
     )
@@ -731,7 +749,7 @@ class Runner:
       if active_scope is not None:
         event.isolation_scope, _ = active_scope
     _apply_run_config_custom_metadata(event, ic.run_config)
-    ic.stamp_event_branch_context(event)
+    _stamp_event_branch_context(ic, event)
     return await self.session_service.append_event(
         session=ic.session, event=event
     )
@@ -809,16 +827,25 @@ class Runner:
     early (e.g., break in async for). In that case we must cancel
     to avoid a leaked task.
     """
+    cancelled_by_cleanup = False
     if not task.done():
       logger.debug(
           'Cancelling root node %s (caller stopped early).',
           node_name,
       )
       task.cancel()
+      cancelled_by_cleanup = True
     try:
       await task
     except asyncio.CancelledError:
-      logger.warning('Root node %s was cancelled.', node_name)
+      if cancelled_by_cleanup:
+        logger.info('Root node %s was cancelled.', node_name)
+      else:
+        # Root task was cancelled prior to cleanup.
+        logger.warning(
+            'Root node %s was cancelled by an external cancellation.',
+            node_name,
+        )
     except Exception:
       logger.error('Root node %s failed.', node_name, exc_info=True)
       raise
@@ -1001,13 +1028,13 @@ class Runner:
           yield item
     finally:
       if not exhausted:
-        # The caller stopped iterating early, so cancel the invocation before
-        # it can run further tools or append more events to the session.
+        # Caller stopped iterating early; cancel background task with sentinel
+        # so after_run callbacks still execute.
         caller_closed_early = True
         loop, task = invocation_handle.get()
         if task is not None:
           try:
-            loop.call_soon_threadsafe(task.cancel)
+            loop.call_soon_threadsafe(task.cancel, _CALLER_CLOSED_EARLY_MSG)
           except RuntimeError:
             # The background loop already finished; nothing to cancel.
             pass
@@ -1415,6 +1442,8 @@ class Runner:
     """
 
     plugin_manager = invocation_context.plugin_manager
+    run_error: BaseException | None = None
+    closing_early = False
 
     try:
       # Step 1: Run the before_run callbacks to see if we should early exit.
@@ -1465,27 +1494,45 @@ class Runner:
                 )
 
             yield output_event
+    except GeneratorExit:
+      # Early generator close is treated as a clean completion.
+      closing_early = True
+      raise
     except Exception as e:
+      run_error = e
       # Notify plugins of the unhandled execution error. Covers failures in
       # before_run_callback, early-exit, and the main execution loop.
       # Notification-only; the original exception is always re-raised.
       await _notify_run_error(plugin_manager, invocation_context, e)
       raise
-
-    # Step 4: Run the after_run callbacks to perform global cleanup tasks or
-    # finalizing logs and metrics data.
-    # This does NOT emit any event. Only runs on success. A failure here (e.g.
-    # an after_run plugin raising, which PluginManager surfaces as a
-    # RuntimeError) is still an unhandled runner error, so notify
-    # on_run_error_callback once and re-raise. on_run_error is
-    # notification-only and never raises, so there is no recursive notification.
-    try:
-      await plugin_manager.run_after_run_callback(
-          invocation_context=invocation_context
-      )
-    except Exception as e:
-      await _notify_run_error(plugin_manager, invocation_context, e)
+    except asyncio.CancelledError as e:
+      if e.args and e.args[0] == _CALLER_CLOSED_EARLY_MSG:
+        closing_early = True
+      else:
+        run_error = e
       raise
+    except BaseException as e:
+      # Interrupts or aborts; skip after_run callbacks.
+      run_error = e
+      raise
+    finally:
+      # Step 4: Run after_run callbacks on successful completion or early exit.
+      if run_error is None:
+        try:
+          await plugin_manager.run_after_run_callback(
+              invocation_context=invocation_context
+          )
+        except Exception as e:
+          await _notify_run_error(plugin_manager, invocation_context, e)
+          if closing_early:
+            # Avoid masking the in-flight GeneratorExit or early-exit cancellation.
+            logger.error(
+                'after_run callback failed while closing invocation %s early.',
+                invocation_context.invocation_id,
+                exc_info=True,
+            )
+          else:
+            raise
 
   async def _append_new_message_to_session(
       self,
@@ -1553,7 +1600,7 @@ class Runner:
           content=new_message,
       )
     _apply_run_config_custom_metadata(event, invocation_context.run_config)
-    invocation_context.stamp_event_branch_context(event)
+    _stamp_event_branch_context(invocation_context, event)
 
     await self.session_service.append_event(
         session=invocation_context.session, event=event

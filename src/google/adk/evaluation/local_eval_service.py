@@ -122,7 +122,7 @@ class LocalEvalService(BaseEvalService):
       artifact_service: Optional[BaseArtifactService] = None,
       eval_set_results_manager: Optional[EvalSetResultsManager] = None,
       session_id_supplier: Callable[[], str] = _get_session_id,
-      user_simulator_provider: UserSimulatorProvider = UserSimulatorProvider(),
+      user_simulator_provider: Optional[UserSimulatorProvider] = None,
       memory_service: Optional[BaseMemoryService] = None,
       *,
       app: Optional[App] = None,
@@ -148,7 +148,9 @@ class LocalEvalService(BaseEvalService):
     self._artifact_service = artifact_service
     self._eval_set_results_manager = eval_set_results_manager
     self._session_id_supplier = session_id_supplier
-    self._user_simulator_provider = user_simulator_provider
+    self._user_simulator_provider = (
+        user_simulator_provider or UserSimulatorProvider()
+    )
     self._memory_service = memory_service
 
   @override

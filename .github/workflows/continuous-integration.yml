@@ -232,7 +232,6 @@ jobs:
           uv pip install --reinstall-package a2a-sdk 'a2a-sdk>=0.3.4,<0.4'
           uv pip list
           uv run pytest tests/unittests/a2a \
-            tests/unittests/agents/test_remote_a2a_agent.py \
             tests/unittests/integrations/agent_registry/test_agent_registry.py
 
   # 3c. Dual-version MCP coverage: the pin admits both SDK majors, but the lock

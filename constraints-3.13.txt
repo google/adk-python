@@ -270,6 +270,10 @@ distro==1.9.0
     #   google-genai
     #   langsmith
     #   openai
+dnspython==2.8.0
+    # via
+    #   -c constraints-3.13.txt.stable.tmp
+    #   pymongo
 docker==7.2.0
     # via
     #   -c constraints-3.13.txt.stable.tmp
@@ -1380,6 +1384,10 @@ pyjwt==2.13.0
     #   oci
     #   redis
 pylint==4.0.6
+    # via
+    #   -c constraints-3.13.txt.stable.tmp
+    #   google-adk (pyproject.toml)
+pymongo==4.18.0
     # via
     #   -c constraints-3.13.txt.stable.tmp
     #   google-adk (pyproject.toml)

@@ -1493,6 +1493,70 @@ class TestMCPSessionManager:
         transport = await manager._get_mtls_transport()
         assert transport is None
 
+  @pytest.mark.asyncio
+  @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
+  async def test_mtls_probe_runs_once_across_session_creations(self):
+    """A server that offers no mTLS is probed once, not once per session."""
+    manager = MCPSessionManager(
+        StreamableHTTPConnectionParams(url="http://example.com/mcp")
+    )
+
+    with patch.dict(
+        "os.environ", {"GOOGLE_API_USE_CLIENT_CERTIFICATE": "true"}
+    ):
+      with patch(
+          "google.auth.default", side_effect=Exception("no credentials")
+      ) as mock_auth_default:
+        with patch.object(manager, "_create_client", return_value=Mock()):
+          with patch(
+              "google.adk.tools.mcp_tool.mcp_session_manager.SessionContext"
+          ) as mock_session_context_class:
+            for index in range(3):
+              mock_session_context_class.return_value = MockSessionContext(
+                  session=MockClientSession()
+              )
+              await manager.create_session(
+                  headers={"Authorization": f"Bearer {index}"}
+              )
+
+    assert len(manager._sessions) == 3
+    assert mock_auth_default.call_count == 1
+
+  @pytest.mark.asyncio
+  @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
+  async def test_mtls_probe_retried_after_the_retry_interval(self):
+    """Credentials that appear after a failed probe are still picked up."""
+    manager = MCPSessionManager(
+        SseConnectionParams(url="https://example.com/mcp")
+    )
+
+    mock_session = AsyncMock()
+    mock_session.is_mtls = True
+    mock_session.configure_mtls_channel = AsyncMock()
+
+    with patch.dict(
+        "os.environ", {"GOOGLE_API_USE_CLIENT_CERTIFICATE": "true"}
+    ):
+      with patch.object(
+          mcp_session_manager_module, "_MTLS_PROBE_RETRY_INTERVAL_SECONDS", 0.0
+      ):
+        with patch(
+            "google.auth.default",
+            side_effect=[Exception("no credentials"), (Mock(), None)],
+        ):
+          with patch(
+              "google.adk.tools.mcp_tool.mcp_session_manager.AsyncAuthorizedSession",
+              return_value=mock_session,
+          ):
+            with patch(
+                "google.adk.tools.mcp_tool.mcp_session_manager._GoogleAuthAsyncTransport"
+            ) as mock_transport_class:
+              assert await manager._get_mtls_transport() is None
+              assert (
+                  await manager._get_mtls_transport()
+                  is mock_transport_class.return_value
+              )
+
   @patch("google.adk.tools.mcp_tool.mcp_session_manager.sse_client")
   def test_create_client_with_mtls_transport_sse(self, mock_sse_client):
     """Test that _create_client uses mtls_transport to create factory for SSE."""
@@ -2013,6 +2077,25 @@ class TestRefreshableAsyncCredentials:
     ]
     assert len(warnings) == 1
     assert urllib.parse.urlparse(url).hostname in warnings[0].getMessage()
+
+  @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
+  @pytest.mark.asyncio
+  async def test_before_request_skips_token_for_plaintext_google_host(self):
+    mock_creds = Mock()
+    mock_creds.expired = True
+    mock_creds.token = "new_token"
+    mock_creds.refresh = Mock()
+
+    url = "http://example.googleapis.com/mcp"
+    credentials = _RefreshableAsyncCredentials(
+        mock_creds, target_host=urllib.parse.urlparse(url).netloc
+    )
+    headers = {}
+
+    await credentials.before_request(None, "GET", url, headers)
+
+    mock_creds.refresh.assert_not_called()
+    assert headers == {}
 
   @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
   @pytest.mark.parametrize(

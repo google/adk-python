@@ -399,6 +399,23 @@ class TestContextRequestConfirmation:
     assert confirmation.hint == "Confirm this action"
     assert confirmation.payload is None
 
+  def test_request_confirmation_with_no_arguments(
+      self, mock_invocation_context
+  ):
+    """Test request_confirmation when called with its default hint."""
+    context = Context(
+        mock_invocation_context,
+        function_call_id="test-function-call-id",
+    )
+
+    context.request_confirmation()
+
+    confirmation = context.actions.requested_tool_confirmations[
+        "test-function-call-id"
+    ]
+    assert confirmation.hint == ""
+    assert confirmation.payload is None
+
   def test_request_confirmation_without_function_call_id_raises(
       self, mock_invocation_context
   ):

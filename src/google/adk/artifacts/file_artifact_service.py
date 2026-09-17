@@ -34,6 +34,7 @@ from typing_extensions import override
 
 from . import artifact_util
 from ..errors.input_validation_error import InputValidationError
+from ..platform import time as platform_time
 from .base_artifact_service import ArtifactVersion
 from .base_artifact_service import BaseArtifactService
 from .base_artifact_service import ensure_part
@@ -445,6 +446,9 @@ class FileArtifactService(BaseArtifactService):
         canonical_uri=canonical_uri,
         custom_metadata=dict(custom_metadata_val),
         mime_type=mime_type,
+        create_time=metadata.create_time
+        if metadata
+        else platform_time.get_time(),
     )
 
   def _latest_metadata(

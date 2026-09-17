@@ -35,13 +35,13 @@ from google.adk.code_executors.code_execution_utils import CodeExecutionResult
 from google.adk.events.event import Event
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
-from google.adk.flows.llm_flows._invocation_utils import copy_http_options
-from google.adk.flows.llm_flows._invocation_utils import run_config_for_new_live_session
-from google.adk.flows.llm_flows._model_response_finalizer import handle_after_model_callback
 from google.adk.flows.llm_flows.base_llm_flow import _finalize_dynamic_instructions
 from google.adk.flows.llm_flows.base_llm_flow import _process_agent_tools
 from google.adk.flows.llm_flows.base_llm_flow import _ReconnectSentinel
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
+from google.adk.flows.llm_flows.core._finalizer import handle_after_model_callback
+from google.adk.flows.llm_flows.core._utils import copy_http_options
+from google.adk.flows.llm_flows.core._utils import run_config_for_new_live_session
 from google.adk.live import LiveRequestQueue
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.base_llm_connection import BaseLlmConnection
@@ -2564,6 +2564,48 @@ async def test_transfer_to_unoffered_agent_raises_value_error():
 
 
 @pytest.mark.asyncio
+async def test_transfer_to_duplicate_name_returns_declared_target():
+  """Transfer resolves the declared target, not a same-named agent elsewhere."""
+  # Arrange
+  undeclared = Agent(name='shared_name')
+  other_branch = Agent(name='other_branch', sub_agents=[undeclared])
+  declared = Agent(name='shared_name')
+  caller = Agent(
+      name='caller',
+      sub_agents=[declared],
+      disallow_transfer_to_parent=True,
+      disallow_transfer_to_peers=True,
+  )
+  Agent(name='root', sub_agents=[other_branch, caller])
+  ctx = await testing_utils.create_invocation_context(caller)
+  flow = BaseLlmFlow()
+
+  # Act
+  agent = flow._get_agent_to_run(ctx, 'shared_name')
+
+  # Assert
+  assert agent is declared
+
+
+@pytest.mark.asyncio
+async def test_transfer_to_self_returns_caller_when_name_is_duplicated():
+  """Transfer to self returns the caller, not a same-named agent elsewhere."""
+  # Arrange
+  namesake = Agent(name='caller')
+  other_branch = Agent(name='other_branch', sub_agents=[namesake])
+  caller = Agent(name='caller')
+  Agent(name='root', sub_agents=[other_branch, caller])
+  ctx = await testing_utils.create_invocation_context(caller)
+  flow = BaseLlmFlow()
+
+  # Act
+  agent = flow._get_agent_to_run(ctx, 'caller')
+
+  # Assert
+  assert agent is caller
+
+
+@pytest.mark.asyncio
 async def test_transfer_to_parent_disallowed_raises_value_error():
   """Transfer to parent raises ValueError when disallow_transfer_to_parent is True."""
   # Arrange
@@ -3380,7 +3422,7 @@ async def test_eof_connection_ends_the_run_instead_of_spinning():
 class _SyncOnlyAgent(BaseAgent):
   """An agent supplying the LlmAgent model surface without subclassing it.
 
-  `_invocation_utils.as_llm_agent` documents that flows drive agents shaped
+  `core._utils.as_llm_agent` documents that flows drive agents shaped
   like this, so resolving a model must not require the async accessors.
   """
 

@@ -256,6 +256,13 @@ class GcsArtifactService(BaseArtifactService):
   ) -> int:
     from google.cloud import exceptions  # pylint: disable=g-import-not-at-top
 
+    if not self._file_has_user_namespace(filename):
+      if session_id is None:
+        raise InputValidationError(
+            "Session ID must be provided for session-scoped artifacts."
+        )
+      artifact_util._validate_session_id_for_flat_storage(session_id)
+
     artifact = ensure_part(artifact)
     blob_metadata = {k: str(v) for k, v in (custom_metadata or {}).items()}
     if artifact.inline_data and artifact.inline_data.display_name:

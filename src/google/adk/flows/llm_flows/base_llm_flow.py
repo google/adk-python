@@ -31,7 +31,6 @@ from opentelemetry import context as otel_context
 from opentelemetry import trace
 
 from . import _live_llm_flow
-from . import _output_schema_processor
 from . import functions
 from ...agents._streaming_mode import StreamingMode
 from ...agents.base_agent import BaseAgent
@@ -50,17 +49,18 @@ from ...telemetry.tracing import tracer
 from ...tools.base_toolset import BaseToolset
 from ...tools.tool_context import ToolContext
 from ...utils.context_utils import Aclosing
-from ._invocation_utils import as_llm_agent as _as_llm_agent
-from ._invocation_utils import copy_http_options
-from ._invocation_utils import require_agent as _require_agent
-from ._invocation_utils import require_run_config as _require_run_config
-from ._model_response_finalizer import finalize_model_response_event
-from ._model_response_finalizer import handle_after_model_callback
-from ._model_response_finalizer import handle_before_model_callback
-from ._model_response_finalizer import run_and_handle_error
-from ._resume_utils import decide_step_resume
-from ._resume_utils import ResumeAction
-from .functions import build_auth_request_event
+from .core._finalizer import finalize_model_response_event
+from .core._finalizer import handle_after_model_callback
+from .core._finalizer import handle_before_model_callback
+from .core._finalizer import run_and_handle_error
+from .core._resume import decide_step_resume
+from .core._resume import ResumeAction
+from .core._utils import as_llm_agent as _as_llm_agent
+from .core._utils import copy_http_options
+from .core._utils import require_agent as _require_agent
+from .core._utils import require_run_config as _require_run_config
+from .prompt import _schema as _output_schema_processor
+from .tools._functions import build_auth_request_event
 
 # Prefix used by toolset auth credential IDs
 TOOLSET_AUTH_CREDENTIAL_ID_PREFIX = '_adk_toolset_auth_'
@@ -238,7 +238,7 @@ async def _process_agent_tools(
     return
   agent = cast('LlmAgent', raw_agent)
 
-  from .agent_transfer import _get_transfer_targets
+  from .extensions._agent_transfer import _get_transfer_targets
 
   multiple_tools = len(agent.tools) > 1 or bool(_get_transfer_targets(agent))
   model = agent.canonical_model
@@ -747,17 +747,23 @@ class BaseLlmFlow(ABC):
 
     from google.adk.agents.llm_agent import LlmAgent
 
-    from .agent_transfer import _get_transfer_targets
+    from .extensions._agent_transfer import _get_transfer_targets
 
     # Restrict transfers to declared targets (or itself) to prevent
-    # unauthorized escalation.
-    if isinstance(agent, LlmAgent) and agent_to_run.name != agent.name:
-      allowed_names = {target.name for target in _get_transfer_targets(agent)}
-      if agent_to_run.name not in allowed_names:
-        raise ValueError(
-            f'Agent {agent.name} is not allowed to transfer to agent'
-            f' {agent_name}.'
-        )
+    # unauthorized escalation. The agent that runs is taken from those
+    # declarations rather than from the tree-wide search above, so an agent
+    # elsewhere in the tree that happens to share the name cannot stand in for
+    # the declared one.
+    if isinstance(agent, LlmAgent):
+      if agent_name == agent.name:
+        return agent
+      for target in _get_transfer_targets(agent):
+        if target.name == agent_name:
+          return target
+      raise ValueError(
+          f'Agent {agent.name} is not allowed to transfer to agent'
+          f' {agent_name}.'
+      )
     return agent_to_run
 
   async def _call_llm_async(

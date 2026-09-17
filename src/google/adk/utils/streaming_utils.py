@@ -489,7 +489,39 @@ class StreamingResponseAggregator:
       )
       self._thought_text = []
       self._text = []
+
     yield llm_response
+
+  def _deduplicate_function_calls(
+      self, parts: list[types.Part]
+  ) -> list[types.Part]:
+    """Deduplicate function call parts.
+
+    If a function call has a model-provided ID (not starting with 'adk-'), it
+    is deduplicated by ID. Otherwise, it is deduplicated by name and args
+    signature.
+    """
+    import json
+
+    seen_fc_ids: set[str] = set()
+    seen_fc_signatures: set[tuple[str, str]] = set()
+    deduped_parts: list[types.Part] = []
+    for part in parts:
+      if part.function_call:
+        fc = part.function_call
+        is_client_id = fc.id and fc.id.startswith('adk-')
+        if fc.id and not is_client_id:
+          if fc.id in seen_fc_ids:
+            continue
+          seen_fc_ids.add(fc.id)
+        else:
+          args_str = json.dumps(fc.args, sort_keys=True) if fc.args else '{}'
+          sig = (fc.name or '', args_str)
+          if sig in seen_fc_signatures:
+            continue
+          seen_fc_signatures.add(sig)
+      deduped_parts.append(part)
+    return deduped_parts
 
   def close(self) -> Optional[LlmResponse]:
     """Generate an aggregated response at the end, if needed.
@@ -524,8 +556,11 @@ class StreamingResponseAggregator:
       self._flush_text_buffer_to_sequence()
       self._flush_function_call_to_sequence()
 
-      final_parts = self._parts_sequence
-      content = types.ModelContent(parts=final_parts) if final_parts else None
+      deduped_parts = self._deduplicate_function_calls(self._parts_sequence)
+
+      content = (
+          types.ModelContent(parts=deduped_parts) if deduped_parts else None
+      )
 
       return LlmResponse(
           content=content,
@@ -545,6 +580,7 @@ class StreamingResponseAggregator:
       parts.append(types.Part(text=''.join(self._thought_text), thought=True))
     if self._text:
       parts.append(types.Part.from_text(text=''.join(self._text)))
+
     content = types.ModelContent(parts=parts) if parts else None
 
     return LlmResponse(

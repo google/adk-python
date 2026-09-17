@@ -34,6 +34,7 @@ import typing
 from typing import Any
 from typing import Awaitable
 from typing import Callable
+from typing import cast
 from typing import List
 from typing import Literal
 from typing import Mapping
@@ -990,7 +991,9 @@ class ApiServer:
   def _get_root_agent(self, agent_or_app: BaseAgent | App) -> BaseAgent:
     """Extract root agent from either a BaseAgent or App object."""
     if isinstance(agent_or_app, App):
-      return agent_or_app.root_agent
+      # App.root_agent is a BaseNode; every caller here needs an agent, and the
+      # App validator already rejects a missing root.
+      return cast(BaseAgent, agent_or_app.root_agent)
     return agent_or_app
 
   def _create_runner(self, agentic_app: App, app_name: str) -> Runner:

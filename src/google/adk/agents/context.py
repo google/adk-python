@@ -201,7 +201,6 @@ class Context(ReadonlyContext):
     self._resume_inputs = resume_inputs or {}
     self._workflow_scheduler = _derive_scheduler(parent_ctx)
     self._node_rerun_on_resume = node.rerun_on_resume if node else True
-    self._child_run_counters: dict[str, int] = {}
     self._attempt_count = attempt_count
     self._output_delegated = False
     self._output_value: Any = None
@@ -708,7 +707,7 @@ class Context(ReadonlyContext):
       )
     self._event_actions.requested_tool_confirmations[self.function_call_id] = (
         ToolConfirmation(
-            hint=hint,
+            hint=hint or '',
             payload=payload,
         )
     )

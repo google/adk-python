@@ -32,7 +32,9 @@ from ..auth.auth_credential import AuthCredential
 from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..events._branch_path import _BranchPath
 from ..events.event import Event
+from ..live._active_streaming_tool import ActiveStreamingTool
 from ..live._audio_cache_manager import RealtimeCacheEntry as RealtimeCacheEntry
+from ..live._transcription_entry import TranscriptionEntry
 from ..live.live_request_queue import LiveRequestQueue
 from ..memory.base_memory_service import BaseMemoryService
 from ..plugins.plugin_manager import PluginManager
@@ -40,12 +42,10 @@ from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
 from ..tools.base_tool import BaseTool
 from ..workflow._base_node import BaseNode
-from .active_streaming_tool import ActiveStreamingTool
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
 from .context_cache_config import ContextCacheConfig
 from .run_config import RunConfig
-from .transcription_entry import TranscriptionEntry
 
 _EventQueueItem = tuple[object, asyncio.Event | None]
 
@@ -569,38 +569,6 @@ class InvocationContext(BaseModel):
           return True
 
     return False
-
-  # TODO: Move this method from invocation_context to a dedicated module.
-  def _find_matching_function_call(
-      self, function_response_event: Event
-  ) -> Event | None:
-    """Finds the function call event in the current invocation that matches the function response id."""
-    from ..flows.llm_flows.functions import find_event_by_function_call_id
-
-    function_responses = function_response_event.get_function_responses()
-    if not function_responses:
-      return None
-
-    events = self._get_events(current_invocation=True)
-    if events and events[-1].id == function_response_event.id:
-      search_space = events[:-1]
-    else:
-      search_space = events
-
-    function_response_id = function_responses[0].id
-    if not function_response_id:
-      return None
-    return find_event_by_function_call_id(search_space, function_response_id)
-
-  def stamp_event_branch_context(self, event: Event) -> None:
-    """Stamps the event with the branch and isolation scope of its matching function call."""
-    if function_call := self._find_matching_function_call(event):
-      event.branch = function_call.branch
-      if (
-          event.isolation_scope is None
-          and function_call.isolation_scope is not None
-      ):
-        event.isolation_scope = function_call.isolation_scope
 
 
 def new_invocation_context_id() -> str:

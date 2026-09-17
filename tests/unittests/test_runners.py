@@ -3131,9 +3131,9 @@ async def test_append_user_event_leaves_root_context_branch_alone():
 
   # Stamping is what puts a child branch on the event; the root must not follow.
   with mock.patch.object(
-      InvocationContext,
-      "stamp_event_branch_context",
-      lambda self, event: setattr(event, "branch", "coordinator@1.tool@2"),
+      runners,
+      "_stamp_event_branch_context",
+      lambda ic, event: setattr(event, "branch", "coordinator@1.tool@2"),
   ):
     event = await runner._append_user_event(
         ic, types.Content(parts=[types.Part.from_text(text="hi")])
@@ -4082,6 +4082,300 @@ async def test_retry_is_deduplicated_even_when_a_plugin_rewrote_the_message():
   )
   assert len(_user_events_for(stored, "inv-retry")) == 1
   assert plugin.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_run_async_early_close_executes_after_run_plugin():
+  """Closing runner.run_async early executes after_run callbacks."""
+  after_run_called = False
+
+  class _TestPlugin(BasePlugin):
+
+    async def after_run_callback(
+        self, *, invocation_context: InvocationContext
+    ) -> None:
+      nonlocal after_run_called
+      after_run_called = True
+
+  class EchoAgent(BaseAgent):
+
+    def __init__(self, name: str):
+      super().__init__(name=name, sub_agents=[])
+
+    async def _run_async_impl(
+        self, invocation_context: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      yield Event(
+          invocation_id=invocation_context.invocation_id,
+          author=self.name,
+          content=types.Content(
+              role="model", parts=[types.Part(text="step 1")]
+          ),
+      )
+      yield Event(
+          invocation_id=invocation_context.invocation_id,
+          author=self.name,
+          content=types.Content(
+              role="model", parts=[types.Part(text="step 2")]
+          ),
+      )
+
+  app = App(
+      name="test_app",
+      root_agent=EchoAgent("echo"),
+      plugins=[_TestPlugin(name="test_plugin")],
+  )
+  ss = InMemorySessionService()
+  runner = Runner(app=app, session_service=ss)
+  session = await ss.create_session(app_name="test_app", user_id=TEST_USER_ID)
+
+  async with aclosing(
+      runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=session.id,
+          new_message=types.Content(parts=[types.Part(text="go")], role="user"),
+      )
+  ) as agen:
+    async for _ in agen:
+      break
+
+  assert after_run_called is True
+
+
+@pytest.mark.asyncio
+async def test_run_async_cancellation_does_not_execute_after_run_plugin():
+  """External task cancellation skips after_run callbacks."""
+  after_run_called = False
+
+  class _TestPlugin(BasePlugin):
+
+    async def after_run_callback(
+        self, *, invocation_context: InvocationContext
+    ) -> None:
+      nonlocal after_run_called
+      after_run_called = True
+
+  class WaitingAgent(BaseAgent):
+
+    def __init__(self, name: str):
+      super().__init__(name=name, sub_agents=[])
+
+    async def _run_async_impl(
+        self, invocation_context: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      yield Event(
+          invocation_id=invocation_context.invocation_id,
+          author=self.name,
+          content=types.Content(
+              role="model", parts=[types.Part(text="started")]
+          ),
+      )
+      await asyncio.sleep(100)
+
+  app = App(
+      name="test_app",
+      root_agent=WaitingAgent("waiting"),
+      plugins=[_TestPlugin(name="test_plugin")],
+  )
+  ss = InMemorySessionService()
+  runner = Runner(app=app, session_service=ss)
+  session = await ss.create_session(app_name="test_app", user_id=TEST_USER_ID)
+
+  started_event = asyncio.Event()
+
+  async def consumer():
+    async for _ in runner.run_async(
+        user_id=TEST_USER_ID,
+        session_id=session.id,
+        new_message=types.Content(parts=[types.Part(text="go")], role="user"),
+    ):
+      started_event.set()
+
+  task = asyncio.create_task(consumer())
+  await started_event.wait()
+  task.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await task
+
+  assert after_run_called is False
+
+
+@pytest.mark.asyncio
+async def test_run_async_after_run_failure_on_early_close_does_not_escape():
+  """after_run failure on early close does not escape aclose()."""
+  reported_errors: list[Exception] = []
+
+  class _FailingAfterRunPlugin(BasePlugin):
+
+    async def after_run_callback(
+        self, *, invocation_context: InvocationContext
+    ) -> None:
+      raise ValueError("after_run boom")
+
+    async def on_run_error_callback(
+        self, *, invocation_context: InvocationContext, error: Exception
+    ) -> None:
+      reported_errors.append(error)
+
+  class EchoAgent(BaseAgent):
+
+    def __init__(self, name: str):
+      super().__init__(name=name, sub_agents=[])
+
+    async def _run_async_impl(
+        self, invocation_context: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      yield Event(
+          invocation_id=invocation_context.invocation_id,
+          author=self.name,
+          content=types.Content(role="model", parts=[types.Part(text="one")]),
+      )
+      yield Event(
+          invocation_id=invocation_context.invocation_id,
+          author=self.name,
+          content=types.Content(role="model", parts=[types.Part(text="two")]),
+      )
+
+  app = App(
+      name="test_app",
+      root_agent=EchoAgent("echo"),
+      plugins=[_FailingAfterRunPlugin(name="failing_plugin")],
+  )
+  ss = InMemorySessionService()
+  runner = Runner(app=app, session_service=ss)
+  session = await ss.create_session(app_name="test_app", user_id=TEST_USER_ID)
+
+  # Failure is reported through on_run_error rather than escaping aclose().
+  async with aclosing(
+      runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=session.id,
+          new_message=types.Content(parts=[types.Part(text="go")], role="user"),
+      )
+  ) as agen:
+    async for _ in agen:
+      break
+
+  assert len(reported_errors) == 1
+
+
+def test_run_sync_early_break_executes_after_run_plugin():
+  """Breaking out of synchronous run() executes after_run callbacks."""
+  after_run_called = False
+
+  class _TestPlugin(BasePlugin):
+
+    async def after_run_callback(
+        self, *, invocation_context: InvocationContext
+    ) -> None:
+      nonlocal after_run_called
+      after_run_called = True
+
+  class _SteppingAgent(BaseAgent):
+
+    async def _run_async_impl(
+        self, invocation_context: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      for i in range(5):
+        yield Event(
+            invocation_id=invocation_context.invocation_id,
+            author=self.name,
+            content=types.Content(
+                role="model", parts=[types.Part(text=f"step {i}")]
+            ),
+        )
+        await asyncio.sleep(0.05)
+
+  app = App(
+      name="test_app",
+      root_agent=_SteppingAgent(name="stepping"),
+      plugins=[_TestPlugin(name="test_plugin")],
+  )
+  runner = Runner(
+      app=app,
+      session_service=InMemorySessionService(),
+      auto_create_session=True,
+  )
+
+  consumed = 0
+  for _ in runner.run(
+      user_id=TEST_USER_ID,
+      session_id="session_sync_break",
+      new_message=types.Content(role="user", parts=[types.Part(text="go")]),
+  ):
+    consumed += 1
+    break
+
+  assert consumed == 1
+  assert after_run_called is True
+
+
+def test_stamp_event_branch_context_preserves_isolation_scope():
+  """Tests _stamp_event_branch_context does not overwrite existing isolation_scope with None."""
+  fc = types.Part.from_function_call(name="some_tool", args={})
+  fc.function_call.id = "test_function_call_id"
+  fc_event = Event(
+      invocation_id="inv_1",
+      author="agent",
+      branch="root@1",
+      isolation_scope=None,  # Coordinator FC has None scope
+      content=testing_utils.ModelContent([fc]),
+  )
+  fr = types.Part.from_function_response(
+      name="some_tool", response={"result": "ok"}
+  )
+  fr.function_response.id = "test_function_call_id"
+  fr_event = Event(
+      invocation_id="inv_1",
+      author="agent",
+      isolation_scope="task_123",  # Pre-populated active task scope
+      content=types.Content(role="user", parts=[fr]),
+  )
+  session = mock.Mock(spec=Session, events=[fc_event, fr_event])
+  ic = InvocationContext(
+      session_service=mock.Mock(spec=BaseSessionService),
+      agent=mock.Mock(spec=BaseAgent, name="agent"),
+      invocation_id="inv_1",
+      session=session,
+  )
+
+  runners._stamp_event_branch_context(ic, fr_event)
+  assert fr_event.branch == "root@1"
+  assert fr_event.isolation_scope == "task_123"
+
+
+def test_stamp_event_branch_context_does_not_overwrite_existing_scope():
+  """Tests _stamp_event_branch_context does not overwrite existing isolation_scope if set."""
+  fc = types.Part.from_function_call(name="some_tool", args={})
+  fc.function_call.id = "test_function_call_id"
+  fc_event = Event(
+      invocation_id="inv_1",
+      author="agent",
+      branch="root@1",
+      isolation_scope="task_456",  # Function call has isolation scope
+      content=testing_utils.ModelContent([fc]),
+  )
+  fr = types.Part.from_function_response(
+      name="some_tool", response={"result": "ok"}
+  )
+  fr.function_response.id = "test_function_call_id"
+  fr_event = Event(
+      invocation_id="inv_1",
+      author="agent",
+      isolation_scope="task_123",  # Pre-populated active task scope
+      content=types.Content(role="user", parts=[fr]),
+  )
+  session = mock.Mock(spec=Session, events=[fc_event, fr_event])
+  ic = InvocationContext(
+      session_service=mock.Mock(spec=BaseSessionService),
+      agent=mock.Mock(spec=BaseAgent, name="agent"),
+      invocation_id="inv_1",
+      session=session,
+  )
+
+  runners._stamp_event_branch_context(ic, fr_event)
+  assert fr_event.branch == "root@1"
+  assert fr_event.isolation_scope == "task_123"
 
 
 if __name__ == "__main__":

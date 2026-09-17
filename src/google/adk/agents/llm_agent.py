@@ -42,6 +42,7 @@ from ..code_executors.base_code_executor import BaseCodeExecutor
 from ..events.event import Event
 from ..flows.llm_flows.auto_flow import AutoFlow
 from ..flows.llm_flows.base_llm_flow import BaseLlmFlow
+from ..flows.llm_flows.functions import find_matching_function_call
 from ..flows.llm_flows.single_flow import SingleFlow
 from ..models.base_llm import BaseLlm
 from ..models.llm_request import LlmRequest
@@ -63,7 +64,18 @@ from .base_agent_config import BaseAgentConfig as BaseAgentConfig
 from .callback_context import CallbackContext
 from .context import Context
 from .invocation_context import InvocationContext
-from .llm_agent_config import LlmAgentConfig as LlmAgentConfig
+
+with warnings.catch_warnings():
+  # LlmAgentConfig subclasses the deprecated BaseAgentConfig purely as an
+  # internal implementation detail, so this import alone should not warn
+  # applications that never touch the deprecated Agent Config APIs.
+  warnings.filterwarnings(
+      'ignore',
+      message=r'.*BaseAgentConfig is deprecated.*',
+      category=DeprecationWarning,
+  )
+  from .llm_agent_config import LlmAgentConfig as LlmAgentConfig
+
 from .readonly_context import ReadonlyContext
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -156,10 +168,16 @@ async def _convert_tool_union_to_tools(
   # other tools.
   # TODO: Remove once the workaround is no longer needed.
   if multiple_tools and isinstance(tool_union, VertexAiSearchTool):
-    from ..tools.discovery_engine_search_tool import DiscoveryEngineSearchTool
-
     vais_tool = tool_union
     if vais_tool.bypass_multi_tools_limit:
+      try:
+        from ..tools.discovery_engine_search_tool import DiscoveryEngineSearchTool
+      except ImportError as e:
+        raise ImportError(
+            'VertexAiSearchTool with bypass_multi_tools_limit=True requires'
+            ' the google-cloud-discoveryengine package. Install it with'
+            ' `pip install google-adk[gcp]`.'
+        ) from e
       return [
           DiscoveryEngineSearchTool(
               data_store_id=vais_tool.data_store_id,
@@ -855,7 +873,7 @@ class LlmAgent(BaseAgent, abc.ABC):
     # We may need to wrap some built-in tools if there are other tools
     # because the built-in tools cannot be used together with other tools.
     # TODO: Remove once the workaround is no longer needed.
-    from ..flows.llm_flows.agent_transfer import _get_transfer_targets
+    from ..flows.llm_flows.extensions._agent_transfer import _get_transfer_targets
 
     multiple_tools = len(self.tools) > 1 or bool(_get_transfer_targets(self))
     model = self.canonical_model
@@ -966,7 +984,9 @@ class LlmAgent(BaseAgent, abc.ABC):
 
     # Last event is from user or another agent.
     if last_event.author == 'user':
-      function_call_event = ctx._find_matching_function_call(last_event)
+      function_call_event = find_matching_function_call(
+          ctx._get_events(current_invocation=True), last_event
+      )
       if not function_call_event:
         raise ValueError(
             'No agent to transfer to for resuming agent from function response'
@@ -986,7 +1006,15 @@ class LlmAgent(BaseAgent, abc.ABC):
     return None
 
   def __get_agent_to_run(self, agent_name: str) -> BaseAgent:
-    """Find the agent to run under the root agent by name."""
+    """Find the agent this agent transferred to, by name."""
+    from ..flows.llm_flows.extensions._agent_transfer import _get_transfer_targets
+
+    # Prefer this agent's own declared targets, so that resuming a transfer
+    # cannot run a same-named agent from an unrelated branch of the tree.
+    for target in _get_transfer_targets(self):
+      if target.name == agent_name:
+        return target
+
     agent_to_run = self.root_agent.find_agent(agent_name)
     if not agent_to_run:
       available = self._get_available_agent_names()
