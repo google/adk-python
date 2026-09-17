@@ -52,6 +52,7 @@ from .errors.session_not_found_error import SessionNotFoundError
 from .events.event import Event
 from .events.event_actions import EventActions
 from .flows.llm_flows import contents
+from .flows.llm_flows.functions import find_matching_function_call as _find_matching_function_call
 from .live import _runner_utils as _live_runner_utils
 from .live.live_request_queue import LiveRequestQueue
 from .memory.base_memory_service import BaseMemoryService
@@ -174,6 +175,19 @@ def _can_transfer_between_agents(root: Any) -> bool:
   from .agents import _agent_router
 
   return _agent_router.can_transfer_between_agents(root)
+
+
+def _stamp_event_branch_context(ic: InvocationContext, event: Event) -> None:
+  """Stamps the event with the branch and isolation scope of its matching function call."""
+  if function_call := _find_matching_function_call(
+      ic._get_events(current_invocation=True), event
+  ):
+    event.branch = function_call.branch
+    if (
+        event.isolation_scope is None
+        and function_call.isolation_scope is not None
+    ):
+      event.isolation_scope = function_call.isolation_scope
 
 
 class Runner:
@@ -701,7 +715,7 @@ class Runner:
       if active_scope is not None:
         event.isolation_scope, _ = active_scope
     _apply_run_config_custom_metadata(event, ic.run_config)
-    ic.stamp_event_branch_context(event)
+    _stamp_event_branch_context(ic, event)
     return await self.session_service.append_event(
         session=ic.session, event=event
     )
@@ -735,7 +749,7 @@ class Runner:
       if active_scope is not None:
         event.isolation_scope, _ = active_scope
     _apply_run_config_custom_metadata(event, ic.run_config)
-    ic.stamp_event_branch_context(event)
+    _stamp_event_branch_context(ic, event)
     return await self.session_service.append_event(
         session=ic.session, event=event
     )
@@ -1586,7 +1600,7 @@ class Runner:
           content=new_message,
       )
     _apply_run_config_custom_metadata(event, invocation_context.run_config)
-    invocation_context.stamp_event_branch_context(event)
+    _stamp_event_branch_context(invocation_context, event)
 
     await self.session_service.append_event(
         session=invocation_context.session, event=event

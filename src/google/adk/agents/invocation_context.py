@@ -570,38 +570,6 @@ class InvocationContext(BaseModel):
 
     return False
 
-  # TODO: Move this method from invocation_context to a dedicated module.
-  def _find_matching_function_call(
-      self, function_response_event: Event
-  ) -> Event | None:
-    """Finds the function call event in the current invocation that matches the function response id."""
-    from ..flows.llm_flows.functions import find_event_by_function_call_id
-
-    function_responses = function_response_event.get_function_responses()
-    if not function_responses:
-      return None
-
-    events = self._get_events(current_invocation=True)
-    if events and events[-1].id == function_response_event.id:
-      search_space = events[:-1]
-    else:
-      search_space = events
-
-    function_response_id = function_responses[0].id
-    if not function_response_id:
-      return None
-    return find_event_by_function_call_id(search_space, function_response_id)
-
-  def stamp_event_branch_context(self, event: Event) -> None:
-    """Stamps the event with the branch and isolation scope of its matching function call."""
-    if function_call := self._find_matching_function_call(event):
-      event.branch = function_call.branch
-      if (
-          event.isolation_scope is None
-          and function_call.isolation_scope is not None
-      ):
-        event.isolation_scope = function_call.isolation_scope
-
 
 def new_invocation_context_id() -> str:
   return "e-" + platform_uuid.new_uuid()

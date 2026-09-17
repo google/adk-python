@@ -415,6 +415,70 @@ def test_find_function_call_event_multiple_function_responses():
   assert result == call_event1  # First match (func_123)
 
 
+def test_find_matching_function_call_with_explicit_response_event():
+  """Test when function_response_event is explicitly provided."""
+  function_call = types.FunctionCall(id='func_123', name='test_func', args={})
+  function_response = types.FunctionResponse(
+      id='func_123', name='test_func', response={}
+  )
+
+  call_event = Event(
+      invocation_id='inv1',
+      author='agent1',
+      content=types.Content(
+          role='model', parts=[types.Part(function_call=function_call)]
+      ),
+  )
+  response_event = Event(
+      invocation_id='inv2',
+      author='user',
+      content=types.Content(
+          role='user', parts=[types.Part(function_response=function_response)]
+      ),
+  )
+  subsequent_event = Event(
+      invocation_id='inv3',
+      author='user',
+      content=types.Content(
+          role='user', parts=[types.Part(text='subsequent message')]
+      ),
+  )
+
+  events = [call_event, response_event, subsequent_event]
+
+  result = find_matching_function_call(
+      events, function_response_event=response_event
+  )
+  assert result == call_event
+
+
+def test_find_matching_function_call_empty_response_id_returns_none():
+  """Test that an empty function response ID returns None without searching."""
+  function_call = types.FunctionCall(id='', name='test_func', args={})
+  function_response = types.FunctionResponse(
+      id='', name='test_func', response={}
+  )
+
+  call_event = Event(
+      invocation_id='inv1',
+      author='agent1',
+      content=types.Content(
+          role='model', parts=[types.Part(function_call=function_call)]
+      ),
+  )
+  response_event = Event(
+      invocation_id='inv2',
+      author='user',
+      content=types.Content(
+          role='user', parts=[types.Part(function_response=function_response)]
+      ),
+  )
+
+  events = [call_event, response_event]
+  result = find_matching_function_call(events)
+  assert result is None
+
+
 @pytest.mark.asyncio
 async def test_function_call_args_not_modified():
   """Test that function_call.args is not modified when making a copy."""

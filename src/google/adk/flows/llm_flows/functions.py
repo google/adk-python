@@ -337,17 +337,28 @@ def _collect_function_call_ids(events: list[Event]) -> set[str]:
 
 def find_matching_function_call(
     events: list[Event],
+    function_response_event: Optional[Event] = None,
 ) -> Optional[Event]:
-  """Finds the function call event that matches the function response id of the last event."""
+  """Finds the function call event that matches the function response id."""
   if not events:
     return None
 
-  last_event = events[-1]
-  function_responses = last_event.get_function_responses()
+  target_response_event = (
+      function_response_event
+      if function_response_event is not None
+      else events[-1]
+  )
+  function_responses = target_response_event.get_function_responses()
   if not function_responses:
     return None
 
   function_call_id = function_responses[0].id
-  if function_call_id is None:
+  if not function_call_id:
     return None
-  return find_event_by_function_call_id(events[:-1], function_call_id)
+
+  if events and events[-1].id == target_response_event.id:
+    search_space = events[:-1]
+  else:
+    search_space = events
+
+  return find_event_by_function_call_id(search_space, function_call_id)

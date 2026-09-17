@@ -367,6 +367,20 @@ Use the mode.
     than `load_skills_from_dir`, because an invalid skill is logged and skipped,
     and a base path that is not a directory produces a warning and an empty dict
     instead of an exception.
+*   **Seeing what was skipped**: a skipped skill only reaches a log, so it
+    otherwise vanishes from the catalog with no signal. Pass `on_error` to get
+    the skill ID and the exception instead of the warning: return from it to
+    keep skipping, or raise to fail the whole listing. `list_skills_in_gcs_dir`
+    and both `_async` twins take the same argument.
+
+```python
+problems: dict[str, Exception] = {}
+
+def record(skill_id: str, error: Exception) -> None:
+    problems[skill_id] = error  # `raise error` here to fail instead.
+
+skills = list_skills_in_dir(skills_dir, on_error=record)
+```
 
 ### Load from Cloud Storage
 
