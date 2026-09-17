@@ -890,8 +890,10 @@ async def test_perform_inference_single_eval_item_live(
       return_value="test_session_id"
   )
   mock_user_sim = mocker.MagicMock()
-  eval_service._user_simulator_provider.provide = mocker.MagicMock(
-      return_value=mock_user_sim
+  mocker.patch.object(
+      eval_service._user_simulator_provider,
+      "provide",
+      return_value=mock_user_sim,
   )
 
   await eval_service._perform_inference_single_eval_item(
@@ -930,8 +932,10 @@ async def test_perform_inference_single_eval_item_non_live(
       return_value="test_session_id"
   )
   mock_user_sim = mocker.MagicMock()
-  eval_service._user_simulator_provider.provide = mocker.MagicMock(
-      return_value=mock_user_sim
+  mocker.patch.object(
+      eval_service._user_simulator_provider,
+      "provide",
+      return_value=mock_user_sim,
   )
 
   await eval_service._perform_inference_single_eval_item(
@@ -979,8 +983,10 @@ async def test_perform_inference_single_eval_item_uses_session_input_id(
       return_value="test_session_id"
   )
   mock_user_sim = mocker.MagicMock()
-  eval_service._user_simulator_provider.provide = mocker.MagicMock(
-      return_value=mock_user_sim
+  mocker.patch.object(
+      eval_service._user_simulator_provider,
+      "provide",
+      return_value=mock_user_sim,
   )
 
   inference_result = await eval_service._perform_inference_single_eval_item(
@@ -1043,8 +1049,10 @@ async def test_perform_inference_pinned_session_id_across_runs(
           status=UserSimulatorStatus.STOP_SIGNAL_DETECTED
       )
   )
-  eval_service._user_simulator_provider.provide = mocker.MagicMock(
-      return_value=mock_user_sim
+  mocker.patch.object(
+      eval_service._user_simulator_provider,
+      "provide",
+      return_value=mock_user_sim,
   )
   mock_runner = mocker.patch(
       "google.adk.evaluation.evaluation_generator.Runner"
