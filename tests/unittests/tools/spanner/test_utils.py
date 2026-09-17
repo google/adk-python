@@ -205,6 +205,8 @@ def test_execute_sql_circular_row_fallback_to_string(mock_get_spanner_client):
   )
 
   assert result == {"status": "SUCCESS", "rows": [str(circular_row)]}
+  mock_database.close.assert_called_once()
+  mock_spanner_client.close.assert_called_once()
 
 
 @mock.patch.object(spanner_utils, "embed_contents", autospec=True)

@@ -42,7 +42,8 @@ async def execute_sql(
     tool_context: ToolContext,
     parameters: Dict[str, Any] | None = None,
     parameter_types: Dict[str, Any] | None = None,
-) -> dict:
+    _view_parameters: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
   """Execute a GoogleSQL query from a Bigtable table.
 
   Args:
@@ -56,6 +57,7 @@ async def execute_sql(
       parameters (dict): properties for parameter replacement. Keys must match
         the names used in ``query``.
       parameter_types (dict): maps explicit types for one or more param values.
+      _view_parameters (dict): maps properties for parameterized views.
 
   Returns:
       dict: Dictionary containing the status and the rows read.
@@ -81,7 +83,7 @@ async def execute_sql(
   """
   del tool_context  # Unused for now
 
-  def _execute_sql():
+  def _execute_sql() -> Dict[str, Any]:
     try:
       bt_client = client.get_bigtable_data_client(
           project=project_id, credentials=credentials
@@ -91,6 +93,7 @@ async def execute_sql(
           instance_id=instance_id,
           parameters=parameters,
           parameter_types=parameter_types,
+          view_parameters=_view_parameters,
       )
 
       rows: List[Dict[str, Any]] = []
@@ -119,7 +122,7 @@ async def execute_sql(
       finally:
         eqi.close()
 
-      result = {"status": "SUCCESS", "rows": rows}
+      result: Dict[str, Any] = {"status": "SUCCESS", "rows": rows}
       if truncated:
         result["result_is_likely_truncated"] = True
       return result

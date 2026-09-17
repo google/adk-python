@@ -20,6 +20,7 @@ import inspect
 import logging
 from typing import Any
 from typing import Callable
+from typing import cast
 from typing import Optional
 from typing import Union
 
@@ -33,10 +34,16 @@ from ...models.llm_request import LlmRequest
 from ..base_toolset import BaseToolset
 from ..tool_context import ToolContext
 from .base_computer import BaseComputer
+from .base_computer import ComputerState
 from .computer_use_tool import ComputerUseTool
 
 # Methods that should be excluded when creating tools from BaseComputer methods
 EXCLUDED_METHODS = {"screen_size", "environment", "close", "prepare"}
+
+_URL_REFUSED_ERROR = (
+    "navigate refused: url must be http(s) and must not target a private or"
+    " link-local address."
+)
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -49,12 +56,24 @@ class ComputerUseToolset(BaseToolset):
       *,
       computer: BaseComputer,
       excluded_predefined_functions: Optional[list[str]] = None,
+      allow_private_network_access: bool = False,
   ):
+    """Initializes the ComputerUseToolset.
+
+    Args:
+      computer: The computer environment to expose as tools.
+      excluded_predefined_functions: Names of BaseComputer methods that should
+        not be exposed as tools.
+      allow_private_network_access: By default `navigate` refuses urls whose
+        host is not publicly routable. Set this to True when the agent is
+        meant to drive the browser against localhost or an internal host.
+    """
     super().__init__()
     self._computer = computer
     self._excluded_predefined_functions = excluded_predefined_functions
+    self._allow_private_network_access = allow_private_network_access
     self._initialized = False
-    self._tools = None
+    self._tools: Optional[list[ComputerUseTool]] = None
 
   async def _ensure_initialized(self) -> None:
     if not self._initialized:
@@ -81,7 +100,9 @@ class ComputerUseToolset(BaseToolset):
 
     @functools.wraps(method)
     async def wrapper(
-        *args: Any, tool_context: ToolContext = None, **kwargs: Any
+        *args: Any,
+        tool_context: Optional[ToolContext] = None,
+        **kwargs: Any,
     ) -> Any:
       # Prepare computer before each tool call
       # Computers that need session state (e.g., AgentEngineSandboxComputer)
@@ -103,7 +124,43 @@ class ComputerUseToolset(BaseToolset):
             annotation=ToolContext,
         )
     ]
-    wrapper.__signature__ = orig_sig.replace(parameters=new_params)
+    setattr(wrapper, "__signature__", orig_sig.replace(parameters=new_params))
+
+    return wrapper
+
+  def _wrap_navigate_with_url_validation(
+      self, navigate_method: Callable[..., Any]
+  ) -> Callable[..., Any]:
+    """Checks a model-supplied url before `navigate` hands it to the browser."""
+
+    @functools.wraps(navigate_method)
+    async def wrapper(url: str) -> Any:
+      # Deferred to keep `requests` off the computer-use import path.
+      from ..load_web_page import _is_blocked_hostname
+      from ..load_web_page import _parse_request_target
+      from ..load_web_page import _resolve_direct_addresses
+
+      try:
+        if not isinstance(url, str):
+          raise ValueError("url is not a string")
+        target = _parse_request_target(url)
+        # A browser ends the authority at "\" but urlparse does not: in
+        # `http://169.254.169.254\@example.com/` the host is example.com here
+        # and 169.254.169.254 in Chrome, so refuse instead of checking it.
+        if "\\" in target.parsed_url.netloc:
+          raise ValueError("backslash in hostname")
+        if not self._allow_private_network_access:
+          if _is_blocked_hostname(target.hostname):
+            raise ValueError("hostname is blocked")
+          # getaddrinfo blocks, so keep it off the event loop.
+          await asyncio.to_thread(_resolve_direct_addresses, target.hostname)
+      except ValueError:
+        logger.warning("Refusing navigate(): url failed safety validation.")
+        # The computer-use model rejects a function response with no url,
+        # so report the page the browser is currently on.
+        state: ComputerState = await self._computer.current_state()
+        return {"error": _URL_REFUSED_ERROR, "url": state.url}
+      return await navigate_method(url)
 
     return wrapper
 
@@ -146,16 +203,14 @@ class ComputerUseToolset(BaseToolset):
       logger.warning("Method %s not found in tools_dict", method_name)
       return
 
-    original_tool = llm_request.tools_dict[method_name]
+    original_tool = cast(ComputerUseTool, llm_request.tools_dict[method_name])
 
     # Create the adapted function using the adapter
-    # Handle both sync and async adapter functions
-    if asyncio.iscoroutinefunction(adapter_func):
-      # If adapter_func is async, await it to get the adapted function
-      adapted_func = await adapter_func(original_tool.func)
+    adapted_func_or_awaitable = adapter_func(original_tool.func)
+    if inspect.isawaitable(adapted_func_or_awaitable):
+      adapted_func = await adapted_func_or_awaitable
     else:
-      # If adapter_func is sync, call it directly
-      adapted_func = adapter_func(original_tool.func)
+      adapted_func = adapted_func_or_awaitable
 
     # Get the name from the adapted function
     new_method_name = adapted_func.__name__
@@ -178,7 +233,9 @@ class ComputerUseToolset(BaseToolset):
     )
 
   @override
-  async def get_tools(
+  # list is invariant, so the narrower element type is not a compatible
+  # override; widening it to BaseTool would change this public signature.
+  async def get_tools(  # type: ignore[override]
       self,
       readonly_context: Optional[ReadonlyContext] = None,
   ) -> list[ComputerUseTool]:
@@ -217,6 +274,11 @@ class ComputerUseToolset(BaseToolset):
       if attr is not None and callable(attr):
         # Get the corresponding method from the concrete instance
         instance_method = getattr(self._computer, method_name)
+        if method_name == "navigate":
+          # Check the url the model supplied before it reaches the browser.
+          instance_method = self._wrap_navigate_with_url_validation(
+              instance_method
+          )
         # Wrap with state binding so session_state is set before each call
         wrapped_method = self._wrap_method_with_state_binding(instance_method)
         computer_methods.append(wrapped_method)
@@ -247,16 +309,20 @@ class ComputerUseToolset(BaseToolset):
       if not self._tools:
         await self.get_tools()
 
-      for tool in self._tools:
-        llm_request.tools_dict[tool.name] = tool
+      assert self._tools is not None
+      for computer_tool in self._tools:
+        llm_request.tools_dict[computer_tool.name] = computer_tool
 
       # Initialize config if needed
       llm_request.config = llm_request.config or types.GenerateContentConfig()
       llm_request.config.tools = llm_request.config.tools or []
 
       # Check if computer use is already configured
-      for tool in llm_request.config.tools:
-        if isinstance(tool, types.Tool) and tool.computer_use:
+      for configured_tool in llm_request.config.tools:
+        if (
+            isinstance(configured_tool, types.Tool)
+            and configured_tool.computer_use
+        ):
           logger.debug("Computer use already configured in LLM request")
           return
 

@@ -1,0 +1,253 @@
+{
+  "events": [
+    {
+      "author": "user",
+      "content": {
+        "parts": [
+          {
+            "text": "My phone number is 555-1234"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-1",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "Thanks! What is your full name?"
+          }
+        ],
+        "role": "model"
+      },
+      "author": "intake_agent",
+      "nodeInfo": {
+        "path": "task_in_workflow@1/intake_agent@1"
+      },
+      "isolationScope": "task_in_workflow@1/intake_agent@1"
+    },
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "Jane Doe"
+          }
+        ],
+        "role": "user"
+      },
+      "author": "user",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "id": "fc-1",
+              "args": {
+                "name": "Jane Doe",
+                "phone_number": "555-1234"
+              },
+              "name": "finish_task"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "author": "intake_agent",
+      "nodeInfo": {
+        "path": "task_in_workflow@1/intake_agent@1"
+      },
+      "isolationScope": "task_in_workflow@1/intake_agent@1"
+    },
+    {
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-1",
+              "name": "finish_task",
+              "response": {
+                "result": "Task completed."
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "author": "intake_agent",
+      "output": {
+        "name": "Jane Doe",
+        "phone_number": "555-1234"
+      },
+      "nodeInfo": {
+        "path": "task_in_workflow@1/intake_agent@1",
+        "outputFor": [
+          "task_in_workflow@1/intake_agent@1"
+        ]
+      },
+      "isolationScope": "task_in_workflow@1/intake_agent@1"
+    },
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "Hello Jane Doe! Let me look up your orders."
+          }
+        ],
+        "role": "user"
+      },
+      "author": "task_in_workflow",
+      "nodeInfo": {
+        "path": "task_in_workflow@1/check_identity@1"
+      }
+    },
+    {
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "id": "fc-2",
+              "args": {},
+              "name": "find_orders"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "author": "generate_instruction",
+      "nodeInfo": {
+        "path": "task_in_workflow@1/generate_instruction@1"
+      }
+    },
+    {
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "id": "fc-3",
+              "args": {
+                "originalFunctionCall": {
+                  "id": "fc-2",
+                  "args": {},
+                  "name": "find_orders"
+                },
+                "toolConfirmation": {
+                  "hint": "Please approve or reject the tool call find_orders() by responding with a FunctionResponse with an expected ToolConfirmation payload.",
+                  "confirmed": false
+                }
+              },
+              "name": "adk_request_confirmation"
+            }
+          }
+        ]
+      },
+      "author": "generate_instruction",
+      "nodeInfo": {
+        "path": "task_in_workflow@1/generate_instruction@1"
+      },
+      "longRunningToolIds": [
+        "fc-3"
+      ]
+    },
+    {
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-2",
+              "name": "find_orders",
+              "response": {
+                "error": "This tool call requires confirmation, please approve or reject."
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "author": "generate_instruction",
+      "actions": {
+        "skipSummarization": true,
+        "requestedToolConfirmations": {
+          "fc-2": {
+            "hint": "Please approve or reject the tool call find_orders() by responding with a FunctionResponse with an expected ToolConfirmation payload.",
+            "confirmed": false
+          }
+        }
+      },
+      "nodeInfo": {
+        "path": "task_in_workflow@1/generate_instruction@1"
+      }
+    },
+    {
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-3",
+              "name": "adk_request_confirmation",
+              "response": {
+                "confirmed": true,
+                "payload": {}
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "author": "user",
+      "nodeInfo": {
+        "path": ""
+      }
+    },
+    {
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-2",
+              "name": "find_orders",
+              "response": {
+                "result": [
+                  "CBC (Complete Blood Count)",
+                  "Lipid Panel"
+                ]
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "author": "generate_instruction",
+      "nodeInfo": {
+        "path": "task_in_workflow@1/generate_instruction@1"
+      }
+    },
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "The patient has the following orders: CBC (Complete Blood Count) and Lipid Panel.\n\nPlease fast for 8-12 hours before your appointment for the Lipid Panel. You may drink water."
+          }
+        ],
+        "role": "model"
+      },
+      "author": "generate_instruction",
+      "nodeInfo": {
+        "path": "task_in_workflow@1/generate_instruction@1",
+        "outputFor": [
+          "task_in_workflow@1/generate_instruction@1",
+          "task_in_workflow@1"
+        ],
+        "messageAsOutput": true
+      }
+    }
+  ]
+}

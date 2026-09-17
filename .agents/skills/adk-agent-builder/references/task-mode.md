@@ -1,86 +1,60 @@
-# Task Mode: Structured Delegation
+# Task Delegation (`mode='task'` / `mode='single_turn'`)
 
-Delegate structured tasks to sub-agents with typed input/output schemas.
+Hand a sub-agent a schema-validated job and get a schema-validated answer back,
+instead of transferring the whole conversation to it.
 
-## 📋 Agent Verification Checklist (Task Mode)
-Use this checklist to verify your Task Mode configuration:
-- [ ] **Mode Setting**: Did you explicitly set `mode='task'` or `mode='single_turn'` on the sub-agent?
-- [ ] **Description**: Does the sub-agent have a clear `description`? (Crucial for the auto-generated tool's description)
-- [ ] **Schemas**: Are `input_schema` and `output_schema` defined as Pydantic models? (If not, defaults are used)
-- [ ] **Completion**: Does the sub-agent know it must call `finish_task` to return results to the coordinator?
+## The three modes
 
-## 💡 Quick Reference (Generated Tools)
-- **`request_task_{agent_name}`**: Generated on the **coordinator** to delegate tasks.
-- **`finish_task`**: Generated on the **sub-agent** to return results and complete the task.
+`LlmAgent.mode` is `'chat'`, `'task'`, `'single_turn'`, or unset. Unset means
+`'chat'` when the agent is a sub-agent, `'single_turn'` when it is a workflow
+node.
 
-## Overview
+| Mode | How the parent reaches it | User interaction | How it finishes |
+|---|---|---|---|
+| `chat` | the `transfer_to_agent` tool | full conversation | transfers back |
+| `task` | a tool named after the sub-agent | can ask the user for clarification | calls `finish_task` |
+| `single_turn` | a tool named after the sub-agent | none — told no reply is coming | calls `finish_task` |
 
-ADK agents support three delegation modes via the `mode` parameter on `Agent`:
+The delegation tool takes the sub-agent's **`name`** verbatim. An agent called
+`researcher` is exposed to the coordinator as a tool called `researcher`, and
+its `description` becomes the tool description, so write the description for a
+model deciding whether to call it.
 
-| Mode | Tool Generated | User Interaction | Completion |
-|------|---------------|------------------|------------|
-| `chat` (default) | `transfer_to_agent` | Full conversational | Agent transfers back |
-| `task` | `request_task_{name}` | Multi-turn (can chat with user) | Calls `finish_task` |
-| `single_turn` | `request_task_{name}` | None (autonomous) | Calls `finish_task` |
-
-## Imports
+## Task mode
 
 ```python
 from google.adk import Agent
 from pydantic import BaseModel
-```
 
-**Note**: Task mode uses `Agent` (aliased from `LlmAgent`) from `google.adk`. Both task sub-agents and coordinators use the same `Agent` class — set `mode='task'` or `mode='single_turn'` on sub-agents.
-
-## Task Mode (`mode='task'`)
-
-A task agent receives structured input via `request_task_{name}`, can interact with the user for clarification, and returns structured output via `finish_task`.
-
-### Delegation Lifecycle
-
-1. User asks the coordinator to do something
-2. Coordinator calls `request_task_{agent_name}(...)` with structured input
-3. Task agent receives the input, works on it (may use tools, may chat with user)
-4. Task agent calls `finish_task(...)` with structured output
-5. Coordinator receives the result and responds to the user
-
-### Example
-
-```python
-from google.adk import Agent
-from pydantic import BaseModel
 
 class ResearchInput(BaseModel):
   topic: str
   depth: str = 'standard'
+
 
 class ResearchOutput(BaseModel):
   summary: str
   key_findings: str
   confidence: str
 
+
 def search_web(query: str) -> str:
   """Search the web for information."""
   return f'Results for "{query}": ...'
 
-def analyze_sources(sources: str) -> str:
-  """Analyze and synthesize source material."""
-  return f'Analysis of {len(sources.split())} words complete.'
 
 researcher = Agent(
     name='researcher',
     mode='task',
     input_schema=ResearchInput,
     output_schema=ResearchOutput,
-    instruction=(
-        'You are a research assistant. When given a topic:\n'
-        '1. Use search_web to find information.\n'
-        '2. Use analyze_sources to synthesize findings.\n'
-        '3. If the user asks for changes, adjust your research.\n'
-        '4. Call finish_task with summary, key_findings, and confidence.'
-    ),
     description='Researches topics using web search and analysis.',
-    tools=[search_web, analyze_sources],
+    instruction=(
+        'Research the given topic with search_web. If the user asks for'
+        ' changes, adjust. When done, call finish_task with summary,'
+        ' key_findings, and confidence.'
+    ),
+    tools=[search_web],
 )
 
 root_agent = Agent(
@@ -88,40 +62,34 @@ root_agent = Agent(
     model='gemini-2.5-flash',
     sub_agents=[researcher],
     instruction=(
-        'When the user asks you to research something, delegate to'
-        ' the researcher using request_task_researcher. After the'
-        ' researcher completes, summarize the results for the user.'
+        'When the user asks for research, call the researcher tool. Summarize'
+        ' its result for the user.'
     ),
 )
 ```
 
-## Single-Turn Mode (`mode='single_turn'`)
+Sequence: the coordinator calls the `researcher` tool with structured input; the
+researcher works, possibly talking to the user; the researcher calls
+`finish_task` with structured output; the coordinator gets the result.
 
-A single-turn agent completes autonomously with no user interaction. It receives input, does its work, and returns a result.
+## Single-turn mode
 
-### Example
+Same shape, no conversation. The framework appends a nudge to the sub-agent's
+input telling it no further user replies will arrive, so it must finish from the
+input alone.
 
 ```python
 class SummaryOutput(BaseModel):
   summary: str
   word_count: int
-  key_points: str
 
-def extract_text(url: str) -> str:
-  """Extract text from a URL."""
-  return f'Extracted content from {url}: ...'
 
 summarizer = Agent(
     name='summarizer',
     mode='single_turn',
     output_schema=SummaryOutput,
-    instruction=(
-        'Summarize the document:\n'
-        '1. Use extract_text to get content.\n'
-        '2. Call finish_task with summary, word_count, key_points.\n'
-        'Complete autonomously without user interaction.'
-    ),
     description='Summarizes documents autonomously.',
+    instruction='Summarize the document with extract_text, then finish_task.',
     tools=[extract_text],
 )
 
@@ -129,147 +97,104 @@ root_agent = Agent(
     name='coordinator',
     model='gemini-2.5-flash',
     sub_agents=[summarizer],
-    instruction='Delegate summarization to summarizer via request_task_summarizer.',
+    instruction='Delegate summarization to the summarizer tool.',
 )
 ```
 
-## Input and Output Schemas
+## Schemas
 
-### Custom Schemas (Pydantic Models)
-
-Define `input_schema` and/or `output_schema` with Pydantic `BaseModel`:
+`input_schema` types the delegation tool's parameters; `output_schema` types
+`finish_task`'s parameters. Both are optional.
 
 ```python
-class TaskInput(BaseModel):
-  query: str
-  max_results: int = 10
-  format: str = 'text'
-
-class TaskOutput(BaseModel):
-  results: str
-  count: int
-  status: str
-
 agent = Agent(
     name='worker',
     mode='task',
-    input_schema=TaskInput,    # Validates request_task_worker args
-    output_schema=TaskOutput,  # Validates finish_task args
+    input_schema=TaskInput,    # validates the delegation call
+    output_schema=TaskOutput,  # validates the finish_task call
     ...
 )
 ```
 
-### Default Schemas
+Without them the defaults are a single string each:
 
-When no custom schema is provided:
-
-**Default input** (used by `request_task_{name}`):
 ```python
-class _DefaultTaskInput(BaseModel):
-  goal: str | None = None
-  background: str | None = None
+# delegation tool parameters
+{'request': str}   # "Detailed instructions or context for the task sub-agent."
+
+# finish_task parameters
+{'result': str}
 ```
 
-**Default output** (used by `finish_task`):
-```python
-class _DefaultTaskOutput(BaseModel):
-  result: str
-```
+A schema violation is not fatal — `finish_task` returns a validation-error
+message and the model gets to retry.
 
-## Auto-Generated Tools
+## `finish_task`
 
-### `request_task_{agent_name}`
+`mode='task'` attaches a tool called `finish_task` to the sub-agent
+automatically, and injects an instruction telling the model to complete the work
+before calling it. Its parameters come from `output_schema`, or `{'result':
+str}` when there is none. There is nothing to import or register.
 
-Auto-generated on the **coordinator** for each `mode='task'` or `mode='single_turn'` sub-agent. The tool name is `request_task_{agent.name}`.
-
-- Parameters come from `input_schema` (or default: `goal`, `background`)
-- Description includes the agent's `description` field
-- Validates input against the schema before delegating
-
-### `finish_task`
-
-Auto-generated on the **task agent** itself. Called by the task agent when work is complete.
-
-- Parameters come from `output_schema` (or default: `result`)
-- Validates output against the schema before signaling completion
-- Sets `tool_context.actions.finish_task` with a `TaskResult`
-
-## Mixed-Mode Patterns
-
-Combine task and single-turn agents under one coordinator:
+## Mixed modes under one coordinator
 
 ```python
-# Interactive: user can discuss options
 flight_searcher = Agent(
     name='flight_searcher',
-    mode='task',
+    mode='task',                # interactive: can discuss options
     input_schema=FlightSearchInput,
     output_schema=FlightSearchOutput,
-    instruction='Search flights, discuss with user, then finish_task.',
     description='Searches and books flights interactively.',
+    instruction='Search flights, discuss with the user, then finish_task.',
     tools=[search_flights, book_flight],
 )
 
-# Autonomous: no user interaction
 weather_checker = Agent(
     name='weather_checker',
-    mode='single_turn',
+    mode='single_turn',         # autonomous
     output_schema=WeatherOutput,
-    instruction='Check weather and call finish_task. No user interaction.',
     description='Checks weather for a destination.',
+    instruction='Check the weather and call finish_task.',
     tools=[get_weather],
-)
-
-# Autonomous: no user interaction
-hotel_finder = Agent(
-    name='hotel_finder',
-    mode='single_turn',
-    output_schema=HotelOutput,
-    instruction='Find hotels and call finish_task. No user interaction.',
-    description='Finds hotels for a destination.',
-    tools=[find_hotels],
 )
 
 root_agent = Agent(
     name='travel_planner',
     model='gemini-2.5-flash',
-    sub_agents=[flight_searcher, weather_checker, hotel_finder],
+    sub_agents=[flight_searcher, weather_checker],
     instruction=(
-        'Help users plan trips:\n'
-        '- request_task_weather_checker: autonomous weather check\n'
-        '- request_task_hotel_finder: autonomous hotel search\n'
-        '- request_task_flight_searcher: interactive flight booking'
+        'Plan trips. Use weather_checker for weather and flight_searcher for'
+        ' booking.'
     ),
 )
 ```
 
-## Key Rules
+## Rules worth knowing
 
-- Both task sub-agents and coordinators use `Agent` from `google.adk`
-- Each sub-agent needs a `description` (used in the auto-generated tool description)
-- `input_schema` and `output_schema` are optional; defaults are provided
-- Sub-agents inherit model from the coordinator if not set
-- `finish_task` instructions are auto-injected into the task agent's LLM context
-- Single-turn agents receive an extra instruction telling them no user replies will come
+- Only the coordinator needs `model=`; sub-agents inherit it from the nearest
+  `LlmAgent` ancestor.
+- Every delegating sub-agent needs a `description` — it is the entire tool
+  description the coordinator's model sees.
+- The delegation tool is marked as deferring its response and its description
+  tells the model **not** to call it in parallel with other tools. Do not build
+  a prompt that asks for several delegations in one turn.
+- A `mode='chat'` sub-agent gets neither a delegation tool nor `finish_task`; it
+  stays a `transfer_to_agent` target.
 
-## Task Mode vs Chat Mode
+## Task mode versus chat transfer
 
-| Feature | Chat (`transfer_to_agent`) | Task (`request_task`) |
-|---------|---------------------------|----------------------|
-| Input | Free-form conversation | Structured (schema-validated) |
-| Output | Free-form conversation | Structured (schema-validated) |
-| Control flow | Agent decides when to transfer back | Agent calls `finish_task` |
-| User interaction | Full chat | `task`: multi-turn; `single_turn`: none |
-| Tool name | `transfer_to_agent` | `request_task_{name}` |
-| Parallel delegation | Not supported | Supported (multiple `request_task` calls) |
+| | chat (`transfer_to_agent`) | task / single_turn |
+|---|---|---|
+| input | free-form conversation | schema-validated |
+| output | free-form conversation | schema-validated |
+| control returns when | the agent transfers back | the agent calls `finish_task` |
+| user interaction | full chat | `task`: multi-turn, `single_turn`: none |
 
-## Source File Locations
+## Where the code lives
 
 | Component | File |
-|-----------|------|
-| Agent/LlmAgent (mode, schemas) | `src/google/adk/agents/llm_agent.py` |
-| BaseLlmFlow (base flow class) | `src/google/adk/flows/llm_flows/base_llm_flow.py` |
-| RequestTaskTool | `src/google/adk/agents/llm/task/_request_task_tool.py` |
-| FinishTaskTool | `src/google/adk/agents/llm/task/_finish_task_tool.py` |
-| TaskRequest, TaskResult | `src/google/adk/agents/llm/task/_task_models.py` |
-| Task samples | `contributing/task_samples/` |
+|---|---|
+| `mode`, `input_schema`, `output_schema` | `src/google/adk/agents/llm_agent.py` |
+| delegation tools, default input schema | `src/google/adk/tools/agent_tool.py` |
+| `finish_task` | `src/google/adk/agents/llm/task/_finish_task_tool.py` |
+| `TaskRequest`, `TaskResult` | `src/google/adk/agents/llm/task/_task_models.py` |

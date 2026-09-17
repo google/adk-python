@@ -18,39 +18,21 @@ from unittest import mock
 
 from google.adk.labs.openai._openai_llm import _function_declaration_to_openai_tool
 from google.adk.labs.openai._openai_llm import _part_to_openai_content
-from google.adk.labs.openai._openai_llm import _update_type_string
 from google.adk.labs.openai._openai_llm import OpenAILlm
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 from google.genai.types import Content
 from google.genai.types import Part
+from openai import AsyncOpenAI
 import pytest
 
 
 def test_supported_models():
   models = OpenAILlm.supported_models()
-  assert len(models) == 3
+  assert len(models) == 2
   assert models[0] == r"gpt-.*"
-  assert models[1] == r"o1-.*"
-  assert models[2] == r"o3-.*"
-
-
-def test_update_type_string():
-  schema = {
-      "type": "OBJECT",
-      "properties": {
-          "name": {"type": "STRING"},
-          "age": {"type": "INTEGER"},
-          "tags": {"type": "ARRAY", "items": {"type": "STRING"}},
-      },
-  }
-  _update_type_string(schema)
-  assert schema["type"] == "object"
-  assert schema["properties"]["name"]["type"] == "string"
-  assert schema["properties"]["age"]["type"] == "integer"
-  assert schema["properties"]["tags"]["type"] == "array"
-  assert schema["properties"]["tags"]["items"]["type"] == "string"
+  assert models[1] == r"o\d+-.*"
 
 
 def test_function_declaration_to_openai_tool():
@@ -349,3 +331,288 @@ async def test_generate_content_async_with_image():
       assert content[0]["text"] == "Analyze this"
       assert content[1]["type"] == "image_url"
       assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def _completion_with_cached_tokens(cached_tokens):
+  """Builds a mock ChatCompletion whose usage carries prompt_tokens_details."""
+  mock_response = mock.MagicMock()
+  mock_choice = mock.MagicMock()
+  mock_message = mock.MagicMock()
+  mock_message.content = "Hello there!"
+  mock_message.tool_calls = None
+  mock_choice.message = mock_message
+  mock_response.choices = [mock_choice]
+  mock_response.usage.prompt_tokens = 100
+  mock_response.usage.completion_tokens = 5
+  mock_response.usage.total_tokens = 105
+  if cached_tokens is None:
+    mock_response.usage.prompt_tokens_details = None
+  else:
+    mock_response.usage.prompt_tokens_details.cached_tokens = cached_tokens
+  return mock_response
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_reports_cached_tokens():
+  """prompt_tokens_details.cached_tokens populates cached_content_token_count."""
+  with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
+    openai_llm = OpenAILlm(model="gpt-4o")
+    llm_request = LlmRequest(
+        model="gpt-4o",
+        contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+    )
+
+    mock_response = _completion_with_cached_tokens(64)
+
+    async def mock_create(*args, **kwargs):
+      return mock_response
+
+    with mock.patch(
+        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+    ) as mock_client_class:
+      mock_client = mock.MagicMock()
+      mock_client_class.return_value = mock_client
+      mock_client.chat.completions.create = mock_create
+
+      responses = [
+          resp
+          async for resp in openai_llm.generate_content_async(
+              llm_request, stream=False
+          )
+      ]
+
+      assert len(responses) == 1
+      assert responses[0].usage_metadata.cached_content_token_count == 64
+      assert responses[0].usage_metadata.prompt_token_count == 100
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_zero_cached_tokens():
+  """No cache hit (cached_tokens=0) reports 0, not a regression."""
+  with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
+    openai_llm = OpenAILlm(model="gpt-4o")
+    llm_request = LlmRequest(
+        model="gpt-4o",
+        contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+    )
+
+    mock_response = _completion_with_cached_tokens(0)
+
+    async def mock_create(*args, **kwargs):
+      return mock_response
+
+    with mock.patch(
+        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+    ) as mock_client_class:
+      mock_client = mock.MagicMock()
+      mock_client_class.return_value = mock_client
+      mock_client.chat.completions.create = mock_create
+
+      responses = [
+          resp
+          async for resp in openai_llm.generate_content_async(
+              llm_request, stream=False
+          )
+      ]
+
+      assert responses[0].usage_metadata.cached_content_token_count == 0
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_absent_prompt_tokens_details():
+  """Missing prompt_tokens_details maps to None (no cached count reported)."""
+  with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
+    openai_llm = OpenAILlm(model="gpt-4o")
+    llm_request = LlmRequest(
+        model="gpt-4o",
+        contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+    )
+
+    mock_response = _completion_with_cached_tokens(None)
+
+    async def mock_create(*args, **kwargs):
+      return mock_response
+
+    with mock.patch(
+        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+    ) as mock_client_class:
+      mock_client = mock.MagicMock()
+      mock_client_class.return_value = mock_client
+      mock_client.chat.completions.create = mock_create
+
+      responses = [
+          resp
+          async for resp in openai_llm.generate_content_async(
+              llm_request, stream=False
+          )
+      ]
+
+      assert responses[0].usage_metadata.cached_content_token_count is None
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_routes_through_provided_client():
+  """Requests reach the pre-configured client, not a default one."""
+  client = AsyncOpenAI(base_url="https://compatible.example/v1", api_key="k")
+  openai_llm = OpenAILlm(model="my-model", client=client)
+  llm_request = LlmRequest(
+      model="my-model",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+  )
+
+  mock_response = mock.MagicMock()
+  mock_choice = mock.MagicMock()
+  mock_message = mock.MagicMock()
+  mock_message.content = "Hello there!"
+  mock_message.tool_calls = None
+  mock_choice.message = mock_message
+  mock_response.choices = [mock_choice]
+  mock_response.usage.prompt_tokens = 10
+  mock_response.usage.completion_tokens = 5
+  mock_response.usage.total_tokens = 15
+  mock_response.usage.prompt_tokens_details = None
+
+  async def mock_create(*args, **kwargs):
+    return mock_response
+
+  with mock.patch.object(
+      client.chat.completions, "create", side_effect=mock_create
+  ) as mock_client_create:
+    with mock.patch(
+        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+    ) as mock_client_class:
+      responses = [
+          resp
+          async for resp in openai_llm.generate_content_async(
+              llm_request, stream=False
+          )
+      ]
+
+  mock_client_class.assert_not_called()
+  mock_client_create.assert_called_once()
+  assert responses[0].content.parts[0].text == "Hello there!"
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_streaming_tool_call():
+  openai_llm = OpenAILlm(model="gpt-4o", api_key="k")
+  llm_request = LlmRequest(
+      model="gpt-4o",
+      contents=[Content(role="user", parts=[Part.from_text(text="Weather?")])],
+      config=types.GenerateContentConfig(
+          tools=[
+              types.Tool(
+                  function_declarations=[
+                      types.FunctionDeclaration(
+                          name="get_weather",
+                          description="Get weather",
+                          parameters=types.Schema(
+                              type=types.Type.OBJECT,
+                              properties={
+                                  "location": types.Schema(
+                                      type=types.Type.STRING
+                                  )
+                              },
+                          ),
+                      )
+                  ]
+              )
+          ]
+      ),
+  )
+
+  chunk_1 = mock.MagicMock()
+  choice_1 = mock.MagicMock()
+  delta_1 = mock.MagicMock()
+  delta_1.content = None
+  tc_1 = mock.MagicMock()
+  tc_1.index = 0
+  tc_1.id = "call_123"
+  tc_1.function = mock.MagicMock()
+  tc_1.function.name = "get_weather"
+  tc_1.function.arguments = ""
+  delta_1.tool_calls = [tc_1]
+  choice_1.delta = delta_1
+  chunk_1.choices = [choice_1]
+
+  chunk_2 = mock.MagicMock()
+  choice_2 = mock.MagicMock()
+  delta_2 = mock.MagicMock()
+  delta_2.content = None
+  tc_2 = mock.MagicMock()
+  tc_2.index = 0
+  tc_2.id = None
+  tc_2.function = mock.MagicMock()
+  tc_2.function.name = None
+  tc_2.function.arguments = '{"location":'
+  delta_2.tool_calls = [tc_2]
+  choice_2.delta = delta_2
+  chunk_2.choices = [choice_2]
+
+  chunk_3 = mock.MagicMock()
+  choice_3 = mock.MagicMock()
+  delta_3 = mock.MagicMock()
+  delta_3.content = None
+  tc_3 = mock.MagicMock()
+  tc_3.index = 0
+  tc_3.id = None
+  tc_3.function = mock.MagicMock()
+  tc_3.function.name = None
+  tc_3.function.arguments = ' "Paris"}'
+  delta_3.tool_calls = [tc_3]
+  choice_3.delta = delta_3
+  chunk_3.choices = [choice_3]
+
+  chunks = [chunk_1, chunk_2, chunk_3]
+
+  async def mock_stream():
+    for c in chunks:
+      yield c
+
+  with mock.patch(
+      "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+  ) as mock_client_class:
+    mock_client = mock.MagicMock()
+    mock_client_class.return_value = mock_client
+    mock_client.chat.completions.create = mock.AsyncMock(
+        return_value=mock_stream()
+    )
+
+    responses = [
+        resp
+        async for resp in openai_llm.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+
+  assert len(responses) == 4
+
+  assert responses[0].partial is True
+  assert responses[0].content.parts[0].function_call.id == "call_123"
+  assert responses[0].content.parts[0].function_call.name == "get_weather"
+  assert responses[0].content.parts[0].function_call.will_continue is True
+  assert responses[0].content.parts[0].function_call.partial_args is None
+
+  assert responses[1].partial is True
+  assert responses[1].content.parts[0].function_call.id == "call_123"
+  assert responses[1].content.parts[0].function_call.partial_args is None
+  assert responses[1].content.parts[0].function_call.will_continue is True
+
+  assert responses[2].partial is True
+  assert responses[2].content.parts[0].function_call.id == "call_123"
+  assert (
+      responses[2].content.parts[0].function_call.partial_args[0].json_path
+      == "$.location"
+  )
+  assert (
+      responses[2].content.parts[0].function_call.partial_args[0].string_value
+      == "Paris"
+  )
+  assert responses[2].content.parts[0].function_call.will_continue is True
+
+  assert responses[3].partial is False
+  assert responses[3].content.parts[0].function_call.id == "call_123"
+  assert responses[3].content.parts[0].function_call.name == "get_weather"
+  assert responses[3].content.parts[0].function_call.args == {
+      "location": "Paris"
+  }

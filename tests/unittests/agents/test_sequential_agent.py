@@ -201,3 +201,8 @@ async def test_run_live(request: pytest.FixtureRequest):
   assert events[1].author == agent_2.name
   assert events[0].content.parts[0].text == f'Hello, live {agent_1.name}!'
   assert events[1].content.parts[0].text == f'Hello, live {agent_2.name}!'
+
+
+def test_deprecation_mentions_sub_agent_limitation():
+  with pytest.warns(DeprecationWarning, match='sub-agent'):
+    SequentialAgent(name='deprecated_sequential', sub_agents=[])

@@ -14,12 +14,26 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from . import version
-from .agents.context import Context
-from .agents.llm_agent import Agent
-from .events.event import Event
-from .runners import Runner
-from .workflow import Workflow
+from .utils import _lazy
+
+if TYPE_CHECKING:
+  from .agents.context import Context
+  from .agents.llm_agent import Agent
+  from .events.event import Event
+  from .runners import Runner
+  from .workflow import Workflow
 
 __version__ = version.__version__
-__all__ = ["Agent", "Context", "Event", "Runner", "Workflow"]
+_LAZY_MEMBERS: dict[str, str] = {
+    'Agent': '.agents.llm_agent',
+    'Context': '.agents.context',
+    'Event': '.events.event',
+    'Runner': '.runners',
+    'Workflow': '.workflow',
+}
+__all__ = ['Agent', 'Context', 'Event', 'Runner', 'Workflow']
+
+__getattr__, __dir__ = _lazy.accessors(globals(), _LAZY_MEMBERS)

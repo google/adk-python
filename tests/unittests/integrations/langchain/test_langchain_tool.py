@@ -14,6 +14,7 @@
 
 from unittest.mock import MagicMock
 
+from google.adk.events.event_actions import EventActions
 from google.adk.integrations.langchain import LangchainTool
 from langchain_core.tools import tool
 from langchain_core.tools.structured import StructuredTool
@@ -31,6 +32,18 @@ async def async_add_with_annotation(x, y) -> int:
 def sync_add_with_annotation(x, y) -> int:
   """Adds two numbers"""
   return x + y
+
+
+@tool(return_direct=True)
+def direct_add(x, y) -> int:
+  """Adds two numbers"""
+  return x + y
+
+
+@tool(return_direct=True)
+def direct_payload_with_error_key(x) -> dict:
+  """Returns a payload that carries a falsy error key"""
+  return {"error": None, "value": x}
 
 
 async def async_add(x, y) -> int:
@@ -99,3 +112,65 @@ async def test_raw_sync_function_with_annotation_works():
       args={"x": 1, "y": 3}, tool_context=MagicMock()
   )
   assert result == 4
+
+
+@pytest.mark.asyncio
+async def test_return_direct_sets_skip_summarization():
+  """A tool with return_direct=True skips summarization on run."""
+  langchain_tool = LangchainTool(tool=direct_add)
+  assert langchain_tool._return_direct is True
+
+  tool_context = MagicMock()
+  tool_context.actions = EventActions()
+  result = await langchain_tool.run_async(
+      args={"x": 1, "y": 2}, tool_context=tool_context
+  )
+
+  assert result == 3
+  assert tool_context.actions.skip_summarization is True
+
+
+@pytest.mark.asyncio
+async def test_return_direct_leaves_skip_summarization_on_error():
+  """A missing-argument error stays summarizable so the model can retry."""
+  langchain_tool = LangchainTool(tool=direct_add)
+
+  tool_context = MagicMock()
+  tool_context.actions = EventActions()
+  result = await langchain_tool.run_async(
+      args={"x": 1}, tool_context=tool_context
+  )
+
+  assert "error" in result
+  assert tool_context.actions.skip_summarization is None
+
+
+@pytest.mark.asyncio
+async def test_return_direct_skips_summarization_for_falsy_error_key():
+  """A payload whose error key is falsy is a real result, not an error."""
+  langchain_tool = LangchainTool(tool=direct_payload_with_error_key)
+
+  tool_context = MagicMock()
+  tool_context.actions = EventActions()
+  result = await langchain_tool.run_async(
+      args={"x": 1}, tool_context=tool_context
+  )
+
+  assert result == {"error": None, "value": 1}
+  assert tool_context.actions.skip_summarization is True
+
+
+@pytest.mark.asyncio
+async def test_return_direct_default_false_leaves_skip_summarization():
+  """A tool without return_direct does not touch skip_summarization."""
+  langchain_tool = LangchainTool(tool=test_langchain_sync_add_tool)
+  assert langchain_tool._return_direct is False
+
+  tool_context = MagicMock()
+  tool_context.actions = EventActions()
+  result = await langchain_tool.run_async(
+      args={"x": 1, "y": 3}, tool_context=tool_context
+  )
+
+  assert result == 4
+  assert tool_context.actions.skip_summarization is None

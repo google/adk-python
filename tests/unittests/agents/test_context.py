@@ -40,10 +40,19 @@ def mock_invocation_context():
   mock_context.session.id = "test-session-id"
   mock_context.app_name = "test-app"
   mock_context.user_id = "test-user"
+  mock_context.branch = "test-branch"
   mock_context.artifact_service = None
   mock_context.credential_service = None
   mock_context.memory_service = None
   return mock_context
+
+
+def test_context_branch_returns_invocation_branch(mock_invocation_context):
+  """Context.branch returns the branch from the underlying invocation context."""
+  mock_invocation_context.branch = "test-branch"
+  context = Context(invocation_context=mock_invocation_context)
+
+  assert context.branch == "test-branch"
 
 
 @pytest.fixture
@@ -125,6 +134,12 @@ class TestContextInitialization:
     context = Context(mock_invocation_context)
 
     assert context.actions is context._event_actions
+
+  def test_custom_metadata_property(self, mock_invocation_context):
+    """Test that custom_metadata property delegates to invocation context."""
+    mock_invocation_context._custom_metadata = {"key": "value"}
+    context = Context(mock_invocation_context)
+    assert context.custom_metadata == {"key": "value"}
 
 
 class TestContextListArtifacts:
@@ -384,6 +399,23 @@ class TestContextRequestConfirmation:
     assert confirmation.hint == "Confirm this action"
     assert confirmation.payload is None
 
+  def test_request_confirmation_with_no_arguments(
+      self, mock_invocation_context
+  ):
+    """Test request_confirmation when called with its default hint."""
+    context = Context(
+        mock_invocation_context,
+        function_call_id="test-function-call-id",
+    )
+
+    context.request_confirmation()
+
+    confirmation = context.actions.requested_tool_confirmations[
+        "test-function-call-id"
+    ]
+    assert confirmation.hint == ""
+    assert confirmation.payload is None
+
   def test_request_confirmation_without_function_call_id_raises(
       self, mock_invocation_context
   ):
@@ -640,10 +672,60 @@ class TestDeriveScheduler:
 
   def test_derive_scheduler_with_parent_no_scheduler(self):
     from google.adk.agents.context import _derive_scheduler
-    from google.adk.workflow._dynamic_node_scheduler import DynamicNodeScheduler
 
     mock_parent = MagicMock()
     mock_parent._workflow_scheduler = None
 
     scheduler = _derive_scheduler(mock_parent)
-    assert isinstance(scheduler, DynamicNodeScheduler)
+    assert scheduler is None
+
+
+class TestContextGetInvocationContext:
+  """Test get_invocation_context method in Context."""
+
+  def test_get_invocation_context_propagates_isolation_scope(
+      self, mock_invocation_context
+  ):
+    """Test that get_invocation_context propagates isolation_scope to the copy."""
+    context = Context(mock_invocation_context)
+    context.isolation_scope = "test-isolation-scope"
+
+    # Mock model_copy to return a mock copy
+    mock_copy = MagicMock()
+    mock_invocation_context.model_copy.return_value = mock_copy
+
+    result = context.get_invocation_context()
+
+    # Verify model_copy was called with correct update dict
+    mock_invocation_context.model_copy.assert_called_once_with(
+        update={
+            "session": context.session,
+            "isolation_scope": "test-isolation-scope",
+        }
+    )
+    assert result is mock_copy
+
+
+@pytest.mark.asyncio
+async def test_context_run_node_delegates_to_dynamic_node_executor(
+    mock_invocation_context, mocker
+):
+  """Context.run_node delegates execution to _dynamic_node_executor.run_node_internal."""
+  from google.adk.workflow import _dynamic_node_executor
+
+  mock_run_internal = mocker.patch.object(
+      _dynamic_node_executor,
+      "run_node_internal",
+      return_value="executor_output",
+  )
+  mock_node = MagicMock()
+  ctx = Context(mock_invocation_context)
+
+  result = await ctx.run_node(mock_node, node_input="test_input")
+
+  assert result == "executor_output"
+  mock_run_internal.assert_called_once()
+  args, kwargs = mock_run_internal.call_args
+  assert args[0] is ctx
+  assert args[1] is mock_node
+  assert kwargs.get("node_input") == "test_input"

@@ -14,13 +14,13 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Awaitable
 from typing import Callable
-from typing import List
+from typing import cast
 from typing import Mapping
-from typing import Optional
+from typing import Protocol
 from typing import TYPE_CHECKING
-from typing import Union
+from typing import TypeAlias
 
 from typing_extensions import override
 
@@ -30,6 +30,45 @@ from .base_toolset import BaseToolset
 
 if TYPE_CHECKING:
   from toolbox_adk import CredentialConfig
+
+  from .tool_context import ToolContext
+
+
+_HeaderValue: TypeAlias = (
+    "str | Callable[[], str] | Callable[[], Awaitable[str]]"
+)
+_AuthTokenGetter: TypeAlias = (
+    "Callable[[], str] | Callable[[], Awaitable[str]] |"
+    " Callable[[ToolContext], str] | Callable[[ToolContext], Awaitable[str]]"
+)
+
+
+class _ToolboxDelegate(Protocol):
+
+  async def get_tools(
+      self, readonly_context: ReadonlyContext | None = None
+  ) -> list[BaseTool]:
+    ...
+
+  async def close(self) -> None:
+    ...
+
+
+class _ToolboxToolsetFactory(Protocol):
+
+  def __call__(
+      self,
+      *,
+      server_url: str,
+      toolset_name: str | None,
+      tool_names: list[str] | None,
+      auth_token_getters: Mapping[str, _AuthTokenGetter] | None,
+      bound_params: Mapping[str, object] | None,
+      credentials: CredentialConfig | None,
+      additional_headers: Mapping[str, _HeaderValue] | None,
+      **kwargs: object,
+  ) -> _ToolboxDelegate:
+    ...
 
 
 class ToolboxToolset(BaseToolset):
@@ -44,16 +83,14 @@ class ToolboxToolset(BaseToolset):
   def __init__(
       self,
       server_url: str,
-      toolset_name: Optional[str] = None,
-      tool_names: Optional[List[str]] = None,
-      auth_token_getters: Optional[Mapping[str, Callable[[], str]]] = None,
-      bound_params: Optional[
-          Mapping[str, Union[Callable[[], Any], Any]]
-      ] = None,
-      credentials: Optional[CredentialConfig] = None,
-      additional_headers: Optional[Mapping[str, str]] = None,
-      **kwargs,
-  ):
+      toolset_name: str | None = None,
+      tool_names: list[str] | None = None,
+      auth_token_getters: Mapping[str, _AuthTokenGetter] | None = None,
+      bound_params: Mapping[str, object] | None = None,
+      credentials: CredentialConfig | None = None,
+      additional_headers: Mapping[str, _HeaderValue] | None = None,
+      **kwargs: object,
+  ) -> None:
     """Initializes the ToolboxToolset.
 
     Args:
@@ -89,7 +126,8 @@ class ToolboxToolset(BaseToolset):
 
     super().__init__()
 
-    self._delegate = RealToolboxToolset(
+    delegate_factory = cast(_ToolboxToolsetFactory, RealToolboxToolset)
+    self._delegate = delegate_factory(
         server_url=server_url,
         toolset_name=toolset_name,
         tool_names=tool_names,
@@ -102,10 +140,10 @@ class ToolboxToolset(BaseToolset):
 
   @override
   async def get_tools(
-      self, readonly_context: Optional[ReadonlyContext] = None
+      self, readonly_context: ReadonlyContext | None = None
   ) -> list[BaseTool]:
     return await self._delegate.get_tools(readonly_context)
 
   @override
-  async def close(self):
+  async def close(self) -> None:
     await self._delegate.close()

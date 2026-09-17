@@ -1699,40 +1699,65 @@ class TestParameterBindingNodeInput:
     assert copied.input_schema is not None
     assert 'x' in copied.input_schema['properties']
 
-  def test_type_hints_cache(self):
-    """Verifies that type hints are cached and robustly unwrapped."""
-    from google.adk.workflow._function_node import _get_type_hints_cached
-    from google.adk.workflow._function_node import _get_type_hints_for_unwrapped
 
-    def my_func(x: int, y: str) -> bool:
-      return True
+@pytest.mark.asyncio
+async def test_function_node_wrapped_partial(request: pytest.FixtureRequest):
+  """Tests that FunctionNode correctly unwraps functools.partial for async/sync generators and coroutines."""
+  import functools
 
-    # Clear cache first to have predictable results
-    _get_type_hints_for_unwrapped.cache_clear()
+  async def async_gen_fn(
+      prefix: str, ctx: Context
+  ) -> AsyncGenerator[Any, None]:
+    yield Event(output=f'{prefix} from AsyncGen')
 
-    hints1 = _get_type_hints_cached(my_func)
-    assert hints1 == {'x': int, 'y': str, 'return': bool}
+  def sync_gen_fn(prefix: str, ctx: Context) -> Generator[Any, None, None]:
+    yield Event(output=f'{prefix} from SyncGen')
 
-    # Call again, should hit cache
-    hints2 = _get_type_hints_cached(my_func)
-    assert hints2 == {'x': int, 'y': str, 'return': bool}
-    assert _get_type_hints_for_unwrapped.cache_info().hits == 1
+  async def async_fn(prefix: str, ctx: Context) -> str:
+    return f'{prefix} from AsyncCoro'
 
-    # Test partial
-    import functools
+  p_async_gen = functools.partial(async_gen_fn, 'Hello')
+  p_sync_gen = functools.partial(sync_gen_fn, 'Hello')
+  p_async = functools.partial(async_fn, 'Hello')
 
-    partial_func = functools.partial(my_func, x=1)
-    hints3 = _get_type_hints_cached(partial_func)
-    # Partial should unwrap to my_func and hit cache!
-    assert hints3 == {'x': int, 'y': str, 'return': bool}
-    assert _get_type_hints_for_unwrapped.cache_info().hits == 2
+  agent = Workflow(
+      name='test_workflow_partial_unwrapping',
+      edges=[
+          (START, p_async_gen),
+          (p_async_gen, p_sync_gen),
+          (p_sync_gen, p_async),
+      ],
+  )
+  events, _, _ = await run_workflow(agent)
 
-    # Test callable object
-    class MyCallable:
+  assert simplify_events_with_node(events) == [
+      (
+          'test_workflow_partial_unwrapping@1/async_gen_fn@1',
+          {'output': 'Hello from AsyncGen'},
+      ),
+      (
+          'test_workflow_partial_unwrapping@1/sync_gen_fn@1',
+          {'output': 'Hello from SyncGen'},
+      ),
+      (
+          'test_workflow_partial_unwrapping@1/async_fn@1',
+          {'output': 'Hello from AsyncCoro'},
+      ),
+  ]
 
-      def __call__(self, z: float) -> None:
-        pass
 
-    obj = MyCallable()
-    hints4 = _get_type_hints_cached(obj)
-    assert hints4 == {'z': float, 'return': type(None)}
+def test_function_node_undocumented_description_is_empty():
+  """Undocumented function gets empty string description on FunctionNode."""
+
+  def undocumented_fn():
+    pass
+
+  def documented_fn():
+    """Some documentation."""
+    pass
+
+  undoc_node = FunctionNode(func=undocumented_fn)
+  doc_node = FunctionNode(func=documented_fn)
+
+  assert undoc_node.description == ''
+  assert doc_node.description == 'Some documentation.'

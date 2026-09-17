@@ -17,6 +17,8 @@
 from __future__ import annotations
 
 from typing import Any
+from typing import List
+from typing import Optional
 
 from google.adk.tools.tool_context import ToolContext
 
@@ -25,10 +27,10 @@ from ..utils.resolve_root_directory import resolve_file_paths
 
 
 async def cleanup_unused_files(
-    used_files: list[str],
+    used_files: List[str],
     tool_context: ToolContext,
-    file_patterns: list[str] | None = None,
-    exclude_patterns: list[str] | None = None,
+    file_patterns: Optional[List[str]] = None,
+    exclude_patterns: Optional[List[str]] = None,
 ) -> dict[str, Any]:
   """Identify and optionally delete unused files in project directories.
 
@@ -67,7 +69,7 @@ async def cleanup_unused_files(
     if exclude_patterns is None:
       exclude_patterns = ["__init__.py", "*_test.py", "test_*.py"]
 
-    result = {
+    result: dict[str, Any] = {
         "success": False,
         "unused_files": [],
         "deleted_files": [],
@@ -81,7 +83,7 @@ async def cleanup_unused_files(
       return result
 
     # Find all files matching patterns
-    all_files = []
+    all_files: list[Any] = []
     for pattern in file_patterns:
       all_files.extend(root_path.rglob(pattern))
 

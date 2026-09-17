@@ -12,8 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import warnings
+
 from .api_registry import ApiRegistry
 
+warnings.warn(
+    "google.adk.integrations.api_registry is deprecated, use"
+    " google.adk.integrations.agent_registry instead.",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
 __all__ = [
-    'ApiRegistry',
+    "ApiRegistry",
 ]

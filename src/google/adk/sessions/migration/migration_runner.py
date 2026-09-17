@@ -82,8 +82,9 @@ def upgrade(
   current_version = _schema_check_utils.get_db_schema_version(source_db_url)
   if current_version == LATEST_VERSION:
     logger.info(
-        f"Database {source_db_url} is already at latest version"
-        f" {LATEST_VERSION}. No migration needed."
+        "Database %s is already at latest version %s. No migration needed.",
+        _schema_check_utils._redact_db_url(source_db_url),
+        LATEST_VERSION,
     )
     return
 
@@ -118,7 +119,10 @@ def upgrade(
         logger.debug("Created temp db %s for step %d", out_url, i + 1)
 
       logger.info(
-          f"Migrating from {in_url} to {out_url} (schema v{end_version})..."
+          "Migrating from %s to %s (schema v%s)...",
+          _schema_check_utils._redact_db_url(in_url),
+          _schema_check_utils._redact_db_url(out_url),
+          end_version,
       )
       if migrate_func is migrate_from_sqlalchemy_pickle.migrate:
         migrate_func(

@@ -88,7 +88,7 @@ def get_issue(issue_number: int) -> dict[str, Any]:
   return {"status": "success", "issue": response}
 
 
-def add_comment_to_issue(issue_number: int, comment: str) -> dict[str, any]:
+def add_comment_to_issue(issue_number: int, comment: str) -> dict[str, Any]:
   """Add the specified comment to the given issue number.
 
   Args:
@@ -112,7 +112,7 @@ def add_comment_to_issue(issue_number: int, comment: str) -> dict[str, any]:
   }
 
 
-def list_comments_on_issue(issue_number: int) -> dict[str, any]:
+def list_comments_on_issue(issue_number: int) -> dict[str, Any]:
   """List all comments on the given issue number.
 
   Args:
@@ -232,10 +232,10 @@ root_agent = Agent(
 
       Please include your justification for your decision in your output.
     """,
-    tools={
+    tools=[
         list_open_issues,
         get_issue,
         add_comment_to_issue,
         list_comments_on_issue,
-    },
+    ],
 )

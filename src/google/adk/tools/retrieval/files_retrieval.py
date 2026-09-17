@@ -17,7 +17,9 @@
 from __future__ import annotations
 
 import logging
+from typing import cast
 from typing import Optional
+from typing import Protocol
 
 from llama_index.core import SimpleDirectoryReader
 from llama_index.core import VectorStoreIndex
@@ -26,6 +28,14 @@ from llama_index.core.base.embeddings.base import BaseEmbedding
 from .llama_index_retrieval import LlamaIndexRetrieval
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+class _EmbeddingFactory(Protocol):
+
+  def __call__(
+      self, *, model_name: str, embed_batch_size: int
+  ) -> BaseEmbedding:
+    ...
 
 
 def _get_default_embedding_model() -> BaseEmbedding:
@@ -40,7 +50,8 @@ def _get_default_embedding_model() -> BaseEmbedding:
   try:
     from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
 
-    return GoogleGenAIEmbedding(
+    factory = cast(_EmbeddingFactory, GoogleGenAIEmbedding)
+    return factory(
         model_name="gemini-embedding-2-preview",
         embed_batch_size=1,
     )

@@ -17,6 +17,9 @@ import random
 
 from google.adk import Agent
 from google.adk.models.lite_llm import LiteLlm
+# Ensures langchain_core.tools.base is importable; langchain-core 1.x does not
+# auto-import it, so convert_to_openai_function fails without this.
+import langchain_core.tools
 from langchain_core.utils.function_calling import convert_to_openai_function
 
 

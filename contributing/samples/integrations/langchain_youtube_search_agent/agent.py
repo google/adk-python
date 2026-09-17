@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from google.adk.agents.llm_agent import LlmAgent
-from google.adk.tools.langchain_tool import LangchainTool
+from google.adk.integrations.langchain import LangchainTool
 from langchain_community.tools.youtube.search import YouTubeSearchTool
 
 # Instantiate the tool

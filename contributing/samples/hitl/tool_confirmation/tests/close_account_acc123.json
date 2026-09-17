@@ -64,7 +64,7 @@
             }
           }
         ],
-        "role": "user"
+        "role": "model"
       },
       "id": "e-3",
       "invocationId": "i-1",

@@ -80,6 +80,7 @@ def _compare_event(
       "timestamp": True,
       "invocation_id": True,
       "long_running_tool_ids": True,
+      "node_info": True,
       # Content fields that vary per run
       "content": {
           "parts": {

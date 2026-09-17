@@ -22,7 +22,7 @@ from google.adk import Agent
 from google.adk import Runner
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.auth.credential_manager import CredentialManager
-from google.adk.integrations.agent_identity import gcp_auth_provider
+from google.adk.integrations.agent_identity import _iam_connector_credentials_provider
 from google.adk.integrations.agent_identity import GcpAuthProvider
 from google.adk.integrations.agent_identity import GcpAuthProviderScheme
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -103,7 +103,7 @@ async def test_gcp_agent_identity_2lo_gets_token() -> None:
 
   # 1. Setup mocked GCP Client to return the fake Bearer token
   with mock.patch.object(
-      gcp_auth_provider,
+      _iam_connector_credentials_provider,
       "Client",
       autospec=True,
   ) as mock_client_cls:
@@ -209,7 +209,7 @@ async def test_gcp_agent_identity_2lo_sends_authorization_header_to_mcp_session(
 
   mock_operation = _DummyOperation()
   with mock.patch.object(
-      gcp_auth_provider, "Client", autospec=True
+      _iam_connector_credentials_provider, "Client", autospec=True
   ) as mock_gcp:
     mock_gcp.return_value.retrieve_credentials.return_value = mock_operation
 

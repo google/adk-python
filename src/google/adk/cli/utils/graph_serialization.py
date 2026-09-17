@@ -110,7 +110,7 @@ def serialize_agent(agent: BaseAgent) -> dict[str, Any]:
   agent_dict = {}
 
   for field_name, field_info in agent.__class__.model_fields.items():
-    if field_name in SKIP_FIELDS:
+    if field_name in SKIP_FIELDS or (field_info and field_info.exclude):
       continue
 
     value = getattr(agent, field_name, None)

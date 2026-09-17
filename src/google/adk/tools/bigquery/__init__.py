@@ -41,9 +41,15 @@ warnings.warn(
 )
 
 if typing.TYPE_CHECKING:
-  from google.adk.integrations.bigquery import BigQueryCredentialsConfig
-  from google.adk.integrations.bigquery import BigQueryToolset
-  from google.adk.integrations.bigquery import get_bigquery_skill
+  from google.adk.integrations.bigquery import BigQueryCredentialsConfig as BigQueryCredentialsConfig
+  from google.adk.integrations.bigquery import BigQueryToolset as BigQueryToolset
+  from google.adk.integrations.bigquery import get_bigquery_skill as get_bigquery_skill
+
+__all__ = [
+    "BigQueryCredentialsConfig",
+    "BigQueryToolset",
+    "get_bigquery_skill",
+]
 
 # Forward public names to integrations/bigquery for backward compatibility.
 # Uses __getattr__ instead of sys.modules replacement so that submodules

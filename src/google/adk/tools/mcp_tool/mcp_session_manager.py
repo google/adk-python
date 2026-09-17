@@ -16,39 +16,198 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from contextlib import AbstractAsyncContextManager
 from contextlib import AsyncExitStack
-from datetime import timedelta
+import contextvars
 import functools
 import hashlib
 import json
 import logging
+import os
 import sys
 import threading
+import time
 from typing import Any
+from typing import AsyncIterator
+from typing import Callable
 from typing import Dict
 from typing import Optional
 from typing import Protocol
 from typing import runtime_checkable
 from typing import TextIO
-from typing import Union
+import urllib.parse
 
-from mcp import ClientSession
-from mcp import SamplingCapability
-from mcp import StdioServerParameters
-from mcp.client.session import SamplingFnT
-from mcp.client.sse import sse_client
-from mcp.client.stdio import stdio_client
-from mcp.client.streamable_http import create_mcp_http_client
-from mcp.client.streamable_http import McpHttpClientFactory
-from mcp.client.streamable_http import streamablehttp_client
+import google.auth
+import google.auth.credentials
+from google.auth.transport.requests import Request
+
+try:
+  from google.auth.aio.credentials import Credentials as AsyncCredentials
+  from google.auth.aio.transport.sessions import AsyncAuthorizedSession
+
+  _AIO_SUPPORTED = True
+except ImportError:
+
+  class AsyncCredentials:  # pylint: disable=g-bad-classes
+    pass
+
+  class AsyncAuthorizedSession:  # pylint: disable=g-bad-classes
+    pass
+
+  _AIO_SUPPORTED = False
+
 from pydantic import BaseModel
 from pydantic import ConfigDict
 
+from ...dependencies import _httpx as httpx
+from ...dependencies._mcp import ClientSession
+from ...dependencies._mcp import create_mcp_http_client as _create_mcp_http_client
+from ...dependencies._mcp import ElicitationFnT
+from ...dependencies._mcp import IS_MCP_SDK_V2
+from ...dependencies._mcp import SamplingCapability
+from ...dependencies._mcp import SamplingFnT
+from ...dependencies._mcp import sse_client
+from ...dependencies._mcp import stdio_client
+from ...dependencies._mcp import StdioServerParameters
+from ...dependencies._mcp import streamable_http_client
+
+try:
+  from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+
+  _HAS_HTTPX_INSTRUMENTOR = True
+except (ImportError, AttributeError):
+  _HAS_HTTPX_INSTRUMENTOR = False
+
 from ...features import FeatureName
 from ...features import is_feature_enabled
+from ...telemetry import tracing
 from .session_context import SessionContext
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+_MAX_LOG_BODY_LENGTH = 1000
+
+# Pooled sessions unused for this long are closed the next time the pool is
+# touched. The value is a heuristic with no principled derivation: long enough
+# that a session survives the gaps between turns of one conversation, short
+# enough that a credential that has rotated away does not pin a connection for
+# the life of the process. It is not what keeps an in-flight call safe -- a
+# session with a call outstanding is held out of the sweep entirely, however
+# long that call runs.
+_SESSION_IDLE_TTL_SECONDS = 900.0
+
+# A session pinned out of the sweep for longer than this is reported. Nothing
+# is closed on the strength of it: a genuinely long call is allowed to run,
+# this only makes an unpaired `_begin_session_use` visible in the logs instead
+# of silently keeping the session alive forever.
+_SESSION_USE_PIN_WARN_SECONDS = 4 * _SESSION_IDLE_TTL_SECONDS
+
+# A failed mTLS probe is not retried for this long. Not cached for the life of
+# the manager, so credentials granted while the process runs are picked up.
+_MTLS_PROBE_RETRY_INTERVAL_SECONDS = 300.0
+
+
+def create_mcp_http_client(
+    headers: dict[str, str] | None = None,
+    timeout: httpx.Timeout | None = None,
+    auth: httpx.Auth | None = None,
+) -> httpx.AsyncClient:
+  """Creates MCP HTTP client and instruments it when OTel is available."""
+  client = _create_mcp_http_client(
+      headers=headers,
+      timeout=timeout,
+      auth=auth,
+  )
+  # The instrumentor is built against httpx 1.x: handed an `httpx2` client it
+  # wraps without complaint, then fails on the first request. Until an httpx2
+  # instrumentor exists, 2.x goes untraced rather than broken.
+  if _HAS_HTTPX_INSTRUMENTOR and not IS_MCP_SDK_V2:
+    HTTPXClientInstrumentor.instrument_client(client)
+  elif _HAS_HTTPX_INSTRUMENTOR:
+    # Otherwise the MCP spans just vanish, with nothing pointing back here.
+    logger.debug(
+        'MCP HTTP calls are not traced: the OpenTelemetry httpx instrumentor is'
+        ' built against httpx, and MCP SDK 2.x pairs with httpx2. Tracing'
+        ' returns when an httpx2 instrumentor exists.'
+    )
+  return client
+
+
+_http_debug_var: contextvars.ContextVar[list[dict[str, Any]] | None] = (
+    contextvars.ContextVar('_http_debug_var', default=None)
+)
+
+
+def _redact_headers(headers: dict[str, str]) -> dict[str, str]:
+  sensitive_keys = {
+      'api-key',
+      'authorization',
+      'cookie',
+      'proxy-authorization',
+      'set-cookie',
+      'x-api-key',
+      'x-goog-api-key',
+  }
+  return {
+      k: '<redacted>' if k.lower() in sensitive_keys else v
+      for k, v in headers.items()
+  }
+
+
+def _sanitize_url(url: httpx.URL, *, redact_query: bool = False) -> str:
+  """Renders `url` for recording, with any userinfo credential dropped."""
+  sanitized = url.copy_with(userinfo=b'')
+  # The `url.full` convention wants query values redacted. The session id, the
+  # one value worth keeping, is recorded separately as `mcp.session.id`.
+  if redact_query and url.query:
+    redacted = '&'.join(
+        f'{key}=REDACTED'
+        for key in urllib.parse.parse_qs(url.query.decode(errors='replace'))
+    )
+    sanitized = sanitized.copy_with(query=redacted.encode())
+  return str(sanitized)
+
+
+class _StreamableHttpClientWrapper:
+  """Wrapper to manage the lifecycle of a pre-created HTTP client with streamable_http_client."""
+
+  def __init__(
+      self,
+      url: str,
+      http_client: httpx.AsyncClient,
+      terminate_on_close: bool = True,
+  ):
+    self.url = url
+    self.http_client = http_client
+    self.terminate_on_close = terminate_on_close
+    self.ctx_mgr = streamable_http_client(
+        url=url,
+        http_client=http_client,
+        terminate_on_close=terminate_on_close,
+    )
+
+  async def __aenter__(self) -> Any:
+    # If http_client is a Mock, it might not have __aenter__ but mock async methods can be used
+    if hasattr(self.http_client, '__aenter__'):
+      await self.http_client.__aenter__()
+    try:
+      return await self.ctx_mgr.__aenter__()
+    except BaseException as e:
+      # BaseException, not Exception: a caller that bounds session creation
+      # cancels this task while the connect is still in flight, and
+      # `CancelledError` is not an `Exception`. Nothing else closes the client
+      # on that path -- an exit stack only registers a context manager once
+      # its `__aenter__` has returned -- so it would stay open forever.
+      if hasattr(self.http_client, '__aexit__'):
+        await self.http_client.__aexit__(type(e), e, e.__traceback__)
+      raise
+
+  async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+    try:
+      await self.ctx_mgr.__aexit__(exc_type, exc_val, exc_tb)
+    finally:
+      if hasattr(self.http_client, '__aexit__'):
+        await self.http_client.__aexit__(exc_type, exc_val, exc_tb)
 
 
 def _has_cancelled_error_context(exc: BaseException) -> bool:
@@ -115,8 +274,165 @@ class SseConnectionParams(BaseModel):
 
 
 @runtime_checkable
-class CheckableMcpHttpClientFactory(McpHttpClientFactory, Protocol):
-  pass
+class CheckableMcpHttpClientFactory(Protocol):
+  """The call signature the `httpx_client_factory` fields accept.
+
+  `@runtime_checkable` is required, not decorative. Pydantic compiles a
+  Protocol-annotated field into an `is-instance` validator, and that validator
+  cannot be built against a protocol without the decorator.
+
+  This copies the SDK's `McpHttpClientFactory` instead of subclassing it,
+  because that protocol lives in the private `mcp.shared._httpx_utils`.
+  Structural typing means a factory written against either one satisfies both.
+
+  The signature stays identical to the SDK's for two reasons.
+  `_DebugHttpxClientFactory` wraps the given factory and calls it by keyword,
+  and that wrapper is what `sse_client` receives, typed there with the SDK's
+  own protocol.
+  """
+
+  def __call__(
+      self,
+      headers: dict[str, str] | None = None,
+      timeout: httpx.Timeout | None = None,
+      auth: httpx.Auth | None = None,
+  ) -> httpx.AsyncClient:
+    ...
+
+
+class _DebugHttpxClientFactory:
+  """A factory wrapper that hooks into the httpx.AsyncClient responses to capture debug info.
+
+  Each exchange goes to two independently gated sinks:
+
+    - `custom_metadata['http_debug_info']`, whenever a caller has stashed a list
+      in `_http_debug_var` (which `McpTool` / `McpToolset` do at DEBUG);
+    - an `adk.experimental.mcp.http.client.response.end` OTel log record,
+      whenever `ADK_EXPERIMENTAL_TELEMETRY` opts in to experimental telemetry.
+  """
+
+  def __init__(
+      self,
+      base_factory: CheckableMcpHttpClientFactory,
+      session_manager: MCPSessionManager | None = None,
+  ):
+    self._base_factory = base_factory
+    self._session_manager = session_manager
+
+  def __call__(
+      self,
+      headers: dict[str, str] | None = None,
+      timeout: httpx.Timeout | None = None,
+      auth: httpx.Auth | None = None,
+  ) -> httpx.AsyncClient:
+    client = self._base_factory(headers=headers, timeout=timeout, auth=auth)
+    if hasattr(client, 'event_hooks') and isinstance(client.event_hooks, dict):
+      client.event_hooks.setdefault('response', []).append(self._response_hook)
+    return client
+
+  def _extract_session_id(self, response: httpx.Response) -> str | None:
+    query_params = urllib.parse.parse_qs(
+        urllib.parse.urlparse(str(response.url)).query
+    )
+    return (
+        query_params.get('sessionId', [None])[0]
+        or query_params.get('session_id', [None])[0]
+    )
+
+  async def _response_hook(self, response: httpx.Response):
+    session_id = self._extract_session_id(response)
+
+    debug_list = None
+    if self._session_manager is not None and session_id:
+      debug_list = self._session_manager._get_active_debug_list_by_session_id(
+          session_id
+      )
+
+    if debug_list is None:
+      debug_list = _http_debug_var.get(None)
+
+    report_to_otel = tracing._should_report_mcp_http_exchanges()  # pylint: disable=protected-access
+    if debug_list is None and not report_to_otel:
+      return
+
+    # The legacy buffer always keeps the payload; the OTel record only does when
+    # body capture is on. A body no sink will keep is not worth decoding.
+    capture_bodies = debug_list is not None or (
+        report_to_otel and tracing._should_capture_mcp_http_bodies()  # pylint: disable=protected-access
+    )
+
+    content_type = response.headers.get('content-type', '').lower()
+    is_sse = 'text/event-stream' in content_type
+
+    request_body = None
+    if capture_bodies and response.request.content:
+      try:
+        request_body = response.request.content.decode(
+            'utf-8', errors='replace'
+        )
+        if len(request_body) > _MAX_LOG_BODY_LENGTH:
+          request_body = request_body[:_MAX_LOG_BODY_LENGTH] + '... [truncated]'
+      except Exception:  # pylint: disable=broad-exception-caught
+        request_body = '<binary>'
+
+    response_body = None
+    if is_sse:
+      # Reading an SSE body would starve the transport of its events.
+      response_body = '<SSE stream>'
+    elif capture_bodies:
+      try:
+        await response.aread()
+        response_body = response.text
+        if len(response_body) > _MAX_LOG_BODY_LENGTH:
+          response_body = (
+              response_body[:_MAX_LOG_BODY_LENGTH] + '... [truncated]'
+          )
+      except Exception as e:  # pylint: disable=broad-exception-caught
+        response_body = f'<failed to read body: {e}>'
+
+    request_headers = _redact_headers(dict(response.request.headers))
+    response_headers = _redact_headers(dict(response.headers))
+
+    if debug_list is not None:
+      debug_list.append({
+          'url': _sanitize_url(response.url),
+          'status_code': response.status_code,
+          'method': response.request.method,
+          'request_headers': request_headers,
+          'request_body': request_body,
+          'response_headers': response_headers,
+          'response_body': response_body,
+      })
+
+    if report_to_otel:
+      try:
+        tracing._trace_mcp_http_exchange(  # pylint: disable=protected-access
+            method=response.request.method,
+            url=_sanitize_url(response.url, redact_query=True),
+            server_address=response.url.host,
+            server_port=response.url.port,
+            status_code=response.status_code,
+            # Three transports put the id in three places: the legacy
+            # `?sessionId=` query, the initialize response, and every later
+            # request the client echoes it on.
+            mcp_session_id=(
+                session_id
+                or response.headers.get('mcp-session-id')
+                or response.request.headers.get('mcp-session-id')
+            ),
+            mcp_protocol_version=(
+                response.headers.get('mcp-protocol-version')
+                or response.request.headers.get('mcp-protocol-version')
+            ),
+            request_headers=request_headers,
+            request_body=request_body,
+            response_headers=response_headers,
+            response_body=response_body,
+        )
+      except Exception:  # pylint: disable=broad-exception-caught
+        # httpx re-raises whatever an event hook raises, so a broken log
+        # processor would otherwise fail the MCP call.
+        logger.warning('Failed to report MCP HTTP exchange', exc_info=True)
 
 
 class StreamableHTTPConnectionParams(BaseModel):
@@ -187,6 +503,174 @@ def retry_on_errors(func):
   return wrapper
 
 
+def _is_google_api_host(host: str | None) -> bool:
+  """Returns whether host is a Google API endpoint."""
+  if not host:
+    return False
+  return host == 'googleapis.com' or host.endswith('.googleapis.com')
+
+
+class _RefreshableAsyncCredentials(AsyncCredentials):
+  """Adapter to refresh sync credentials asynchronously."""
+
+  def __init__(
+      self,
+      creds: google.auth.credentials.Credentials,
+      target_host: str | None = None,
+  ):
+    super().__init__()
+    self._creds = creds
+    self._target_host = target_host
+    self._lock = asyncio.Lock()
+    self._warned_non_google_host = False
+
+  async def before_request(
+      self,
+      _request: Any,
+      _method: str,
+      url: str,
+      headers: dict[str, str],
+  ) -> None:
+    parsed_url = urllib.parse.urlparse(url)
+    if self._target_host and parsed_url.netloc != self._target_host:
+      logger.debug(
+          'Skipping token injection for redirect to %s', parsed_url.netloc
+      )
+      return
+
+    # Application Default Credentials are issued to the caller by Google, so
+    # the bearer token only goes to Google API hosts over https. Other MCP
+    # servers are still reached over the mTLS channel, just without the token.
+    if parsed_url.scheme != 'https' or not _is_google_api_host(
+        parsed_url.hostname
+    ):
+      if not self._warned_non_google_host:
+        self._warned_non_google_host = True
+        logger.warning(
+            'Not attaching Application Default Credentials to non-Google host'
+            ' %s. Configure explicit authentication for this MCP server if it'
+            ' requires credentials.',
+            parsed_url.hostname,
+        )
+      return
+
+    if any(k.lower() == 'authorization' for k in headers):
+      logger.debug('Authorization header already present, not overwriting')
+      return
+
+    async with self._lock:
+      await asyncio.to_thread(self._refresh_sync)
+    if self._creds.token:
+      headers['Authorization'] = f'Bearer {self._creds.token}'
+
+  def _refresh_sync(self) -> None:
+    if self._creds.expired or not self._creds.token:
+      self._creds.refresh(Request())
+
+
+class _GoogleAuthAsyncByteStream(httpx.AsyncByteStream):
+  """Adapter to bridge google-auth Response.content with httpx.AsyncByteStream."""
+
+  def __init__(self, auth_response: Any):
+    self._auth_response = auth_response
+
+  async def __aiter__(self) -> AsyncIterator[bytes]:
+    async for chunk in self._auth_response.content():
+      yield chunk
+
+  async def aclose(self) -> None:
+    await self._auth_response.close()
+
+
+class _GoogleAuthAsyncTransport(httpx.AsyncBaseTransport):
+  """Adapter to bridge google-auth AsyncAuthorizedSession with httpx.AsyncBaseTransport."""
+
+  def __init__(self, auth_session: Any):
+    self._auth_session = auth_session
+
+  async def handle_async_request(
+      self, request: httpx.Request
+  ) -> httpx.Response:
+    content = await request.aread()
+    headers_dict = dict(request.headers)
+
+    timeout_val = 30.0
+    if request.extensions and 'timeout' in request.extensions:
+      timeout_dict = request.extensions['timeout']
+      if 'read' in timeout_dict and timeout_dict['read'] is not None:
+        timeout_val = timeout_dict['read']
+
+    if request.headers.get('accept') == 'text/event-stream':
+      # google-auth-aio translates timeout to aiohttp ClientTimeout(total=timeout).
+      # For SSE streams, we disable the total timeout (setting it to 0.0) to
+      # prevent aiohttp from forcibly closing the stream after sse_read_timeout.
+      timeout_val = 0.0
+
+    auth_response: Any = await self._auth_session.request(
+        method=request.method,
+        url=str(request.url),
+        data=content if content else None,
+        headers=headers_dict,
+        timeout=timeout_val,
+    )
+
+    # google-auth-aio uses aiohttp internally, which automatically handles
+    # decompression and decodes chunked transfer encoding, but leaves the
+    # headers intact. We must strip these headers so httpx doesn't attempt
+    # to decompress or parse chunked framing again on the raw stream.
+    response_headers = {
+        k: v
+        for k, v in auth_response.headers.items()
+        if k.lower()
+        not in ('content-encoding', 'content-length', 'transfer-encoding')
+    }
+
+    return httpx.Response(
+        status_code=auth_response.status_code,
+        headers=response_headers,
+        stream=_GoogleAuthAsyncByteStream(auth_response),
+    )
+
+  async def aclose(self) -> None:
+    await self._auth_session.close()
+
+
+class _SharedAsyncTransport(httpx.AsyncBaseTransport):
+  """Wrapper transport that prevents the wrapped transport from being closed."""
+
+  def __init__(self, transport: httpx.AsyncBaseTransport):
+    self._transport = transport
+
+  async def handle_async_request(
+      self, request: httpx.Request
+  ) -> httpx.Response:
+    return await self._transport.handle_async_request(request)
+
+  async def aclose(self) -> None:
+    pass
+
+
+def _create_mtls_client_factory(
+    mtls_transport: httpx.AsyncBaseTransport,
+) -> CheckableMcpHttpClientFactory:
+  """Returns a factory that creates httpx.AsyncClient using the mtls_transport."""
+
+  def factory(
+      headers: dict[str, Any] | None = None,
+      timeout: httpx.Timeout | None = None,
+      auth: httpx.Auth | None = None,
+  ) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        headers=headers,
+        auth=auth,
+        timeout=timeout,
+        transport=_SharedAsyncTransport(mtls_transport),
+        follow_redirects=True,
+    )
+
+  return factory
+
+
 class MCPSessionManager:
   """Manages MCP client sessions.
 
@@ -197,16 +681,17 @@ class MCPSessionManager:
 
   def __init__(
       self,
-      connection_params: Union[
-          StdioServerParameters,
-          StdioConnectionParams,
-          SseConnectionParams,
-          StreamableHTTPConnectionParams,
-      ],
+      connection_params: (
+          StdioServerParameters
+          | StdioConnectionParams
+          | SseConnectionParams
+          | StreamableHTTPConnectionParams
+      ),
       errlog: TextIO = sys.stderr,
       *,
-      sampling_callback: Optional[SamplingFnT] = None,
-      sampling_capabilities: Optional[SamplingCapability] = None,
+      sampling_callback: SamplingFnT | None = None,
+      sampling_capabilities: SamplingCapability | None = None,
+      elicitation_callback: ElicitationFnT | None = None,
   ):
     """Initializes the MCP session manager.
 
@@ -216,12 +701,16 @@ class MCPSessionManager:
           parameters but it's not configurable for now.
         errlog: (Optional) TextIO stream for error logging. Use only for
           initializing a local stdio MCP session.
-        sampling_callback: Optional callback to handle sampling requests from the
-          MCP server.
+        sampling_callback: Optional callback to handle sampling requests from
+          the MCP server.
         sampling_capabilities: Optional capabilities for sampling.
+        elicitation_callback: Optional callback to handle elicitation requests
+          from the MCP server (``elicitation/create``), including URL-mode
+          elicitations used for out-of-band flows such as auth challenges.
     """
     self._sampling_callback = sampling_callback
     self._sampling_capabilities = sampling_capabilities
+    self._elicitation_callback = elicitation_callback
 
     if isinstance(connection_params, StdioServerParameters):
       # So far timeout is not configurable. Given MCP is still evolving, we
@@ -242,19 +731,73 @@ class MCPSessionManager:
     # Session pool: maps session keys to (session, exit_stack, loop) tuples.
     # Kept as a tuple for backward-compatibility with downstream tests
     # that construct or unpack entries directly.
-    self._sessions: Dict[
+    self._sessions: dict[
         str, tuple[ClientSession, AsyncExitStack, asyncio.AbstractEventLoop]
     ] = {}
 
     # Sibling pool: maps session keys to their SessionContext. Stored
     # separately from `_sessions` so the tuple shape above stays stable.
     # Used by McpTool to access `_run_guarded` for transport-crash detection.
-    self._session_contexts: Dict[str, SessionContext] = {}
+    self._session_contexts: dict[str, SessionContext] = {}
+
+    # Monotonic timestamp of the last use of each pooled session. Without
+    # this the pool grows without bound in a long-lived process, because the
+    # session key includes per-user credentials, which rotate. The timestamp
+    # is refreshed when a call finishes, so a session is only "idle" once
+    # nothing has used it since.
+    self._session_last_used: dict[str, float] = {}
+
+    # Number of calls currently in flight against each pooled session. A
+    # session with an outstanding call is never swept: its caller is still
+    # reading from the transport the sweep would close.
+    self._session_use_counts: dict[str, int] = {}
+
+    # Guards the read-modify-write on `_session_use_counts`. This manager is
+    # driven from more than one event loop, so `_session_lock` (which is
+    # per-loop) does not serialize those updates; a lost increment would let
+    # one loop's sweep close a transport with a call in flight on another.
+    self._use_count_lock = threading.Lock()
+
+    # Teardown tasks for sessions that have been evicted from the pool. The
+    # tasks are kept referenced here so they are not garbage collected while
+    # still running.
+    self._eviction_tasks: set[asyncio.Task[None]] = set()
 
     # Map of event loops to their respective locks to prevent race conditions
     # across different event loops in session creation.
     self._session_lock_map: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
     self._lock_map_lock = threading.Lock()
+    self._session_id_to_key: dict[str, str] = {}
+    self._active_debug_lists: dict[str, list[dict[str, Any]]] = {}
+
+    # Cache for mTLS transports per event loop to avoid re-creation.
+    self._mtls_transports: dict[
+        asyncio.AbstractEventLoop, _GoogleAuthAsyncTransport
+    ] = {}
+
+    # When the mTLS probe last failed, per event loop, so that a server which
+    # offers no mTLS is not probed again for every session it is given.
+    self._mtls_probe_failed_at: dict[asyncio.AbstractEventLoop, float] = {}
+
+  def _make_on_session_created(self, session_key: str) -> Callable[[str], None]:
+    def on_session_created(session_id: str):
+      logger.debug('Session created: %s -> %s', session_id, session_key)
+      self._session_id_to_key[session_id] = session_key
+
+    return on_session_created
+
+  def _set_active_debug_list(
+      self, session_key: str, debug_list: list[dict[str, Any]]
+  ):
+    self._active_debug_lists[session_key] = debug_list
+
+  def _get_active_debug_list_by_session_id(
+      self, session_id: str
+  ) -> list[dict[str, Any]] | None:
+    session_key = self._session_id_to_key.get(session_id)
+    if session_key:
+      return self._active_debug_lists.get(session_key)
+    return None
 
   @property
   def _session_lock(self) -> asyncio.Lock:
@@ -264,6 +807,64 @@ class MCPSessionManager:
       if current_loop not in self._session_lock_map:
         self._session_lock_map[current_loop] = asyncio.Lock()
       return self._session_lock_map[current_loop]
+
+  async def _get_mtls_transport(self) -> _GoogleAuthAsyncTransport | None:
+    """Attempts to create a _GoogleAuthAsyncTransport for mTLS, caching the outcome per loop."""
+    if isinstance(self._connection_params, StdioConnectionParams):
+      return None
+
+    if not _AIO_SUPPORTED:
+      logger.debug('google.auth.aio not available, mTLS not configured')
+      return None
+
+    use_client_cert = (
+        os.environ.get('GOOGLE_API_USE_CLIENT_CERTIFICATE', 'true').lower()
+        == 'true'
+    )
+    if not use_client_cert:
+      return None
+
+    current_loop = asyncio.get_running_loop()
+    if current_loop in self._mtls_transports:
+      return self._mtls_transports[current_loop]
+
+    last_failure = self._mtls_probe_failed_at.get(current_loop)
+    if (
+        last_failure is not None
+        and time.monotonic() - last_failure < _MTLS_PROBE_RETRY_INTERVAL_SECONDS
+    ):
+      return None
+
+    try:
+      scopes = ['https://www.googleapis.com/auth/cloud-platform']
+      sync_credentials, _ = await asyncio.to_thread(
+          google.auth.default, scopes=scopes
+      )
+
+      target_url = self._connection_params.url
+      target_host = urllib.parse.urlparse(target_url).netloc
+
+      credentials = _RefreshableAsyncCredentials(
+          sync_credentials, target_host=target_host
+      )
+      auth_session = AsyncAuthorizedSession(credentials)
+      await auth_session.configure_mtls_channel()
+
+      if auth_session.is_mtls:
+        logger.info('Successfully configured mTLS using AsyncAuthorizedSession')
+        transport = _GoogleAuthAsyncTransport(auth_session)
+        self._mtls_transports[current_loop] = transport
+        return transport
+      else:
+        logger.warning(
+            'mTLS was requested but AsyncAuthorizedSession channel is not mTLS'
+        )
+    except Exception as e:  # pylint: disable=broad-except
+      logger.warning(
+          'Failed to configure mTLS using AsyncAuthorizedSession: %s', e
+      )
+    self._mtls_probe_failed_at[current_loop] = time.monotonic()
+    return None
 
   def _generate_session_key(
       self, merged_headers: Optional[Dict[str, str]] = None
@@ -291,6 +892,22 @@ class MCPSessionManager:
       return f'session_{headers_hash}'
     else:
       return 'session_no_headers'
+
+  def _session_key_for(self, headers: Optional[Dict[str, str]] = None) -> str:
+    """Returns the pool key that ``create_session`` would use for these headers.
+
+    Two calls that produce the same key talk to the same MCP server with the
+    same effective credentials, so callers can use it to key per-connection
+    caches without duplicating the header-merging rules.
+
+    Args:
+        headers: Optional headers to merge with the connection headers, exactly
+          as they would be passed to ``create_session``.
+
+    Returns:
+        The session pool key.
+    """
+    return self._generate_session_key(self._merge_headers(headers))
 
   def _merge_headers(
       self, additional_headers: Optional[Dict[str, str]] = None
@@ -324,13 +941,30 @@ class MCPSessionManager:
   def _is_session_disconnected(self, session: ClientSession) -> bool:
     """Checks if a session is disconnected or closed.
 
+    Reads two attributes ADK does not own: the SDK holds the transport streams
+    on the session privately, and each stream reports its own closed flag. A
+    session that lacks either one reads as connected rather than raising,
+    because a release is free to restructure both away and this probe is not
+    the only thing standing between a dead session and a caller.
+
+    `create_session` pairs this with `SessionContext._is_task_alive`, which
+    ADK owns and which catches strictly more: a crashed transport can leave
+    the streams open while the task behind them is already dead. That pairing
+    runs under `_MCP_GRACEFUL_ERROR_HANDLING`, which is on by default. The
+    kill switch drops it and leaves this probe on its own.
+
     Args:
         session: The ClientSession to check.
 
     Returns:
-        True if the session is disconnected, False otherwise.
+        True if the session is known to be disconnected, False otherwise.
     """
-    return session._read_stream._closed or session._write_stream._closed
+    read_stream = getattr(session, '_read_stream', None)
+    write_stream = getattr(session, '_write_stream', None)
+    return bool(
+        getattr(read_stream, '_closed', False)
+        or getattr(write_stream, '_closed', False)
+    )
 
   def _get_session_context(
       self, headers: Optional[Dict[str, str]] = None
@@ -348,9 +982,43 @@ class MCPSessionManager:
     Returns:
         The SessionContext if a matching session exists, None otherwise.
     """
-    merged_headers = self._merge_headers(headers)
-    session_key = self._generate_session_key(merged_headers)
-    return self._session_contexts.get(session_key)
+    return self._session_contexts.get(self._session_key_for(headers))
+
+  def _begin_session_use(
+      self, headers: Optional[Dict[str, str]] = None
+  ) -> None:
+    """Records that a call against this session is starting.
+
+    Idleness is measured from the end of the last call, not from when the
+    session was handed out, so a call that outlives the idle TTL must hold the
+    session out of the sweep for its whole duration. Callers must pair this
+    with ``_end_session_use`` in a ``finally``.
+
+    Args:
+        headers: The headers the caller passed to ``create_session``.
+    """
+    session_key = self._generate_session_key(self._merge_headers(headers))
+    with self._use_count_lock:
+      self._session_use_counts[session_key] = (
+          self._session_use_counts.get(session_key, 0) + 1
+      )
+
+  def _end_session_use(self, headers: Optional[Dict[str, str]] = None) -> None:
+    """Records that a call against this session has finished.
+
+    Args:
+        headers: The headers the caller passed to ``create_session``.
+    """
+    session_key = self._generate_session_key(self._merge_headers(headers))
+    with self._use_count_lock:
+      remaining = self._session_use_counts.get(session_key, 0) - 1
+      if remaining > 0:
+        self._session_use_counts[session_key] = remaining
+      else:
+        self._session_use_counts.pop(session_key, None)
+    # Start the idle clock now, at the end of the call.
+    if session_key in self._sessions:
+      self._session_last_used[session_key] = time.monotonic()
 
   async def _cleanup_session(
       self,
@@ -362,6 +1030,24 @@ class MCPSessionManager:
 
     Args:
         session_key: The session key to clean up.
+        exit_stack: The AsyncExitStack managing the session resources.
+        stored_loop: The event loop on which the session was created.
+    """
+    try:
+      await self._close_exit_stack(session_key, exit_stack, stored_loop)
+    finally:
+      self._forget_session(session_key)
+
+  async def _close_exit_stack(
+      self,
+      session_key: str,
+      exit_stack: AsyncExitStack,
+      stored_loop: asyncio.AbstractEventLoop,
+  ) -> None:
+    """Tears a session's resources down without touching the pool.
+
+    Args:
+        session_key: The session key the exit stack belongs to, for logging.
         exit_stack: The AsyncExitStack managing the session resources.
         stored_loop: The event loop on which the session was created.
     """
@@ -404,20 +1090,104 @@ class MCPSessionManager:
           f'Error during session cleanup for {session_key}: {e}',
           exc_info=True,
       )
-    finally:
-      if session_key in self._sessions:
-        del self._sessions[session_key]
-      # Also drop the SessionContext reference so we don't leak the
-      # SessionContext after its underlying session is gone.
-      if session_key in self._session_contexts:
-        del self._session_contexts[session_key]
 
-  def _create_client(self, merged_headers: Optional[Dict[str, str]] = None):
+  def _forget_session(self, session_key: str) -> None:
+    """Drops every pool entry belonging to a session key.
+
+    Args:
+        session_key: The session key to remove from the pool.
+    """
+    # Every drop here is unconditional: this runs on the sweep path, so two
+    # event loops can reach the same key and a check-then-delete would raise
+    # KeyError on the loser.
+    self._sessions.pop(session_key, None)
+    self._session_last_used.pop(session_key, None)
+    # Also drop the SessionContext reference so we don't leak the
+    # SessionContext after its underlying session is gone.
+    self._session_contexts.pop(session_key, None)
+    # Also clean up session ID mapping
+    for sid, skey in list(self._session_id_to_key.items()):
+      if skey == session_key:
+        self._session_id_to_key.pop(sid, None)
+    self._active_debug_lists.pop(session_key, None)
+
+  def _evict_idle_sessions(self, keep_key: str) -> None:
+    """Closes pooled sessions that have been idle past the TTL.
+
+    Must be called from inside the ``_session_lock`` critical section. Stdio
+    pools are skipped: they use a single constant key backed by a local
+    subprocess whose lifetime should not be driven by pool pressure.
+
+    Sessions with a call in flight are skipped, however long that call has
+    been running.
+
+    An idle entry leaves the pool synchronously, but its connection is torn
+    down in a background task rather than awaited here. Each close is bounded
+    by the connection timeout, so awaiting them would hold the session lock
+    for that timeout once per stale entry and park every other caller of this
+    toolset behind unrelated dead sessions.
+
+    Args:
+        keep_key: The session key the caller is about to use, which is never
+          evicted.
+    """
+    if isinstance(self._connection_params, StdioConnectionParams):
+      return
+
+    now = time.monotonic()
+    for session_key in list(self._sessions):
+      if session_key == keep_key:
+        continue
+      idle_for = now - self._session_last_used.get(session_key, now)
+      in_flight = self._session_use_counts.get(session_key)
+      if in_flight:
+        # A call is in flight on this session; closing its transport now would
+        # fail that call mid-flight. An unpaired `_begin_session_use` pins the
+        # key here for the life of the process, so once the pin outlives any
+        # plausible call, say so rather than leaking silently.
+        if idle_for > _SESSION_USE_PIN_WARN_SECONDS:
+          logger.warning(
+              'MCP session %s has been held out of the idle sweep for %.0fs'
+              ' with %d call(s) reported in flight; a call that never'
+              ' finished may be leaking this session.',
+              session_key,
+              idle_for,
+              in_flight,
+          )
+        continue
+      if idle_for < _SESSION_IDLE_TTL_SECONDS:
+        continue
+      entry = self._sessions.get(session_key)
+      if entry is None:
+        # Another loop's sweep took this key between the snapshot above and
+        # here; it owns the teardown.
+        continue
+      logger.info('Evicting idle MCP session: %s', session_key)
+      _, exit_stack, stored_loop = entry
+      # Forget the entry before spawning the teardown, so a later caller that
+      # reuses this key gets a fresh session and the in-flight teardown never
+      # reaches into the pool to drop it.
+      self._forget_session(session_key)
+      task = asyncio.ensure_future(
+          self._close_exit_stack(session_key, exit_stack, stored_loop)
+      )
+      self._eviction_tasks.add(task)
+      task.add_done_callback(self._eviction_tasks.discard)
+
+  def _create_client(
+      self,
+      merged_headers: dict[str, str] | None = None,
+      mtls_transport: httpx.AsyncBaseTransport | None = None,
+      *,
+      session_key: str | None = None,
+  ) -> AbstractAsyncContextManager[Any]:
     """Creates an MCP client based on the connection parameters.
 
     Args:
-        merged_headers: Optional headers to include in the connection.
-                       Only applicable for SSE and StreamableHTTP connections.
+        session_key: Optional session key for this client.
+        merged_headers: Optional headers to include in the connection. Only
+          applicable for SSE and StreamableHTTP connections.
+        mtls_transport: Optional mTLS transport for the HTTP client.
 
     Returns:
         The appropriate MCP client instance.
@@ -431,23 +1201,43 @@ class MCPSessionManager:
           errlog=self._errlog,
       )
     elif isinstance(self._connection_params, SseConnectionParams):
+      factory = self._connection_params.httpx_client_factory
+      if mtls_transport:
+        factory = _create_mtls_client_factory(mtls_transport)
+      debug_factory = _DebugHttpxClientFactory(
+          factory,
+          session_manager=self,
+      )
+      on_session_created = None
+      if session_key is not None:
+        on_session_created = self._make_on_session_created(session_key)
       client = sse_client(
           url=self._connection_params.url,
           headers=merged_headers,
           timeout=self._connection_params.timeout,
           sse_read_timeout=self._connection_params.sse_read_timeout,
-          httpx_client_factory=self._connection_params.httpx_client_factory,
+          httpx_client_factory=debug_factory,
+          on_session_created=on_session_created,
       )
     elif isinstance(self._connection_params, StreamableHTTPConnectionParams):
-      client = streamablehttp_client(
-          url=self._connection_params.url,
+      factory = self._connection_params.httpx_client_factory
+      if mtls_transport:
+        factory = _create_mtls_client_factory(mtls_transport)
+      debug_factory = _DebugHttpxClientFactory(
+          factory,
+          session_manager=self,
+      )
+      http_client = debug_factory(
           headers=merged_headers,
-          timeout=timedelta(seconds=self._connection_params.timeout),
-          sse_read_timeout=timedelta(
-              seconds=self._connection_params.sse_read_timeout
+          timeout=httpx.Timeout(
+              self._connection_params.timeout,
+              read=self._connection_params.sse_read_timeout,
           ),
+      )
+      client = _StreamableHttpClientWrapper(
+          url=self._connection_params.url,
+          http_client=http_client,
           terminate_on_close=self._connection_params.terminate_on_close,
-          httpx_client_factory=self._connection_params.httpx_client_factory,
       )
     else:
       raise ValueError(
@@ -458,7 +1248,7 @@ class MCPSessionManager:
     return client
 
   async def create_session(
-      self, headers: Optional[Dict[str, str]] = None
+      self, headers: dict[str, str] | None = None
   ) -> ClientSession:
     """Creates and initializes an MCP client session.
 
@@ -482,6 +1272,13 @@ class MCPSessionManager:
 
     # Use async lock to prevent race conditions
     async with self._session_lock:
+      # Register the active debug list for this session key if available in context
+      debug_list = _http_debug_var.get(None)
+      if debug_list is not None:
+        self._set_active_debug_list(session_key, debug_list)
+
+      self._evict_idle_sessions(keep_key=session_key)
+
       # Check if we have an existing session
       if session_key in self._sessions:
         session, exit_stack, stored_loop = self._sessions[session_key]
@@ -507,6 +1304,7 @@ class MCPSessionManager:
             and ctx_alive
         ):
           # Session is still good, return it
+          self._session_last_used[session_key] = time.monotonic()
           return session
         else:
           # Session is disconnected, dead, or from a different loop; clean up.
@@ -530,7 +1328,12 @@ class MCPSessionManager:
       )
 
       try:
-        client = self._create_client(merged_headers)
+        mtls_transport = await self._get_mtls_transport()
+        client = self._create_client(
+            merged_headers,
+            mtls_transport=mtls_transport,
+            session_key=session_key,
+        )
         is_stdio = isinstance(self._connection_params, StdioConnectionParams)
 
         session_context = SessionContext(
@@ -540,6 +1343,7 @@ class MCPSessionManager:
             is_stdio=is_stdio,
             sampling_callback=self._sampling_callback,
             sampling_capabilities=self._sampling_capabilities,
+            elicitation_callback=self._elicitation_callback,
         )
 
         if is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):  # pylint: disable=protected-access
@@ -562,6 +1366,7 @@ class MCPSessionManager:
         # `_run_guarded` on it. Stored separately to avoid changing the
         # shape of `_sessions` (which is a public-ish internal surface).
         self._session_contexts[session_key] = session_context
+        self._session_last_used[session_key] = time.monotonic()
         logger.debug('Created new session: %s', session_key)
         return session
 
@@ -582,10 +1387,18 @@ class MCPSessionManager:
     # Remove unpicklable entries or those that shouldn't persist across pickle
     state['_sessions'] = {}
     state['_session_contexts'] = {}
+    state['_session_last_used'] = {}
+    state['_session_use_counts'] = {}
+    state['_eviction_tasks'] = set()
     state['_session_lock_map'] = {}
+    state['_mtls_transports'] = {}
+    state['_mtls_probe_failed_at'] = {}
+    state['_session_id_to_key'] = {}
+    state['_active_debug_lists'] = {}
 
     # Locks and file-like objects cannot be pickled
     state.pop('_lock_map_lock', None)
+    state.pop('_use_count_lock', None)
     state.pop('_errlog', None)
 
     return state
@@ -596,18 +1409,51 @@ class MCPSessionManager:
     # Re-initialize members that were not pickled
     self._sessions = {}
     self._session_contexts = {}
+    self._session_last_used = {}
+    self._session_use_counts = {}
+    self._eviction_tasks = set()
     self._session_lock_map = {}
+    self._mtls_transports = {}
+    self._mtls_probe_failed_at = {}
+    self._session_id_to_key = {}
+    self._active_debug_lists = {}
     self._lock_map_lock = threading.Lock()
+    self._use_count_lock = threading.Lock()
     # If _errlog was removed during pickling, default to sys.stderr
     if not hasattr(self, '_errlog') or self._errlog is None:
       self._errlog = sys.stderr
 
   async def close(self):
     """Closes all sessions and cleans up resources."""
+    current_loop = asyncio.get_running_loop()
     async with self._session_lock:
       for session_key in list(self._sessions.keys()):
         _, exit_stack, stored_loop = self._sessions[session_key]
         await self._cleanup_session(session_key, exit_stack, stored_loop)
+
+      # Detached eviction teardowns are still in flight. Only the ones on this
+      # loop can be awaited -- this manager is used from more than one loop,
+      # and awaiting a task that belongs to another one raises. Teardowns
+      # owned by another loop are left to it; it is still running, since the
+      # task has not been cancelled.
+      # Snapshot first: the done callback discards from this set and can fire
+      # from another loop's thread, which would break a live iteration.
+      pending = [
+          task
+          for task in list(self._eviction_tasks)
+          if task.get_loop() is current_loop
+      ]
+
+      for transport in self._mtls_transports.values():
+        await transport.aclose()
+      self._mtls_transports.clear()
+      self._mtls_probe_failed_at.clear()
+
+    # Awaited outside the lock: a wedged teardown must not park every other
+    # caller of this pool, which is the stall detaching them avoided in the
+    # first place.
+    if pending:
+      await asyncio.gather(*pending, return_exceptions=True)
 
 
 SseServerParams = SseConnectionParams

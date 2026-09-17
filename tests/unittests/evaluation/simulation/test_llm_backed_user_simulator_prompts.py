@@ -21,6 +21,7 @@ from google.adk.evaluation.simulation.llm_backed_user_simulator_prompts import g
 from google.adk.evaluation.simulation.llm_backed_user_simulator_prompts import is_valid_user_simulator_template
 from google.adk.evaluation.simulation.user_simulator_personas import UserBehavior
 from google.adk.evaluation.simulation.user_simulator_personas import UserPersona
+from jinja2.exceptions import SecurityError
 import pytest
 
 _MOCK_DEFAULT_TEMPLATE = textwrap.dedent("""\
@@ -207,6 +208,57 @@ class TestGetLlmBackedUserSimulatorPrompt:
       # Stop signal
       test stop""").strip()
     assert prompt == expected_prompt
+
+  def test_get_llm_backed_user_simulator_prompt_renders_persona_templates_in_sandbox(
+      self,
+  ):
+    user_persona = UserPersona(
+        id="test_persona",
+        description="Test persona description",
+        behaviors=[
+            UserBehavior(
+                name="Behavior {{ stop_signal }}",
+                description="Description {{ stop_signal }}",
+                behavior_instructions=["instruction {{ stop_signal }}"],
+                violation_rubrics=["rubric 1"],
+            )
+        ],
+    )
+
+    prompt = get_llm_backed_user_simulator_prompt(
+        conversation_plan="test plan",
+        conversation_history="test history",
+        stop_signal="test stop",
+        user_persona=user_persona,
+    )
+
+    assert "## Behavior test stop" in prompt
+    assert "Description test stop" in prompt
+    assert "  * instruction test stop" in prompt
+
+  def test_get_llm_backed_user_simulator_prompt_blocks_unsafe_persona_templates(
+      self,
+  ):
+    user_persona = UserPersona(
+        id="test_persona",
+        description="Test persona description",
+        behaviors=[
+            UserBehavior(
+                name="{{ ''.__class__.__mro__ }}",
+                description="Test behavior description",
+                behavior_instructions=["instruction 1"],
+                violation_rubrics=["rubric 1"],
+            )
+        ],
+    )
+
+    with pytest.raises(SecurityError):
+      get_llm_backed_user_simulator_prompt(
+          conversation_plan="test plan",
+          conversation_history="test history",
+          stop_signal="test stop",
+          user_persona=user_persona,
+      )
 
 
 class TestIsValidUserSimulatorTemplate:

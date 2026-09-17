@@ -30,9 +30,22 @@ env:
 1. Click "Edit access"
 1. Add pages or databases as needed
 
-### 4. Run the Agent
+### 4. Opt In to Stdio MCP Servers
 
-Use the `adk web` to run the agent and interact with your Notion workspace.
+This sample declares a stdio MCP server in `root_agent.yaml`, which means
+loading the config launches `npx` as a local process. ADK rejects that by
+default, because an agent config obtained from someone else would then be able
+to run arbitrary commands. Opt in before running the sample:
+
+```bash
+export ADK_ALLOW_CONFIG_STDIO_MCP_SERVERS=1
+```
+
+Only set this when you trust every agent config the process will load.
+
+### 5. Run the Agent
+
+Use `adk run` to run the agent and interact with your Notion workspace.
 
 ## Example Queries
 

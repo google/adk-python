@@ -82,7 +82,7 @@ These variables control the timing thresholds and model selection.
 | :---------------------------------- | :--------------------------------------------------------------------------- | :---------------------- |
 | `STALE_HOURS_THRESHOLD`             | Hours of inactivity after a maintainer's question before marking as `stale`. | `168` (7 days)          |
 | `CLOSE_HOURS_AFTER_STALE_THRESHOLD` | Hours after being marked `stale` before the issue is closed.                 | `168` (7 days)          |
-| `LLM_MODEL_NAME`                    | The specific Gemini model version to use.                                    | `gemini-2.5-flash`      |
+| `LLM_MODEL_NAME`                    | The specific Gemini model version to use.                                    | `gemini-3.5-flash`      |
 | `OWNER`                             | Repository owner (auto-detected in Actions).                                 | (Environment dependent) |
 | `REPO`                              | Repository name (auto-detected in Actions).                                  | (Environment dependent) |
 

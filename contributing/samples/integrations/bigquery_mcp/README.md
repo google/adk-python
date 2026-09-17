@@ -40,7 +40,7 @@ or
 for the LLM service for your agent. For example, for using Google AI Studio you
 would set:
 
-- GOOGLE_GENAI_USE_VERTEXAI=FALSE
+- GOOGLE_GENAI_USE_ENTERPRISE=FALSE
 - GOOGLE_API_KEY={your api key}
 
 Then run the agent using `adk run .` or `adk web .` in this directory.

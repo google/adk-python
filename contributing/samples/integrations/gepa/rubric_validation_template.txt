@@ -155,12 +155,12 @@ Verdict: no
   </available_tools>
 
   <main_prompt>
-  {{user_input}}
+  {{user_input|e}}
   </main_prompt>
 </user_prompt>
 
 <responses>
-{{model_response}}
+{{model_response|e}}
 </responses>
 
 <properties>

@@ -69,7 +69,11 @@ ConfigsUnion = Annotated[
 
 # Use a RootModel to represent the agent directly at the top level.
 # The `discriminator` is applied to the union within the RootModel.
-@deprecated("AgentConfig is deprecated and will be removed in future versions.")
+@deprecated(
+    "AgentConfig is deprecated and will be removed in future versions. "
+    "Config is now loaded via reflection so the separate config class is no "
+    "longer needed."
+)
 @experimental(FeatureName.AGENT_CONFIG)
 class AgentConfig(RootModel[ConfigsUnion]):
   """The config for the YAML schema to create an agent."""

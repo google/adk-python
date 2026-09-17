@@ -43,7 +43,7 @@ pip install google-adk asyncpg greenlet
 
 | Column        | Type         | Description                 |
 | ------------- | ------------ | --------------------------- |
-| id            | VARCHAR(256) | Event UUID (PK)             |
+| id            | VARCHAR(128) | Event UUID (PK)             |
 | app_name      | VARCHAR(128) | Application identifier (PK) |
 | user_id       | VARCHAR(128) | User identifier (PK)        |
 | session_id    | VARCHAR(128) | Session reference (PK, FK)  |
@@ -136,7 +136,7 @@ Create a `.env` file:
 POSTGRES_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/adk_sessions
 GOOGLE_CLOUD_PROJECT=<your-gcp-project-id>
 GOOGLE_CLOUD_LOCATION=us-central1
-GOOGLE_GENAI_USE_VERTEXAI=true
+GOOGLE_GENAI_USE_ENTERPRISE=true
 ```
 
 Or run export command.
@@ -145,7 +145,7 @@ Or run export command.
 export POSTGRES_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/adk_sessions
 export GOOGLE_CLOUD_PROJECT=$(gcloud config get-value project)
 export GOOGLE_CLOUD_LOCATION=us-central1
-export GOOGLE_GENAI_USE_VERTEXAI=true
+export GOOGLE_GENAI_USE_ENTERPRISE=true
 ```
 
 ### 3. Run the Agent

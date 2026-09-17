@@ -15,9 +15,10 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
+from typing import cast
 from typing import List
 from typing import Optional
-from typing import Union
 
 from fastapi.openapi.models import HTTPBearer
 from typing_extensions import override
@@ -29,6 +30,7 @@ from ...auth.auth_credential import ServiceAccount
 from ...auth.auth_credential import ServiceAccountCredential
 from ...auth.auth_schemes import AuthScheme
 from ...auth.auth_tool import AuthConfig
+from ..base_tool import BaseTool
 from ..base_toolset import BaseToolset
 from ..base_toolset import ToolPredicate
 from ..openapi_tool.auth.auth_helpers import service_account_scheme_credential
@@ -42,7 +44,6 @@ from .integration_connector_tool import IntegrationConnectorTool
 logger = logging.getLogger("google_adk." + __name__)
 
 
-# TODO(cheliu): Apply a common toolset interface
 class ApplicationIntegrationToolset(BaseToolset):
   """ApplicationIntegrationToolset generates tools from a given Application
   Integration or Integration Connector resource.
@@ -84,22 +85,23 @@ class ApplicationIntegrationToolset(BaseToolset):
       self,
       project: str,
       location: str,
-      connection_template_override: Optional[str] = None,
-      integration: Optional[str] = None,
-      triggers: Optional[List[str]] = None,
-      connection: Optional[str] = None,
-      entity_operations: Optional[str] = None,
-      actions: Optional[list[str]] = None,
+      connection_template_override: str | None = None,
+      integration: str | None = None,
+      triggers: list[str] | None = None,
+      connection: str | None = None,
+      entity_operations: dict[str, list[str]] | None = None,
+      actions: list[str] | None = None,
       # Optional parameter for the toolset. This is prepended to the generated
       # tool/python function name.
-      tool_name_prefix: Optional[str] = "",
+      tool_name_prefix: str | None = "",
       # Optional parameter for the toolset. This is appended to the generated
       # tool/python function description.
-      tool_instructions: Optional[str] = "",
-      service_account_json: Optional[str] = None,
-      auth_scheme: Optional[AuthScheme] = None,
-      auth_credential: Optional[AuthCredential] = None,
-      tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
+      tool_instructions: str | None = "",
+      service_account_json: str | None = None,
+      auth_scheme: AuthScheme | None = None,
+      auth_credential: AuthCredential | None = None,
+      tool_filter: ToolPredicate | list[str] | None = None,
+      credential_key: str | None = None,
   ):
     """Args:
 
@@ -139,16 +141,18 @@ class ApplicationIntegrationToolset(BaseToolset):
     self._connection = connection
     self._entity_operations = entity_operations
     self._actions = actions
-    self._tool_instructions = tool_instructions
+    self._tool_instructions = tool_instructions or ""
     self._service_account_json = service_account_json
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
+    self._credential_key = credential_key
     # Store auth config as instance variable so ADK can populate
     # exchanged_auth_credential in-place before calling get_tools()
-    self._auth_config: Optional[AuthConfig] = (
+    self._auth_config: AuthConfig | None = (
         AuthConfig(
             auth_scheme=auth_scheme,
             raw_auth_credential=auth_credential,
+            credential_key=credential_key,
         )
         if auth_scheme
         else None
@@ -165,7 +169,7 @@ class ApplicationIntegrationToolset(BaseToolset):
         actions,
         service_account_json,
     )
-    connection_details = {}
+    connection_details: dict[str, Any] = {}
     if integration:
       spec = integration_client.get_openapi_spec_for_integration()
     elif connection and (entity_operations or actions):
@@ -174,19 +178,23 @@ class ApplicationIntegrationToolset(BaseToolset):
       )
       connection_details = connections_client.get_connection_details()
       spec = integration_client.get_openapi_spec_for_connection(
-          tool_name_prefix,
-          tool_instructions,
+          tool_name_prefix or "",
+          self._tool_instructions,
       )
     else:
       raise ValueError(
           "Invalid request, Either integration or (connection and"
           " (entity_operations or actions)) should be provided."
       )
-    self._openapi_toolset = None
-    self._tools = []
+    self._openapi_toolset: OpenAPIToolset | None = None
+    self._tools: list[IntegrationConnectorTool] = []
     self._parse_spec_to_toolset(spec, connection_details)
 
-  def _parse_spec_to_toolset(self, spec_dict, connection_details):
+  def _parse_spec_to_toolset(
+      self,
+      spec_dict: dict[str, Any],
+      connection_details: dict[str, Any],
+  ) -> None:
     """Parses the spec dict to OpenAPI toolset."""
     if self._service_account_json:
       sa_credential = ServiceAccountCredential.model_validate_json(
@@ -214,6 +222,7 @@ class ApplicationIntegrationToolset(BaseToolset):
           spec_dict=spec_dict,
           auth_credential=auth_credential,
           auth_scheme=auth_scheme,
+          credential_key=self._credential_key,
           tool_filter=self.tool_filter,
       )
       return
@@ -221,13 +230,18 @@ class ApplicationIntegrationToolset(BaseToolset):
     operations = OpenApiSpecParser().parse(spec_dict)
 
     for open_api_operation in operations:
-      operation = getattr(open_api_operation.operation, "x-operation")
-      entity = None
-      action = None
+      # These three come from a spec this package generates itself, where
+      # x-operation is always set to a string, so they are cast rather than
+      # checked. A check here could only ever reject a hand-built spec.
+      operation = cast(
+          str, getattr(open_api_operation.operation, "x-operation")
+      )
+      entity: Optional[str] = None
+      action: Optional[str] = None
       if hasattr(open_api_operation.operation, "x-entity"):
-        entity = getattr(open_api_operation.operation, "x-entity")
+        entity = cast(str, getattr(open_api_operation.operation, "x-entity"))
       elif hasattr(open_api_operation.operation, "x-action"):
-        action = getattr(open_api_operation.operation, "x-action")
+        action = cast(str, getattr(open_api_operation.operation, "x-action"))
       rest_api_tool = RestApiTool.from_parsed_operation(open_api_operation)
       if auth_scheme:
         rest_api_tool.configure_auth_scheme(auth_scheme)
@@ -267,23 +281,68 @@ class ApplicationIntegrationToolset(BaseToolset):
               rest_api_tool=rest_api_tool,
               auth_scheme=connector_auth_scheme,
               auth_credential=connector_auth_credential,
+              credential_key=self._credential_key,
           )
       )
 
+  def _clone_connector_tool_with_auth_credential(
+      self,
+      tool: IntegrationConnectorTool,
+      auth_credential: AuthCredential,
+  ) -> IntegrationConnectorTool:
+    return IntegrationConnectorTool(
+        name=tool.name,
+        description=tool.description,
+        connection_name=tool._connection_name,
+        connection_host=tool._connection_host,
+        connection_service_name=tool._connection_service_name,
+        entity=tool._entity,
+        action=tool._action,
+        operation=tool._operation,
+        rest_api_tool=tool._rest_api_tool,
+        auth_scheme=tool._auth_scheme,
+        auth_credential=auth_credential,
+        credential_key=tool._credential_key,
+    )
+
   @override
+  # typing.List rather than list, so the released annotation is unchanged.
   async def get_tools(
       self,
-      readonly_context: Optional[ReadonlyContext] = None,
-  ) -> List[RestApiTool]:
-    return (
-        [
-            tool
-            for tool in self._tools
-            if self._is_tool_selected(tool, readonly_context)
-        ]
-        if self._openapi_toolset is None
-        else await self._openapi_toolset.get_tools(readonly_context)
+      readonly_context: ReadonlyContext | None = None,
+  ) -> List[BaseTool]:
+    if self._openapi_toolset is not None:
+      # A new list, because list is invariant and the toolset hands back the
+      # narrower list[RestApiTool].
+      return list(await self._openapi_toolset.get_tools(readonly_context))
+
+    exchanged_auth_credential = (
+        self._auth_config.exchanged_auth_credential
+        if self._auth_config
+        else None
     )
+
+    selected_tools: list[BaseTool] = [
+        tool
+        for tool in self._tools
+        if self._is_tool_selected(tool, readonly_context)
+    ]
+
+    if not exchanged_auth_credential:
+      return selected_tools
+
+    resolved_tools: list[BaseTool] = []
+    for tool in selected_tools:
+      if isinstance(tool, IntegrationConnectorTool) and tool._auth_scheme:
+        resolved_tools.append(
+            self._clone_connector_tool_with_auth_credential(
+                tool, exchanged_auth_credential
+            )
+        )
+      else:
+        resolved_tools.append(tool)
+
+    return resolved_tools
 
   @override
   async def close(self) -> None:

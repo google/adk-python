@@ -39,6 +39,13 @@ class AsyncListIterator:
       raise StopAsyncIteration from exc
 
 
+def _mock_admin_client(mock_client_cls):
+  """Returns the admin client the tool's ``async with`` block binds."""
+  mock_client = mock_client_cls.return_value
+  mock_client.__aenter__.return_value = mock_client
+  return mock_client
+
+
 @pytest.fixture
 def mock_credentials():
   return create_autospec(Credentials, instance=True)
@@ -53,7 +60,9 @@ async def test_list_instances_success(
     mock_instance_admin_client_cls, mock_credentials
 ):
   """Tests the list_instances function in admin_tool."""
-  mock_instance_admin_client = mock_instance_admin_client_cls.return_value
+  mock_instance_admin_client = _mock_admin_client(
+      mock_instance_admin_client_cls
+  )
   mock_instance1 = create_autospec(
       spanner_admin_instance_v1.types.Instance, instance=True
   )
@@ -74,6 +83,7 @@ async def test_list_instances_success(
       "results": ["test-instance-1", "test-instance-2"],
   }
   mock_instance_admin_client.list_instances.assert_called_once()
+  mock_instance_admin_client.__aexit__.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -84,7 +94,9 @@ async def test_list_instances_success(
 async def test_list_instances_error(
     mock_instance_admin_client_cls, mock_credentials
 ):
-  mock_instance_admin_client = mock_instance_admin_client_cls.return_value
+  mock_instance_admin_client = _mock_admin_client(
+      mock_instance_admin_client_cls
+  )
   mock_instance_admin_client.list_instances.side_effect = Exception(
       "test error"
   )
@@ -93,6 +105,7 @@ async def test_list_instances_error(
       "status": "ERROR",
       "error_details": "Exception('test error')",
   }
+  mock_instance_admin_client.__aexit__.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -104,7 +117,9 @@ async def test_get_instance_success(
     mock_instance_admin_client_cls, mock_credentials
 ):
   """Tests the get_instance function in admin_tool."""
-  mock_instance_admin_client = mock_instance_admin_client_cls.return_value
+  mock_instance_admin_client = _mock_admin_client(
+      mock_instance_admin_client_cls
+  )
   mock_instance = create_autospec(
       spanner_admin_instance_v1.types.Instance, instance=True
   )
@@ -140,6 +155,7 @@ async def test_get_instance_success(
       "test-project", "test-instance"
   )
   mock_instance_admin_client.get_instance.assert_called_once()
+  mock_instance_admin_client.__aexit__.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -151,7 +167,9 @@ async def test_get_instance_error(
     mock_instance_admin_client_cls, mock_credentials
 ):
   """Tests the get_instance function in admin_tool when an error occurs."""
-  mock_instance_admin_client = mock_instance_admin_client_cls.return_value
+  mock_instance_admin_client = _mock_admin_client(
+      mock_instance_admin_client_cls
+  )
   mock_instance_admin_client.get_instance.side_effect = Exception("test error")
   result = await admin_tool.get_instance(
       project_id="test-project",
@@ -162,6 +180,7 @@ async def test_get_instance_error(
       "status": "ERROR",
       "error_details": "Exception('test error')",
   }
+  mock_instance_admin_client.__aexit__.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -173,7 +192,9 @@ async def test_list_instance_configs_success(
     mock_instance_admin_client_cls, mock_credentials
 ):
   """Tests the list_instance_configs function in admin_tool."""
-  mock_instance_admin_client = mock_instance_admin_client_cls.return_value
+  mock_instance_admin_client = _mock_admin_client(
+      mock_instance_admin_client_cls
+  )
   mock_instance_admin_client.common_project_path.return_value = (
       "projects/test-project"
   )
@@ -214,7 +235,9 @@ async def test_get_instance_config_success(
     mock_instance_admin_client_cls, mock_credentials
 ):
   """Tests the get_instance_config function in admin_tool."""
-  mock_instance_admin_client = mock_instance_admin_client_cls.return_value
+  mock_instance_admin_client = _mock_admin_client(
+      mock_instance_admin_client_cls
+  )
   mock_instance_admin_client.instance_config_path.return_value = (
       "projects/test-project/instanceConfigs/config-1"
   )
@@ -269,7 +292,9 @@ async def test_get_instance_config_error(
     mock_instance_admin_client_cls, mock_credentials
 ):
   """Tests the get_instance_config function when an error occurs."""
-  mock_instance_admin_client = mock_instance_admin_client_cls.return_value
+  mock_instance_admin_client = _mock_admin_client(
+      mock_instance_admin_client_cls
+  )
   mock_instance_admin_client.get_instance_config.side_effect = Exception(
       "test error"
   )
@@ -293,7 +318,9 @@ async def test_create_instance_success(
     mock_instance_admin_client_cls, mock_credentials
 ):
   """Tests the create_instance function in admin_tool."""
-  mock_instance_admin_client = mock_instance_admin_client_cls.return_value
+  mock_instance_admin_client = _mock_admin_client(
+      mock_instance_admin_client_cls
+  )
   mock_instance_admin_client.instance_config_path.return_value = (
       "projects/test-project/instanceConfigs/config-1"
   )
@@ -325,7 +352,7 @@ async def test_list_databases_success(
     mock_db_admin_client_cls, mock_credentials
 ):
   """Tests the list_databases function in admin_tool."""
-  mock_db_admin_client = mock_db_admin_client_cls.return_value
+  mock_db_admin_client = _mock_admin_client(mock_db_admin_client_cls)
   mock_db_admin_client.instance_path.return_value = (
       "projects/test-project/instances/test-instance"
   )
@@ -366,7 +393,7 @@ async def test_create_database_success(
     mock_db_admin_client_cls, mock_credentials
 ):
   """Tests the create_database function in admin_tool."""
-  mock_db_admin_client = mock_db_admin_client_cls.return_value
+  mock_db_admin_client = _mock_admin_client(mock_db_admin_client_cls)
   mock_db_admin_client.instance_path.return_value = (
       "projects/test-project/instances/test-instance"
   )

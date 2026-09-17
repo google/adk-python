@@ -17,7 +17,7 @@ from __future__ import annotations
 import warnings
 
 try:
-  from google.adk.integrations.secret_manager.secret_client import SecretManagerClient
+  from google.adk.integrations.secret_manager.secret_client import SecretManagerClient  # noqa: F401
 
   warnings.warn(
       "SecretManagerClient has been moved to"

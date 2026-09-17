@@ -14,6 +14,9 @@
 
 from __future__ import annotations
 
+from urllib.parse import quote
+from urllib.parse import unquote
+
 ADK_METADATA_KEY_PREFIX = "adk_"
 ADK_CONTEXT_ID_PREFIX = "ADK"
 ADK_CONTEXT_ID_SEPARATOR = "/"
@@ -54,18 +57,23 @@ def _to_a2a_context_id(app_name: str, user_id: str, session_id: str) -> str:
     raise ValueError(
         "All parameters (app_name, user_id, session_id) must be non-empty"
     )
-  return ADK_CONTEXT_ID_SEPARATOR.join(
-      [ADK_CONTEXT_ID_PREFIX, app_name, user_id, session_id]
-  )
+  return ADK_CONTEXT_ID_SEPARATOR.join([
+      ADK_CONTEXT_ID_PREFIX,
+      quote(app_name, safe=""),
+      quote(user_id, safe=""),
+      quote(session_id, safe=""),
+  ])
 
 
 def _from_a2a_context_id(
     context_id: str | None,
 ) -> tuple[str, str, str] | tuple[None, None, None]:
   """Converts an A2A context id to app name, user id and session id.
-  if context_id is None, return None, None, None
-  if context_id is not None, but not in the format of
-  ADK$app_name$user_id$session_id, return None, None, None
+
+  Reverses ``_to_a2a_context_id``. The context id is expected to be
+  ``ADK/<app_name>/<user_id>/<session_id>`` with each field percent-encoded, so
+  that ids containing the separator still round-trip. Returns (None, None, None)
+  if context_id is None or does not match this format.
 
   Args:
     context_id: The A2A context id.
@@ -76,16 +84,18 @@ def _from_a2a_context_id(
   if not context_id:
     return None, None, None
 
-  try:
-    parts = context_id.split(ADK_CONTEXT_ID_SEPARATOR)
-    if len(parts) != 4:
-      return None, None, None
+  parts = context_id.split(ADK_CONTEXT_ID_SEPARATOR)
+  if len(parts) != 4:
+    return None, None, None
 
-    prefix, app_name, user_id, session_id = parts
-    if prefix == ADK_CONTEXT_ID_PREFIX and app_name and user_id and session_id:
-      return app_name, user_id, session_id
-  except ValueError:
-    # Handle any split errors gracefully
-    pass
+  prefix, app_name, user_id, session_id = parts
+  if prefix != ADK_CONTEXT_ID_PREFIX:
+    return None, None, None
+
+  app_name = unquote(app_name)
+  user_id = unquote(user_id)
+  session_id = unquote(session_id)
+  if app_name and user_id and session_id:
+    return app_name, user_id, session_id
 
   return None, None, None

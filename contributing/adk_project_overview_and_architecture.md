@@ -45,6 +45,14 @@ agent.py: Must define the agent and assign it to a variable named root_agent. Th
 
 `__init__.py`: In each agent directory, it must contain `from . import agent` to make the agent discoverable.
 
+### Nested Agent Directories (Dev Mode / `adk web`)
+
+In the local development server (`adk web` / `dev_server`), ADK supports deeply nested agent directories (e.g., sub-packages or structured folders).
+
+- **Recursive Discovery**: The loader recursively walks directories to discover all valid agent applications containing an `agent.py`, `root_agent.yaml`, or `__init__.py` file.
+- **Dot Naming Convention**: Nested agents are represented in the system and referenced inside the Web UI using a standard dot-separated namespace notation (e.g., `agent_samples.empty_agent` or `workflow_samples.fan_out_fan_in`).
+- **Isolation**: Production environments (`adk api_server`) only support flat single-level agent directories for maximum security and isolation.
+
 ## Local Development & Debugging
 
 Interactive UI (adk web): This is our primary debugging tool. It's a decoupled system:

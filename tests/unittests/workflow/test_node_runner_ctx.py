@@ -396,6 +396,34 @@ async def test_delegated_ctx_output_not_emitted():
   assert len(output_events) == 0
 
 
+@pytest.mark.asyncio
+async def test_delegated_output_preserves_event_details():
+  """When output is delegated, the event is enqueued but output is suppressed."""
+  from google.adk.events.event_actions import EventActions
+
+  class _Node(BaseNode):
+
+    async def _run_impl(self, *, ctx, node_input):
+      ctx._output_delegated = True
+      yield Event(
+          output='delegated_value',
+          actions=EventActions(state_delta={'foo': 'bar'}),
+          content=types.Content(role='model', parts=[types.Part(text='hello')]),
+      )
+
+  parent_ctx, events = _make_ctx()
+  child_ctx = await NodeRunner(
+      node=_Node(name='n'), parent_ctx=parent_ctx
+  ).run()
+
+  assert child_ctx.output == 'delegated_value'
+  assert len(events) == 1
+  event = events[0]
+  assert event.output is None
+  assert event.actions.state_delta == {'foo': 'bar'}
+  assert event.content.parts[0].text == 'hello'
+
+
 # =========================================================================
 # Context as INPUT — resume state provided to NodeRunner at construction
 # =========================================================================
@@ -586,6 +614,28 @@ async def test_sequential_branch_propagation():
   ).run()
 
   assert events[0].branch == 'parent_branch'
+
+
+@pytest.mark.asyncio
+async def test_child_event_branch_does_not_mutate_parent_ic():
+  """A child node altering its branch does not mutate the parent's shared InvocationContext branch."""
+
+  class _Node(BaseNode):
+
+    async def _run_impl(self, *, ctx, node_input):
+      yield Event(output='result', branch='new_child_branch')
+
+  parent_ctx, events = _make_ctx()
+  parent_ctx._invocation_context.branch = 'parent_branch'
+  await NodeRunner(
+      node=_Node(name='n'),
+      parent_ctx=parent_ctx,
+      use_sub_branch=False,
+  ).run()
+
+  assert events[0].branch == 'new_child_branch'
+  # The parent's branch must remain unchanged.
+  assert parent_ctx._invocation_context.branch == 'parent_branch'
 
 
 @pytest.mark.asyncio

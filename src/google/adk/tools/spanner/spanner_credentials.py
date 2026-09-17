@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from pydantic import model_validator
+
 from ...features import experimental
 from ...features import FeatureName
 from .._google_credentials import BaseGoogleCredentialsConfig
@@ -32,9 +34,12 @@ class SpannerCredentialsConfig(BaseGoogleCredentialsConfig):
   Please do not use this in production, as it may be deprecated later.
   """
 
+  @model_validator(mode="after")
   def __post_init__(self) -> SpannerCredentialsConfig:
     """Populate default scope if scopes is None."""
-    super().__post_init__()
+    # pydantic wraps the base @model_validator in a descriptor proxy that mypy
+    # does not treat as callable; it binds to the function normally at runtime.
+    super().__post_init__()  # type: ignore[operator]
 
     if not self.scopes:
       self.scopes = SPANNER_DEFAULT_SCOPE

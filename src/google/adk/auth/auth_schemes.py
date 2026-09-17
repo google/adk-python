@@ -68,7 +68,7 @@ class OAuthGrantType(str, Enum):
   PASSWORD = "password"
 
   @staticmethod
-  def from_flow(flow: OAuthFlows) -> "OAuthGrantType":
+  def from_flow(flow: OAuthFlows) -> Optional["OAuthGrantType"]:
     """Converts an OAuthFlows object to a OAuthGrantType."""
     if flow.clientCredentials:
       return OAuthGrantType.CLIENT_CREDENTIALS

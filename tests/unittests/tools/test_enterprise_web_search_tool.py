@@ -93,23 +93,3 @@ async def test_process_llm_request_non_gemini_with_disabled_check(monkeypatch):
       llm_request.config.tools[0].enterprise_web_search
       == types.EnterpriseWebSearch()
   )
-
-
-@pytest.mark.asyncio
-async def test_process_llm_request_failure_with_multiple_tools_gemini_1_models():
-  tool = EnterpriseWebSearchTool()
-  llm_request = LlmRequest(
-      model='gemini-1.5-flash',
-      config=types.GenerateContentConfig(
-          tools=[
-              types.Tool(google_search=types.GoogleSearch()),
-          ]
-      ),
-  )
-  tool_context = await _create_tool_context()
-
-  with pytest.raises(ValueError) as exc_info:
-    await tool.process_llm_request(
-        tool_context=tool_context, llm_request=llm_request
-    )
-  assert 'cannot be used with other tools in Gemini 1.x.' in str(exc_info.value)

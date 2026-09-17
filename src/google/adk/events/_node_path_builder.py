@@ -56,6 +56,15 @@ class _NodePathBuilder:
     return self._segments[-1].rsplit('@', 1)[0]
 
   @property
+  def static_path(self) -> str:
+    """Returns the path with run ids stripped from every segment.
+
+    Example: ``'wf@1/node@2'`` -> ``'wf/node'``. Useful for comparing a node's
+    position in the tree across runs, where the run ids differ.
+    """
+    return '/'.join(segment.rsplit('@', 1)[0] for segment in self._segments)
+
+  @property
   def leaf_segment(self) -> str:
     """Returns the full leaf segment."""
     if not self._segments:

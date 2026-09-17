@@ -514,6 +514,32 @@ def test_evaluate_first_turn_failure():
   assert result.eval_status == EvalStatus.FAILED
 
 
+@pytest.mark.parametrize(
+    "user_content",
+    [
+        types.Content(role="user", parts=[]),
+        types.Content(),
+    ],
+)
+def test_evaluate_first_turn_not_evaluated_when_user_content_has_no_text(
+    user_content,
+):
+  """First turn with empty/None parts is not evaluated instead of crashing."""
+  evaluator = _create_test_evaluator(
+      threshold=1.0, stop_signal="test stop signal"
+  )
+  conversation_scenario = _create_test_conversation_scenario(
+      conversation_plan="plan",
+      starting_prompt="test starting prompt",
+  )
+  invocation = Invocation(invocation_id="1", user_content=user_content)
+
+  result = evaluator._evaluate_first_turn(invocation, conversation_scenario)  # pylint: disable=protected-access
+
+  assert result.score is None
+  assert result.eval_status == EvalStatus.NOT_EVALUATED
+
+
 def test_aggregate_conversation_results_all_pass_produces_pass():
   evaluator = _create_test_evaluator()
   results = [

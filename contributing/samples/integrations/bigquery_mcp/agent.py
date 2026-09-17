@@ -15,10 +15,15 @@
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+from google.adk.utils import _mtls_utils
 import google.auth
 
 BIGQUERY_AGENT_NAME = "adk_sample_bigquery_mcp_agent"
-BIGQUERY_MCP_ENDPOINT = "https://bigquery.googleapis.com/mcp"
+BIGQUERY_MCP_ENDPOINT = _mtls_utils.get_api_endpoint(
+    location="",
+    default_template="https://bigquery.googleapis.com/mcp",
+    mtls_template="https://bigquery.mtls.googleapis.com/mcp",
+)
 BIGQUERY_SCOPE = "https://www.googleapis.com/auth/bigquery"
 
 # Initialize the tools to use the application default credentials.

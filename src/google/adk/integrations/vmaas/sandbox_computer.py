@@ -21,6 +21,7 @@ Agent Engine Computer Use Sandbox as the remote browser environment.
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 import time
 from typing import Any
@@ -41,11 +42,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("google_adk." + __name__)
 
-# Session state keys for sharing resources across sessions
+# Keys of the per-session resource record
 _STATE_KEY_AGENT_ENGINE_NAME = "_vmaas_agent_engine_name"
 _STATE_KEY_SANDBOX_NAME = "_vmaas_sandbox_name"
-_STATE_KEY_ACCESS_TOKEN = "_vmaas_access_token"
-_STATE_KEY_TOKEN_EXPIRY = "_vmaas_token_expiry"
+
+# Number of sessions whose resources are remembered by one computer instance
+_MAX_REMEMBERED_SESSIONS = 1024
 
 # Default token timeout in seconds
 _DEFAULT_TOKEN_TIMEOUT = 3600
@@ -62,12 +64,13 @@ class AgentEngineSandboxComputer(BaseComputer):
   Computer Use Sandbox. It supports:
   - Auto-provisioning of agent engines and sandboxes
   - Bring-your-own-sandbox (BYOS) mode
-  - Session-aware resource sharing via session_state property
+  - Reuse of one sandbox across the invocations of a session
   - Automatic token refresh on expiry
 
-  When used with ComputerUseToolset, the session_state property is
-  automatically bound to tool_context.state before each tool call,
-  enabling state sharing across invocations and agent server instances.
+  When used with ComputerUseToolset, the sandbox of the invocation's session is
+  bound before each tool call, so the invocations of a session share a sandbox.
+  It is remembered by this instance, so a session served by another agent
+  server instance gets a sandbox of its own.
 
   Example usage:
     ```python
@@ -133,23 +136,57 @@ class AgentEngineSandboxComputer(BaseComputer):
     self._search_engine_url = search_engine_url
     self._screen_size = (1280, 720)
 
-    # Extract agent engine name from sandbox_name if provided
+    # Determine the agent engine to use. The backend requires that a sandbox
+    # is created under the same reasoning engine that owns the
+    # template/snapshot, so we derive the engine from whichever resource name
+    # is provided rather than creating a new (mismatched) engine. This lets
+    # users supply only a template or snapshot name without also pre-creating
+    # a sandbox (BYOS). All sandbox resource names embed the engine:
+    #   projects/.../reasoningEngines/{engine}/{sandboxEnvironments|
+    #   sandboxEnvironmentTemplates|sandboxEnvironmentSnapshots}/...
     self._agent_engine_name = None
-    if sandbox_name:
-      # Format: projects/.../reasoningEngines/.../sandboxEnvironments/...
-      parts = sandbox_name.split("/sandboxEnvironments/")
-      if len(parts) == 2:
-        self._agent_engine_name = parts[0]
+    for resource_name in (
+        sandbox_name,
+        sandbox_template_name,
+        sandbox_snapshot_name,
+    ):
+      if not resource_name:
+        continue
+      engine_name = resource_name.split("/sandboxEnvironment")[0]
+      if engine_name != resource_name and "/reasoningEngines/" in engine_name:
+        self._agent_engine_name = engine_name
+        break
 
     # Vertex client (lazy-initialized if not provided)
     self._client = vertexai_client
 
-    # Session state for sharing sandbox/tokens across invocations
+    # Sandbox and agent engine of every session served so far, keyed by the
+    # identity of the session. They are kept here rather than in session state
+    # because session state is writable by the caller, and a sandbox name taken
+    # from there would attach these tools to the browser of whoever owns that
+    # sandbox.
+    self._resources_by_session: collections.OrderedDict[
+        tuple[str, str, str], dict[str, Any]
+    ] = collections.OrderedDict()
+
+    # Resources of the session being served, bound by prepare()
     self._session_state: dict[str, Any] | None = None
 
+    # Access token cache. Held on the instance rather than in session state:
+    # session state is persisted and emitted in the event state delta, and the
+    # token is a bearer credential for the configured service account.
+    self._access_token: str | None = None
+    self._token_expiry: float = 0.0
+
   async def prepare(self, tool_context: "ToolContext") -> None:
-    """Bind session state for sandbox resource sharing."""
-    self._session_state = tool_context.state
+    """Bind the sandbox resources of the invocation's session."""
+    session = tool_context.session
+    key = (session.app_name, session.user_id, session.id)
+    if key not in self._resources_by_session:
+      self._resources_by_session[key] = {}
+      if len(self._resources_by_session) > _MAX_REMEMBERED_SESSIONS:
+        self._resources_by_session.popitem(last=False)
+    self._session_state = self._resources_by_session[key]
 
   def _get_client(self) -> "vertexai.Client":
     """Get or create the Vertex AI client."""
@@ -221,12 +258,10 @@ class AgentEngineSandboxComputer(BaseComputer):
         "Creating new sandbox under agent engine: %s", agent_engine_name
     )
 
-    from vertexai import types
-
     config = {
         "display_name": "adk_computer_use_sandbox",
     }
-    spec = None
+    spec: dict[str, Any] | None = None
     if self._sandbox_template_name:
       config["sandbox_environment_template"] = self._sandbox_template_name
       logger.info(
@@ -265,11 +300,12 @@ class AgentEngineSandboxComputer(BaseComputer):
     Returns:
       The access token.
     """
-    # Check session state
-    token = self._session_state.get(_STATE_KEY_ACCESS_TOKEN)
-    expiry = self._session_state.get(_STATE_KEY_TOKEN_EXPIRY, 0)
-    if token and time.time() < expiry - _TOKEN_REFRESH_BUFFER:
-      return token
+    # Check the cached token
+    if (
+        self._access_token
+        and time.time() < self._token_expiry - _TOKEN_REFRESH_BUFFER
+    ):
+      return self._access_token
 
     # Generate new token
     logger.debug("Generating new access token for sandbox: %s", sandbox_name)
@@ -281,11 +317,8 @@ class AgentEngineSandboxComputer(BaseComputer):
         timeout=_DEFAULT_TOKEN_TIMEOUT,
     )
 
-    # Store in session state
-    self._session_state[_STATE_KEY_ACCESS_TOKEN] = token
-    self._session_state[_STATE_KEY_TOKEN_EXPIRY] = (
-        time.time() + _DEFAULT_TOKEN_TIMEOUT
-    )
+    self._access_token = token
+    self._token_expiry = time.time() + _DEFAULT_TOKEN_TIMEOUT
 
     return token
 
@@ -302,8 +335,8 @@ class AgentEngineSandboxComputer(BaseComputer):
     except Exception as e:
       # Token generation failed - clear cached token and retry
       logger.warning("Token generation failed, clearing cache: %s", e)
-      self._session_state[_STATE_KEY_ACCESS_TOKEN] = None
-      self._session_state[_STATE_KEY_TOKEN_EXPIRY] = 0
+      self._access_token = None
+      self._token_expiry = 0.0
       token = await self._get_access_token(sandbox_name)
 
     return SandboxClient(

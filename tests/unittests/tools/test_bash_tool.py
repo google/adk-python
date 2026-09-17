@@ -13,14 +13,22 @@
 # limitations under the License.
 
 import asyncio
-import resource
 import signal
+import sys
 from unittest import mock
+
+import pytest
+
+if sys.platform == "win32":
+  pytest.skip(
+      "bash tool tests require Unix resource module", allow_module_level=True
+  )
+
+import resource
 
 from google.adk.tools import bash_tool
 from google.adk.tools import tool_context
 from google.adk.tools.tool_confirmation import ToolConfirmation
-import pytest
 
 
 @pytest.fixture

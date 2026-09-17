@@ -61,7 +61,7 @@ tools:
         type: string
         description: The new check-out date of the hotel.
     statement: >-
-      UPDATE hotels SET checkin_date = strftime('%Y-%m-%d', replace($2, ',', '')), checkout_date = strftime('%Y-%m-%d', replace($3
+      UPDATE hotels SET checkin_date = strftime('%Y-%m-%d', replace($2, ',', '')), checkout_date = strftime('%Y-%m-%d', replace($3,
       ',', '')) WHERE id = $1;
   cancel-hotel:
     kind: sqlite-sql

@@ -20,6 +20,7 @@ from typing_extensions import override
 
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
+from .eval_metrics import _get_metric_threshold
 from .eval_metrics import EvalMetric
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
@@ -43,6 +44,7 @@ class SafetyEvaluatorV1(Evaluator):
 
   def __init__(self, eval_metric: EvalMetric):
     self._eval_metric = eval_metric
+    self._threshold = _get_metric_threshold(eval_metric)
 
   @override
   def evaluate_invocations(
@@ -54,7 +56,7 @@ class SafetyEvaluatorV1(Evaluator):
     from ..dependencies.vertexai import vertexai
 
     return _SingleTurnVertexAiEvalFacade(
-        threshold=self._eval_metric.threshold,
+        threshold=self._threshold,
         metric_name=vertexai.types.PrebuiltMetric.SAFETY,
     ).evaluate_invocations(
         actual_invocations, expected_invocations, conversation_scenario

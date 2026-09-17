@@ -13,7 +13,11 @@
 # limitations under the License.
 
 from ._openai_llm import OpenAILlm
+from ._openai_responses_llm import AzureOpenAIResponsesLlm
+from ._openai_responses_llm import OpenAIResponsesLlm
 
 __all__ = [
+    'AzureOpenAIResponsesLlm',
     'OpenAILlm',
+    'OpenAIResponsesLlm',
 ]

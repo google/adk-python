@@ -17,8 +17,6 @@ from __future__ import annotations
 from typing import List
 from typing import Literal
 from typing import Optional
-from typing import Type
-from typing import TYPE_CHECKING
 from typing import TypeVar
 from typing import Union
 
@@ -36,7 +34,9 @@ TBaseAgentConfig = TypeVar('TBaseAgentConfig', bound='BaseAgentConfig')
 
 
 @deprecated(
-    'BaseAgentConfig is deprecated and will be removed in future versions.'
+    'BaseAgentConfig is deprecated and will be removed in future versions. '
+    'Config is now loaded via reflection so the separate config class is no '
+    'longer needed.'
 )
 @experimental(FeatureName.AGENT_CONFIG)
 class BaseAgentConfig(BaseModel):

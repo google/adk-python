@@ -45,7 +45,7 @@ class AuthenticatedFunctionTool(FunctionTool):
       self,
       *,
       func: Callable[..., Any],
-      auth_config: AuthConfig = None,
+      auth_config: Optional[AuthConfig] = None,
       response_for_auth_required: Optional[Union[dict[str, Any], str]] = None,
   ):
     """Initializes the AuthenticatedFunctionTool.
@@ -65,6 +65,7 @@ class AuthenticatedFunctionTool(FunctionTool):
     super().__init__(func=func)
     self._ignore_params.append("credential")
 
+    self._credentials_manager: Optional[CredentialManager]
     if auth_config and auth_config.auth_scheme:
       self._credentials_manager = CredentialManager(auth_config=auth_config)
     else:
@@ -98,7 +99,7 @@ class AuthenticatedFunctionTool(FunctionTool):
       *,
       args: dict[str, Any],
       tool_context: ToolContext,
-      credential: AuthCredential,
+      credential: Optional[AuthCredential],
   ) -> Any:
     args_to_call = args.copy()
     signature = inspect.signature(self.func)

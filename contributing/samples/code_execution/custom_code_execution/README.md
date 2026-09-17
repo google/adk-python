@@ -58,13 +58,13 @@ You can run this agent using the ADK CLI.
 To interact with the agent through the command line:
 
 ```bash
-adk run contributing/samples/custom_code_execution "Plot a bar chart with these categories and values: {'リンゴ': 10, 'バナナ': 15, 'オレンジ': 8}. Title the chart '果物の在庫' (Fruit Stock)."
+adk run contributing/samples/code_execution/custom_code_execution "Plot a bar chart with these categories and values: {'リンゴ': 10, 'バナナ': 15, 'オレンジ': 8}. Title the chart '果物の在庫' (Fruit Stock)."
 ```
 
 To use the web interface:
 
 ```bash
-adk web contributing/samples/
+adk web contributing/samples/code_execution/
 ```
 
 Then select `custom_code_execution` from the list of agents and interact with

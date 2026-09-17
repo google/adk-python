@@ -22,3 +22,24 @@ agent = LlmAgent(
 ```
 
 Requires the `openai` Python package and `OPENAI_API_KEY` environment variable.
+
+## OpenAI-Compatible Endpoints
+
+To reach a host that speaks the OpenAI API, or to configure anything else the
+client supports, build an `AsyncOpenAI` yourself and pass it as `client`. Each
+model instance keeps its own client, so one process can talk to several hosts:
+
+```python
+from openai import AsyncOpenAI
+from google.adk.labs.openai import OpenAILlm
+
+openai_model = OpenAILlm(
+    model="my-model",
+    client=AsyncOpenAI(base_url="https://my-host.example/v1", api_key="..."),
+)
+```
+
+`OpenAIResponsesLlm` takes the same `client` field.
+
+> **Tip:** To send every request to one compatible host, leave `client` unset
+> and set `OPENAI_BASE_URL` in the environment. The default client reads it.

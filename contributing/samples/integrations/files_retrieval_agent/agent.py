@@ -18,7 +18,7 @@ This agent indexes local text files and answers questions about them
 using retrieval-augmented generation.
 
 Usage:
-  cd contributing/samples
+  cd contributing/samples/integrations
   adk run files_retrieval_agent
   # or
   adk web .

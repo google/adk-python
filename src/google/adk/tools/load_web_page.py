@@ -30,6 +30,8 @@ from requests.utils import select_proxy
 
 _ALLOWED_URL_SCHEMES = frozenset({'http', 'https'})
 _DEFAULT_PORT_BY_SCHEME = {'http': 80, 'https': 443}
+# Default timeout in seconds for HTTP requests.
+_DEFAULT_TIMEOUT_SECONDS = 30
 _ResolvedAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 
 
@@ -156,8 +158,42 @@ def _is_blocked_hostname(hostname: str) -> bool:
   )
 
 
+_NAT64_WELL_KNOWN_PREFIX = ipaddress.ip_network('64:ff9b::/96')
+
+
+def _embedded_ipv4(address: _ResolvedAddress) -> ipaddress.IPv4Address | None:
+  """Returns the IPv4 address embedded in an IPv6 address, if any.
+
+  ``is_global`` on the outer IPv6 address does not reflect the reachability of
+  the embedded IPv4 target for IPv4-mapped (``::ffff:a.b.c.d``), IPv4-compatible
+  (``::a.b.c.d``), 6to4 (``2002::/16``) and NAT64 (``64:ff9b::/96``) addresses.
+  For example ``64:ff9b::169.254.169.254`` is reported as global but, on a
+  network with NAT64, routes to the internal ``169.254.169.254`` metadata
+  endpoint. Returning the embedded IPv4 lets the caller vet it directly.
+  """
+  if not isinstance(address, ipaddress.IPv6Address):
+    return None
+  if address.ipv4_mapped is not None:
+    return address.ipv4_mapped
+  if address.sixtofour is not None:
+    return address.sixtofour
+  if address in _NAT64_WELL_KNOWN_PREFIX:
+    return ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
+  # IPv4-compatible ``::a.b.c.d`` (deprecated): top 96 bits zero, low 32 bits a
+  # non-trivial IPv4 (excluding ``::`` and ``::1``).
+  packed = int(address)
+  if packed >> 32 == 0 and (packed & 0xFFFFFFFF) not in (0, 1):
+    return ipaddress.IPv4Address(packed & 0xFFFFFFFF)
+  return None
+
+
 def _is_blocked_address(address: _ResolvedAddress) -> bool:
-  return not address.is_global
+  if not address.is_global:
+    return True
+  # Reject IPv6 addresses that embed a non-global IPv4 target (NAT64,
+  # IPv4-compatible, etc.), which `is_global` alone does not catch.
+  embedded = _embedded_ipv4(address)
+  return embedded is not None and not embedded.is_global
 
 
 def _resolve_host_addresses(hostname: str) -> tuple[_ResolvedAddress, ...]:
@@ -230,6 +266,7 @@ def _fetch_direct_response(
           url,
           allow_redirects=False,
           proxies={'http': None, 'https': None},
+          timeout=_DEFAULT_TIMEOUT_SECONDS,
       )
     except requests.RequestException as exc:
       last_error = exc
@@ -253,7 +290,9 @@ def _fetch_response(url: str) -> requests.Response:
     # localhost-style names can be rejected locally without breaking proxy use.
     if parsed_ip_literal is not None and _is_blocked_address(parsed_ip_literal):
       raise ValueError(f'Blocked host: {target.hostname}')
-    return requests.get(url, allow_redirects=False)
+    return requests.get(
+        url, allow_redirects=False, timeout=_DEFAULT_TIMEOUT_SECONDS
+    )
 
   if parsed_ip_literal is not None:
     if _is_blocked_address(parsed_ip_literal):
@@ -281,11 +320,18 @@ def load_web_page(url: str) -> str:
   Returns:
       str: The text content of the url.
   """
-  from bs4 import BeautifulSoup
+  try:
+    from bs4 import BeautifulSoup
+    import lxml  # noqa: F401 -- verify lxml is available for the parser
+  except ImportError as e:
+    raise ImportError(
+        'load_web_page requires the "beautifulsoup4" and "lxml" packages. '
+        'Install them with: pip install google-adk[extensions]'
+    ) from e
 
   try:
     response = _fetch_response(url)
-  except ValueError:
+  except (ValueError, requests.RequestException):
     return _failed_to_fetch_message(url)
 
   # Set allow_redirects=False to prevent SSRF attacks via redirection.

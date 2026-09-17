@@ -182,7 +182,7 @@ class _UserAgent(base_agent.BaseAgent):
     if last_event.content and last_event.content.parts:
       next_message = '\n\n'.join([p.text for p in last_event.content.parts])
     else:
-      logging.warn('Empty content with event=%s', last_event)
+      logging.warning('Empty content with event=%s', last_event)
       next_message = ''
     env_response = retry.retry_call(
         self.env.step,

@@ -82,7 +82,7 @@ root_agent = Agent(
     instruction="""
       Helps you with calendar related tasks.
     """,
-    tools=calendar_tool.get_tools(),
+    tools=[calendar_tool],
     generate_content_config=types.GenerateContentConfig(
         safety_settings=[
             types.SafetySetting(

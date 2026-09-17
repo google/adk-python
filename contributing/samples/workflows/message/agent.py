@@ -71,6 +71,8 @@ async def stream_sentence(node_input: Any = None):
   """
   Demonstrates streaming by sending a sentence in chunks.
   The `partial=True` flag tells the UI that this is part of an ongoing message.
+  Partial events are not written to the session, so the node ends by yielding
+  the assembled sentence once as a non-partial event.
   """
   yield Event(message="#4 Starting to stream...")
   sentence = """\
@@ -88,6 +90,8 @@ You can stream in markdown as well. For example, the table below:
     chunk = sentence[i : i + 5]
     yield Event(message=chunk, partial=True)
     await sleep_if_not_pytest(0.2)
+
+  yield Event(message=sentence)
 
 
 root_agent = Workflow(

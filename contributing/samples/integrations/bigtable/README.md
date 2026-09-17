@@ -5,23 +5,31 @@
 This sample agent demonstrates the Bigtable first-party tools in ADK,
 distributed via the `google.adk.tools.bigtable` module. These tools include:
 
-1. `bigtable_list_instances`
+1. `list_instances`
 
 Fetches Bigtable instance ids in a Google Cloud project.
 
-1. `bigtable_get_instance_info`
+1. `get_instance_info`
 
 Fetches metadata information about a Bigtable instance.
 
-1. `bigtable_list_tables`
+1. `list_clusters`
+
+Fetches clusters and their metadata in a Bigtable instance.
+
+1. `get_cluster_info`
+
+Fetches metadata information about a Bigtable cluster.
+
+1. `list_tables`
 
 Fetches table ids in a Bigtable instance.
 
-1. `bigtable_get_table_info`
+1. `get_table_info`
 
 Fetches metadata information about a Bigtable table.
 
-1. `bigtable_execute_sql`
+1. `execute_sql`
 
 Runs a DQL SQL query in Bigtable database.
 
@@ -34,7 +42,7 @@ or
 for the LLM service for your agent. For example, for using Google AI Studio you
 would set:
 
-- GOOGLE_GENAI_USE_VERTEXAI=FALSE
+- GOOGLE_GENAI_USE_ENTERPRISE=FALSE
 - GOOGLE_API_KEY={your api key}
 
 ### With Application Default Credentials

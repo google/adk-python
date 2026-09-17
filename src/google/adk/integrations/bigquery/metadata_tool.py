@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from google.auth.credentials import Credentials
 from google.cloud import bigquery
 
@@ -70,7 +72,7 @@ def get_dataset_info(
     dataset_id: str,
     credentials: Credentials,
     settings: BigQueryToolConfig,
-) -> dict:
+) -> dict[str, Any]:
   """Get metadata information about a BigQuery dataset.
 
   Args:
@@ -184,7 +186,7 @@ def get_table_info(
     table_id: str,
     credentials: Credentials,
     settings: BigQueryToolConfig,
-) -> dict:
+) -> dict[str, Any]:
   """Get metadata information about a BigQuery table.
 
   Args:
@@ -304,7 +306,7 @@ def get_job_info(
     job_id: str,
     credentials: Credentials,
     settings: BigQueryToolConfig,
-) -> dict:
+) -> dict[str, Any]:
   """Get metadata information about a BigQuery job. Including slot usage,
      job configuration, job statistics, job status, original query etc.
 

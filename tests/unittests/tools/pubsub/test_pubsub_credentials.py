@@ -36,7 +36,7 @@ def test_pubsub_credentials_config_client_id_secret():
   config = PubSubCredentialsConfig(client_id="abc", client_secret="def")
   assert config.client_id == "abc"
   assert config.client_secret == "def"
-  assert config.scopes == PUBSUB_DEFAULT_SCOPE
+  assert config.scopes == list(PUBSUB_DEFAULT_SCOPE)
   assert config.credentials is None
 
 

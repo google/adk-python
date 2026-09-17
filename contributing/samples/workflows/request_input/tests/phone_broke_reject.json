@@ -72,7 +72,8 @@
               "name": "adk_request_input"
             }
           }
-        ]
+        ],
+        "role": "model"
       },
       "id": "e-4",
       "invocationId": "i-1",

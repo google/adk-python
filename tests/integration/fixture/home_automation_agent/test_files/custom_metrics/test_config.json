@@ -1,0 +1,13 @@
+{
+  "criteria": {
+    "tool_trajectory_length_match": 1.0
+  },
+  "custom_metrics": {
+    "tool_trajectory_length_match": {
+      "code_config": {
+        "name": "tests.integration.fixture.home_automation_agent.test_files.custom_metrics.metrics.tool_trajectory_length_match"
+      },
+      "description": "Checks that actual and expected tool trajectories have the same length."
+    }
+  }
+}

@@ -17,8 +17,7 @@
 import asyncio
 import time
 
-import agent
-from google.adk.agents.run_config import RunConfig
+from adk_pr_agent import agent
 from google.adk.runners import InMemoryRunner
 from google.adk.sessions.session import Session
 from google.genai import types
@@ -44,14 +43,16 @@ async def main():
         user_id=user_id_1,
         session_id=session.id,
         new_message=content,
-        run_config=RunConfig(save_input_blobs_as_artifacts=False),
     ):
-      if event.content.parts and event.content.parts[0].text:
+      if event.content and event.content.parts and event.content.parts[0].text:
         if event.author == agent.root_agent.name:
           final_agent_response_parts.append(event.content.parts[0].text)
     print(f"<<<< Agent Final Output: {''.join(final_agent_response_parts)}\n")
 
   pr_message = agent.get_github_pr_info_http(pr_number=1422)
+  if not pr_message:
+    print("Could not fetch the pull request info.")
+    return
   query = "Generate pull request description for " + pr_message
   await run_agent_prompt(session_11, query)
 

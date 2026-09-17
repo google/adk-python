@@ -1,0 +1,6 @@
+fastapi
+google-adk[agent-identity,mcp]
+google-auth
+google-cloud-aiplatform[agent-engines]>=1.148.1
+httpx
+uvicorn

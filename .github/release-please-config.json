@@ -22,7 +22,8 @@
         },
         {
           "type": "refactor",
-          "section": "Code Refactoring"
+          "section": "Code Refactoring",
+          "hidden": true
         },
         {
           "type": "docs",
@@ -56,5 +57,5 @@
       ]
     }
   },
-  "last-release-sha": "cd81f7bde91df78d6cece539a6f98dda2aa8c9c0"
+  "last-release-sha": "b65be0155cd68b849809b9a13dc1eda8e43474f6"
 }

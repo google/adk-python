@@ -28,7 +28,6 @@ from .readonly_context import ReadonlyContext
 
 if TYPE_CHECKING:
   from google.genai import types
-  from pydantic import BaseModel
 
   from ..artifacts.base_artifact_service import ArtifactVersion
   from ..auth.auth_credential import AuthCredential
@@ -56,13 +55,7 @@ def _derive_scheduler(
 ) -> ScheduleDynamicNode | None:
   """Derives the dynamic node scheduler from the parent context."""
   if parent_ctx:
-    scheduler = parent_ctx._workflow_scheduler
-    if scheduler is None:
-      from ..workflow._dynamic_node_scheduler import DynamicNodeScheduler
-      from ..workflow._dynamic_node_scheduler import DynamicNodeState
-
-      scheduler = DynamicNodeScheduler(state=DynamicNodeState())
-    return scheduler
+    return parent_ctx._workflow_scheduler
   return None
 
 
@@ -87,8 +80,8 @@ def _derive_node_path(
 
   if not parent_path and isinstance(node, BaseAgent) and node.parent_agent:
     path_builder = _NodePathBuilder([])
-    curr = node.parent_agent
-    parent_agents = []
+    curr: BaseAgent | None = node.parent_agent
+    parent_agents: list[BaseAgent] = []
     depth = 0
     while curr is not None and depth < _MAX_PARENT_DEPTH:
       parent_agents.insert(0, curr)
@@ -122,6 +115,8 @@ class Context(ReadonlyContext):
   When used in a workflow, additional fields under the ``Workflow-specific
   fields`` section are available.
   """
+
+  _workflow_scheduler: ScheduleDynamicNode | None = None
 
   def __init__(
       self,
@@ -206,7 +201,6 @@ class Context(ReadonlyContext):
     self._resume_inputs = resume_inputs or {}
     self._workflow_scheduler = _derive_scheduler(parent_ctx)
     self._node_rerun_on_resume = node.rerun_on_resume if node else True
-    self._child_run_counters: dict[str, int] = {}
     self._attempt_count = attempt_count
     self._output_delegated = False
     self._output_value: Any = None
@@ -220,14 +214,22 @@ class Context(ReadonlyContext):
         parent_ctx.isolation_scope if parent_ctx else None
     )
 
+    self._output_for_ancestors: list[str]
     if use_as_output and parent_ctx:
-      self._output_for_ancestors: list[str] = [parent_ctx.node_path] + list(
+      self._output_for_ancestors = [parent_ctx.node_path] + list(
           parent_ctx._output_for_ancestors or []
       )
     else:
-      self._output_for_ancestors: list[str] = []
+      self._output_for_ancestors = []
     self._error: Exception | None = None
     self._error_node_path: str = ''
+
+  @property
+  @override
+  def custom_metadata(self) -> dict[str, Any]:
+    """Returns the custom metadata dictionary."""
+    # pylint: disable=protected-access
+    return self._invocation_context._custom_metadata
 
   @property
   def function_call_id(self) -> str | None:
@@ -238,6 +240,11 @@ class Context(ReadonlyContext):
   def function_call_id(self, value: str | None) -> None:
     """Sets the function call id of the current tool call."""
     self._function_call_id = value
+
+  @property
+  def branch(self) -> str | None:
+    """The branch path of the current invocation context."""
+    return self._invocation_context.branch
 
   @property
   def isolation_scope(self) -> str | None:
@@ -403,6 +410,7 @@ class Context(ReadonlyContext):
     ctx_with_proxy = ctx.model_copy(
         update={
             'session': self.session,
+            'isolation_scope': self.isolation_scope,
         }
     )
     return ctx_with_proxy
@@ -445,115 +453,65 @@ class Context(ReadonlyContext):
       use_sub_branch: If True, the dynamic node will be executed in a sub-branch
         to isolate its state and events from the main branch.
       override_branch: An optional branch to use instead of parent's branch.
+      override_isolation_scope: An optional isolation scope to use instead of
+        the parent's scope.
+      raise_on_wait: If True, raises NodeInterruptedError when the child node
+        is WAITING instead of returning None.
 
     Returns:
       The output of the dynamically executed node, once it finishes executing.
     """
-
-    if not self._node_rerun_on_resume:
-      raise ValueError(
-          'A node must have rerun_on_resume=True. Reason is that dynamically'
-          ' scheduled nodes might be interrupted, and the workflow'
-          ' wakes-up/re-runs the parent node, so it can get the child node'
-          ' response.'
-      )
-
-    from ..workflow.utils._workflow_graph_utils import build_node  # pylint: disable=g-import-not-at-top
-
-    built_node = build_node(node)
-
-    from ..agents.base_agent import BaseAgent
-
-    if isinstance(node, BaseAgent) and isinstance(built_node, BaseAgent):
-      built_node.parent_agent = node.parent_agent
-
-    # Mode 1: Running within a Workflow graph.
-    # The workflow orchestrator provides a scheduler to handle resume, dedup,
-    # etc.
-    if self._workflow_scheduler:
-      from ..workflow._errors import NodeInterruptedError
-
-      # Output delegation: once set, the calling node's own output
-      # events are suppressed — the child's output (annotated with
-      # output_for) becomes the calling node's output.
-      if use_as_output:
-        if self._output_delegated:
-          raise ValueError(
-              f'Node {self.node_path} already has a use_as_output delegate.'
-          )
-        self._output_delegated = True
-
-      if run_id:
-        if run_id.isdigit():
-          raise ValueError(
-              f'Explicit run_id "{run_id}" for node "{built_node.name}" must'
-              ' contain non-numeric characters to prevent collision with'
-              ' auto-generated IDs.'
-          )
-      else:
-        self._child_run_counters[built_node.name] = (
-            self._child_run_counters.get(built_node.name, 0) + 1
-        )
-        run_id = str(self._child_run_counters[built_node.name])
-
-      child_ctx = await self._workflow_scheduler(
-          self,
-          built_node,
-          node_input,
-          node_name=built_node.name,
-          use_as_output=use_as_output,
-          run_id=run_id,
-          use_sub_branch=use_sub_branch,
-          override_branch=override_branch,
-          override_isolation_scope=override_isolation_scope,
-      )
-      if child_ctx.error:
-        from ..workflow._errors import DynamicNodeFailError
-
-        raise DynamicNodeFailError(
-            message=f'Dynamic node {built_node.name} failed',
-            error=child_ctx.error,
-            error_node_path=child_ctx.error_node_path,
-        )
-      if child_ctx.interrupt_ids:
-        # Propagate child's interrupt_ids to this node's ctx
-        # so NodeRunner sees them after catching the error.
-        self._interrupt_ids.update(child_ctx.interrupt_ids)
-        raise NodeInterruptedError()
-      # When the caller passes raise_on_wait=True, surface a child
-      # that's WAITING (wait_for_output, no output, not transferring)
-      # as NodeInterruptedError so the parent's NodeRunner records
-      # the parent as WAITING instead of falsely COMPLETED.
-      if (
-          raise_on_wait
-          and built_node.wait_for_output
-          and child_ctx.output is None
-          and not child_ctx.actions.transfer_to_agent
-      ):
-        raise NodeInterruptedError()
-      return child_ctx.output
-
-    # Mode 2: Standalone execution (outside of workflow).
-    # Run the node directly via NodeRunner.
-    result = await self._run_node_standalone(
-        built_node,
+    return await self._run_node_internal(
+        node,
         node_input,
         use_as_output=use_as_output,
+        run_id=run_id,
         use_sub_branch=use_sub_branch,
         override_branch=override_branch,
         override_isolation_scope=override_isolation_scope,
-        run_id=run_id,
+        raise_on_wait=raise_on_wait,
+        resume_inputs=None,
+        return_ctx=False,
     )
-    if (
-        raise_on_wait
-        and built_node.wait_for_output
-        and result.output is None
-        and not result.actions.transfer_to_agent
-    ):
-      from ..workflow._errors import NodeInterruptedError
 
-      raise NodeInterruptedError()
-    return result.output
+  async def _run_node_internal(
+      self,
+      node: NodeLike,
+      node_input: Any = None,
+      *,
+      use_as_output: bool = False,
+      run_id: str | None = None,
+      use_sub_branch: bool = False,
+      override_branch: str | None = None,
+      override_isolation_scope: str | None = None,
+      raise_on_wait: bool = False,
+      return_ctx: bool = False,
+      resume_inputs: dict[str, Any] | None = None,
+      skip_run_id_validation: bool = False,
+  ) -> Any:
+    """Executes a node dynamically (Internal Orchestration API).
+
+    See public ``run_node`` for public argument details.
+    Additional internal args:
+      return_ctx: If True, returns the child's Context instead of its output.
+    """
+
+    from ..workflow import _dynamic_node_executor
+
+    return await _dynamic_node_executor.run_node_internal(
+        self,
+        node,
+        node_input=node_input,
+        use_as_output=use_as_output,
+        run_id=run_id,
+        use_sub_branch=use_sub_branch,
+        override_branch=override_branch,
+        override_isolation_scope=override_isolation_scope,
+        raise_on_wait=raise_on_wait,
+        return_ctx=return_ctx,
+        resume_inputs=resume_inputs,
+        skip_run_id_validation=skip_run_id_validation,
+    )
 
   # ============================================================================
   # Artifact methods
@@ -749,7 +707,7 @@ class Context(ReadonlyContext):
       )
     self._event_actions.requested_tool_confirmations[self.function_call_id] = (
         ToolConfirmation(
-            hint=hint,
+            hint=hint or '',
             payload=payload,
         )
     )
@@ -901,16 +859,16 @@ class Context(ReadonlyContext):
       override_isolation_scope: str | None = None,
       resume_inputs: dict[str, Any] | None = None,
   ) -> Context:
-    """Run a node directly via NodeRunner without an orchestrator."""
-    from ..workflow._node_runner import NodeRunner
+    from ..workflow import _dynamic_node_executor
 
-    runner = NodeRunner(
-        node=node,
-        parent_ctx=self,
-        run_id=run_id,
+    return await _dynamic_node_executor.run_node_standalone(
+        self,
+        node,
+        node_input=node_input,
         use_as_output=use_as_output,
+        run_id=run_id,
         use_sub_branch=use_sub_branch,
         override_branch=override_branch,
         override_isolation_scope=override_isolation_scope,
+        resume_inputs=resume_inputs,
     )
-    return await runner.run(node_input=node_input, resume_inputs=resume_inputs)

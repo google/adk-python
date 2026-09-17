@@ -20,8 +20,8 @@ from typing import Optional
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import field_validator
-
-from ...features import FeatureName
+from pydantic import model_validator
+from typing_extensions import Self
 
 
 class WriteMode(Enum):
@@ -95,6 +95,32 @@ class BigQueryToolConfig(BaseModel):
   operations (such as query execution) in a specific project.
   """
 
+  default_project_id: Optional[str] = None
+  """GCP project ID the tools should use when the model does not name one.
+
+  Set this when the agent always works in one project. The `project_id`
+  argument then becomes optional for the model, so it no longer has to ask the
+  user for a project at the start of every conversation. The model can still
+  name a different project, subject to the `compute_project_id` guardrail.
+
+  Because the query tools run in the project they are given, this must name the
+  same project as `compute_project_id` when that guardrail is set. Leave this
+  unset to keep the data project up to the model.
+  """
+
+  default_dataset_id: Optional[str] = None
+  """BigQuery dataset ID the tools should use when the model does not name one.
+
+  Set this when the agent always works in one dataset. The `dataset_id`
+  argument then becomes optional for the model, so it no longer has to ask the
+  user for a dataset at the start of every conversation. The model can still
+  name a different dataset.
+
+  This only reaches the tools that take a `dataset_id` argument: the dataset
+  and table metadata tools. `execute_sql` and the ML tools carry the dataset in
+  the SQL text instead.
+  """
+
   location: Optional[str] = None
   """BigQuery location to use for the data and compute.
 
@@ -121,7 +147,7 @@ class BigQueryToolConfig(BaseModel):
 
   @field_validator('maximum_bytes_billed')
   @classmethod
-  def validate_maximum_bytes_billed(cls, v):
+  def validate_maximum_bytes_billed(cls, v: Optional[int]) -> Optional[int]:
     """Validate the maximum bytes billed."""
     if v and v < 10_485_760:
       raise ValueError(
@@ -134,7 +160,7 @@ class BigQueryToolConfig(BaseModel):
 
   @field_validator('application_name')
   @classmethod
-  def validate_application_name(cls, v):
+  def validate_application_name(cls, v: Optional[str]) -> Optional[str]:
     """Validate the application name."""
     if v and ' ' in v:
       raise ValueError('Application name should not contain spaces.')
@@ -142,7 +168,9 @@ class BigQueryToolConfig(BaseModel):
 
   @field_validator('job_labels')
   @classmethod
-  def validate_job_labels(cls, v):
+  def validate_job_labels(
+      cls, v: Optional[dict[str, str]]
+  ) -> Optional[dict[str, str]]:
     """Validate the job labels."""
     if v is not None:
       if len(v) > 20:
@@ -156,3 +184,21 @@ class BigQueryToolConfig(BaseModel):
               f' reserved for internal usage, found "{key}".'
           )
     return v
+
+  @model_validator(mode='after')
+  def validate_default_project_id(self) -> Self:
+    """Validate the default project against the compute project guardrail."""
+    if (
+        self.default_project_id
+        and self.compute_project_id
+        and self.default_project_id != self.compute_project_id
+    ):
+      raise ValueError(
+          'default_project_id'
+          f' "{self.default_project_id}" cannot differ from'
+          f' compute_project_id "{self.compute_project_id}", as the query'
+          ' tools would then default to a project the compute guardrail'
+          ' rejects. Leave default_project_id unset to let the model pick the'
+          ' data project.'
+      )
+    return self

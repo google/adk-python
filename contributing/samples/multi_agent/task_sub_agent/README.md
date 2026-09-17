@@ -50,3 +50,7 @@ graph TD
        ...
    )
    ```
+
+## Related Guides
+
+- [LlmAgent Task Mode](../../../../docs/guides/agents/llm_agent/task.md) - Guide explaining the behavior and configuration of task-mode agents.

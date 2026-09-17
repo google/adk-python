@@ -35,7 +35,7 @@ variables, ensuring `INTERACTIVE` is set to `1` or is unset. Then, execute the
 following command in your terminal:
 
 ```bash
-adk web contributing/samples/adk_documentation
+adk web contributing/samples/adk_team/adk_documentation
 ```
 
 This will start a local server and provide a URL to access the agent's web
@@ -80,7 +80,7 @@ The agent requires the following Python libraries.
 
 ```bash
 pip install --upgrade pip
-pip install google-adk
+pip install google-adk[db]
 ```
 
 ### Environment Variables

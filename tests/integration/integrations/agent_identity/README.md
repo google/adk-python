@@ -4,15 +4,12 @@ Verifies OAuth flows using GCP Agent Identity Credentials service.
 
 ## Setup
 
-To set up your environment for the first time, run the `uv` setup script:
+To set up your environment for the first time, create a virtual environment
+and install dependencies:
 ```bash
-cd open_source_workspace
-./uv_setup.sh
-```
-
-Then, activate the virtual environment:
-```bash
+uv venv --python "python3.11" ".venv"
 source .venv/bin/activate
+uv sync --all-extras
 ```
 
 Then, install test specific packages

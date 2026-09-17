@@ -1,0 +1,1532 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from __future__ import annotations
+
+import copy
+from typing import Any
+
+from google.adk.agents.context import Context
+from google.adk.agents.llm_agent import LlmAgent
+from google.adk.apps.app import App
+from google.adk.apps.app import ResumabilityConfig
+from google.adk.events.event import Event
+from google.adk.events.request_input import RequestInput
+from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from google.adk.tools._node_tool import NodeTool
+from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.long_running_tool import LongRunningFunctionTool
+from google.adk.workflow import JoinNode
+from google.adk.workflow import node
+from google.adk.workflow import START
+from google.adk.workflow._base_node import BaseNode
+from google.adk.workflow._function_node import FunctionNode
+from google.adk.workflow._node_status import NodeStatus
+from google.adk.workflow._workflow import Workflow
+from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
+from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
+from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
+from google.genai import types
+from pydantic import BaseModel
+from pydantic import Field
+import pytest
+
+from . import workflow_testing_utils
+from .. import testing_utils
+from .workflow_testing_utils import RequestInputNode
+
+
+class UserInfo(BaseModel):
+  name: str
+  age: int
+
+
+class DummyRequest(BaseModel):
+  request: str = ''
+
+
+def test_node_tool_requires_input_schema():
+  """NodeTool raises ValueError if wrapped node has no input_schema."""
+  wf = Workflow(name='no_schema_wf', edges=[])
+  with pytest.raises(ValueError, match='does not have an input_schema defined'):
+    NodeTool(node=wf)
+
+
+@pytest.mark.asyncio
+async def test_workflow_as_tool_hitl_resume(request: pytest.FixtureRequest):
+  """Workflow-as-a-tool suspends on RequestInput and resumes successfully.
+
+  Setup:
+    - LlmAgent 'parent_agent' uses WorkflowTool 'collect_user_info_tool'.
+    - The tool wraps 'sub_workflow' which has a RequestInputNode and a
+    format_response node.
+  Act:
+    - Turn 1: Run with 'Start task'. The model calls the tool, which suspends.
+    - Turn 2: Resume with the user input response to the interrupt.
+  Assert:
+    - Turn 1: Event history contains the RequestInput function call.
+    - Turn 2: The workflow tool resumes and finishes, and parent agent produces
+    final text response.
+  """
+  # 1. Define the sub-workflow that has an input interrupt
+  input_node = RequestInputNode(
+      name='input_node',
+      message='What is your name and age?',
+      response_schema=UserInfo.model_json_schema(),
+  )
+
+  def format_response(node_input: dict[str, Any]):
+    yield Event(
+        output=f"User {node_input['name']} is {node_input['age']} years old."
+    )
+
+  sub_workflow = Workflow(
+      name='sub_workflow',
+      edges=[
+          (START, input_node),
+          (input_node, format_response),
+      ],
+  )
+  sub_workflow.input_schema = DummyRequest
+
+  # 2. Wrap the sub-workflow as a WorkflowTool
+  wf_tool = NodeTool(
+      node=sub_workflow,
+      name='collect_user_info_tool',
+      description='Call this tool to collect customer name and age.',
+  )
+
+  # 3. Define the parent agent that calls this tool
+  # In the first turn, the model decides to call the tool.
+  # In the second turn, after the tool resumes and returns output, the model replies to the user.
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='collect_user_info_tool',
+                  args={},
+              ),
+              types.Part.from_text(
+                  text='Thank you! I received the user details.'
+              ),
+          ]
+      ),
+      tools=[wf_tool],
+  )
+
+  # 4. Wrap the parent agent in an App with resumability enabled
+  app = App(
+      name=request.function.__name__,
+      root_agent=parent_agent,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  # Turn 1: Run the agent, triggering the tool call.
+  # The sub-workflow starts, hits the RequestInputNode, and suspends.
+  user_event = testing_utils.get_user_content('Start task')
+  events1 = await runner.run_async(user_event)
+
+  simplified_events1 = (
+      workflow_testing_utils.simplify_events_with_node_and_agent_state(
+          copy.deepcopy(events1),
+      )
+  )
+
+  # Verify that we got a RequestInput event
+  request_input_event = workflow_testing_utils.find_function_call_event(
+      events1, REQUEST_INPUT_FUNCTION_CALL_NAME
+  )
+  assert request_input_event is not None
+  args = request_input_event.content.parts[0].function_call.args
+  assert args['message'] == 'What is your name and age?'
+
+  interrupt_id = get_request_input_interrupt_ids(request_input_event)[0]
+  invocation_id = request_input_event.invocation_id
+
+  # Turn 2: Resume with the user input resolving the interrupt.
+  user_input = create_request_input_response(
+      interrupt_id, {'name': 'Alice', 'age': 25}
+  )
+  events2 = await runner.run_async(
+      new_message=testing_utils.UserContent(user_input),
+      invocation_id=invocation_id,
+  )
+
+  simplified_events2 = (
+      workflow_testing_utils.simplify_events_with_node_and_agent_state(
+          copy.deepcopy(events2),
+      )
+  )
+
+  # Verify the tool workflow finished executing, returned the output,
+  # and the parent agent LLM produced its final response.
+  text_responses = [
+      event.content.parts[0].text
+      for event in events2
+      if event.content and event.content.parts and event.content.parts[0].text
+  ]
+  assert 'Thank you! I received the user details.' in text_responses
+
+
+@pytest.mark.asyncio
+async def test_workflow_as_tool_hitl_resume_non_resumable_app(
+    request: pytest.FixtureRequest,
+):
+  """Workflow-as-a-tool suspends and resumes successfully even when the App has resumability disabled."""
+  # 1. Define the sub-workflow that has an input interrupt
+  input_node = RequestInputNode(
+      name='input_node',
+      message='What is your name and age?',
+      response_schema=UserInfo.model_json_schema(),
+  )
+
+  def format_response(node_input: dict[str, Any]):
+    yield Event(
+        output=f"User {node_input['name']} is {node_input['age']} years old."
+    )
+
+  sub_workflow = Workflow(
+      name='sub_workflow',
+      edges=[
+          (START, input_node),
+          (input_node, format_response),
+      ],
+  )
+  sub_workflow.input_schema = DummyRequest
+
+  # 2. Wrap the sub-workflow as a WorkflowTool
+  wf_tool = NodeTool(
+      node=sub_workflow,
+      name='collect_user_info_tool',
+      description='Call this tool to collect customer name and age.',
+  )
+
+  # 3. Define the parent agent that calls this tool
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='collect_user_info_tool',
+                  args={},
+              ),
+              types.Part.from_text(
+                  text='Thank you! I received the user details.'
+              ),
+          ]
+      ),
+      tools=[wf_tool],
+  )
+
+  # 4. Wrap the parent agent in an App with resumability disabled
+  app = App(
+      name=request.function.__name__,
+      root_agent=parent_agent,
+      resumability_config=None,
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  # Turn 1: Run the agent, triggering the tool call.
+  user_event = testing_utils.get_user_content('Start task')
+  events1 = await runner.run_async(user_event)
+
+  # Verify that we got a RequestInput event
+  request_input_event = workflow_testing_utils.find_function_call_event(
+      events1, REQUEST_INPUT_FUNCTION_CALL_NAME
+  )
+  assert request_input_event is not None
+  args = request_input_event.content.parts[0].function_call.args
+  assert args['message'] == 'What is your name and age?'
+
+  interrupt_id = get_request_input_interrupt_ids(request_input_event)[0]
+  invocation_id = request_input_event.invocation_id
+
+  # Turn 2: Resume with the user input resolving the interrupt.
+  user_input = create_request_input_response(
+      interrupt_id, {'name': 'Alice', 'age': 25}
+  )
+  events2 = await runner.run_async(
+      new_message=testing_utils.UserContent(user_input),
+      invocation_id=invocation_id,
+  )
+
+  # Verify the tool workflow finished executing, returned the output,
+  # and the parent agent LLM produced its final response.
+  text_responses = [
+      event.content.parts[0].text
+      for event in events2
+      if event.content and event.content.parts and event.content.parts[0].text
+  ]
+  assert 'Thank you! I received the user details.' in text_responses
+
+
+def test_node_tool_rejects_agent():
+  """NodeTool raises ValueError if initialized with any BaseAgent."""
+  agent = LlmAgent(
+      name='my_agent',
+      instruction='Answer questions',
+  )
+  with pytest.raises(ValueError, match='cannot be wrapped as a NodeTool'):
+    NodeTool(node=agent)
+
+
+class GreetRequest(BaseModel):
+  request: str
+
+
+@pytest.mark.asyncio
+async def test_function_node_wrapped_as_tool_returns_output(
+    request: pytest.FixtureRequest,
+):
+  """NodeTool wraps a function node and returns expected output."""
+
+  @node
+  def greet_node(request: str) -> str:
+    return f'Hello, {request}!'
+
+  greet_node.input_schema = GreetRequest
+  greet_tool = NodeTool(node=greet_node, name='greet_tool')
+
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='greet_tool',
+                  args={'request': 'world'},
+              ),
+              types.Part.from_text(text='Processed greet.'),
+          ]
+      ),
+      tools=[greet_tool],
+  )
+
+  app = App(
+      name=request.function.__name__,
+      root_agent=parent_agent,
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+  events = await runner.run_async(testing_utils.get_user_content('Greet world'))
+
+  func_response_events = [
+      e
+      for e in events
+      if e.content and e.content.parts and e.content.parts[0].function_response
+  ]
+  assert len(func_response_events) == 1
+  assert func_response_events[0].content.parts[
+      0
+  ].function_response.response == {'result': 'Hello, world!'}
+
+
+@pytest.mark.asyncio
+async def test_function_node_wrapped_as_tool_no_output(
+    request: pytest.FixtureRequest,
+):
+  """NodeTool wrapping a function node that returns None completes with None result."""
+
+  @node
+  def no_output_node(request: str):
+    yield Event(output=None)
+
+  no_output_node.input_schema = GreetRequest
+  no_output_tool = NodeTool(node=no_output_node, name='no_output_tool')
+
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='no_output_tool',
+                  args={'request': 'world'},
+              ),
+              types.Part.from_text(text='Processed no output.'),
+          ]
+      ),
+      tools=[no_output_tool],
+  )
+
+  app = App(
+      name=request.function.__name__,
+      root_agent=parent_agent,
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+  events = await runner.run_async(
+      testing_utils.get_user_content('Run no output')
+  )
+
+  func_response_events = [
+      e
+      for e in events
+      if e.content and e.content.parts and e.content.parts[0].function_response
+  ]
+  assert len(func_response_events) == 1
+  assert func_response_events[0].content.parts[
+      0
+  ].function_response.response == {'result': None}
+
+
+@pytest.mark.asyncio
+async def test_workflow_tool_with_join_node(request: pytest.FixtureRequest):
+  """WorkflowTool containing a JoinNode works correctly when wrapped as a tool."""
+  node_a = workflow_testing_utils.TestingNode(name='NodeA', output={'a': 1})
+  node_b = workflow_testing_utils.TestingNode(name='NodeB', output={'b': 2})
+  node_join = JoinNode(name='NodeJoin')
+
+  def format_response(node_input: dict[str, Any]):
+    yield Event(
+        output=(
+            f"A is {node_input['NodeA']['a']} and B is"
+            f" {node_input['NodeB']['b']}."
+        )
+    )
+
+  sub_workflow = Workflow(
+      name='sub_workflow',
+      edges=[
+          (START, node_a),
+          (START, node_b),
+          (node_a, node_join),
+          (node_b, node_join),
+          (node_join, format_response),
+      ],
+  )
+  sub_workflow.input_schema = DummyRequest
+
+  wf_tool = NodeTool(
+      node=sub_workflow,
+      name='my_join_tool',
+      description='Collect parallel items.',
+  )
+
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='my_join_tool',
+                  args={},
+              ),
+              types.Part.from_text(text='Done.'),
+          ]
+      ),
+      tools=[wf_tool],
+  )
+
+  app = App(
+      name=request.function.__name__,
+      root_agent=parent_agent,
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+  events = await runner.run_async(testing_utils.get_user_content('Run join'))
+
+  func_response_events = [
+      e
+      for e in events
+      if e.content and e.content.parts and e.content.parts[0].function_response
+  ]
+  assert len(func_response_events) == 1
+  assert func_response_events[0].content.parts[
+      0
+  ].function_response.response == {'result': 'A is 1 and B is 2.'}
+
+
+@pytest.mark.asyncio
+async def test_workflow_tool_with_dynamic_node(request: pytest.FixtureRequest):
+  """WorkflowTool containing a dynamic node schedules and executes it correctly."""
+
+  @node
+  async def child(*, ctx, node_input):
+    yield f'child got: {node_input}'
+
+  @node(rerun_on_resume=True)
+  async def parent_node(*, ctx, node_input):
+    result = await ctx.run_node(child, node_input='hello')
+    yield f'parent got: {result}'
+
+  sub_workflow = Workflow(
+      name='sub_workflow',
+      edges=[
+          (START, parent_node),
+      ],
+  )
+  sub_workflow.input_schema = DummyRequest
+
+  wf_tool = NodeTool(
+      node=sub_workflow,
+      name='my_dynamic_tool',
+      description='Call dynamic node.',
+  )
+
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='my_dynamic_tool',
+                  args={},
+              ),
+              types.Part.from_text(text='Done.'),
+          ]
+      ),
+      tools=[wf_tool],
+  )
+
+  app = App(
+      name=request.function.__name__,
+      root_agent=parent_agent,
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+  events = await runner.run_async(testing_utils.get_user_content('Run dynamic'))
+
+  func_response_events = [
+      e
+      for e in events
+      if e.content and e.content.parts and e.content.parts[0].function_response
+  ]
+  assert len(func_response_events) == 1
+  assert func_response_events[0].content.parts[
+      0
+  ].function_response.response == {'result': 'parent got: child got: hello'}
+
+
+@pytest.mark.asyncio
+async def test_workflow_tool_with_nested_workflows(
+    request: pytest.FixtureRequest,
+):
+  """WorkflowTool wrapping a nested workflow executes successfully."""
+  inner_node = workflow_testing_utils.TestingNode(
+      name='inner_node', output='inner_output'
+  )
+  inner_wf = Workflow(
+      name='inner_wf',
+      edges=[
+          (START, inner_node),
+      ],
+  )
+  inner_wf.input_schema = None
+
+  outer_node = workflow_testing_utils.TestingNode(
+      name='outer_node', output='outer_output'
+  )
+  outer_wf = Workflow(
+      name='outer_wf',
+      edges=[
+          (START, outer_node, inner_wf),
+      ],
+  )
+  outer_wf.input_schema = DummyRequest
+
+  wf_tool = NodeTool(
+      node=outer_wf,
+      name='nested_wf_tool',
+      description='Call nested workflow.',
+  )
+
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='nested_wf_tool',
+                  args={},
+              ),
+              types.Part.from_text(text='Done.'),
+          ]
+      ),
+      tools=[wf_tool],
+  )
+
+  app = App(
+      name=request.function.__name__,
+      root_agent=parent_agent,
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+  events = await runner.run_async(testing_utils.get_user_content('Run nested'))
+
+  func_response_events = [
+      e
+      for e in events
+      if e.content and e.content.parts and e.content.parts[0].function_response
+  ]
+  assert len(func_response_events) == 1
+  assert func_response_events[0].content.parts[
+      0
+  ].function_response.response == {'result': 'inner_output'}
+
+
+@pytest.mark.asyncio
+async def test_workflow_tool_with_dynamic_node_hitl_resume(
+    request: pytest.FixtureRequest,
+):
+  """WorkflowTool with a dynamic node containing HITL suspends and resumes successfully."""
+  # 1. Define dynamic node calling a child RequestInputNode
+  input_node = RequestInputNode(
+      name='input_node',
+      message='Enter value:',
+      response_schema=UserInfo.model_json_schema(),
+  )
+
+  @node(rerun_on_resume=True)
+  async def parent_node(*, ctx, node_input):
+    result = await ctx.run_node(input_node)
+    yield f'parent got: {result["name"]}'
+
+  sub_workflow = Workflow(
+      name='sub_workflow',
+      edges=[
+          (START, parent_node),
+      ],
+  )
+  sub_workflow.input_schema = DummyRequest
+
+  # 2. Wrap as WorkflowTool
+  wf_tool = NodeTool(
+      node=sub_workflow,
+      name='my_dynamic_hitl_tool',
+      description='Call dynamic HITL node.',
+  )
+
+  # 3. Define parent agent
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='my_dynamic_hitl_tool',
+                  args={},
+              ),
+              types.Part.from_text(text='Task completed.'),
+          ]
+      ),
+      tools=[wf_tool],
+  )
+
+  # 4. App with resumability enabled
+  app = App(
+      name=request.function.__name__,
+      root_agent=parent_agent,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  # Turn 1: Run the agent, triggering the tool call and dynamic node suspend.
+  user_event = testing_utils.get_user_content('Start')
+  events1 = await runner.run_async(user_event)
+
+  request_input_event = workflow_testing_utils.find_function_call_event(
+      events1, REQUEST_INPUT_FUNCTION_CALL_NAME
+  )
+  assert request_input_event is not None
+  interrupt_id = get_request_input_interrupt_ids(request_input_event)[0]
+  invocation_id = request_input_event.invocation_id
+
+  # Turn 2: Resume with the user input response.
+  user_input = create_request_input_response(
+      interrupt_id, {'name': 'Bob', 'age': 30}
+  )
+  events2 = await runner.run_async(
+      new_message=testing_utils.UserContent(user_input),
+      invocation_id=invocation_id,
+  )
+
+  # Verify the tool workflow finished executing, returned output,
+  # and parent agent replied.
+  text_responses = [
+      event.content.parts[0].text
+      for event in events2
+      if event.content and event.content.parts and event.content.parts[0].text
+  ]
+  assert 'Task completed.' in text_responses
+
+
+@pytest.mark.asyncio
+async def test_workflow_as_tool_nested_hitl(request: pytest.FixtureRequest):
+  """Parent LLM agent -> workflow -> LLM agent -> NodeTool(HITL) propagation."""
+
+  # 1. Define the deepest node that raises RequestInput
+  @node(name='deep_input_node', rerun_on_resume=True)
+  def input_node(ctx: Context):
+    resume_input = ctx.resume_inputs.get('deep_input_id')
+    if not resume_input:
+      yield RequestInput(
+          interrupt_id='deep_input_id',
+          message='Give me some input:',
+          response_schema={
+              'type': 'object',
+              'properties': {'val': {'type': 'string'}},
+          },
+      )
+      return
+    user_val = (
+        resume_input.get('val')
+        if isinstance(resume_input, dict)
+        else resume_input
+    )
+    yield Event(output=f'Processed: {user_val}')
+
+  # 2. Wrap it as a NodeTool
+  input_node.input_schema = DummyRequest
+  node_tool = NodeTool(node=input_node, name='my_node_tool')
+
+  # 3. Define the child agent that uses this NodeTool
+  child_agent = LlmAgent(
+      name='child_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='my_node_tool',
+                  args={},
+              ),
+              types.Part.from_text(text='Child agent processed.'),
+          ]
+      ),
+      tools=[node_tool],
+  )
+
+  # 4. Define the sub-workflow containing the child agent
+  sub_workflow = Workflow(
+      name='sub_workflow',
+      edges=[
+          (START, child_agent),
+      ],
+  )
+  sub_workflow.input_schema = DummyRequest
+
+  # 5. Wrap the sub-workflow as a WorkflowTool
+  wf_tool = NodeTool(
+      node=sub_workflow,
+      name='my_wf_tool',
+      description='Call sub workflow.',
+  )
+
+  # 6. Define the parent agent that calls the WorkflowTool
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='my_wf_tool',
+                  args={},
+              ),
+              types.Part.from_text(text='Parent agent finished successfully.'),
+          ]
+      ),
+      tools=[wf_tool],
+  )
+
+  # 7. Wrap in App and Runner
+  app = App(
+      name=request.function.__name__,
+      root_agent=parent_agent,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  # Turn 1: Run
+  events1 = await runner.run_async(testing_utils.get_user_content('Start task'))
+
+  # Assert Turn 1: Expect RequestInput event
+  request_input_event = workflow_testing_utils.find_function_call_event(
+      events1, REQUEST_INPUT_FUNCTION_CALL_NAME
+  )
+  assert request_input_event is not None
+  args = request_input_event.content.parts[0].function_call.args
+  assert args['message'] == 'Give me some input:'
+
+  interrupt_id = get_request_input_interrupt_ids(request_input_event)[0]
+  invocation_id = request_input_event.invocation_id
+
+  # Turn 2: Resume
+  user_input = create_request_input_response(interrupt_id, {'val': 'hello'})
+  events2 = await runner.run_async(
+      new_message=testing_utils.UserContent(user_input),
+      invocation_id=invocation_id,
+  )
+
+  # Assert Turn 2: Expect completion
+  text_responses = [
+      event.content.parts[0].text
+      for event in events2
+      if event.content and event.content.parts and event.content.parts[0].text
+  ]
+  assert 'Parent agent finished successfully.' in text_responses
+
+
+@pytest.mark.asyncio
+async def test_workflow_as_tool_nested_multi_hitl(
+    request: pytest.FixtureRequest,
+):
+  """Parent LLM agent -> workflow -> LLM agent -> NodeTool(HITL) twice."""
+
+  # 1. Define the deepest node that raises RequestInput
+  @node(name='deep_input_node', rerun_on_resume=True)
+  def input_node(ctx: Context):
+    resume_input_1 = ctx.resume_inputs.get('deep_input_id_1')
+    resume_input_2 = ctx.resume_inputs.get('deep_input_id_2')
+    if not resume_input_1:
+      yield RequestInput(
+          interrupt_id='deep_input_id_1',
+          message='Give me some input:',
+          response_schema={
+              'type': 'object',
+              'properties': {'val': {'type': 'string'}},
+          },
+      )
+      return
+    if not resume_input_2:
+      yield RequestInput(
+          interrupt_id='deep_input_id_2',
+          message='Give me some input:',
+          response_schema={
+              'type': 'object',
+              'properties': {'val': {'type': 'string'}},
+          },
+      )
+      return
+    user_val = (
+        resume_input_2.get('val')
+        if isinstance(resume_input_2, dict)
+        else resume_input_2
+    )
+    yield Event(output=f'Processed: {user_val}')
+
+  # 2. Wrap it as a NodeTool
+  input_node.input_schema = DummyRequest
+  node_tool = NodeTool(node=input_node, name='my_node_tool')
+
+  # 3. Define the child agent that uses this NodeTool twice
+  child_agent = LlmAgent(
+      name='child_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='my_node_tool',
+                  args={},
+              ),
+              types.Part.from_text(text='Child agent finished.'),
+          ]
+      ),
+      tools=[node_tool],
+  )
+
+  # 4. Define the sub-workflow containing the child agent
+  sub_workflow = Workflow(
+      name='sub_workflow',
+      edges=[
+          (START, child_agent),
+      ],
+  )
+  sub_workflow.input_schema = DummyRequest
+
+  # 5. Wrap the sub-workflow as a WorkflowTool
+  wf_tool = NodeTool(
+      node=sub_workflow,
+      name='my_wf_tool',
+      description='Call sub workflow.',
+  )
+
+  # 6. Define the parent agent that calls the WorkflowTool
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='my_wf_tool',
+                  args={},
+              ),
+              types.Part.from_text(text='Parent agent finished successfully.'),
+          ]
+      ),
+      tools=[wf_tool],
+  )
+
+  # 7. Wrap in App and Runner
+  app = App(
+      name=request.function.__name__,
+      root_agent=parent_agent,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  # Turn 1: Run -> triggers first HITL
+  events1 = await runner.run_async(testing_utils.get_user_content('Start task'))
+  request_input_event1 = workflow_testing_utils.find_function_call_event(
+      events1, REQUEST_INPUT_FUNCTION_CALL_NAME
+  )
+  assert request_input_event1 is not None
+  interrupt_id1 = get_request_input_interrupt_ids(request_input_event1)[0]
+  invocation_id = request_input_event1.invocation_id
+
+  # Turn 2: Resume first HITL -> triggers second HITL
+  user_input1 = create_request_input_response(interrupt_id1, {'val': 'hello'})
+  events2 = await runner.run_async(
+      new_message=testing_utils.UserContent(user_input1),
+      invocation_id=invocation_id,
+  )
+
+  request_input_event2 = workflow_testing_utils.find_function_call_event(
+      events2, REQUEST_INPUT_FUNCTION_CALL_NAME
+  )
+  assert request_input_event2 is not None
+  interrupt_id2 = get_request_input_interrupt_ids(request_input_event2)[0]
+  assert interrupt_id1 != interrupt_id2
+
+  # Turn 3: Resume second HITL -> finishes
+  user_input2 = create_request_input_response(interrupt_id2, {'val': 'world'})
+  events3 = await runner.run_async(
+      new_message=testing_utils.UserContent(user_input2),
+      invocation_id=invocation_id,
+  )
+
+  # Assert Turn 3: Expect completion
+  text_responses = [
+      event.content.parts[0].text
+      for event in events3
+      if event.content and event.content.parts and event.content.parts[0].text
+  ]
+  assert 'Parent agent finished successfully.' in text_responses
+
+
+@pytest.mark.asyncio
+async def test_workflow_as_tool_nested_lro(request: pytest.FixtureRequest):
+  """Parent LLM agent -> workflow -> LLM agent -> LRO tool."""
+
+  # 1. Define LRO tool function
+  def my_lro_func():
+    return None
+
+  # 2. Define child agent with LRO tool
+  child_agent = LlmAgent(
+      name='child_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='my_lro_func',
+                  args={},
+              ),
+              types.Part.from_text(text='Child agent finished after LRO.'),
+          ]
+      ),
+      tools=[LongRunningFunctionTool(func=my_lro_func)],
+  )
+
+  # 3. Define sub-workflow
+  sub_workflow = Workflow(
+      name='sub_workflow',
+      edges=[
+          (START, child_agent),
+      ],
+  )
+  sub_workflow.input_schema = DummyRequest
+
+  # 4. Wrap as WorkflowTool
+  wf_tool = NodeTool(
+      node=sub_workflow,
+      name='my_wf_tool',
+      description='Call sub workflow.',
+  )
+
+  # 5. Define parent agent
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='my_wf_tool',
+                  args={},
+              ),
+              types.Part.from_text(text='Parent agent finished successfully.'),
+          ]
+      ),
+      tools=[wf_tool],
+  )
+
+  # 6. Wrap in App and Runner
+  app = App(
+      name=request.function.__name__,
+      root_agent=parent_agent,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  # Turn 1: Run -> should pause on LRO
+  events1 = await runner.run_async(testing_utils.get_user_content('Start task'))
+  assert any(e.long_running_tool_ids for e in events1)
+
+  invocation_id = events1[0].invocation_id
+  fc_event = workflow_testing_utils.find_function_call_event(
+      events1, 'my_lro_func'
+  )
+  assert fc_event is not None
+  function_call_id = fc_event.content.parts[0].function_call.id
+
+  # Turn 2: Resume with LRO response
+  tool_response = testing_utils.UserContent(
+      types.Part(
+          function_response=types.FunctionResponse(
+              id=function_call_id,
+              name='my_lro_func',
+              response={'result': 'LRO finished'},
+          )
+      )
+  )
+  events2 = await runner.run_async(
+      new_message=tool_response,
+      invocation_id=invocation_id,
+  )
+
+  # Assert Turn 2: Expect completion
+  text_responses = [
+      event.content.parts[0].text
+      for event in events2
+      if event.content and event.content.parts and event.content.parts[0].text
+  ]
+  assert 'Parent agent finished successfully.' in text_responses
+
+
+def test_node_tool_auto_converts_function_node_binding():
+  """NodeTool automatically converts FunctionNode parameter_binding to 'node_input'."""
+
+  @node
+  def my_func_node(request: str) -> str:
+    """A dummy node."""
+    return f'Result: {request}'
+
+  # Originally it is 'state' mode by default
+  assert my_func_node.parameter_binding == 'state'
+  # input_schema is originally None
+  assert getattr(my_func_node, 'input_schema', None) is None
+
+  # Wrap it
+  tool = NodeTool(node=my_func_node)
+
+  # Check that the wrapped node copy is converted to 'node_input' mode
+  assert tool.node.parameter_binding == 'node_input'
+  # And input_schema is automatically inferred
+  schema = tool.node.input_schema
+  assert 'request' in schema['properties']
+
+
+@pytest.mark.asyncio
+async def test_node_tool_primitive_input_schema(request: pytest.FixtureRequest):
+  """NodeTool automatically wraps primitive input_schema to object in declaration and unwraps in run."""
+
+  def echo_func(node_input: str):
+    yield Event(output=f'Echo: {node_input}')
+
+  sub_workflow = Workflow(
+      name='sub_workflow',
+      edges=[
+          (START, echo_func),
+      ],
+  )
+  sub_workflow.input_schema = str
+  tool = NodeTool(node=sub_workflow, name='primitive_tool')
+
+  # 1. Check declaration is wrapped to object schema
+  decl = tool._get_declaration()
+  assert decl.parameters_json_schema is not None
+  assert decl.parameters_json_schema['type'] == 'object'
+  assert 'request' in decl.parameters_json_schema['properties']
+  assert (
+      decl.parameters_json_schema['properties']['request']['type'] == 'string'
+  )
+
+  # 2. Run the tool (passing wrapped argument) and check execution
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='primitive_tool',
+                  args={'request': 'hello_world'},
+              ),
+              types.Part.from_text(text='Finished.'),
+          ]
+      ),
+      tools=[tool],
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=parent_agent,
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+  events = await runner.run_async(testing_utils.get_user_content('Run'))
+
+  func_response_events = [
+      e
+      for e in events
+      if e.content and e.content.parts and e.content.parts[0].function_response
+  ]
+  assert len(func_response_events) == 1
+  assert func_response_events[0].content.parts[
+      0
+  ].function_response.response == {'result': 'Echo: hello_world'}
+
+
+@pytest.mark.parametrize('has_context', [False, True])
+@pytest.mark.asyncio
+async def test_node_tool_wraps_zero_argument_function(
+    request: pytest.FixtureRequest,
+    has_context: bool,
+):
+  """NodeTool supports FunctionNode taking no arguments or only context."""
+
+  if has_context:
+
+    @node
+    def get_constant(ctx: Context) -> str:
+      """Returns a constant value."""
+      return 'constant_val'
+
+  else:
+
+    @node
+    def get_constant() -> str:
+      """Returns a constant value."""
+      return 'constant_val'
+
+  tool = NodeTool(node=get_constant)
+  decl = tool._get_declaration()
+  assert decl.name == 'get_constant'
+  assert decl.parameters_json_schema is None
+
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='get_constant',
+                  args={},
+              ),
+              types.Part.from_text(text='Finished.'),
+          ]
+      ),
+      tools=[get_constant],
+  )
+  app = App(
+      name=f'{request.function.__name__}_{has_context}',
+      root_agent=parent_agent,
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+  events = await runner.run_async(testing_utils.get_user_content('Run'))
+
+  func_response_events = [
+      e
+      for e in events
+      if e.content and e.content.parts and e.content.parts[0].function_response
+  ]
+  assert len(func_response_events) == 1
+  assert func_response_events[0].content.parts[
+      0
+  ].function_response.response == {'result': 'constant_val'}
+
+
+@pytest.mark.parametrize('tool_confirmed', [True, False])
+@pytest.mark.asyncio
+async def test_workflow_as_tool_nested_tool_confirmation(
+    request: pytest.FixtureRequest, tool_confirmed: bool
+):
+  """Workflow-as-a-tool pauses on nested tool confirmation and resumes after user decision.
+
+  Setup:
+    - Parent agent calls a WorkflowTool wrapping an inner workflow.
+    - Inner workflow runs a child agent that calls a tool requiring
+    confirmation.
+  Act:
+    - Turn 1: Run task. Child agent requests confirmation, pausing execution.
+    - Turn 2: User responds to the confirmation request.
+  Assert:
+    - Turn 1: adk_request_confirmation function call event is yielded on
+    sub-branch.
+    - Turn 2: Confirmed tool executes (or rejection is handled), and parent
+    finishes.
+  """
+  tool_executed = False
+
+  def my_sensitive_action(action: str) -> dict[str, str]:
+    nonlocal tool_executed
+    tool_executed = True
+    return {'result': f'Executed: {action}'}
+
+  child_agent = LlmAgent(
+      name='child_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='my_sensitive_action',
+                  args={'action': 'perform_transfer'},
+              ),
+              types.Part.from_text(
+                  text=(
+                      'Child agent executed action successfully.'
+                      if tool_confirmed
+                      else 'Child agent handled rejection gracefully.'
+                  )
+              ),
+          ]
+      ),
+      tools=[
+          FunctionTool(
+              func=my_sensitive_action,
+              require_confirmation=True,
+          )
+      ],
+  )
+
+  sub_workflow = Workflow(
+      name='sub_workflow',
+      edges=[(START, child_agent)],
+  )
+  sub_workflow.input_schema = DummyRequest
+
+  wf_tool = NodeTool(
+      node=sub_workflow,
+      name='my_wf_tool',
+      description='Call sub workflow.',
+  )
+
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='my_wf_tool',
+                  args={},
+              ),
+              types.Part.from_text(text='Parent agent finished successfully.'),
+          ]
+      ),
+      tools=[wf_tool],
+  )
+
+  app = App(
+      name=f'{request.function.__name__}_{tool_confirmed}',
+      root_agent=parent_agent,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  # Turn 1: Run -> should pause and request confirmation
+  events1 = await runner.run_async(testing_utils.get_user_content('Start task'))
+
+  fc_event = workflow_testing_utils.find_function_call_event(
+      events1, REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+  )
+  assert fc_event is not None, 'Did not find confirmation request event'
+  confirmation_fc = [
+      p.function_call
+      for p in fc_event.content.parts
+      if p.function_call
+      and p.function_call.name == REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+  ][0]
+  assert not tool_executed
+  assert 'my_wf_tool@' in fc_event.branch
+
+  invocation_id = events1[0].invocation_id
+  confirmation_call_id = confirmation_fc.id
+
+  # Turn 2: User responds to tool confirmation
+  user_confirmation = testing_utils.UserContent(
+      types.Part(
+          function_response=types.FunctionResponse(
+              id=confirmation_call_id,
+              name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+              response={'confirmed': tool_confirmed},
+          )
+      )
+  )
+  events2 = await runner.run_async(
+      new_message=user_confirmation,
+      invocation_id=invocation_id,
+  )
+
+  if tool_confirmed:
+    assert tool_executed, 'Tool should have executed after confirmation'
+  else:
+    assert not tool_executed, 'Tool should not execute when rejected'
+
+  text_responses = [
+      p.text
+      for e in events2
+      if e.content and e.content.parts
+      for p in e.content.parts
+      if p.text
+  ]
+  assert 'Parent agent finished successfully.' in text_responses
+
+
+@pytest.mark.asyncio
+async def test_concurrent_node_tool_isolation(request: pytest.FixtureRequest):
+  """Concurrent calls to the same NodeTool maintain isolated branch execution and events.
+
+  Setup:
+    - Parent agent configured with a NodeTool wrapping a workflow.
+  Act:
+    - Model emits two parallel function calls to the same NodeTool in one turn.
+  Assert:
+    - Each call runs on a separate sub-branch scoped by its function call ID.
+    - Intermediate events are isolated to their respective sub-branches.
+    - Function responses correctly match their corresponding call IDs.
+  """
+
+  class ItemRequest(BaseModel):
+    item_id: str
+
+  def process_item(node_input: dict[str, Any]):
+    yield Event(output=f'Step 1 for {node_input["item_id"]}')
+
+  sub_workflow = Workflow(
+      name='process_workflow',
+      edges=[(START, process_item)],
+  )
+  sub_workflow.input_schema = ItemRequest
+
+  proc_tool = NodeTool(
+      node=sub_workflow,
+      name='process_tool',
+      description='Process an item.',
+  )
+
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              # Turn 1: parallel function calls to the SAME tool
+              [
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name='process_tool',
+                          args={'item_id': 'alpha'},
+                          id='fc_alpha',
+                      )
+                  ),
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name='process_tool',
+                          args={'item_id': 'beta'},
+                          id='fc_beta',
+                      )
+                  ),
+              ],
+              # Turn 2: final model response after both tools return
+              types.Part.from_text(text='Finished processing alpha and beta.'),
+          ]
+      ),
+      tools=[proc_tool],
+  )
+
+  app = App(
+      name=request.function.__name__,
+      root_agent=parent_agent,
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(
+      testing_utils.get_user_content('Process alpha and beta')
+  )
+
+  # Verify intermediate events have distinct branches
+  intermediate_events = [
+      e for e in events if e.output and 'Step 1 for' in str(e.output)
+  ]
+  assert len(intermediate_events) == 2
+
+  alpha_events = [e for e in intermediate_events if 'alpha' in str(e.output)]
+  beta_events = [e for e in intermediate_events if 'beta' in str(e.output)]
+  assert len(alpha_events) == 1
+  assert len(beta_events) == 1
+
+  assert 'process_tool@fc_alpha' in alpha_events[0].branch
+  assert 'process_tool@fc_beta' in beta_events[0].branch
+  assert alpha_events[0].branch != beta_events[0].branch
+
+  # Verify function responses
+  fr_events = [e for e in events if e.get_function_responses()]
+  fr_map = {
+      fr.id: fr.response for e in fr_events for fr in e.get_function_responses()
+  }
+  assert fr_map['fc_alpha'] == {'result': 'Step 1 for alpha'}
+  assert fr_map['fc_beta'] == {'result': 'Step 1 for beta'}
+
+  # Verify parent agent final text
+  text_responses = [
+      p.text
+      for e in events
+      if e.content and e.content.parts
+      for p in e.content.parts
+      if p.text
+  ]
+  assert 'Finished processing alpha and beta.' in text_responses
+
+
+@pytest.mark.asyncio
+async def test_node_tool_returns_structured_dict(
+    request: pytest.FixtureRequest,
+):
+  """NodeTool returns structured dictionary from wrapped @node function."""
+
+  class UserProfileInput(BaseModel):
+    user_id: str
+
+  @node
+  def get_user_profile(user_id: str) -> dict[str, Any]:
+    return {'id': user_id, 'role': 'admin'}
+
+  get_user_profile.input_schema = UserProfileInput
+  user_tool = NodeTool(node=get_user_profile, name='get_user_profile')
+
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='get_user_profile',
+                  args={'user_id': 'user_123'},
+              ),
+              types.Part.from_text(text='Received user profile.'),
+          ]
+      ),
+      tools=[user_tool],
+  )
+  app = App(
+      name=request.function.__name__,
+      root_agent=parent_agent,
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(
+      testing_utils.get_user_content('Lookup profile')
+  )
+
+  function_responses = [fr for e in events for fr in e.get_function_responses()]
+  assert len(function_responses) == 1
+  assert function_responses[0].response == {'id': 'user_123', 'role': 'admin'}
+
+
+@pytest.mark.asyncio
+async def test_function_node_with_arguments_as_tool_in_llm_agent(
+    request: pytest.FixtureRequest,
+):
+  """FunctionNode with arguments is automatically adapted and executed as an LlmAgent tool."""
+
+  @node
+  def calculate_sum(x: int, y: int) -> int:
+    """Calculates the sum of two integers.
+
+    Args:
+      x: The first integer.
+      y: The second integer.
+    """
+    return x + y
+
+  # Given an LlmAgent configured with the @node directly in tools
+  agent = LlmAgent(
+      name='math_agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='calculate_sum',
+                  args={'x': 3, 'y': 5},
+              ),
+              types.Part.from_text(text='The sum is 8.'),
+          ]
+      ),
+      tools=[calculate_sum],
+  )
+
+  # When the agent runs a turn triggering the tool call
+  app = App(
+      name=request.function.__name__,
+      root_agent=agent,
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+  events = await runner.run_async(
+      testing_utils.get_user_content('Calculate 3 + 5')
+  )
+
+  # Then the tool response event contains the computed result
+  func_response_events = [
+      e
+      for e in events
+      if e.content and e.content.parts and e.content.parts[0].function_response
+  ]
+  assert len(func_response_events) == 1
+  assert func_response_events[0].content.parts[
+      0
+  ].function_response.response == {'result': 8}
+
+
+def test_node_tool_infers_schema_from_function_node():
+  """NodeTool automatically infers declaration and parameter schema from FunctionNode."""
+
+  def calculate(x: int, y: int) -> int:
+    """Calculates the sum of two integers.
+
+    Args:
+      x: The first integer.
+      y: The second integer.
+    """
+    return x + y
+
+  fn_node = FunctionNode(func=calculate, name='calc')
+  tool = NodeTool(node=fn_node)
+  decl = tool._get_declaration()
+
+  assert decl is not None
+  assert decl.name == 'calc'
+  assert 'Calculates the sum' in (decl.description or '')
+  assert decl.parameters_json_schema is not None
+  assert 'x' in decl.parameters_json_schema['properties']
+  assert 'y' in decl.parameters_json_schema['properties']
+  assert decl.parameters_json_schema['required'] == ['x', 'y']
+
+
+def test_node_tool_declaration_with_pydantic_schemas_and_overrides():
+  """NodeTool generates FunctionDeclaration from input_schema and output_schema and respects overrides."""
+
+  class QueryInput(BaseModel):
+    query: str
+
+  class QueryResult(BaseModel):
+    result: str
+
+  class CustomNode(BaseNode):
+
+    async def _run_impl(self, *, ctx, node_input):
+      yield node_input
+
+  node_instance = CustomNode(
+      name='backend_node',
+      description='Original description',
+      input_schema=QueryInput,
+      output_schema=QueryResult,
+  )
+  tool = NodeTool(
+      node=node_instance,
+      name='custom_tool_alias',
+      description='Custom tool description',
+  )
+  decl = tool._get_declaration()
+
+  assert decl is not None
+  assert decl.name == 'custom_tool_alias'
+  assert decl.description == 'Custom tool description'
+  assert decl.parameters_json_schema is not None
+  assert 'query' in decl.parameters_json_schema['properties']
+  assert decl.response_json_schema is not None
+  assert 'result' in decl.response_json_schema['properties']

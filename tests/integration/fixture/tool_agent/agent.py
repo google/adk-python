@@ -107,7 +107,7 @@ test_case_retrieval = FilesRetrieval(
 valid_rag_retrieval = VertexAiRagRetrieval(
     name="valid_rag_retrieval",
     rag_corpora=[
-        "projects/1096655024998/locations/us-central1/ragCorpora/4985766262475849728"
+        "projects/123456789/locations/us-central1/ragCorpora/1234567890"
     ],
     description="General guidance for agent test cases",
 )
@@ -115,16 +115,14 @@ valid_rag_retrieval = VertexAiRagRetrieval(
 invalid_rag_retrieval = VertexAiRagRetrieval(
     name="invalid_rag_retrieval",
     rag_corpora=[
-        "projects/1096655024998/locations/us-central1/InValidRagCorporas/4985766262475849728"
+        "projects/123456789/locations/us-central1/InValidRagCorporas/1234567890"
     ],
     description="Invalid rag retrieval resource name",
 )
 
 non_exist_rag_retrieval = VertexAiRagRetrieval(
     name="non_exist_rag_retrieval",
-    rag_corpora=[
-        "projects/1096655024998/locations/us-central1/RagCorpora/1234567"
-    ],
+    rag_corpora=["projects/123456789/locations/us-central1/RagCorpora/1234567"],
     description="Non exist rag retrieval resource name",
 )
 

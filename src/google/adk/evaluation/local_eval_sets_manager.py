@@ -33,6 +33,7 @@ from ._eval_sets_manager_utils import delete_eval_case_from_eval_set
 from ._eval_sets_manager_utils import get_eval_case_from_eval_set
 from ._eval_sets_manager_utils import get_eval_set_from_app_and_id
 from ._eval_sets_manager_utils import update_eval_case_in_eval_set
+from ._path_validation import validate_path_segment
 from .eval_case import EvalCase
 from .eval_case import IntermediateData
 from .eval_case import Invocation
@@ -247,6 +248,7 @@ class LocalEvalSetsManager(EvalSetsManager):
     Raises:
       NotFoundError: If the eval directory for the app is not found.
     """
+    validate_path_segment(app_name, "app_name")
     eval_set_file_path = os.path.join(self._agents_dir, app_name)
     eval_sets = []
     try:
@@ -272,7 +274,9 @@ class LocalEvalSetsManager(EvalSetsManager):
     return get_eval_case_from_eval_set(eval_set, eval_case_id)
 
   @override
-  def add_eval_case(self, app_name: str, eval_set_id: str, eval_case: EvalCase):
+  def add_eval_case(
+      self, app_name: str, eval_set_id: str, eval_case: EvalCase
+  ) -> None:
     """Adds the given EvalCase to an existing EvalSet identified by app_name and eval_set_id.
 
     Raises:
@@ -286,7 +290,7 @@ class LocalEvalSetsManager(EvalSetsManager):
   @override
   def update_eval_case(
       self, app_name: str, eval_set_id: str, updated_eval_case: EvalCase
-  ):
+  ) -> None:
     """Updates an existing EvalCase give the app_name and eval_set_id.
 
     Raises:
@@ -299,7 +303,7 @@ class LocalEvalSetsManager(EvalSetsManager):
   @override
   def delete_eval_case(
       self, app_name: str, eval_set_id: str, eval_case_id: str
-  ):
+  ) -> None:
     """Deletes the given EvalCase identified by app_name, eval_set_id and eval_case_id.
 
     Raises:
@@ -310,20 +314,24 @@ class LocalEvalSetsManager(EvalSetsManager):
     self._save_eval_set(app_name, eval_set_id, updated_eval_set)
 
   def _get_eval_set_file_path(self, app_name: str, eval_set_id: str) -> str:
+    validate_path_segment(app_name, "app_name")
+    validate_path_segment(eval_set_id, "eval_set_id")
     return os.path.join(
         self._agents_dir,
         app_name,
         eval_set_id + _EVAL_SET_FILE_EXTENSION,
     )
 
-  def _validate_id(self, id_name: str, id_value: str):
+  def _validate_id(self, id_name: str, id_value: str) -> None:
     pattern = r"^[a-zA-Z0-9_]+$"
     if not bool(re.fullmatch(pattern, id_value)):
       raise ValueError(
           f"Invalid {id_name}. {id_name} should have the `{pattern}` format",
       )
 
-  def _write_eval_set_to_path(self, eval_set_path: str, eval_set: EvalSet):
+  def _write_eval_set_to_path(
+      self, eval_set_path: str, eval_set: EvalSet
+  ) -> None:
     os.makedirs(os.path.dirname(eval_set_path), exist_ok=True)
     with open(eval_set_path, "w", encoding="utf-8") as f:
       f.write(
@@ -335,6 +343,8 @@ class LocalEvalSetsManager(EvalSetsManager):
           )
       )
 
-  def _save_eval_set(self, app_name: str, eval_set_id: str, eval_set: EvalSet):
+  def _save_eval_set(
+      self, app_name: str, eval_set_id: str, eval_set: EvalSet
+  ) -> None:
     eval_set_file_path = self._get_eval_set_file_path(app_name, eval_set_id)
     self._write_eval_set_to_path(eval_set_file_path, eval_set)

@@ -14,367 +14,97 @@
 
 from __future__ import annotations
 
-from contextlib import aclosing
-from dataclasses import dataclass
-from dataclasses import field
-import sys
+from typing import TYPE_CHECKING
 
-if sys.version_info >= (3, 11):
-  from typing import Self
-else:
-  from typing_extensions import Self
-
-from google.adk import Event
-from google.adk import Workflow
-from google.adk.agents.llm_agent import Agent
-from google.adk.runners import InMemoryRunner
-from google.adk.telemetry import node_tracing
 from google.adk.telemetry import tracing
-from google.adk.tools.function_tool import FunctionTool
-from google.adk.workflow._base_node import START
-from google.adk.workflow._workflow import Workflow
-from google.genai.types import Content
-from google.genai.types import Part
-from opentelemetry.sdk.trace import ReadableSpan
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from opentelemetry.util.types import AttributeValue
+from opentelemetry.trace import StatusCode
 import pytest
 
-from ..testing_utils import MockModel
-from ..testing_utils import TestInMemoryRunner
-from .utils import set_aclosing_wrapping_assertions
+from .functional._aclosing import aclosing_wrapping_assertions
+from .functional._recording import check_case
+from .functional.scenarios.agent import run_node_scenario
+from .functional.scenarios.conversation import TOOL_ERROR
+from .functional.scenarios.inference import mock_test_model
+from .functional.scenarios.telemetry_setup import install_telemetry
+from .functional_node_test_cases import ALL_NODE_CASES
 
-# Difficult to extract, non deterministic attribute keys.
-# We check only for their presence, instead of their values.
-NON_DETERMINISTIC_ATTRIBUTE_KEYS = {
-    'gcp.vertex.agent.event_id',
-    'gen_ai.tool.call.id',
-    'gcp.vertex.agent.associated_event_ids',
-}
+if TYPE_CHECKING:
+  from google.adk.events.event import Event
+  from opentelemetry.sdk.trace import ReadableSpan
 
-# We replace the non deterministic fields that are difficult to extract
-# with a "PRESENT" literal to still test their presence.
-PRESENT = 'PRESENT'
+  from .functional._recording import FunctionalTestCase
 
 
-@dataclass(frozen=True)
-class SpanDigest:
-  name: str
-  attributes: dict[str, AttributeValue]
-  children: list[SpanDigest] = field(default_factory=list)
+@pytest.mark.parametrize("case", ALL_NODE_CASES, ids=lambda c: c.test_id)
+@pytest.mark.asyncio
+async def test_telemetry_schema(case: FunctionalTestCase) -> None:
+  """Tests creation of multiple spans/logs in an E2E runner invocation with a
 
-  @staticmethod
-  def build(spans: tuple[ReadableSpan, ...]) -> SpanDigest:
-    """Builds the in-memory span tree.
+  workflow.
 
-    Used for clear diff with pytest assertions.
-    """
-    digest_by_id = {
-        span.context.span_id: SpanDigest.from_span(span)
-        for span in spans
-        if span.context is not None
-    }
-    root = None
-    for span in spans:
-      if span.context is None:
-        continue
-      digest = digest_by_id[span.context.span_id]
-      if span.parent and span.parent.span_id in digest_by_id:
-        parent_digest = digest_by_id[span.parent.span_id]
-        parent_digest.children.append(digest)
-      else:
-        if root is not None:
-          raise ValueError('Multiple root spans found.')
-        root = digest
+  Asserts the entire telemetry schema (spans + attributes + per-span logs)
+  ADK's own instrumentation records matches the golden, under the case's
+  semconv + content-capture configuration, and that the OTel instrumentor
+  diverges from it only where it already did.
+  """
+  recording = await check_case(case)
 
-    # Sort children for deterministic comparisons.
-    for digest in digest_by_id.values():
-      digest.children.sort(key=lambda span: span.name)
-
-    if root is None:
-      raise ValueError('No root span found in the provided spans.')
-    return root
-
-  @classmethod
-  def from_span(cls, span: ReadableSpan) -> Self:
-    determinized_attributes = {
-        attr_key: (
-            attr_val
-            if attr_key not in NON_DETERMINISTIC_ATTRIBUTE_KEYS
-            else PRESENT
-        )
-        for attr_key, attr_val in (span.attributes or {}).items()
-    }
-
-    return cls(
-        name=span.name,
-        attributes=determinized_attributes,
-    )
-
-
-@pytest.fixture
-def span_exporter(monkeypatch: pytest.MonkeyPatch) -> InMemorySpanExporter:
-  # Disable capturing message content to make attributes deterministic
-  monkeypatch.setenv('ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS', 'false')
-
-  tracer_provider = TracerProvider()
-  span_exporter = InMemorySpanExporter()
-  tracer_provider.add_span_processor(SimpleSpanProcessor(span_exporter))
-  real_tracer = tracer_provider.get_tracer(__name__)
-
-  def do_replace(tracer):
-    monkeypatch.setattr(
-        tracer, 'start_as_current_span', real_tracer.start_as_current_span
-    )
-
-  do_replace(tracing.tracer)
-  do_replace(node_tracing.tracer)
-
-  return span_exporter
+  _verify_associated_events(recording.spans, recording.events)
 
 
 @pytest.mark.asyncio
-async def test_tracer_start_as_current_span(
-    span_exporter: InMemorySpanExporter,
-):
-  """Test creation of multiple spans and their attributes in an E2E runner invocation with a workflow."""
+async def test_async_generators_wrapped_in_aclosing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Asserts each async generator iterated by the scenario is wrapped in ``aclosing``.
 
-  # Arrange
-  set_aclosing_wrapping_assertions()
+  Necessary because instrumentation utilizes contextvars, which run into
+  "ContextVar was created in a different Context" errors when a given
+  coroutine gets indeterminately suspended.
 
-  mock_model = MockModel.create(
-      responses=[
-          Part.from_function_call(name='some_tool', args={'arg1': 'val1'}),
-          Part.from_text(text='text response'),
-      ]
+  Kept as a single non-parametrized test because the underlying
+  ``gc.get_referrers`` walk is expensive (~5 seconds per scenario).
+  """
+  install_telemetry(
+      monkeypatch,
+      InMemorySpanExporter(),
+      InMemoryLogRecordExporter(),
+      InMemoryMetricReader(),
   )
 
-  def some_tool(arg1: str):
-    """A sample tool."""
-
-    return f'processed {arg1}'
-
-  test_agent = Agent(
-      name='some_root_agent',
-      description='A sample root agent.',
-      model=mock_model,
-      tools=[
-          FunctionTool(some_tool),
-      ],
-  )
-
-  async def some_node(ctx, node_input):
-    return 'some result'
-
-  workflow = Workflow(
-      name='my_workflow',
-      edges=[
-          (START, some_node, test_agent),
-      ],
-  )
-
-  user_id = 'some_user'
-  app_name = 'some_app'
-
-  runner = InMemoryRunner(app_name=app_name, node=workflow)
-  session = await runner.session_service.create_session(
-      app_name=app_name, user_id=user_id
-  )
-  content = Content(parts=[Part.from_text(text='hello')], role='user')
-
-  # Act
-  captured_events: list[Event] = []
-  async with aclosing(
-      runner.run_async(
-          user_id=user_id, session_id=session.id, new_message=content
-      )
-  ) as agen:
-    async for event in agen:
-      captured_events.append(event)
-
-  invocation_id = captured_events[0].invocation_id
-
-  # Assert
-  finished_spans = span_exporter.get_finished_spans()
-  _verify_associated_events(finished_spans, captured_events)
-
-  span_tree = SpanDigest.build(finished_spans)
-  assert span_tree == SpanDigest(
-      name='invocation',
-      attributes={},
-      children=[
-          SpanDigest(
-              name='invoke_workflow my_workflow',
-              attributes={
-                  'gen_ai.conversation.id': session.id,
-                  'gen_ai.operation.name': 'invoke_workflow',
-                  'gen_ai.workflow.name': 'my_workflow',
-                  # Workflow in this test doesn't emit any events directly.
-                  # Commented exists to to document this behavior.
-                  # 'gcp.vertex.agent.associated_event_ids': PRESENT,
-              },
-              children=[
-                  SpanDigest(
-                      name='invoke_agent some_root_agent',
-                      attributes={
-                          'gen_ai.agent.description': 'A sample root agent.',
-                          'gen_ai.agent.name': 'some_root_agent',
-                          'gen_ai.conversation.id': session.id,
-                          'gen_ai.operation.name': 'invoke_agent',
-                      },
-                      children=[
-                          SpanDigest(
-                              name='call_llm',
-                              attributes={
-                                  'gcp.vertex.agent.event_id': PRESENT,
-                                  'gcp.vertex.agent.invocation_id': (
-                                      invocation_id
-                                  ),
-                                  'gcp.vertex.agent.llm_request': '{}',
-                                  'gcp.vertex.agent.llm_response': '{}',
-                                  'gen_ai.request.model': 'mock',
-                                  'gen_ai.system': 'gcp.vertex.agent',
-                                  'gcp.vertex.agent.session_id': session.id,
-                              },
-                              children=[
-                                  SpanDigest(
-                                      name='generate_content mock',
-                                      attributes={
-                                          'gcp.vertex.agent.event_id': PRESENT,
-                                          'gcp.vertex.agent.invocation_id': (
-                                              invocation_id
-                                          ),
-                                          'gen_ai.agent.name': (
-                                              'some_root_agent'
-                                          ),
-                                          'gen_ai.conversation.id': session.id,
-                                          'gen_ai.operation.name': (
-                                              'generate_content'
-                                          ),
-                                          'gen_ai.request.model': 'mock',
-                                          'gen_ai.system': 'gemini',
-                                      },
-                                      children=[
-                                          SpanDigest(
-                                              name='execute_tool some_tool',
-                                              attributes={
-                                                  'gcp.vertex.agent.event_id': (
-                                                      PRESENT
-                                                  ),
-                                                  'gcp.vertex.agent.llm_request': (
-                                                      '{}'
-                                                  ),
-                                                  'gcp.vertex.agent.llm_response': (
-                                                      '{}'
-                                                  ),
-                                                  'gcp.vertex.agent.tool_call_args': (
-                                                      '{}'
-                                                  ),
-                                                  'gcp.vertex.agent.tool_response': (
-                                                      '{}'
-                                                  ),
-                                                  'gen_ai.operation.name': (
-                                                      'execute_tool'
-                                                  ),
-                                                  'gen_ai.tool.call.id': (
-                                                      PRESENT
-                                                  ),
-                                                  'gen_ai.tool.description': (
-                                                      'A sample tool.'
-                                                  ),
-                                                  'gen_ai.tool.name': (
-                                                      'some_tool'
-                                                  ),
-                                                  'gen_ai.tool.type': (
-                                                      'FunctionTool'
-                                                  ),
-                                              },
-                                          ),
-                                      ],
-                                  ),
-                              ],
-                          ),
-                          SpanDigest(
-                              name='call_llm',
-                              attributes={
-                                  'gcp.vertex.agent.invocation_id': (
-                                      invocation_id
-                                  ),
-                                  'gcp.vertex.agent.llm_request': '{}',
-                                  'gcp.vertex.agent.llm_response': '{}',
-                                  'gcp.vertex.agent.event_id': PRESENT,
-                                  'gcp.vertex.agent.session_id': session.id,
-                                  'gen_ai.request.model': 'mock',
-                                  'gen_ai.system': 'gcp.vertex.agent',
-                              },
-                              children=[
-                                  SpanDigest(
-                                      name='generate_content mock',
-                                      attributes={
-                                          'gcp.vertex.agent.event_id': PRESENT,
-                                          'gcp.vertex.agent.invocation_id': (
-                                              invocation_id
-                                          ),
-                                          'gen_ai.agent.name': (
-                                              'some_root_agent'
-                                          ),
-                                          'gen_ai.conversation.id': session.id,
-                                          'gen_ai.operation.name': (
-                                              'generate_content'
-                                          ),
-                                          'gen_ai.request.model': 'mock',
-                                          'gen_ai.system': 'gemini',
-                                      },
-                                  ),
-                              ],
-                          ),
-                      ],
-                  ),
-                  SpanDigest(
-                      name='invoke_node some_node',
-                      attributes={
-                          'gen_ai.conversation.id': session.id,
-                          'gen_ai.operation.name': 'invoke_node',
-                          'gcp.vertex.agent.associated_event_ids': 'PRESENT',
-                      },
-                  ),
-              ],
-          ),
-      ],
-  )
+  with aclosing_wrapping_assertions():
+    _ = await run_node_scenario(mock_test_model())
 
 
 def _verify_associated_events(
     spans: tuple[ReadableSpan, ...], events: list[Event]
 ):
   def _nodelike_name(span: ReadableSpan) -> str:
-    for prefix in ['invoke_node ', 'invoke_workflow ', 'invoke_agent ']:
+    for prefix in ["invoke_node ", "invoke_workflow ", "invoke_agent "]:
       if span.name.startswith(prefix):
-        return span.name.replace(prefix, '')
-    return ''
+        return span.name.replace(prefix, "")
+    return ""
 
   def _emitting_node_name(event: Event) -> str:
     # Strip out
     # 1. Path except for the last node (everything before "/")
     # 2. Retry count (everything after "@")
-    return event.node_info.path.split('/')[-1].split('@')[0]
+    return event.node_info.path.split("/")[-1].split("@")[0]
 
   events_by_id = {event.id: event for event in events}
   for span in spans:
     if not span.attributes:
       continue
-
     associated_ids = span.attributes.get(
-        'gcp.vertex.agent.associated_event_ids', None
+        "gcp.vertex.agent.associated_event_ids", None
     )
     if associated_ids is None:
       continue
-
     assert isinstance(associated_ids, tuple)
-    assert len(associated_ids) > 0, f'Span name {span.name} emitted no events'
-
+    assert len(associated_ids) > 0, f"Span name {span.name} emitted no events"
     for event_id in associated_ids:
       event = events_by_id[str(event_id)]
       assert _nodelike_name(span) == _emitting_node_name(event)
@@ -382,95 +112,126 @@ def _verify_associated_events(
 
 @pytest.mark.asyncio
 async def test_exception_preserves_attributes(
-    span_exporter: InMemorySpanExporter,
+    monkeypatch: pytest.MonkeyPatch,
 ):
   """Test when an exception occurs during tool execution, span attributes are still present on spans where they are expected."""
 
-  # Arrange
-  mock_model = MockModel.create(
-      responses=[
-          Part.from_function_call(name='some_tool', args={}),
-      ]
+  span_exporter = InMemorySpanExporter()
+  install_telemetry(
+      monkeypatch,
+      span_exporter,
+      InMemoryLogRecordExporter(),
+      InMemoryMetricReader(),
   )
 
-  async def some_tool():
-    """Tool that fails."""
-    raise ValueError('This tool always fails')
-
-  test_agent = Agent(
-      name='some_root_agent',
-      description='Failing agent.',
-      model=mock_model,
-      tools=[
-          FunctionTool(some_tool),
-      ],
-  )
-  test_runner = TestInMemoryRunner(node=test_agent)
-
-  # Act
-  captured_events = []
-  with pytest.raises(ValueError, match='This tool always fails'):
-    async with aclosing(
-        test_runner.run_async_with_new_session_agen('hello')
-    ) as agen:
-      async for event in agen:
-        captured_events.append(event)
+  captured_events: list[Event] = []
+  with pytest.raises(ValueError, match="This tool always fails"):
+    await run_node_scenario(
+        mock_test_model(),
+        tool_exception=TOOL_ERROR,
+        event_sink=captured_events,
+    )
 
   # Assert
   spans = span_exporter.get_finished_spans()
   _verify_associated_events(spans, captured_events)
   spans_by_name = {span.name: span for span in spans}
 
-  assert 'execute_tool some_tool' in spans_by_name
-  tool_span = spans_by_name['execute_tool some_tool']
+  assert "execute_tool some_tool" in spans_by_name
+  tool_span = spans_by_name["execute_tool some_tool"]
 
   attrs = dict(tool_span.attributes)
   # Dynamic ID
-  tool_call_id = attrs.get('gen_ai.tool.call.id')
+  tool_call_id = attrs.get("gen_ai.tool.call.id")
 
   assert dict(tool_span.attributes) == {
-      'gen_ai.operation.name': 'execute_tool',
-      'gen_ai.tool.name': 'some_tool',
-      'gen_ai.tool.description': 'Tool that fails.',
-      'gen_ai.tool.type': 'FunctionTool',
-      'error.type': 'ValueError',
-      'gcp.vertex.agent.llm_request': '{}',
-      'gcp.vertex.agent.llm_response': '{}',
-      'gcp.vertex.agent.tool_call_args': '{}',
-      'gen_ai.tool.call.id': tool_call_id,
-      'gcp.vertex.agent.tool_response': '{}',
+      "gen_ai.operation.name": "execute_tool",
+      "gen_ai.agent.name": "some_root_agent",
+      "gen_ai.tool.name": "some_tool",
+      "gen_ai.tool.description": "A sample tool.",
+      "gen_ai.tool.type": "FunctionTool",
+      "error.type": "ValueError",
+      "gcp.vertex.agent.llm_request": "{}",
+      "gcp.vertex.agent.llm_response": "{}",
+      "gcp.vertex.agent.tool_call_args": '{"arg1": "val1"}',
+      "gen_ai.tool.call.id": tool_call_id,
+      "gcp.vertex.agent.tool_response": '{"result": "<not specified>"}',
   }
 
 
 @pytest.mark.asyncio
+async def test_failed_turn_is_not_reported_as_a_successful_workflow(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """A workflow whose node failed must not close its span clean.
+
+  A workflow catches a failing node's exception so the graph can act on it,
+  which leaves nothing unwinding by the time the span closes. The root span
+  and its duration metric read that as success, so an error rate measured on
+  them stayed at zero however many turns failed.
+  """
+  span_exporter = InMemorySpanExporter()
+  metric_reader = InMemoryMetricReader()
+  install_telemetry(
+      monkeypatch,
+      span_exporter,
+      InMemoryLogRecordExporter(),
+      metric_reader,
+  )
+
+  with pytest.raises(ValueError, match="This tool always fails"):
+    await run_node_scenario(mock_test_model(), tool_exception=TOOL_ERROR)
+
+  # The outermost workflow is the one not marked as nested inside another.
+  outermost = [
+      span
+      for span in span_exporter.get_finished_spans()
+      if span.name.startswith("invoke_workflow")
+      and dict(span.attributes or {}).get("gen_ai.workflow.nested") is None
+  ]
+  assert len(outermost) == 1
+  assert outermost[0].status.status_code is StatusCode.ERROR
+
+  error_types = [
+      dict(point.attributes).get("error.type")
+      for resource in metric_reader.get_metrics_data().resource_metrics
+      for scope in resource.scope_metrics
+      for metric in scope.metrics
+      if metric.name == "gen_ai.invoke_workflow.duration"
+      for point in metric.data.data_points
+      if dict(point.attributes).get("gen_ai.workflow.nested") is None
+  ]
+  assert error_types == ["ValueError"]
+
+
+@pytest.mark.asyncio
 async def test_no_generate_content_for_gemini_model_when_already_instrumented(
-    span_exporter: InMemorySpanExporter,
     monkeypatch: pytest.MonkeyPatch,
 ):
   """Tests that generate_content span is not created if already instrumented."""
-  # Arrange
-  mock_model = MockModel.create(responses=['hello'])
-  test_agent = Agent(name='test', model=mock_model)
-  test_runner = TestInMemoryRunner(node=test_agent)
 
+  span_exporter = InMemorySpanExporter()
+  install_telemetry(
+      monkeypatch,
+      span_exporter,
+      InMemoryLogRecordExporter(),
+      InMemoryMetricReader(),
+  )
+
+  # Arrange
   monkeypatch.setattr(
       tracing,
-      '_instrumented_with_opentelemetry_instrumentation_google_genai',
+      "_instrumented_with_opentelemetry_instrumentation_google_genai",
       lambda: True,
   )
   monkeypatch.setattr(
       tracing,
-      '_is_gemini_agent',
+      "_is_gemini_agent",
       lambda _: True,
   )
 
-  # Act
-  async with aclosing(
-      test_runner.run_async_with_new_session_agen('hello')
-  ) as agen:
-    async for _ in agen:
-      pass
+  _ = await run_node_scenario(mock_test_model())
 
   # Assert
   spans = span_exporter.get_finished_spans()
-  assert not any(span.name.startswith('generate_content') for span in spans)
+  assert not any(span.name.startswith("generate_content") for span in spans)

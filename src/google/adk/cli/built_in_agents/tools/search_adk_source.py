@@ -83,7 +83,7 @@ async def search_adk_source(
 
     adk_src_dir = Path(adk_source_path)
 
-    result = {
+    result: Dict[str, Any] = {
         "success": False,
         "pattern": search_pattern,
         "total_matches": 0,
@@ -109,7 +109,7 @@ async def search_adk_source(
       return result
 
     # Find all Python files to search
-    files_to_search = []
+    files_to_search: List[Any] = []
     for pattern in file_patterns:
       files_to_search.extend(adk_src_dir.rglob(pattern))
 

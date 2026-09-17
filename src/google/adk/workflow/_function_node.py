@@ -17,12 +17,11 @@ from __future__ import annotations
 import collections.abc
 from collections.abc import AsyncGenerator
 from collections.abc import Callable
-import functools
+from collections.abc import Mapping
 import inspect
 import logging
 import typing
 from typing import Any
-from typing import cast
 from typing import Literal
 from typing import TYPE_CHECKING
 
@@ -37,12 +36,14 @@ from ..auth.auth_tool import AuthConfig
 from ..events.event import Event
 from ..events.request_input import RequestInput
 from ._base_node import BaseNode
+from ._errors import WorkflowConfigurationError
+from ._errors import WorkflowDataError
 from ._retry_config import RetryConfig
 from .utils._workflow_hitl_utils import create_auth_request_event
 from .utils._workflow_hitl_utils import has_auth_credential
 from .utils._workflow_hitl_utils import process_auth_resume
 
-logger = logging.getLogger('google_adk.' + __name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 
 async def _sync_to_async_gen(
@@ -66,38 +67,7 @@ _GENERATOR_ORIGINS = (
 )
 
 
-def _unwrap_callable(func: Callable[..., Any]) -> Callable[..., Any]:
-  """Unwraps partials, bound methods and callable objects to find the stable underlying function."""
-  while True:
-    if isinstance(func, functools.partial):
-      func = func.func
-    elif hasattr(func, '__func__'):  # bound method
-      func = func.__func__
-    elif (
-        hasattr(func, '__call__')
-        and not inspect.isfunction(func)
-        and not inspect.ismethod(func)
-    ):
-      # callable object, unwrap to its __call__ method
-      func = func.__call__
-    else:
-      break
-  return func
-
-
-@functools.lru_cache(maxsize=1024)
-def _get_type_hints_for_unwrapped(func: Callable[..., Any]) -> dict[str, Any]:
-  """Cached version of typing.get_type_hints."""
-  try:
-    return typing.get_type_hints(func)
-  except (TypeError, NameError, AttributeError):
-    return {}
-
-
-def _get_type_hints_cached(func: Callable[..., Any]) -> dict[str, Any]:
-  """Cached version of typing.get_type_hints with robust unwrapping."""
-  unwrapped = _unwrap_callable(func)
-  return _get_type_hints_for_unwrapped(unwrapped)
+from ..utils._callable_utils import CallableSpec
 
 
 def _content_to_str(
@@ -111,12 +81,12 @@ def _content_to_str(
     elif part.inline_data or part.file_data or part.executable_code:
       logger.warning(
           'Parameter "%s" of function "%s" expects str but received'
-          ' Content with non-text parts (e.g. inline_data, file_data).'
-          ' Non-text parts are dropped during auto-conversion.',
+          " Content with non-text parts (e.g. inline_data, file_data)."
+          " Non-text parts are dropped during auto-conversion.",
           param_name,
           func_name,
       )
-  return ''.join(texts)
+  return "".join(texts)
 
 
 def _expects_str(annotated_type: Any) -> bool:
@@ -150,7 +120,7 @@ class FunctionNode(BaseNode):
   ``AuthHandler(auth_config).get_auth_response(ctx.state)``.
   """
 
-  parameter_binding: Literal['state', 'node_input'] = 'state'
+  parameter_binding: Literal["state", "node_input"] = "state"
   """How function parameters are bound.
 
   ``'state'`` (default) binds parameters from ``ctx.state``.
@@ -163,8 +133,10 @@ class FunctionNode(BaseNode):
   _func: Callable[..., Any] = PrivateAttr()
   _sig: inspect.Signature = PrivateAttr()
   _type_hints: dict[str, Any] = PrivateAttr()
-  _type_adapters: dict[str, TypeAdapter] = PrivateAttr()
-  _context_param_name: str | None = PrivateAttr(default=None)
+  _type_adapters: dict[str, TypeAdapter[Any]] = PrivateAttr()
+  # Always assigned in __init__; 'ctx' is the fallback used when the wrapped
+  # function declares no context parameter.
+  _context_param_name: str = PrivateAttr(default="ctx")
 
   def __init__(
       self,
@@ -175,7 +147,7 @@ class FunctionNode(BaseNode):
       retry_config: RetryConfig | None = None,
       timeout: float | None = None,
       auth_config: AuthConfig | None = None,
-      parameter_binding: Literal['state', 'node_input'] = 'state',
+      parameter_binding: Literal["state", "node_input"] = "state",
       state_schema: type[BaseModel] | None = None,
   ):
     """Initializes FunctionNode.
@@ -194,34 +166,39 @@ class FunctionNode(BaseNode):
         this configuration.
       timeout: Maximum time in seconds for this node to complete.
       auth_config: If provided, the framework requests user authentication
-        before running the node. Requires rerun_on_resume=True (the node
-        must rerun after credentials are provided).
+        before running the node. Requires rerun_on_resume=True (the node must
+        rerun after credentials are provided).
       parameter_binding: How function parameters are bound. ``'state'``
-        (default) binds parameters from ``ctx.state``. ``'node_input'``
-        binds parameters from ``node_input`` dict and infers
-        ``input_schema`` / ``output_schema`` from the function signature
-        (used when the node acts as an agent's tool).
+        (default) binds parameters from ``ctx.state``. ``'node_input'`` binds
+        parameters from ``node_input`` dict and infers ``input_schema`` /
+        ``output_schema`` from the function signature (used when the node acts
+        as an agent's tool).
     """
 
     if not callable(func):
-      raise TypeError('Function must be callable.')
+      raise WorkflowConfigurationError("Function must be callable.")
 
     if auth_config and not rerun_on_resume:
-      raise ValueError(
-          'FunctionNode with auth_config requires rerun_on_resume=True.'
-          ' The node must rerun after credentials are provided.'
+      raise WorkflowConfigurationError(
+          "FunctionNode with auth_config requires rerun_on_resume=True."
+          " The node must rerun after credentials are provided."
       )
 
-    inferred_name = name or getattr(func, '__name__', None)
+    spec = CallableSpec(func)
+    inferred_name = (
+        name
+        or getattr(func, "__name__", None)
+        or getattr(spec.unwrapped_func, "__name__", None)
+    )
     if not inferred_name:
-      raise ValueError(
-          'FunctionNode must have a name. If the wrapped callable does not'
+      raise WorkflowConfigurationError(
+          "FunctionNode must have a name. If the wrapped callable does not"
           " have a '__name__' attribute, please provide a name explicitly."
       )
 
     super().__init__(
         name=inferred_name,
-        description=inspect.getdoc(func) or '',
+        description=spec.doc,
         rerun_on_resume=rerun_on_resume,
         retry_config=retry_config,
         timeout=timeout,
@@ -230,21 +207,19 @@ class FunctionNode(BaseNode):
         state_schema=state_schema,
     )
 
-    sig = inspect.signature(func)
-    type_hints = _get_type_hints_cached(func)
+    sig = spec.signature
+    type_hints = spec.type_hints
 
-    # Detect the context parameter name (e.g. 'ctx', 'tool_context').
-    from ..utils.context_utils import find_context_parameter
-
-    self._context_param_name = find_context_parameter(func) or 'ctx'
+    self._context_param_name = spec.context_param_name or "ctx"
 
     # Set private attributes
     self._func = func
+    self._unwrapped_func = spec.unwrapped_func
     self._sig = sig
     self._type_hints = type_hints
     self._type_adapters = {}
     for name, hint in type_hints.items():
-      if name == 'return' or name == self._context_param_name:
+      if name == "return" or name == self._context_param_name:
         continue
       try:
         self._type_adapters[name] = TypeAdapter(hint)
@@ -252,7 +227,7 @@ class FunctionNode(BaseNode):
         pass
 
     # Infer schemas based on the parameter binding mode.
-    if parameter_binding == 'node_input':
+    if parameter_binding == "node_input":
       self._infer_schemas_from_func_signature(func)
     else:
       self._infer_schemas_for_state_mode(type_hints)
@@ -267,7 +242,7 @@ class FunctionNode(BaseNode):
     # Infer output_schema from the return type hint.
     # For generators (Generator[T, ...] / AsyncGenerator[T, ...]),
     # extract the yield type T as the schema.
-    return_hint = type_hints.get('return')
+    return_hint = type_hints.get("return")
     schema_hint = return_hint
 
     # Unwrap Generator[T, ...] / AsyncGenerator[T, ...] to T.
@@ -286,7 +261,7 @@ class FunctionNode(BaseNode):
       self.output_schema = schema_hint
 
     # Infer input_schema from node_input type hint.
-    input_hint = type_hints.get('node_input')
+    input_hint = type_hints.get("node_input")
     if (
         input_hint is not None
         and inspect.isclass(input_hint)
@@ -306,9 +281,7 @@ class FunctionNode(BaseNode):
     from ..tools._function_tool_declarations import _build_parameters_json_schema
     from ..tools._function_tool_declarations import _build_response_json_schema
 
-    ignore_params: list[str] = (
-        [self._context_param_name] if self._context_param_name else []
-    )
+    ignore_params: list[str] = [self._context_param_name]
     self.input_schema = _build_parameters_json_schema(
         func, ignore_params=ignore_params
     )
@@ -324,12 +297,18 @@ class FunctionNode(BaseNode):
     is passed through directly and all other non-context parameters are
     looked up in ``ctx.state``.
     """
-    input_bound = self.parameter_binding == 'node_input'
+    from pydantic import BaseModel
+
+    input_bound = self.parameter_binding == "node_input"
+    source: Any
     if input_bound:
-      source = node_input if isinstance(node_input, dict) else {}
+      if isinstance(node_input, (dict, BaseModel)):
+        source = node_input
+      else:
+        source = {}
     else:
       source = ctx.state
-    source_name = 'node_input' if input_bound else 'state'
+    source_name = "node_input" if input_bound else "state"
 
     kwargs: dict[str, Any] = {}
     for param_name, param in self._sig.parameters.items():
@@ -338,7 +317,7 @@ class FunctionNode(BaseNode):
         continue
 
       # In state mode, 'node_input' param is passed through directly.
-      if not input_bound and param_name == 'node_input':
+      if not input_bound and param_name == "node_input":
         value = node_input
         if param_name in self._type_hints:
           value = self._coerce_param(
@@ -349,8 +328,21 @@ class FunctionNode(BaseNode):
         kwargs[param_name] = value
         continue
 
-      if param_name in source:
-        value = source[param_name]
+      has_param = False
+      value = None
+      if isinstance(source, BaseModel):
+        if hasattr(source, param_name):
+          has_param = True
+          value = getattr(source, param_name)
+      else:
+        try:
+          if param_name in source:
+            has_param = True
+            value = source[param_name]
+        except (TypeError, KeyError):
+          pass
+
+      if has_param:
         if param_name in self._type_hints:
           value = self._coerce_param(
               param_name,
@@ -361,14 +353,16 @@ class FunctionNode(BaseNode):
       elif param.default is not inspect.Parameter.empty:
         kwargs[param_name] = param.default
       else:
-        raise ValueError(
+        raise WorkflowDataError(
             f'Missing value for parameter "{param_name}" of function'
             f' "{self.name}". It was not found in {source_name} and has no'
-            ' default value.'
+            " default value."
         )
     return kwargs
 
-  def _to_event(self, ctx: Context, data: Any) -> Event | None:
+  def _to_event(
+      self, ctx: Context, data: object
+  ) -> Event | RequestInput | None:
     """Converts a function return value to an Event.
 
     Pass-through types (returned as-is): Event, RequestInput.
@@ -444,27 +438,27 @@ class FunctionNode(BaseNode):
 
   @override
   def model_copy(
-      self, *, update: dict[str, Any] | None = None, deep: bool = False
+      self, *, update: Mapping[str, Any] | None = None, deep: bool = False
   ) -> FunctionNode:
-    copied = cast(FunctionNode, super().model_copy(update=update, deep=deep))
-    if not update or 'name' not in update:
+    copied = super().model_copy(update=update, deep=deep)
+    if not update or "name" not in update:
       return copied
 
     # If the wrapped function is a bound method of a Node, we need to clone
     # the Node and re-bind the function to the new instance.
     # This is needed if the function is referring to params like 'name' from the "self" reference.
-    # Like Workflow or LLM use that name for event node_paths or retreving session events.
+    # Like Workflow or LLM use that name for event node_paths or retrieving session events.
     func = self._func
     if inspect.ismethod(func) and isinstance(
-        getattr(func, '__self__', None), BaseNode
+        getattr(func, "__self__", None), BaseNode
     ):
-      method_self = getattr(func, '__self__')
-      method_name = getattr(func, '__name__')
+      method_self = getattr(func, "__self__")
+      method_name = getattr(func, "__name__")
 
       # Pass the name update to the cloned agent instance if it's being passed
       # to the FunctionNode (case for parallel workers).
       agent_update = {
-          'name': update['name'],
+          "name": update["name"],
       }
 
       new_obj = method_self.model_copy(update=agent_update)
@@ -473,6 +467,7 @@ class FunctionNode(BaseNode):
       copied._func = func
 
     copied._sig = self._sig
+    copied._unwrapped_func = self._unwrapped_func
     copied._type_hints = self._type_hints
     copied._type_adapters = self._type_adapters
     copied._context_param_name = self._context_param_name
@@ -487,19 +482,24 @@ class FunctionNode(BaseNode):
   ) -> AsyncGenerator[Any, None]:
     # --- Auth gate ---
     if self.auth_config:
-      interrupt_id = f'wf_auth:{ctx.node_path}'
+      interrupt_id = f"wf_auth:{ctx.node_path}"
       auth_response = ctx.resume_inputs.get(interrupt_id)
       if auth_response is not None:
-        await process_auth_resume(auth_response, self.auth_config, ctx.state)
+        await process_auth_resume(
+            auth_response, self.auth_config, ctx.state, interrupt_id
+        )
       elif not has_auth_credential(self.auth_config, ctx.state):
-        yield create_auth_request_event(self.auth_config, interrupt_id)
+        yield create_auth_request_event(
+            self.auth_config, interrupt_id, ctx.state
+        )
         return
 
     kwargs = self._bind_parameters(ctx, node_input)
 
-    if inspect.isasyncgenfunction(self._func):
+    unwrapped_func = self._unwrapped_func
+    if inspect.isasyncgenfunction(unwrapped_func):
       items = self._func(**kwargs)
-    elif inspect.isgeneratorfunction(self._func):
+    elif inspect.isgeneratorfunction(unwrapped_func):
       items = _sync_to_async_gen(self._func(**kwargs))
     else:
       items = None
@@ -510,7 +510,7 @@ class FunctionNode(BaseNode):
         if event is not None:
           yield event
     else:
-      if inspect.iscoroutinefunction(self._func):
+      if inspect.iscoroutinefunction(unwrapped_func):
         result = await self._func(**kwargs)
       else:  # Sync function
         result = self._func(**kwargs)
@@ -518,3 +518,31 @@ class FunctionNode(BaseNode):
       event = self._to_event(ctx, result)
       if event is not None:
         yield event
+
+  def _as_tool_node(self) -> FunctionNode:
+    """Returns a FunctionNode clone adapted for tool execution (node_input binding)."""
+    if self.parameter_binding == "node_input":
+      return self
+    func = getattr(self, "_func", None)
+    if not callable(func):
+      raise ValueError(
+          f"FunctionNode '{self.name}' has no underlying callable to adapt as a"
+          " tool node."
+      )
+    node = FunctionNode(
+        func=func,
+        name=self.name,
+        rerun_on_resume=self.rerun_on_resume,
+        retry_config=self.retry_config,
+        timeout=self.timeout,
+        auth_config=self.auth_config,
+        parameter_binding="node_input",
+        state_schema=self.state_schema,
+    )
+    node.description = self.description
+    node.wait_for_output = self.wait_for_output
+    if self.input_schema is not None:
+      node.input_schema = self.input_schema
+    if self.output_schema is not None:
+      node.output_schema = self.output_schema
+    return node

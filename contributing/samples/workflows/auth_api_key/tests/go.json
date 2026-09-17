@@ -43,7 +43,8 @@
               "name": "adk_request_credential"
             }
           }
-        ]
+        ],
+        "role": "model"
       },
       "id": "e-2",
       "invocationId": "i-1",

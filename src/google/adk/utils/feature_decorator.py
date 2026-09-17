@@ -20,10 +20,33 @@ import os
 from typing import Any
 from typing import cast
 from typing import Optional
+from typing import overload
+from typing import Protocol
 from typing import TypeVar
 import warnings
 
 T = TypeVar("T")
+
+
+class _FeatureDecorator(Protocol):
+  """A feature decorator usable with or without a message argument.
+
+  Preserves the decorated object's type so that subclasses and type
+  checkers continue to see the real class/function rather than ``Any``.
+  """
+
+  # @decorator (bare, on a class or function)
+  @overload
+  def __call__(self, message_or_obj: T) -> T:
+    ...
+
+  # @decorator() or @decorator("message")
+  @overload
+  def __call__(self, message_or_obj: Optional[str] = ...) -> Callable[[T], T]:
+    ...
+
+  def __call__(self, message_or_obj: Any = None) -> Any:
+    ...
 
 
 def _is_truthy_env(var_name: str) -> bool:
@@ -33,13 +56,26 @@ def _is_truthy_env(var_name: str) -> bool:
   return value.strip().lower() in ("1", "true", "yes", "on")
 
 
+# Repeating an unchanging notice buries warnings the user can act on, and the
+# interpreter's own per-location deduplication is discarded whenever anything
+# in the process touches the warning filters.
+_WARNED_MESSAGES: set[str] = set()
+
+
+def _warn_once(msg: str) -> None:
+  if msg in _WARNED_MESSAGES:
+    return
+  _WARNED_MESSAGES.add(msg)
+  warnings.warn(msg, category=UserWarning, stacklevel=3)
+
+
 def _make_feature_decorator(
     *,
     label: str,
     default_message: str,
     block_usage: bool = False,
     bypass_env_var: Optional[str] = None,
-) -> Callable[..., Any]:
+) -> _FeatureDecorator:
   def decorator_factory(message_or_obj: Any = None) -> Any:
     # Case 1: Used as @decorator without parentheses
     # message_or_obj is the decorated class/function
@@ -57,7 +93,7 @@ def _make_feature_decorator(
     )
     return _create_decorator(message, label, block_usage, bypass_env_var)
 
-  return decorator_factory
+  return cast(_FeatureDecorator, decorator_factory)
 
 
 def _create_decorator(
@@ -84,7 +120,7 @@ def _create_decorator(
         elif block_usage:
           raise RuntimeError(msg)
         else:
-          warnings.warn(msg, category=UserWarning, stacklevel=2)
+          _warn_once(msg)
         return orig_init(self, *args, **kwargs)
 
       cast(Any, cls).__init__ = new_init
@@ -106,7 +142,7 @@ def _create_decorator(
         elif block_usage:
           raise RuntimeError(msg)
         else:
-          warnings.warn(msg, category=UserWarning, stacklevel=2)
+          _warn_once(msg)
         return func(*args, **kwargs)
 
       return cast(T, wrapper)

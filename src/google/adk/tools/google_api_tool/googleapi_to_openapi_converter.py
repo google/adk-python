@@ -15,15 +15,20 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 import json
 import logging
+import socket
 from typing import Any
 from typing import Dict
-from typing import List
 
 # Google API client
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+import httplib2
+
+from ...utils._mtls_utils import MtlsClientCerts
+from ...utils._mtls_utils import use_client_cert_effective
 
 # Configure logging
 logger = logging.getLogger("google_adk." + __name__)
@@ -45,15 +50,19 @@ class GoogleApiToOpenApiConverter:
     self._api_name = api_name
     self._api_version = api_version
     self._discovery_url = discovery_url
-    self._google_api_resource = None
-    self._google_api_spec = None
-    self._openapi_spec = {
+    self._google_api_resource: object | None = None
+    # Discovery documents are heterogeneous JSON objects, and this attribute
+    # is only populated once the document has been fetched.
+    self._google_api_spec: Any = None
+    self._openapi_spec: dict[str, Any] = {
         "openapi": "3.0.0",
         "info": {},
         "servers": [],
         "paths": {},
         "components": {"schemas": {}, "securitySchemes": {}},
     }
+    self._use_client_cert = use_client_cert_effective()
+    self._mtls_certs = MtlsClientCerts() if self._use_client_cert else None
 
   def fetch_google_api_spec(self) -> None:
     """Fetches the Google API specification using discovery service."""
@@ -63,21 +72,50 @@ class GoogleApiToOpenApiConverter:
           self._api_name,
           self._api_version,
       )
+
+      # Determine if we should use mTLS
+      # self._use_client_cert is already initialized in __init__
+
+      http_client = None
+      discovery_url = self._discovery_url
+
+      if self._use_client_cert and self._mtls_certs:
+        cert_path, key_path, passphrase = self._mtls_certs.get_certs()
+        if cert_path and key_path:
+          # Set default HTTP timeout similar to googleapiclient.http.build_http()
+          http_timeout = socket.getdefaulttimeout() or 60
+          http_client = httplib2.Http(timeout=http_timeout)
+          try:
+            http_client.redirect_codes = http_client.redirect_codes - {308}
+          except AttributeError:
+            pass
+          http_client.add_certificate(key_path, cert_path, "", passphrase)
+
+          if not discovery_url:
+            discovery_url = "https://www.mtls.googleapis.com/discovery/v1/apis/{api}/{apiVersion}/rest"
+
       # Build a resource object for the specified API
-      if self._discovery_url:
+      if discovery_url:
         self._google_api_resource = build(
             self._api_name,
             self._api_version,
-            discoveryServiceUrl=self._discovery_url,
+            discoveryServiceUrl=discovery_url,
+            http=http_client,
         )
       else:
-        self._google_api_resource = build(self._api_name, self._api_version)
+        self._google_api_resource = build(
+            self._api_name,
+            self._api_version,
+            http=http_client,
+        )
 
       # Access the underlying API discovery document
-      self._google_api_spec = self._google_api_resource._rootDesc
-
-      if not self._google_api_spec:
+      root_desc = getattr(self._google_api_resource, "_rootDesc", None)
+      if not isinstance(root_desc, dict) or not root_desc:
         raise ValueError("Failed to retrieve API specification")
+      if not all(isinstance(key, str) for key in root_desc):
+        raise ValueError("API specification keys must be strings")
+      self._google_api_spec = root_desc
 
       logger.info("Successfully fetched %s API specification", self._api_name)
     except HttpError as e:
@@ -95,6 +133,9 @@ class GoogleApiToOpenApiConverter:
     """
     if not self._google_api_spec:
       self.fetch_google_api_spec()
+
+    if self._google_api_spec is None:
+      raise RuntimeError("Failed to initialize Google API specification.")
 
     # Convert basic API information
     self._convert_info()
@@ -136,9 +177,15 @@ class GoogleApiToOpenApiConverter:
 
   def _convert_servers(self) -> None:
     """Convert server information."""
-    base_url = self._google_api_spec.get(
-        "rootUrl", ""
-    ) + self._google_api_spec.get("servicePath", "")
+    if self._google_api_spec is None:
+      raise RuntimeError("API spec must be initialized before conversion.")
+    use_client_cert = getattr(self, "_use_client_cert", False)
+    if use_client_cert and "mtlsRootUrl" in self._google_api_spec:
+      root_url = self._google_api_spec["mtlsRootUrl"]
+    else:
+      root_url = self._google_api_spec.get("rootUrl", "")
+
+    base_url = root_url + self._google_api_spec.get("servicePath", "")
 
     # Remove trailing slash if present
     if base_url.endswith("/"):
@@ -157,7 +204,7 @@ class GoogleApiToOpenApiConverter:
     if oauth2:
       # Handle OAuth2
       scopes = oauth2.get("scopes", {})
-      formatted_scopes = {}
+      formatted_scopes: dict[str, str] = {}
 
       for scope, scope_info in scopes.items():
         formatted_scopes[scope] = scope_info.get("description", "")
@@ -201,8 +248,8 @@ class GoogleApiToOpenApiConverter:
       ] = converted_schema
 
   def _convert_schema_object(
-      self, schema_def: Dict[str, Any]
-  ) -> Dict[str, Any]:
+      self, schema_def: Mapping[str, Any]
+  ) -> dict[str, Any]:
     """Recursively convert a Google API schema object to OpenAPI schema.
 
     Args:
@@ -211,7 +258,7 @@ class GoogleApiToOpenApiConverter:
     Returns:
         Converted OpenAPI schema object
     """
-    result = {}
+    result: dict[str, Any] = {}
 
     # Convert the type
     if "type" in schema_def:
@@ -289,7 +336,7 @@ class GoogleApiToOpenApiConverter:
     return result
 
   def _convert_resources(
-      self, resources: Dict[str, Any], parent_path: str = ""
+      self, resources: Mapping[str, Any], parent_path: str = ""
   ) -> None:
     """Recursively convert all resources and their methods.
 
@@ -309,7 +356,7 @@ class GoogleApiToOpenApiConverter:
         self._convert_resources(nested_resources, resource_path)
 
   def _convert_methods(
-      self, methods: Dict[str, Any], resource_path: str
+      self, methods: Mapping[str, Any], resource_path: str
   ) -> None:
     """Convert methods for a specific resource path.
 
@@ -339,7 +386,7 @@ class GoogleApiToOpenApiConverter:
           self._convert_operation(method_data, path_params)
       )
 
-  def _extract_path_parameters(self, path: str) -> List[str]:
+  def _extract_path_parameters(self, path: str) -> list[str]:
     """Extract path parameters from a URL path.
 
     Args:
@@ -360,8 +407,8 @@ class GoogleApiToOpenApiConverter:
     return params
 
   def _convert_operation(
-      self, method_data: Dict[str, Any], path_params: List[str]
-  ) -> Dict[str, Any]:
+      self, method_data: Mapping[str, Any], path_params: list[str]
+  ) -> dict[str, Any]:
     """Convert a Google API method to an OpenAPI operation.
 
     Args:
@@ -371,7 +418,7 @@ class GoogleApiToOpenApiConverter:
     Returns:
         OpenAPI operation object
     """
-    operation = {
+    operation: dict[str, Any] = {
         "operationId": method_data.get("id", ""),
         "summary": method_data.get("description", ""),
         "description": method_data.get("description", ""),
@@ -448,8 +495,8 @@ class GoogleApiToOpenApiConverter:
     return operation
 
   def _convert_parameter_schema(
-      self, param_data: Dict[str, Any]
-  ) -> Dict[str, Any]:
+      self, param_data: Mapping[str, Any]
+  ) -> dict[str, Any]:
     """Convert a parameter definition to an OpenAPI schema.
 
     Args:
@@ -458,7 +505,7 @@ class GoogleApiToOpenApiConverter:
     Returns:
         OpenAPI schema for the parameter
     """
-    schema = {}
+    schema: dict[str, Any] = {}
 
     # Convert type
     param_type = param_data.get("type", "string")
@@ -493,7 +540,7 @@ class GoogleApiToOpenApiConverter:
     logger.info("OpenAPI specification saved to %s", output_path)
 
 
-def main():
+def main() -> int:
   """Command line interface for the converter."""
   parser = argparse.ArgumentParser(
       description=(
@@ -532,4 +579,4 @@ def main():
 
 
 if __name__ == "__main__":
-  main()
+  raise SystemExit(main())

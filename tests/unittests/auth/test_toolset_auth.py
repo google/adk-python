@@ -406,9 +406,12 @@ class TestBuildAuthRequestEvent:
       self, mock_invocation_context
   ):
     """Test that multiple auth requests create multiple function call parts."""
+    config1 = create_oauth2_auth_config()
+    config2 = create_oauth2_auth_config()
+    config2.credential_key = "different_key"
     auth_requests = {
-        "call_1": create_oauth2_auth_config(),
-        "call_2": create_oauth2_auth_config(),
+        "call_1": config1,
+        "call_2": config2,
     }
 
     event = build_auth_request_event(mock_invocation_context, auth_requests)
@@ -418,6 +421,27 @@ class TestBuildAuthRequestEvent:
         p.function_call.args["functionCallId"] for p in event.content.parts
     }
     assert function_call_ids == {"call_1", "call_2"}
+
+  def test_duplicate_auth_requests_are_deduplicated(
+      self, mock_invocation_context
+  ):
+    """Test that auth requests with the same credential key are deduplicated."""
+    config1 = create_oauth2_auth_config()
+    config2 = create_oauth2_auth_config()
+    # Ensure they have the same credential key
+    assert config1.credential_key == config2.credential_key
+
+    auth_requests = {
+        "call_1": config1,
+        "call_2": config2,
+    }
+
+    event = build_auth_request_event(mock_invocation_context, auth_requests)
+
+    assert len(event.content.parts) == 1
+    fc = event.content.parts[0].function_call
+    assert fc.name == REQUEST_EUC_FUNCTION_CALL_NAME
+    assert fc.args["functionCallId"] == "call_1"
 
   def test_always_adds_long_running_tool_ids(self, mock_invocation_context):
     """Test that long_running_tool_ids is always set."""

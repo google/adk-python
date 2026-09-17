@@ -37,13 +37,23 @@ questions in the same session, and the agent will maintain context.
 - `get_data_agent_info`: Retrieves details about a specific Data Agent given
   its full resource name.
 - `ask_data_agent`: Chats with a specific Data Agent using natural language.
+- `create_data_agent`: Creates a new Data Agent for your GCP project (requires
+  setting `enable_data_agent_modification=True` in `DataAgentToolConfig`). Takes
+  a JSON string (`agent_config`) representing the DataAgent resource. This tool
+  is experimental.
+- `delete_data_agent`: Deletes a Data Agent given its full resource name
+  (requires setting `enable_data_agent_modification=True` in
+  `DataAgentToolConfig`). This tool is experimental.
+- `update_data_agent`: Updates an existing Data Agent given its full resource
+  name (requires setting `enable_data_agent_modification=True` in
+  `DataAgentToolConfig`). This tool is experimental.
 
 ## How to Run
 
 1. Navigate to the root of the ADK repository.
 1. Run the agent using the ADK CLI:
    ```bash
-   adk run --agent-path contributing/samples/data_agent
+   adk run contributing/samples/integrations/data_agent
    ```
 1. The CLI will prompt you for input. You can ask questions like the examples
    below.
@@ -55,3 +65,4 @@ questions in the same session, and the agent will maintain context.
   `projects/my-project/locations/global/dataAgents/sales-agent-123`, who were
   my top 3 customers last quarter?"
 - "How does that compare to the quarter before?"
+- "Create a new data agent named `my-new-agent`."

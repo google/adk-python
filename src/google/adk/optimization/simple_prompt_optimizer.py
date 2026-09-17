@@ -21,8 +21,6 @@ import random
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.evaluation._retry_options_utils import add_default_retry_options_if_not_present
-from google.adk.models import google_llm
-from google.adk.models import llm_request
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.registry import LLMRegistry
 from google.adk.optimization.agent_optimizer import AgentOptimizer
