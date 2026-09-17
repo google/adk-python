@@ -343,6 +343,7 @@ class ReplayManager:
 
     self._recovered_executions = raw_results
     self._sequence_barrier = ReplaySequenceBarrier(sequence)
+    self._parent_sequence_barriers[ctx.node_path] = self._sequence_barrier
     return raw_results, sequence
 
   def prepare_parent_sequence_barrier(

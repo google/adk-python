@@ -31,12 +31,12 @@ from typing import TYPE_CHECKING
 
 from google.genai import types
 
-from ...events._branch_path import _BranchPath
-from ...events.event import Event
-from ._invocation_utils import require_agent_name
+from ....events._branch_path import _BranchPath
+from ....events.event import Event
+from ._utils import require_agent_name
 
 if TYPE_CHECKING:
-  from ...agents.invocation_context import InvocationContext
+  from ....agents.invocation_context import InvocationContext
 
 
 class ResumeAction(enum.Enum):
@@ -156,8 +156,8 @@ def _find_answer_event(
   # Imported here, not at module scope: google.adk.workflow imports back into
   # the flows package.
   # pylint: disable=g-import-not-at-top
-  from ...workflow.utils._workflow_hitl_utils import REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
-  from ...workflow.utils._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
+  from ....workflow.utils._workflow_hitl_utils import REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
+  from ....workflow.utils._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
 
   # pylint: enable=g-import-not-at-top
 

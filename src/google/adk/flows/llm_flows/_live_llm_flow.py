@@ -28,7 +28,6 @@ from google.genai import types
 from websockets.exceptions import ConnectionClosed
 from websockets.exceptions import ConnectionClosedOK
 
-from . import functions
 from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...events.event_actions import EventActions
@@ -41,10 +40,11 @@ from ...telemetry.tracing import trace_send_data
 from ...telemetry.tracing import tracer
 from ...utils.context_utils import Aclosing
 from ...utils.variant_utils import GoogleLLMVariant
-from ._invocation_utils import as_llm_agent as _as_llm_agent
-from ._invocation_utils import require_run_config as _require_run_config
-from ._invocation_utils import run_config_for_new_live_session
+from .core._utils import as_llm_agent as _as_llm_agent
+from .core._utils import require_run_config as _require_run_config
+from .core._utils import run_config_for_new_live_session
 from .prompt import _schema as _output_schema_processor
+from .tools import _functions as functions
 
 if TYPE_CHECKING:
   from ...agents.llm_agent import LlmAgent

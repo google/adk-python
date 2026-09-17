@@ -35,7 +35,7 @@ from google.adk.tools.tool_context import ToolContext
 from pydantic import BaseModel
 import pytest
 
-from ... import testing_utils
+from .... import testing_utils
 
 
 @pytest.fixture(autouse=True)

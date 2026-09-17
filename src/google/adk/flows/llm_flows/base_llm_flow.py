@@ -49,18 +49,18 @@ from ...telemetry.tracing import tracer
 from ...tools.base_toolset import BaseToolset
 from ...tools.tool_context import ToolContext
 from ...utils.context_utils import Aclosing
-from ._invocation_utils import as_llm_agent as _as_llm_agent
-from ._invocation_utils import copy_http_options
-from ._invocation_utils import require_agent as _require_agent
-from ._invocation_utils import require_run_config as _require_run_config
-from ._model_response_finalizer import finalize_model_response_event
-from ._model_response_finalizer import handle_after_model_callback
-from ._model_response_finalizer import handle_before_model_callback
-from ._model_response_finalizer import run_and_handle_error
-from ._resume_utils import decide_step_resume
-from ._resume_utils import ResumeAction
-from .functions import build_auth_request_event
+from .core._finalizer import finalize_model_response_event
+from .core._finalizer import handle_after_model_callback
+from .core._finalizer import handle_before_model_callback
+from .core._finalizer import run_and_handle_error
+from .core._resume import decide_step_resume
+from .core._resume import ResumeAction
+from .core._utils import as_llm_agent as _as_llm_agent
+from .core._utils import copy_http_options
+from .core._utils import require_agent as _require_agent
+from .core._utils import require_run_config as _require_run_config
 from .prompt import _schema as _output_schema_processor
+from .tools._functions import build_auth_request_event
 
 # Prefix used by toolset auth credential IDs
 TOOLSET_AUTH_CREDENTIAL_ID_PREFIX = '_adk_toolset_auth_'

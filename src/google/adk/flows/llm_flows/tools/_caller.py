@@ -51,7 +51,7 @@ from ....tools.tool_context import ToolContext
 from ....utils._callback_pipeline import _run_callbacks
 from ....utils._callback_pipeline import _stop_on_non_none
 from ....utils.context_utils import Aclosing
-from .._invocation_utils import require_agent_name as _require_agent_name
+from ..core._utils import require_agent_name as _require_agent_name
 
 if TYPE_CHECKING:
   from ....agents.invocation_context import InvocationContext
@@ -62,8 +62,9 @@ logger = logging.getLogger('google_adk.' + __name__)
 # Thread pool executors for running tools in background threads, keyed by the
 # event loop they serve and then by max_workers. A pool dedicated to tools keeps
 # blocking tools from blocking the event loop in Live API mode without competing
-# with the loop's own default executor. Each pool is shut down once its loop is
-# gone, so its idle threads do not survive the loop.
+# with the loop's own default executor. A pool is released when its loop is
+# closed, or when the loop is collected, whichever happens first -- see
+# _shutdown_closed_loop_pools for why collection alone is not enough.
 _TOOL_THREAD_POOLS: weakref.WeakKeyDictionary[
     asyncio.AbstractEventLoop, dict[int, ThreadPoolExecutor]
 ] = weakref.WeakKeyDictionary()
@@ -109,6 +110,34 @@ def _as_callback_result(function_result: object) -> dict[str, Any]:
   return cast(dict[str, Any], function_result)
 
 
+def _shutdown_closed_loop_pools() -> None:
+  """Releases the pools of loops that are closed but not yet collected.
+
+  The registry is weak-keyed, so a pool is normally released when its loop is
+  collected. Collection is not guaranteed to follow closure: a coroutine that
+  raises leaves a traceback that references its frames, the frames reference
+  the loop, and the traceback can be held for as long as the caller keeps the
+  exception -- ``logging.exception`` keeps it on the log record. The loop is
+  already closed and will never run anything again, but its idle tool threads
+  stay alive with it.
+
+  A server that runs ``asyncio.run`` per request therefore accumulates threads
+  in proportion to the number of *failed* requests, not the number served, and
+  the accumulation does not stop until the process restarts. Sweeping on every
+  acquisition bounds it to the loops closed since the previous call.
+
+  The caller must hold ``_TOOL_THREAD_POOL_LOCK``.
+  """
+  # Materialize the keys first: popping inside the loop would mutate the
+  # mapping that is being iterated.
+  for closed_loop in [loop for loop in _TOOL_THREAD_POOLS if loop.is_closed()]:
+    for pool in _TOOL_THREAD_POOLS.pop(closed_loop, {}).values():
+      # wait=False so that whichever caller happens to sweep is not made to
+      # join another loop's tool threads. Work already submitted still runs;
+      # shutdown only stops new work and lets the threads exit after it.
+      pool.shutdown(wait=False)
+
+
 def _get_tool_thread_pool(max_workers: int = 4) -> ThreadPoolExecutor:
   """Gets or creates the running loop's thread pool executor for tool execution.
 
@@ -120,10 +149,11 @@ def _get_tool_thread_pool(max_workers: int = 4) -> ThreadPoolExecutor:
 
   Returns:
     A ThreadPoolExecutor with the specified max_workers, shut down when the
-    event loop that created it is collected.
+    event loop that created it is closed or collected.
   """
   loop = asyncio.get_running_loop()
   with _TOOL_THREAD_POOL_LOCK:
+    _shutdown_closed_loop_pools()
     pools = _TOOL_THREAD_POOLS.setdefault(loop, {})
     pool = pools.get(max_workers)
     if pool is None:

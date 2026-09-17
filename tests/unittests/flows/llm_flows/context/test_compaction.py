@@ -21,8 +21,8 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import EventsCompactionConfig
 from google.adk.apps.llm_event_summarizer import LlmEventSummarizer
 from google.adk.events.event import Event
-from google.adk.flows.llm_flows import compaction
-from google.adk.flows.llm_flows import contents
+from google.adk.flows.llm_flows.context import _compaction as compaction
+from google.adk.flows.llm_flows.context import _contents as contents
 from google.adk.flows.llm_flows.single_flow import SingleFlow
 from google.adk.models.llm_request import LlmRequest
 from google.adk.sessions.base_session_service import BaseSessionService

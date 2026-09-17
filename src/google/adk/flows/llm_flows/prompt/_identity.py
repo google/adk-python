@@ -24,7 +24,7 @@ from ....agents.invocation_context import InvocationContext
 from ....events.event import Event
 from ....models.llm_request import LlmRequest
 from .._base_llm_processor import BaseLlmRequestProcessor
-from .._invocation_utils import as_llm_agent
+from ..core._utils import as_llm_agent
 
 
 class _IdentityLlmRequestProcessor(BaseLlmRequestProcessor):

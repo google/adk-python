@@ -21,7 +21,7 @@ from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.events.event import Event
-from google.adk.flows.llm_flows.context_cache_processor import ContextCacheRequestProcessor
+from google.adk.flows.llm_flows.context._cache import ContextCacheRequestProcessor
 from google.adk.models.cache_metadata import CacheMetadata
 from google.adk.models.llm_request import LlmRequest
 from google.adk.sessions.base_session_service import BaseSessionService

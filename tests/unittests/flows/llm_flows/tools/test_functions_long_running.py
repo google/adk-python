@@ -17,7 +17,7 @@ from google.adk.tools.long_running_tool import LongRunningFunctionTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai.types import Part
 
-from ... import testing_utils
+from .... import testing_utils
 
 
 def test_async_function():

@@ -64,6 +64,7 @@ class FeatureName(str, Enum):
   PROGRESSIVE_SSE_STREAMING = "PROGRESSIVE_SSE_STREAMING"
   PUBSUB_TOOL_CONFIG = "PUBSUB_TOOL_CONFIG"
   PUBSUB_TOOLSET = "PUBSUB_TOOLSET"
+  SKILL_LIFECYCLE = "SKILL_LIFECYCLE"
   SKILL_TOOLSET = "SKILL_TOOLSET"
   SPANNER_TOOLSET = "SPANNER_TOOLSET"
   SPANNER_ADMIN_TOOLSET = "SPANNER_ADMIN_TOOLSET"
@@ -204,6 +205,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     ),
     FeatureName.PUBSUB_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.SKILL_LIFECYCLE: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=False
     ),
     FeatureName.SKILL_TOOLSET: FeatureConfig(
         FeatureStage.STABLE, default_on=True

@@ -26,10 +26,10 @@ from ...events.event import Event
 from ...models.llm_request import LlmRequest
 from ...utils import model_name_utils
 from ._base_llm_processor import BaseLlmRequestProcessor
-from ._invocation_utils import as_llm_agent
-from ._invocation_utils import copy_http_options as _copy_http_options
-from ._invocation_utils import copy_or_none as _copy_or_none
-from ._invocation_utils import require_run_config
+from .core._utils import as_llm_agent
+from .core._utils import copy_http_options as _copy_http_options
+from .core._utils import copy_or_none as _copy_or_none
+from .core._utils import require_run_config
 
 
 def _merge_run_config_http_options(

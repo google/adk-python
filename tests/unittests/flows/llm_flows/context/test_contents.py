@@ -19,8 +19,8 @@ from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.events.event_actions import EventCompaction
 from google.adk.flows.llm_flows import _nl_planning
-from google.adk.flows.llm_flows import contents
-from google.adk.flows.llm_flows.contents import request_processor
+from google.adk.flows.llm_flows.context import _contents as contents
+from google.adk.flows.llm_flows.context._contents import request_processor
 from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from google.adk.labs.openai import OpenAIResponsesLlm
@@ -30,7 +30,7 @@ from google.adk.models.llm_request import LlmRequest
 from google.genai import types
 import pytest
 
-from ... import testing_utils
+from .... import testing_utils
 
 
 @pytest.mark.asyncio

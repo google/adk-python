@@ -26,8 +26,8 @@ from ....events.event import Event
 from ....models.llm_request import LlmRequest
 from ....tools.set_model_response_tool import SetModelResponseTool
 from .._base_llm_processor import BaseLlmRequestProcessor
-from .._invocation_utils import as_llm_agent
-from .._invocation_utils import require_agent_name
+from ..core._utils import as_llm_agent
+from ..core._utils import require_agent_name
 
 
 class _OutputSchemaRequestProcessor(BaseLlmRequestProcessor):

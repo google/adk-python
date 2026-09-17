@@ -20,12 +20,12 @@ Child agents can see parent agents' events, but not sibling agents' events.
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
-from google.adk.flows.llm_flows.contents import request_processor
+from google.adk.flows.llm_flows.context._contents import request_processor
 from google.adk.models.llm_request import LlmRequest
 from google.genai import types
 import pytest
 
-from ... import testing_utils
+from .... import testing_utils
 
 
 @pytest.mark.asyncio

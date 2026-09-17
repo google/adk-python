@@ -187,7 +187,8 @@ warning instead of being stored.
 Once the skill reaches a `SkillToolset`, the toolset publishes four tools to the
 model: `list_skills`, `load_skill`, `load_skill_resource`, and
 `run_skill_script`. A fifth, `search_skills`, appears when a registry is
-configured. The model reaches the three levels by calling those tools in order:
+configured, and a sixth, `unload_skill`, when the `SKILL_LIFECYCLE` feature is
+enabled. The model reaches the three levels by calling those tools in order:
 
 1.  `list_skills` returns the name and description of every installed skill,
     which is level 1. Pass `discovery_mode=SkillDiscoveryMode.EAGER` on
@@ -366,6 +367,20 @@ Use the mode.
     than `load_skills_from_dir`, because an invalid skill is logged and skipped,
     and a base path that is not a directory produces a warning and an empty dict
     instead of an exception.
+*   **Seeing what was skipped**: a skipped skill only reaches a log, so it
+    otherwise vanishes from the catalog with no signal. Pass `on_error` to get
+    the skill ID and the exception instead of the warning: return from it to
+    keep skipping, or raise to fail the whole listing. `list_skills_in_gcs_dir`
+    and both `_async` twins take the same argument.
+
+```python
+problems: dict[str, Exception] = {}
+
+def record(skill_id: str, error: Exception) -> None:
+    problems[skill_id] = error  # `raise error` here to fail instead.
+
+skills = list_skills_in_dir(skills_dir, on_error=record)
+```
 
 ### Load from Cloud Storage
 
@@ -434,6 +449,11 @@ so it has to equal the declared `name`.
 *   **Skill names are kebab-case by default.** Snake_case requires enabling the
     `SNAKE_CASE_SKILL_NAME` feature; see
     the feature registry guide.
+*   **Releasing a skill is opt-in.** A loaded skill stays active, and its
+    `metadata.adk_additional_tools` stay declared, for the rest of the session.
+    Enabling the `SKILL_LIFECYCLE` feature adds an `unload_skill` tool the model
+    can call to drop one. Its instructions stay in the conversation history;
+    only its tools go away.
 *   **Experimental.** The package's own
     [README](../../../../src/google/adk/skills/README.md) marks skills as
     experimental and under active development, so the API may change without

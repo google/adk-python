@@ -17,8 +17,8 @@
 from unittest.mock import MagicMock
 
 from google.adk.events.event import Event
-from google.adk.flows.llm_flows import contents
-from google.adk.flows.llm_flows import interactions_processor
+from google.adk.flows.llm_flows.context import _contents as contents
+from google.adk.flows.llm_flows.context import _interactions as interactions_processor
 from google.adk.flows.llm_flows.single_flow import SingleFlow
 from google.genai import types
 

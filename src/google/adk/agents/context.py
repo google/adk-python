@@ -707,7 +707,7 @@ class Context(ReadonlyContext):
       )
     self._event_actions.requested_tool_confirmations[self.function_call_id] = (
         ToolConfirmation(
-            hint=hint,
+            hint=hint or '',
             payload=payload,
         )
     )

@@ -17,8 +17,8 @@
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.events.event_actions import EventCompaction
-from google.adk.flows.llm_flows._content_compaction import _process_compaction_events
-from google.adk.flows.llm_flows._content_compaction import _recover_compacted_function_calls
+from google.adk.flows.llm_flows.context._compaction import _process_compaction_events
+from google.adk.flows.llm_flows.context._compaction import _recover_compacted_function_calls
 from google.genai import types
 
 

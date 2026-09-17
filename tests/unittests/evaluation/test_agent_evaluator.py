@@ -136,7 +136,7 @@ async def test_evaluate_eval_set_threads_artifact_service(mocker):
 
   await AgentEvaluator.evaluate_eval_set(
       agent_module="my.agent.module",
-      eval_set=EvalSet(eval_set_id="es1", eval_cases=[]),
+      eval_set=_make_eval_set(),
       eval_config=EvalConfig(),
       num_runs=1,
       artifact_service=my_service,
@@ -318,6 +318,42 @@ async def test_evaluate_eval_set_passes_when_metrics_pass(mocker):
   )
 
   await _mock_evaluate_eval_set(mocker, passing_result)
+
+
+@pytest.mark.asyncio
+async def test_evaluate_eval_set_raises_when_no_eval_cases_were_evaluated(
+    mocker,
+):
+  """An empty `eval_set` must fail early before evaluating."""
+  mock_get_agent = mocker.patch.object(AgentEvaluator, "_get_agent_for_eval")
+  mock_get_results = mocker.patch.object(
+      AgentEvaluator, "_get_eval_results_by_eval_id"
+  )
+
+  with pytest.raises(ValueError, match="No eval cases were evaluated"):
+    await AgentEvaluator.evaluate_eval_set(
+        agent_module="my.agent.module",
+        eval_set=EvalSet(eval_set_id="es1", eval_cases=[]),
+        eval_config=EvalConfig(),
+        num_runs=1,
+    )
+
+  mock_get_agent.assert_not_called()
+  mock_get_results.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("num_runs", [0, -1])
+async def test_evaluate_eval_set_raises_when_num_runs_less_than_one(num_runs):
+  with pytest.raises(
+      ValueError, match=f"`num_runs` must be at least 1, got {num_runs}."
+  ):
+    await AgentEvaluator.evaluate_eval_set(
+        agent_module="my.agent.module",
+        eval_set=_make_eval_set(),
+        eval_config=EvalConfig(),
+        num_runs=num_runs,
+    )
 
 
 class TestGetAgentForEval:
@@ -1003,6 +1039,33 @@ async def test_evaluate_requires_app_name_when_manager_given(mocker):
         agent_module="pkg.search_agent",
         eval_dataset_file_path_or_dir="some.test.json",
         eval_set_results_manager=manager,
+    )
+
+
+@pytest.mark.asyncio
+async def test_evaluate_raises_when_no_test_files_found(tmp_path):
+  empty_dir = tmp_path / "empty_evals"
+  empty_dir.mkdir()
+  with pytest.raises(
+      ValueError,
+      match=r"No `\*\.test\.json` eval files found in",
+  ):
+    await AgentEvaluator.evaluate(
+        agent_module="pkg.search_agent",
+        eval_dataset_file_path_or_dir=str(empty_dir),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("num_runs", [0, -1])
+async def test_evaluate_raises_when_num_runs_less_than_one(num_runs):
+  with pytest.raises(
+      ValueError, match=f"`num_runs` must be at least 1, got {num_runs}."
+  ):
+    await AgentEvaluator.evaluate(
+        agent_module="pkg.search_agent",
+        eval_dataset_file_path_or_dir="some.test.json",
+        num_runs=num_runs,
     )
 
 

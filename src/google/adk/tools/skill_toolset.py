@@ -39,6 +39,8 @@ from typing_extensions import override
 from ..agents.readonly_context import ReadonlyContext
 from ..code_executors.base_code_executor import BaseCodeExecutor
 from ..code_executors.code_execution_utils import CodeExecutionInput
+from ..features import FeatureName
+from ..features import is_feature_enabled
 from ..skills import models
 from ..skills import prompt
 from ..skills import SkillRegistry
@@ -71,6 +73,7 @@ _BINARY_FILE_DETECTED_MSG = (
 _LIST_SKILLS_TOOL_NAME = "list_skills"
 _SEARCH_SKILLS_TOOL_NAME = "search_skills"
 _LOAD_SKILL_TOOL_NAME = "load_skill"
+_UNLOAD_SKILL_TOOL_NAME = "unload_skill"
 _LOAD_SKILL_RESOURCE_TOOL_NAME = "load_skill_resource"
 _RUN_SKILL_SCRIPT_TOOL_NAME = "run_skill_script"
 
@@ -114,10 +117,12 @@ class SkillDiscoveryMode(Enum):
 
 
 def _build_skill_system_instruction(
+    *,
     prefix: str | None = None,
     allowed_tools: set[str] | frozenset[str] | None = None,
     skills_folder: Path | None = None,
     script_execution_enabled: bool = True,
+    unload_enabled: bool = False,
 ) -> str:
   """Builds the skill guidance injected into the model's system instruction.
 
@@ -132,6 +137,9 @@ def _build_skill_system_instruction(
     script_execution_enabled: Whether scripts can actually be run. When False,
       `run_skill_script` is not offered to the model either, so advertising it
       here would promise a capability that always fails.
+    unload_enabled: Whether the lifecycle feature is on. When it is,
+      `unload_skill` is documented here, and named in the ban notice if
+      `allowed_tools` filters it out.
 
   Returns:
     The system instruction text.
@@ -195,6 +203,15 @@ def _build_skill_system_instruction(
       " (search, data retrieval, render), then write your reply. Never end"
       " your turn with an empty response right after loading a skill."
   )
+  if unload_enabled:
+    steps.append(
+        "Once a skill's task is finished and you no longer need its"
+        f" instructions or its tools, call `{p}{_UNLOAD_SKILL_TOOL_NAME}` with"
+        ' `skill_name="<SKILL_NAME>"` to release it. Only unload a skill you'
+        " are done with: its tools stop being available, and you would have to"
+        f" `{p}{_LOAD_SKILL_TOOL_NAME}` it again to use them. Unloading is"
+        " optional; never unload a skill just because you loaded it."
+    )
   if script_execution_enabled and skills_folder_posix is not None:
     steps.append(
         "NOTE ON ENVIRONMENT EXECUTION: When using"
@@ -224,13 +241,16 @@ def _build_skill_system_instruction(
   )
 
   if allowed_tools is not None:
-    banned = []
-    for tool_name in (
+    bannable = [
         _RUN_SKILL_SCRIPT_TOOL_NAME,
         _LOAD_SKILL_RESOURCE_TOOL_NAME,
         _LOAD_SKILL_TOOL_NAME,
         _LIST_SKILLS_TOOL_NAME,
-    ):
+    ]
+    if unload_enabled:
+      bannable.append(_UNLOAD_SKILL_TOOL_NAME)
+    banned = []
+    for tool_name in bannable:
       if tool_name not in allowed_tools:
         banned.append(f"`{p}{tool_name}`")
     if banned:
@@ -423,6 +443,91 @@ class LoadSkillTool(BaseTool):
         "skill_name": skill_name,
         "instructions": instructions,
         "frontmatter": skill.frontmatter.model_dump(),
+    }
+
+  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+    """Telemetry hook: returns an error type if the response indicates an error."""
+    if isinstance(response, dict) and response.get("error"):
+      error_code = response.get("error_code")
+      return error_code if error_code else "TOOL_ERROR"
+    return None
+
+
+class UnloadSkillTool(BaseTool):
+  """Tool to release an active skill.
+
+  Drops the skill from the agent's activated-skill state, so the tools it
+  contributed via ``adk_additional_tools`` stop being declared. The
+  instructions it was loaded with stay in the conversation. Nothing is
+  re-fetched, so this also works for a skill that has left the registry.
+
+  Known limitation: the activated-skill list is rewritten wholesale, so
+  parallel writes to it race. The deltas merge per key and the last call in the
+  batch wins, so two unloads issued together can leave one of the skills active
+  while both report success. ``load_skill`` can lose an activation the same
+  way.
+  """
+
+  TOOL_NAME = _UNLOAD_SKILL_TOOL_NAME
+
+  def __init__(self, toolset: "SkillToolset"):
+    super().__init__(
+        name=self.TOOL_NAME,
+        description=(
+            "Unloads an active skill once its task is complete, releasing its"
+            " dynamic tools from the context."
+        ),
+    )
+    self._toolset = toolset
+
+  def _get_declaration(self) -> types.FunctionDeclaration | None:
+    return types.FunctionDeclaration(
+        name=self.name,
+        description=self.description,
+        parameters_json_schema={
+            "type": "object",
+            "properties": {
+                "skill_name": {
+                    "type": "string",
+                    "description": "The name of the skill to unload.",
+                },
+            },
+            "required": ["skill_name"],
+        },
+    )
+
+  async def run_async(
+      self, *, args: dict[str, Any], tool_context: ToolContext
+  ) -> Any:
+    """Drops a skill from the calling agent's activated-skill list.
+
+    Args:
+      args: Tool arguments. ``skill_name`` (required) is the skill to release.
+      tool_context: Context of the call; its session state holds the list.
+
+    Returns:
+      ``{"skill_name": str, "unloaded": True, "active_skills": list[str]}`` on
+      success, listing what stays active. On failure, ``{"error": str,
+      "error_code": str}``, where ``error_code`` is ``INVALID_ARGUMENTS``
+      (``skill_name`` missing or empty) or ``SKILL_NOT_ACTIVE``.
+    """
+    skill_name: str | None = args.get("skill_name")
+    if not skill_name:
+      return {
+          "error": "Argument 'skill_name' is required.",
+          "error_code": "INVALID_ARGUMENTS",
+      }
+
+    if not self._toolset.unload_skill(tool_context, skill_name):
+      return {
+          "error": f"Skill '{skill_name}' is not active.",
+          "error_code": "SKILL_NOT_ACTIVE",
+      }
+
+    return {
+        "skill_name": skill_name,
+        "unloaded": True,
+        "active_skills": self._toolset.list_active_skills(tool_context),
     }
 
   def _detect_error_in_response(self, response: Any) -> Optional[str]:
@@ -1445,6 +1550,7 @@ class SkillToolset(BaseToolset):
 
     self._discovery_mode = discovery_mode
     self._warned_on_filtered_list_skills = False
+    self._lifecycle_enabled = is_feature_enabled(FeatureName.SKILL_LIFECYCLE)
 
     # Initialize core skill tools
     self._tools: list[BaseTool] = []
@@ -1457,6 +1563,8 @@ class SkillToolset(BaseToolset):
     ])
     if self._registry:
       self._tools.append(SearchSkillsTool(self))
+    if self._lifecycle_enabled:
+      self._tools.append(UnloadSkillTool(self))
 
   @property
   def skills_folder(self) -> Path | None:
@@ -1748,6 +1856,7 @@ class SkillToolset(BaseToolset):
             allowed_tools=selected_core_tools,
             skills_folder=self.skills_folder,
             script_execution_enabled=self._has_script_execution(tool_context),
+            unload_enabled=self._lifecycle_enabled,
         )
     ]
 

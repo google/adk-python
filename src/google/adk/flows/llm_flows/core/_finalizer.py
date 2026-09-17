@@ -21,19 +21,19 @@ from typing import Optional
 
 from opentelemetry import trace
 
-from . import functions
-from ...agents.callback_context import CallbackContext
-from ...agents.invocation_context import InvocationContext
-from ...agents.readonly_context import ReadonlyContext
-from ...events.event import Event
-from ...models.llm_request import LlmRequest
-from ...models.llm_response import LlmResponse
-from ...telemetry import _instrumentation
-from ...utils._callback_pipeline import _run_callbacks
-from ...utils._callback_pipeline import _stop_on_non_none
-from ...utils._callback_pipeline import _stop_on_truthy
-from ...utils.context_utils import Aclosing
-from ._invocation_utils import as_llm_agent as _as_llm_agent
+from .. import functions
+from ....agents.callback_context import CallbackContext
+from ....agents.invocation_context import InvocationContext
+from ....agents.readonly_context import ReadonlyContext
+from ....events.event import Event
+from ....models.llm_request import LlmRequest
+from ....models.llm_response import LlmResponse
+from ....telemetry import _instrumentation
+from ....utils._callback_pipeline import _run_callbacks
+from ....utils._callback_pipeline import _stop_on_non_none
+from ....utils._callback_pipeline import _stop_on_truthy
+from ....utils.context_utils import Aclosing
+from ._utils import as_llm_agent as _as_llm_agent
 
 
 def finalize_model_response_event(

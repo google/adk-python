@@ -19,16 +19,16 @@ from __future__ import annotations
 from unittest import mock
 
 from google.adk.events.event import Event
-from google.adk.flows.llm_flows._resume_utils import _branch_carries_call
-from google.adk.flows.llm_flows._resume_utils import _find_answer_event
-from google.adk.flows.llm_flows._resume_utils import _find_target_call_event
-from google.adk.flows.llm_flows._resume_utils import _is_sub_branch_answer
-from google.adk.flows.llm_flows._resume_utils import _needs_call_replay
-from google.adk.flows.llm_flows._resume_utils import _pause_left_calls_unanswered
-from google.adk.flows.llm_flows._resume_utils import decide_resume
-from google.adk.flows.llm_flows._resume_utils import decide_step_resume
-from google.adk.flows.llm_flows._resume_utils import ResumeAction
-from google.adk.flows.llm_flows._resume_utils import ResumeDecision
+from google.adk.flows.llm_flows.core._resume import _branch_carries_call
+from google.adk.flows.llm_flows.core._resume import _find_answer_event
+from google.adk.flows.llm_flows.core._resume import _find_target_call_event
+from google.adk.flows.llm_flows.core._resume import _is_sub_branch_answer
+from google.adk.flows.llm_flows.core._resume import _needs_call_replay
+from google.adk.flows.llm_flows.core._resume import _pause_left_calls_unanswered
+from google.adk.flows.llm_flows.core._resume import decide_resume
+from google.adk.flows.llm_flows.core._resume import decide_step_resume
+from google.adk.flows.llm_flows.core._resume import ResumeAction
+from google.adk.flows.llm_flows.core._resume import ResumeDecision
 from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
 from google.genai import types
 import pytest

@@ -24,12 +24,12 @@ from typing import TypeVar
 from google.genai import types
 from pydantic import BaseModel
 
-from ...agents.base_agent import BaseAgent
-from ...agents.invocation_context import InvocationContext
-from ...agents.run_config import RunConfig
+from ....agents.base_agent import BaseAgent
+from ....agents.invocation_context import InvocationContext
+from ....agents.run_config import RunConfig
 
 if TYPE_CHECKING:
-  from ...agents.llm_agent import LlmAgent
+  from ....agents.llm_agent import LlmAgent
 
 _ModelT = TypeVar('_ModelT', bound=BaseModel)
 

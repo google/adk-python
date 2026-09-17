@@ -864,8 +864,9 @@ def adk_services_options(*, default_use_local_storage: bool = True):
             If set, ADK uses this service.
 
             \b
-            If unset, ADK chooses a default session service (see
-            --use_local_storage).
+            If unset, ADK automatically connects to Agent Platform Sessions when
+            an Agent Platform environment is detected. Otherwise, it chooses a
+            default session service (see --use_local_storage).
             - Use 'agentengine://<agent_engine>' to connect to Agent Engine
               sessions. <agent_engine> can either be the full qualified resource
               name 'projects/abc/locations/us-central1/reasoningEngines/123' or
@@ -897,12 +898,12 @@ def adk_services_options(*, default_use_local_storage: bool = True):
         default=default_use_local_storage,
         show_default=True,
         help=(
-            "Optional. Whether to use local .adk storage when "
-            "--session_service_uri and --artifact_service_uri are unset. "
-            "Cannot be combined with explicit service URIs. When the agents "
-            "directory isn't writable (common in Cloud Run/Kubernetes), ADK "
-            "falls back to in-memory unless overridden by "
-            "ADK_FORCE_LOCAL_STORAGE=1 or ADK_DISABLE_LOCAL_STORAGE=1."
+            "Optional. Whether to use local .adk storage when explicit service"
+            " URIs are unset, and an Agent Platform environment is not"
+            " detected. Cannot be combined with explicit service URIs. When the"
+            " agents directory isn't writable (common in Cloud Run/Kubernetes),"
+            " ADK falls back to in-memory unless overridden by"
+            " ADK_FORCE_LOCAL_STORAGE=1 or ADK_DISABLE_LOCAL_STORAGE=1."
         ),
     )
     @click.option(
@@ -913,7 +914,9 @@ def adk_services_options(*, default_use_local_storage: bool = True):
             If set, ADK uses this service.
 
             \b
-            If unset, ADK chooses a default memory service.
+            If unset, ADK automatically connects to Agent Platform Memory Bank
+            when an Agent Platform environment is detected. Otherwise, it uses
+            the default memory service.
             - Use 'rag://<rag_corpus_id>' to connect to Vertex AI Rag Memory Service.
             - Use 'agentengine://<agent_engine>' to connect to Agent Engine
               sessions. <agent_engine> can either be the full qualified resource

@@ -216,49 +216,31 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
         # by its state.
         #
         # Crucially, the transfer *loop* remains under the control of `self`
-        # (the initiating scheduler). If we handed over the entire loop
-        # (via `await active_scheduler(...)`), the foreign scheduler would only
-        # know its own context, causing `use_as_output` to remain False for the
-        # rest of the chain even if execution later transfers back to `ctx`.
-        if isinstance(active_scheduler, DynamicNodeScheduler):
-          child_ctx = await active_scheduler._execute_step(
-              curr_parent_ctx,
-              curr_node,
-              curr_input,
-              node_name=curr_name,
-              use_as_output=curr_use_as_output,
-              run_id=curr_run_id,
-              use_sub_branch=use_sub_branch,
-              override_branch=override_branch,
-              override_isolation_scope=override_isolation_scope,
-              resume_inputs=curr_resume_inputs,
+        # (the initiating scheduler). A foreign scheduler cannot own a
+        # transfer hop because the loop's use_as_output and run-id ownership
+        # would be lost.
+        if not isinstance(active_scheduler, DynamicNodeScheduler):
+          raise WorkflowInvariantError(
+              f'Foreign scheduler of type {type(active_scheduler).__name__}'
+              " cannot own a transfer hop because the loop's use_as_output and"
+              ' run-id ownership would be lost.'
           )
-        else:
-          child_ctx = await active_scheduler(
-              curr_parent_ctx,
-              curr_node,
-              curr_input,
-              node_name=curr_name,
-              use_as_output=curr_use_as_output,
-              run_id=curr_run_id,
-              use_sub_branch=use_sub_branch,
-              override_branch=override_branch,
-              override_isolation_scope=override_isolation_scope,
-              resume_inputs=curr_resume_inputs,
-          )
+        step_scheduler = active_scheduler
       else:
-        child_ctx = await self._execute_step(
-            curr_parent_ctx,
-            curr_node,
-            curr_input,
-            node_name=curr_name,
-            use_as_output=curr_use_as_output,
-            run_id=curr_run_id,
-            use_sub_branch=use_sub_branch,
-            override_branch=override_branch,
-            override_isolation_scope=override_isolation_scope,
-            resume_inputs=curr_resume_inputs,
-        )
+        step_scheduler = self
+
+      child_ctx = await step_scheduler._execute_step(
+          curr_parent_ctx,
+          curr_node,
+          curr_input,
+          node_name=curr_name,
+          use_as_output=curr_use_as_output,
+          run_id=curr_run_id,
+          use_sub_branch=use_sub_branch,
+          override_branch=override_branch,
+          override_isolation_scope=override_isolation_scope,
+          resume_inputs=curr_resume_inputs,
+      )
 
       if child_ctx.error or child_ctx.interrupt_ids:
         if self._enable_replay and child_ctx.interrupt_ids:
@@ -507,6 +489,11 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
       # Rerun!
       run.state.resume_inputs = result.resume_inputs or {}
       logger.debug('node %s schedule: Rerunning execution.', node_path)
+      actual_isolation_scope = (
+          run.recovered_state.isolation_scope
+          if (run.recovered_state and run.recovered_state.isolation_scope)
+          else override_isolation_scope
+      )
       return (
           await self._run_node_internal(
               curr_parent_ctx,
@@ -519,7 +506,7 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
               is_fresh=False,
               use_sub_branch=use_sub_branch,
               override_branch=override_branch,
-              override_isolation_scope=override_isolation_scope,
+              override_isolation_scope=actual_isolation_scope,
           ),
           True,
       )
