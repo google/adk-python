@@ -1355,3 +1355,147 @@ async def test_dynamic_node_scheduler_resumed_run_prefers_recovered_isolation_sc
       ctx._run_node_standalone.call_args.kwargs['override_isolation_scope']
       == 'wf@1/task_node@1'
   )
+
+
+@pytest.mark.asyncio
+async def test_dynamic_node_scheduler_transfer_defers_to_target_parent_scheduler(
+    mocker,
+):
+  """A transfer hands the chain to the scheduler owning the target's parent."""
+  # Arrange
+  child = LlmAgent(name='child', rerun_on_resume=True)
+  parent = LlmAgent(name='parent', sub_agents=[child], rerun_on_resume=True)
+  root = LlmAgent(name='root', sub_agents=[parent], rerun_on_resume=True)
+  child.parent_agent = parent
+  parent.parent_agent = root
+
+  root_ctx, _ = _make_parent_ctx()
+  root_ctx.node = root
+  parent_ctx = Context(
+      root_ctx._invocation_context,
+      parent_ctx=root_ctx,
+      node=parent,
+      run_id='1',
+  )
+
+  child_ctx = Context(
+      root_ctx._invocation_context,
+      parent_ctx=parent_ctx,
+      node=child,
+      run_id='1',
+      event_actions=EventActions(transfer_to_agent='parent'),
+  )
+  parent_ctx2 = Context(
+      root_ctx._invocation_context,
+      parent_ctx=root_ctx,
+      node=parent,
+      run_id='2',
+      event_actions=EventActions(),
+  )
+  parent_ctx2.output = 'parent_output'
+
+  # root_ctx owns a different scheduler; installed after parent_ctx is built
+  # so parent_ctx does not inherit it and gets the transfer-only default.
+  root_scheduler = DynamicNodeScheduler(state=DynamicNodeState())
+  root_scheduler._execute_step = AsyncMock(return_value=parent_ctx2)
+  root_ctx._workflow_scheduler = root_scheduler
+
+  mock_standalone = mocker.patch(
+      'google.adk.workflow._dynamic_node_executor.run_node_standalone',
+      return_value=child_ctx,
+  )
+
+  scheduler = DynamicNodeScheduler(
+      state=DynamicNodeState(), enable_replay=False
+  )
+
+  # Act
+  result_ctx = await scheduler(
+      parent_ctx, child, node_input='child_input', node_name='child'
+  )
+
+  # Assert
+  assert result_ctx.output == 'parent_output'
+  # The hop after the transfer went through root_ctx's scheduler, not the
+  # one installed on parent_ctx.
+  assert mock_standalone.call_count == 1
+  root_scheduler._execute_step.assert_awaited_once()
+  assert root_scheduler._execute_step.await_args.args[0] is root_ctx
+  assert root_scheduler._execute_step.await_args.args[1] is parent
+
+
+@pytest.mark.asyncio
+async def test_dynamic_node_scheduler_transfer_restores_use_as_output_on_hop_back_to_calling_ctx(
+    mocker,
+):
+  """A transfer chain that leaves the calling context and hops back restores use_as_output."""
+  # Arrange: root -> parent -> [child1, child2]
+  child1 = LlmAgent(name='child1', rerun_on_resume=True)
+  child2 = LlmAgent(name='child2', rerun_on_resume=True)
+  parent = LlmAgent(
+      name='parent', sub_agents=[child1, child2], rerun_on_resume=True
+  )
+  root = LlmAgent(name='root', sub_agents=[parent], rerun_on_resume=True)
+  child1.parent_agent = parent
+  child2.parent_agent = parent
+  parent.parent_agent = root
+
+  root_ctx, _ = _make_parent_ctx()
+  root_ctx.node = root
+  parent_ctx = Context(
+      root_ctx._invocation_context,
+      parent_ctx=root_ctx,
+      node=parent,
+      run_id='1',
+      event_actions=EventActions(transfer_to_agent='child2'),
+  )
+
+  child1_ctx = Context(
+      root_ctx._invocation_context,
+      parent_ctx=parent_ctx,
+      node=child1,
+      run_id='1',
+      event_actions=EventActions(transfer_to_agent='parent'),
+  )
+  child2_ctx = Context(
+      root_ctx._invocation_context,
+      parent_ctx=parent_ctx,
+      node=child2,
+      run_id='1',
+      event_actions=EventActions(),
+  )
+  child2_ctx.output = 'final_output'
+
+  # root_ctx has a different scheduler
+  root_scheduler = DynamicNodeScheduler(state=DynamicNodeState())
+  root_scheduler._execute_step = AsyncMock(return_value=parent_ctx)
+  root_ctx._workflow_scheduler = root_scheduler
+
+  # parent_ctx's standalone runs: child1 then child2
+  mock_standalone = mocker.patch(
+      'google.adk.workflow._dynamic_node_executor.run_node_standalone',
+      side_effect=[child1_ctx, child2_ctx],
+  )
+
+  scheduler = DynamicNodeScheduler(state=DynamicNodeState())
+
+  # Act
+  result_ctx = await scheduler(
+      parent_ctx,
+      child1,
+      node_input='init',
+      node_name='child1',
+      use_as_output=True,
+  )
+
+  # Assert
+  assert result_ctx.output == 'final_output'
+  # Hop 1 (child1 on parent_ctx): use_as_output=True
+  assert mock_standalone.call_args_list[0].kwargs['use_as_output'] is True
+  # Hop 2 (parent on root_ctx via root_scheduler): use_as_output=False
+  root_scheduler._execute_step.assert_awaited_once()
+  assert (
+      root_scheduler._execute_step.await_args.kwargs['use_as_output'] is False
+  )
+  # Hop 3 (child2 hopped back to parent_ctx): use_as_output restored to True!
+  assert mock_standalone.call_args_list[1].kwargs['use_as_output'] is True
