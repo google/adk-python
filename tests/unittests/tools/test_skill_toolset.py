@@ -23,6 +23,8 @@ import re
 import sys
 from unittest import mock
 
+from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.code_executors.base_code_executor import BaseCodeExecutor
 from google.adk.code_executors.code_execution_utils import CodeExecutionResult
@@ -31,6 +33,8 @@ from google.adk.environment import BaseEnvironment
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.models import llm_request as llm_request_model
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.session import Session
 from google.adk.skills import models
 from google.adk.telemetry import _instrumentation
 from google.adk.tools import skill_toolset
@@ -271,7 +275,7 @@ async def test_clone_with_updated_skills_keeps_discovery_mode(
       t.name for t in await new_toolset.get_tools(tool_context_instance)
   ]
   assert "list_skills" not in original_names
-  assert clone_names == original_names
+  assert "list_skills" not in clone_names
 
 
 def test_init_accepts_environment(mock_skill1):
@@ -337,6 +341,38 @@ async def test_get_tools(mock_skill1, mock_skill2):
   assert isinstance(tools[1], skill_toolset.LoadSkillTool)
   assert isinstance(tools[2], skill_toolset.LoadSkillResourceTool)
   assert isinstance(tools[3], skill_toolset.RunSkillScriptTool)
+
+
+@pytest.mark.asyncio
+async def test_get_tools_excludes_run_skill_script_when_no_skill_has_scripts(
+    mock_skill2,
+):
+  toolset = skill_toolset.SkillToolset([mock_skill2])
+
+  tools = await toolset.get_tools()
+
+  assert [tool.name for tool in tools] == [
+      "list_skills",
+      "load_skill",
+      "load_skill_resource",
+  ]
+  assert not any(
+      isinstance(tool, skill_toolset.RunSkillScriptTool) for tool in tools
+  )
+
+
+@pytest.mark.asyncio
+async def test_get_tools_includes_run_skill_script_when_any_skill_has_scripts(
+    mock_skill1,
+    mock_skill2,
+):
+  toolset = skill_toolset.SkillToolset([mock_skill2, mock_skill1])
+
+  tools = await toolset.get_tools()
+
+  assert any(
+      isinstance(tool, skill_toolset.RunSkillScriptTool) for tool in tools
+  )
 
 
 @pytest.mark.asyncio
@@ -3997,3 +4033,48 @@ async def test_process_llm_request_never_bans_unload_when_disabled(mock_skill1):
 
   assert "NOT available" in instruction
   assert "unload_skill" not in instruction
+
+
+@pytest.mark.asyncio
+async def test_scriptless_skill_request_does_not_advertise_script_execution():
+  """A real outgoing request never instructs calling an absent script tool."""
+  skill = models.Skill(
+      frontmatter=models.Frontmatter(
+          name="reference-only", description="Read guidance"
+      ),
+      instructions="Read the references and answer the user.",
+  )
+  toolset = skill_toolset.SkillToolset(
+      [skill], code_executor=UnsafeLocalCodeExecutor()
+  )
+  agent = LlmAgent(name="test_agent", tools=[toolset])
+  ctx = tool_context.ToolContext(
+      InvocationContext(
+          invocation_id="scriptless-skill",
+          agent=agent,
+          session=Session(id="test", app_name="test", user_id="test"),
+          session_service=InMemorySessionService(),
+      )
+  )
+  llm_req = llm_request_model.LlmRequest()
+
+  await toolset.process_llm_request(tool_context=ctx, llm_request=llm_req)
+  for tool in await toolset.get_tools(ctx):
+    await tool.process_llm_request(tool_context=ctx, llm_request=llm_req)
+
+  assert list(llm_req.tools_dict) == [
+      "list_skills",
+      "load_skill",
+      "load_skill_resource",
+  ]
+  instruction = llm_req.config.system_instruction
+  assert "Use `run_skill_script`" not in instruction
+  assert "SCRIPT_NOT_FOUND" not in instruction
+  assert "can be run via bash" not in instruction
+  assert re.findall(r"^(\d+)\. ", instruction, re.MULTILINE) == [
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+  ]
