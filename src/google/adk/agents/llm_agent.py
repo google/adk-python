@@ -1273,10 +1273,6 @@ class LlmAgent(BaseAgent, abc.ABC):
       data['tools'] = new_tools
     return data
 
-  @model_validator(mode='after')
-  def __model_validator_after(self) -> LlmAgent:
-    return self
-
   @field_validator('generate_content_config', mode='after')
   @classmethod
   def validate_generate_content_config(

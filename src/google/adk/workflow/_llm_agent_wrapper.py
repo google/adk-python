@@ -510,8 +510,6 @@ async def run_llm_agent_as_node(
             had_task_fc = True
             break  # close this run_iter; outer loop re-enters
           if event.actions.transfer_to_agent:
-            target_name = event.actions.transfer_to_agent
-
             from ..agents.llm_agent import LlmAgent
 
             if (

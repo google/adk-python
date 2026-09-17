@@ -58,11 +58,3 @@ class NodeState(BaseModel):
 
   ``None`` until the run is scheduled, which is when the id is assigned.
   """
-
-  parent_run_id: str | None = None
-  """The run ID of the parent node which dynamically
-  scheduled this node run.
-
-  ``None`` for a node the graph scheduled; set only for a node another node's
-  run started dynamically.
-  """

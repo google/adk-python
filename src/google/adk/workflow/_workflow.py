@@ -632,7 +632,6 @@ class Workflow(BaseNode):
       )
 
       if not result.should_run:
-        is_terminal = node_name in graph._terminal_node_names
         ancestor_path = ctx.node_path if is_terminal else None
 
         if ancestor_path:
@@ -962,15 +961,3 @@ class Workflow(BaseNode):
         task.cancel()
     if all_tasks:
       await asyncio.gather(*all_tasks, return_exceptions=True)
-      for task in all_tasks:
-        if task.cancelled():
-          # Mark static nodes as CANCELLED
-          for name, t in loop_state.pending_tasks.items():
-            if t is task:
-              loop_state.nodes[name].status = NodeStatus.CANCELLED
-              break
-          # Mark dynamic nodes as CANCELLED
-          for _, run in loop_state.runs.items():
-            if run.task is task:
-              run.state.status = NodeStatus.CANCELLED
-              break

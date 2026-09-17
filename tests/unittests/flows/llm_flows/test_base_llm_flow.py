@@ -3442,7 +3442,7 @@ async def test_get_llm_reads_an_agent_that_has_only_the_sync_properties():
       agent=agent
   )
 
-  llm = await BaseLlmFlow()._BaseLlmFlow__get_llm(invocation_context)
+  llm = await BaseLlmFlow()._get_llm(invocation_context)
 
   assert llm.model == 'gemini-2.5-flash'
 
@@ -3455,4 +3455,4 @@ async def test_get_llm_rejects_an_agent_with_no_model_at_all():
   )
 
   with pytest.raises(TypeError, match='canonical_model'):
-    await BaseLlmFlow()._BaseLlmFlow__get_llm(invocation_context)
+    await BaseLlmFlow()._get_llm(invocation_context)
