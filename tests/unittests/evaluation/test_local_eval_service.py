@@ -1305,3 +1305,21 @@ async def test_eval_injects_session_input_state_into_instruction(
   instruction_text = app_details.get_developer_instructions("stateful_agent")
   assert "secret-value" in instruction_text
   assert "{some_key}" not in instruction_text
+
+
+def test_default_user_simulator_provider_is_not_shared_between_services(
+    dummy_agent, mock_eval_sets_manager
+):
+  service = LocalEvalService(
+      root_agent=dummy_agent,
+      eval_sets_manager=mock_eval_sets_manager,
+  )
+  other_service = LocalEvalService(
+      root_agent=dummy_agent,
+      eval_sets_manager=mock_eval_sets_manager,
+  )
+
+  assert (
+      service._user_simulator_provider
+      is not other_service._user_simulator_provider
+  )

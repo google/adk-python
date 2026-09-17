@@ -43,11 +43,3 @@ class Trigger(BaseModel):
   ``None`` inherits the parent's branch; the empty string is a distinct value
   that overrides it with the root branch.
   """
-
-  isolation_scope: str | None = None
-  """Scope tag explicitly propagated to this trigger.
-
-  ``None`` on a freshly buffered trigger. It may be filled in later, just
-  before the node starts, so a resumed run continues in the scope its earlier
-  attempt used.
-  """

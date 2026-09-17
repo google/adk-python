@@ -140,6 +140,20 @@ def test_non_exist_model():
   assert 'Model non-exist-model not found.' in str(e_info.value)
 
 
+def test_bare_third_party_model_name_is_told_about_the_provider_form():
+  """A bare unregistered name gets the "provider/model" hint and the install.
+
+  Neither of the existing branches fires for it: it has no claude prefix and
+  no slash, so before this it got "Model x not found." and nothing else.
+  """
+  with pytest.raises(ValueError) as e_info:
+    models.LLMRegistry.resolve('grok-4')
+  error_msg = str(e_info.value)
+  assert 'Model grok-4 not found.' in error_msg
+  assert '"provider/model"' in error_msg
+  assert 'pip install google-adk[extensions]' in error_msg
+
+
 def test_helpful_error_for_claude_without_extensions():
   """Test that Claude models show install instructions when anthropic is absent.
 

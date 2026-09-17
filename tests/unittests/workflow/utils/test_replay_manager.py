@@ -980,3 +980,39 @@ def test_scan_workflow_events_sequence_composite_child_keys_on_descendant_reques
 
   assert raw_results["composite@1"].interrupt_ids == {"req-1"}
   assert sequence == ["composite@1", "sibling@1"]
+
+
+def test_scan_workflow_events_registers_parent_sequence_barrier():
+  """scan_workflow_events registers a transitive sequence barrier under ctx.node_path for prepare_parent_sequence_barrier."""
+  mgr = ReplayManager()
+  nested_ev = Event(
+      author="sub_agent",
+      node_info=NodeInfo(
+          path="wf@1/alpha@1/sub_agent@1",
+          run_id="1",
+          output_for=["wf@1/alpha@1"],
+      ),
+      invocation_id="inv-1",
+      output="alpha_nested_out",
+  )
+  direct_ev = Event(
+      author="beta",
+      node_info=NodeInfo(path="wf@1/beta@1", run_id="1"),
+      invocation_id="inv-1",
+      output="beta_out",
+  )
+
+  ctx = MagicMock()
+  ctx._invocation_context = MagicMock()
+  ctx._invocation_context.invocation_id = "inv-1"
+  ctx._invocation_context.session = MagicMock()
+  ctx._invocation_context.session.events = [nested_ev, direct_ev]
+  ctx.node_path = "wf@1"
+
+  _, sequence = mgr.scan_workflow_events(ctx)
+
+  assert sequence == ["alpha@1", "beta@1"]
+  assert mgr.sequence_barrier is not None
+  barrier = mgr.prepare_parent_sequence_barrier(ctx, "wf@1")
+  assert barrier is mgr.sequence_barrier
+  assert barrier.sequence == ["alpha@1", "beta@1"]
