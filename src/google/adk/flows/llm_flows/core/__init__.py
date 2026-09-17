@@ -12,15 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from . import _code_execution
-from . import _nl_planning
-from . import contents
-from . import context
-from . import core
-from . import extensions
-from . import functions
-from . import identity
-from . import instructions
-from . import prompt
-from . import request_confirmation
-from . import tools
+"""Core runtime utilities and turn lifecycle orchestration for LLM flows.
+
+Submodules (_finalizer, _resume, _utils) are intentionally not eagerly imported
+here so that low-level leaf helpers (such as core._utils) can be imported by
+extensions without triggering circular initialization through tools.
+"""

@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from google.adk.events.event import Event
-from google.adk.flows.llm_flows import _fencing
+from google.adk.flows.llm_flows.context import _fencing
 from google.genai import types
 
 

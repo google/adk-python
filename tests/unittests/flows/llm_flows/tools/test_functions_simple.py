@@ -46,7 +46,7 @@ from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 import pytest
 
-from ... import testing_utils
+from .... import testing_utils
 
 
 def test_simple_function():

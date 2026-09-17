@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 from ....events.event import Event
 from ....models.cache_metadata import CacheMetadata
 from .._base_llm_processor import BaseLlmRequestProcessor
-from .._invocation_utils import require_agent_name
+from ..core._utils import require_agent_name
 
 if TYPE_CHECKING:
   from ....agents.invocation_context import InvocationContext

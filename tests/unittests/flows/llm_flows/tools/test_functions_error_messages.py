@@ -20,7 +20,7 @@ from google.adk.tools import BaseTool
 from google.genai import types
 import pytest
 
-from ... import testing_utils
+from .... import testing_utils
 
 
 # Mock tool for testing error messages

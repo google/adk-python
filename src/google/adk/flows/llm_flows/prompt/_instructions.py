@@ -26,8 +26,8 @@ from ....agents.readonly_context import ReadonlyContext
 from ....events.event import Event
 from ....utils import instructions_utils
 from .._base_llm_processor import BaseLlmRequestProcessor
-from .._fencing import QUOTED_CONTENT_ELIDED
-from .._invocation_utils import as_llm_agent
+from ..context._fencing import QUOTED_CONTENT_ELIDED
+from ..core._utils import as_llm_agent
 
 if TYPE_CHECKING:
   from ....agents.invocation_context import InvocationContext

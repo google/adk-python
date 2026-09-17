@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
-from google.adk.flows.llm_flows import _model_response_finalizer
+from google.adk.flows.llm_flows.core import _finalizer as _model_response_finalizer
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
@@ -27,7 +27,7 @@ from google.adk.tools.google_search_tool import GoogleSearchTool
 from google.genai import types
 import pytest
 
-from ... import testing_utils
+from .... import testing_utils
 
 google_search = GoogleSearchTool(bypass_multi_tools_limit=True)
 

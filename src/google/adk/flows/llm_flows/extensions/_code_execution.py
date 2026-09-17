@@ -47,7 +47,7 @@ from ....models.llm_response import LlmResponse
 from ....utils.context_utils import Aclosing
 from .._base_llm_processor import BaseLlmRequestProcessor
 from .._base_llm_processor import BaseLlmResponseProcessor
-from .._invocation_utils import as_llm_agent
+from ..core._utils import as_llm_agent
 
 if TYPE_CHECKING:
   from ....models.llm_request import LlmRequest

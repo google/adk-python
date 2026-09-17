@@ -17,7 +17,7 @@ from typing import Any
 from google.adk.agents.llm_agent import Agent
 from google.genai import types
 
-from ... import testing_utils
+from .... import testing_utils
 
 
 def function_call(args: dict[str, Any]) -> types.Part:

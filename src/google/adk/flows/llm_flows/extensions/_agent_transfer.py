@@ -28,7 +28,7 @@ from ....models.llm_request import LlmRequest
 from ....tools.tool_context import ToolContext
 from ....tools.transfer_to_agent_tool import TransferToAgentTool
 from .._base_llm_processor import BaseLlmRequestProcessor
-from .._invocation_utils import as_llm_agent
+from ..core._utils import as_llm_agent
 
 if typing.TYPE_CHECKING:
   from ....agents.base_agent import BaseAgent

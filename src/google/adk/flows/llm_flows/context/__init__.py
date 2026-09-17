@@ -15,21 +15,25 @@
 """Context subpackage for LLM flows.
 
 This subpackage contains components for managing conversation history,
-events compaction, context caching, and interaction state:
+events compaction, context caching, untrusted content fencing, and interaction
+state:
 - _contents: Assembles conversation history and context into LLM request contents
 - _compaction: Token-threshold compaction and event history pruning
 - _cache: Context cache configuration and metadata retrieval
+- _fencing: Untrusted tool output fencing
 - _interactions: Interactions API conversation chaining
 """
 
 from . import _cache
 from . import _compaction
 from . import _contents
+from . import _fencing
 from . import _interactions
 
 __all__ = [
     '_cache',
     '_compaction',
     '_contents',
+    '_fencing',
     '_interactions',
 ]

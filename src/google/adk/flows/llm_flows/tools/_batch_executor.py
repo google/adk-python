@@ -33,7 +33,7 @@ from ....telemetry.tracing import trace_merged_tool_calls
 from ....telemetry.tracing import tracer
 from ....tools.base_tool import BaseTool
 from ....tools.tool_confirmation import ToolConfirmation
-from .._invocation_utils import as_llm_agent as _as_llm_agent
+from ..core._utils import as_llm_agent as _as_llm_agent
 from ._caller import _execute_single_prepared_call_async
 from ._caller import _execute_single_prepared_call_live
 from ._caller import _prepare_single

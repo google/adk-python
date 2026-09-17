@@ -22,7 +22,6 @@ from typing import TYPE_CHECKING
 from google.genai import types
 from typing_extensions import override
 
-from .. import functions
 from ....agents.invocation_context import InvocationContext
 from ....agents.readonly_context import ReadonlyContext
 from ....events.event import Event
@@ -33,13 +32,10 @@ from ....tools.tool_context import ToolContext
 from .._base_llm_processor import BaseLlmRequestProcessor
 from ..agent_transfer import _build_transfer_tool
 from ..agent_transfer import _get_transfer_targets
+from ._functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 
 if TYPE_CHECKING:
   from ....agents.llm_agent import LlmAgent
-
-REQUEST_CONFIRMATION_FUNCTION_CALL_NAME = (
-    functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
-)
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -359,6 +355,8 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
       return
 
     # Step 4: Re-execute the confirmed tools.
+    from .. import functions
+
     if function_response_event := await functions.handle_function_call_list_async(
         invocation_context,
         list(tools_to_resume_with_args.values()),

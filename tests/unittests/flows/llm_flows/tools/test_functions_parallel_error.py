@@ -21,7 +21,7 @@ from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 import pytest
 
-from ... import testing_utils
+from .... import testing_utils
 
 
 def function_call(function_call_id, name, args: dict[str, Any]) -> types.Part:

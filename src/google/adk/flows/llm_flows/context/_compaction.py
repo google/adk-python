@@ -23,7 +23,7 @@ from ....apps.compaction import _has_token_threshold_config
 from ....apps.compaction import _run_compaction_for_token_threshold_config
 from ....events.event import Event
 from .._base_llm_processor import BaseLlmRequestProcessor
-from .._invocation_utils import require_agent
+from ..core._utils import require_agent
 
 if TYPE_CHECKING:
   from ....agents.invocation_context import InvocationContext

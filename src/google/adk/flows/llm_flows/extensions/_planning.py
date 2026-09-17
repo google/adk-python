@@ -29,8 +29,8 @@ from ....events.event import Event
 from ....planners.plan_re_act_planner import PlanReActPlanner
 from .._base_llm_processor import BaseLlmRequestProcessor
 from .._base_llm_processor import BaseLlmResponseProcessor
-from .._invocation_utils import as_llm_agent
-from .._invocation_utils import require_agent_name
+from ..core._utils import as_llm_agent
+from ..core._utils import require_agent_name
 
 if TYPE_CHECKING:
   from ....models.llm_request import LlmRequest

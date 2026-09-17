@@ -22,7 +22,7 @@ import logging
 from google.genai import types
 
 from ....events.event import Event
-from ..functions import _collect_function_call_ids
+from ._functions import _collect_function_call_ids
 
 logger = logging.getLogger('google_adk.' + __name__)
 
