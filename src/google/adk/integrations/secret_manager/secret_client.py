@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import json
-from typing import cast
 from typing import Optional
 
 from google.api_core.gapic_v1 import client_info
@@ -146,7 +145,7 @@ class SecretManagerClient:
     """
     try:
       response = self._client.access_secret_version(name=resource_name)
-      return cast(str, response.payload.data.decode("UTF-8"))
+      return response.payload.data.decode("UTF-8")
     except Exception as e:
       raise e  # Re-raise the exception to allow for handling by the caller
       # Consider logging the exception here before re-raising.

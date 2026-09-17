@@ -18,7 +18,7 @@ import os
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.mcp_instruction_provider import McpInstructionProvider
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
-from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
+from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 
 connection_params = SseConnectionParams(
     url=os.environ.get('MCP_SERVER_URL', 'https://localhost:3000/sse'),
@@ -33,7 +33,7 @@ root_agent = LlmAgent(
         prompt_name='file_system_prompt',
     ),
     tools=[
-        MCPToolset(
+        McpToolset(
             connection_params=connection_params,
             tool_filter=[
                 'read_file',

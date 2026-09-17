@@ -57,3 +57,14 @@ def test_state_content(mock_invocation_context):
 def test_user_id(mock_invocation_context):
   readonly_context = ReadonlyContext(mock_invocation_context)
   assert readonly_context.user_id == "test-user-id"
+
+
+def test_custom_metadata(mock_invocation_context):
+  mock_invocation_context._custom_metadata = {"meta_key": "meta_value"}
+  readonly_context = ReadonlyContext(mock_invocation_context)
+  metadata = readonly_context.custom_metadata
+
+  assert isinstance(metadata, MappingProxyType)
+  assert metadata["meta_key"] == "meta_value"
+  with pytest.raises(TypeError):
+    metadata["new_key"] = "new_value"

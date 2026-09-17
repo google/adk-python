@@ -13,30 +13,53 @@
 # limitations under the License.
 
 import base64
+import io
+from typing import Any
+from unittest import mock
+import zipfile
 
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.models.llm_request import LlmRequest
 from google.adk.tools.load_artifacts_tool import _maybe_base64_to_bytes
 from google.adk.tools.load_artifacts_tool import load_artifacts_tool
+from google.adk.tools.load_artifacts_tool import LoadArtifactsTool
 from google.genai import types
-from pytest import mark
+import pandas as pd
+import pytest
 
 
 class _StubToolContext:
   """Minimal ToolContext stub for LoadArtifactsTool tests."""
 
-  def __init__(self, artifacts_by_name: dict[str, types.Part]):
+  def __init__(
+      self,
+      artifacts_by_name: dict[str, types.Part],
+      out_of_scope_artifacts_by_name: dict[str, types.Part] | None = None,
+  ):
+    """Stubs the artifact service.
+
+    Args:
+        artifacts_by_name: Artifacts in scope, which list_artifacts reports.
+        out_of_scope_artifacts_by_name: Artifacts the backend would return for a
+          name outside the current scope but that list_artifacts does not
+          report, modelling a backend whose keying does not isolate scopes.
+    """
     self._artifacts_by_name = artifacts_by_name
+    self._out_of_scope_artifacts_by_name = out_of_scope_artifacts_by_name or {}
+    self.loaded_names: list[str] = []
 
   async def list_artifacts(self) -> list[str]:
     return list(self._artifacts_by_name.keys())
 
   async def load_artifact(self, name: str) -> types.Part | None:
-    return self._artifacts_by_name.get(name)
+    self.loaded_names.append(name)
+    if name in self._artifacts_by_name:
+      return self._artifacts_by_name[name]
+    return self._out_of_scope_artifacts_by_name.get(name)
 
 
-@mark.asyncio
+@pytest.mark.asyncio
 async def test_load_artifacts_converts_unsupported_mime_to_text():
   """Unsupported inline MIME types are converted to text parts."""
   artifact_name = 'test.csv'
@@ -74,7 +97,42 @@ async def test_load_artifacts_converts_unsupported_mime_to_text():
   assert artifact_part.text == csv_bytes.decode('utf-8')
 
 
-@mark.asyncio
+@pytest.mark.asyncio
+async def test_load_artifacts_multi_part_traversal():
+  """Function response is found when not at parts[0]."""
+  artifact_name = 'test.txt'
+  artifact = types.Part.from_text(text='artifact content')
+
+  tool_context = _StubToolContext({artifact_name: artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part.from_text(text='prior text part'),
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': [artifact_name]},
+                      )
+                  ),
+              ],
+          )
+      ]
+  )
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert len(llm_request.contents) == 2
+  assert (
+      llm_request.contents[-1].parts[0].text == f'Artifact {artifact_name} is:'
+  )
+  assert llm_request.contents[-1].parts[1].text == 'artifact content'
+
+
+@pytest.mark.asyncio
 async def test_load_artifacts_converts_base64_unsupported_mime_to_text():
   """Unsupported base64 string data is converted to text parts."""
   artifact_name = 'test.csv'
@@ -110,7 +168,231 @@ async def test_load_artifacts_converts_base64_unsupported_mime_to_text():
   assert artifact_part.text == csv_bytes.decode('utf-8')
 
 
-@mark.asyncio
+@pytest.mark.asyncio
+async def test_load_artifacts_converts_csv_octet_stream_to_text():
+  """CSV files streamed as octet-stream are extracted using text fallback."""
+  artifact_name = 'test.csv'
+  csv_bytes = b'col1,col2\n1,2\n'
+  artifact = types.Part(
+      inline_data=types.Blob(
+          data=csv_bytes, mime_type='application/octet-stream'
+      )
+  )
+
+  tool_context = _StubToolContext({artifact_name: artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': [artifact_name]},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  artifact_part = llm_request.contents[-1].parts[1]
+  assert artifact_part.inline_data is None
+  assert artifact_part.text == csv_bytes.decode('utf-8')
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_converts_docx_to_text():
+  """DOCX binary payloads are extracted to raw text."""
+  artifact_name = 'document.docx'
+
+  # Create a minimal valid docx in memory
+  docx_bytes_io = io.BytesIO()
+  with zipfile.ZipFile(docx_bytes_io, 'w') as zf:
+    zf.writestr(
+        'word/document.xml',
+        b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<w:document'
+        b' xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:t>Hello'
+        b' DOCX</w:t></w:p></w:body></w:document>',
+    )
+
+  docx_bytes = docx_bytes_io.getvalue()
+
+  artifact = types.Part(
+      inline_data=types.Blob(
+          data=docx_bytes, mime_type='application/octet-stream'
+      )
+  )
+
+  tool_context = _StubToolContext({artifact_name: artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': [artifact_name]},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  artifact_part = llm_request.contents[-1].parts[1]
+  assert artifact_part.inline_data is None
+  assert artifact_part.text == 'Hello DOCX'
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_converts_docx_octet_stream_inline_file_to_text():
+  """DOCX binary payloads named 'inline-file' with octet-stream are extracted."""
+  artifact_name = 'inline-file'
+
+  # Create a minimal valid docx in memory
+  docx_bytes_io = io.BytesIO()
+  with zipfile.ZipFile(docx_bytes_io, 'w') as zf:
+    zf.writestr(
+        'word/document.xml',
+        b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<w:document'
+        b' xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:t>Hello'
+        b' Inline DOCX</w:t></w:p></w:body></w:document>',
+    )
+
+  docx_bytes = docx_bytes_io.getvalue()
+
+  artifact = types.Part(
+      inline_data=types.Blob(
+          data=docx_bytes, mime_type='application/octet-stream'
+      )
+  )
+
+  tool_context = _StubToolContext({artifact_name: artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': [artifact_name]},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  artifact_part = llm_request.contents[-1].parts[1]
+  assert artifact_part.inline_data is None
+  assert artifact_part.text == 'Hello Inline DOCX'
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_fallback_for_invalid_docx_octet_stream():
+  """Invalid DOCX with octet-stream falls back to binary placeholder."""
+  artifact_name = 'inline-file'
+  invalid_docx_bytes = b'not a zip file'
+
+  artifact = types.Part(
+      inline_data=types.Blob(
+          data=invalid_docx_bytes, mime_type='application/octet-stream'
+      )
+  )
+
+  tool_context = _StubToolContext({artifact_name: artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': [artifact_name]},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  artifact_part = llm_request.contents[-1].parts[1]
+  assert artifact_part.inline_data is None
+  assert 'Binary artifact' in artifact_part.text
+  assert 'Content cannot be displayed inline' in artifact_part.text
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_converts_docx_with_custom_namespace_prefix_to_text():
+  """DOCX binary payloads with non-standard namespace prefix are extracted."""
+  artifact_name = 'document.docx'
+
+  # Create a minimal valid docx in memory with custom namespace prefix 'ns0'
+  docx_bytes_io = io.BytesIO()
+  with zipfile.ZipFile(docx_bytes_io, 'w') as zf:
+    zf.writestr(
+        'word/document.xml',
+        b'<?xml version="1.0" encoding="UTF-8"'
+        b' standalone="yes"?>\n<ns0:document'
+        b' xmlns:ns0="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><ns0:body><ns0:p><ns0:t>Hello'
+        b' Custom Prefix</ns0:t></ns0:p></ns0:body></ns0:document>',
+    )
+
+  docx_bytes = docx_bytes_io.getvalue()
+
+  artifact = types.Part(
+      inline_data=types.Blob(
+          data=docx_bytes, mime_type='application/octet-stream'
+      )
+  )
+
+  tool_context = _StubToolContext({artifact_name: artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': [artifact_name]},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  artifact_part = llm_request.contents[-1].parts[1]
+  assert artifact_part.inline_data is None
+  assert artifact_part.text == 'Hello Custom Prefix'
+
+
+@pytest.mark.asyncio
 async def test_load_artifacts_keeps_supported_mime_types():
   """Supported inline MIME types are passed through unchanged."""
   artifact_name = 'test.pdf'
@@ -144,8 +426,8 @@ async def test_load_artifacts_keeps_supported_mime_types():
   assert artifact_part.inline_data.mime_type == 'application/pdf'
 
 
-@mark.asyncio
-@mark.parametrize(
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     'mime_type',
     ['image/svg+xml', 'image/svg', 'application/svg+xml', 'image/xml'],
 )
@@ -227,3 +509,952 @@ def test_get_declaration_with_json_schema_feature_enabled():
           },
       },
   }
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_rejects_non_string_artifact_names():
+  result = await load_artifacts_tool.run_async(
+      args={'artifact_names': ['valid.txt', 123]},
+      tool_context=_StubToolContext({}),
+  )
+
+  assert result['error_code'] == 'INVALID_ARGUMENTS'
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_registers_dynamic_instructions():
+  """load_artifacts registers instructions in llm_request._dynamic_instructions."""
+  tool_context = _StubToolContext(
+      {'doc.txt': types.Part.from_text(text='hello')},
+  )
+  llm_request = LlmRequest()
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert len(llm_request._dynamic_instructions) == 1
+  assert 'You have a list of artifacts' in llm_request._dynamic_instructions[0]
+  assert llm_request.config.system_instruction is None
+  assert len(llm_request.contents) == 0
+
+
+def test_load_artifacts_tool_keyword_only():
+  """process_artifact must be passed as keyword argument."""
+  with pytest.raises(TypeError):
+    LoadArtifactsTool(lambda art, name: art)  # type: ignore[call-arg]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'tool',
+    [
+        LoadArtifactsTool(),
+        LoadArtifactsTool(process_artifact=None),
+        load_artifacts_tool,
+    ],
+    ids=['default_constructor', 'explicit_none', 'singleton_instance'],
+)
+async def test_load_artifacts_tool_default_process_artifact(
+    tool: LoadArtifactsTool,
+):
+  """Default LoadArtifactsTool instances use safe conversion for unsupported artifacts."""
+  artifact_name = 'data.csv'
+  csv_bytes = b'col1,col2\n1,2\n'
+  artifact = types.Part(
+      inline_data=types.Blob(data=csv_bytes, mime_type='application/csv')
+  )
+  tool_context = _StubToolContext({artifact_name: artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': [artifact_name]},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+  await tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+  assert len(llm_request.contents) == 2
+  assert (
+      llm_request.contents[-1].parts[0].text == f'Artifact {artifact_name} is:'
+  )
+  assert llm_request.contents[-1].parts[1].text == csv_bytes.decode('utf-8')
+  assert llm_request.contents[-1].parts[1].inline_data is None
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_with_custom_process_artifact():
+  """Custom process_artifact transforms artifact parts before adding to LLM request."""
+  called_args = []
+
+  def custom_filter(artifact: types.Part, artifact_name: str) -> types.Part:
+    called_args.append((artifact, artifact_name))
+    return types.Part.from_text(
+        text=f'Custom transformed content for {artifact_name}'
+    )
+
+  tool = LoadArtifactsTool(process_artifact=custom_filter)
+  artifact_name = 'data.csv'
+  artifact = types.Part(
+      inline_data=types.Blob(
+          data=b'col1,col2\n1,2\n', mime_type='application/csv'
+      )
+  )
+  tool_context = _StubToolContext({artifact_name: artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': [artifact_name]},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  await tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert len(called_args) == 1
+  assert called_args[0][0] is artifact
+  assert called_args[0][1] == artifact_name
+
+  assert len(llm_request.contents) == 2
+  assert (
+      llm_request.contents[-1].parts[0].text == f'Artifact {artifact_name} is:'
+  )
+  assert (
+      llm_request.contents[-1].parts[1].text
+      == f'Custom transformed content for {artifact_name}'
+  )
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_with_async_custom_process_artifact():
+  """Async custom process_artifact transforms artifact parts."""
+  called_args = []
+
+  async def async_filter(
+      artifact: types.Part, artifact_name: str
+  ) -> types.Part:
+    called_args.append((artifact, artifact_name))
+    return types.Part.from_text(
+        text=f'Async transformed content for {artifact_name}'
+    )
+
+  tool = LoadArtifactsTool(process_artifact=async_filter)
+  artifact_name = 'data.csv'
+  artifact = types.Part(
+      inline_data=types.Blob(
+          data=b'col1,col2\n1,2\n', mime_type='application/csv'
+      )
+  )
+  tool_context = _StubToolContext({artifact_name: artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': [artifact_name]},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  await tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert len(called_args) == 1
+  assert called_args[0][0] is artifact
+  assert called_args[0][1] == artifact_name
+
+  assert len(llm_request.contents) == 2
+  assert (
+      llm_request.contents[-1].parts[0].text == f'Artifact {artifact_name} is:'
+  )
+  assert (
+      llm_request.contents[-1].parts[1].text
+      == f'Async transformed content for {artifact_name}'
+  )
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_custom_process_artifact_exception_skipped():
+  """When process_artifact raises an exception, it is logged and the artifact is skipped."""
+
+  def failing_filter(artifact: types.Part, artifact_name: str) -> types.Part:
+    if artifact_name == 'error.txt':
+      raise ValueError('Transformation failed!')
+    return artifact
+
+  tool = LoadArtifactsTool(process_artifact=failing_filter)
+  art1 = types.Part.from_text(text='error content')
+  art2 = types.Part.from_text(text='good content')
+  tool_context = _StubToolContext({
+      'error.txt': art1,
+      'good.txt': art2,
+  })
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={
+                              'artifact_names': ['error.txt', 'good.txt']
+                          },
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  await tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert len(llm_request.contents) == 2
+  assert llm_request.contents[1].parts[0].text == 'Artifact good.txt is:'
+  assert llm_request.contents[1].parts[1] is art2
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_custom_filter_multiple_artifacts():
+  """Custom filter processes multiple requested artifacts independently."""
+
+  def custom_filter(artifact: types.Part, artifact_name: str) -> types.Part:
+    if artifact_name.endswith('.txt'):
+      return types.Part.from_text(text=f'PROCESSED_TXT: {artifact.text}')
+    return types.Part.from_text(text=f'PROCESSED_OTHER: {artifact_name}')
+
+  tool = LoadArtifactsTool(process_artifact=custom_filter)
+  art1 = types.Part.from_text(text='hello world')
+  art2 = types.Part(
+      inline_data=types.Blob(data=b'%PDF-1.4', mime_type='application/pdf')
+  )
+  tool_context = _StubToolContext({
+      'notes.txt': art1,
+      'doc.pdf': art2,
+  })
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': ['notes.txt', 'doc.pdf']},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  await tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert len(llm_request.contents) == 3
+  assert llm_request.contents[1].parts[0].text == 'Artifact notes.txt is:'
+  assert llm_request.contents[1].parts[1].text == 'PROCESSED_TXT: hello world'
+  assert llm_request.contents[2].parts[0].text == 'Artifact doc.pdf is:'
+  assert llm_request.contents[2].parts[1].text == 'PROCESSED_OTHER: doc.pdf'
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_custom_filter_passthrough_selected_artifacts():
+  """Custom filter can pass through selected artifacts unchanged."""
+
+  def custom_filter(artifact: types.Part, artifact_name: str) -> types.Part:
+    if artifact_name == 'custom.txt':
+      return types.Part.from_text(text='rewritten')
+    return artifact
+
+  tool = LoadArtifactsTool(process_artifact=custom_filter)
+  art1 = types.Part.from_text(text='original')
+  art2 = types.Part.from_text(text='untouched')
+  tool_context = _StubToolContext({
+      'custom.txt': art1,
+      'other.txt': art2,
+  })
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={
+                              'artifact_names': ['custom.txt', 'other.txt']
+                          },
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  await tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert len(llm_request.contents) == 3
+  assert llm_request.contents[1].parts[1].text == 'rewritten'
+  assert llm_request.contents[2].parts[1] is art2
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_custom_filter_returns_none_skips_artifact():
+  """When custom filter returns None, the artifact is skipped and omitted from contents."""
+
+  def custom_filter(
+      artifact: types.Part, artifact_name: str
+  ) -> types.Part | None:
+    if artifact_name == 'skip.txt':
+      return None
+    return artifact
+
+  tool = LoadArtifactsTool(process_artifact=custom_filter)
+  art1 = types.Part.from_text(text='skip me')
+  art2 = types.Part.from_text(text='keep me')
+  tool_context = _StubToolContext({
+      'skip.txt': art1,
+      'keep.txt': art2,
+  })
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': ['skip.txt', 'keep.txt']},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  await tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  # Only keep.txt should be appended; skip.txt should be omitted.
+  assert len(llm_request.contents) == 2
+  assert llm_request.contents[1].parts[0].text == 'Artifact keep.txt is:'
+  assert llm_request.contents[1].parts[1] is art2
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_callback_gets_resolver_prefixed_name():
+  """Custom callback receives the prefixed name the resolver matched.
+
+  The artifact is listed as user:doc.txt, so the resolver maps the model's
+  bare request onto it and the first load succeeds; the user: retry below is
+  covered by test_load_artifacts_callback_gets_retried_user_prefixed_name.
+  """
+  called_args = []
+
+  def custom_filter(artifact: types.Part, artifact_name: str) -> types.Part:
+    called_args.append((artifact, artifact_name))
+    return types.Part.from_text(text=f'Transformed {artifact_name}')
+
+  tool = LoadArtifactsTool(process_artifact=custom_filter)
+  artifact = types.Part.from_text(text='user-scoped data')
+  tool_context = _StubToolContext({'user:doc.txt': artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': ['doc.txt']},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  await tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert len(called_args) == 1
+  assert called_args[0][0] is artifact
+  assert called_args[0][1] == 'user:doc.txt'
+
+  assert len(llm_request.contents) == 2
+  # The prompt text keeps the name the model used, the callback does not.
+  assert llm_request.contents[1].parts[0].text == 'Artifact doc.txt is:'
+  assert llm_request.contents[1].parts[1].text == 'Transformed user:doc.txt'
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_custom_callback_returns_non_part_raises():
+  """When custom callback returns a non-Part object, an error is raised when building Content."""
+
+  def invalid_filter(artifact: types.Part, artifact_name: str) -> Any:
+    del artifact, artifact_name
+    return 12345
+
+  tool = LoadArtifactsTool(process_artifact=invalid_filter)  # type: ignore[arg-type]
+  artifact = types.Part.from_text(text='content')
+  tool_context = _StubToolContext({'data.txt': artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': ['data.txt']},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  with pytest.raises((ValueError, TypeError)):
+    await tool.process_llm_request(
+        tool_context=tool_context, llm_request=llm_request
+    )
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_parses_spreadsheet():
+  """Spreadsheet artifacts are parsed into markdown."""
+  artifact_name = 'test.xlsx'
+  df = pd.DataFrame({'col1': [1, 2], 'col2': ['a', 'b']})
+  output = io.BytesIO()
+  # Use openpyxl as engine since it is in deps
+  with pd.ExcelWriter(output, engine='openpyxl') as writer:
+    df.to_excel(writer, sheet_name='Sheet1', index=False)
+  xlsx_bytes = output.getvalue()
+
+  artifact = types.Part(
+      inline_data=types.Blob(
+          data=xlsx_bytes,
+          mime_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      )
+  )
+
+  tool_context = _StubToolContext({artifact_name: artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': [artifact_name]},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  custom_tool = LoadArtifactsTool(enable_spreadsheet_parsing=True)
+  await custom_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  _, artifact_part = llm_request.contents[-1].parts
+  assert artifact_part.inline_data is None
+
+  # Check for Markdown table content
+  # We expect something like:
+  # ### Sheet: Sheet1
+  #
+  # | col1 | col2 |
+  # | :--- | :--- |
+  # | 1    | a    |
+  # | 2    | b    |
+
+  markdown_output = artifact_part.text
+
+  assert 'Sheet1' in markdown_output
+  assert '| col1' in markdown_output
+  assert '| col2' in markdown_output
+  assert '| 1' in markdown_output
+  assert '| a' in markdown_output
+  assert '| 2' in markdown_output
+  assert '| b' in markdown_output
+
+
+@pytest.mark.asyncio
+@mock.patch('pandas.ExcelFile')
+async def test_load_artifacts_parses_xls_spreadsheet(mock_excel_file_cls):
+  """Spreadsheet artifacts (.xls) are parsed into markdown."""
+  artifact_name = 'test.xls'
+  xls_bytes = b'dummy_xls_content'
+
+  # Mock ExcelFile context manager
+  mock_xl = mock.MagicMock()
+  mock_xl.__enter__.return_value = mock_xl
+  mock_xl.sheet_names = ['Sheet1']
+  mock_xl.parse.return_value = pd.DataFrame(
+      {'col1': [1, 2], 'col2': ['a', 'b']}
+  )
+  mock_excel_file_cls.return_value = mock_xl
+
+  artifact = types.Part(
+      inline_data=types.Blob(
+          data=xls_bytes,
+          mime_type='application/vnd.ms-excel',
+      )
+  )
+
+  tool_context = _StubToolContext({artifact_name: artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': [artifact_name]},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  custom_tool = LoadArtifactsTool(enable_spreadsheet_parsing=True)
+  await custom_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  _, artifact_part = llm_request.contents[-1].parts
+  assert artifact_part.inline_data is None
+
+  markdown_output = artifact_part.text
+
+  assert 'Sheet1' in markdown_output
+  assert '| col1' in markdown_output
+  assert '| col2' in markdown_output
+  assert '| 1' in markdown_output
+  assert '| a' in markdown_output
+  assert '| 2' in markdown_output
+  assert '| b' in markdown_output
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_handles_invalid_spreadsheet():
+  """Invalid spreadsheet artifacts return an error message."""
+  artifact_name = 'invalid.xlsx'
+  invalid_bytes = b'not a valid excel file'
+
+  artifact = types.Part(
+      inline_data=types.Blob(
+          data=invalid_bytes,
+          mime_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      )
+  )
+
+  tool_context = _StubToolContext({artifact_name: artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': [artifact_name]},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  custom_tool = LoadArtifactsTool(enable_spreadsheet_parsing=True)
+  await custom_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  _, artifact_part = llm_request.contents[-1].parts
+  assert artifact_part.inline_data is None
+  assert '[Invalid spreadsheet format' in artifact_part.text
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_spreadsheet_truncation():
+  """Spreadsheet artifacts with > 100 rows are truncated."""
+  artifact_name = 'large.xlsx'
+  # Create a DataFrame with 101 rows
+  df = pd.DataFrame({'col1': list(range(101))})
+  output = io.BytesIO()
+  with pd.ExcelWriter(output, engine='openpyxl') as writer:
+    df.to_excel(writer, sheet_name='Sheet1', index=False)
+  xlsx_bytes = output.getvalue()
+
+  artifact = types.Part(
+      inline_data=types.Blob(
+          data=xlsx_bytes,
+          mime_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      )
+  )
+
+  tool_context = _StubToolContext({artifact_name: artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': [artifact_name]},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  custom_tool = LoadArtifactsTool(enable_spreadsheet_parsing=True)
+  await custom_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  _, artifact_part = llm_request.contents[-1].parts
+  assert artifact_part.inline_data is None
+
+  markdown_output = artifact_part.text
+  assert 'Output is limited to the first 100 rows' in markdown_output
+  assert 'Total rows: 101' in markdown_output
+
+  # Verify that the table itself is truncated
+  # A 100-row table (plus header and separator) should have 102 lines starting with '|'
+  table_lines = [
+      line
+      for line in markdown_output.splitlines()
+      if line.strip().startswith('|')
+  ]
+  assert len(table_lines) == 102
+
+  # The 101st row (value 100) should NOT appear in the table body
+  # This checks that '| 100' does not appear as a trailing row.
+  # Note: '100' appears in the notice, so it checks specifically for table row format.
+  assert '| 100' not in markdown_output.split('Output is limited')[0]
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_spreadsheet_unparsed_by_default():
+  """Spreadsheet artifacts remain unparsed if enable_spreadsheet_parsing is False."""
+  artifact_name = 'test.xlsx'
+  df = pd.DataFrame({'col1': [1, 2]})
+  output = io.BytesIO()
+  with pd.ExcelWriter(output, engine='openpyxl') as writer:
+    df.to_excel(writer, sheet_name='Sheet1', index=False)
+  xlsx_bytes = output.getvalue()
+
+  artifact = types.Part(
+      inline_data=types.Blob(
+          data=xlsx_bytes,
+          mime_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      )
+  )
+
+  tool_context = _StubToolContext({artifact_name: artifact})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': [artifact_name]},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+  # Use default LoadArtifactsTool (enable_spreadsheet_parsing=False)
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  _, artifact_part = llm_request.contents[-1].parts
+  assert artifact_part.inline_data is None
+  assert '[Binary artifact: test.xlsx' in artifact_part.text
+  assert 'Content cannot be displayed inline' in artifact_part.text
+
+
+def _load_artifacts_request(artifact_names: Any) -> LlmRequest:
+  """Builds a request whose last part is a load_artifacts function response."""
+  return LlmRequest(
+      contents=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='load_artifacts',
+                          response={'artifact_names': artifact_names},
+                      )
+                  )
+              ],
+          )
+      ]
+  )
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_skips_name_not_listed_for_this_session():
+  """A name the session does not have is never loaded, even if it resolves."""
+  tool_context = _StubToolContext(
+      {'mine.txt': types.Part.from_text(text='mine')},
+      out_of_scope_artifacts_by_name={
+          '../../otherUser/otherSession/secret.bin': types.Part.from_text(
+              text='secret'
+          )
+      },
+  )
+  llm_request = _load_artifacts_request(
+      ['../../otherUser/otherSession/secret.bin']
+  )
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert not tool_context.loaded_names
+  assert len(llm_request.contents) == 1
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_loads_only_the_listed_names():
+  """Listed names are still loaded when mixed with an unlisted one."""
+  tool_context = _StubToolContext(
+      {'mine.txt': types.Part.from_text(text='mine')},
+      out_of_scope_artifacts_by_name={
+          'theirs.txt': types.Part.from_text(text='theirs')
+      },
+  )
+  llm_request = _load_artifacts_request(['theirs.txt', 'mine.txt'])
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert tool_context.loaded_names == ['mine.txt']
+  assert llm_request.contents[-1].parts[0].text == 'Artifact mine.txt is:'
+  assert llm_request.contents[-1].parts[1].text == 'mine'
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_resolves_listed_user_scoped_name():
+  """A user-scoped name the model echoed without its prefix still loads."""
+  tool_context = _StubToolContext(
+      {'user:notes.txt': types.Part.from_text(text='notes')},
+  )
+  llm_request = _load_artifacts_request(['notes.txt'])
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert tool_context.loaded_names == ['user:notes.txt']
+  # The request keeps the name the model used, as the other ADK languages do.
+  assert llm_request.contents[-1].parts[0].text == 'Artifact notes.txt is:'
+  assert llm_request.contents[-1].parts[1].text == 'notes'
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_does_not_add_user_prefix_to_reach_out_of_scope():
+  """The user: fallback only applies to names the session actually listed."""
+  tool_context = _StubToolContext(
+      {'mine.txt': types.Part.from_text(text='mine')},
+      out_of_scope_artifacts_by_name={
+          'user:theirs.txt': types.Part.from_text(text='theirs')
+      },
+  )
+  llm_request = _load_artifacts_request(['theirs.txt'])
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert not tool_context.loaded_names
+  assert len(llm_request.contents) == 1
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_ignores_response_with_a_non_string_name():
+  """A response holding a non-string name is ignored rather than raising."""
+  tool_context = _StubToolContext(
+      {'mine.txt': types.Part.from_text(text='mine')},
+  )
+  llm_request = _load_artifacts_request([{'not': 'a string'}, 'mine.txt'])
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert not tool_context.loaded_names
+  assert len(llm_request.contents) == 1
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_retries_user_scope_for_listed_bare_name():
+  """A listed bare name still falls back to user scope when not session-scoped.
+
+  FileArtifactService lists an artifact saved with session_id=None under the
+  bare name it was saved with, so the name is in scope but only resolves in the
+  user namespace.
+  """
+  tool_context = _StubToolContext(
+      {'notes.txt': None},
+      out_of_scope_artifacts_by_name={
+          'user:notes.txt': types.Part.from_text(text='notes')
+      },
+  )
+  llm_request = _load_artifacts_request(['notes.txt'])
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert tool_context.loaded_names == ['notes.txt', 'user:notes.txt']
+  assert llm_request.contents[-1].parts[0].text == 'Artifact notes.txt is:'
+  assert llm_request.contents[-1].parts[1].text == 'notes'
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_callback_gets_retried_user_prefixed_name():
+  """The callback receives the user: name the retry actually loaded under."""
+  called_args = []
+
+  def custom_filter(artifact: types.Part, artifact_name: str) -> types.Part:
+    called_args.append((artifact, artifact_name))
+    return types.Part.from_text(text=f'Transformed {artifact_name}')
+
+  tool = LoadArtifactsTool(process_artifact=custom_filter)
+  artifact = types.Part.from_text(text='notes')
+  tool_context = _StubToolContext(
+      {'notes.txt': None},
+      out_of_scope_artifacts_by_name={'user:notes.txt': artifact},
+  )
+  llm_request = _load_artifacts_request(['notes.txt'])
+
+  await tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert tool_context.loaded_names == ['notes.txt', 'user:notes.txt']
+  assert len(called_args) == 1
+  assert called_args[0][0] is artifact
+  assert called_args[0][1] == 'user:notes.txt'
+
+  # The prompt text keeps the name the model used, the callback does not.
+  assert llm_request.contents[-1].parts[0].text == 'Artifact notes.txt is:'
+  assert llm_request.contents[-1].parts[1].text == 'Transformed user:notes.txt'
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_placeholder_keeps_the_name_the_model_used():
+  """The binary placeholder shows the model's wording, not the resolved name.
+
+  The name handed to as_safe_part_for_llm ends up in text the model reads, so
+  it must not pick up a user: prefix the model never used.
+  """
+  artifact = types.Part(
+      inline_data=types.Blob(
+          data=b'\x00\x01binary', mime_type='application/zip'
+      )
+  )
+  tool_context = _StubToolContext({'user:notes.zip': artifact})
+  llm_request = _load_artifacts_request(['notes.zip'])
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert tool_context.loaded_names == ['user:notes.zip']
+  prompt_part, artifact_part = llm_request.contents[-1].parts
+  assert prompt_part.text == 'Artifact notes.zip is:'
+  assert '[Binary artifact: notes.zip' in artifact_part.text
+  assert 'user:' not in artifact_part.text
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_strips_user_prefix_for_listed_bare_name():
+  """A user: prefixed request resolves against a bare listed name.
+
+  When FileArtifactService lists an artifact saved with session_id=None under
+  its bare name, a model requesting user:notes.txt should still resolve and
+  load.
+  """
+  tool_context = _StubToolContext(
+      {'notes.txt': None},
+      out_of_scope_artifacts_by_name={
+          'user:notes.txt': types.Part.from_text(text='notes')
+      },
+  )
+  llm_request = _load_artifacts_request(['user:notes.txt'])
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert tool_context.loaded_names == ['user:notes.txt']
+  assert llm_request.contents[-1].parts[0].text == 'Artifact user:notes.txt is:'
+  assert llm_request.contents[-1].parts[1].text == 'notes'
+
+
+@pytest.mark.asyncio
+async def test_load_artifacts_ignores_non_list_artifact_names():
+  """A non-list artifact_names value is ignored rather than raising."""
+  tool_context = _StubToolContext(
+      {'mine.txt': types.Part.from_text(text='mine')},
+  )
+  llm_request = _load_artifacts_request(None)
+
+  await load_artifacts_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert not tool_context.loaded_names
+  assert len(llm_request.contents) == 1

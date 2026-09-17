@@ -20,6 +20,7 @@ from typing_extensions import override
 
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
+from .eval_metrics import _get_metric_threshold
 from .eval_metrics import EvalMetric
 from .eval_metrics import PrebuiltMetrics
 from .evaluator import EvaluationResult
@@ -59,8 +60,11 @@ class ResponseEvaluator(Evaluator):
       )
 
     if eval_metric:
-      threshold = eval_metric.threshold
+      threshold = _get_metric_threshold(eval_metric)
       metric_name = eval_metric.metric_name
+
+    if threshold is None:
+      raise ValueError("A response evaluation threshold is required.")
 
     if PrebuiltMetrics.RESPONSE_EVALUATION_SCORE.value == metric_name:
       from ..dependencies.vertexai import vertexai

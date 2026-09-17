@@ -18,13 +18,22 @@ Exercises the full ``runner.run_async`` path with a mock model, an in-memory
 session service, and token-threshold event compaction.
 """
 
+import asyncio
+from contextlib import suppress
+
 from google.adk.agents.llm_agent import Agent
 from google.adk.apps.app import App
 from google.adk.apps.app import EventsCompactionConfig
+from google.adk.apps.base_events_summarizer import BaseEventsSummarizer
 from google.adk.apps.llm_event_summarizer import LlmEventSummarizer
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
+from google.adk.events.event_actions import EventCompaction
 from google.adk.runners import Runner
+from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.workflow import START
+from google.adk.workflow._workflow import Workflow
 from google.genai import types
 from google.genai.types import Content
 from google.genai.types import Part
@@ -210,3 +219,179 @@ async def test_runner_appends_sliding_window_compaction_event():
   assert (
       compaction_events
   ), "runner did not append the sliding-window compaction event"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_turn_drops_stale_post_response_compaction():
+  """A newer turn winning storage must not fail an already answered turn."""
+
+  class _BlockingFirstSummarizer(BaseEventsSummarizer):
+
+    def __init__(self):
+      self.first_started = asyncio.Event()
+      self.release_first = asyncio.Event()
+      self.call_count = 0
+
+    async def maybe_summarize_events(self, *, events):
+      self.call_count += 1
+      if self.call_count == 1:
+        self.first_started.set()
+        await self.release_first.wait()
+      compaction = EventCompaction(
+          start_timestamp=events[0].timestamp,
+          end_timestamp=events[-1].timestamp,
+          compacted_content=types.ModelContent(f"summary {self.call_count}"),
+      )
+      return Event(
+          author="compactor",
+          invocation_id=Event.new_id(),
+          content=compaction.compacted_content,
+          actions=EventActions(compaction=compaction),
+      )
+
+  summarizer = _BlockingFirstSummarizer()
+  agent = Agent(
+      name="agent",
+      model=testing_utils.MockModel.create(
+          responses=["answer one", "answer two"]
+      ),
+  )
+  app = App(
+      name="test_app",
+      root_agent=agent,
+      events_compaction_config=EventsCompactionConfig(
+          compaction_interval=1,
+          overlap_size=0,
+          summarizer=summarizer,
+      ),
+  )
+  session_service = DatabaseSessionService("sqlite+aiosqlite:///:memory:")
+  await session_service.create_session(
+      app_name="test_app", user_id="u1", session_id="s1"
+  )
+  runner = Runner(app=app, session_service=session_service)
+
+  async def consume(message):
+    return [
+        event
+        async for event in runner.run_async(
+            user_id="u1",
+            session_id="s1",
+            new_message=types.UserContent(message),
+        )
+    ]
+
+  first_turn = None
+  try:
+    first_turn = asyncio.create_task(consume("turn one"))
+    await asyncio.wait_for(summarizer.first_started.wait(), timeout=5)
+
+    second_events = await asyncio.wait_for(consume("turn two"), timeout=5)
+    summarizer.release_first.set()
+    first_events = await asyncio.wait_for(first_turn, timeout=5)
+
+    assert first_events
+    assert second_events
+    assert summarizer.call_count == 2
+    refreshed = await session_service.get_session(
+        app_name="test_app", user_id="u1", session_id="s1"
+    )
+    assert refreshed is not None
+    compaction_events = [
+        event for event in refreshed.events if event.actions.compaction
+    ]
+    assert len(compaction_events) == 1
+    stored_text = [
+        part.text
+        for event in refreshed.events
+        if event.content
+        for part in event.content.parts or []
+        if part.text
+    ]
+    assert "turn one" in stored_text
+    assert "turn two" in stored_text
+  finally:
+    summarizer.release_first.set()
+    if first_turn is not None:
+      if not first_turn.done():
+        first_turn.cancel()
+      with suppress(asyncio.CancelledError, Exception):
+        await first_turn
+    await session_service.close()
+
+
+@pytest.mark.asyncio
+async def test_mid_workflow_compaction_does_not_stale_later_node_append():
+  """Compacting a non-last Workflow node must not stale-fail later nodes.
+
+  Each single-turn LlmAgent node in a Workflow runs against its own copy of
+  the InvocationContext (see ``prepare_llm_agent_context``). Token-threshold
+  compaction writes through that per-node context's session, so a
+  ``DatabaseSessionService`` (which rejects an ``append_event`` whose
+  in-memory revision marker is behind storage) must still accept later
+  writes made through the shared session object: they should see the marker
+  the compaction write left behind, not a stale copy of it.
+  """
+  agent1_model = testing_utils.MockModel.create(
+      responses=["agent1 turn 1", "agent1 turn 2"]
+  )
+  agent2_model = testing_utils.MockModel.create(
+      responses=["agent2 turn 1", "agent2 turn 2"]
+  )
+  agent1 = Agent(name="agent1", model=agent1_model, mode="single_turn")
+  agent2 = Agent(name="agent2", model=agent2_model, mode="single_turn")
+  workflow = Workflow(
+      name="wf",
+      edges=[(START, agent1), (agent1, agent2)],
+  )
+  app = App(
+      name="test_app",
+      root_agent=workflow,
+      events_compaction_config=EventsCompactionConfig(
+          token_threshold=100,
+          event_retention_size=0,
+          summarizer=LlmEventSummarizer(
+              llm=testing_utils.MockModel.create(responses=["summary"] * 10)
+          ),
+      ),
+  )
+  session_service = DatabaseSessionService("sqlite+aiosqlite:///:memory:")
+  await session_service.create_session(
+      app_name="test_app", user_id="u1", session_id="s1"
+  )
+  runner = Runner(app=app, session_service=session_service)
+
+  # Turn 1: short message, well below the token threshold estimate. No
+  # compaction triggered.
+  async for _ in runner.run_async(
+      user_id="u1",
+      session_id="s1",
+      new_message=Content(role="user", parts=[Part(text="hi")]),
+  ):
+    pass
+
+  # Turn 2: a long message pushes agent1's estimated prompt token count
+  # above the threshold, so its compaction request-processor compacts
+  # mid-invocation, before agent2 runs.
+  long_message = "lorem ipsum dolor sit amet " * 40
+  events = [
+      event
+      async for event in runner.run_async(
+          user_id="u1",
+          session_id="s1",
+          new_message=Content(role="user", parts=[Part(text=long_message)]),
+      )
+  ]
+
+  agent2_events = [event for event in events if event.author == "agent2"]
+  assert agent2_events, "agent2's response was not produced/persisted"
+
+  refreshed = await session_service.get_session(
+      app_name="test_app", user_id="u1", session_id="s1"
+  )
+  persisted_agent2_events = [
+      event for event in refreshed.events if event.author == "agent2"
+  ]
+  assert (
+      len(persisted_agent2_events) == 2
+  ), "agent2's response was not persisted to storage"

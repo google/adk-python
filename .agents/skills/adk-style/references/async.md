@@ -1,19 +1,19 @@
 # Async and Concurrency Style Guide
 
--   **All I/O operations must be in async functions**: Any operation that
-    performs I/O (network calls, file system access, database queries, etc.)
-    must be defined in an `async def` function.
--   **Do not block the event loop**: Avoid calling blocking synchronous
-    functions directly from async code.
--   **Wrap synchronous I/O**: If you must use a synchronous library for I/O
-    (e.g., standard `open()`, `pathlib` file operations, or synchronous
-    clients), wrap the blocking call in `asyncio.to_thread` to run it in a
-    separate thread and prevent blocking the main event loop.
-
-Example:
+- **I/O belongs in `async def`**: network calls, file system access, database
+  queries, and subprocess waits all go in async functions. ADK runs everything
+  on one event loop, so a synchronous call inside it stalls every concurrent
+  agent, not just the caller.
+- **Don't block the event loop**: no synchronous HTTP clients, `time.sleep`,
+  or blocking file reads inside async code.
+- **Wrap synchronous I/O in `asyncio.to_thread`** when a library offers no
+  async API (`open()`, `pathlib`, most cloud SDK clients):
 
 ```python
 async def save_data(path: Path, data: bytes) -> None:
-  # Wrap blocking file write in asyncio.to_thread
+  # Wrap the blocking write so the event loop stays free.
   await asyncio.to_thread(path.write_bytes, data)
 ```
+
+No hook checks this — a blocking call passes CI and shows up later as
+unexplained latency under concurrency, so it is worth catching in review.

@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import concurrent.futures
+import threading
+import time
 from unittest import mock
 
 from google.adk.tools import discovery_engine_search_tool
@@ -494,6 +497,100 @@ class TestDiscoveryEngineSearchTool:
     assert result["results"][0]["title"] == "Jira Issue"
     assert mock_search_client.return_value.search.call_count == 2
     # Mode should be persisted so subsequent calls skip the retry.
+    assert tool._search_result_mode == SearchResultMode.DOCUMENTS
+
+  @mock.patch.object(
+      discoveryengine,
+      "SearchServiceClient",
+  )
+  def test_auto_detect_caches_chunks_on_success(self, mock_search_client):
+    """Test auto-detect caches CHUNKS mode on successful search."""
+    mock_chunk = discoveryengine.Chunk(
+        document_metadata={
+            "title": "Jira Issue",
+            "uri": "https://jira.example.com/123",
+            "struct_data": {
+                "summary": "Bug fix",
+            },
+        },
+        content="Bug fix",
+    )
+    mock_response = discoveryengine.SearchResponse()
+    mock_response.results = [
+        discoveryengine.SearchResponse.SearchResult(chunk=mock_chunk)
+    ]
+    mock_search_client.return_value.search.return_value = mock_response
+
+    tool = DiscoveryEngineSearchTool(data_store_id="test_data_store")
+    result = tool.discovery_engine_search("test query")
+
+    assert result["status"] == "success"
+    assert len(result["results"]) == 1
+    assert result["results"][0]["title"] == "Jira Issue"
+    assert result["results"][0]["url"] == "https://jira.example.com/123"
+    assert result["results"][0]["content"] == "Bug fix"
+    assert mock_search_client.return_value.search.call_count == 1
+    # Mode should be persisted as CHUNKS.
+    assert tool._search_result_mode == SearchResultMode.CHUNKS
+
+  @mock.patch.object(
+      discoveryengine,
+      "SearchServiceClient",
+  )
+  def test_auto_detect_singleflights_structured_fallback(
+      self, mock_search_client
+  ):
+    """Concurrent cold calls should share one CHUNKS probe."""
+    spec_cls = discoveryengine.SearchRequest.ContentSearchSpec
+    worker_count = 8
+    start_barrier = threading.Barrier(worker_count)
+    search_lock = threading.Lock()
+    search_modes = []
+    structured_error = exceptions.InvalidArgument(
+        "`content_search_spec.search_result_mode` must be set to"
+        " SearchRequest.ContentSearchSpec.SearchResultMode.DOCUMENTS"
+        " when the engine contains structured data store."
+    )
+    mock_doc = discoveryengine.Document(
+        name="projects/p/locations/l/doc1",
+        id="doc1",
+        struct_data={
+            "title": "Jira Issue",
+            "uri": "https://jira.example.com/123",
+            "summary": "Bug fix",
+        },
+    )
+    mock_doc_response = discoveryengine.SearchResponse()
+    mock_doc_response.results = [
+        discoveryengine.SearchResponse.SearchResult(document=mock_doc)
+    ]
+
+    def search(request):
+      mode = request.content_search_spec.search_result_mode
+      with search_lock:
+        search_modes.append(mode)
+      if mode == spec_cls.SearchResultMode.CHUNKS:
+        time.sleep(0.05)
+        raise structured_error
+      return mock_doc_response
+
+    mock_search_client.return_value.search.side_effect = search
+    tool = DiscoveryEngineSearchTool(data_store_id="test_data_store")
+
+    def run_search(index):
+      start_barrier.wait(timeout=5)
+      return tool.discovery_engine_search(f"test query {index}")
+
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=worker_count
+    ) as executor:
+      results = list(executor.map(run_search, range(worker_count)))
+
+    assert all(result["status"] == "success" for result in results)
+    assert search_modes.count(spec_cls.SearchResultMode.CHUNKS) == 1
+    assert (
+        search_modes.count(spec_cls.SearchResultMode.DOCUMENTS) == worker_count
+    )
     assert tool._search_result_mode == SearchResultMode.DOCUMENTS
 
   @mock.patch.object(

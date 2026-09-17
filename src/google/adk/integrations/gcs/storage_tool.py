@@ -15,35 +15,62 @@
 from __future__ import annotations
 
 import base64
+from pathlib import Path
+from typing import Any
+import warnings
 
 from google.auth.credentials import Credentials
 
+from . import admin_tool
 from . import client
+from .settings import GCSToolSettings
 
 
-def get_bucket(*, bucket_name: str, credentials: Credentials) -> dict:
+def _resolve_local_path(path: str, settings: GCSToolSettings | None) -> str:
+  """Resolves a model-supplied local file path under the configured root.
+
+  Raises:
+      ValueError: If no root is configured, if it names the root itself, or if
+        it resolves outside the root once symlinks are followed.
+  """
+  root = settings.local_file_root if settings else None
+  if not root:
+    raise ValueError(
+        "Local file access is disabled. Set 'local_file_root' in the GCS tool"
+        " settings to let these tools read from or write to the local"
+        " filesystem."
+    )
+  resolved_root = Path(root).resolve()
+  # An absolute path is judged by where it lands, like a relative one: the
+  # containment check below is what confines either, and it runs after symlinks
+  # are followed.
+  candidate = Path(path)
+  if not candidate.is_absolute():
+    candidate = resolved_root / candidate
+  resolved = candidate.resolve()
+  # The root itself stays out of the message: it reaches the model, and the
+  # deployment's filesystem layout is not the model's business.
+  if not resolved.is_relative_to(resolved_root):
+    raise ValueError(f"Local file path escapes the configured root: {path}")
+  if resolved == resolved_root:
+    raise ValueError(
+        f"Local file path must name a file under the configured root: {path}"
+    )
+  return str(resolved)
+
+
+def get_bucket(*, bucket_name: str, credentials: Credentials) -> dict[str, Any]:
   """Get metadata information about a GCS bucket.
 
-  Args:
-      bucket_name (str): The name of the GCS bucket.
-      credentials (Credentials): The credentials to use for the request.
-
-  Returns:
-      dict: Dictionary representing the properties of the bucket.
+  Deprecated: Use admin_tool.get_bucket instead.
   """
-  try:
-    gcs_client = client.get_gcs_client(credentials=credentials)
-    bucket = gcs_client.get_bucket(bucket_name)
-    results = getattr(bucket, "_properties", {}).copy()
-    return {
-        "status": "SUCCESS",
-        "results": results,
-    }
-  except Exception as ex:
-    return {
-        "status": "ERROR",
-        "error_details": str(ex),
-    }
+  warnings.warn(
+      "storage_tool.get_bucket is deprecated and will be removed in a future"
+      " version. Use admin_tool.get_bucket instead.",
+      DeprecationWarning,
+      stacklevel=2,
+  )
+  return admin_tool.get_bucket(bucket_name=bucket_name, credentials=credentials)
 
 
 def list_objects(
@@ -53,7 +80,7 @@ def list_objects(
     prefix: str | None = None,
     page_size: int | None = None,
     page_token: str | None = None,
-) -> dict:
+) -> dict[str, Any]:
   """List object names in a GCS bucket.
 
   Args:
@@ -73,7 +100,7 @@ def list_objects(
   try:
     gcs_client = client.get_gcs_client(credentials=credentials)
     bucket = gcs_client.get_bucket(bucket_name)
-    list_kwargs = {}
+    list_kwargs: dict[str, Any] = {}
     if page_size is not None:
       list_kwargs["max_results"] = page_size
     if page_token is not None:
@@ -110,7 +137,7 @@ def get_object_metadata(
     object_name: str,
     credentials: Credentials,
     generation: int | None = None,
-) -> dict:
+) -> dict[str, Any]:
   """Get metadata information about a GCS object (blob).
 
   Args:
@@ -156,7 +183,8 @@ def create_object(
     credentials: Credentials,
     data: str | None = None,
     source_file_path: str | None = None,
-) -> dict:
+    settings: GCSToolSettings | None = None,
+) -> dict[str, Any]:
   """Create a new object (blob) in a GCS bucket from provided data or a local file.
 
   Args:
@@ -164,8 +192,10 @@ def create_object(
       object_name (str): The name of the GCS object to create.
       credentials (Credentials): The credentials to use for the request.
       data (str, optional): The content to write to the object.
-      source_file_path (str, optional): The local filesystem path of the file to
-        upload.
+      source_file_path (str, optional): The path of a local file to upload,
+        either absolute or relative to the directory the tools are configured
+        to use. Must name a file inside that directory. Rejected when no such
+        directory is configured.
 
   Returns:
       dict: Dictionary indicating success or error.
@@ -175,7 +205,7 @@ def create_object(
     bucket = gcs_client.get_bucket(bucket_name)
     blob = bucket.blob(object_name)
     if source_file_path is not None:
-      blob.upload_from_filename(source_file_path)
+      blob.upload_from_filename(_resolve_local_path(source_file_path, settings))
     elif data is not None:
       blob.upload_from_string(data)
     else:
@@ -207,7 +237,8 @@ def get_object_data(
     credentials: Credentials,
     generation: int | None = None,
     destination_file_path: str | None = None,
-) -> dict:
+    settings: GCSToolSettings | None = None,
+) -> dict[str, Any]:
   """Get the content/data of a GCS object (blob).
 
   Args:
@@ -216,8 +247,11 @@ def get_object_data(
       credentials (Credentials): The credentials to use for the request.
       generation (int, optional): If present, selects a specific generation of
         this object.
-      destination_file_path (str, optional): The local filesystem path to save
-        the downloaded file.
+      destination_file_path (str, optional): The path to save the downloaded
+        file to, either absolute or relative to the directory the tools are
+        configured to use. Must name a file inside that directory. Rejected
+        when no such directory is configured. Missing parent directories are
+        created.
 
   Returns:
       dict: Dictionary containing the object data as a string or confirming file
@@ -239,7 +273,9 @@ def get_object_data(
       }
 
     if destination_file_path is not None:
-      blob.download_to_filename(destination_file_path)
+      resolved = Path(_resolve_local_path(destination_file_path, settings))
+      resolved.parent.mkdir(parents=True, exist_ok=True)
+      blob.download_to_filename(str(resolved))
       return {
           "status": "SUCCESS",
           "results": (
@@ -274,7 +310,7 @@ def delete_objects(
     bucket_name: str,
     object_names: list[str],
     credentials: Credentials,
-) -> dict:
+) -> dict[str, Any]:
   """Delete multiple objects (blobs) from a GCS bucket.
 
   Note: A GCS bucket must be empty before it can be deleted. Use this tool to

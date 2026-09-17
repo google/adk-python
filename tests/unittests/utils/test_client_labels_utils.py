@@ -66,3 +66,25 @@ def test_eval_client_label():
       f"google-adk-eval/{version.__version__}"
       == _client_labels_utils.EVAL_CLIENT_LABEL
   )
+
+
+def test_get_client_labels_with_framework_label():
+  """An explicit framework_label appends a +suffix to the google-adk token."""
+  labels = _client_labels_utils.get_client_labels(
+      framework_label="managed_agent"
+  )
+  assert len(labels) == 2
+  assert f"google-adk/{version.__version__}+managed_agent" == labels[0]
+  assert f"gl-python/{sys.version.split()[0]}" == labels[1]
+
+
+def test_framework_label_takes_precedence_over_agent_engine(monkeypatch):
+  """An explicit framework_label wins over the Agent Engine env-var suffix."""
+  monkeypatch.setenv(
+      _client_labels_utils._AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME,
+      "test-agent-id",
+  )
+  labels = _client_labels_utils.get_client_labels(
+      framework_label="managed_agent"
+  )
+  assert f"google-adk/{version.__version__}+managed_agent" == labels[0]

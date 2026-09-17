@@ -56,20 +56,22 @@ class PlanReActPlanner(BasePlanner):
     if not response_parts:
       return None
 
-    preserved_parts = []
+    preserved_parts: list[types.Part] = []
     first_fc_part_index = -1
     for i in range(len(response_parts)):
+      response_part = response_parts[i]
+      function_call = response_part.function_call
       # Stop at the first (group of) function calls.
-      if response_parts[i].function_call:
+      if function_call is not None:
         # Ignore and filter out function calls with empty names.
-        if not response_parts[i].function_call.name:
+        if not function_call.name:
           continue
-        preserved_parts.append(response_parts[i])
+        preserved_parts.append(response_part)
         first_fc_part_index = i
         break
 
       # Split the response into reasoning and final answer parts.
-      self._handle_non_function_call_parts(response_parts[i], preserved_parts)
+      self._handle_non_function_call_parts(response_part, preserved_parts)
 
     if first_fc_part_index >= 0:
       j = first_fc_part_index + 1
@@ -82,7 +84,9 @@ class PlanReActPlanner(BasePlanner):
 
     return preserved_parts
 
-  def _split_by_last_pattern(self, text, separator):
+  def _split_by_last_pattern(
+      self, text: str, separator: str
+  ) -> tuple[str, str]:
     """Splits the text by the last occurrence of the separator.
 
     Args:
@@ -98,10 +102,29 @@ class PlanReActPlanner(BasePlanner):
       return text, ''
     return text[: index + len(separator)], text[index + len(separator) :]
 
+  _PLANNING_TAGS = (PLANNING_TAG, REASONING_TAG, ACTION_TAG, REPLANNING_TAG)
+
+  def _strip_planning_tags(self, text: str) -> str:
+    """Strips all planning tags from the text.
+
+    Args:
+      text: The text to strip.
+
+    Returns:
+      The text with all planning tags removed.
+    """
+    for tag in self._PLANNING_TAGS:
+      text = text.replace(tag, '')
+    return text
+
   def _handle_non_function_call_parts(
       self, response_part: types.Part, preserved_parts: list[types.Part]
-  ):
+  ) -> None:
     """Handles non-function-call parts of the response.
+
+    The method strips embedded planning tags (e.g. ``/*PLANNING*/``,
+    ``/*REASONING*/``) from the text so that callers receive clean content
+    blocks instead of raw tagged text.
 
     Args:
       response_part: The response part to handle.
@@ -112,6 +135,11 @@ class PlanReActPlanner(BasePlanner):
       reasoning_text, final_answer_text = self._split_by_last_pattern(
           response_part.text, FINAL_ANSWER_TAG
       )
+      # _split_by_last_pattern includes the separator in the left part; strip
+      # it so the reasoning block contains only the actual reasoning text.
+      if reasoning_text.endswith(FINAL_ANSWER_TAG):
+        reasoning_text = reasoning_text[: -len(FINAL_ANSWER_TAG)]
+      reasoning_text = self._strip_planning_tags(reasoning_text)
       if reasoning_text:
         reasoning_part = types.Part(text=reasoning_text)
         self._mark_as_thought(reasoning_part)
@@ -124,29 +152,20 @@ class PlanReActPlanner(BasePlanner):
         )
     else:
       response_text = response_part.text or ''
-      # If the part is a text part with a planning/reasoning/action tag,
-      # label it as reasoning.
-      if response_text and (
-          any(
-              response_text.startswith(tag)
-              for tag in [
-                  PLANNING_TAG,
-                  REASONING_TAG,
-                  ACTION_TAG,
-                  REPLANNING_TAG,
-              ]
-          )
-      ):
+      # If the part is a text part with a leading planning/reasoning/action tag,
+      # label it as reasoning and strip all tags to produce clean text.
+      if response_text and response_text.startswith(self._PLANNING_TAGS):
+        response_part.text = self._strip_planning_tags(response_text)
         self._mark_as_thought(response_part)
       preserved_parts.append(response_part)
 
-  def _mark_as_thought(self, response_part: types.Part):
+  def _mark_as_thought(self, response_part: types.Part) -> None:
     """Marks the response part as thought.
 
     Args:
       response_part: The mutable response part to mark as thought.
     """
-    if response_part.text:
+    if response_part.text is not None:
       response_part.thought = True
     return
 

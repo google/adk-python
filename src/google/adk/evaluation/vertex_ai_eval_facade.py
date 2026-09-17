@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import abc
+from collections.abc import Sequence
 import logging
 import math
 import os
@@ -30,6 +31,8 @@ from .app_details import AgentDetails
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_case import InvocationEvent
+from .eval_case import InvocationEvents
+from .evaluator import _validate_invocation_lengths
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
@@ -65,7 +68,7 @@ class _VertexAiEvalFacade(Evaluator):
       metric_name: Union[
           vertexai.types.PrebuiltMetric, vertexai.types.RubricMetric
       ],
-      expected_invocations_required=False,
+      expected_invocations_required: bool = False,
   ):
     self._threshold = threshold
     self._metric_name = metric_name
@@ -115,18 +118,21 @@ class _VertexAiEvalFacade(Evaluator):
 
     return ""
 
-  def _get_score(self, eval_result) -> Optional[float]:
+  def _get_score(self, eval_result: object) -> Optional[float]:
+    summary_metrics: object = getattr(eval_result, "summary_metrics", None)
+    if not isinstance(summary_metrics, Sequence) or not summary_metrics:
+      return None
+    mean_score: object = getattr(summary_metrics[0], "mean_score", None)
     if (
-        eval_result
-        and eval_result.summary_metrics
-        and isinstance(eval_result.summary_metrics[0].mean_score, float)
-        and not math.isnan(eval_result.summary_metrics[0].mean_score)
+        isinstance(mean_score, (int, float))
+        and not isinstance(mean_score, bool)
+        and not math.isnan(mean_score)
     ):
-      return eval_result.summary_metrics[0].mean_score
+      return float(mean_score)
 
     return None
 
-  def _get_eval_status(self, score: Optional[float]):
+  def _get_eval_status(self, score: Optional[float]) -> EvalStatus:
     if score is not None:
       return (
           EvalStatus.PASSED if score >= self._threshold else EvalStatus.FAILED
@@ -134,15 +140,16 @@ class _VertexAiEvalFacade(Evaluator):
 
     return EvalStatus.NOT_EVALUATED
 
-  def _perform_eval(self, dataset, metrics):
+  def _perform_eval(self, dataset: object, metrics: Sequence[object]) -> object:
     """This method hides away the call to external service.
 
     Primarily helps with unit testing.
     """
-    return self._client.evals.evaluate(
+    result: object = self._client.evals.evaluate(
         dataset=dataset,
         metrics=metrics,
     )
+    return result
 
 
 class _SingleTurnVertexAiEvalFacade(_VertexAiEvalFacade):
@@ -157,6 +164,7 @@ class _SingleTurnVertexAiEvalFacade(_VertexAiEvalFacade):
   ) -> EvaluationResult:
     if self._expected_invocations_required and expected_invocations is None:
       raise ValueError("expected_invocations is needed by this metric.")
+    _validate_invocation_lengths(actual_invocations, expected_invocations)
     del conversation_scenario  # not supported for per-invocation evaluation.
 
     # If expected_invocation are not required by the metric and if they are not
@@ -170,7 +178,9 @@ class _SingleTurnVertexAiEvalFacade(_VertexAiEvalFacade):
     total_score = 0.0
     num_invocations = 0
     per_invocation_results = []
-    for actual, expected in zip(actual_invocations, expected_invocations):
+    for actual, expected in zip(
+        actual_invocations, expected_invocations, strict=True
+    ):
       prompt = self._get_text(actual.user_content)
       reference = self._get_text(expected.final_response) if expected else None
       response = self._get_text(actual.final_response)
@@ -224,6 +234,9 @@ class _MultiTurnVertexiAiEvalFacade(_VertexAiEvalFacade):
       conversation_scenario: Optional[ConversationScenario] = None,
   ) -> EvaluationResult:
     del conversation_scenario
+    _validate_invocation_lengths(actual_invocations, expected_invocations)
+    if not actual_invocations:
+      return EvaluationResult()
 
     per_invocation_results = []
     # If expected_invocation are not required by the metric and if they are not
@@ -236,7 +249,7 @@ class _MultiTurnVertexiAiEvalFacade(_VertexAiEvalFacade):
 
     # We mark all the n-1 turns as NOT-EVALUATED for these metrics.
     for actual, expected in zip(
-        actual_invocations[:-1], expected_invocations[:-1]
+        actual_invocations[:-1], expected_invocations[:-1], strict=True
     ):
       per_invocation_results.append(
           PerInvocationResult(
@@ -310,12 +323,13 @@ class _MultiTurnVertexiAiEvalFacade(_VertexAiEvalFacade):
         )
     )
 
-    for invocation_event in invocation.intermediate_data.invocation_events:
-      agent_events.append(
-          _MultiTurnVertexiAiEvalFacade._map_inovcation_event_to_agent_event(
-              invocation_event
-          )
-      )
+    if isinstance(invocation.intermediate_data, InvocationEvents):
+      for invocation_event in invocation.intermediate_data.invocation_events:
+        agent_events.append(
+            _MultiTurnVertexiAiEvalFacade._map_inovcation_event_to_agent_event(
+                invocation_event
+            )
+        )
 
     agent_events.append(
         vertexai.types.evals.AgentEvent(

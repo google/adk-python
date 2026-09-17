@@ -48,5 +48,5 @@ root_agent = Agent(
         **Important Notes:**
         - I currently support only **GET** and **LIST** operations.
     """,
-    tools=jira_tool.get_tools(),
+    tools=[jira_tool],
 )

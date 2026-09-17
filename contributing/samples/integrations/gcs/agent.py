@@ -29,7 +29,13 @@ import google.auth
 CREDENTIALS_TYPE = None
 
 # Define GCS tool config (default is READ_ONLY; add Capabilities.READ_WRITE for modification access)
-tool_settings = GCSToolSettings(capabilities=[Capabilities.READ_WRITE])
+# The tools refuse to upload from or download to the local filesystem unless
+# local_file_root names a directory. A path the model asks for is resolved
+# inside that directory and cannot escape it.
+tool_settings = GCSToolSettings(
+    capabilities=[Capabilities.READ_WRITE],
+    local_file_root=os.getcwd(),
+)
 
 if CREDENTIALS_TYPE == AuthCredentialTypes.OAUTH2:
   # Initialize the tools to do interactive OAuth
@@ -68,12 +74,11 @@ root_agent = LlmAgent(
     model="gemini-2.5-flash",
     name="gcs_agent",
     description=(
-        "Agent to answer questions about Google Cloud Storage (GCS) buckets"
-        " and objects."
+        "Agent to answer questions about Google Cloud Storage (GCS) objects."
     ),
     instruction="""\
-        You are a storage agent with access to several GCS tools.
-        Make use of those tools to answer the user's questions about buckets and objects.
+        You are a storage agent with access to GCS object tools.
+        Make use of those tools to answer the user's questions about objects.
     """,
     tools=[
         gcs_toolset,

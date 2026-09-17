@@ -150,6 +150,38 @@ class TestLlmAgentOutputSave:
     expected_output = {"message": "Hello", "confidence": 0.95}
     assert event.actions.state_delta["result"] == expected_output
 
+  def test_maybe_save_output_to_state_task_mode_skips_intermediate_text(self):
+    """Test that intermediate conversational text in task mode is skipped for output_key."""
+    agent = LlmAgent(
+        name="test_agent",
+        mode="task",
+        output_key="result",
+        output_schema=MockOutputSchema,
+    )
+
+    # Conversational text (not JSON) emitted during clarification
+    event = create_test_event(
+        author="test_agent",
+        content_text="Please describe your data domain.",
+    )
+
+    agent._LlmAgent__maybe_save_output_to_state(event)
+
+    # Task mode skips intermediate text events for output_key
+    assert "result" not in event.actions.state_delta
+
+  def test_maybe_accumulate_streaming_output_task_mode_skips(self):
+    """Test that streaming accumulation skips task-mode agents."""
+    agent = LlmAgent(name="test_agent", mode="task", output_key="result")
+    event = create_test_event(
+        author="test_agent", content_text="Streaming chunk"
+    )
+
+    accum = agent._LlmAgent__maybe_accumulate_streaming_output(event, "")
+
+    assert accum == ""
+    assert "result" not in event.actions.state_delta
+
   def test_maybe_save_output_to_state_multiple_parts(self):
     """Test that multiple text parts are concatenated."""
     agent = LlmAgent(name="test_agent", output_key="result")

@@ -85,6 +85,86 @@ def test_load_web_page_blocks_shared_address_space_urls(monkeypatch):
   mock_send.assert_not_called()
 
 
+def test_load_web_page_blocks_nat64_embedded_metadata_ip(monkeypatch):
+  _clear_proxy_env(monkeypatch)
+  mock_get = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.requests, 'get', mock_get)
+  mock_send = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.HTTPAdapter, 'send', mock_send)
+
+  result = load_web_page(
+      'http://[64:ff9b::169.254.169.254]/computeMetadata/v1/'
+  )
+
+  assert (
+      result
+      == 'Failed to fetch url:'
+      ' http://[64:ff9b::169.254.169.254]/computeMetadata/v1/'
+  )
+  mock_get.assert_not_called()
+  mock_send.assert_not_called()
+
+
+def test_load_web_page_blocks_ipv4_compatible_embedded_private_ip(monkeypatch):
+  _clear_proxy_env(monkeypatch)
+  mock_get = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.requests, 'get', mock_get)
+  mock_send = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.HTTPAdapter, 'send', mock_send)
+
+  result = load_web_page('http://[::169.254.169.254]/latest/meta-data/')
+
+  assert (
+      result
+      == 'Failed to fetch url: http://[::169.254.169.254]/latest/meta-data/'
+  )
+  mock_get.assert_not_called()
+  mock_send.assert_not_called()
+
+
+def test_load_web_page_allows_public_nat64_ip(monkeypatch):
+  _clear_proxy_env(monkeypatch)
+  mock_get = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.requests, 'get', mock_get)
+
+  captured_request: dict[str, object] = {}
+
+  def _send(
+      self,
+      request,
+      stream=False,
+      timeout=None,
+      verify=True,
+      cert=None,
+      proxies=None,
+  ):
+    del self, stream, timeout, verify, cert, proxies
+    captured_request['url'] = request.url
+    captured_request['host_header'] = request.headers['Host']
+    return _create_response(
+        '<html><body><p>This page has enough words to keep.</p></body></html>'
+    )
+
+  monkeypatch.setattr(load_web_page_module.HTTPAdapter, 'send', _send)
+  monkeypatch.setattr(
+      'bs4.BeautifulSoup',
+      mock.Mock(
+          return_value=mock.Mock(
+              get_text=mock.Mock(
+                  return_value='This page has enough words to keep.'
+              )
+          )
+      ),
+  )
+
+  result = load_web_page('http://[64:ff9b::8.8.8.8]/')
+
+  assert result == 'This page has enough words to keep.'
+  assert captured_request['url'] == 'http://[64:ff9b::808:808]/'
+  assert captured_request['host_header'] == '[64:ff9b::8.8.8.8]'
+  mock_get.assert_not_called()
+
+
 def test_load_web_page_blocks_private_hostname_targets(monkeypatch):
   _clear_proxy_env(monkeypatch)
   monkeypatch.setattr(

@@ -25,7 +25,9 @@ from pydantic import TypeAdapter
 from pydantic import ValidationError
 from typing_extensions import override
 
+from ....events.event import Event
 from ....tools.base_tool import BaseTool
+from ....utils._schema_utils import schema_to_json_schema
 from ....utils._schema_utils import SchemaType
 from ._task_models import _DefaultTaskOutput
 
@@ -41,6 +43,28 @@ FINISH_TASK_TOOL_NAME = 'finish_task'
 # passes.  The wrapper uses this to distinguish a successful completion
 # from a validation-error retry signal.
 FINISH_TASK_SUCCESS_RESULT = 'Task completed.'
+FINISH_TASK_ERROR_RESULT = 'Task failed.'
+
+# Default parameter key used to wrap primitive values for finish_task.
+FINISH_TASK_DEFAULT_WRAPPER_KEY = 'result'
+
+
+def get_output_wrapper_key(
+    output_schema: Optional[SchemaType],
+) -> Optional[str]:
+  """Determine the wrapper key for the output schema."""
+  schema = output_schema if output_schema is not None else _DefaultTaskOutput
+  if isinstance(schema, dict):
+    raw_schema = schema
+  elif isinstance(schema, types.Schema):
+    raw_schema = schema.model_dump(mode='json')
+  else:
+    raw_schema = schema_to_json_schema(schema)
+  return (
+      None
+      if raw_schema.get('type') in ('object', 'OBJECT')
+      else FINISH_TASK_DEFAULT_WRAPPER_KEY
+  )
 
 
 class FinishTaskTool(BaseTool):
@@ -73,9 +97,7 @@ class FinishTaskTool(BaseTool):
     # FunctionDeclaration parameters must be a JSON object schema.
     # If the schema is already an object (e.g. BaseModel), use it directly.
     # Otherwise wrap it in an object with a single key.
-    self._wrapper_key: str | None = (
-        None if raw_schema.get('type') == 'object' else 'result'
-    )
+    self._wrapper_key: str | None = get_output_wrapper_key(raw_schema)
 
     description = (
         'Signal that this agent has completed its delegated task. Call this'
@@ -182,3 +204,19 @@ no accompanying text output."""
     del validated_output
 
     return FINISH_TASK_SUCCESS_RESULT
+
+
+def is_finish_task_terminal_fr(event: Event) -> bool:
+  """True iff this event is a terminal FR from FinishTaskTool.
+
+  A non-terminal FR (e.g., validation error) returns False so the
+  caller keeps iterating and the LLM gets a chance to retry.
+  """
+  for fr in event.get_function_responses():
+    if fr.name == FINISH_TASK_TOOL_NAME:
+      response = fr.response or {}
+      return response.get('result') in (
+          FINISH_TASK_SUCCESS_RESULT,
+          FINISH_TASK_ERROR_RESULT,
+      )
+  return False

@@ -17,62 +17,150 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from collections.abc import Mapping
 from contextlib import aclosing
-import json
 from typing import Any
-from typing import Optional
+from typing import cast
+from typing import TYPE_CHECKING
 
 from google.genai import types
-from pydantic import BaseModel
 
 from ..agents.context import Context
-from ..agents.llm.task._finish_task_tool import FINISH_TASK_SUCCESS_RESULT
 from ..agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME as _FINISH_TASK_FC_NAME
+from ..agents.llm.task._finish_task_tool import is_finish_task_terminal_fr
 from ..events.event import Event
+from ..flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from ..utils._schema_utils import validate_schema
+from ..utils.content_utils import to_user_content
+from ._errors import WorkflowConfigurationError
+from ._errors import WorkflowInvariantError
+
+if TYPE_CHECKING:
+  from ..agents.llm_agent import LlmAgent
+  from ..agents.llm_agent import ToolUnion
+  from ..sessions.session import Session
 
 
-def _extract_finish_task_fc(event: Event) -> Optional[types.FunctionCall]:
-  """Returns the finish_task FC in this event, or None."""
+def _extract_finish_task_fc(event: Event) -> types.FunctionCall | None:
+  """Returns the finish_task FC in this event, or None.
+
+  A partial event is skipped: its arguments may still be arriving, and
+  promoting them would make a fragment decide the task's output.
+  """
+  if event.partial:
+    return None
   for fc in event.get_function_calls():
     if fc.name == _FINISH_TASK_FC_NAME:
       return fc
   return None
 
 
-def _is_finish_task_success_fr(event: Event) -> bool:
-  """True iff this event is the success FR from FinishTaskTool.
-
-  A non-success FR (e.g., validation error) returns False so the
-  caller keeps iterating and the LLM gets a chance to retry.
-  """
-  for fr in event.get_function_responses():
-    if fr.name == _FINISH_TASK_FC_NAME:
-      response = fr.response or {}
-      return response.get('result') == FINISH_TASK_SUCCESS_RESULT
-  return False
-
-
 def _extract_task_delegation_fcs(
-    event: Event, tools_dict: dict
+    event: Event, tools_dict: Mapping[str, ToolUnion]
 ) -> list[types.FunctionCall]:
   """Return task-delegation FCs from this event.
 
   A task-delegation FC is one whose tool is a ``_TaskAgentTool`` instance.
+
+  A partial event yields nothing, the way ``process_llm_agent_output``
+  already treats one. Its arguments may still be arriving, and the Runner
+  never appends a fragment to the session, so dispatching from one would run
+  the specialist on truncated arguments and leave the delegation out of the
+  history the coordinator replays.
   """
+  if event.partial:
+    return []
+
   from ..tools.agent_tool import _TaskAgentTool
 
   return [
       fc
       for fc in event.get_function_calls()
       if fc.id
-      and fc.name in tools_dict
-      and isinstance(tools_dict[fc.name], _TaskAgentTool)
+      and fc.name is not None
+      and isinstance(tools_dict.get(fc.name), _TaskAgentTool)
   ]
 
 
+def _event_has_eager_tool_calls(
+    event: Event, tools_dict: Mapping[str, ToolUnion]
+) -> bool:
+  """True if this event has FCs that produce FR events in the current step.
+
+  Task-delegation tools (``_TaskAgentTool``) and other deferred / long-running
+  tools do not emit an FR from ``handle_function_calls_async``; the chat
+  wrapper synthesizes task FRs itself. Regular tools (including long-running or
+  deferred tools that return a value) do emit FRs in the same LLM step, after
+  the model FC event. The wrapper must drain those FR events before closing the
+  generator, or they are lost and the session history becomes unbalanced for
+  Gemini.
+
+  Args:
+    event: The event containing function calls.
+    tools_dict: Map of tool names to Tool objects.
+
+  Returns:
+    True if the event has eager tool calls.
+  """
+  from ..tools.agent_tool import _TaskAgentTool  # pylint: disable=g-import-not-at-top
+
+  for fc in event.get_function_calls():
+    if not fc.name:
+      continue
+    tool = tools_dict.get(fc.name)
+    if tool is None or isinstance(tool, _TaskAgentTool):
+      continue
+    return True
+  return False
+
+
+async def _drain_pending_tool_response_events(
+    run_iter: AsyncGenerator[Event, None],
+) -> AsyncGenerator[Event, None]:
+  """Yield remaining non-model events from the current LLM step.
+
+  After a mixed model turn (regular tools + task delegation), the LLM flow
+  still has pending function-response events. Closing the generator before
+  reading them drops regular-tool FRs.
+
+  Stops after the first event that carries function responses, or before the
+  next model-role event (which would start another LLM round without
+  synthesized task FRs).
+
+  Args:
+    run_iter: The generator to drain events from.
+
+  Yields:
+    Events from the current LLM step.
+  """
+  async for pending_event in run_iter:
+    if (
+        pending_event.content is not None
+        and pending_event.content.role == 'model'
+    ):
+      # Tool confirmation events have role 'model' but they are part of the
+      # current step (asking for confirmation before executing the tool).
+      # We must yield them and continue draining the actual FR.
+      is_confirmation = any(
+          fc.name == REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+          for fc in pending_event.get_function_calls()
+      )
+      if is_confirmation:
+        yield pending_event
+        continue
+
+      # Next LLM round already started; abandon it by stopping iteration.
+      # Closing the outer generator cancels further work.
+      return
+    yield pending_event
+    if pending_event.get_function_responses():
+      return
+
+
 def _find_unresolved_task_delegations(
-    session, owner: str, tools_dict: dict
+    session: Session,
+    owner: str,
+    tools_dict: Mapping[str, ToolUnion],
 ) -> list[types.FunctionCall]:
   """Walk session events; find task FCs from ``owner`` without matching FRs.
 
@@ -97,11 +185,12 @@ def _find_unresolved_task_delegations(
       continue
     for part in event.content.parts:
       fc = part.function_call
+      tool_name = fc.name if fc is not None else None
       if (
           fc
           and fc.id
-          and fc.name in tools_dict
-          and isinstance(tools_dict[fc.name], _TaskAgentTool)
+          and tool_name is not None
+          and isinstance(tools_dict.get(tool_name), _TaskAgentTool)
       ):
         fc_by_id[fc.id] = fc
       fr = part.function_response
@@ -110,51 +199,65 @@ def _find_unresolved_task_delegations(
   return [fc for fc_id, fc in fc_by_id.items() if fc_id not in fr_ids]
 
 
-def _find_finish_task_tool(agent: Any) -> Any:
+def _agent_tools(agent: LlmAgent) -> list[ToolUnion]:
+  """Returns ``agent.tools``, tolerating agents that do not define it."""
+  tools: list[ToolUnion] = getattr(agent, 'tools', None) or []
+  return tools
+
+
+def _find_finish_task_tool(agent: LlmAgent) -> ToolUnion | None:
   """Return the FinishTaskTool instance attached to a task-mode agent."""
-  for tool in getattr(agent, 'tools', []) or []:
+  for tool in _agent_tools(agent):
     if getattr(tool, 'name', None) == _FINISH_TASK_FC_NAME:
       return tool
   return None
 
 
-def _safe_canonical_tools_dict(agent: Any) -> dict:
+def _safe_canonical_tools_dict(agent: LlmAgent) -> dict[str, ToolUnion]:
   """Build a name→tool map from ``agent.tools``.
 
   Used by the chat wrapper to identify task-delegation FCs by tool
   name without resolving the agent's full canonical-tools pipeline.
   """
-  out: dict = {}
-  for tool in getattr(agent, 'tools', []) or []:
+  out: dict[str, ToolUnion] = {}
+  for tool in _agent_tools(agent):
     name = getattr(tool, 'name', None)
-    if name:
+    if isinstance(name, str) and name:
       out[name] = tool
   return out
 
 
 async def _dispatch_task_fc(
-    parent_agent: Any, fc: types.FunctionCall, ctx: Context
+    parent_agent: LlmAgent, fc: types.FunctionCall, ctx: Context
 ) -> Any:
   """Dispatch a task-delegation FC via ``ctx.run_node`` and return the output.
 
   ``run_id=fc.id`` makes the child run idempotent across resumes (same
-  FC always maps to the same scheduler-tracked child run).  Scope is
-  carried by ``isolation_scope`` (``override_isolation_scope=fc.id``); we
-  intentionally do NOT set a branch — task-mode and single_turn-mode
-  agents share the parent's branch and rely on isolation_scope for
-  scoping instead.
+  FC always maps to the same scheduler-tracked child run).  Each task
+  runs in a stable sub-branch so resumable LLM flow logic sees only the
+  task's own function calls.  ``isolation_scope`` remains keyed by the
+  FC id to keep task history scoped independently of branch ancestry.
   """
+  # Both call sites select FCs that already carry a name and an id, so an
+  # unnamed or id-less FC arriving here means that filtering was bypassed.
+  if fc.name is None or fc.id is None:
+    raise WorkflowInvariantError(
+        'Task delegation calls require both a name and an ID.'
+    )
   target_agent = parent_agent.root_agent.find_agent(fc.name)
   if target_agent is None:
-    raise ValueError(f'Task target agent {fc.name!r} not found.')
+    raise WorkflowConfigurationError(
+        f'Task target agent {fc.name!r} not found.'
+    )
   from .utils._workflow_graph_utils import build_node
 
   wrapped_target = build_node(target_agent)
-  wrapped_target.parent_agent = target_agent.parent_agent
+  cast(Any, wrapped_target).parent_agent = target_agent.parent_agent
   return await ctx.run_node(
       wrapped_target,
       node_input=fc.args,
       run_id=fc.id,
+      use_sub_branch=True,
       override_isolation_scope=fc.id,
       raise_on_wait=True,
   )
@@ -185,22 +288,7 @@ def _synthesize_task_fr_event(fc: types.FunctionCall, output: Any) -> Event:
   )
 
 
-def _node_input_to_content(node_input: Any) -> types.Content:
-  """Converts node_input to a user Content for the LLM agent."""
-  if isinstance(node_input, types.Content):
-    return types.Content(role='user', parts=node_input.parts)
-  if isinstance(node_input, str):
-    text = node_input
-  elif isinstance(node_input, BaseModel):
-    text = node_input.model_dump_json()
-  elif isinstance(node_input, (dict, list)):
-    text = json.dumps(node_input)
-  else:
-    text = str(node_input)
-  return types.Content(role='user', parts=[types.Part(text=text)])
-
-
-def prepare_llm_agent_context(agent: Any, ctx: Context) -> Context:
+def prepare_llm_agent_context(agent: LlmAgent, ctx: Context) -> Context:
   """Prepares the context for running LlmAgent as a node."""
   if agent.mode != 'single_turn':
     return ctx
@@ -216,15 +304,21 @@ def prepare_llm_agent_context(agent: Any, ctx: Context) -> Context:
   )
   agent_ctx.isolation_scope = ctx.isolation_scope
 
-  ic.session = ic.session.model_copy(deep=False)
+  # Share the parent's `session` object (don't copy it): a mid-invocation
+  # write such as compaction must be visible to later nodes, or the DB
+  # service rejects their write as stale.
   return agent_ctx
 
 
-def prepare_llm_agent_input(agent: Any, ctx: Context, node_input: Any) -> None:
+def prepare_llm_agent_input(
+    agent: LlmAgent, ctx: Context, node_input: object
+) -> None:
   """Prepares the input for running LlmAgent as a node.
 
   For ``single_turn`` mode, append a user-role event with the input
-  directly to session.events (legacy behavior).
+  directly to session.events (legacy behavior). When resuming with
+  ``resume_inputs``, skip appending to avoid injecting duplicate synthetic
+  user events that shadow user function responses.
 
   For ``task`` mode, the input is the parent's task-delegation FC
   args.  Those are NOT appended here — the content-builder
@@ -238,9 +332,19 @@ def prepare_llm_agent_input(agent: Any, ctx: Context, node_input: Any) -> None:
   For workflow nodes running in a sub-branch, stamp the input event with that
   branch. A private node input should not look like the shared root user turn.
   """
-  if node_input is None or agent.mode != 'single_turn':
+  # Skip injection if:
+  # 1. No input was provided.
+  # 2. Agent is not single_turn (task mode handles its own leading turn).
+  # 3. Resuming from pause/interrupt (e.g. HITL confirmation): node is re-run
+  #    with resume_inputs; injecting synthetic user input would shadow the
+  #    user's FunctionResponse on the branch tail and cause infinite loops.
+  if (
+      node_input is None
+      or agent.mode != 'single_turn'
+      or bool(ctx.resume_inputs)
+  ):
     return
-  agent_input = _node_input_to_content(node_input)
+  agent_input = to_user_content(node_input)
   user_event = Event(author='user', message=agent_input)
   if user_event.content is not None:
     user_event.content.role = 'user'
@@ -253,7 +357,9 @@ def prepare_llm_agent_input(agent: Any, ctx: Context, node_input: Any) -> None:
   ctx.session.events.append(user_event)
 
 
-def process_llm_agent_output(agent: Any, ctx: Context, event: Event) -> None:
+def process_llm_agent_output(
+    agent: LlmAgent, ctx: Context, event: Event
+) -> None:
   """Processes the output of LlmAgent run as a node."""
   if (
       event.get_function_calls()
@@ -285,7 +391,7 @@ def process_llm_agent_output(agent: Any, ctx: Context, event: Event) -> None:
 
 
 async def run_llm_agent_as_node(
-    agent: Any,
+    agent: LlmAgent,
     *,
     ctx: Context,
     node_input: Any,
@@ -296,7 +402,7 @@ async def run_llm_agent_as_node(
     agent.mode = 'single_turn'
 
   if agent.mode not in ('task', 'single_turn', 'chat'):
-    raise ValueError(
+    raise WorkflowConfigurationError(
         f'LlmAgent as node only supports task, single_turn, and chat mode,'
         f" but agent '{agent.name}' has mode='{agent.mode}'."
     )
@@ -309,7 +415,7 @@ async def run_llm_agent_as_node(
   prepare_llm_agent_input(agent, agent_ctx, node_input)
 
   ic = agent_ctx.get_invocation_context()
-  update = {'agent': agent}
+  update: dict[str, object] = {'agent': agent}
   # thread the agent's isolation_scope into the
   # InvocationContext so the content processor can filter session
   # events to this agent's scope only.  Only mode=task and
@@ -324,10 +430,10 @@ async def run_llm_agent_as_node(
   # case).  For delegated tasks, the FC takes precedence and this
   # override is unused.
   if agent.mode == 'task' and node_input is not None:
-    update['user_content'] = _node_input_to_content(node_input)
+    update['user_content'] = to_user_content(node_input)
   ic = ic.model_copy(update=update)
 
-  from ..agents.live_request_queue import LiveRequestQueue
+  from ..live.live_request_queue import LiveRequestQueue
 
   # A single_turn LlmAgent in a live session runs in non-live mode
   # and only consumes the node_input (ignoring the live request queue).
@@ -386,10 +492,21 @@ async def run_llm_agent_as_node(
         async for event in run_iter:
           yield event
           task_fcs = _extract_task_delegation_fcs(event, tools_dict)
-          for fc in task_fcs:
-            output = await _dispatch_task_fc(agent, fc, ctx)
-            yield _synthesize_task_fr_event(fc, output)
           if task_fcs:
+            # Mixed turns (regular tool FC + task FC) still have pending
+            # regular-tool FR events in this generator. Drain them before
+            # breaking, otherwise aclosing drops them and the session is
+            # left with unbalanced FC/FR history that Gemini rejects.
+            if _event_has_eager_tool_calls(event, tools_dict):
+              async with aclosing(
+                  _drain_pending_tool_response_events(run_iter)
+              ) as drain_iter:
+                async for pending_event in drain_iter:
+                  yield pending_event
+
+            for fc in task_fcs:
+              output = await _dispatch_task_fc(agent, fc, ctx)
+              yield _synthesize_task_fr_event(fc, output)
             had_task_fc = True
             break  # close this run_iter; outer loop re-enters
           if event.actions.transfer_to_agent:
@@ -426,7 +543,7 @@ async def run_llm_agent_as_node(
   # top level of args. We extract via the FinishTaskTool's
   # `_wrapper_key` when accessible, falling back to the full args.
   finish_tool = _find_finish_task_tool(agent)
-  pending_fc_args: Optional[dict] = None
+  pending_fc_args: dict[str, Any] | None = None
   run_method = agent.run_live(ic) if is_live else agent.run_async(ic)
   async with aclosing(run_method) as run_iter:
     async for event in run_iter:
@@ -439,12 +556,15 @@ async def run_llm_agent_as_node(
         yield event
         continue
 
-      if pending_fc_args is not None and _is_finish_task_success_fr(event):
+      if pending_fc_args is not None and is_finish_task_terminal_fr(event):
         wrapper_key = getattr(finish_tool, '_wrapper_key', None)
         if wrapper_key and wrapper_key in pending_fc_args:
           event.output = pending_fc_args[wrapper_key]
         else:
           event.output = pending_fc_args
+        output_key = getattr(agent, 'output_key', None)
+        if output_key and event.output is not None:
+          ctx.actions.state_delta[output_key] = event.output
         yield event
         return
 

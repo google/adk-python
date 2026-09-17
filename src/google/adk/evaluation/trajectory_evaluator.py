@@ -25,8 +25,10 @@ from typing_extensions import override
 from .eval_case import ConversationScenario
 from .eval_case import get_all_tool_calls
 from .eval_case import Invocation
+from .eval_metrics import _get_metric_threshold
 from .eval_metrics import EvalMetric
 from .eval_metrics import ToolTrajectoryCriterion
+from .evaluator import _validate_invocation_lengths
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
@@ -82,6 +84,7 @@ class TrajectoryEvaluator(Evaluator):
         )
         self._threshold = criterion.threshold
         self._match_type = criterion.match_type
+        self._ignore_args = criterion.ignore_args
       except ValidationError as e:
         expected_criterion_type_error = ValueError(
             f"`{eval_metric.metric_name}` metric expects a criterion of type"
@@ -89,11 +92,15 @@ class TrajectoryEvaluator(Evaluator):
         )
         raise expected_criterion_type_error from e
     elif eval_metric:
-      self._threshold = eval_metric.threshold
+      self._threshold = _get_metric_threshold(eval_metric)
       self._match_type = ToolTrajectoryCriterion.MatchType.EXACT
+      self._ignore_args = False
     else:
+      if threshold is None:
+        raise ValueError("A trajectory evaluation threshold is required.")
       self._threshold = threshold
       self._match_type = ToolTrajectoryCriterion.MatchType.EXACT
+      self._ignore_args = False
 
   @override
   def evaluate_invocations(
@@ -105,13 +112,16 @@ class TrajectoryEvaluator(Evaluator):
     """Returns EvaluationResult after performing evaluations using actual and expected invocations."""
     if expected_invocations is None:
       raise ValueError("expected_invocations is needed by this metric.")
+    _validate_invocation_lengths(actual_invocations, expected_invocations)
     del conversation_scenario  # not supported for per-invocation evaluation.
 
     total_tool_use_accuracy = 0.0
     num_invocations = 0
     per_invocation_results = []
 
-    for actual, expected in zip(actual_invocations, expected_invocations):
+    for actual, expected in zip(
+        actual_invocations, expected_invocations, strict=True
+    ):
       tool_use_accuracy = self._calculate_tool_use_accuracy(actual, expected)
       per_invocation_results.append(
           PerInvocationResult(
@@ -191,9 +201,8 @@ class TrajectoryEvaluator(Evaluator):
     try:
       current_expected = next(expected_it)
       for actual in actual_tool_calls:
-        if (
-            actual.name == current_expected.name
-            and actual.args == current_expected.args
+        if actual.name == current_expected.name and (
+            self._ignore_args or actual.args == current_expected.args
         ):
           current_expected = next(expected_it)
     except StopIteration:
@@ -229,7 +238,9 @@ class TrajectoryEvaluator(Evaluator):
     for expected in expected_tool_calls:
       found = False
       for i, actual in enumerate(actual_tool_calls_copy):
-        if actual.name == expected.name and actual.args == expected.args:
+        if actual.name == expected.name and (
+            self._ignore_args or actual.args == expected.args
+        ):
           actual_tool_calls_copy.pop(i)
           found = True
           break
@@ -259,11 +270,15 @@ class TrajectoryEvaluator(Evaluator):
     if len(actual_tool_calls) != len(expected_tool_calls):
       return False
 
-    for actual, expected in zip(actual_tool_calls, expected_tool_calls):
-      if actual.name != expected.name or actual.args != expected.args:
+    for actual, expected in zip(
+        actual_tool_calls, expected_tool_calls, strict=True
+    ):
+      if actual.name != expected.name or (
+          not self._ignore_args and actual.args != expected.args
+      ):
         return False
 
     return True
 
-  def _get_eval_status(self, score: float):
+  def _get_eval_status(self, score: float) -> EvalStatus:
     return EvalStatus.PASSED if score >= self._threshold else EvalStatus.FAILED

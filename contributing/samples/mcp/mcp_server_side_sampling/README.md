@@ -1,18 +1,18 @@
 # FastMCP Server-Side Sampling with ADK
 
-This project demonstrates how to use server-side sampling with a `fastmcp` server connected to an ADK `MCPToolset`.
+This project demonstrates how to use server-side sampling with a `fastmcp` server connected to an ADK `McpToolset`.
 
 ## Description
 
 The setup consists of two main components:
 
-1. **ADK Agent (`agent.py`):** An `LlmAgent` is configured with an `MCPToolset`. This toolset connects to a local `fastmcp` server.
+1. **ADK Agent (`agent.py`):** An `LlmAgent` is configured with an `McpToolset`. This toolset connects to a local `fastmcp` server.
 1. **FastMCP Server (`mcp_server.py`):** A `fastmcp` server that exposes a single tool, `analyze_sentiment`. This server is configured to use its own LLM for sampling, independent of the ADK agent's LLM.
 
 The flow is as follows:
 
 1. The user provides a text prompt to the ADK agent.
-1. The agent decides to use the `analyze_sentiment` tool from the `MCPToolset`.
+1. The agent decides to use the `analyze_sentiment` tool from the `McpToolset`.
 1. The tool call is sent to the `mcp_server.py`.
 1. Inside the `analyze_sentiment` tool, `ctx.sample()` is called. This delegates an LLM call to the `fastmcp` server's own sampling handler.
 1. The `mcp_server`'s LLM processes the prompt from `ctx.sample()` and returns the result to the server.
@@ -41,10 +41,10 @@ pip install fastmcp openai litellm
 
 ### 3. Run the Example
 
-Navigate to the `samples` directory and choose this ADK agent:
+Run this ADK agent:
 
 ```bash
-adk web .
+adk run contributing/samples/mcp/mcp_server_side_sampling
 ```
 
 The agent will automatically start the FastMCP server in the background.

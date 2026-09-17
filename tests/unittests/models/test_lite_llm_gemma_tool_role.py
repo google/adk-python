@@ -92,6 +92,20 @@ class TestToolRoleSingleResponse:
     )
 
   @pytest.mark.asyncio
+  async def test_gemma4_hf_style_naming_uses_tool_responses_role(self):
+    """Hyphenated 'gemma-4' naming should also get role='tool_responses'."""
+    content = _make_function_response_content()
+
+    result = await _content_to_message_param(
+        content, model="google/gemma-4-26B-A4B"
+    )
+
+    assert _extract_role(result) == "tool_responses", (
+        "Gemma models require role='tool_responses' to match their chat "
+        "template; role='tool' causes infinite tool-calling loops."
+    )
+
+  @pytest.mark.asyncio
   async def test_gemma4_uppercase_model_name(self):
     """Model name matching should be case-insensitive."""
     content = _make_function_response_content()

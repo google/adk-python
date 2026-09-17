@@ -96,6 +96,28 @@ bilingual_writer = LlmAgent(
 )
 ```
 
+### Non-LlmAgent single-turn sub-agents
+
+`single_turn` composition is not limited to `LlmAgent`. A `ManagedAgent`
+(server-backed) can also be a single-turn sub-agent by setting
+`mode='single_turn'`; ADK auto-exposes it to the parent as an inline tool, and
+its internal events are preserved in the shared session. Each single-turn managed
+call is stateless (isolated per call), so pass a self-contained request.
+
+```python
+from google.adk.agents import LlmAgent, ManagedAgent
+
+specialist = ManagedAgent(
+    name="search_specialist",
+    mode="single_turn",
+    agent_id="...",
+    environment={"type": "remote"},
+    description="Answers questions needing fresh, grounded web facts.",
+)
+
+coordinator = LlmAgent(name="coordinator", sub_agents=[specialist])
+```
+
 --------------------------------------------------------------------------------
 
 ## How Context Isolation Works

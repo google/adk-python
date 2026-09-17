@@ -109,23 +109,26 @@ def get_test_prompts() -> List[str]:
           " load_profile='realistic'."
       ),
       (
-          "Call analyze_user_behavior_patterns with"
-          " user_segment='premium_customers', time_period='last_30_days',"
-          " metrics=['engagement', 'conversion']."
+          "Call analyze_data_patterns with data='premium customer engagement"
+          " and conversion events for the last 30 days',"
+          " analysis_type='trends'."
       ),
       (
-          "Run market_research_analysis for industry='fintech',"
-          " focus_areas=['user_experience', 'security'],"
-          " report_depth='comprehensive'."
+          "Run research_literature for topic='fintech user experience and"
+          " security', sources=['industry', 'academic'],"
+          " depth='comprehensive'."
       ),
       (
-          "Execute competitive_analysis with competitors=['Netflix',"
-          " 'Disney+'], analysis_type='feature_comparison',"
-          " output_format='detailed'."
+          "Execute design_scalability_architecture with"
+          " current_architecture='monolith',"
+          " expected_growth={'user_growth_multiplier': '10x'},"
+          " scalability_requirements={'availability_target': '99.9%'},"
+          " technology_preferences=['kubernetes']."
       ),
       (
-          "Perform content_performance_evaluation on content_type='video',"
-          " platform='social_media', success_metrics=['views', 'engagement']."
+          "Perform analyze_security_vulnerabilities on"
+          " system_components=['web_frontend', 'api_endpoints'],"
+          " security_scope='comprehensive', compliance_frameworks=['SOC2']."
       ),
   ]
 

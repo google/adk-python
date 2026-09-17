@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
+from types import TracebackType
 from typing import Any
 from typing import Mapping
 from typing import Optional
@@ -247,7 +248,12 @@ class PerAgentDatabaseSessionService(BaseSessionService):
     """Enters the async context manager."""
     return self
 
-  async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+  async def __aexit__(
+      self,
+      exc_type: type[BaseException] | None,
+      exc_val: BaseException | None,
+      exc_tb: TracebackType | None,
+  ) -> None:
     """Exits the async context manager and closes the service."""
     await self.close()
 

@@ -16,8 +16,12 @@ from __future__ import annotations
 
 import textwrap
 from typing import Optional
+from typing import TYPE_CHECKING
 
 from .user_simulator_personas import UserPersona
+
+if TYPE_CHECKING:
+  from jinja2.runtime import Context
 
 _DEFAULT_USER_SIMULATOR_INSTRUCTIONS_TEMPLATE = """You are a Simulated User designed to test an AI Agent.
 
@@ -140,39 +144,38 @@ def _get_user_simulator_instructions_template(
     user_persona: Optional[UserPersona] = None,
 ) -> str:
   """Returns the appropriate instruction template for the user simulator."""
-  if custom_instructions is None and user_persona is None:
-    return _DEFAULT_USER_SIMULATOR_INSTRUCTIONS_TEMPLATE
-
-  if custom_instructions is None and user_persona is not None:
+  if custom_instructions is None:
+    if user_persona is None:
+      return _DEFAULT_USER_SIMULATOR_INSTRUCTIONS_TEMPLATE
     return _USER_SIMULATOR_INSTRUCTIONS_WITH_PERSONA_TEMPLATE
 
-  if custom_instructions is not None and user_persona is None:
+  if user_persona is None:
     return custom_instructions
 
-  if custom_instructions is not None and user_persona is not None:
-    if not is_valid_user_simulator_template(
-        custom_instructions,
-        required_params=[
-            "stop_signal",
-            "conversation_plan",
-            "conversation_history",
-            "persona",
-        ],
-    ):
-      raise ValueError(
-          textwrap.dedent(
-              """Custom instructions using personas must contain the following formatting placeholders following Jinja syntax:
-                * {{ stop_signal }} : text to be generated when the user simulator decides that the
-                  conversation is over.
-                * {{ conversation_plan }} : the overall plan for the conversation that the user
-                  simulator must follow.
-                * {{ conversation_history }} : the conversation between the user and the agent so far.
-                * {{ persona }} : UserPersona for the simulator to use.
-              """
-          )
-      )
+  # The remaining case is custom_instructions and user_persona both set.
+  if not is_valid_user_simulator_template(
+      custom_instructions,
+      required_params=[
+          "stop_signal",
+          "conversation_plan",
+          "conversation_history",
+          "persona",
+      ],
+  ):
+    raise ValueError(
+        textwrap.dedent(
+            """Custom instructions using personas must contain the following formatting placeholders following Jinja syntax:
+              * {{ stop_signal }} : text to be generated when the user simulator decides that the
+                conversation is over.
+              * {{ conversation_plan }} : the overall plan for the conversation that the user
+                simulator must follow.
+              * {{ conversation_history }} : the conversation between the user and the agent so far.
+              * {{ persona }} : UserPersona for the simulator to use.
+            """
+        )
+    )
 
-    return custom_instructions
+  return custom_instructions
 
 
 def get_llm_backed_user_simulator_prompt(
@@ -181,7 +184,7 @@ def get_llm_backed_user_simulator_prompt(
     stop_signal: str,
     custom_instructions: Optional[str] = None,
     user_persona: Optional[UserPersona] = None,
-):
+) -> str:
   """Formats the prompt for the llm-backed user simulator"""
   from jinja2 import DictLoader
   from jinja2 import pass_context
@@ -196,14 +199,14 @@ def get_llm_backed_user_simulator_prompt(
   template_env = SandboxedEnvironment(loader=DictLoader(templates))
 
   @pass_context
-  def _render_string_filter(context, template_string):
+  def _render_string_filter(context: Context, template_string: str) -> str:
     if not template_string:
       return ""
     return template_env.from_string(template_string).render(context.get_all())
 
   template_env.filters["render_string_filter"] = _render_string_filter
 
-  template_parameters = {
+  template_parameters: dict[str, object] = {
       "stop_signal": stop_signal,
       "conversation_plan": conversation_plan,
       "conversation_history": conversation_history,

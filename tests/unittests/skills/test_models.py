@@ -65,6 +65,7 @@ def test_skill_properties():
   skill = models.Skill(frontmatter=frontmatter, instructions="do this")
   assert skill.name == "my-skill"
   assert skill.description == "my description"
+  assert skill._uri is None
 
 
 def test_script_to_string():

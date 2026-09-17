@@ -163,7 +163,9 @@ class TestParameterManagerClient:
     # Execute and verify
     with pytest.raises(
         ValueError,
-        match="error occurred while trying to use default credentials",
+        match=(
+            "error occurred while trying to use default credentials: Auth error"
+        ),
     ):
       ParameterManagerClient()
 

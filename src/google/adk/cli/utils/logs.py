@@ -27,7 +27,7 @@ LOGGING_FORMAT = (
 )
 
 
-def setup_adk_logger(level=logging.INFO):
+def setup_adk_logger(level: int = logging.INFO) -> None:
   # Configure the root logger format and level.
   logging.basicConfig(level=level, format=LOGGING_FORMAT)
 
@@ -68,12 +68,12 @@ def _try_create_latest_log_symlink(
 
 
 def log_to_tmp_folder(
-    level=logging.INFO,
+    level: int = logging.INFO,
     *,
     sub_folder: str = 'agents_log',
     log_file_prefix: str = 'agent',
     log_file_timestamp: str = time.strftime('%Y%m%d_%H%M%S'),
-):
+) -> str:
   """Logs to system temp folder, instead of logging to stderr.
 
   Args

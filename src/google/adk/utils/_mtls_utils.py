@@ -71,6 +71,12 @@ def get_api_endpoint(
 ) -> str:
   """Returns API endpoint based on mTLS configuration and cert availability.
 
+  Under the "auto" setting the mTLS endpoint is chosen only when a client
+  certificate is actually available, which is how generated client libraries
+  pick an endpoint. Asking for client certificates without having one is not
+  enough on its own: the transport would present no certificate, and the mTLS
+  host would reject the connection.
+
   Args:
       location: The region location.
       default_template: Template for default regional endpoint (e.g.
@@ -80,7 +86,9 @@ def get_api_endpoint(
   """
   use_mtls_endpoint = _mtls_endpoint_setting()
   if (use_mtls_endpoint == MtlsEndpoint.ALWAYS) or (
-      use_mtls_endpoint == MtlsEndpoint.AUTO and use_client_cert_effective()
+      use_mtls_endpoint == MtlsEndpoint.AUTO
+      and use_client_cert_effective()
+      and mtls.has_default_client_cert_source()
   ):
     return mtls_template.format(location=location)
   return default_template.format(location=location)

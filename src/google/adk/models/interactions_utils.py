@@ -39,27 +39,37 @@ from typing import AsyncGenerator
 from typing import TYPE_CHECKING
 
 from google.genai import types
+from google.genai.interactions import ArgumentsDelta
 from google.genai.interactions import AudioContentParam
+from google.genai.interactions import AudioDelta
+from google.genai.interactions import CodeExecutionCallDelta
 from google.genai.interactions import CodeExecutionCallStep
 from google.genai.interactions import CodeExecutionCallStepParam
+from google.genai.interactions import CodeExecutionResultDelta
 from google.genai.interactions import CodeExecutionResultStep
 from google.genai.interactions import CodeExecutionResultStepParam
 from google.genai.interactions import ContentParam
 from google.genai.interactions import DocumentContentParam
+from google.genai.interactions import DocumentDelta
 from google.genai.interactions import ErrorEvent
 from google.genai.interactions import FunctionCallStep
 from google.genai.interactions import FunctionCallStepParam
 from google.genai.interactions import FunctionParam
+from google.genai.interactions import FunctionResultDelta
 from google.genai.interactions import FunctionResultStep
 from google.genai.interactions import FunctionResultStepParam
 from google.genai.interactions import GenerationConfigParam
+from google.genai.interactions import GoogleSearchCallDelta
+from google.genai.interactions import GoogleSearchResultDelta
 from google.genai.interactions import GoogleSearchResultStep
 from google.genai.interactions import ImageContentParam
+from google.genai.interactions import ImageDelta
 from google.genai.interactions import Interaction
 from google.genai.interactions import InteractionCompletedEvent
 from google.genai.interactions import InteractionCreatedEvent
 from google.genai.interactions import InteractionSSEEvent
 from google.genai.interactions import InteractionStatusUpdate
+from google.genai.interactions import MCPServerParam
 from google.genai.interactions import ModelOutputStep
 from google.genai.interactions import ModelOutputStepParam
 from google.genai.interactions import Step
@@ -68,25 +78,57 @@ from google.genai.interactions import StepDeltaData
 from google.genai.interactions import StepParam
 from google.genai.interactions import StepStart
 from google.genai.interactions import StepStop
+from google.genai.interactions import TextAnnotationDelta
+from google.genai.interactions import TextContent
 from google.genai.interactions import TextContentParam
+from google.genai.interactions import TextDelta
+from google.genai.interactions import ThoughtSignatureDelta
 from google.genai.interactions import ThoughtStep
 from google.genai.interactions import ThoughtStepParam
+from google.genai.interactions import ThoughtSummaryDelta
 from google.genai.interactions import ToolParam
 from google.genai.interactions import UnknownStepDeltaData
+from google.genai.interactions import URLCitation
 from google.genai.interactions import UserInputStepParam
 from google.genai.interactions import VideoContentParam
+from google.genai.interactions import VideoDelta
 from pydantic import BaseModel
 from typing_extensions import deprecated
 
 if TYPE_CHECKING:
   from google.genai import Client
 
+  from ..tools._remote_mcp_server import RemoteMcpServer
+
+from ..utils._google_client_headers import merge_tracking_headers
 from .llm_request import LlmRequest
 from .llm_response import LlmResponse
 
 logger = logging.getLogger('google_adk.' + __name__)
 
 _NEW_LINE = '\n'
+
+# Sampling knobs the interactions API applies, but that the installed
+# google-genai release does not declare on its request model. That model
+# discards keys it has no field for while serializing, so these never reach the
+# API and sending them is indistinguishable from never setting them.
+_UNDECLARED_SAMPLING_PARAMS = (
+    'temperature',
+    'top_p',
+    'top_k',
+)
+
+# Sampling knobs the interactions API itself rejects as unknown parameters.
+# No release of the client can carry these, so the caller has to stop setting
+# them or stop using the interactions API.
+_UNSUPPORTED_SAMPLING_PARAMS = (
+    'presence_penalty',
+    'frequency_penalty',
+)
+
+# Sampling knobs already reported as dropped, so each warning below is emitted
+# once per process instead of once per model turn.
+_WARNED_SAMPLING_PARAMS: set[str] = set()
 
 
 def _extract_stream_interaction_id(
@@ -153,7 +195,9 @@ def _wrap_content_param_in_step(
     'convert_part_to_interaction_content is deprecated and will be removed in'
     ' future versions'
 )
-def convert_part_to_interaction_content(part: types.Part) -> dict | None:
+def convert_part_to_interaction_content(
+    part: types.Part,
+) -> dict[str, Any] | None:
   """Convert a types.Part to an interaction content dict.
 
   Args:
@@ -251,12 +295,12 @@ def convert_part_to_interaction_content(part: types.Part) -> dict | None:
   elif part.thought:
     # part.thought is a boolean indicating this is a thought part
     # ThoughtContentParam expects 'signature' (base64 encoded bytes)
-    result: dict[str, Any] = {'type': 'thought'}
+    thought_result: dict[str, Any] = {'type': 'thought'}
     if part.thought_signature is not None:
-      result['signature'] = base64.b64encode(part.thought_signature).decode(
-          'utf-8'
-      )
-    return result
+      thought_result['signature'] = base64.b64encode(
+          part.thought_signature
+      ).decode('utf-8')
+    return thought_result
   elif part.code_execution_result is not None:
     is_error = part.code_execution_result.outcome in (
         types.Outcome.OUTCOME_FAILED,
@@ -521,6 +565,27 @@ def convert_tools_config_to_interactions_format(
   return interaction_tools
 
 
+def _build_mcp_server_param(
+    server: RemoteMcpServer,
+    resolved_headers: dict[str, str],
+) -> MCPServerParam:
+  """Map a RemoteMcpServer + resolved headers to an interactions MCPServerParam.
+
+  Built directly (not via ``types.McpServer``) so ``allowed_tools`` can be
+  carried and the "not supported in Vertex AI" restriction on
+  ``types.Tool.mcp_servers`` is avoided. ``resolved_headers`` is the static
+  headers already merged with any ``header_provider`` output by the caller.
+  """
+  param: MCPServerParam = {'type': 'mcp_server', 'url': server.url}
+  if server.name is not None:
+    param['name'] = server.name
+  if resolved_headers:
+    param['headers'] = resolved_headers
+  if server.allowed_tools is not None:
+    param['allowed_tools'] = [{'tools': list(server.allowed_tools)}]
+  return param
+
+
 def _function_result_to_response(
     result: BaseModel | dict[str, Any] | list[Any] | str,
 ) -> dict[str, Any]:
@@ -603,14 +668,22 @@ def _convert_interaction_step_to_parts(step: Step) -> list[types.Part]:
         types.Part(
             function_response=types.FunctionResponse(
                 id=step.call_id or '',
+                name=step.name,
                 response=_function_result_to_response(step.result),
             )
         )
     ]
   elif isinstance(step, ThoughtStep):
-    # ThoughtContent has a 'signature' attribute, not 'thought'
-    # These are internal model reasoning and typically not exposed as Parts
-    # Skip thought outputs for now
+    # Gemini 3 rejects the follow-up unless this signature is echoed back.
+    # Keep it on a part of its own: a part that also carries text is
+    # re-encoded as a text step, which drops the signature.
+    if step.signature:
+      return [
+          types.Part(
+              thought=True,
+              thought_signature=base64.b64decode(step.signature),
+          )
+      ]
     return []
   elif isinstance(step, CodeExecutionResultStep):
     return [
@@ -654,15 +727,21 @@ def _usage_metadata_from_interaction(
   type carried by ``InteractionCompletedEvent``) also exposes ``usage``, so this
   accepts either interaction type.
   """
-  if not interaction.usage:
+  usage = interaction.usage
+  if not usage:
     return None
+  # Prefer the total the API reports: it also covers thought and tool-use
+  # tokens, which input + output alone undercounts. Fall back to the sum only
+  # when the API omits the total.
+  total_token_count = usage.total_tokens
+  if total_token_count is None:
+    total_token_count = (usage.total_input_tokens or 0) + (
+        usage.total_output_tokens or 0
+    )
   return types.GenerateContentResponseUsageMetadata(
-      prompt_token_count=interaction.usage.total_input_tokens,
-      candidates_token_count=interaction.usage.total_output_tokens,
-      total_token_count=(
-          (interaction.usage.total_input_tokens or 0)
-          + (interaction.usage.total_output_tokens or 0)
-      ),
+      prompt_token_count=usage.total_input_tokens,
+      candidates_token_count=usage.total_output_tokens,
+      total_token_count=total_token_count,
   )
 
 
@@ -738,6 +817,12 @@ class _StreamState:
   """
 
   parts: list[types.Part] = dataclasses.field(default_factory=list)
+  # Maps a function-call step's ``index`` to the part started at that step, so
+  # interleaved calls route their argument deltas and stops to the matching
+  # step instead of always landing on the most recently started call.
+  fc_parts_by_index: dict[int, types.Part] = dataclasses.field(
+      default_factory=dict
+  )
   web_search_queries: list[str] = dataclasses.field(default_factory=list)
   grounding_chunks: list[types.GroundingChunk] = dataclasses.field(
       default_factory=list
@@ -773,7 +858,7 @@ def _partial_grounding_response(
 
 
 def _handle_text(
-    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+    delta: TextDelta, state: _StreamState, interaction_id: str | None
 ) -> LlmResponse | None:
   text = delta.text
   if not text:
@@ -784,7 +869,9 @@ def _handle_text(
 
 
 def _handle_media(
-    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+    delta: ImageDelta | AudioDelta | VideoDelta | DocumentDelta,
+    state: _StreamState,
+    interaction_id: str | None,
 ) -> LlmResponse | None:
   """Handle image/audio/video/document deltas (shared data/uri/mime_type)."""
   data = delta.data
@@ -802,23 +889,55 @@ def _handle_media(
   return _partial_part_response(part, interaction_id)
 
 
+def _resolve_streaming_function_call_part(
+    index: int | None, state: _StreamState
+) -> types.Part | None:
+  """Resolve the function-call part a streaming event applies to.
+
+  Streaming events carry the ``index`` of the step they belong to. When that
+  index maps to a known function-call part we use it directly, so argument
+  deltas and step stops for interleaved calls route to the correct step instead
+  of always landing on the most recently started call. Events without an index
+  (or from builds that don't track one) fall back to the last started function
+  call to preserve the previous behavior.
+  """
+  if index is not None:
+    return state.fc_parts_by_index.get(index)
+  if state.parts and state.parts[-1].function_call:
+    return state.parts[-1]
+  return None
+
+
 def _handle_arguments_delta(
-    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+    delta: ArgumentsDelta,
+    state: _StreamState,
+    interaction_id: str | None,
+    index: int | None = None,
 ) -> LlmResponse | None:
-  if not state.parts:
-    return None
-  last_part = state.parts[-1]
-  if not last_part.function_call:
+  target_part = _resolve_streaming_function_call_part(index, state)
+  if target_part is None or not target_part.function_call:
+    logger.warning(
+        'Interactions streaming converter dropped an arguments delta: step'
+        ' index %r has no function-call part; skipping.',
+        index,
+    )
     return None
   delta_args = delta.arguments
-  if delta_args is None or last_part.function_call.partial_args is None:
+  if delta_args is None:
     return None
-  last_part.function_call.partial_args.append(
+  if target_part.function_call.partial_args is None:
+    logger.warning(
+        'Interactions streaming converter dropped an arguments delta: step'
+        ' index %r was already finalized; skipping.',
+        index,
+    )
+    return None
+  target_part.function_call.partial_args.append(
       types.PartialArg(string_value=delta_args)
   )
   chunk_part = types.Part(
       function_call=types.FunctionCall(
-          name=last_part.function_call.name,
+          name=target_part.function_call.name,
           partial_args=[types.PartialArg(string_value=delta_args)],
       )
   )
@@ -847,12 +966,10 @@ def _handle_unknown_delta(
 
 
 def _handle_thought_summary(
-    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+    delta: ThoughtSummaryDelta, state: _StreamState, interaction_id: str | None
 ) -> LlmResponse | None:
   content = delta.content
-  text = None
-  if content is not None and getattr(content, 'type', None) == 'text':
-    text = content.text
+  text = content.text if isinstance(content, TextContent) else None
   if not text:
     return None
   part = types.Part(text=text, thought=True)
@@ -861,7 +978,9 @@ def _handle_thought_summary(
 
 
 def _handle_thought_signature(
-    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+    delta: ThoughtSignatureDelta,
+    state: _StreamState,
+    interaction_id: str | None,
 ) -> LlmResponse | None:
   signature = delta.signature
   if not signature:
@@ -869,12 +988,19 @@ def _handle_thought_signature(
   for part in reversed(state.parts):
     if part.thought:
       part.thought_signature = base64.b64decode(signature)
-      break
+      return None
+  # A signature often arrives with no preceding thought summary, leaving no
+  # part to attach it to. Keep it on its own part rather than dropping it.
+  state.parts.append(
+      types.Part(thought=True, thought_signature=base64.b64decode(signature))
+  )
   return None
 
 
 def _handle_code_execution_call(
-    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+    delta: CodeExecutionCallDelta,
+    state: _StreamState,
+    interaction_id: str | None,
 ) -> LlmResponse | None:
   args = delta.arguments
   code = args.code if args else None
@@ -893,7 +1019,9 @@ def _handle_code_execution_call(
 
 
 def _handle_code_execution_result(
-    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+    delta: CodeExecutionResultDelta,
+    state: _StreamState,
+    interaction_id: str | None,
 ) -> LlmResponse | None:
   part = types.Part(
       code_execution_result=types.CodeExecutionResult(
@@ -908,7 +1036,9 @@ def _handle_code_execution_result(
 
 
 def _handle_google_search_call(
-    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+    delta: GoogleSearchCallDelta,
+    state: _StreamState,
+    interaction_id: str | None,
 ) -> LlmResponse | None:
   queries = delta.arguments.queries if delta.arguments else None
   if not queries:
@@ -919,7 +1049,9 @@ def _handle_google_search_call(
 
 
 def _handle_google_search_result(
-    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+    delta: GoogleSearchResultDelta,
+    state: _StreamState,
+    interaction_id: str | None,
 ) -> LlmResponse | None:
   rendered = None
   for search_result in delta.result or []:
@@ -935,12 +1067,12 @@ def _handle_google_search_result(
 
 
 def _handle_text_annotation(
-    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+    delta: TextAnnotationDelta, state: _StreamState, interaction_id: str | None
 ) -> LlmResponse | None:
   new_chunks: list[types.GroundingChunk] = []
   new_supports: list[types.GroundingSupport] = []
   for annotation in delta.annotations or []:
-    if getattr(annotation, 'type', None) != 'url_citation':
+    if not isinstance(annotation, URLCitation):
       continue
     chunk_index = len(state.grounding_chunks) + len(new_chunks)
     new_chunks.append(
@@ -971,11 +1103,12 @@ def _handle_text_annotation(
 
 
 def _handle_function_result(
-    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+    delta: FunctionResultDelta, state: _StreamState, interaction_id: str | None
 ) -> LlmResponse | None:
   part = types.Part(
       function_response=types.FunctionResponse(
           id=delta.call_id or '',
+          name=delta.name,
           response=_function_result_to_response(delta.result),
       )
   )
@@ -1031,6 +1164,8 @@ def convert_interaction_event_to_llm_response(
       )
       part = types.Part(function_call=fc)
       state.parts.append(part)
+      if event.index is not None:
+        state.fc_parts_by_index[event.index] = part
 
       return LlmResponse(
           content=types.Content(role='model', parts=[part]),
@@ -1041,36 +1176,39 @@ def convert_interaction_event_to_llm_response(
 
   elif isinstance(event, StepDelta):
     delta = event.delta
-    delta_type = delta.type
 
-    if delta_type == 'text':
+    # Dispatch on the delta class, not on its ``type`` tag, so each handler can
+    # declare the one delta it reads. A renamed class fails at import; a renamed
+    # tag string would leave a branch that silently never matches.
+    if isinstance(delta, TextDelta):
       return _handle_text(delta, state, interaction_id)
-    elif delta_type == 'thought_summary':
+    elif isinstance(delta, ThoughtSummaryDelta):
       return _handle_thought_summary(delta, state, interaction_id)
-    elif delta_type == 'thought_signature':
+    elif isinstance(delta, ThoughtSignatureDelta):
       return _handle_thought_signature(delta, state, interaction_id)
-    elif delta_type in ('image', 'audio', 'video', 'document'):
+    elif isinstance(delta, (ImageDelta, AudioDelta, VideoDelta, DocumentDelta)):
       return _handle_media(delta, state, interaction_id)
-    elif delta_type == 'arguments_delta':
-      return _handle_arguments_delta(delta, state, interaction_id)
-    elif delta_type == 'code_execution_call':
+    elif isinstance(delta, ArgumentsDelta):
+      return _handle_arguments_delta(delta, state, interaction_id, event.index)
+    elif isinstance(delta, CodeExecutionCallDelta):
       return _handle_code_execution_call(delta, state, interaction_id)
-    elif delta_type == 'code_execution_result':
+    elif isinstance(delta, CodeExecutionResultDelta):
       return _handle_code_execution_result(delta, state, interaction_id)
-    elif delta_type == 'google_search_call':
+    elif isinstance(delta, GoogleSearchCallDelta):
       return _handle_google_search_call(delta, state, interaction_id)
-    elif delta_type == 'google_search_result':
+    elif isinstance(delta, GoogleSearchResultDelta):
       return _handle_google_search_result(delta, state, interaction_id)
-    elif delta_type == 'text_annotation_delta':
+    elif isinstance(delta, TextAnnotationDelta):
       return _handle_text_annotation(delta, state, interaction_id)
-    elif delta_type == 'function_result':
+    elif isinstance(delta, FunctionResultDelta):
       return _handle_function_result(delta, state, interaction_id)
     else:
       return _handle_unknown_delta(delta, state, interaction_id)
 
   elif isinstance(event, StepStop):
-    if state.parts and state.parts[-1].function_call:
-      fc = state.parts[-1].function_call
+    target_part = _resolve_streaming_function_call_part(event.index, state)
+    if target_part is not None and target_part.function_call:
+      fc = target_part.function_call
       if fc.partial_args is not None:
         arg_str = ''.join(pa.string_value or '' for pa in fc.partial_args)
 
@@ -1144,10 +1282,27 @@ def convert_interaction_event_to_llm_response(
   return None
 
 
+def _unwarned_params_set_on(
+    config: types.GenerateContentConfig, names: tuple[str, ...]
+) -> list[str]:
+  """Return the names the caller set that have not been warned about yet."""
+  return [
+      name
+      for name in names
+      if getattr(config, name) is not None
+      and name not in _WARNED_SAMPLING_PARAMS
+  ]
+
+
 def build_generation_config(
     config: types.GenerateContentConfig,
 ) -> GenerationConfigParam:
   """Build generation config dict for interactions API.
+
+  Only the parameters that reach the interactions API are carried over. A
+  sampling parameter that would be discarded before the request is sent is
+  logged as ignored, once per parameter per process, naming whether the client
+  or the API is the one that cannot carry it.
 
   Args:
     config: The GenerateContentConfig to extract parameters from.
@@ -1156,20 +1311,33 @@ def build_generation_config(
     A dictionary containing generation configuration parameters.
   """
   generation_config: GenerationConfigParam = {}
-  if config.temperature is not None:
-    generation_config['temperature'] = config.temperature
-  if config.top_p is not None:
-    generation_config['top_p'] = config.top_p
-  if config.top_k is not None:
-    generation_config['top_k'] = config.top_k
   if config.max_output_tokens is not None:
     generation_config['max_output_tokens'] = config.max_output_tokens
   if config.stop_sequences:
     generation_config['stop_sequences'] = config.stop_sequences
-  if config.presence_penalty is not None:
-    generation_config['presence_penalty'] = config.presence_penalty
-  if config.frequency_penalty is not None:
-    generation_config['frequency_penalty'] = config.frequency_penalty
+  if config.seed is not None:
+    generation_config['seed'] = config.seed
+
+  undeclared = _unwarned_params_set_on(config, _UNDECLARED_SAMPLING_PARAMS)
+  if undeclared:
+    _WARNED_SAMPLING_PARAMS.update(undeclared)
+    logger.warning(
+        'The installed google-genai has no field for %s on the interactions'
+        ' request, so they are dropped before the request is sent even though'
+        ' the API itself applies them. Applying them needs a google-genai'
+        ' release that declares those fields.',
+        ', '.join(undeclared),
+    )
+
+  unsupported = _unwarned_params_set_on(config, _UNSUPPORTED_SAMPLING_PARAMS)
+  if unsupported:
+    _WARNED_SAMPLING_PARAMS.update(unsupported)
+    logger.warning(
+        'The interactions API has no equivalent for %s, so the model decodes'
+        ' with its own defaults instead. Unset them, or turn off'
+        ' use_interactions_api to have them applied.',
+        ', '.join(unsupported),
+    )
   return generation_config
 
 
@@ -1434,15 +1602,26 @@ def _get_latest_user_contents(
 
   # Find the latest continuous user messages from the end
   latest_user_contents: list[types.Content] = []
-  for i in range(len(contents) - 1, -1, -1):
-    content = contents[i]
-    if content.role == 'user':
-      latest_user_contents.append(content)
-    else:
-      # Stop when we hit a non-user message
-      break
+  index = len(contents) - 1
+  while index >= 0 and contents[index].role == 'user':
+    latest_user_contents.append(contents[index])
+    index -= 1
 
   latest_user_contents.reverse()
+
+  # The thought signature Gemini model needs back sits on the preceding
+  # model turn, outside the user-only window above. Carry just those parts
+  # across; the rest of that turn is already server-side under
+  # previous_interaction_id.
+  if index >= 0:
+    signature_parts = [
+        part for part in contents[index].parts or [] if part.thought_signature
+    ]
+    if signature_parts:
+      latest_user_contents.insert(
+          0, types.Content(role='model', parts=signature_parts)
+      )
+
   return latest_user_contents
 
 
@@ -1451,6 +1630,7 @@ async def _create_interactions(
     *,
     create_kwargs: dict[str, Any],
     stream: bool,
+    extra_headers: dict[str, str] | None = None,
 ) -> AsyncGenerator[LlmResponse, None]:
   """Issue ``interactions.create`` and convert the response(s) to LlmResponses.
 
@@ -1461,8 +1641,12 @@ async def _create_interactions(
   Args:
     api_client: The Google GenAI client.
     create_kwargs: Keyword arguments passed verbatim to
-      ``api_client.aio.interactions.create`` (excluding ``stream``).
+      ``api_client.aio.interactions.create`` (excluding ``stream`` and
+      ``extra_headers``).
     stream: Whether to stream the response.
+    extra_headers: Optional per-request HTTP headers forwarded to
+      ``interactions.create`` (e.g. ADK tracking headers merged with any
+      user-supplied headers). ``None`` sends no extra headers.
 
   Yields:
     LlmResponse objects converted from interaction responses.
@@ -1472,7 +1656,7 @@ async def _create_interactions(
 
   if stream:
     responses = await api_client.aio.interactions.create(
-        **create_kwargs, stream=True
+        **create_kwargs, stream=True, extra_headers=extra_headers
     )
     state = _StreamState()
     async for event in responses:
@@ -1491,7 +1675,7 @@ async def _create_interactions(
         yield llm_response
   else:
     interaction = await api_client.aio.interactions.create(
-        **create_kwargs, stream=False
+        **create_kwargs, stream=False, extra_headers=extra_headers
     )
     logger.info('Interaction response received.')
     logger.debug(build_interactions_response_log(interaction))
@@ -1572,7 +1756,17 @@ async def generate_content_via_interactions(
       'previous_interaction_id': previous_interaction_id,
   }
 
+  # Re-merge tracking headers into any request-time headers (idempotent) so the
+  # interactions path forwards user-supplied headers instead of dropping them.
+  config_headers = None
+  if llm_request.config and llm_request.config.http_options:
+    config_headers = llm_request.config.http_options.headers
+  extra_headers = merge_tracking_headers(config_headers)
+
   async for llm_response in _create_interactions(
-      api_client, create_kwargs=create_kwargs, stream=stream
+      api_client,
+      create_kwargs=create_kwargs,
+      stream=stream,
+      extra_headers=extra_headers,
   ):
     yield llm_response

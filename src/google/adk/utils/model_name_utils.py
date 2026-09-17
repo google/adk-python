@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 
 from packaging.version import InvalidVersion
 from packaging.version import Version
+from typing_extensions import deprecated
 
 from .env_utils import is_env_enabled
 
@@ -106,6 +107,10 @@ def is_gemini_model(model_string: Optional[str]) -> bool:
   return re.match(r'^gemini-', model_name) is not None
 
 
+@deprecated(
+    'ADK no longer distinguishes Gemini versions internally, because Gemini'
+    ' 1.x is fully deprecated. Use is_gemini_model instead.'
+)
 def is_gemini_1_model(model_string: Optional[str]) -> bool:
   """Check if the model is a Gemini 1.x model using regex patterns.
 
@@ -122,6 +127,10 @@ def is_gemini_1_model(model_string: Optional[str]) -> bool:
   return re.match(r'^gemini-1\.\d+', model_name) is not None
 
 
+@deprecated(
+    'ADK no longer distinguishes Gemini versions internally, because Gemini'
+    ' 1.x is fully deprecated. Use is_gemini_model instead.'
+)
 def is_gemini_eap_or_2_or_above(model_string: Optional[str]) -> bool:
   """Check if the model is a Gemini EAP or a Gemini 2.0+ model.
 
@@ -166,7 +175,8 @@ def _is_gemini_eap_model(model_string: Optional[str]) -> bool:
   followed by a numeric suffix, e.g. ``gemini-flash-early-exp`` or
   ``gemini-flash-early-exp3``. ``<variant>`` is one or more
   alphanumeric/underscore segments separated by ``-`` (e.g. ``flash``,
-  ``pro``, ``flash-lite``).
+  ``pro``, ``flash-lite``), and is optional: variant-less EAP ids such as
+  ``gemini-early-exp`` are also matched.
 
   Args:
     model_string: Either a simple model name or path-based model name.
@@ -179,7 +189,9 @@ def _is_gemini_eap_model(model_string: Optional[str]) -> bool:
 
   model_name = extract_model_name(model_string)
   return (
-      re.match(r'^gemini-[a-z0-9_]+(?:-[a-z0-9_]+)*-early-exp\d*$', model_name)
+      re.match(
+          r'^gemini-(?:[a-z0-9_]+(?:-[a-z0-9_]+)*-)?early-exp\d*$', model_name
+      )
       is not None
   )
 

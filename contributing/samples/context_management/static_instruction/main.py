@@ -38,7 +38,6 @@ async def call_agent_async(
     runner, user_id, session_id, prompt, state_delta=None
 ):
   """Call the agent asynchronously with state delta support."""
-  from google.adk.agents.run_config import RunConfig
   from google.genai import types
 
   content = types.Content(
@@ -51,7 +50,6 @@ async def call_agent_async(
       session_id=session_id,
       new_message=content,
       state_delta=state_delta,
-      run_config=RunConfig(save_input_blobs_as_artifacts=False),
   ):
     if event.content and event.content.parts:
       if text := "".join(part.text or "" for part in event.content.parts):

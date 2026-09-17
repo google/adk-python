@@ -29,7 +29,9 @@ from typing_extensions import override
 from . import envs
 from ...agents.base_agent import BaseAgent
 from ...apps.app import App
+from ...workflow import BaseNode
 from .agent_loader import AgentLoader
+from .agent_loader import is_single_agent_directory
 from .agent_loader import SPECIAL_AGENTS_DIR
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -41,23 +43,7 @@ class NestedAgentLoader(AgentLoader):
   @staticmethod
   def _is_valid_agent_dir(path: Path) -> bool:
     """Returns True if the directory is a valid agent directory."""
-    if not path.is_dir():
-      return False
-    if (path / "agent.py").is_file():
-      return True
-    if (path / "root_agent.yaml").is_file():
-      return True
-
-    init_py = path / "__init__.py"
-    if init_py.is_file():
-      try:
-        content = init_py.read_text(encoding="utf-8")
-        if "root_agent" in content:
-          return True
-      except Exception as e:
-        logger.warning("Error reading %s: %s", init_py, e)
-
-    return False
+    return is_single_agent_directory(path)
 
   def _has_nested_agents(self, agents_path: Path) -> bool:
     """Returns True if there are any nested agents within the directory (up to max depth)."""
@@ -84,22 +70,26 @@ class NestedAgentLoader(AgentLoader):
 
   @override
   def _init_agent_mode(self, agents_path: Path) -> None:
-    if agents_path.is_file():
+    try:
+      is_file = agents_path.is_file()
+    except Exception:
+      is_file = False
+
+    if is_file:
       # Explicit file-based single-agent mode
       self._is_single_agent = True
       self._single_agent_name = agents_path.stem
       self.agents_dir = str(agents_path.parent)
+    elif self._is_valid_agent_dir(agents_path):
+      # Single-agent directory mode: treat as single agent even if it has subfolders.
+      self._is_single_agent = True
+      self._single_agent_name = agents_path.name
+      self.agents_dir = str(agents_path.parent)
     else:
-      # It is a directory. Check if it contains any nested agents.
-      if self._has_nested_agents(agents_path):
-        # Force multi-agent (nested) mode even if the root directory itself
-        # contains an agent.py, to allow discovering the nested agents.
-        self._is_single_agent = False
-        self._single_agent_name = None
-        self.agents_dir = str(agents_path)
-      else:
-        # Fall back to parent class behavior
-        super()._init_agent_mode(agents_path)
+      # It is a multi-agent directory containing sub-directories with agents.
+      self._is_single_agent = False
+      self._single_agent_name = None
+      self.agents_dir = str(agents_path)
 
   @override
   def list_agents(self) -> list[str]:
@@ -107,7 +97,10 @@ class NestedAgentLoader(AgentLoader):
     if self._is_single_agent:
       return [self._single_agent_name]
     base_path = Path(self.agents_dir)
-    if not base_path.exists() or not base_path.is_dir():
+    try:
+      if not base_path.exists() or not base_path.is_dir():
+        return []
+    except Exception:
       return []
 
     apps = []
@@ -137,6 +130,11 @@ class NestedAgentLoader(AgentLoader):
   def _validate_agent_name(self, full_agent_name: str) -> None:
     """Validate agent name allowing dot-separated paths."""
     if full_agent_name.startswith("__"):
+      if not self._allow_special_agents:
+        raise PermissionError(
+            f"Loading special internal agent {full_agent_name!r} is disabled in"
+            " this loader configuration."
+        )
       agent_relative_path = full_agent_name[2:]
       check_dir = os.path.abspath(SPECIAL_AGENTS_DIR)
     else:
@@ -188,6 +186,7 @@ class NestedAgentLoader(AgentLoader):
   @override
   def _perform_load(self, agent_path: str) -> Union[BaseAgent, App]:
     """Internal logic to load an agent allowing slash-separated paths."""
+    self._root_agent_type_mismatches = []
     self._validate_agent_name(agent_path)
     # Determine the directory to use for loading
     if agent_path.startswith("__"):
@@ -246,6 +245,26 @@ class NestedAgentLoader(AgentLoader):
       )
       return root_agent
 
+    # A root_agent was found but had an unusable type: surface that
+    # diagnosis instead of the generic not-found guidance.
+    if self._root_agent_type_mismatches:
+      details = "\n".join(
+          f"  - '{location}.root_agent' is of type '{type_name}'"
+          for location, type_name, _ in self._root_agent_type_mismatches
+      )
+      app_hint = ""
+      if any(is_app for _, _, is_app in self._root_agent_type_mismatches):
+        app_hint = (
+            "\n\nHINT: To serve an App, expose it under the name 'app'"
+            " instead of 'root_agent'."
+        )
+      raise ValueError(
+          f"A 'root_agent' was found for '{agent_path}' but it is not a"
+          " BaseAgent (or workflow node) instance:\n"
+          f"{details}\n\nExpose a BaseAgent instance named"
+          f" 'root_agent'.{app_hint}"
+      )
+
     hint = ""
     agents_path = Path(agents_dir)
     if (
@@ -291,7 +310,7 @@ class NestedAgentLoader(AgentLoader):
     raise ValueError(f"Could not determine agent type for '{agent_name}'.")
 
   @override
-  def remove_agent_from_cache(self, agent_name: str):
+  def remove_agent_from_cache(self, agent_name: str) -> None:
     agent_dot_path = agent_name.replace("/", ".")
     keys_to_delete = [
         module_name
@@ -332,7 +351,7 @@ class NestedAgentLoader(AgentLoader):
       candidate = Path(agents_dir, expected_full_app_name.replace(".", "/"))
       origin_path = candidate if candidate.exists() else Path(agents_dir)
 
-    def _attach_metadata(target: Union[BaseAgent, App]) -> None:
+    def _attach_metadata(target: Union[BaseNode, App]) -> None:
       setattr(target, "_adk_origin_app_name", expected_full_app_name)
       setattr(target, "_adk_origin_path", origin_path)
 

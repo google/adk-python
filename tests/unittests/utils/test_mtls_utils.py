@@ -89,10 +89,14 @@ class TestMtlsUtils:
     assert endpoint == _DEFAULT_TEMPLATE.format(location=_LOCATION)
     mock_use_client_cert.assert_not_called()
 
+  @patch.object(mtls, "has_default_client_cert_source", autospec=True)
   @patch.object(_mtls_utils, "use_client_cert_effective", autospec=True)
   @patch.dict("os.environ", {"GOOGLE_API_USE_MTLS_ENDPOINT": "auto"})
-  def test_get_api_endpoint_auto_with_cert(self, mock_use_client_cert):
+  def test_get_api_endpoint_auto_with_cert(
+      self, mock_use_client_cert, mock_has_cert_source
+  ):
     mock_use_client_cert.return_value = True
+    mock_has_cert_source.return_value = True
     endpoint = _mtls_utils.get_api_endpoint(
         _LOCATION, _DEFAULT_TEMPLATE, _MTLS_TEMPLATE
     )
@@ -109,12 +113,40 @@ class TestMtlsUtils:
     assert endpoint == _DEFAULT_TEMPLATE.format(location=_LOCATION)
     mock_use_client_cert.assert_called_once()
 
+  @patch.object(mtls, "has_default_client_cert_source", autospec=True)
+  @patch.object(_mtls_utils, "use_client_cert_effective", autospec=True)
+  @patch.dict("os.environ", {"GOOGLE_API_USE_MTLS_ENDPOINT": "auto"})
+  def test_get_api_endpoint_auto_enabled_without_cert_source(
+      self, mock_use_client_cert, mock_has_cert_source
+  ):
+    """Client certs enabled but none available must not select the mTLS host."""
+    mock_use_client_cert.return_value = True
+    mock_has_cert_source.return_value = False
+    endpoint = _mtls_utils.get_api_endpoint(
+        _LOCATION, _DEFAULT_TEMPLATE, _MTLS_TEMPLATE
+    )
+    assert endpoint == _DEFAULT_TEMPLATE.format(location=_LOCATION)
+
+  @patch.object(mtls, "has_default_client_cert_source", autospec=True)
+  @patch.dict("os.environ", {"GOOGLE_API_USE_MTLS_ENDPOINT": "always"})
+  def test_get_api_endpoint_always_ignores_cert_availability(
+      self, mock_has_cert_source
+  ):
+    mock_has_cert_source.return_value = False
+    endpoint = _mtls_utils.get_api_endpoint(
+        _LOCATION, _DEFAULT_TEMPLATE, _MTLS_TEMPLATE
+    )
+    assert endpoint == _MTLS_TEMPLATE.format(location=_LOCATION)
+    mock_has_cert_source.assert_not_called()
+
+  @patch.object(mtls, "has_default_client_cert_source", autospec=True)
   @patch.object(_mtls_utils, "use_client_cert_effective", autospec=True)
   @patch.dict("os.environ", {"GOOGLE_API_USE_MTLS_ENDPOINT": "invalid_value"})
   def test_get_api_endpoint_invalid_fallback_to_auto(
-      self, mock_use_client_cert
+      self, mock_use_client_cert, mock_has_cert_source
   ):
     mock_use_client_cert.return_value = True
+    mock_has_cert_source.return_value = True
     endpoint = _mtls_utils.get_api_endpoint(
         _LOCATION, _DEFAULT_TEMPLATE, _MTLS_TEMPLATE
     )

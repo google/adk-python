@@ -28,14 +28,14 @@ The server should be accessible at `http://localhost:3000/sse`.
 ## Running the Demo
 
 ```bash
-adk web contributing/samples
+adk web contributing/samples/mcp
 ```
 
 Then select **mcp_in_agent_tool_remote** from the list and interact with the agent.
 
 ## Try These Prompts
 
-This demo uses **Gemini 2.5 Flash** as the model. Try these prompts:
+The agents do not set a model, so they use the ADK default. Try these prompts:
 
 1. **Check available tools:**
 

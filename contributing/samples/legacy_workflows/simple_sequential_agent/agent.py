@@ -72,7 +72,6 @@ prime_agent = LlmAgent(
       You are responsible for checking whether numbers are prime.
       When asked to check primes, you must call the check_prime tool with a list of integers.
       Never attempt to determine prime numbers manually.
-      Return the prime number results to the root agent.
     """,
     tools=[check_prime],
     generate_content_config=types.GenerateContentConfig(

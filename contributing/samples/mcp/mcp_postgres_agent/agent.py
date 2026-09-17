@@ -17,7 +17,7 @@ import os
 from dotenv import load_dotenv
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.tools.mcp_tool import StdioConnectionParams
-from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
+from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.genai.types import GenerateContentConfig
 from mcp import StdioServerParameters
 
@@ -38,7 +38,7 @@ root_agent = LlmAgent(
         "the PostgreSQL database. Ask clarifying questions when unsure."
     ),
     tools=[
-        MCPToolset(
+        McpToolset(
             connection_params=StdioConnectionParams(
                 server_params=StdioServerParameters(
                     command="uvx",

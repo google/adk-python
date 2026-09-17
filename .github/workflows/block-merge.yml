@@ -19,6 +19,9 @@ on:
     branches: [main]
     types: [opened, reopened, synchronize]
 
+permissions:
+  contents: read
+
 jobs:
   block-merge:
     if: github.repository == 'google/adk-python'

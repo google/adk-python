@@ -298,66 +298,6 @@ class TestVertexAiSearchTool:
     assert 'data_store_specs=1 spec(s): [spec_store]' in log_message
 
   @pytest.mark.asyncio
-  async def test_process_llm_request_with_gemini_1_and_other_tools_raises_error(
-      self,
-  ):
-    """Test that Gemini 1.x with other tools raises ValueError."""
-    tool = VertexAiSearchTool(data_store_id='test_data_store')
-    tool_context = await _create_tool_context()
-
-    existing_tool = types.Tool(
-        function_declarations=[
-            types.FunctionDeclaration(name='test_function', description='test')
-        ]
-    )
-
-    llm_request = LlmRequest(
-        model='gemini-1.5-flash',
-        config=types.GenerateContentConfig(tools=[existing_tool]),
-    )
-
-    with pytest.raises(
-        ValueError,
-        match=(
-            'Vertex AI search tool cannot be used with other tools in'
-            ' Gemini 1.x'
-        ),
-    ):
-      await tool.process_llm_request(
-          tool_context=tool_context, llm_request=llm_request
-      )
-
-  @pytest.mark.asyncio
-  async def test_process_llm_request_with_path_based_gemini_1_and_other_tools_raises_error(
-      self,
-  ):
-    """Test that path-based Gemini 1.x with other tools raises ValueError."""
-    tool = VertexAiSearchTool(data_store_id='test_data_store')
-    tool_context = await _create_tool_context()
-
-    existing_tool = types.Tool(
-        function_declarations=[
-            types.FunctionDeclaration(name='test_function', description='test')
-        ]
-    )
-
-    llm_request = LlmRequest(
-        model='projects/265104255505/locations/us-central1/publishers/google/models/gemini-1.5-pro-preview',
-        config=types.GenerateContentConfig(tools=[existing_tool]),
-    )
-
-    with pytest.raises(
-        ValueError,
-        match=(
-            'Vertex AI search tool cannot be used with other tools in'
-            ' Gemini 1.x'
-        ),
-    ):
-      await tool.process_llm_request(
-          tool_context=tool_context, llm_request=llm_request
-      )
-
-  @pytest.mark.asyncio
   async def test_process_llm_request_with_non_gemini_model_raises_error(self):
     """Test that non-Gemini model raises ValueError."""
     tool = VertexAiSearchTool(data_store_id='test_data_store')

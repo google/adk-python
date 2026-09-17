@@ -110,6 +110,7 @@ class TestConnectionsClient:
               "Content-Type": "application/json",
               "Authorization": f"Bearer {mock_credentials.token}",
           },
+          timeout=30,
       )
 
   def test_execute_api_call_credential_error(

@@ -56,9 +56,9 @@ def _make_litellm(model: str):
         ("gemini-2.5-flash", "1", True),
         ("gemini-2.5-flash", "0", False),
         ("gemini-2.5-flash", None, False),
-        ("gemini-1.5-pro", "1", False),
         ("gemini-1.5-pro", "0", False),
         ("gemini-1.5-pro", None, False),
+        ("gemini-early-exp", "1", True),
     ],
 )
 def test_can_use_output_schema_with_tools(

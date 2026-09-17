@@ -37,23 +37,26 @@ from collections.abc import Sequence
 import json
 import logging
 import sys
+from typing import Final
 from typing import Literal
 from typing import Protocol
 from typing import runtime_checkable
 from typing import TYPE_CHECKING
 from typing import TypedDict
 
+from google.adk.dependencies._mcp_name import SDK_MODULE_NAME as _MCP_SDK_MODULE_NAME
 from google.adk.telemetry._token_usage import TokenUsage
 from google.genai import types
-from google.genai.models import t as transformers
 from opentelemetry._logs import Logger
 from opentelemetry._logs import LogRecord
+from opentelemetry.trace import set_span_in_context
 from opentelemetry.trace import Span
+from opentelemetry.util.types import AnyValue
 from opentelemetry.util.types import AttributeValue
 
 if TYPE_CHECKING:
-  from mcp import ClientSession as McpClientSession  # noqa: F401
-  from mcp import Tool as McpTool
+  from ..dependencies._mcp import ClientSession as McpClientSession  # noqa: F401
+  from ..dependencies._mcp import Tool as McpTool
 
   from ..models.llm_request import LlmRequest
   from ..models.llm_response import LlmResponse
@@ -64,6 +67,7 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_SYSTEM_INSTRUCTIONS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_DEFINITIONS
 
+from ._finish_reason import is_reported_finish_reason
 from .context import TelemetryConfig
 
 # Use the import symbol once the minimum OpenTelemetry SDK version is updated to 1.40.0
@@ -78,7 +82,7 @@ OTEL_SEMCONV_STABILITY_OPT_IN = 'OTEL_SEMCONV_STABILITY_OPT_IN'
 
 GEN_AI_USAGE_REASONING_OUTPUT_TOKENS = 'gen_ai.usage.reasoning.output_tokens'
 
-FUNCTION_TOOL_DEFINITION_TYPE = 'function'
+FUNCTION_TOOL_DEFINITION_TYPE: Final = 'function'
 
 COMPLETION_DETAILS_EVENT_NAME = 'gen_ai.client.inference.operation.details'
 
@@ -105,13 +109,13 @@ class FileData(TypedDict):
 class ToolCall(TypedDict):
   id: str | None
   name: str
-  arguments: Mapping[str, object] | None
+  arguments: Mapping[str, AnyValue] | None
   type: Literal['tool_call']
 
 
 class ToolCallResponse(TypedDict):
   id: str | None
-  response: Mapping[str, object] | None
+  response: Mapping[str, AnyValue] | None
   type: Literal['tool_call_response']
 
 
@@ -132,7 +136,7 @@ class OutputMessage(TypedDict):
 class FunctionToolDefinition(TypedDict):
   name: str
   description: str | None
-  parameters: Mapping[str, object] | None
+  parameters: Mapping[str, AnyValue] | None
   type: Literal['function']
 
 
@@ -172,6 +176,53 @@ class _SupportsToDict(Protocol):
 # ---------------------------------------------------------------------------
 
 
+def _to_any_value(value: object, *, seen: set[int] | None = None) -> AnyValue:
+  """Normalizes a dynamic value to OpenTelemetry's recursive log type."""
+  if value is None or isinstance(value, (str, bool, int, float, bytes)):
+    return value
+  if isinstance(value, bytearray):
+    return bytes(value)
+
+  seen = set() if seen is None else seen
+  value_id = id(value)
+  if value_id in seen:
+    return '<not serializable>'
+  next_seen = seen | {value_id}
+
+  if isinstance(value, Mapping):
+    return {
+        str(key): _to_any_value(item, seen=next_seen)
+        for key, item in value.items()
+    }
+  if isinstance(value, Sequence) and not isinstance(
+      value, (str, bytes, bytearray)
+  ):
+    return [_to_any_value(item, seen=next_seen) for item in value]
+  if isinstance(value, _SupportsToDict):
+    return _to_any_value(value.to_dict(), seen=next_seen)
+  if isinstance(value, _SupportsModelDump):
+    return _to_any_value(value.model_dump(exclude_none=True), seen=next_seen)
+  return '<not serializable>'
+
+
+def _to_optional_mapping(
+    value: object | None,
+) -> Mapping[str, AnyValue] | None:
+  """Normalizes optional tool arguments and responses to an object."""
+  if value is None:
+    return None
+  normalized = _to_any_value(value)
+  if isinstance(normalized, Mapping):
+    return normalized
+  return {'value': normalized}
+
+
+def _string_attribute(value: object, name: str) -> str | None:
+  """Reads a string attribute from a duck-typed external object."""
+  attribute = getattr(value, name, None)
+  return attribute if isinstance(attribute, str) else None
+
+
 def _safe_json_serialize_no_whitespaces(obj: object) -> str:
   """Convert any Python object to a JSON-serializable type or string.
 
@@ -203,21 +254,17 @@ def _to_role(role: str | None) -> str:
 
 
 def _to_finish_reason(finish_reason: types.FinishReason | None) -> str:
-  if finish_reason is None:
-    return ''
-  if (
-      # Mapping unspecified and other to error,
-      # as JSON schema for finish_reason does not support them.
-      finish_reason is types.FinishReason.FINISH_REASON_UNSPECIFIED
-      or finish_reason is types.FinishReason.OTHER
-  ):
-    return 'error'
-  if finish_reason is types.FinishReason.STOP:
-    return 'stop'
-  if finish_reason is types.FinishReason.MAX_TOKENS:
-    return 'length'
-
-  return finish_reason.name.lower()
+  if is_reported_finish_reason(finish_reason):
+    if finish_reason is types.FinishReason.OTHER:
+      # Mapped to error, as the JSON schema for finish_reason does not
+      # support it.
+      return 'error'
+    if finish_reason is types.FinishReason.STOP:
+      return 'stop'
+    if finish_reason is types.FinishReason.MAX_TOKENS:
+      return 'length'
+    return finish_reason.name.lower()
+  return ''
 
 
 def _to_part(part: types.Part, idx: int) -> Part | None:
@@ -232,15 +279,17 @@ def _to_part(part: types.Part, idx: int) -> Part | None:
   if (text := part.text) is not None:
     return Text(content=text, type='text')
 
-  if data := part.inline_data:
+  if inline_data := part.inline_data:
     return Blob(
-        mime_type=data.mime_type or '', data=data.data or b'', type='blob'
+        mime_type=inline_data.mime_type or '',
+        data=inline_data.data or b'',
+        type='blob',
     )
 
-  if data := part.file_data:
+  if file_data := part.file_data:
     return FileData(
-        mime_type=data.mime_type or '',
-        uri=data.file_uri or '',
+        mime_type=file_data.mime_type or '',
+        uri=file_data.file_uri or '',
         type='file_data',
     )
 
@@ -248,14 +297,14 @@ def _to_part(part: types.Part, idx: int) -> Part | None:
     return ToolCall(
         id=call.id or tool_call_id_fallback(call.name),
         name=call.name or '',
-        arguments=call.args,
+        arguments=_to_optional_mapping(call.args),
         type='tool_call',
     )
 
   if response := part.function_response:
     return ToolCallResponse(
         id=response.id or tool_call_id_fallback(response.name),
-        response=response.response,
+        response=_to_optional_mapping(response.response),
         type='tool_call_response',
     )
 
@@ -294,7 +343,9 @@ def _to_system_instructions(
   if not config.system_instruction:
     return []
 
-  transformed_contents = transformers.t_contents(config.system_instruction)
+  from google.genai import _transformers  # pylint: disable=g-import-not-at-top
+
+  transformed_contents = _transformers.t_contents(config.system_instruction)
   if not transformed_contents:
     return []
 
@@ -306,33 +357,22 @@ def _to_system_instructions(
   return [part for part in parts if part is not None]
 
 
-def _clean_parameters(params: object) -> Mapping[str, object] | None:
+def _clean_parameters(params: object) -> Mapping[str, AnyValue] | None:
   """Converts parameter objects into plain dicts."""
   if params is None:
     return None
-  if isinstance(params, dict):
-    return params
-  if isinstance(params, _SupportsToDict):
-    return params.to_dict()
-  if isinstance(params, _SupportsModelDump):
-    return params.model_dump(exclude_none=True)
+  normalized = _to_any_value(params)
+  if isinstance(normalized, Mapping):
+    return normalized
 
-  try:
-    # Check if it's already a standard JSON type.
-    json.dumps(params)
-    return params  # type: ignore[return-value]
-  except (TypeError, ValueError):
-    return {
-        'type': 'object',
-        'properties': {
-            'serialization_error': {
-                'type': 'string',
-                'description': (
-                    f'Failed to serialize parameters: {type(params).__name__}'
-                ),
-            }
-        },
-    }
+  serialization_error: dict[str, AnyValue] = {
+      'type': 'string',
+      'description': (
+          f'Expected a mapping for parameters, got {type(params).__name__}'
+      ),
+  }
+  properties: dict[str, AnyValue] = {'serialization_error': serialization_error}
+  return {'type': 'object', 'properties': properties}
 
 
 def _model_dump_to_tool_definition(
@@ -340,15 +380,27 @@ def _model_dump_to_tool_definition(
 ) -> FunctionToolDefinition:
   model_dump = tool.model_dump(exclude_none=True)
 
+  dumped_name = model_dump.get('name')
   name = (
-      model_dump.get('name')
-      or getattr(tool, 'name', None)
-      or type(tool).__name__
+      dumped_name
+      if isinstance(dumped_name, str) and dumped_name
+      else _string_attribute(tool, 'name') or type(tool).__name__
   )
-  description = model_dump.get('description') or getattr(
-      tool, 'description', None
+  dumped_description = model_dump.get('description')
+  description = (
+      dumped_description
+      if isinstance(dumped_description, str)
+      else _string_attribute(tool, 'description')
   )
-  parameters = model_dump.get('parameters') or model_dump.get('inputSchema')
+  # MCP SDK 1.x names the schema field `inputSchema` and 2.x names it
+  # `input_schema`, so a dumped MCP tool spells it either way. Missing the
+  # spelling in use costs no error and no log line -- the tool is still
+  # reported, just with no parameters.
+  parameters = _clean_parameters(
+      model_dump.get('parameters')
+      or model_dump.get('inputSchema')
+      or model_dump.get('input_schema')
+  )
   return FunctionToolDefinition(
       name=name,
       description=description,
@@ -361,13 +413,11 @@ def _tool_to_tool_definition(tool: types.Tool) -> list[ToolDefinition]:
   definitions: list[ToolDefinition] = []
   if tool.function_declarations:
     for fd in tool.function_declarations:
-      parameters = getattr(fd, 'parameters', None) or getattr(
-          fd, 'parameters_json_schema', None
-      )
+      parameters = fd.parameters or fd.parameters_json_schema
       definitions.append(
           FunctionToolDefinition(
-              name=getattr(fd, 'name', type(fd).__name__),
-              description=getattr(fd, 'description', None),
+              name=fd.name or type(fd).__name__,
+              description=fd.description,
               parameters=_clean_parameters(parameters),
               type=FUNCTION_TOOL_DEFINITION_TYPE,
           )
@@ -398,7 +448,7 @@ def _tool_definition_from_callable_tool(
 ) -> FunctionToolDefinition:
   doc = getattr(tool, '__doc__', '') or ''
   return FunctionToolDefinition(
-      name=getattr(tool, '__name__', type(tool).__name__),
+      name=_string_attribute(tool, '__name__') or type(tool).__name__,
       description=doc.strip(),
       parameters=None,
       type=FUNCTION_TOOL_DEFINITION_TYPE,
@@ -410,15 +460,18 @@ def _tool_definition_from_mcp_tool(tool: McpTool) -> FunctionToolDefinition:
     return _model_dump_to_tool_definition(tool)
 
   return FunctionToolDefinition(
-      name=getattr(tool, 'name', type(tool).__name__),
-      description=getattr(tool, 'description', None),
-      parameters=getattr(tool, 'input_schema', None),
+      name=_string_attribute(tool, 'name') or type(tool).__name__,
+      description=_string_attribute(tool, 'description'),
+      parameters=_clean_parameters(
+          getattr(tool, 'input_schema', None)
+          or getattr(tool, 'inputSchema', None)
+      ),
       type=FUNCTION_TOOL_DEFINITION_TYPE,
   )
 
 
 def _to_tool_definitions(
-    tool: types.ToolUnionDict,
+    tool: types.ToolUnion,
 ) -> list[ToolDefinition]:
   """Synchronously converts a single tool entry into ``ToolDefinition``s.
 
@@ -436,9 +489,11 @@ def _to_tool_definitions(
   if callable(tool):
     return [_tool_definition_from_callable_tool(tool)]
 
-  if 'mcp' in sys.modules:
-    from mcp import ClientSession as McpClientSession
-    from mcp import Tool as McpTool
+  # Ask for the SDK by the name the seam resolves, not by a literal: the
+  # internal build renames it, and a stale literal would drop MCP tools here.
+  if _MCP_SDK_MODULE_NAME in sys.modules:
+    from ..dependencies._mcp import ClientSession as McpClientSession
+    from ..dependencies._mcp import Tool as McpTool
 
     if isinstance(tool, McpTool):
       return [_tool_definition_from_mcp_tool(tool)]
@@ -463,34 +518,47 @@ def _to_tool_definitions(
 
 
 def _operation_details_attributes_no_content(
-    operation_details_attributes: Mapping[str, AttributeValue],
-) -> dict[str, AttributeValue]:
+    operation_details_attributes: Mapping[str, AnyValue],
+) -> dict[str, AnyValue]:
   """Returns a no-content view of operation-details attributes.
 
   Strips function-tool ``parameters`` (privacy-sensitive) but preserves generic
   tool definitions verbatim.
   """
   tool_def = operation_details_attributes.get(GEN_AI_TOOL_DEFINITIONS)
-  if not tool_def:
+  if (
+      not tool_def
+      or not isinstance(tool_def, Sequence)
+      or isinstance(tool_def, (str, bytes, bytearray))
+  ):
     return {}
 
-  return {
-      GEN_AI_TOOL_DEFINITIONS: [
-          FunctionToolDefinition(
-              name=td['name'],
-              description=td['description'],
-              parameters=None,
-              type=td['type'],
-          )
-          if 'parameters' in td
-          else td
-          for td in tool_def
-      ]
-  }
+  redacted: list[AnyValue] = []
+  for definition in tool_def:
+    if not isinstance(definition, Mapping):
+      continue
+    name = definition.get('name')
+    tool_type = definition.get('type')
+    if not isinstance(name, str) or not isinstance(tool_type, str):
+      continue
+
+    if 'parameters' in definition:
+      description = definition.get('description')
+      redacted_definition: dict[str, AnyValue] = {
+          'name': name,
+          'description': description if isinstance(description, str) else None,
+          'parameters': None,
+          'type': FUNCTION_TOOL_DEFINITION_TYPE,
+      }
+    else:
+      redacted_definition = {'name': name, 'type': tool_type}
+    redacted.append(redacted_definition)
+
+  return {GEN_AI_TOOL_DEFINITIONS: redacted}
 
 
 def _resolve_tool_definitions(
-    tools: Sequence[types.ToolUnionDict],
+    tools: Sequence[types.ToolUnion],
 ) -> list[ToolDefinition]:
   """Flattens a sequence of tools into a list of ``ToolDefinition``s."""
   resolved: list[ToolDefinition] = []
@@ -503,7 +571,7 @@ def _resolve_tool_definitions(
 
 def _build_request_operation_details(
     llm_request: LlmRequest,
-) -> dict[str, AttributeValue]:
+) -> dict[str, AnyValue]:
   """Pure builder for the per-request operation-details attributes.
 
   Synchronous by construction: every tool entry on
@@ -512,18 +580,14 @@ def _build_request_operation_details(
   unchanged from inside synchronous code paths (e.g. the WebUI log
   exporter, which executes inside an OTel log record processor).
   """
-  input_messages = _to_input_messages(
-      transformers.t_contents(llm_request.contents)
-      if llm_request.contents
-      else []
-  )
+  input_messages = _to_input_messages(llm_request.contents)
   system_instructions = _to_system_instructions(llm_request.config)
   tool_definitions = _resolve_tool_definitions(llm_request.config.tools or [])
 
   return {
-      GEN_AI_INPUT_MESSAGES: input_messages,
-      GEN_AI_SYSTEM_INSTRUCTIONS: system_instructions,
-      GEN_AI_TOOL_DEFINITIONS: tool_definitions,
+      GEN_AI_INPUT_MESSAGES: _to_any_value(input_messages),
+      GEN_AI_SYSTEM_INSTRUCTIONS: _to_any_value(system_instructions),
+      GEN_AI_TOOL_DEFINITIONS: _to_any_value(tool_definitions),
   }
 
 
@@ -532,30 +596,34 @@ def _build_response_common_attributes(
 ) -> dict[str, AttributeValue]:
   """Pure builder for common attributes derived from an LLM response."""
   attributes: dict[str, AttributeValue] = {}
-  if finish_reason := llm_response.finish_reason:
-    attributes[GEN_AI_RESPONSE_FINISH_REASONS] = [
-        _to_finish_reason(finish_reason)
-    ]
+  # An unreported finish reason maps to '': omit the attribute rather than
+  # publish that.
+  if finish_reason := _to_finish_reason(llm_response.finish_reason):
+    attributes[GEN_AI_RESPONSE_FINISH_REASONS] = [finish_reason]
   if llm_response.usage_metadata:
-    attributes.update(TokenUsage(llm_response.usage_metadata).to_attributes())
+    attributes.update(
+        TokenUsage.from_usage_metadata(
+            llm_response.usage_metadata
+        ).to_attributes()
+    )
   return attributes
 
 
 def _build_response_operation_details(
     llm_response: LlmResponse,
-) -> dict[str, AttributeValue]:
+) -> dict[str, AnyValue]:
   """Pure builder for the per-response operation-details attributes."""
   output_message = _to_output_message(llm_response)
   if output_message is None:
     return {}
-  return {GEN_AI_OUTPUT_MESSAGES: [output_message]}
+  return {GEN_AI_OUTPUT_MESSAGES: _to_any_value([output_message])}
 
 
 def _build_completion_log_attributes(
     telemetry_config: TelemetryConfig,
-    operation_details_attributes: Mapping[str, AttributeValue],
-    operation_details_common_attributes: Mapping[str, AttributeValue],
-) -> Mapping[str, AttributeValue]:
+    operation_details_attributes: Mapping[str, AnyValue],
+    operation_details_common_attributes: Mapping[str, AnyValue],
+) -> Mapping[str, AnyValue]:
   """Returns the attributes to attach to the emitted completion log record."""
   if telemetry_config.should_add_content_to_logs:
     return dict(operation_details_common_attributes) | dict(
@@ -568,8 +636,8 @@ def _build_completion_log_attributes(
 
 def _build_completion_span_attributes(
     telemetry_config: TelemetryConfig,
-    operation_details_attributes: Mapping[str, AttributeValue],
-) -> Mapping[str, AttributeValue]:
+    operation_details_attributes: Mapping[str, AnyValue],
+) -> Mapping[str, AnyValue]:
   """Returns the attributes to set on the active span (pre-serialization)."""
   if telemetry_config.should_add_content_to_experimental_spans:
     return dict(operation_details_attributes)
@@ -582,10 +650,10 @@ def _build_completion_span_attributes(
 
 
 def set_operation_details_common_attributes(
-    operation_details_common_attributes: MutableMapping[str, AttributeValue],
+    operation_details_common_attributes: MutableMapping[str, AnyValue],
     telemetry_config: TelemetryConfig,
-    attributes: Mapping[str, AttributeValue],
-    log_only_attributes: Mapping[str, AttributeValue] | None = None,
+    attributes: Mapping[str, AnyValue],
+    log_only_attributes: Mapping[str, AnyValue] | None = None,
 ) -> None:
   operation_details_common_attributes.update(attributes)
   if log_only_attributes and telemetry_config.should_add_content_to_logs:
@@ -593,7 +661,7 @@ def set_operation_details_common_attributes(
 
 
 def set_operation_details_attributes_from_request(
-    operation_details_attributes: MutableMapping[str, AttributeValue],
+    operation_details_attributes: MutableMapping[str, AnyValue],
     llm_request: LlmRequest,
 ) -> None:
   operation_details_attributes.update(
@@ -603,22 +671,28 @@ def set_operation_details_attributes_from_request(
 
 def set_operation_details_attributes_from_response(
     llm_response: LlmResponse,
-    operation_details_attributes: MutableMapping[str, AttributeValue],
-    operation_details_common_attributes: MutableMapping[str, AttributeValue],
+    operation_details_attributes: MutableMapping[str, AnyValue],
+    operation_details_common_attributes: MutableMapping[str, AnyValue],
 ) -> None:
   operation_details_common_attributes.update(
       _build_response_common_attributes(llm_response)
   )
-  operation_details_attributes.update(
-      _build_response_operation_details(llm_response)
-  )
+  response_attributes = _build_response_operation_details(llm_response)
+  # A turn arriving as several responses is reported as all of them rather than
+  # whichever came last, one message each, as
+  # opentelemetry-instrumentation-google-genai reports a stream too.
+  recorded = operation_details_attributes.get(GEN_AI_OUTPUT_MESSAGES)
+  arrived = response_attributes.get(GEN_AI_OUTPUT_MESSAGES)
+  if isinstance(recorded, list) and isinstance(arrived, list):
+    response_attributes[GEN_AI_OUTPUT_MESSAGES] = recorded + arrived
+  operation_details_attributes.update(response_attributes)
 
 
 def maybe_log_completion_details(
     span: Span | None,
     otel_logger: Logger,
-    operation_details_attributes: Mapping[str, AttributeValue],
-    operation_details_common_attributes: Mapping[str, AttributeValue],
+    operation_details_attributes: Mapping[str, AnyValue],
+    operation_details_common_attributes: Mapping[str, AnyValue],
     telemetry_config: TelemetryConfig,
 ) -> None:
   """Logs completion details based on the experimental semconv capturing mode."""
@@ -637,6 +711,9 @@ def maybe_log_completion_details(
       LogRecord(
           event_name=COMPLETION_DETAILS_EVENT_NAME,
           attributes=log_attributes,
+          # Named rather than taken from the ambient context, which callers are
+          # not required to have this span current in.
+          context=set_span_in_context(span),
       )
   )
 

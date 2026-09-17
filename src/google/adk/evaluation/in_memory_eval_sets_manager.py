@@ -34,13 +34,13 @@ class InMemoryEvalSetsManager(EvalSetsManager):
   to use.
   """
 
-  def __init__(self):
+  def __init__(self) -> None:
     # {app_name: {eval_set_id: EvalSet}}
     self._eval_sets: dict[str, dict[str, EvalSet]] = {}
     # {app_name: {eval_set_id: {eval_case_id: EvalCase}}}
     self._eval_cases: dict[str, dict[str, dict[str, EvalCase]]] = {}
 
-  def _ensure_app_exists(self, app_name: str):
+  def _ensure_app_exists(self, app_name: str) -> None:
     if app_name not in self._eval_sets:
       self._eval_sets[app_name] = {}
       self._eval_cases[app_name] = {}
@@ -51,7 +51,7 @@ class InMemoryEvalSetsManager(EvalSetsManager):
     return self._eval_sets[app_name].get(eval_set_id, None)
 
   @override
-  def create_eval_set(self, app_name: str, eval_set_id: str):
+  def create_eval_set(self, app_name: str, eval_set_id: str) -> EvalSet:
     self._ensure_app_exists(app_name)
     if eval_set_id in self._eval_sets[app_name]:
       raise ValueError(
@@ -85,7 +85,9 @@ class InMemoryEvalSetsManager(EvalSetsManager):
     return self._eval_cases[app_name][eval_set_id].get(eval_case_id)
 
   @override
-  def add_eval_case(self, app_name: str, eval_set_id: str, eval_case: EvalCase):
+  def add_eval_case(
+      self, app_name: str, eval_set_id: str, eval_case: EvalCase
+  ) -> None:
     self._ensure_app_exists(app_name)
     if eval_set_id not in self._eval_sets[app_name]:
       raise NotFoundError(
@@ -104,7 +106,7 @@ class InMemoryEvalSetsManager(EvalSetsManager):
   @override
   def update_eval_case(
       self, app_name: str, eval_set_id: str, updated_eval_case: EvalCase
-  ):
+  ) -> None:
     self._ensure_app_exists(app_name)
     if eval_set_id not in self._eval_sets[app_name]:
       raise NotFoundError(
@@ -131,7 +133,7 @@ class InMemoryEvalSetsManager(EvalSetsManager):
   @override
   def delete_eval_case(
       self, app_name: str, eval_set_id: str, eval_case_id: str
-  ):
+  ) -> None:
     self._ensure_app_exists(app_name)
     if eval_set_id not in self._eval_sets[app_name]:
       raise NotFoundError(

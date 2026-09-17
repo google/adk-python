@@ -1,434 +1,325 @@
 # Getting Started: Creating ADK Agents
 
-Step-by-step guide covering environment setup, basic LLM agents, and workflow agents.
+Environment, the agent directory convention, a first LLM agent, and the jump to
+graph workflows.
 
-## 📋 New Agent Checklist
-Use this checklist when creating a new agent to ensure it follows convention:
+## CLI commands
 
-- [ ] **Directory**: Is there a directory for the agent?
-- [ ] **__init__.py**: Does it contain `from . import agent`?
-- [ ] **agent.py**: Does it define `root_agent` or `app`?
-- [ ] **.env**: Is there a `.env` file with the appropriate API keys? (Do not commit to git)
+| Command | What it does |
+|---|---|
+| `adk create {agent_name}` | Scaffolds an agent directory |
+| `adk run {agent_dir}` | Runs the agent in the terminal |
+| `adk web {agent_dir}` | Dev server on `http://localhost:8000` (development only) |
+| `adk api_server {agent_dir}` | HTTP API for the agent |
 
-## 💡 Quick Reference (CLI Commands)
-
-- **Create**: `adk create <agent_name>` (Scaffolds a new agent project)
-- **Web UI**: `adk web <path_to_agent_dir>` (Starts dev server at localhost:8000)
-- **Run CLI**: `adk run <path_to_agent_dir>` (Interactive or query mode)
-
-## 1. Set Up the Environment
-
-Create a virtual environment and install the ADK:
+## 1. Environment
 
 ```bash
-# Create and activate virtual environment
-python -m venv .venv
-source .venv/bin/activate  # macOS/Linux
-
-# Install the ADK package
-pip install google-adk
-```
-
-Or with `uv`:
-
-```bash
-uv venv --python "python3.11" ".venv"
+uv venv --python python3.11 .venv
 source .venv/bin/activate
 uv pip install google-adk
 ```
 
-## 2. Configure API Keys
+`pip install google-adk` in a `python -m venv` works too. ADK requires Python
+3.10 or newer.
 
-### Google AI Studio (recommended for getting started)
+## 2. API keys
 
-Obtain an API key from [Google AI Studio](https://aistudio.google.com/app/apikey).
+Put a `.env` file in the **agent directory**, not its parent — the loader looks
+beside `agent.py`. Do not commit it.
 
-Create a `.env` file in the agent directory:
+Google AI Studio (get a key at https://aistudio.google.com/app/apikey):
 
-```
+```bash
 GOOGLE_GENAI_USE_ENTERPRISE=FALSE
 GOOGLE_API_KEY=YOUR_API_KEY
 ```
 
-### Vertex AI
+Vertex AI, after `gcloud auth application-default login`:
 
-For production use with Google Cloud:
-
-```
+```bash
 GOOGLE_GENAI_USE_ENTERPRISE=TRUE
 GOOGLE_CLOUD_PROJECT=your-project-id
 GOOGLE_CLOUD_LOCATION=us-central1
 ```
 
-Run `gcloud auth application-default login` to authenticate.
+Vertex AI express mode swaps the project/location pair for an API key:
 
-### Vertex AI Express Mode
-
-Combines Vertex AI with API key authentication:
-
-```
+```bash
 GOOGLE_GENAI_USE_ENTERPRISE=TRUE
 GOOGLE_API_KEY=YOUR_EXPRESS_MODE_KEY
 ```
 
-## 3. Agent Directory Structure
+`GOOGLE_GENAI_USE_VERTEXAI` is the old name for the same switch. It still works
+but emits a `DeprecationWarning`; `GOOGLE_GENAI_USE_ENTERPRISE` wins when both
+are set.
 
-The ADK CLI discovers agents by directory convention. Each agent directory must have:
+## 3. Directory layout
 
-```
+The CLI discovers agents by convention:
+
+```text
 my_agent/
-├── __init__.py    # Must import the agent module
-├── agent.py       # Must define root_agent
-└── .env           # API keys (not committed to git)
+├── __init__.py    # from . import agent
+├── agent.py       # defines root_agent (and optionally app)
+└── .env
 ```
 
-### __init__.py
+`__init__.py` must re-export the module, or the agent will not appear in
+`adk web`:
 
 ```python
 from . import agent
 ```
 
-Or generate the project with the CLI:
+## 4. A basic LLM agent
 
-```bash
-adk create my_agent
-```
-
-## 4. Basic LLM Agent with Tools
-
-Before building workflow agents, understand the basic LLM agent pattern. An `LlmAgent` (also aliased as `Agent`) connects an LLM to tools and instructions:
-
-### agent.py
+`LlmAgent` (aliased as `Agent`) binds a model, an instruction, and tools.
 
 ```python
-from google.adk.agents.llm_agent import Agent
+from google.adk import Agent
+
 
 def get_weather(city: str) -> dict:
   """Returns the current weather for a specified city."""
-  # In production, call a real weather API
   return {
-      "status": "success",
-      "city": city,
-      "weather": "sunny",
-      "temperature": "72F",
+      'status': 'success',
+      'city': city,
+      'weather': 'sunny',
+      'temperature': '72F',
   }
 
-def get_current_time(city: str) -> dict:
-  """Returns the current time in a specified city."""
-  import datetime
-  return {
-      "status": "success",
-      "city": city,
-      "time": datetime.datetime.now().strftime("%I:%M %p"),
-  }
 
 root_agent = Agent(
-    model="gemini-2.5-flash",
-    name="root_agent",
-    description="An assistant that provides weather and time information.",
-    instruction="""You are a helpful assistant.
-Use the get_weather tool to look up weather and
-get_current_time to check the time in any city.
-Always be friendly and concise.""",
-    tools=[get_weather, get_current_time],
+    model='gemini-2.5-flash',
+    name='root_agent',
+    description='An assistant that reports the weather.',
+    instruction=(
+        'You are a helpful assistant. Use get_weather to look up the'
+        ' weather in any city. Be concise.'
+    ),
+    tools=[get_weather],
 )
 ```
 
-### Key concepts
+| Field | Purpose |
+|---|---|
+| `model` | Model id, e.g. `'gemini-2.5-flash'`, `'gemini-2.5-pro'` |
+| `instruction` | System prompt; `{var}` placeholders resolve from session state |
+| `tools` | Python callables; name, docstring, and type hints become the tool schema |
+| `description` | How a parent agent decides to route to this one |
+| `output_key` | Session-state key to store the agent's final text under |
 
-- **`model`**: The LLM to use (e.g., `"gemini-2.5-flash"`, `"gemini-2.5-pro"`)
-- **`instruction`**: System prompt guiding the agent's behavior
-- **`tools`**: Python functions the LLM can call. The function name, docstring, and type hints are sent to the LLM as the tool schema
-- **`description`**: Used when this agent is a sub-agent (for transfer routing)
-- **`output_key`**: Store the agent's final text output in session state under this key
+A tool function needs a docstring and type hints on every parameter — the LLM
+sees only those. Return a `dict` or a `str`.
 
-### Tool function conventions
-
-- Use clear function names and docstrings — the LLM sees these
-- Type-hint all parameters — they define the tool's input schema
-- Return a `dict` or `str` — the return value becomes the tool response
-
-## 5. Run the Agent
-
-### Web UI (primary debugging tool)
-
-```bash
-adk web my_agent/
-```
-
-Open `http://localhost:8000`. Select the agent from the dropdown, type a message, and see events in the Events tab.
-
-**Note**: `adk web` is for development only, not production.
-
-### CLI mode
-
-```bash
-adk run my_agent/
-```
-
-### API server
-
-```bash
-adk api_server my_agent/
-```
-
-### Programmatic execution
+## 5. Running it programmatically
 
 ```python
 import asyncio
+
 from google.adk.runners import InMemoryRunner
 from google.genai import types
 
+from my_agent import agent
+
+
 async def main():
-  from my_agent import agent
-
-  runner = InMemoryRunner(
-      app_name="my_app",
-      agent=agent.root_agent,
-  )
-
+  runner = InMemoryRunner(app_name='my_app', agent=agent.root_agent)
   session = await runner.session_service.create_session(
-      app_name="my_app", user_id="user1"
+      app_name='my_app', user_id='user1'
   )
-
-  content = types.Content(
-      role="user", parts=[types.Part.from_text(text="What's the weather in Paris?")]
+  message = types.Content(
+      role='user',
+      parts=[types.Part.from_text(text="What's the weather in Paris?")],
   )
-
   async for event in runner.run_async(
-      user_id="user1",
-      session_id=session.id,
-      new_message=content,
+      user_id='user1', session_id=session.id, new_message=message
   ):
     if event.content and event.content.parts:
-      if event.content.parts[0].text:
-        print(f"{event.author}: {event.content.parts[0].text}")
+      text = event.content.parts[0].text
+      if text:
+        print(f'{event.author}: {text}')
+
 
 asyncio.run(main())
 ```
 
-## 6. From LLM Agent to Workflow Agent
+## 6. From one agent to a workflow
 
-A `Workflow` extends the basic agent pattern with graph-based execution. Instead of a single LLM deciding what to do, define explicit nodes and edges:
-
-### agent.py — Minimal Workflow
+A `Workflow` replaces "one LLM decides everything" with an explicit graph. The
+smallest one has a single edge from `START`:
 
 ```python
-from google.adk.workflow import Workflow
+from google.adk import Workflow
+
 
 def greet(node_input: str) -> str:
-  return f"Hello! You said: {node_input}"
+  return f'Hello! You said: {node_input}'
 
-root_agent = Workflow(
-    name="my_workflow",
-    edges=[
-        ('START', greet),
-    ],
-)
+
+root_agent = Workflow(name='my_workflow', edges=[('START', greet)])
 ```
 
-## 5. Sample: Sequential Pipeline with LLM Agents
+### Sequential pipeline of LLM agents
 
-A code write-review-refactor pipeline using `SequentialAgent`:
+> **Deprecated.** `SequentialAgent` is deprecated in favour of `Workflow`.
+> Prefer the explicit edge list above for new code; this form is documented
+> because existing agents still use it.
 
-### agent.py
+`SequentialAgent` generates `START -> a -> b -> c` for you. Each agent's
+`output_key` publishes to session state, and the next agent reads it through an
+instruction placeholder.
 
 ```python
-from google.adk.agents.llm_agent import LlmAgent
-from google.adk.agents.sequential_agent import SequentialAgent
+from google.adk.agents import LlmAgent, SequentialAgent
 
-code_writer_agent = LlmAgent(
-    name="CodeWriterAgent",
-    model="gemini-2.5-flash",
-    instruction="""You are a Python Code Generator.
-Based *only* on the user's request, write Python code that fulfills the requirement.
-Output *only* the complete Python code block.
-""",
-    description="Writes initial Python code based on a specification.",
-    output_key="generated_code",
+writer = LlmAgent(
+    name='CodeWriterAgent',
+    model='gemini-2.5-flash',
+    instruction=(
+        'Write Python code that fulfills the user request. Output only the'
+        ' code block.'
+    ),
+    description='Writes initial Python code from a specification.',
+    output_key='generated_code',
 )
 
-code_reviewer_agent = LlmAgent(
-    name="CodeReviewerAgent",
-    model="gemini-2.5-flash",
-    instruction="""You are an expert Python Code Reviewer.
-Review the following code:
-
-```python
-{generated_code}
-```
-
-Provide feedback as a concise, bulleted list.
-If the code is excellent, state: "No major issues found."
-""",
-    description="Reviews code and provides feedback.",
-    output_key="review_comments",
+reviewer = LlmAgent(
+    name='CodeReviewerAgent',
+    model='gemini-2.5-flash',
+    instruction=(
+        'Review this code and reply with a bulleted list of issues, or "No'
+        ' major issues found." if it is clean:\n\n{generated_code}'
+    ),
+    description='Reviews code and provides feedback.',
+    output_key='review_comments',
 )
 
-code_refactorer_agent = LlmAgent(
-    name="CodeRefactorerAgent",
-    model="gemini-2.5-flash",
-    instruction="""You are a Python Code Refactoring AI.
-Improve the code based on the review comments.
-
-**Original Code:**
-```python
-{generated_code}
-```
-
-**Review Comments:**
-{review_comments}
-
-If no issues found, return the original code unchanged.
-Output *only* the final Python code block.
-""",
-    description="Refactors code based on review comments.",
-    output_key="refactored_code",
+refactorer = LlmAgent(
+    name='CodeRefactorerAgent',
+    model='gemini-2.5-flash',
+    instruction=(
+        'Improve this code:\n\n{generated_code}\n\nAddressing these'
+        ' comments:\n\n{review_comments}\n\nOutput only the final code'
+        ' block.'
+    ),
+    description='Refactors code based on review comments.',
+    output_key='refactored_code',
 )
 
 root_agent = SequentialAgent(
-    name="CodePipelineAgent",
-    sub_agents=[code_writer_agent, code_reviewer_agent, code_refactorer_agent],
-    description="Executes a sequence of code writing, reviewing, and refactoring.",
+    name='CodePipelineAgent',
+    sub_agents=[writer, reviewer, refactorer],
+    description='Writes, reviews, and refactors Python code.',
 )
 ```
 
-### Key patterns in this sample
+### Graph with conditional routing
 
-- **`output_key`**: Each agent stores its output in session state, making it available to later agents
-- **`{generated_code}`**: Instruction placeholders are resolved from session state at runtime
-- **`SequentialAgent`**: Convenience wrapper that auto-generates `START -> agent1 -> agent2 -> agent3` edges
-
-## 6. Sample: Graph Workflow with Functions and Routing
-
-A data processing pipeline with conditional routing:
-
-### agent.py
+A node returns `Event(route=...)` and the edge dict picks the branch.
 
 ```python
-from google.adk.workflow import Workflow
-from google.adk.events.event import Event
-from google.adk.agents.context import Context
+from google.adk import Event, Workflow
+
 
 def parse_input(node_input: str) -> dict:
-  """Parse the user's input into a structured format."""
-  words = node_input.strip().split()
-  return {"text": node_input, "word_count": len(words)}
+  return {'text': node_input, 'word_count': len(node_input.split())}
+
 
 def classify(node_input: dict):
-  """Route based on input length."""
-  if node_input["word_count"] > 10:
-    return Event(output=node_input, route="long")
-  return Event(output=node_input, route="short")
+  route = 'long' if node_input['word_count'] > 10 else 'short'
+  return Event(output=node_input, route=route)
+
 
 def handle_short(node_input: dict) -> str:
-  return f"Short input ({node_input['word_count']} words): {node_input['text']}"
+  return f"Short ({node_input['word_count']} words): {node_input['text']}"
+
 
 def handle_long(node_input: dict) -> str:
-  return f"Long input ({node_input['word_count']} words). Summary: {node_input['text'][:50]}..."
+  return f"Long ({node_input['word_count']} words): {node_input['text'][:50]}..."
+
 
 root_agent = Workflow(
-    name="classifier_workflow",
+    name='classifier_workflow',
     input_schema=str,
     edges=[
-        ('START', parse_input),
-        (parse_input, classify),
-        (classify, handle_short, "short"),
-        (classify, handle_long, "long"),
+        ('START', parse_input, classify),
+        (classify, {'short': handle_short, 'long': handle_long}),
     ],
 )
 ```
 
-## 7. Sample: Parallel Processing
+### Parallel list processing
 
-Process a list of items concurrently:
-
-### agent.py
+`parallel_worker=True` makes a node run once per item of a list input and
+return a list of results.
 
 ```python
-from google.adk.workflow import Workflow
+from google.adk import Workflow
 from google.adk.workflow import node
 
+
 def split_input(node_input: str) -> list:
-  """Split comma-separated input into a list."""
-  return [item.strip() for item in node_input.split(",")]
+  return [item.strip() for item in node_input.split(',')]
+
 
 @node(parallel_worker=True)
 def process_item(node_input: str) -> dict:
-  """Process a single item (runs in parallel for each list item)."""
-  return {"item": node_input, "length": len(node_input), "upper": node_input.upper()}
+  return {'item': node_input, 'upper': node_input.upper()}
+
 
 def format_results(node_input: list) -> str:
-  """Format the parallel results into a readable summary."""
-  lines = [f"- {r['item']}: {r['length']} chars -> {r['upper']}" for r in node_input]
-  return "Results:\n" + "\n".join(lines)
+  return '\n'.join(f"- {r['item']} -> {r['upper']}" for r in node_input)
+
 
 root_agent = Workflow(
-    name="parallel_processor",
+    name='parallel_processor',
     input_schema=str,
-    edges=[
-        ('START', split_input),
-        (split_input, process_item),
-        (process_item, format_results),
-    ],
+    edges=[('START', split_input, process_item, format_results)],
 )
 ```
 
-## 8. Sample: Workflow with LLM Agent and Tools
-
-Combine function nodes with an LLM agent that has tools:
-
-### agent.py
+### Mixing function nodes and an LLM agent
 
 ```python
-from google.adk.agents.llm_agent import LlmAgent
-from google.adk.workflow import Workflow
-from google.adk.agents.context import Context
+from google.adk import Workflow
+from google.adk.agents import LlmAgent
+
 
 def get_weather(city: str) -> dict:
   """Get the current weather for a city."""
-  # In production, call a real API
-  return {"city": city, "temp": "72F", "condition": "sunny"}
+  return {'city': city, 'temp': '72F', 'condition': 'sunny'}
+
 
 def extract_city(node_input: str) -> str:
-  """Extract city name from user input."""
-  # Simple extraction; in production, use NLP or LLM
   return node_input.strip()
 
+
 weather_agent = LlmAgent(
-    name="weather_reporter",
-    model="gemini-2.5-flash",
-    instruction="""You are a friendly weather reporter.
-Use the get_weather tool to look up the weather, then give
-a natural-language weather report for the city.""",
+    name='weather_reporter',
+    model='gemini-2.5-flash',
+    instruction='Use get_weather, then give a natural-language report.',
     tools=[get_weather],
 )
 
-def format_output(ctx: Context, node_input: str) -> str:
-  """Add a friendly sign-off."""
-  return f"{node_input}\n\nHave a great day!"
+
+def sign_off(node_input: str) -> str:
+  return f'{node_input}\n\nHave a great day!'
+
 
 root_agent = Workflow(
-    name="weather_workflow",
+    name='weather_workflow',
     input_schema=str,
-    edges=[
-        ('START', extract_city),
-        (extract_city, weather_agent),
-        (weather_agent, format_output),
-    ],
+    edges=[('START', extract_city, weather_agent, sign_off)],
 )
 ```
 
 ## Troubleshooting
 
-### "No module named 'google.adk'"
-Ensure the virtual environment is activated and `google-adk` is installed.
-
-### Agent not showing in `adk web`
-Check that `__init__.py` contains `from . import agent` and `agent.py` defines `root_agent`.
-
-### API key errors
-Verify `.env` is in the agent directory (not the parent) and contains a valid `GOOGLE_API_KEY`.
-
-### Model not found
-Check the model name. Common models: `gemini-2.5-flash`, `gemini-2.5-pro`. The ADK also supports non-Google models (Anthropic, LiteLLM) with extra dependencies.
+| Symptom | Cause |
+|---|---|
+| `No module named 'google.adk'` | Virtual environment not activated, or `google-adk` not installed in it |
+| Agent missing from the `adk web` dropdown | `__init__.py` lacks `from . import agent`, or `agent.py` defines no `root_agent` |
+| API key errors | `.env` sits in the parent directory instead of the agent directory |
+| Model not found | Typo in the model id; non-Google models (Anthropic, LiteLLM) need extra dependencies |

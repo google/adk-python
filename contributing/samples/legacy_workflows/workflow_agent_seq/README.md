@@ -1,5 +1,8 @@
 # Workflow Agent Sample - SequentialAgent
 
+These samples use the legacy `SequentialAgent` / `ParallelAgent` / `LoopAgent`
+API; `contributing/samples/workflows/` shows the current `Workflow` equivalents.
+
 Sample query:
 
 - Write a quicksort method in python.

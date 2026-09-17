@@ -20,7 +20,9 @@ import json
 import logging
 import sqlite3
 import threading
+from typing import cast
 from typing import Iterable
+from typing import Mapping
 from typing import Optional
 from typing import Sequence
 
@@ -30,6 +32,7 @@ from opentelemetry.sdk.trace.export import SpanExportResult
 from opentelemetry.trace import SpanContext
 from opentelemetry.trace import TraceFlags
 from opentelemetry.trace import TraceState
+from opentelemetry.util.types import AttributeValue
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -103,7 +106,9 @@ class SqliteSpanExporter(SpanExporter):
       conn.execute(_CREATE_TRACE_INDEX)
       conn.commit()
 
-  def _serialize_attributes(self, attributes: dict[str, object]) -> str:
+  def _serialize_attributes(
+      self, attributes: Mapping[str, AttributeValue]
+  ) -> str:
     try:
       return json.dumps(
           attributes,
@@ -116,15 +121,17 @@ class SqliteSpanExporter(SpanExporter):
 
   def _deserialize_attributes(
       self, attributes_json: object
-  ) -> dict[str, object]:
-    if not attributes_json:
+  ) -> dict[str, AttributeValue]:
+    if not isinstance(attributes_json, (str, bytes, bytearray)):
       return {}
     try:
-      attributes = json.loads(attributes_json)
+      decoded: object = json.loads(attributes_json)
     except (json.JSONDecodeError, TypeError) as e:
       logger.debug("Failed to deserialize span attributes: %r", e)
       return {}
-    return attributes if isinstance(attributes, dict) else {}
+    if not isinstance(decoded, dict):
+      return {}
+    return cast(dict[str, AttributeValue], decoded)
 
   def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
     try:
@@ -133,10 +140,18 @@ class SqliteSpanExporter(SpanExporter):
         rows: list[tuple[object, ...]] = []
         for span in spans:
           attributes = dict(span.attributes) if span.attributes else {}
-          session_id = attributes.get(
+          session_id_value = attributes.get(
               "gcp.vertex.agent.session_id"
           ) or attributes.get("gen_ai.conversation.id")
-          invocation_id = attributes.get("gcp.vertex.agent.invocation_id")
+          session_id = (
+              session_id_value if isinstance(session_id_value, str) else None
+          )
+          invocation_id_value = attributes.get("gcp.vertex.agent.invocation_id")
+          invocation_id = (
+              invocation_id_value
+              if isinstance(invocation_id_value, str)
+              else None
+          )
 
           parent_span_id = None
           if span.parent is not None:

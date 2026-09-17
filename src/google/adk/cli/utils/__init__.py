@@ -12,16 +12,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import re
-from typing import Any
-from typing import Optional
+from __future__ import annotations
 
-from ...agents.base_agent import BaseAgent
-from ...agents.llm_agent import LlmAgent
-from .dot_adk_folder import DotAdkFolder
-from .state import create_empty_state
+from typing import TYPE_CHECKING
 
+from ...utils import _lazy
+
+if TYPE_CHECKING:
+  from .dot_adk_folder import DotAdkFolder
+  from .state import create_empty_state
+
+_LAZY_MEMBERS: dict[str, str] = {
+    'create_empty_state': '.state',
+    'DotAdkFolder': '.dot_adk_folder',
+}
 __all__ = [
     'create_empty_state',
     'DotAdkFolder',
 ]
+
+__getattr__, __dir__ = _lazy.accessors(globals(), _LAZY_MEMBERS)

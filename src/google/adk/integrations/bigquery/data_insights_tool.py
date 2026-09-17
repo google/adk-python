@@ -119,9 +119,7 @@ def ask_data_insights(
           "Content-Type": "application/json",
           "X-Goog-API-Client": _GDA_CLIENT_ID,
       }
-      ca_url = (
-          f"{endpoint}/v1beta/projects/{project_id}/locations/{location}:chat"
-      )
+      ca_url = f"{endpoint}/v1/projects/{project_id}/locations/{location}:chat"
 
       instructions = """**INSTRUCTIONS - FOLLOW THESE RULES:**
     1.  **CONTENT:** Your answer should present the supporting data and then provide a conclusion based on that data, including relevant details and observations where possible.
@@ -131,14 +129,12 @@ def ask_data_insights(
     """
 
       ca_payload = {
-          "project": f"projects/{project_id}",
           "messages": [{"userMessage": {"text": user_query_with_context}}],
           "inlineContext": {
               "datasourceReferences": {
                   "bq": {"tableReferences": table_references}
               },
               "systemInstruction": instructions,
-              "options": {"chart": {"image": {"noImage": {}}}},
           },
           "clientIdEnum": _GDA_CLIENT_ID,
       }

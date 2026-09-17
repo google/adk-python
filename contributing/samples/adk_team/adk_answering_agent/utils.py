@@ -20,7 +20,6 @@ from urllib.parse import urljoin
 
 from adk_answering_agent.settings import GITHUB_GRAPHQL_URL
 from adk_answering_agent.settings import GITHUB_TOKEN
-from google.adk.agents.run_config import RunConfig
 from google.adk.runners import Runner
 from google.genai import types
 import requests
@@ -164,7 +163,6 @@ async def call_agent_async(
       user_id=user_id,
       session_id=session_id,
       new_message=content,
-      run_config=RunConfig(save_input_blobs_as_artifacts=False),
   ):
     if event.content and event.content.parts:
       if text := "".join(part.text or "" for part in event.content.parts):

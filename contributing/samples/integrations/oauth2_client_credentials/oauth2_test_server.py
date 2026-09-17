@@ -24,7 +24,7 @@ Usage:
 Endpoints:
     GET  /auth                 - Authorization endpoint (auth code flow)
     POST /token                - Token endpoint (both flows)
-    GET  /.well-known/openid_configuration - OpenID Connect discovery
+    GET  /.well-known/openid-configuration - OpenID Connect discovery
     GET  /api/weather          - Weather API (requires Bearer token)
 """
 
@@ -69,7 +69,7 @@ class TokenResponse(BaseModel):
   scope: Optional[str] = None
 
 
-@app.get("/.well-known/openid_configuration")
+@app.get("/.well-known/openid-configuration")
 async def openid_configuration():
   """OpenID Connect Discovery endpoint."""
   return {
@@ -306,7 +306,7 @@ async def root():
             <ul>
                 <li><strong>GET /auth</strong> - Authorization endpoint</li>
                 <li><strong>POST /token</strong> - Token endpoint</li>
-                <li><strong>GET /.well-known/openid_configuration</strong> - Discovery</li>
+                <li><strong>GET /.well-known/openid-configuration</strong> - Discovery</li>
                 <li><strong>GET /api/weather</strong> - Weather API (requires Bearer token)</li>
             </ul>
 

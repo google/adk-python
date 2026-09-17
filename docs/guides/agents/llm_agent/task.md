@@ -123,7 +123,7 @@ Every agent configured with `mode="task"` automatically receives the
 
 ## Task Mode in Workflows
 
-Task mode is currently **not supported** in workflows. Full support for running task agents within workflows is coming soon.
+Task mode is fully supported in workflows. You can use task-mode agents as static nodes in a workflow graph. The workflow runner will automatically manage the task lifecycle, including pausing for human input and resuming with the correct context.
 
 ## Limitations
 

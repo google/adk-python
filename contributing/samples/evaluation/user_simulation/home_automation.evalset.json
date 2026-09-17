@@ -1,0 +1,33 @@
+{
+  "eval_set_id": "user_simulation",
+  "name": "User simulation",
+  "description": "Dynamically simulated user turns driven by a conversation plan and persona.",
+  "eval_cases": [
+    {
+      "eval_id": "comfortable_bedroom_novice",
+      "conversation_scenario": {
+        "starting_prompt": "I want my bedroom to be comfortable.",
+        "conversation_plan": "You actually want the bedroom set to 21 degrees Celsius, but only reveal the exact number when the agent asks for it. Once the agent confirms the temperature is set, your goal is complete.",
+        "user_persona": "NOVICE"
+      },
+      "session_input": {
+        "app_name": "home_automation_agent",
+        "user_id": "user",
+        "state": {}
+      }
+    },
+    {
+      "eval_id": "audit_devices_expert",
+      "conversation_scenario": {
+        "starting_prompt": "I need to check on my devices.",
+        "conversation_plan": "First ask which devices are on. Then ask the agent to turn off any device that is on in the Living Room. Once it confirms, your goal is complete.",
+        "user_persona": "EXPERT"
+      },
+      "session_input": {
+        "app_name": "home_automation_agent",
+        "user_id": "user",
+        "state": {}
+      }
+    }
+  ]
+}

@@ -17,8 +17,10 @@ from __future__ import annotations
 import logging
 import mimetypes
 import os
-from typing import Any
-from typing import Optional
+import threading
+from typing import cast
+from typing import TYPE_CHECKING
+from typing import TypedDict
 
 from typing_extensions import override
 
@@ -30,8 +32,25 @@ from .code_execution_utils import File
 
 logger = logging.getLogger('google_adk.' + __name__)
 
+if TYPE_CHECKING:
+  from vertexai.preview.extensions import Extension
+
+_EXTENSION_LOCK = threading.Lock()
+_EXTENSION_CLIENTS: dict[str, Extension] = {}
 _SUPPORTED_IMAGE_TYPES = ['png', 'jpg', 'jpeg']
 _SUPPORTED_DATA_FILE_TYPES = ['csv']
+
+
+class _OutputFile(TypedDict):
+  name: str
+  contents: str | bytes
+
+
+class _ExecutionResponse(TypedDict, total=False):
+  execution_result: str
+  execution_error: str
+  output_files: list[_OutputFile]
+
 
 _IMPORTED_LIBRARIES = '''
 import io
@@ -85,7 +104,9 @@ Total columns: {df.shape[1]}
 '''
 
 
-def _get_code_interpreter_extension(resource_name: str = None):
+def _get_code_interpreter_extension(
+    resource_name: str | None = None,
+) -> Extension:
   """Returns: Load or create the code interpreter extension."""
   from vertexai.preview.extensions import Extension
 
@@ -113,20 +134,18 @@ class VertexAiCodeExecutor(BaseCodeExecutor):
       projects/123/locations/us-central1/extensions/456
   """
 
-  resource_name: str = None
+  resource_name: str | None = None
   """
   If set, load the existing resource name of the code interpreter extension
   instead of creating a new one.
   Format: projects/123/locations/us-central1/extensions/456
   """
 
-  _code_interpreter_extension: Extension
-
   def __init__(
       self,
-      resource_name: str = None,
-      **data,
-  ):
+      resource_name: str | None = None,
+      **data: object,
+  ) -> None:
     """Initializes the VertexAiCodeExecutor.
 
     Args:
@@ -137,9 +156,27 @@ class VertexAiCodeExecutor(BaseCodeExecutor):
     """
     super().__init__(**data)
     self.resource_name = resource_name
-    self._code_interpreter_extension = _get_code_interpreter_extension(
-        self.resource_name
+
+  @property
+  def _extension_client(self) -> Extension:
+    """Lazy loads the Vertex AI Extension client."""
+    name = self.resource_name or os.environ.get(
+        'CODE_INTERPRETER_EXTENSION_NAME'
     )
+    if not name or name not in _EXTENSION_CLIENTS:
+      with _EXTENSION_LOCK:
+        name = self.resource_name or os.environ.get(
+            'CODE_INTERPRETER_EXTENSION_NAME'
+        )
+        if not name or name not in _EXTENSION_CLIENTS:
+          client = _get_code_interpreter_extension(self.resource_name)
+          name = self.resource_name or os.environ.get(
+              'CODE_INTERPRETER_EXTENSION_NAME'
+          )
+          if name:
+            _EXTENSION_CLIENTS[name] = client
+          return client
+    return _EXTENSION_CLIENTS[name]
 
   @override
   def execute_code(
@@ -184,7 +221,7 @@ class VertexAiCodeExecutor(BaseCodeExecutor):
             File(
                 name=output_file['name'],
                 content=output_file['contents'],
-                mime_type=mime_type,
+                mime_type=mime_type or 'application/octet-stream',
             )
         )
 
@@ -200,9 +237,9 @@ class VertexAiCodeExecutor(BaseCodeExecutor):
   def _execute_code_interpreter(
       self,
       code: str,
-      input_files: Optional[list[File]] = None,
-      session_id: Optional[str] = None,
-  ) -> dict[str, Any]:
+      input_files: list[File] | None = None,
+      session_id: str | None = None,
+  ) -> _ExecutionResponse:
     """Executes the code interpreter extension.
 
     Args:
@@ -213,18 +250,19 @@ class VertexAiCodeExecutor(BaseCodeExecutor):
     Returns:
       The response from the code interpreter extension.
     """
-    operation_params = {'code': code}
+    operation_params: dict[str, object] = {'code': code}
     if input_files:
       operation_params['files'] = [
           {'name': f.name, 'contents': f.content} for f in input_files
       ]
     if session_id:
       operation_params['session_id'] = session_id
-    response = self._code_interpreter_extension.execute(
+    # Use the lazy-loaded client property
+    response: object = self._extension_client.execute(
         operation_id='execute',
         operation_params=operation_params,
     )
-    return response
+    return cast(_ExecutionResponse, response)
 
   def _get_code_with_imports(self, code: str) -> str:
     """Builds the code string with built-in imports.

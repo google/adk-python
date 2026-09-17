@@ -2,7 +2,20 @@
 
 ## Overview
 
-This sample demonstrates how to define a workflow with a feedback loop using a YAML configuration file. It mirrors the `workflow_samples/loop` sample, but uses YAML to define the workflow structure instead of Python.
+This sample demonstrates how to define a workflow with a feedback loop using a
+YAML configuration file. It mirrors the
+`contributing/samples/workflows/loop` sample, but uses YAML to define the
+workflow structure instead of Python.
+
+The loader builds this graph as written: `agent_class: Workflow` resolves, and
+`edges` is mapped onto the `Workflow` field of the same name. Loading
+`root_agent.yaml` yields a `Workflow` with five edges, the last of them the
+`unrelated` route back to `generate_headline`.
+
+Code references in this sample (`.agent.process_input`,
+`loop_config.agent.Feedback`) are resolved against `sys.path`, so run it from
+the directory holding the agent folders -- `contributing/samples/workflows` --
+as the CLI does.
 
 ## Sample Inputs
 
@@ -25,12 +38,12 @@ graph TD
 
 This sample uses some special syntax in `root_agent.yaml` to support dynamic resolution and graph construction:
 
-### 1. `_code` Suffix
+### 1. Code References
 
-Fields ending with `_code` (like `output_schema_code` in `evaluate_headline.yaml`) tell the ADK YAML mapper to resolve the value as a Python code reference rather than treating it as a plain string.
+Fields that hold a Python object (like `output_schema` in `evaluate_headline.yaml`) take a `name` entry holding the fully qualified name of that object, which the loader imports.
 
-- If it starts with `.`, it resolves relative to the current agent directory's Python package path.
-- Example: `output_schema_code: .agent.Feedback` resolves to the `Feedback` Pydantic model in `agent.py` in the same directory.
+- The name is resolved against `sys.path`, which includes the directory holding the agent folders.
+- Example: `name: loop_config.agent.Feedback` resolves to the `Feedback` Pydantic model in `agent.py` in this directory.
 
 ### 2. Function References in Edges
 

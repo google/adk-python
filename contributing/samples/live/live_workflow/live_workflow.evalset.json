@@ -1,0 +1,20 @@
+{
+  "eval_set_id": "live_workflow",
+  "name": "live_workflow",
+  "description": "Live eval cases for the live workflow. Exercises the audio user simulator driving each stage: greeting/identity, DOB verification, and delivering the call goals.",
+  "eval_cases": [
+    {
+      "eval_id": "verified_patient_scenario",
+      "conversation_scenario": {
+        "starting_prompt": "Hello?",
+        "conversation_plan": "You are John Doe. Confirm your name when greeted. When asked for your date of birth, give July 12th, 1985, and confirm it when read back. Listen to the appointment details, ask what you should bring to the visit, then say you have no other questions and let the call wrap up.",
+        "user_persona": "NOVICE"
+      },
+      "session_input": {
+        "app_name": "live_workflow",
+        "user_id": "test_user_id",
+        "state": {}
+      }
+    }
+  ]
+}

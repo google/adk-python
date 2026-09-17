@@ -20,6 +20,7 @@ from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_case import InvocationEvent
 from google.adk.evaluation.eval_case import InvocationEvents
 from google.adk.evaluation.eval_metrics import EvalMetric
+from google.adk.evaluation.eval_metrics import EvalStatus
 from google.adk.evaluation.eval_metrics import JudgeModelOptions
 from google.adk.evaluation.eval_metrics import PrebuiltMetrics
 from google.adk.evaluation.eval_metrics import RubricsBasedCriterion
@@ -149,6 +150,14 @@ class TestDialogueAssembly:
   @pytest.fixture
   def evaluator(self):
     return _make_evaluator()
+
+  @pytest.mark.asyncio
+  async def test_empty_conversation_returns_not_evaluated(self, evaluator):
+    result = await evaluator.evaluate_invocations([])
+
+    assert result.overall_score is None
+    assert result.overall_eval_status == EvalStatus.NOT_EVALUATED
+    assert result.per_invocation_results == []
 
   @pytest.mark.asyncio
   async def test_single_turn_user_and_agent(self, evaluator):

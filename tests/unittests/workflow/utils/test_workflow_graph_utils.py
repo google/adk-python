@@ -14,8 +14,13 @@
 
 from __future__ import annotations
 
+from unittest.mock import Mock
+
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
+from google.adk.tools._node_tool import NodeTool
 from google.adk.tools.base_tool import BaseTool
+from google.adk.tools.function_tool import FunctionTool
 from google.adk.workflow._base_node import BaseNode
 from google.adk.workflow._base_node import START
 from google.adk.workflow._function_node import FunctionNode
@@ -104,6 +109,68 @@ class TestBuildNode:
 
     assert isinstance(built, _ToolNode)
 
+  def test_unwraps_node_tool_to_underlying_node(self):
+    """build_node unwraps NodeTool and returns the underlying BaseNode."""
+
+    class DummyNode(BaseNode):
+
+      async def _run_impl(self, *, ctx, node_input):
+        yield node_input
+
+    inner_node = DummyNode(name="inner", input_schema=str)
+    node_tool = NodeTool(node=inner_node)
+
+    built = build_node(node_tool)
+
+    assert built is inner_node
+    assert not isinstance(built, _ToolNode)
+
+  def test_unwraps_node_tool_with_overrides(self):
+    """build_node unwraps NodeTool and applies property overrides."""
+
+    class DummyNode(BaseNode):
+
+      async def _run_impl(self, *, ctx, node_input):
+        yield node_input
+
+    inner_node = DummyNode(name="original_name", input_schema=str)
+    node_tool = NodeTool(node=inner_node)
+
+    built = build_node(node_tool, name="overridden_name", timeout=12.5)
+
+    assert built.name == "overridden_name"
+    assert built.timeout == 12.5
+    assert not isinstance(built, _ToolNode)
+
+  def test_unwraps_node_tool_preserves_tool_name(self):
+    """build_node unwraps NodeTool and preserves custom tool name."""
+
+    class DummyNode(BaseNode):
+
+      async def _run_impl(self, *, ctx, node_input):
+        yield node_input
+
+    inner_node = DummyNode(name="inner", input_schema=str)
+    node_tool = NodeTool(node=inner_node, name="custom_tool_name")
+
+    built = build_node(node_tool)
+
+    assert built.name == "custom_tool_name"
+    assert not isinstance(built, _ToolNode)
+
+  def test_wraps_function_tool_in_tool_node(self):
+    """build_node wraps FunctionTool in _ToolNode."""
+
+    def custom_func(x: int) -> int:
+      return x * 2
+
+    func_tool = FunctionTool(func=custom_func)
+
+    built = build_node(func_tool)
+
+    assert isinstance(built, _ToolNode)
+    assert built.tool is func_tool
+
   def test_returns_function_node_for_callable(self):
     """build_node wraps callable in a FunctionNode."""
 
@@ -134,3 +201,53 @@ class TestBuildNode:
     standalone = LlmAgent(name="standalone", instruction="test")
     built_standalone = build_node(standalone)
     assert built_standalone.mode == "single_turn"
+
+  def test_build_node_remote_a2a_agent_non_task(self):
+    """build_node does not wrap RemoteA2aAgent in task wrapper if mode is not task."""
+
+    class DummyRemoteAgent(RemoteA2aAgent):
+
+      def __init__(self, mode=None):
+        super().__init__(name="dummy", agent_card="dummy_card", mode=mode)
+        self.parent_agent = None
+
+      def clone(self, *args, **kwargs):
+        raise AssertionError("clone should not be called")
+
+    agent = DummyRemoteAgent(mode=None)
+    built = build_node(agent)
+    assert built == agent
+
+  def test_build_node_remote_a2a_agent_task(self):
+    """build_node raises ValueError if RemoteA2aAgent mode is task."""
+
+    class DummyRemoteAgent(RemoteA2aAgent):
+
+      def __init__(self, mode="task"):
+        super().__init__(name="dummy", agent_card="dummy_card", mode=mode)
+        self.parent_agent = None
+
+    agent = DummyRemoteAgent(mode="task")
+    with pytest.raises(
+        ValueError,
+        match=(
+            "RemoteA2aAgent in task mode is not supported as a standalone"
+            " workflow node. It is only supported in tool-delegation mode."
+        ),
+    ):
+      build_node(agent)
+
+  def test_build_node_remote_a2a_agent_task_with_parent(self):
+    """build_node allows task-mode RemoteA2aAgent if parent_agent is set."""
+
+    class DummyRemoteAgent(RemoteA2aAgent):
+
+      def __init__(self, mode="task"):
+        super().__init__(name="dummy", agent_card="dummy_card", mode=mode)
+        self.parent_agent = Mock()
+
+    agent = DummyRemoteAgent(mode="task")
+    built = build_node(agent)
+    assert built is not agent
+    assert built.mode == "task"
+    assert built.wait_for_output is True

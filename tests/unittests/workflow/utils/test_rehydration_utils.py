@@ -24,6 +24,7 @@ from google.adk.workflow.utils._rehydration_utils import _reconstruct_node_state
 from google.adk.workflow.utils._rehydration_utils import _unwrap_response
 from google.adk.workflow.utils._rehydration_utils import _validate_resume_response
 from google.adk.workflow.utils._rehydration_utils import _wrap_response
+from google.adk.workflow.utils._rehydration_utils import is_terminal_event
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_event
 from google.genai import types
 from pydantic import BaseModel
@@ -324,6 +325,134 @@ class TestScanNodeEvents:
         results["node_a@1"].resolved_responses["interrupt-1"] == "user answer"
     )
 
+  def test_scan_resolves_by_branch_run_id_not_substring(self):
+    # The branch is a dot-joined `name@run_id` path. Matching an interrupt id
+    # against it as a substring resolves any id contained in the one the branch
+    # actually carries -- here "int-1" inside "int-10".
+    event_short = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        long_running_tool_ids={"int-1"},
+        invocation_id="test_id",
+    )
+    event_long = Event(
+        node_info=NodeInfo(path="/wf@1/node_b@1"),
+        long_running_tool_ids={"int-10"},
+        invocation_id="test_id",
+    )
+    event_fr = Event(
+        author="user",
+        branch="wf@1.node_b@int-10",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id="int-10",
+                        name="adk_request_input",
+                        response={"result": "user answer"},
+                    )
+                )
+            ]
+        ),
+        invocation_id="test_id",
+    )
+
+    results = _reconstruct_node_states(
+        [event_short, event_long, event_fr],
+        "/wf@1",
+        invocation_id="test_id",
+        group_by_direct_child=True,
+    )
+
+    assert "int-10" in results["node_b@1"].resolved_ids
+    assert "int-1" not in results["node_a@1"].resolved_ids
+
+  def test_scan_clears_output_emitted_before_the_node_paused(self):
+    # What a node emitted before stopping to ask is not its result; leaving it
+    # in place lets the workflow route on a value the node never returned.
+    event_output = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        output="partial work",
+        invocation_id="test_id",
+    )
+    event_int = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        long_running_tool_ids={"interrupt-1"},
+        invocation_id="test_id",
+    )
+    event_fr = Event(
+        author="user",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id="interrupt-1",
+                        name="adk_request_input",
+                        response={"result": "user answer"},
+                    )
+                )
+            ]
+        ),
+        invocation_id="test_id",
+    )
+
+    results = _reconstruct_node_states(
+        [event_output, event_int, event_fr],
+        "/wf@1",
+        invocation_id="test_id",
+        group_by_direct_child=True,
+    )
+
+    assert "interrupt-1" in results["node_a@1"].resolved_ids
+    assert results["node_a@1"].output is None
+
+  def test_scan_resolves_an_interrupt_owned_by_an_ancestor_branch(self):
+    # The nested case: the answer comes back carrying its own response id, not
+    # the interrupt's, and only the branch says which interrupt it settles.
+    # `fr.id` is deliberately not an interrupt id here -- if it were, the
+    # owner lookup would handle the event and this path would never run.
+    event_output = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        output="partial work",
+        invocation_id="test_id",
+    )
+    event_int = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        long_running_tool_ids={"int-1"},
+        invocation_id="test_id",
+    )
+    event_fr = Event(
+        author="user",
+        branch="wf@1.node_a@int-1",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id="resp-99",
+                        name="adk_request_input",
+                        response={"result": "user answer"},
+                    )
+                )
+            ]
+        ),
+        invocation_id="test_id",
+    )
+
+    results = _reconstruct_node_states(
+        [event_output, event_int, event_fr],
+        "/wf@1",
+        invocation_id="test_id",
+        group_by_direct_child=True,
+    )
+    state = results["node_a@1"]
+
+    assert "int-1" in state.resolved_ids
+    # Keyed by the interrupt id, because that is what the consumer looks up
+    # (`ctx.resume_inputs.get(interrupt_id)`), not by the response's own id.
+    assert "int-1" in state.resolved_responses
+    assert "resp-99" not in state.resolved_responses
+    # And the pre-pause output is dropped here too, not only on the direct path.
+    assert state.output is None
+
   def test_scan_matches_specific_node_path_without_child_grouping(self):
     """Scanning matches events for a specific node path when not grouping by direct child."""
     event = Event(
@@ -387,3 +516,265 @@ class TestScanNodeEvents:
     assert results["node_a@1"].resolved_responses["interrupt-1"] == {
         "count": 42
     }
+
+  def test_scan_records_error_code(self):
+    """A node that raised is recovered as failed, not as an empty success."""
+    event = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        error_code="ValueError",
+        error_message="boom",
+        invocation_id="test_id",
+    )
+
+    results = _reconstruct_node_states(
+        [event], "/wf@1", invocation_id="test_id", group_by_direct_child=True
+    )
+
+    assert results["node_a@1"].error_code == "ValueError"
+    assert results["node_a@1"].output is None
+
+  def test_scan_later_output_clears_error_code(self):
+    """A retry that succeeded supersedes the failure that preceded it."""
+    error_event = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        error_code="ValueError",
+        error_message="boom",
+        invocation_id="test_id",
+    )
+    output_event = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        output="node_a output",
+        invocation_id="test_id",
+    )
+
+    results = _reconstruct_node_states(
+        [error_event, output_event],
+        "/wf@1",
+        invocation_id="test_id",
+        group_by_direct_child=True,
+    )
+
+    assert results["node_a@1"].error_code is None
+    assert results["node_a@1"].output == "node_a output"
+
+  def test_scan_later_route_clears_error_code(self):
+    """A node may signal only a route on the attempt that succeeded."""
+    error_event = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        error_code="ValueError",
+        error_message="boom",
+        invocation_id="test_id",
+    )
+    route_event = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        route="route-a",
+        invocation_id="test_id",
+    )
+
+    results = _reconstruct_node_states(
+        [error_event, route_event],
+        "/wf@1",
+        invocation_id="test_id",
+        group_by_direct_child=True,
+    )
+
+    assert results["node_a@1"].error_code is None
+    assert results["node_a@1"].route == "route-a"
+
+  def test_scan_error_after_output_records_error_code(self):
+    """The last attempt decides, so a failure after a result still fails."""
+    output_event = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        output="node_a output",
+        invocation_id="test_id",
+    )
+    error_event = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        error_code="ValueError",
+        error_message="boom",
+        invocation_id="test_id",
+    )
+
+    results = _reconstruct_node_states(
+        [output_event, error_event],
+        "/wf@1",
+        invocation_id="test_id",
+        group_by_direct_child=True,
+    )
+
+    assert results["node_a@1"].error_code == "ValueError"
+
+  def test_scan_output_on_the_error_event_is_not_a_failure(self):
+    """An LlmAgent node's output rides on the response event, which carries a
+    non-STOP finish reason as an error code. It still produced a result."""
+    event = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        output="truncated but real",
+        error_code="MAX_TOKENS",
+        invocation_id="test_id",
+    )
+
+    results = _reconstruct_node_states(
+        [event], "/wf@1", invocation_id="test_id", group_by_direct_child=True
+    )
+
+    assert results["node_a@1"].error_code is None
+    assert results["node_a@1"].output == "truncated but real"
+
+  def test_scan_sibling_failure_leaves_node_unaffected(self):
+    """One child's failure must not be attributed to another child."""
+    error_event = Event(
+        node_info=NodeInfo(path="/wf@1/node_a@1"),
+        error_code="ValueError",
+        error_message="boom",
+        invocation_id="test_id",
+    )
+    output_event = Event(
+        node_info=NodeInfo(path="/wf@1/node_b@1"),
+        output="node_b output",
+        invocation_id="test_id",
+    )
+
+    results = _reconstruct_node_states(
+        [error_event, output_event],
+        "/wf@1",
+        invocation_id="test_id",
+        group_by_direct_child=True,
+    )
+
+    assert results["node_a@1"].error_code == "ValueError"
+    assert results["node_b@1"].error_code is None
+
+  def test_scan_descendant_isolation_scope_does_not_pollute_parent(self):
+    """A descendant event's isolation_scope must not overwrite the parent's scope."""
+    parent_event = Event(
+        node_info=NodeInfo(path="/wf@1/task@1"),
+        isolation_scope=None,
+        invocation_id="test_id",
+    )
+    descendant_event = Event(
+        node_info=NodeInfo(path="/wf@1/task@1/agent@1"),
+        isolation_scope="agent_scope",
+        invocation_id="test_id",
+    )
+
+    results = _reconstruct_node_states(
+        [parent_event, descendant_event],
+        "/wf@1/task@1",
+        invocation_id="test_id",
+        group_by_direct_child=False,
+    )
+
+    assert results["/wf@1/task@1"].isolation_scope is None
+
+  def test_scan_descendant_isolation_scope_does_not_pollute_direct_child(self):
+    """A descendant event's isolation_scope must not overwrite a direct child's scope when group_by_direct_child=True."""
+    child_event = Event(
+        node_info=NodeInfo(path="/wf@1/task@1"),
+        isolation_scope=None,
+        invocation_id="test_id",
+    )
+    descendant_event = Event(
+        node_info=NodeInfo(path="/wf@1/task@1/agent@1"),
+        isolation_scope="agent_scope",
+        invocation_id="test_id",
+    )
+
+    results = _reconstruct_node_states(
+        [child_event, descendant_event],
+        "/wf@1",
+        invocation_id="test_id",
+        group_by_direct_child=True,
+    )
+
+    assert results["task@1"].isolation_scope is None
+
+  def test_scan_direct_child_isolation_scope_is_preserved_with_descendants(
+      self,
+  ):
+    """A direct child's own isolation_scope is preserved and not overwritten by descendants."""
+    child_event = Event(
+        node_info=NodeInfo(path="/wf@1/task@1"),
+        isolation_scope="direct_scope",
+        invocation_id="test_id",
+    )
+    descendant_event = Event(
+        node_info=NodeInfo(path="/wf@1/task@1/agent@1"),
+        isolation_scope="descendant_scope",
+        invocation_id="test_id",
+    )
+
+    results = _reconstruct_node_states(
+        [child_event, descendant_event],
+        "/wf@1",
+        invocation_id="test_id",
+        group_by_direct_child=True,
+    )
+
+    assert results["task@1"].isolation_scope == "direct_scope"
+
+
+# --- is_terminal_event ---
+#
+# Terminal events are what the replay sequence barrier is built from, so a
+# misclassification either drops a node out of the recorded order or blocks
+# the barrier on a node that never produced anything.
+
+
+class TestIsTerminalEvent:
+
+  def test_falsy_output_is_still_terminal(self):
+    """A node that returned 0 / "" / False produced an output all the same."""
+    for falsy in (0, "", False, [], {}):
+      assert is_terminal_event(Event(author="node", output=falsy)) is True
+
+  def test_absent_output_alone_is_not_terminal(self):
+    """A bare event carries no outcome, so it must not enter the sequence."""
+    assert is_terminal_event(Event(author="node")) is False
+
+  def test_intermediate_text_is_not_terminal(self):
+    """Streamed model text is not an outcome unless flagged as the output."""
+    event = Event(
+        author="node",
+        content=types.Content(role="model", parts=[types.Part(text="hi")]),
+    )
+    assert is_terminal_event(event) is False
+
+  def test_message_as_output_with_content_is_terminal(self):
+    """message_as_output promotes the content event itself to the outcome."""
+    event = Event(
+        author="node",
+        node_info=NodeInfo(path="wf@1/n@1", message_as_output=True),
+        content=types.Content(role="model", parts=[types.Part(text="hi")]),
+    )
+    assert is_terminal_event(event) is True
+
+  def test_message_as_output_without_content_is_not_terminal(self):
+    """The flag alone promotes nothing — there is no message to be the output."""
+    event = Event(
+        author="node",
+        node_info=NodeInfo(path="wf@1/n@1", message_as_output=True),
+    )
+    assert is_terminal_event(event) is False
+
+  def test_route_only_event_is_terminal(self):
+    """A node may emit a route and no output; it still finished its turn."""
+    assert is_terminal_event(Event(author="node", route="route-a")) is True
+
+  def test_interrupt_event_is_terminal(self):
+    """Pausing for human input ends the node's turn in the recorded order."""
+    event = Event(author="node", long_running_tool_ids=["fc-1"])
+    assert is_terminal_event(event) is True
+
+  def test_request_input_call_without_long_running_ids_is_terminal(self):
+    """Older sessions stored the interrupt only as a function call."""
+    event = create_request_input_event(
+        RequestInput(interrupt_id="fc-1", message="approve?")
+    )
+    event.long_running_tool_ids = None
+    assert is_terminal_event(event) is True
+
+  def test_error_event_is_terminal(self):
+    """A failed node occupies its slot in the sequence rather than vanishing."""
+    event = Event(author="node", error_code="BOOM")
+    assert is_terminal_event(event) is True

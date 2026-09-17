@@ -23,6 +23,7 @@ from typing import Literal
 from ...tools.base_tool import BaseTool
 from .._base_node import BaseNode
 from .._base_node import START
+from .._errors import WorkflowConfigurationError
 from .._function_node import FunctionNode
 from .._graph import NodeLike
 from .._retry_config import RetryConfig
@@ -59,18 +60,18 @@ def build_node(
       wrapped node.
     timeout: If provided, overrides the timeout property of the wrapped node.
     auth_config: If provided, passed to FunctionNode for authentication.
-    parameter_binding: How function parameters are bound. ``'state'``
-      (default) binds parameters from ``ctx.state``. ``'node_input'``
-      binds parameters from ``node_input`` dict and infers
-      ``input_schema`` / ``output_schema`` from the function signature
-      (used when the node acts as an agent's tool).
+    parameter_binding: How function parameters are bound. ``'state'`` (default)
+      binds parameters from ``ctx.state``. ``'node_input'`` binds parameters
+      from ``node_input`` dict and infers ``input_schema`` / ``output_schema``
+      from the function signature (used when the node acts as an agent's tool).
 
   Returns:
     A BaseNode instance.
 
   Raises:
-    ValueError: If node_like is not a valid type (BaseNode, BaseAgent,
-      BaseTool, callable, or 'START').
+    WorkflowConfigurationError: If node_like is not a valid type (BaseNode,
+      BaseAgent, BaseTool, callable, or 'START'), or if it is a task-mode
+      RemoteA2aAgent with no parent agent.
   """
 
   if node_like == 'START':
@@ -79,6 +80,15 @@ def build_node(
   # Lazy import to avoid circular dependency:
   # workflow_graph_utils -> agents.llm_agent -> ... -> workflow_graph_utils
   from ...agents.llm_agent import LlmAgent
+
+  # Optional dependency: RemoteA2aAgent is only available if a2a is installed.
+  _remote_a2a_agent_type: Any = None
+  try:
+    from ...agents.remote_a2a_agent import RemoteA2aAgent  # pylint: disable=g-import-not-at-top
+
+    _remote_a2a_agent_type = RemoteA2aAgent
+  except ImportError:
+    pass
 
   if isinstance(node_like, BaseNode):
     kwargs: dict[str, Any] = {}
@@ -91,14 +101,27 @@ def build_node(
     if timeout is not None:
       kwargs['timeout'] = timeout
 
-    if isinstance(node_like, LlmAgent):
+    is_remote_a2a_task = False
+    if _remote_a2a_agent_type is not None:
+      is_remote_a2a_task = (
+          isinstance(node_like, _remote_a2a_agent_type)
+          and node_like.mode == 'task'
+      )
+    if is_remote_a2a_task and getattr(node_like, 'parent_agent', None) is None:
+      raise WorkflowConfigurationError(
+          'RemoteA2aAgent in task mode is not supported as a standalone '
+          'workflow node. It is only supported in tool-delegation mode.'
+      )
+
+    if isinstance(node_like, LlmAgent) or is_remote_a2a_task:
       if rerun_on_resume is None:
         kwargs['rerun_on_resume'] = True
-      agent = node_like.clone(update=kwargs)
+      agent_node = cast(Any, node_like)
+      agent = agent_node.clone(update=kwargs)
       # Preserve parent agent reference that was lost during clone
-      agent.parent_agent = node_like.parent_agent
+      agent.parent_agent = agent_node.parent_agent
 
-      if agent.mode is None:
+      if isinstance(agent, LlmAgent) and agent.mode is None:
         # Sub-agents dynamically attached to a parent agent default to 'chat'
         # mode to enable agent transfer.
         # Standalone agents in a workflow graph default to 'single_turn'.
@@ -110,7 +133,7 @@ def build_node(
       if agent.mode in ('task', 'chat'):
         agent.wait_for_output = True
 
-      if agent.parallel_worker:
+      if isinstance(agent, LlmAgent) and agent.parallel_worker:
         from .._parallel_worker import _ParallelWorker
 
         agent.parallel_worker = False
@@ -118,9 +141,29 @@ def build_node(
       return cast(BaseNode, agent)
     else:
       if kwargs:
-        return cast(BaseNode, node_like.model_copy(update=kwargs))
+        return node_like.model_copy(update=kwargs)
       return node_like
   elif isinstance(node_like, BaseTool):
+    # Lazy imports to avoid circular dependency
+    from ...tools._node_tool import NodeTool
+
+    # 1. Unpack NodeTool: directly return the underlying native node, applying any overrides
+    if isinstance(node_like, NodeTool):
+      target_name = name or node_like.name
+      kwargs = {}
+      if target_name != getattr(node_like.node, 'name', None):
+        kwargs['name'] = target_name
+      if rerun_on_resume is not None:
+        kwargs['rerun_on_resume'] = rerun_on_resume
+      if retry_config is not None:
+        kwargs['retry_config'] = retry_config
+      if timeout is not None:
+        kwargs['timeout'] = timeout
+      if kwargs and hasattr(node_like.node, 'model_copy'):
+        return node_like.node.model_copy(update=kwargs)
+      return node_like.node
+
+    # 2. Other generic BaseTools (including FunctionTool) are wrapped in _ToolNode
     return _ToolNode(
         tool=node_like,
         name=name,
@@ -138,7 +181,7 @@ def build_node(
         parameter_binding=parameter_binding,
     )
   else:
-    raise ValueError(
+    raise WorkflowConfigurationError(
         f'Invalid node type: {type(node_like)}. Node must be a BaseNode, a'
         ' BaseAgent, a BaseTool, or a callable.'
     )

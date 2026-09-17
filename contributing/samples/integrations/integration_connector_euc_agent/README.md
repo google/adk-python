@@ -63,9 +63,10 @@ to handle authentication.
 
 1. **Install Dependencies:** Ensure you have the necessary libraries installed
    (e.g., `google-adk`, `python-dotenv`).
-1. **Run the Agent:** Execute the agent script from your terminal:
+1. **Run the Agent:** Launch the dev UI from the repository root and pick
+   `integration_connector_euc_agent` from the dropdown:
    ```bash
-   python agent.py
+   adk web contributing/samples/integrations
    ```
 1. **Interact:** Once the agent starts, you can interact with it. If it's the
    first time using the tool requiring OAuth, you might be prompted to go

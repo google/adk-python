@@ -51,9 +51,9 @@ async def main():
         f" {pr_count})."
     )
     prompt = (
-        f"Please use 'list_untriaged_pull_requests' to find {pr_count} pull"
-        " requests that need triaging, then triage each one according to your"
-        " instructions."
+        f"Please use 'list_unassigned_pull_requests' to find {pr_count} pull"
+        " requests that have nobody assigned, then triage each one according to"
+        " your instructions."
     )
 
   response = await call_agent_async(runner, USER_ID, session.id, prompt)

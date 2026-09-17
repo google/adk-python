@@ -24,6 +24,7 @@ from fastapi.openapi.models import OAuth2
 from fastapi.openapi.models import OAuthFlowAuthorizationCode
 from fastapi.openapi.models import OAuthFlowClientCredentials
 from fastapi.openapi.models import OAuthFlows
+from fastapi.openapi.models import OpenIdConnect
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
@@ -236,6 +237,36 @@ class TestGenerateAuthUri:
     assert "audience" not in result.oauth2.auth_uri
     assert result.oauth2.state == "mock_state"
 
+  def test_generate_auth_uri_rejects_scheme_without_flows(
+      self, oauth2_credentials
+  ):
+    """A scheme carrying no OAuth2 flows is reported, not an AttributeError."""
+    config = AuthConfig(
+        auth_scheme=OpenIdConnect(
+            openIdConnectUrl=(
+                "https://example.com/.well-known/openid-configuration"
+            )
+        ),
+        raw_auth_credential=oauth2_credentials,
+    )
+    handler = AuthHandler(config)
+
+    with pytest.raises(ValueError, match="no OAuth2 flows"):
+      handler.generate_auth_uri()
+
+  def test_generate_auth_uri_rejects_flows_without_endpoint(
+      self, oauth2_credentials
+  ):
+    """Flows declaring no endpoint are reported, not a TypeError from authlib."""
+    config = AuthConfig(
+        auth_scheme=OAuth2(flows=OAuthFlows()),
+        raw_auth_credential=oauth2_credentials,
+    )
+    handler = AuthHandler(config)
+
+    with pytest.raises(ValueError, match="no flow declares an authorization"):
+      handler.generate_auth_uri()
+
   @patch("google.adk.auth.auth_handler.OAuth2Session", MockOAuth2Session)
   def test_generate_auth_uri_with_audience_and_prompt(
       self, openid_auth_scheme, oauth2_credentials
@@ -354,6 +385,59 @@ class TestGenerateAuthUri:
     _, kwargs = mock_client.create_authorization_url.call_args
     assert "code_verifier" in kwargs
     assert kwargs["code_verifier"] == result.oauth2.code_verifier
+
+  @patch("google.adk.auth.auth_handler.OAuth2Session")
+  def test_generate_auth_uri_with_nonce(
+      self, mock_oauth2_session, oauth2_auth_scheme, oauth2_credentials
+  ):
+    """Test that a nonce is forwarded to the authorization request."""
+    oauth2_credentials.oauth2.nonce = "test_nonce"
+    exchanged = oauth2_credentials.model_copy(deep=True)
+
+    config = AuthConfig(
+        auth_scheme=oauth2_auth_scheme,
+        raw_auth_credential=oauth2_credentials,
+        exchanged_auth_credential=exchanged,
+    )
+
+    mock_client = Mock()
+    mock_oauth2_session.return_value = mock_client
+    mock_client.create_authorization_url.return_value = (
+        "https://example.com/oauth2/authorize?nonce=test_nonce",
+        "mock_state",
+    )
+
+    handler = AuthHandler(config)
+    handler.generate_auth_uri()
+
+    _, kwargs = mock_client.create_authorization_url.call_args
+    assert kwargs["nonce"] == "test_nonce"
+
+  @patch("google.adk.auth.auth_handler.OAuth2Session")
+  def test_generate_auth_uri_without_nonce(
+      self, mock_oauth2_session, oauth2_auth_scheme, oauth2_credentials
+  ):
+    """Test that no nonce is sent when the credential has none."""
+    exchanged = oauth2_credentials.model_copy(deep=True)
+
+    config = AuthConfig(
+        auth_scheme=oauth2_auth_scheme,
+        raw_auth_credential=oauth2_credentials,
+        exchanged_auth_credential=exchanged,
+    )
+
+    mock_client = Mock()
+    mock_oauth2_session.return_value = mock_client
+    mock_client.create_authorization_url.return_value = (
+        "https://example.com/oauth2/authorize",
+        "mock_state",
+    )
+
+    handler = AuthHandler(config)
+    handler.generate_auth_uri()
+
+    _, kwargs = mock_client.create_authorization_url.call_args
+    assert "nonce" not in kwargs
 
   def test_generate_auth_uri_unsupported_pkce_method(
       self, oauth2_auth_scheme, oauth2_credentials
@@ -501,7 +585,11 @@ class TestGenerateAuthRequest:
     result = handler.generate_auth_request()
 
     assert mock_generate_auth_uri.called
-    assert result.exchanged_auth_credential == mock_credential
+    expected = mock_credential.model_copy(deep=True)
+    expected.oauth2.client_secret = None
+    assert result.exchanged_auth_credential == expected
+    assert result.raw_auth_credential.oauth2.client_secret is None
+    assert result.raw_auth_credential.oauth2.client_id == "mock_client_id"
 
   @patch("google.adk.auth.auth_handler.AuthHandler.generate_auth_uri")
   def test_preserves_credential_key_on_generated_request(
@@ -554,6 +642,138 @@ class TestGetAuthResponse:
     result = handler.get_auth_response(state)
     assert result is None
 
+  def test_get_auth_response_temp_prefix_str_token(self, auth_config):
+    """Test retrieving a string token stored under temp prefix in state."""
+    handler = AuthHandler(auth_config)
+    state = MockState()
+    credential_key = auth_config.credential_key
+    state["temp:" + credential_key] = "ya29.mock_token"
+
+    result = handler.get_auth_response(state)
+
+    assert result is not None
+    assert result.auth_type == AuthCredentialTypes.OAUTH2
+    assert result.oauth2.access_token == "ya29.mock_token"
+
+  def test_get_auth_response_no_prefix_credential(
+      self, auth_config, oauth2_credentials_with_auth_uri
+  ):
+    """Test retrieving a credential stored under the key without prefix."""
+    handler = AuthHandler(auth_config)
+    state = MockState()
+    credential_key = auth_config.credential_key
+    state[credential_key] = oauth2_credentials_with_auth_uri
+
+    result = handler.get_auth_response(state)
+
+    assert result == oauth2_credentials_with_auth_uri
+
+  def test_get_auth_response_no_prefix_str_token(self, auth_config):
+    """Test retrieving a string token stored under the key without prefix."""
+    handler = AuthHandler(auth_config)
+    state = MockState()
+    credential_key = auth_config.credential_key
+    state[credential_key] = "ya29.mock_token_no_prefix"
+
+    result = handler.get_auth_response(state)
+
+    assert result is not None
+    assert result.auth_type == AuthCredentialTypes.OAUTH2
+    assert result.oauth2.access_token == "ya29.mock_token_no_prefix"
+
+  def test_get_auth_response_temp_prefix_dict(self, auth_config):
+    """Test retrieving a credential dictionary stored under temp prefix."""
+    handler = AuthHandler(auth_config)
+    state = MockState()
+    credential_key = auth_config.credential_key
+    # Store dict in state representing an AuthCredential
+    state["temp:" + credential_key] = {
+        "auth_type": "oauth2",
+        "oauth2": {"access_token": "ya29.mock_token_from_dict"},
+    }
+
+    result = handler.get_auth_response(state)
+
+    assert result is not None
+    assert result.auth_type == AuthCredentialTypes.OAUTH2
+    assert result.oauth2.access_token == "ya29.mock_token_from_dict"
+
+  def test_get_auth_response_no_prefix_dict(self, auth_config):
+    """Test retrieving a credential dictionary stored under the key without prefix."""
+    handler = AuthHandler(auth_config)
+    state = MockState()
+    credential_key = auth_config.credential_key
+    state[credential_key] = {
+        "auth_type": "oauth2",
+        "oauth2": {"access_token": "ya29.mock_token_from_dict_no_prefix"},
+    }
+
+    result = handler.get_auth_response(state)
+
+    assert result is not None
+    assert result.auth_type == AuthCredentialTypes.OAUTH2
+    assert result.oauth2.access_token == "ya29.mock_token_from_dict_no_prefix"
+
+  def test_get_auth_response_api_key_str(self):
+    """Test retrieving a string token under apiKey scheme wraps it as APIKey."""
+    auth_scheme = APIKey(**{"name": "X-API-Key", "in": APIKeyIn.header})
+    config = AuthConfig(auth_scheme=auth_scheme)
+    handler = AuthHandler(config)
+    state = MockState()
+    credential_key = config.credential_key
+    state["temp:" + credential_key] = "my_api_key_value"
+
+    result = handler.get_auth_response(state)
+
+    assert result is not None
+    assert result.auth_type == AuthCredentialTypes.API_KEY
+    assert result.api_key == "my_api_key_value"
+
+  def test_get_auth_response_http_str(self):
+    """Test retrieving a string token under http bearer scheme wraps it as HTTP Bearer."""
+    from fastapi.openapi.models import HTTPBearer
+
+    auth_scheme = HTTPBearer()
+    config = AuthConfig(auth_scheme=auth_scheme)
+    handler = AuthHandler(config)
+    state = MockState()
+    credential_key = config.credential_key
+    state["temp:" + credential_key] = "my_http_bearer_token"
+
+    result = handler.get_auth_response(state)
+
+    assert result is not None
+    assert result.auth_type == AuthCredentialTypes.HTTP
+    assert result.http is not None
+    assert result.http.scheme == "bearer"
+    assert result.http.credentials.token == "my_http_bearer_token"
+
+  @patch("google.adk.auth.oauth2_credential_util.OAuth2Session")
+  def test_reattaches_configured_client_for_exchange(
+      self, mock_oauth2_session, auth_config, oauth2_credentials_with_auth_code
+  ):
+    """Test exchanging a stored response that carries no client secret."""
+    mock_client = Mock()
+    mock_oauth2_session.return_value = mock_client
+    mock_client.fetch_token.return_value = OAuth2Token(
+        {"access_token": "mock_access_token"}
+    )
+    stored = oauth2_credentials_with_auth_code.model_copy(deep=True)
+    stored.oauth2.client_id = None
+    stored.oauth2.client_secret = None
+    state = MockState()
+    credential_key = "temp:" + auth_config.credential_key
+    state[credential_key] = stored
+
+    result = AuthHandler(auth_config).get_auth_response(state)
+
+    assert result.oauth2.access_token == "mock_access_token"
+    assert mock_oauth2_session.call_args[0][0] == "mock_client_id"
+    assert mock_oauth2_session.call_args[0][1] == "mock_client_secret"
+    # The exchanged token is kept, the secret that exchanged it is not.
+    assert state[credential_key].oauth2.access_token == "mock_access_token"
+    assert state[credential_key].oauth2.client_secret is None
+
 
 class TestParseAndStoreAuthResponse:
   """Tests for the parse_and_store_auth_response method."""
@@ -573,9 +793,9 @@ class TestParseAndStoreAuthResponse:
     await handler.parse_and_store_auth_response(state)
 
     credential_key = auth_config.credential_key
-    assert (
-        state["temp:" + credential_key] == auth_config.exchanged_auth_credential
-    )
+    expected = auth_config.exchanged_auth_credential.model_copy(deep=True)
+    expected.oauth2.client_secret = None
+    assert state["temp:" + credential_key] == expected
 
   @patch("google.adk.auth.auth_handler.AuthHandler.exchange_auth_token")
   @pytest.mark.asyncio
@@ -596,6 +816,19 @@ class TestParseAndStoreAuthResponse:
     credential_key = auth_config_with_exchanged.credential_key
     assert state["temp:" + credential_key] == mock_exchange_token.return_value
     assert mock_exchange_token.called
+
+  @pytest.mark.asyncio
+  async def test_empty_credential_key_raises_error(self, oauth2_auth_scheme):
+    """Test that ValueError is raised when credential_key is empty."""
+    config = AuthConfig(
+        auth_scheme=oauth2_auth_scheme,
+    )
+    config.credential_key = ""  # Bypass init logic that sets it
+    handler = AuthHandler(config)
+    state = MockState()
+
+    with pytest.raises(ValueError, match="credential_key is empty."):
+      await handler.parse_and_store_auth_response(state)
 
 
 class TestExchangeAuthToken:

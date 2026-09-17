@@ -17,13 +17,14 @@ from __future__ import annotations
 
 from typing import Union
 
-from a2a.client.middleware import ClientCallContext
 from a2a.extensions.common import HTTP_EXTENSION_HEADER
 from a2a.types import Message as A2AMessage
 from google.adk.a2a.agent.config import ParametersConfig
 from google.adk.a2a.agent.config import RequestInterceptor
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events.event import Event
+
+from ... import _compat
 
 _NEW_A2A_ADK_INTEGRATION_EXTENSION = (
     'https://google.github.io/adk-docs/a2a/a2a-extension/'
@@ -37,7 +38,7 @@ async def _before_request(
 ) -> tuple[Union[A2AMessage, Event], ParametersConfig]:
   """Adds A2A_new_agent_version to client_call_context."""
   if params.client_call_context is None:
-    params.client_call_context = ClientCallContext()
+    params.client_call_context = _compat.ClientCallContext()
 
   http_kwargs = params.client_call_context.state.get('http_kwargs', {})
   headers = http_kwargs.get('headers', {})

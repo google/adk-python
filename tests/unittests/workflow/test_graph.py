@@ -94,3 +94,19 @@ def test_get_next_pending_nodes_unmatched_route_warning(caplog) -> None:
       'has conditional/DEFAULT edges but none were matched' in record.message
       for record in caplog.records
   )
+
+
+def test_from_edge_items_expands_a_chain_and_infers_its_nodes() -> None:
+  """A chain tuple becomes consecutive edges, with nodes inferred once each."""
+  node_a = TestingNode(name='NodeA')
+  node_b = TestingNode(name='NodeB')
+
+  graph = Graph.from_edge_items([(START, node_a, node_b)])
+
+  assert [(e.from_node.name, e.to_node.name) for e in graph.edges] == [
+      (START.name, 'NodeA'),
+      ('NodeA', 'NodeB'),
+  ]
+  # NodeA is both a destination and a source; it must appear once, in the
+  # order it was first seen.
+  assert [n.name for n in graph.nodes] == [START.name, 'NodeA', 'NodeB']

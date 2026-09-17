@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from abc import ABC
+from collections.abc import Callable as CallableABC
 import inspect
 import logging
 from typing import Any
@@ -46,6 +47,11 @@ if TYPE_CHECKING:
 from .tool_context import ToolContext  # pylint: disable=unused-import
 
 SelfTool = TypeVar("SelfTool", bound="BaseTool")
+
+
+def _is_callable_annotation(annotation: object) -> bool:
+  """Returns whether a resolved annotation describes a callable."""
+  return annotation is Callable or get_origin(annotation) is CallableABC
 
 
 class BaseTool(ABC):
@@ -98,6 +104,11 @@ class BaseTool(ABC):
     - ``WHEN_IDLE``: defers the reaction until the model is idle.
     - ``INTERRUPT``: reacts immediately.
 
+  This is the tool-wide default. A streaming tool can choose a different mode
+  for one chunk by yielding a ``types.FunctionResponse`` carrying that chunk's
+  payload in ``response`` and the mode in ``scheduling``; anything it yields
+  plainly falls back to this setting.
+
   Ignored by models that don't support asynchronous function calling. ``None``
   preserves the default behavior.
   """
@@ -105,8 +116,8 @@ class BaseTool(ABC):
   def __init__(
       self,
       *,
-      name,
-      description,
+      name: str,
+      description: str,
       is_long_running: bool = False,
       custom_metadata: Optional[dict[str, Any]] = None,
       response_scheduling: Optional[types.FunctionResponseScheduling] = None,
@@ -168,6 +179,12 @@ class BaseTool(ABC):
     # Use the consolidated logic in LlmRequest.append_tools
     llm_request.append_tools([self])
 
+  async def check_require_confirmation(
+      self, args: dict[str, Any], tool_context: ToolContext
+  ) -> bool:
+    """Returns whether the tool requires confirmation for the given args."""
+    return False
+
   @property
   def _api_variant(self) -> GoogleLLMVariant:
     return get_google_llm_variant()
@@ -224,7 +241,7 @@ class BaseTool(ABC):
             and value is not None
         ):
           kwargs[param_name] = param_type.model_validate(value)
-        elif param_type is Callable or get_origin(param_type) is Callable:
+        elif _is_callable_annotation(param_type):
           kwargs[param_name] = config_agent_utils.resolve_fully_qualified_name(
               value
           )
@@ -232,13 +249,15 @@ class BaseTool(ABC):
           kwargs[param_name] = param_type(value)
         elif get_origin(param_type) is list:
           list_args = get_args(param_type)
-          if issubclass(list_args[0], BaseModel):
+          if inspect.isclass(list_args[0]) and issubclass(
+              list_args[0], BaseModel
+          ):
             kwargs[param_name] = [
                 list_args[0].model_validate(item) for item in value
             ]
           elif list_args[0] in (int, str, bool, float):
             kwargs[param_name] = value
-          elif list_args[0] is Callable or get_origin(list_args[0]) is Callable:
+          elif _is_callable_annotation(list_args[0]):
             kwargs[param_name] = [
                 config_agent_utils.resolve_fully_qualified_name(item)
                 for item in value

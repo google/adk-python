@@ -33,11 +33,25 @@ class ParsedArtifactUri(NamedTuple):
   version: int
 
 
+_WINDOWS_DRIVE_RE = re.compile(r"[A-Za-z]:")
+
+_RESERVED_PATH_SEGMENTS = frozenset({
+    "apps",
+    "users",
+    "sessions",
+    "artifacts",
+    "versions",
+})
+_RESERVED_SEGMENTS_LOOKAHEAD = (
+    rf"(?!/(?:{'|'.join(sorted(_RESERVED_PATH_SEGMENTS))})/)"
+)
+_PATH_SEGMENT_PATTERN = rf"(?:{_RESERVED_SEGMENTS_LOOKAHEAD}.)+?"
+
 _SESSION_SCOPED_ARTIFACT_URI_RE = re.compile(
-    r"artifact://apps/([^/]+)/users/([^/]+)/sessions/([^/]+)/artifacts/(.+)/versions/(\d+)"
+    rf"artifact://apps/({_PATH_SEGMENT_PATTERN})/users/({_PATH_SEGMENT_PATTERN})/sessions/({_PATH_SEGMENT_PATTERN})/artifacts/(.+)/versions/(\d+)"
 )
 _USER_SCOPED_ARTIFACT_URI_RE = re.compile(
-    r"artifact://apps/([^/]+)/users/([^/]+)/artifacts/(.+)/versions/(\d+)"
+    rf"artifact://apps/({_PATH_SEGMENT_PATTERN})/users/({_PATH_SEGMENT_PATTERN})/artifacts/(.+)/versions/(\d+)"
 )
 
 
@@ -134,3 +148,77 @@ def validate_artifact_reference_scope(
         "Session-scoped artifact references must stay within the same"
         " session scope."
     )
+
+
+def _is_drive_qualified(value: str) -> bool:
+  """Checks whether a value starts with a Windows drive letter such as ``C:``."""
+  return _WINDOWS_DRIVE_RE.match(value) is not None
+
+
+def _validate_session_id_for_flat_storage(session_id: str) -> None:
+  """Validates a session_id used by flat storage artifact backends.
+
+  In addition to the checks in `validate_path_segment`, rejects values whose
+  first path segment is the reserved value "user". Backends that lay out
+  session-scoped and user-scoped artifacts in the same flat namespace
+  (in-memory, GCS) use that exact string as a reserved segment marking
+  user-scoped artifacts, so a session starting with "user" would silently write
+  into -- and read out of -- that reserved namespace instead of its own.
+
+  Args:
+    session_id: The caller-supplied session id.
+
+  Raises:
+    InputValidationError: If `session_id` fails `validate_path_segment`, or has
+      the reserved value "user" as its first path segment.
+  """
+  validate_path_segment(session_id, "session_id")
+  if session_id.replace("\\", "/").split("/")[0] == "user":
+    raise input_validation_error.InputValidationError(
+        "session_id must not be or start with the reserved value 'user'."
+    )
+
+
+def validate_path_segment(value: str, field_name: str) -> None:
+  """Rejects values that could alter the constructed path.
+
+  Args:
+    value: The caller-supplied identifier (e.g. user_id or session_id).
+    field_name: Human-readable name used in the error message.
+
+  Raises:
+    InputValidationError: If the value contains traversal segments, null bytes,
+      is an absolute path / starts with a slash, is drive-qualified, or contains
+      slashes along with reserved path segments.
+  """
+  if not value:
+    raise input_validation_error.InputValidationError(
+        f"{field_name} must not be empty."
+    )
+  if "\x00" in value:
+    raise input_validation_error.InputValidationError(
+        f"{field_name} must not contain null bytes."
+    )
+  if isinstance(value, str) and (
+      value.startswith("/") or value.startswith("\\")
+  ):
+    raise input_validation_error.InputValidationError(
+        f"{field_name} {value!r} must not be an absolute path or start with a"
+        " slash."
+    )
+  if isinstance(value, str) and _is_drive_qualified(value):
+    raise input_validation_error.InputValidationError(
+        f"{field_name} {value!r} must not be drive-qualified."
+    )
+  if value in (".", "..") or ".." in value.replace("\\", "/").split("/"):
+    raise input_validation_error.InputValidationError(
+        f"{field_name} {value!r} must not contain traversal segments."
+    )
+  if isinstance(value, str) and ("/" in value or "\\" in value):
+    segments = {
+        segment.casefold() for segment in value.replace("\\", "/").split("/")
+    }
+    if not _RESERVED_PATH_SEGMENTS.isdisjoint(segments):
+      raise input_validation_error.InputValidationError(
+          f"{field_name} {value!r} must not contain reserved path segments."
+      )

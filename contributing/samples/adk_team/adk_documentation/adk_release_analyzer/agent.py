@@ -559,6 +559,7 @@ summary_agent = Agent(
     name="summary_agent",
     description="Compiles recommendations and creates the GitHub issue.",
     instruction=summary_instruction,
+    include_contents="none",
     tools=[
         get_all_recommendations,
         create_issue,

@@ -25,6 +25,7 @@ from .eval_case import Invocation
 from .eval_case import InvocationEvents
 from .eval_metrics import EvalMetric
 from .eval_metrics import RubricsBasedCriterion
+from .llm_as_judge_utils import get_grounding_metadata_as_json_str
 from .llm_as_judge_utils import get_text_from_content
 from .llm_as_judge_utils import get_tool_calls_and_responses_as_json_str
 from .llm_as_judge_utils import get_tool_declarations_as_json_str
@@ -45,8 +46,9 @@ Only respond to the properties provided. Do not make up new properties.
 
 # Key Evaluation Principles
 Your evaluation must follow a two-part process: first, collect trusted evidence from the agent's work, and second, judge the final answer against it.
-1. **Establish Trusted Evidence from Tool Calls**: You must first examine the agent's tool calls to determine if they are procedurally sound, meaning that the agent used the appropriate tools with logical parameters to address the user's prompt.
-  * Your ONLY sources of truth are the <user_prompt> and the direct output ('tool_response') from PROCEDURALLY SOUND tool calls found in the <response_steps>. Examples of procedural flaws include:
+1. **Establish Trusted Evidence from Tool Calls and Grounding**: You must first examine the agent's tool calls to determine if they are procedurally sound, meaning that the agent used the appropriate tools with logical parameters to address the user's prompt.
+  * Your ONLY sources of truth are the <user_prompt>, the direct output ('tool_response') from PROCEDURALLY SOUND tool calls found in the <response_steps>, and model-supplied grounding metadata found in <grounding_metadata>.
+  * Grounding metadata is trusted evidence for model-internal tools such as google_search whose raw search results may not appear as function tool responses. Examples of procedural flaws include:
     * The agent failed to call a tool that will enable it to answer the user's prompt despite having all the necessary parameters to do so.
     * The agent called the tool with incorrect or missing parameters.
     * The agent called a tool that does not exist, or called a tool with a parameter that does not exist.
@@ -70,7 +72,8 @@ For each property follow these internal steps:
 6. Output the final verdict in the required output format.
 
 # Output Format (repeat this format for every property, starting with a new line):
-Property: [Repeat the property, word for word, without making any changes. Keep everything including punctuation and capitalization as-is.]
+ID: [Copy the id shown in the "[id: ...]" tag for this property, verbatim. Omit this line only if no tag is shown.]
+Property: [Repeat the property text that follows the "[id: ...]" tag, word for word, without making any changes and without the tag. Keep everything including punctuation and capitalization as-is.]
 Evidence: [List all trusted evidence from tool calls or the user prompt that is relevant to the property (referencing the Step Index). Alternatively, if either no trusted evidence is required, or no trusted evidence exists (e.g., flawed process, missing tool call, tool error), explain why.]
 Rationale: [Explain your reasoning, detailing how the evidence (or lack thereof) supports or contradicts the final answer, or why the property is not applicable.]
 Verdict: [yes|no]
@@ -149,46 +152,53 @@ REMEMBER: Your answer will help improve the AI agent. It is important to determi
 </response>
 
 <properties>
-* The final answer correctly identifies the total number of employees.
-* The final answer correctly identifies the name of Alice Smith's manager, or correctly states that it cannot be determined and why.
-* The final answer correctly states the average salary for the Marketing department.
-* The final answer correctly identifies the employee with the highest salary.
-* The final answer correctly identifies the gender of the employee with the highest salary, or correctly states that it cannot be determined and why.
-* The final answer is formatted as a numbered list.
-* If the company has fewer than 100 employees, then the final answer states that it has fewer than 100 employees.
+*  [id: 1] The final answer correctly identifies the total number of employees.
+*  [id: 2] The final answer correctly identifies the name of Alice Smith's manager, or correctly states that it cannot be determined and why.
+*  [id: 3] The final answer correctly states the average salary for the Marketing department.
+*  [id: 4] The final answer correctly identifies the employee with the highest salary.
+*  [id: 5] The final answer correctly identifies the gender of the employee with the highest salary, or correctly states that it cannot be determined and why.
+*  [id: 6] The final answer is formatted as a numbered list.
+*  [id: 7] If the company has fewer than 100 employees, then the final answer states that it has fewer than 100 employees.
 </properties>
 
 ## Output
+ID: 1
 Property: The final answer correctly identifies the total number of employees.
 Evidence: The trusted evidence is "110 employees". The tool call in Step 0 is procedurally sound and provides the total number of employees (110) by calling the load_hr_data_from_file tool with the correct file name.
 Rationale: The final answer's claim ("110 employees") is fully consistent with the trusted evidence.
 Verdict: yes
 
+ID: 2
 Property: The final answer correctly identifies the name of Alice Smith's manager, or correctly states that it cannot be determined and why.
 Evidence: No trusted evidence exists. The agent did not perform a tool call to determine the manager of Alice Smith, despite having the necessary information (the employee name) and access to the necessary tools (get_manager) to do so.
 Rationale: The agent incorrectly stated that the final answer cannot be determined, despite having the necessary information (the employee name) and tools (get_manager) to determine it.
 Verdict: no
 
+ID: 3
 Property: The final answer correctly states the average salary for the Marketing department.
 Evidence: No trusted evidence exists for the Marketing department's average salary. The tool call in Step 1 is procedurally flawed; the agent searched for "Engineering" instead of "Marketing".
 Rationale: There is no trusted evidence for the Marketing department's average salary.
 Verdict: no
 
+ID: 4
 Property: The final answer correctly identifies the employee with the highest salary.
 Evidence: The trusted evidence is "John Smith". The tool call in Step 2 produces trusted evidence for the employee with the highest salary by calling the load_hr_data_from_file tool with the correct file name and then using the idxmax() method to find the employee with the highest salary.
 Rationale: The final answer's claim ("John Doe") is inconsistent with the trusted evidence ("John Smith").
 Verdict: no
 
+ID: 5
 Property: The final answer correctly identifies the gender of the employee with the highest salary, or correctly states that it cannot be determined and why.
 Evidence: No trusted evidence exists. The agent did not perform a tool call to determine the gender of the employee with the highest salary.
 Rationale: There is no trusted evidence to confirm the gender of the employee with the highest salary that the final answer states (male). Even if the gender is coincidentally actually male, the claim in the final answer cannot be unambiguously verified using the evidence.
 Verdict: no
 
+ID: 7
 Property: If the company has fewer than 100 employees, then the final answer should state that it has fewer than 100 employees.
 Evidence: The trusted evidence is "110 employees". The tool call in Step 0 correctly counts the total number of employees as 110 by calling the load_hr_data_from_file tool with the correct file name.
 Rationale: The total number of employees is 110, so the condition for this property (fewer than 100 employees) was not met. Therefore, the property is not applicable to this response.
 Verdict: yes
 
+ID: 6
 Property: The final answer is formatted as a numbered list.
 Evidence: N/A. Trusted evidence from tool calls or the user prompt is not required in order to determine the format of the final answer.
 Rationale: The final answer is formatted as a numbered list from 1 to 4, e.g. "1. The total number of employees is 110\n2...".
@@ -214,6 +224,9 @@ Verdict: yes
   <response_steps>
   {response_steps}
   </response_steps>
+  <grounding_metadata>
+  {grounding_metadata}
+  </grounding_metadata>
   <final_answer>
   {final_response}
   </final_answer>
@@ -274,9 +287,8 @@ class RubricBasedFinalResponseQualityV1Evaluator(RubricBasedEvaluator):
     self.create_effective_rubrics_list(actual_invocation.rubrics)
     user_input = get_text_from_content(actual_invocation.user_content)
 
-    criterion = self._eval_metric.criterion
-    include_intermediate = getattr(
-        criterion, "include_intermediate_responses_in_final", False
+    include_intermediate = (
+        self._criterion.include_intermediate_responses_in_final
     )
     final_response = (
         get_text_from_content(
@@ -287,8 +299,8 @@ class RubricBasedFinalResponseQualityV1Evaluator(RubricBasedEvaluator):
     )
 
     rubrics_text = "\n".join([
-        f"*  {r.rubric_content.text_property}"
-        for r in self._effective_rubrics_list
+        f"*  [id: {r.rubric_id}] {r.rubric_content.text_property}"
+        for r in self.get_effective_rubrics_list()
     ])
 
     developer_instructions = ""
@@ -296,17 +308,31 @@ class RubricBasedFinalResponseQualityV1Evaluator(RubricBasedEvaluator):
     response_steps = get_tool_calls_and_responses_as_json_str(
         actual_invocation.intermediate_data
     )
+    grounding_metadata = get_grounding_metadata_as_json_str(
+        actual_invocation.intermediate_data
+    )
 
     app_details = actual_invocation.app_details
     if app_details:
+      # Determine agent name from invocation events if available,
+      # otherwise fall back to the first agent in app_details.
+      # This ensures developer_instructions are populated even when
+      # the agent makes zero tool calls (e.g., declining out-of-scope
+      # requests).
+      agent_name = None
       if (
           isinstance(actual_invocation.intermediate_data, InvocationEvents)
           and actual_invocation.intermediate_data.invocation_events
       ):
+        agent_name = actual_invocation.intermediate_data.invocation_events[
+            0
+        ].author
+      elif app_details.agent_details:
+        agent_name = next(iter(app_details.agent_details))
+
+      if agent_name:
         developer_instructions = app_details.get_developer_instructions(
-            agent_name=actual_invocation.intermediate_data.invocation_events[
-                0
-            ].author
+            agent_name=agent_name
         )
       tool_declarations = get_tool_declarations_as_json_str(app_details)
 
@@ -315,6 +341,7 @@ class RubricBasedFinalResponseQualityV1Evaluator(RubricBasedEvaluator):
         tool_declarations=tool_declarations,
         user_input=user_input,
         response_steps=response_steps,
+        grounding_metadata=grounding_metadata,
         final_response=final_response,
         rubrics=rubrics_text,
     )

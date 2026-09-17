@@ -57,7 +57,7 @@ def _event(
 
 @pytest.mark.asyncio
 async def test_run_async_accumulates_text_around_tool_calls():
-  """Regression test for issue #5590.
+  """Regression test for dropped output_key text around tool calls.
 
   Under StreamingMode.SSE with tools, an LlmAgent emits text in several
   non-partial events: some carry text only, others carry text alongside a

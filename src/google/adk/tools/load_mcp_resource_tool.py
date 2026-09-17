@@ -106,48 +106,51 @@ NOTE: Call when you need access to resources.""",
 
   async def _append_resources_to_llm_request(
       self, *, tool_context: ToolContext, llm_request: LlmRequest
-  ):
+  ) -> None:
     try:
       resource_names = await self._mcp_toolset.list_resources()
       if resource_names:
-        llm_request.append_instructions([f"""You have a list of MCP resources:
+        llm_request._append_dynamic_instructions(
+            [f"""You have a list of MCP resources:
 {json.dumps(resource_names)}
 
 When the user asks questions about any of the resources, you should call the
 `load_mcp_resource` function to load the resource. Always call load_mcp_resource
 before answering questions related to the resources.
-"""])
+"""]
+        )
     except Exception as e:
       logger.warning("Failed to list MCP resources: %s", e)
 
     # Attach content
     if llm_request.contents and llm_request.contents[-1].parts:
-      function_response = llm_request.contents[-1].parts[0].function_response
-      if function_response and function_response.name == self.name:
-        response = function_response.response or {}
-        resource_names = response.get("resource_names", [])
-        for resource_name in resource_names:
-          try:
-            contents = await self._mcp_toolset.read_resource(resource_name)
+      for part in llm_request.contents[-1].parts:
+        function_response = part.function_response
+        if function_response and function_response.name == self.name:
+          response = function_response.response or {}
+          resource_names = response.get("resource_names", [])
+          for resource_name in resource_names:
+            try:
+              contents = await self._mcp_toolset.read_resource(resource_name)
 
-            for content in contents:
-              part = self._mcp_content_to_part(content, resource_name)
-              llm_request.contents.append(
-                  types.Content(
-                      role="user",
-                      parts=[
-                          types.Part.from_text(
-                              text=f"Resource {resource_name} is:"
-                          ),
-                          part,
-                      ],
-                  )
+              for content in contents:
+                part = self._mcp_content_to_part(content, resource_name)
+                llm_request.contents.append(
+                    types.Content(
+                        role="user",
+                        parts=[
+                            types.Part.from_text(
+                                text=f"Resource {resource_name} is:"
+                            ),
+                            part,
+                        ],
+                    )
+                )
+            except Exception as e:
+              logger.warning(
+                  "Failed to read MCP resource '%s': %s", resource_name, e
               )
-          except Exception as e:
-            logger.warning(
-                "Failed to read MCP resource '%s': %s", resource_name, e
-            )
-            continue
+              continue
 
   def _mcp_content_to_part(
       self, content: Any, resource_name: str
@@ -157,8 +160,14 @@ before answering questions related to the resources.
     elif hasattr(content, "blob") and content.blob is not None:
       try:
         data = base64.b64decode(content.blob)
-        # Basic check for mime type or default
-        mime_type = content.mimeType or "application/octet-stream"
+        # MCP SDK 1.x spells this `mimeType`, 2.x `mime_type`. Reading only one
+        # raises an AttributeError that the except below turns into the
+        # placeholder text, so every binary resource would look undecodable.
+        mime_type = (
+            getattr(content, "mimeType", None)
+            or getattr(content, "mime_type", None)
+            or "application/octet-stream"
+        )
         return types.Part.from_bytes(data=data, mime_type=mime_type)
       except Exception:
         return types.Part.from_text(

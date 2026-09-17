@@ -41,9 +41,9 @@ else:
 async def build_graph(
     graph: graphviz.Digraph,
     agent: BaseAgent,
-    highlight_pairs,
-    parent_agent=None,
-):
+    highlight_pairs: list[tuple[str, str]] | None,
+    parent_agent: BaseAgent | None = None,
+) -> None:
   """
   Build a graph of the agent and its sub-agents.
   Args:
@@ -63,7 +63,7 @@ async def build_graph(
   light_gray = '#cccccc'
   white = '#ffffff'
 
-  def get_node_name(tool_or_agent: Union[BaseAgent, BaseTool]):
+  def get_node_name(tool_or_agent: Union[BaseAgent, BaseTool]) -> str:
     if isinstance(tool_or_agent, BaseAgent):
       # Added Workflow Agent checks for different agent types
       if isinstance(tool_or_agent, SequentialAgent):
@@ -81,7 +81,7 @@ async def build_graph(
     else:
       raise ValueError(f'Unsupported tool type: {tool_or_agent}')
 
-  def get_node_caption(tool_or_agent: Union[BaseAgent, BaseTool]):
+  def get_node_caption(tool_or_agent: Union[BaseAgent, BaseTool]) -> str:
 
     if isinstance(tool_or_agent, BaseAgent):
       return '🤖 ' + tool_or_agent.name
@@ -105,7 +105,7 @@ async def build_graph(
       )
       return f'❓ Unsupported tool type: {type(tool_or_agent)}'
 
-  def get_node_shape(tool_or_agent: Union[BaseAgent, BaseTool]):
+  def get_node_shape(tool_or_agent: Union[BaseAgent, BaseTool]) -> str:
     if isinstance(tool_or_agent, BaseAgent):
       return 'ellipse'
     elif retrieval_tool_module_loaded and isinstance(
@@ -126,7 +126,9 @@ async def build_graph(
       )
       return 'cylinder'
 
-  def should_build_agent_cluster(tool_or_agent):
+  def should_build_agent_cluster(
+      tool_or_agent: Union[BaseAgent, BaseTool],
+  ) -> bool:
     if isinstance(tool_or_agent, Workflow):
       return True
     elif isinstance(tool_or_agent, BaseAgent):
@@ -149,7 +151,9 @@ async def build_graph(
     else:
       return False
 
-  async def build_cluster(child: graphviz.Digraph, agent: BaseAgent, name: str):
+  async def build_cluster(
+      child: graphviz.Digraph, agent: BaseAgent, name: str
+  ) -> None:
     if isinstance(agent, LoopAgent):
       # Draw the edge from the parent agent to the first sub-agent
       if parent_agent:
@@ -215,7 +219,7 @@ async def build_graph(
         fontcolor=light_gray,
     )
 
-  async def draw_node(tool_or_agent: Union[BaseAgent, BaseTool]):
+  async def draw_node(tool_or_agent: Union[BaseAgent, BaseTool]) -> None:
     name = get_node_name(tool_or_agent)
     shape = get_node_shape(tool_or_agent)
     caption = get_node_caption(tool_or_agent)
@@ -261,7 +265,7 @@ async def build_graph(
 
       return
 
-  def draw_edge(from_name, to_name):
+  def draw_edge(from_name: str, to_name: str) -> None:
     if highlight_pairs:
       for highlight_from, highlight_to in highlight_pairs:
         if from_name == highlight_from and to_name == highlight_to:

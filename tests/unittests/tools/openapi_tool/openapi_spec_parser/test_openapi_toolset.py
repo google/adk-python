@@ -282,6 +282,173 @@ def test_openapi_toolset_default_snake_case_conversion(
   assert "calendarId" not in schema["properties"]
 
 
+def test_openapi_toolset_optional_operation_security():
+  """An operation that allows anonymous access builds an unauthed tool."""
+  spec = {
+      "openapi": "3.0.0",
+      "info": {"title": "Test API", "version": "1.0"},
+      "servers": [{"url": "https://api.example.com"}],
+      "components": {
+          "securitySchemes": {
+              "apiKey": {
+                  "type": "apiKey",
+                  "in": "header",
+                  "name": "X-API-Key",
+              }
+          }
+      },
+      "paths": {
+          "/items": {
+              "get": {
+                  "operationId": "listItems",
+                  # An empty object means auth is optional for this operation.
+                  "security": [{}, {"apiKey": []}],
+                  "responses": {"200": {"description": "OK"}},
+              }
+          }
+      },
+  }
+
+  toolset = OpenAPIToolset(spec_dict=spec)
+  tool = toolset.get_tool("list_items")
+  assert isinstance(tool, RestApiTool)
+  assert tool.endpoint.path == "/items"
+  assert tool.auth_scheme is None
+
+
+def test_openapi_toolset_optional_global_security():
+  """A global list that allows anonymous access leaves every tool unauthed."""
+  spec = {
+      "openapi": "3.0.0",
+      "info": {"title": "Test API", "version": "1.0"},
+      "servers": [{"url": "https://api.example.com"}],
+      # An empty object means auth is optional for every operation.
+      "security": [{}, {"apiKey": []}],
+      "components": {
+          "securitySchemes": {
+              "apiKey": {
+                  "type": "apiKey",
+                  "in": "header",
+                  "name": "X-API-Key",
+              }
+          }
+      },
+      "paths": {
+          "/items": {
+              "get": {
+                  "operationId": "listItems",
+                  "responses": {"200": {"description": "OK"}},
+              }
+          }
+      },
+  }
+
+  toolset = OpenAPIToolset(spec_dict=spec)
+  assert toolset.get_tool("list_items").auth_scheme is None
+
+
+def test_openapi_toolset_optional_security_listed_after_the_scheme():
+  """The empty requirement makes auth optional wherever it appears."""
+  spec = {
+      "openapi": "3.0.0",
+      "info": {"title": "Test API", "version": "1.0"},
+      "servers": [{"url": "https://api.example.com"}],
+      "security": [{"apiKey": []}, {}],
+      "components": {
+          "securitySchemes": {
+              "apiKey": {
+                  "type": "apiKey",
+                  "in": "header",
+                  "name": "X-API-Key",
+              }
+          }
+      },
+      "paths": {
+          "/items": {
+              "get": {
+                  "operationId": "listItems",
+                  "responses": {"200": {"description": "OK"}},
+              }
+          }
+      },
+  }
+
+  toolset = OpenAPIToolset(spec_dict=spec)
+  assert toolset.get_tool("list_items").auth_scheme is None
+
+
+def test_openapi_toolset_required_global_security():
+  """A list with no empty requirement still makes auth mandatory."""
+  spec = {
+      "openapi": "3.0.0",
+      "info": {"title": "Test API", "version": "1.0"},
+      "servers": [{"url": "https://api.example.com"}],
+      "security": [{"apiKey": []}],
+      "components": {
+          "securitySchemes": {
+              "apiKey": {
+                  "type": "apiKey",
+                  "in": "header",
+                  "name": "X-API-Key",
+              }
+          }
+      },
+      "paths": {
+          "/items": {
+              "get": {
+                  "operationId": "listItems",
+                  "responses": {"200": {"description": "OK"}},
+              }
+          }
+      },
+  }
+
+  toolset = OpenAPIToolset(spec_dict=spec)
+  tool = toolset.get_tool("list_items")
+  assert isinstance(tool.auth_scheme, APIKey)
+  assert tool.auth_scheme.name == "X-API-Key"
+
+
+def test_openapi_toolset_operation_security_overrides_global():
+  """Test an operation that opts out of the global security requirement."""
+  spec = {
+      "openapi": "3.0.0",
+      "info": {"title": "Test API", "version": "1.0"},
+      "servers": [{"url": "https://api.example.com"}],
+      "security": [{"apiKey": []}],
+      "components": {
+          "securitySchemes": {
+              "apiKey": {
+                  "type": "apiKey",
+                  "in": "header",
+                  "name": "X-API-Key",
+              }
+          }
+      },
+      "paths": {
+          "/items": {
+              "get": {
+                  "operationId": "listItems",
+                  # Declaring only an empty object opts out of the global
+                  # requirement rather than inheriting it.
+                  "security": [{}],
+                  "responses": {"200": {"description": "OK"}},
+              }
+          },
+          "/other": {
+              "get": {
+                  "operationId": "listOther",
+                  "responses": {"200": {"description": "OK"}},
+              }
+          },
+      },
+  }
+
+  toolset = OpenAPIToolset(spec_dict=spec)
+  assert toolset.get_tool("list_items").auth_scheme is None
+  assert isinstance(toolset.get_tool("list_other").auth_scheme, APIKey)
+
+
 def test_openapi_toolset_preserve_property_names_body_params():
   """Test preserve_property_names with request body properties."""
   spec = {

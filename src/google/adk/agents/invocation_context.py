@@ -16,8 +16,6 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
-from typing import cast
-from typing import Optional
 
 from google.adk.platform import uuid as platform_uuid
 from google.genai import types
@@ -25,6 +23,7 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import PrivateAttr
+from typing_extensions import override
 
 from ..apps._configs import EventsCompactionConfig
 from ..apps._configs import ResumabilityConfig
@@ -33,42 +32,26 @@ from ..auth.auth_credential import AuthCredential
 from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..events._branch_path import _BranchPath
 from ..events.event import Event
+from ..live._active_streaming_tool import ActiveStreamingTool
+from ..live._audio_cache_manager import RealtimeCacheEntry as RealtimeCacheEntry
+from ..live._transcription_entry import TranscriptionEntry
+from ..live.live_request_queue import LiveRequestQueue
 from ..memory.base_memory_service import BaseMemoryService
 from ..plugins.plugin_manager import PluginManager
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
 from ..tools.base_tool import BaseTool
 from ..workflow._base_node import BaseNode
-from .active_streaming_tool import ActiveStreamingTool
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
 from .context_cache_config import ContextCacheConfig
-from .live_request_queue import LiveRequestQueue
 from .run_config import RunConfig
-from .transcription_entry import TranscriptionEntry
+
+_EventQueueItem = tuple[object, asyncio.Event | None]
 
 
 class LlmCallsLimitExceededError(Exception):
   """Error thrown when the number of LLM calls exceed the limit."""
-
-
-class RealtimeCacheEntry(BaseModel):
-  """Store audio data chunks for caching before flushing."""
-
-  model_config = ConfigDict(
-      arbitrary_types_allowed=True,
-      extra="forbid",
-  )
-  """The pydantic model config."""
-
-  role: str
-  """The role that created this audio data, typically "user" or "model"."""
-
-  data: types.Blob
-  """The audio data chunk."""
-
-  timestamp: float
-  """Timestamp when the audio chunk was received."""
 
 
 class _InvocationCostManager(BaseModel):
@@ -83,8 +66,8 @@ class _InvocationCostManager(BaseModel):
   """A counter that keeps track of number of llm calls made."""
 
   def increment_and_enforce_llm_calls_limit(
-      self, run_config: Optional[RunConfig]
-  ):
+      self, run_config: RunConfig | None
+  ) -> None:
     """Increments _number_of_llm_calls and enforces the limit."""
     # We first increment the counter and then check the conditions.
     self._number_of_llm_calls += 1
@@ -147,15 +130,15 @@ class InvocationContext(BaseModel):
   )
   """The pydantic model config."""
 
-  artifact_service: Optional[BaseArtifactService] = None
+  artifact_service: BaseArtifactService | None = None
   session_service: BaseSessionService
-  memory_service: Optional[BaseMemoryService] = None
-  credential_service: Optional[BaseCredentialService] = None
-  context_cache_config: Optional[ContextCacheConfig] = None
+  memory_service: BaseMemoryService | None = None
+  credential_service: BaseCredentialService | None = None
+  context_cache_config: ContextCacheConfig | None = None
 
   invocation_id: str
   """The id of this invocation context. Readonly."""
-  branch: Optional[str] = None
+  branch: str | None = None
   """The branch of the invocation context.
 
   The format is like agent_1.agent_2.agent_3, where agent_1 is the parent of
@@ -164,7 +147,7 @@ class InvocationContext(BaseModel):
   Branch is used when multiple sub-agents shouldn't see their peer agents'
   conversation history.
   """
-  isolation_scope: Optional[str] = None
+  isolation_scope: str | None = None
   """Scope tag for filtering session events visible to this agent.
 
   When set, the LLM content-builder restricts session events to those
@@ -176,17 +159,17 @@ class InvocationContext(BaseModel):
   ⚠️ DO NOT USE THIS FIELD DIRECTLY.  It is an internal mechanism
   that may change without notice.
   """
-  agent: Optional[BaseAgent | BaseNode] = None
+  agent: BaseAgent | BaseNode | None = None
   """The current agent of this invocation context.
 
   None when Runner drives a BaseNode (not a BaseAgent).
   """
-  user_content: Optional[types.Content] = None
+  user_content: types.Content | None = None
   """The user content that started this invocation. Readonly."""
   session: Session
   """The current session of this invocation context. Readonly."""
 
-  node_path: Optional[str] = None
+  node_path: str | None = None
   """The path of the current agent in the workflow call stack.
 
   Used by workflow agents to track their position in nested agent hierarchies.
@@ -205,31 +188,34 @@ class InvocationContext(BaseModel):
 
   Set to True in callbacks or tools to terminate this invocation."""
 
-  live_request_queue: Optional[LiveRequestQueue] = None
+  live_request_queue: LiveRequestQueue | None = None
   """The queue to receive live requests."""
 
-  active_streaming_tools: Optional[dict[str, ActiveStreamingTool]] = None
+  active_streaming_tools: dict[str, ActiveStreamingTool] | None = None
   """The running streaming tools of this invocation."""
 
-  transcription_cache: Optional[list[TranscriptionEntry]] = None
+  active_non_blocking_tool_tasks: dict[str, asyncio.Task[Any]] | None = None
+  """The running non-blocking tool tasks of this invocation (Live only)."""
+
+  transcription_cache: list[TranscriptionEntry] | None = None
   """Caches necessary data, audio or contents, that are needed by transcription."""
 
-  live_session_resumption_handle: Optional[str] = None
+  live_session_resumption_handle: str | None = None
   """The handle for live session resumption."""
 
-  input_realtime_cache: Optional[list[RealtimeCacheEntry]] = None
+  input_realtime_cache: list[RealtimeCacheEntry] | None = None
   """Caches input audio chunks before flushing to session and artifact services."""
 
-  output_realtime_cache: Optional[list[RealtimeCacheEntry]] = None
+  output_realtime_cache: list[RealtimeCacheEntry] | None = None
   """Caches output audio chunks before flushing to session and artifact services."""
 
-  run_config: Optional[RunConfig] = None
+  run_config: RunConfig | None = None
   """Configurations for live agents under this invocation."""
 
-  resumability_config: Optional[ResumabilityConfig] = None
+  resumability_config: ResumabilityConfig | None = None
   """The resumability config that applies to all agents under this invocation."""
 
-  events_compaction_config: Optional[EventsCompactionConfig] = None
+  events_compaction_config: EventsCompactionConfig | None = None
   """The compaction config for this invocation."""
 
   token_compaction_checked: bool = False
@@ -238,7 +224,7 @@ class InvocationContext(BaseModel):
   plugin_manager: PluginManager = Field(default_factory=PluginManager)
   """The manager for keeping track of plugins in this invocation."""
 
-  _state_schema: Optional[type[BaseModel]] = None
+  _state_schema: type[BaseModel] | None = None
   """The Pydantic model declaring the expected state keys and types.
 
   Propagated from the owning agent down the hierarchy.  When set,
@@ -246,10 +232,12 @@ class InvocationContext(BaseModel):
   validated against this schema at runtime.
   """
 
-  canonical_tools_cache: Optional[list[BaseTool]] = None
+  canonical_tools_cache: list[BaseTool] | None = None
   """The cache of canonical tools for this invocation."""
 
-  _event_queue: Optional[asyncio.Queue] = PrivateAttr(default=None)
+  _event_queue: asyncio.Queue[_EventQueueItem] | None = PrivateAttr(
+      default=None
+  )
   """Shared event queue for all nodes in this invocation.
 
   All nodes enqueue events here via ``_enqueue_event()``. The Runner
@@ -269,6 +257,12 @@ class InvocationContext(BaseModel):
   """A container to keep track of different kinds of costs incurred as a part
   of this invocation.
   """
+
+  @override
+  def model_post_init(self, __context: Any) -> None:
+    super().model_post_init(__context)
+    if self.run_config and self.run_config.custom_metadata:
+      self._custom_metadata.update(self.run_config.custom_metadata)
 
   @property
   def is_resumable(self) -> bool:
@@ -306,7 +300,7 @@ class InvocationContext(BaseModel):
       self,
       agent_name: str,
       *,
-      agent_state: Optional[BaseAgentState] = None,
+      agent_state: BaseAgentState | None = None,
       end_of_agent: bool = False,
   ) -> None:
     """Sets the state of an agent in this invocation.
@@ -343,6 +337,8 @@ class InvocationContext(BaseModel):
     Args:
       agent_name: The name of the agent whose sub-agent states need to be reset.
     """
+    if not isinstance(self.agent, BaseAgent):
+      return
     agent = self.agent.find_agent(agent_name)
     if not agent:
       return
@@ -389,7 +385,7 @@ class InvocationContext(BaseModel):
 
   def increment_llm_call_count(
       self,
-  ):
+  ) -> None:
     """Tracks number of llm calls made.
 
     Raises:
@@ -433,12 +429,94 @@ class InvocationContext(BaseModel):
           if event.invocation_id == self.invocation_id
       ]
     if current_branch:
-      results = [
-          event
-          for event in results
-          if event.branch == self.branch
-          or (event.branch is None and event.author == "user")
-      ]
+      branch_fc_ids: set[str] | None = None
+
+      def _branch_function_call_ids() -> set[str]:
+        """Function call ids issued on this branch or a descendant sub-branch.
+
+        The ids depend only on the session and this branch, not on the event
+        being tested, so they are gathered at most once per call. Gathering
+        them inside the predicate instead rescans every session event once per
+        user response event, which is quadratic in the session size.
+        """
+        nonlocal branch_fc_ids
+        if branch_fc_ids is None:
+          descendant_prefix = f"{self.branch}."
+          branch_fc_ids = {
+              fc.id
+              for branch_event in self.session.events
+              if branch_event.branch
+              and (
+                  branch_event.branch == self.branch
+                  or branch_event.branch.startswith(descendant_prefix)
+              )
+              for fc in branch_event.get_function_calls()
+              if fc.id is not None
+          }
+        return branch_fc_ids
+
+      def _is_branch_match(event: Event) -> bool:
+        """Determines whether an event is part of this invocation's subtree.
+
+        The rule differs by author, deliberately but asymmetrically.
+
+        A user event matches when it sits on this branch, on a descendant
+        sub-branch (e.g. a child NodeTool/WorkflowTool execution tree), or on
+        no branch at all; and when ``self.branch`` is ``None``, every user
+        event matches whatever branch it is on. An empty-string branch is the
+        opposite rather than a synonym for that: it is a real branch value in
+        the workflow code and matches no branched event. A user event carrying
+        function responses must additionally answer a function call issued on
+        this branch or below it -- one answering a call from anywhere else is
+        dropped even when it sits on exactly this branch, which is what keeps
+        a reply from leaking across parallel trees.
+
+        Any other event must sit on exactly this branch; a descendant's own
+        events are not returned.
+
+        So a confirmation answered by the user on a sub-branch is visible here
+        while the agent event that requested it is not. Widening the non-user
+        rule to descendants would not expose sibling trees --
+        ``_BranchPath.is_descendant_of`` excludes those -- but it would hand
+        every caller a descendant's internal events, so it needs a per-caller
+        review rather than a blanket change.
+
+        Note this is the opposite direction from
+        ``contents._is_event_belongs_to_branch``, which asks a different
+        question -- "what history may this agent see?" -- and so matches
+        *ancestor* branches instead. Both are intended.
+        """
+        if getattr(event, "author", None) == "user":
+          frs = event.get_function_responses()
+          if frs and self.branch and self.session:
+            fr_ids = {fr.id for fr in frs if fr.id is not None}
+            # If user's response IDs do not match any function call on this
+            # branch tree, prevent event leakage across parallel or unrelated
+            # branches.
+            if fr_ids and not (fr_ids & _branch_function_call_ids()):
+              return False
+
+          # Match events yielded directly on this branch or on descendant
+          # sub-branches (e.g. child NodeTool/WorkflowTool execution trees).
+          # The `self.branch` guard keeps an empty branch from matching every
+          # branched event, which a bare descendant test would do.
+          if (
+              event.branch is None
+              or self.branch is None
+              or event.branch == self.branch
+              or (
+                  self.branch
+                  and _BranchPath.from_string(event.branch).is_descendant_of(
+                      _BranchPath.from_string(self.branch)
+                  )
+              )
+          ):
+            return True
+          return False
+        # Non-user events: exactly this branch, per the docstring above.
+        return event.branch == self.branch
+
+      results = [e for e in results if _is_branch_match(e)]
     return results
 
   def should_pause_invocation(self, event: Event) -> bool:
@@ -492,37 +570,6 @@ class InvocationContext(BaseModel):
 
     return False
 
-  # TODO: Move this method from invocation_context to a dedicated module.
-  def _find_matching_function_call(
-      self, function_response_event: Event
-  ) -> Optional[Event]:
-    """Finds the function call event in the current invocation that matches the function response id."""
-    from ..flows.llm_flows.functions import find_event_by_function_call_id
-
-    function_responses = function_response_event.get_function_responses()
-    if not function_responses:
-      return None
-
-    events = self._get_events(current_invocation=True)
-    if events and events[-1].id == function_response_event.id:
-      search_space = events[:-1]
-    else:
-      search_space = events
-
-    return find_event_by_function_call_id(
-        search_space, function_responses[0].id
-    )
-
-  def stamp_event_branch_context(self, event: Event) -> None:
-    """Stamps the event with the branch and isolation scope of its matching function call."""
-    if function_call := self._find_matching_function_call(event):
-      event.branch = function_call.branch
-      if (
-          event.isolation_scope is None
-          and function_call.isolation_scope is not None
-      ):
-        event.isolation_scope = function_call.isolation_scope
-
 
 def new_invocation_context_id() -> str:
-  return "e-" + cast(str, platform_uuid.new_uuid())
+  return "e-" + platform_uuid.new_uuid()

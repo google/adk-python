@@ -16,7 +16,7 @@ This sample agent is for demonstrating the aforementioned behavior.
 Run below command:
 
 ```bash
-$ adk run contributing/samples/session_state_agent --replay contributing/samples/session_state_agent/input.json
+$ adk run contributing/samples/context_management/session_state_agent --replay contributing/samples/context_management/session_state_agent/input.json
 ```
 
 And you should see below output:

@@ -22,8 +22,8 @@ The agent includes:
 3\. **Contributing guide**: A sample document uploaded to Gemini Files API and referenced via file_data
 
 **Vertex AI:**
-3\. **Research paper**: Gemma research paper from Google Cloud Storage via GCS file reference
-4\. **AI research paper**: Same research paper accessed via HTTPS URL for comparison
+3\. **Research paper**: Gemini research paper from Google Cloud Storage via GCS file reference
+4\. **AI research paper**: Another Gemini research paper accessed via HTTPS URL for comparison
 
 ## Content Used
 
@@ -40,14 +40,14 @@ The agent includes:
 
 **Vertex AI:**
 
-- **Gemma Research Paper**: Research paper accessed via GCS URI (as `file_data`)
-  - GCS URI: `gs://cloud-samples-data/generative-ai/pdf/2403.05530.pdf`
+- **Gemini Research Paper**: Research paper accessed via GCS URI (as `file_data`)
+  - GCS URI: `gs://cloud-samples-data/generative-ai/pdf/2507.06261.pdf`
   - Demonstrates native GCS file access in Vertex AI
   - PDF format with technical AI research content about Gemini 1.5
-- **AI Research Paper**: Same research paper accessed via HTTPS URL (as `file_data`)
+- **AI Research Paper**: Another research paper accessed via HTTPS URL (as `file_data`)
   - HTTPS URL: `https://storage.googleapis.com/cloud-samples-data/generative-ai/pdf/2403.05530.pdf`
   - Demonstrates HTTPS file access in Vertex AI
-  - Agent can discover these are the same document and compare access methods
+  - Agent can compare documents and selectively provide information from different documents
 
 ## Setup
 
@@ -103,7 +103,7 @@ python -m static_non_text_content.main --prompt "What reference materials do you
 
 ```bash
 cd contributing/samples
-python -m static_non_text_content.main --debug --prompt "What is the Gemma research paper about?"
+python -m static_non_text_content.main --debug --prompt "What is the Gemini research paper about?"
 ```
 
 ## Default Test Prompts
@@ -120,7 +120,7 @@ The sample automatically runs test prompts when no `--prompt` is specified:
 4\. "What does the contributing guide document say about best practices?"
 
 **Vertex AI only (additional prompts):**
-5\. "What is the Gemma research paper about and what are its key contributions?"
+5\. "What is the Gemini research paper about and what are its key contributions?"
 6\. "Can you compare the research papers you have access to? Are they related or different?"
 
 **Gemini Developer API** tests: `inline_data` (image) + Files API `file_data` (uploaded document)

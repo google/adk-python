@@ -12,7 +12,7 @@ This sample demonstrates how tool callbacks work in live (bidirectional streamin
 
 ### After Tool Callbacks
 
-1. **Enhancement Callback**: Adds metadata to tool responses
+1. **Enhancement Callback**: Collects response metadata and hands it to the next callback in the chain
 1. **Async Post-processing Callback**: Performs async post-processing of responses
 
 ### Tools Available
@@ -105,6 +105,7 @@ Observe how multiple callbacks in the chain are processed.
 
 - This sample demonstrates that tool callbacks now work identically in both regular and live streaming modes
 - Multiple callbacks are supported and processed in order
+- A callback that returns a value ends the chain, and every callback in an after chain sees the original tool response, so a callback that wants the rest of the chain to run must return `None` and pass anything it produced through `tool_context.state`
 - Both sync and async callbacks are supported
 - Callbacks can modify, enhance, or block tool execution
 - The callback system provides full control over the tool execution pipeline

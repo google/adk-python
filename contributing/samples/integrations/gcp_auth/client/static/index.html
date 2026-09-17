@@ -22,6 +22,26 @@
           <h2>Configuration Settings</h2>
         </div>
         <div class="settings-form">
+          <!-- Agent Type Selection -->
+          <md-outlined-select id="agent-type-select" label="Agent Type">
+            <md-select-option value="local">
+              <div slot="headline">Local Agent</div>
+            </md-select-option>
+            <md-select-option value="remote" selected>
+              <div slot="headline">Remote Agent (Vertex AI)</div>
+            </md-select-option>
+          </md-outlined-select>
+
+          <!-- Local Agent Settings -->
+          <div id="local-settings" style="display: none;">
+            <md-outlined-select id="local-agent-select" label="Select Local Agent">
+              <md-select-option value="">
+                <div slot="headline">Select an agent...</div>
+              </md-select-option>
+            </md-outlined-select>
+            <input type="hidden" id="local-agent" />
+          </div>
+
           <!-- Remote Agent Settings -->
           <div id="remote-settings">
             <md-outlined-text-field
@@ -72,15 +92,19 @@
                 <span class="info-label">Mode:</span>
                 <span class="info-value" id="info-agent-mode">Remote Vertex AI</span>
               </div>
-              <div class="info-row">
+              <div class="info-row" id="info-row-local-agent" style="display: none;">
+                <span class="info-label">Local Agent:</span>
+                <span class="info-value" id="info-local-agent">-</span>
+              </div>
+              <div class="info-row" id="info-row-project-id">
                 <span class="info-label">Project ID:</span>
                 <span class="info-value" id="info-project-id">-</span>
               </div>
-              <div class="info-row">
+              <div class="info-row" id="info-row-location">
                 <span class="info-label">Location:</span>
                 <span class="info-value" id="info-location">-</span>
               </div>
-              <div class="info-row">
+              <div class="info-row" id="info-row-agent-id">
                 <span class="info-label">Target ID:</span>
                 <span class="info-value" id="info-agent-id">-</span>
               </div>

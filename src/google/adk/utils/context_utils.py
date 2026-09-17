@@ -23,6 +23,7 @@ from __future__ import annotations
 from contextlib import aclosing
 import functools
 import inspect
+from types import UnionType
 import typing
 from typing import Any
 from typing import Callable
@@ -51,9 +52,9 @@ def _is_context_type(annotation: Any) -> bool:
   if annotation is inspect.Parameter.empty:
     return False
 
-  # Handle Optional[Context] and Union types
+  # Handle Optional[Context] and Union types (both Union[X, None] and X | None)
   origin = get_origin(annotation)
-  if origin is Union:
+  if origin is Union or origin is UnionType:
     args = get_args(annotation)
     return any(
         _is_context_type(arg) for arg in args if not isinstance(arg, type(None))

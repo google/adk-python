@@ -21,13 +21,17 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.mcp_instruction_provider import McpInstructionProvider
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
-from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
+from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.adk.tools.tool_context import ToolContext
 
-# Configure logging; the mcp_tool logger must be set to
-# DEBUG to capture http_debug_info
+# The callback below reads `http_debug_info`, which the mcp_tool loggers fill
+# only at DEBUG, because recording an exchange can mean reading the response
+# body. The same exchanges also reach OpenTelemetry, as one
+# `adk.experimental.mcp.http.client.response.end` log record each, whenever
+# `ADK_EXPERIMENTAL_TELEMETRY=true`; set `ADK_CAPTURE_MCP_HTTP_BODIES=true` for
+# the payloads to travel with them.
 logging.basicConfig(level=logging.INFO)
-logging.getLogger('google_adk.google.adk.tools.mcp_tool.mcp_tool').setLevel(
+logging.getLogger('google_adk.google.adk.tools.mcp_tool').setLevel(
     logging.DEBUG
 )
 
@@ -59,7 +63,7 @@ root_agent = LlmAgent(
         prompt_name='file_system_prompt',
     ),
     tools=[
-        MCPToolset(
+        McpToolset(
             connection_params=connection_params,
             # don't want agent to do write operation
             # you can also do below
@@ -72,12 +76,8 @@ root_agent = LlmAgent(
             # ],
             tool_filter=[
                 'read_file',
-                'read_multiple_files',
                 'list_directory',
-                'directory_tree',
-                'search_files',
-                'get_file_info',
-                'list_allowed_directories',
+                'get_cwd',
             ],
             require_confirmation=True,
         )

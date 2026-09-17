@@ -15,10 +15,9 @@
 from __future__ import annotations
 
 import logging
+from typing import Callable
 from typing import Dict
 from typing import List
-from typing import Optional
-from typing import Union
 
 import httpx
 from typing_extensions import override
@@ -62,15 +61,15 @@ class GoogleApiToolset(BaseToolset):
       self,
       api_name: str,
       api_version: str,
-      client_id: Optional[str] = None,
-      client_secret: Optional[str] = None,
-      tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
-      service_account: Optional[ServiceAccount] = None,
-      tool_name_prefix: Optional[str] = None,
+      client_id: str | None = None,
+      client_secret: str | None = None,
+      tool_filter: ToolPredicate | List[str] | None = None,
+      service_account: ServiceAccount | None = None,
+      tool_name_prefix: str | None = None,
       *,
-      additional_headers: Optional[Dict[str, str]] = None,
-      additional_scopes: Optional[List[str]] = None,
-      discovery_url: Optional[str] = None,
+      additional_headers: Dict[str, str] | None = None,
+      additional_scopes: List[str] | None = None,
+      discovery_url: str | None = None,
   ):
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
     self.api_name = api_name
@@ -82,13 +81,14 @@ class GoogleApiToolset(BaseToolset):
     self._additional_scopes = additional_scopes
     self._discovery_url = discovery_url
 
-    self._httpx_client_factory = None
+    self._httpx_client_factory: Callable[[], httpx.AsyncClient] | None = None
+    self._mtls_certs: MtlsClientCerts | None = None
     use_client_cert = use_client_cert_effective()
 
     if use_client_cert:
       self._mtls_certs = MtlsClientCerts()
       cert_path, key_path, passphrase = self._mtls_certs.get_certs()
-      if cert_path and key_path and passphrase:
+      if cert_path and key_path:
 
         def client_factory() -> httpx.AsyncClient:
           if passphrase:
@@ -102,8 +102,10 @@ class GoogleApiToolset(BaseToolset):
     self._openapi_toolset = self._load_toolset_with_oidc_auth()
 
   @override
-  async def get_tools(
-      self, readonly_context: Optional[ReadonlyContext] = None
+  # list is invariant, so the narrower element type is not a compatible
+  # override; widening it to BaseTool would change this public signature.
+  async def get_tools(  # type: ignore[override]
+      self, readonly_context: ReadonlyContext | None = None
   ) -> List[GoogleApiTool]:
     """Get all tools in the toolset."""
     return [
@@ -118,7 +120,7 @@ class GoogleApiToolset(BaseToolset):
         if self._is_tool_selected(tool, readonly_context)
     ]
 
-  def set_tool_filter(self, tool_filter: Union[ToolPredicate, List[str]]):
+  def set_tool_filter(self, tool_filter: ToolPredicate | List[str]) -> None:
     self.tool_filter = tool_filter
 
   def _load_toolset_with_oidc_auth(self) -> OpenAPIToolset:
@@ -158,16 +160,16 @@ class GoogleApiToolset(BaseToolset):
         httpx_client_factory=self._httpx_client_factory,
     )
 
-  def configure_auth(self, client_id: str, client_secret: str):
+  def configure_auth(self, client_id: str, client_secret: str) -> None:
     self._client_id = client_id
     self._client_secret = client_secret
 
-  def configure_sa_auth(self, service_account: ServiceAccount):
+  def configure_sa_auth(self, service_account: ServiceAccount) -> None:
     self._service_account = service_account
 
   @override
-  async def close(self):
+  async def close(self) -> None:
     if self._openapi_toolset:
       await self._openapi_toolset.close()
-    if hasattr(self, '_mtls_certs') and self._mtls_certs:
+    if self._mtls_certs:
       self._mtls_certs.close()

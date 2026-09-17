@@ -17,7 +17,8 @@ import os
 
 from dotenv import load_dotenv
 from google.adk.agents.llm_agent import LlmAgent
-from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
+from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+from google.adk.tools.mcp_tool.mcp_toolset import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_toolset import StdioServerParameters
 
 load_dotenv()
@@ -36,11 +37,13 @@ root_agent = LlmAgent(
         "or create Notion pages. Ask clarifying questions when unsure."
     ),
     tools=[
-        MCPToolset(
-            connection_params=StdioServerParameters(
-                command="npx",
-                args=["-y", "@notionhq/notion-mcp-server"],
-                env={"OPENAPI_MCP_HEADERS": NOTION_HEADERS},
+        McpToolset(
+            connection_params=StdioConnectionParams(
+                server_params=StdioServerParameters(
+                    command="npx",
+                    args=["-y", "@notionhq/notion-mcp-server"],
+                    env={"OPENAPI_MCP_HEADERS": NOTION_HEADERS},
+                ),
             )
         )
     ],

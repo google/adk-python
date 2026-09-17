@@ -1,0 +1,17 @@
+# Modules whose import failure is expected, and which therefore must not fail
+# the release artifact check.
+#
+# Adding a line here is a deliberate, reviewable act: put the module on its own
+# line with a comment saying why the failure is correct. Prefer fixing the
+# import. Entries that outlive their reason should be deleted -- a module that
+# imports again is reported under "Now importing again" in the check's output,
+# which is the signal to remove it from here.
+#
+# There is no flag to skip this check. This file is the only escape hatch, on
+# purpose: a gate that can be waved through from a command line stops being a
+# gate.
+#
+# Format: one dotted module name per line. Blank lines and #-comments ignored.
+#
+# Example:
+#   google.adk.some.module  # dropped in this release on purpose

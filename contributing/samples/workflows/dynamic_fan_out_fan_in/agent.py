@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import AsyncGenerator
 
 from google.adk import Agent
 from google.adk import Context
@@ -33,7 +34,9 @@ generator = Agent(
 
 
 @node(rerun_on_resume=True)
-async def orchestrator(ctx: Context, node_input: str) -> str:
+async def orchestrator(
+    ctx: Context, node_input: str
+) -> AsyncGenerator[Event, None]:
   """Orchestrator node that performs dynamic fan-out and fan-in."""
   # Split input comma-separated string into topics
   topics = [t.strip() for t in node_input.split(",") if t.strip()]
@@ -41,7 +44,7 @@ async def orchestrator(ctx: Context, node_input: str) -> str:
 
   # Fan-out: Schedule a dynamic node for each topic
   tasks = []
-  for i, topic in enumerate(topics):
+  for topic in topics:
     tasks.append(
         ctx.run_node(
             generator,

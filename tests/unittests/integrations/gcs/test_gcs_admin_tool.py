@@ -138,3 +138,67 @@ def test_delete_bucket():
     )
     assert result["status"] == "SUCCESS"
     mock_bucket.delete.assert_called_once()
+
+
+def test_get_bucket():
+  """Test get_bucket function."""
+  with mock.patch.object(
+      client, "get_gcs_client", autospec=True
+  ) as mock_get_client:
+    mock_client = mock.MagicMock()
+    mock_get_client.return_value = mock_client
+    mock_bucket = mock.MagicMock()
+    mock_client.get_bucket.return_value = mock_bucket
+    setattr(
+        mock_bucket,
+        "_properties",
+        {
+            "bucket_id": "test-bucket-id",
+            "bucket_name": "test-bucket",
+            "location": "US",
+            "storage_class": "STANDARD",
+            "time_created": "2024-01-01",
+            "updated": "2024-01-02",
+            "labels": {"env": "test"},
+        },
+    )
+
+    creds = mock.create_autospec(Credentials, instance=True)
+    result = admin_tool.get_bucket(bucket_name="test-bucket", credentials=creds)
+    expected_result = getattr(mock_bucket, "_properties", {}).copy()
+    assert result == {"status": "SUCCESS", "results": expected_result}
+
+
+def test_get_bucket_with_properties():
+  """Test get_bucket function when bucket has raw _properties populated."""
+  with mock.patch.object(
+      client, "get_gcs_client", autospec=True
+  ) as mock_get_client:
+    mock_client = mock.MagicMock()
+    mock_get_client.return_value = mock_client
+    mock_bucket = mock.MagicMock()
+    mock_client.get_bucket.return_value = mock_bucket
+    setattr(
+        mock_bucket,
+        "_properties",
+        {
+            "kind": "storage#bucket",
+            "id": "test-bucket-id",
+            "name": "test-bucket",
+            "location": "US",
+            "storageClass": "STANDARD",
+            "timeCreated": "2024-01-01",
+            "updated": "2024-01-02",
+            "labels": {"env": "test"},
+            "locationType": "region",
+            "etag": "etag-val",
+            "metageneration": 2,
+            "versioning": {"enabled": True},
+            "iamConfiguration": {"uniformBucketLevelAccess": {"enabled": True}},
+        },
+    )
+
+    creds = mock.create_autospec(Credentials, instance=True)
+    result = admin_tool.get_bucket(bucket_name="test-bucket", credentials=creds)
+    expected_result = getattr(mock_bucket, "_properties", {}).copy()
+    assert result == {"status": "SUCCESS", "results": expected_result}

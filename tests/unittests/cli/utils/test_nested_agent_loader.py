@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+from textwrap import dedent
 
 from google.adk.cli.utils._nested_agent_loader import NestedAgentLoader
 import pytest
@@ -58,10 +59,10 @@ class TestNestedAgentLoader:
       dir2.mkdir(parents=True)
       (dir2 / "root_agent.yaml").write_text("")
 
-      # Create sub_dir/sub_sub_dir/agent_three/__init__.py
+      # Create sub_dir/sub_sub_dir/agent_three/agent.py
       dir3 = temp_path / "sub_dir" / "sub_sub_dir" / "agent_three"
       dir3.mkdir(parents=True)
-      (dir3 / "__init__.py").write_text("root_agent = None")
+      (dir3 / "agent.py").write_text("")
 
       loader = NestedAgentLoader(str(temp_path))
       agents = loader.list_agents()
@@ -102,23 +103,24 @@ class TestNestedAgentLoader:
 
       assert agents == ["valid_agent"]
 
-  def test_list_agents_excludes_root_directory_itself(self):
-    """Root app directory itself is not listed as a nested agent sub-app."""
+  def test_single_agent_directory_with_subfolders_remains_single_agent(self):
+    """A directory with an agent.py at root remains in single-agent mode even with subfolders."""
     with tempfile.TemporaryDirectory() as temp_dir:
-      temp_path = Path(temp_dir)
+      temp_path = Path(temp_dir) / "my_single_agent"
+      temp_path.mkdir()
 
-      # Create agent.py at the root itself
+      # Create agent.py at the root of my_single_agent directory
       (temp_path / "agent.py").write_text("")
 
-      # Create a nested valid agent
+      # Create a nested subfolder containing an agent
       dir_nested = temp_path / "sub_agent"
       dir_nested.mkdir()
       (dir_nested / "agent.py").write_text("")
 
       loader = NestedAgentLoader(str(temp_path))
-      agents = loader.list_agents()
-
-      assert agents == ["sub_agent"]
+      assert loader.is_single_agent is True
+      assert loader.single_agent_name == "my_single_agent"
+      assert loader.list_agents() == ["my_single_agent"]
 
   def test_list_agents_sorts_discovered_agents_alphabetically(self):
     """Returned list of discovered agents is sorted alphabetically."""
@@ -154,3 +156,54 @@ class TestNestedAgentLoader:
     # Assert: cleared from sys.modules (both the module and its submodules)
     assert "foo.bar.my_agent" not in sys.modules
     assert "foo.bar.my_agent.submodule" not in sys.modules
+
+  def test_nested_wrong_type_root_agent_raises_targeted_error(self):
+    """A non-agent `root_agent` in nested path raises a type-mismatch error."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+      agent_dir = temp_path / "parent" / "mistyped_agent"
+      agent_dir.mkdir(parents=True)
+      agent_file = agent_dir / "agent.py"
+      agent_file.write_text(dedent("""
+                root_agent = "I am a string, not an agent"
+            """))
+
+      loader = NestedAgentLoader(str(temp_path))
+
+      with pytest.raises(ValueError) as exc_info:
+        loader.load_agent("parent.mistyped_agent")
+
+      message = str(exc_info.value)
+      assert "parent.mistyped_agent.agent.root_agent" in message
+      assert "builtins.str" in message
+      assert "No root_agent found" not in message
+
+  def test_nested_app_exported_as_root_agent_suggests_app_name(self):
+    """Exporting an App as `root_agent` in nested path points the user at 'app'."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+      agent_dir = temp_path / "parent" / "app_agent"
+      agent_dir.mkdir(parents=True)
+      agent_file = agent_dir / "agent.py"
+      agent_file.write_text(dedent("""
+                from google.adk.agents.base_agent import BaseAgent
+                from google.adk.apps.app import App
+
+
+                class MyAgent(BaseAgent):
+
+                    def __init__(self):
+                        super().__init__(name="my_agent")
+
+
+                root_agent = App(name="app_agent", root_agent=MyAgent())
+            """))
+
+      loader = NestedAgentLoader(str(temp_path))
+
+      with pytest.raises(ValueError) as exc_info:
+        loader.load_agent("parent.app_agent")
+
+      message = str(exc_info.value)
+      assert "google.adk.apps.app.App" in message
+      assert "under the name 'app'" in message

@@ -29,7 +29,7 @@ from .base_credential_refresher import BaseCredentialRefresher
 class CredentialRefresherRegistry:
   """Registry for credential refresher instances."""
 
-  def __init__(self):
+  def __init__(self) -> None:
     self._refreshers: Dict[AuthCredentialTypes, BaseCredentialRefresher] = {}
 
   def register(

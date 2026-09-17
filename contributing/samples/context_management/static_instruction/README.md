@@ -47,8 +47,8 @@ The agent will automatically load environment variables on startup.
 Run the agent to see Bingo in different hunger states:
 
 ```bash
-cd contributing/samples
-PYTHONPATH=../../src python -m static_instruction.main
+cd contributing/samples/context_management
+PYTHONPATH=../../../src python -m static_instruction.main
 ```
 
 This will demonstrate all hunger states by simulating different feeding times and showing how Bingo's mood changes while his core personality remains cached.
@@ -58,8 +58,8 @@ This will demonstrate all hunger states by simulating different feeding times an
 For a more interactive experience, use the ADK web interface to chat with Bingo in real-time:
 
 ```bash
-cd contributing/samples
-PYTHONPATH=../../src adk web .
+cd contributing/samples/context_management
+PYTHONPATH=../../../src adk web .
 ```
 
 This will start a web interface where you can:

@@ -48,7 +48,7 @@ Note: `gemini-embedding-2-preview` is currently only available in
 ## Usage
 
 ```bash
-cd contributing/samples
+cd contributing/samples/integrations
 
 # Interactive CLI
 adk run files_retrieval_agent

@@ -1,116 +1,35 @@
 {
   "appName": "node_as_tool",
+  "id": "12345678-1234-1234-1234-123456789abc",
+  "userId": "user",
   "events": [
     {
-      "author": "user",
-      "content": {
-        "parts": [
-          {
-            "text": "What discount does customer c123 get?"
-          }
-        ],
-        "role": "user"
-      },
-      "id": "e-1",
-      "invocationId": "i-1",
-      "nodeInfo": {
-        "path": ""
-      }
-    },
-    {
-      "author": "customer_service_agent",
       "content": {
         "parts": [
           {
             "functionCall": {
+              "id": "fc-3",
               "args": {
-                "user_id": "c123"
+                "interruptId": "fc-3",
+                "payload": null,
+                "message": "Apply VIP discount for tier 'Verified VIP Member'?",
+                "response_schema": null
               },
-              "id": "fc-1",
-              "name": "customer_lookup_workflow"
+              "name": "adk_request_input"
             }
           }
-        ],
-        "role": "model"
+        ]
       },
-      "id": "e-2",
-      "invocationId": "i-1",
-      "longRunningToolIds": [
-        "fc-1"
-      ],
-      "nodeInfo": {
-        "path": "customer_service_agent@1"
-      }
-    },
-    {
-      "author": "customer_lookup_workflow",
-      "branch": "customer_lookup_workflow@fc-1",
-      "id": "e-3",
-      "invocationId": "i-1",
-      "nodeInfo": {
-        "outputFor": [
-          "customer_lookup_workflow@1/lookup_customer_data@1",
-          "customer_lookup_workflow@1"
-        ],
-        "path": "customer_lookup_workflow@1/lookup_customer_data@1"
-      },
-      "output": {
-        "tier": "Verified VIP Member",
-        "user_id": "c123"
-      }
-    },
-    {
-      "author": "customer_service_agent",
-      "content": {
-        "parts": [
-          {
-            "functionResponse": {
-              "id": "fc-1",
-              "name": "customer_lookup_workflow",
-              "response": {
-                "tier": "Verified VIP Member",
-                "user_id": "c123"
-              }
-            }
-          }
-        ],
-        "role": "user"
-      },
-      "id": "e-4",
-      "invocationId": "i-1",
-      "nodeInfo": {
-        "path": "customer_service_agent@1"
-      }
-    },
-    {
-      "author": "customer_service_agent",
-      "content": {
-        "parts": [
-          {
-            "functionCall": {
-              "args": {
-                "tier": "Verified VIP Member"
-              },
-              "id": "fc-2",
-              "name": "calculate_discount"
-            }
-          }
-        ],
-        "role": "model"
-      },
-      "id": "e-5",
-      "invocationId": "i-1",
-      "longRunningToolIds": [
-        "fc-2"
-      ],
-      "nodeInfo": {
-        "path": "customer_service_agent@1"
-      }
-    },
-
-    {
       "author": "calculate_discount",
-      "branch": "calculate_discount@fc-2",
+      "nodeInfo": {
+        "path": "calculate_discount@1"
+      },
+      "longRunningToolIds": [
+        "fc-3"
+      ],
+      "branch": "calculate_discount@fc-2"
+    },
+    {
       "content": {
         "parts": [
           {
@@ -119,27 +38,121 @@
         ],
         "role": "user"
       },
-      "id": "e-6",
-      "invocationId": "i-1",
+      "author": "calculate_discount",
       "nodeInfo": {
         "path": "calculate_discount@1"
-      }
+      },
+      "branch": "calculate_discount@fc-2"
+    },
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "Checking discount rules for tier 'Verified VIP Member'..."
+          }
+        ],
+        "role": "user"
+      },
+      "author": "calculate_discount",
+      "nodeInfo": {
+        "path": "calculate_discount@1"
+      },
+      "branch": "calculate_discount@fc-2"
     },
     {
       "author": "calculate_discount",
-      "branch": "calculate_discount@fc-2",
-      "id": "e-7",
-      "invocationId": "i-1",
+      "output": "20% off",
       "nodeInfo": {
+        "path": "calculate_discount@1",
         "outputFor": [
           "calculate_discount@1"
-        ],
-        "path": "calculate_discount@1"
+        ]
       },
-      "output": "20% off"
+      "branch": "calculate_discount@fc-2"
     },
     {
+      "author": "customer_lookup_workflow",
+      "output": {
+        "user_id": "c123",
+        "tier": "Verified VIP Member"
+      },
+      "nodeInfo": {
+        "path": "customer_lookup_workflow@1/lookup_customer_data@1",
+        "outputFor": [
+          "customer_lookup_workflow@1/lookup_customer_data@1",
+          "customer_lookup_workflow@1"
+        ]
+      },
+      "branch": "customer_lookup_workflow@fc-1"
+    },
+    {
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "id": "fc-2",
+              "args": {
+                "tier": "Verified VIP Member"
+              },
+              "name": "calculate_discount"
+            }
+          }
+        ],
+        "role": "model"
+      },
       "author": "customer_service_agent",
+      "nodeInfo": {
+        "path": "customer_service_agent@1"
+      },
+      "longRunningToolIds": [
+        "fc-2"
+      ]
+    },
+    {
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "id": "fc-1",
+              "args": {
+                "user_id": "c123"
+              },
+              "name": "customer_lookup_workflow"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "author": "customer_service_agent",
+      "nodeInfo": {
+        "path": "customer_service_agent@1"
+      },
+      "longRunningToolIds": [
+        "fc-1"
+      ]
+    },
+    {
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-1",
+              "name": "customer_lookup_workflow",
+              "response": {
+                "user_id": "c123",
+                "tier": "Verified VIP Member"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "author": "customer_service_agent",
+      "nodeInfo": {
+        "path": "customer_service_agent@1"
+      }
+    },
+    {
       "content": {
         "parts": [
           {
@@ -154,14 +167,12 @@
         ],
         "role": "user"
       },
-      "id": "e-8",
-      "invocationId": "i-1",
+      "author": "customer_service_agent",
       "nodeInfo": {
         "path": "customer_service_agent@1"
       }
     },
     {
-      "author": "customer_service_agent",
       "content": {
         "parts": [
           {
@@ -170,13 +181,31 @@
         ],
         "role": "model"
       },
-      "id": "e-9",
-      "invocationId": "i-1",
+      "author": "customer_service_agent",
       "nodeInfo": {
         "path": "customer_service_agent@1"
       }
+    },
+    {
+      "content": {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "fc-3",
+              "name": "adk_request_input",
+              "response": {
+                "text": "yes"
+              }
+            }
+          }
+        ],
+        "role": "user"
+      },
+      "author": "user",
+      "nodeInfo": {
+        "path": ""
+      },
+      "branch": "calculate_discount@fc-2"
     }
-  ],
-  "id": "12345678-1234-1234-1234-123456789abc",
-  "userId": "user"
+  ]
 }

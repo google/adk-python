@@ -28,7 +28,9 @@ from typing import cast
 from typing import Iterator
 from typing import Optional
 
+from ...errors._stale_session_error import StaleSessionError
 from ...errors.already_exists_error import AlreadyExistsError
+from ...errors.session_not_found_error import SessionNotFoundError
 from ...events.event import Event
 from ...platform import uuid as platform_uuid
 from ...sessions import _session_util
@@ -155,27 +157,28 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
 
   @staticmethod
   def _merge_state(
-      app_state: dict[str, Any],
-      user_state: dict[str, Any],
+      app_state: Optional[dict[str, Any]],
+      user_state: Optional[dict[str, Any]],
       session_state: dict[str, Any],
   ) -> dict[str, Any]:
     """Merge app, user, and session states into a single state dictionary."""
     merged_state = copy.deepcopy(session_state)
-    for key, value in app_state.items():
+    for key, value in (app_state or {}).items():
       merged_state[State.APP_PREFIX + key] = value
-    for key, value in user_state.items():
+    for key, value in (user_state or {}).items():
       merged_state[State.USER_PREFIX + key] = value
     return merged_state
 
   def _get_sessions_ref(
       self, app_name: str, user_id: str
   ) -> firestore.AsyncCollectionReference:
-    return (
+    return cast(
+        "firestore.AsyncCollectionReference",
         self.client.collection(self.root_collection)
         .document(app_name)
         .collection("users")
         .document(user_id)
-        .collection(self.sessions_collection)
+        .collection(self.sessions_collection),
     )
 
   async def create_session(
@@ -195,11 +198,13 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
 
     session_ref = self._get_sessions_ref(app_name, user_id).document(session_id)
 
-    # Extract state deltas
+    # Extract state deltas. App and user state are written to Firestore
+    # natively, which keeps datetime and other rich types, so only the session
+    # bucket, which is json.dumps'd below, is coerced.
     state_deltas = _session_util.extract_state_delta(initial_state)
     app_state_delta = state_deltas["app"]
     user_state_delta = state_deltas["user"]
-    session_state = state_deltas["session"]
+    session_state = _session_util.make_json_safe_state(state_deltas["session"])
 
     app_ref = self.client.collection(self.app_state_collection).document(
         app_name
@@ -291,17 +296,6 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
     if not data:
       return None
 
-    # Fetch events and shared state concurrently
-    events_ref = session_ref.collection(self.events_collection)
-    query = events_ref.order_by("timestamp")
-
-    if config:
-      if config.after_timestamp:
-        after_dt = datetime.fromtimestamp(config.after_timestamp)
-        query = query.where("timestamp", ">=", after_dt)
-      if config.num_recent_events:
-        query = query.limit_to_last(config.num_recent_events)
-
     app_ref = self.client.collection(self.app_state_collection).document(
         app_name
     )
@@ -312,11 +306,33 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
         .document(user_id)
     )
 
-    events_docs, app_doc, user_doc = await asyncio.gather(
-        query.get(),
-        app_ref.get(),
-        user_ref.get(),
-    )
+    # A requested count of zero asks for no event history at all (callers use
+    # it to probe whether a session exists), so skip the events query rather
+    # than falling through and reading the whole transcript.
+    if config is not None and config.num_recent_events == 0:
+      events_docs: list[Any] = []
+      app_doc, user_doc = await asyncio.gather(app_ref.get(), user_ref.get())
+    else:
+      # Fetch events and shared state concurrently
+      events_ref = session_ref.collection(self.events_collection)
+      query = events_ref.order_by("timestamp")
+
+      if config:
+        if config.after_timestamp:
+          # Stored event timestamps are aware UTC; a naive cursor is read as
+          # UTC on the wire and would skew the filter by the host's UTC offset.
+          after_dt = datetime.fromtimestamp(
+              config.after_timestamp, tz=timezone.utc
+          )
+          query = query.where("timestamp", ">=", after_dt)
+        if config.num_recent_events is not None:
+          query = query.limit_to_last(config.num_recent_events)
+
+      events_docs, app_doc, user_doc = await asyncio.gather(
+          query.get(),
+          app_ref.get(),
+          user_ref.get(),
+      )
 
     events = []
     for event_doc in events_docs:
@@ -422,6 +438,7 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
           )
       )
 
+    sessions.sort(key=lambda s: (s.last_update_time, s.user_id, s.id))
     return ListSessionsResponse(sessions=sessions)
 
   async def delete_session(
@@ -477,6 +494,9 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
         if event.actions and event.actions.state_delta
         else {}
     )
+    # App and user state are written to Firestore natively, so they keep their
+    # rich types; only the session bucket is json.dumps'd, and it is coerced
+    # once below over the whole merged dict.
     state_deltas = _session_util.extract_state_delta(state_delta)
     app_updates = state_deltas["app"]
     user_updates = state_deltas["user"]
@@ -503,7 +523,7 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
         # 1. Reads
         session_snap = await session_ref.get(transaction=transaction)
         if not session_snap.exists:
-          raise ValueError(f"Session {session.id} not found.")
+          raise SessionNotFoundError(f"Session {session.id} not found.")
 
         session_doc = session_snap.to_dict() or {}
         if session_doc.get("status") == "DELETING":
@@ -513,7 +533,7 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
 
         if session._storage_update_marker is not None:
           if session._storage_update_marker != str(current_revision):
-            raise ValueError(_STALE_SESSION_ERROR_MESSAGE)
+            raise StaleSessionError(_STALE_SESSION_ERROR_MESSAGE)
 
         app_snap = (
             await app_ref.get(transaction=transaction) if app_updates else None
@@ -526,7 +546,7 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
 
         # 2. Writes
         if app_updates and app_snap is not None:
-          current_app = app_snap.to_dict() if app_snap.exists else {}
+          current_app = (app_snap.to_dict() or {}) if app_snap.exists else {}
           current_app.update(app_updates)
           transaction.set(app_ref, current_app, merge=True)
 
@@ -545,6 +565,11 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
             and not k.startswith(State.TEMP_PREFIX)
         }
         session_only_state.update(session_updates)
+        # `session.state` also carries the raw delta merged by the base class
+        # on every earlier append, so the whole merged dict is coerced here.
+        session_only_state = _session_util.make_json_safe_state(
+            session_only_state
+        )
         transaction.update(
             session_ref,
             {

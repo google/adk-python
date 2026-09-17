@@ -1,0 +1,35 @@
+{
+  "eval_set_id": "custom_metric",
+  "name": "Custom metric: temperature safety",
+  "description": "A valid set_temperature call; the custom metric scores 1.0.",
+  "eval_cases": [
+    {
+      "eval_id": "set_bedroom_safe_temp",
+      "conversation": [
+        {
+          "invocation_id": "cm-1",
+          "user_content": {
+            "parts": [{"text": "Set the Bedroom to 21 degrees."}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "Temperature in Bedroom set to 21C."}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {"name": "set_temperature",
+               "args": {"location": "Bedroom", "temperature": 21}}
+            ],
+            "intermediate_responses": []
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "home_automation_agent",
+        "user_id": "user",
+        "state": {}
+      }
+    }
+  ]
+}

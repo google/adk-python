@@ -72,28 +72,36 @@ Agent created in {agent_folder}:
 """
 
 
+_GENERATED_GITIGNORE_ENTRIES = (".env", ".adk/")
+
+
 def _ensure_dotenv_gitignored(agent_folder: str) -> None:
-  """Ensures generated secrets are excluded from version control."""
+  """Ensures generated secrets and local runtime data are excluded from
+  version control."""
   gitignore_file_path = os.path.join(agent_folder, ".gitignore")
-  dotenv_entry = ".env"
 
   if not os.path.exists(gitignore_file_path):
     with open(gitignore_file_path, "w", encoding="utf-8") as f:
-      f.write(f"{dotenv_entry}\n")
+      f.write("".join(f"{entry}\n" for entry in _GENERATED_GITIGNORE_ENTRIES))
     return
 
   with open(gitignore_file_path, "r", encoding="utf-8") as f:
     content = f.read()
 
   existing_lines = content.splitlines()
-  if dotenv_entry in existing_lines:
+  missing_entries = [
+      entry
+      for entry in _GENERATED_GITIGNORE_ENTRIES
+      if entry not in existing_lines
+  ]
+  if not missing_entries:
     return
 
-  # Append .env, ensuring proper newline separation.
+  # Append missing entries, ensuring proper newline separation.
   with open(gitignore_file_path, "a", encoding="utf-8") as f:
     if content and not content.endswith("\n"):
       f.write("\n")
-    f.write(f"{dotenv_entry}\n")
+    f.write("".join(f"{entry}\n" for entry in missing_entries))
 
 
 def _generate_files(
@@ -104,7 +112,7 @@ def _generate_files(
     google_cloud_region: Optional[str] = None,
     model: Optional[str] = None,
     type: str,
-):
+) -> None:
   """Generates a folder name for the agent."""
   os.makedirs(agent_folder, exist_ok=True)
 
@@ -189,7 +197,7 @@ def run_cmd(
     google_cloud_project: Optional[str],
     google_cloud_region: Optional[str],
     type: Optional[str],
-):
+) -> None:
   """Runs `adk create` command to create agent template.
 
   Args:

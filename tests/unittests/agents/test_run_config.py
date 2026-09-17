@@ -137,3 +137,85 @@ def test_model_input_context_accepts_transient_contents():
   run_config = RunConfig(model_input_context=[context_content])
 
   assert run_config.model_input_context == [context_content]
+
+
+def _deprecation_messages(records) -> list[str]:
+  return [
+      str(record.message)
+      for record in records
+      if issubclass(record.category, DeprecationWarning)
+  ]
+
+
+def test_save_live_audio_true_turns_on_save_live_blob():
+  """The deprecated flag must keep working by forwarding to its replacement."""
+  with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    config = RunConfig(save_live_audio=True)
+
+  assert config.save_live_blob is True
+  assert any(
+      "`save_live_audio` config is deprecated" in message
+      for message in _deprecation_messages(caught)
+  )
+
+
+def test_save_live_audio_false_leaves_save_live_blob_off():
+  """Opting out of the deprecated flag must not opt in to the new one."""
+  with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    config = RunConfig(save_live_audio=False)
+
+  assert config.save_live_blob is False
+  assert any(
+      "`save_live_audio` config is deprecated" in message
+      for message in _deprecation_messages(caught)
+  )
+
+
+def test_save_live_audio_overrides_explicit_save_live_blob_false():
+  """When both are given, the caller asked for blobs to be saved."""
+  config = RunConfig(save_live_audio=True, save_live_blob=False)
+
+  assert config.save_live_blob is True
+
+
+def test_no_deprecation_warning_when_save_live_audio_is_not_passed():
+  """Callers who never touched the deprecated field must not be warned."""
+  with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    config = RunConfig(save_live_blob=True)
+
+  assert config.save_live_blob is True
+  assert not [
+      message
+      for message in _deprecation_messages(caught)
+      if "`save_live_audio` config is deprecated" in message
+  ]
+
+
+def test_max_llm_calls_default_value(monkeypatch):
+  monkeypatch.delenv("ADK_MAX_LLM_CALLS", raising=False)
+  config = RunConfig()
+  assert config.max_llm_calls == 500
+
+
+def test_max_llm_calls_env_var_override(monkeypatch):
+  monkeypatch.setenv("ADK_MAX_LLM_CALLS", "100")
+  config = RunConfig()
+  assert config.max_llm_calls == 100
+
+
+def test_max_llm_calls_explicit_value_overrides_env_var(monkeypatch):
+  monkeypatch.setenv("ADK_MAX_LLM_CALLS", "100")
+  config = RunConfig(max_llm_calls=200)
+  assert config.max_llm_calls == 200
+
+
+def test_max_llm_calls_invalid_env_var_warning(monkeypatch):
+  monkeypatch.setenv("ADK_MAX_LLM_CALLS", "invalid")
+  with patch("google.adk.agents.run_config.logger.warning") as mock_warning:
+    config = RunConfig()
+    assert config.max_llm_calls == 500
+    mock_warning.assert_called_once()
+    assert "Invalid value for ADK_MAX_LLM_CALLS" in mock_warning.call_args[0][0]

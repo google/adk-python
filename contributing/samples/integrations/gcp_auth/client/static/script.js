@@ -21,20 +21,31 @@ $(function() {
 
   /**
    * Updates the active agent profile information panel in the sidebar
-   * based on the currently selected remote agent and user ID configurations.
+   * based on the currently selected agent mode, local or remote parameters.
    */
   const updateAgentInfoPane = () => {
-    const projectId = $('#project-id').val();
-    const location = $('#location').val();
-    const agentId = $('#agent-id').val() || $('#agent-select').val();
+    const isLocal = ($('#agent-type-select').val() || 'remote') === 'local';
     const userId = $('#user-id').val() || 'default_user_id';
 
-    $('#info-agent-mode').text('Remote Vertex AI');
-    $('#info-project-id').text(projectId || '-');
-    $('#info-location').text(location || '-');
-    $('#info-agent-id').text(agentId || '-');
+    if (isLocal) {
+      const localAgent = $('#local-agent').val() || $('#local-agent-select').val();
+      $('#info-agent-mode').text('Local Agent');
+      $('#info-local-agent').text(localAgent || '-');
+    } else {
+      const projectId = $('#project-id').val();
+      const location = $('#location').val();
+      const agentId = $('#agent-id').val() || $('#agent-select').val();
+
+      $('#info-agent-mode').text('Remote Vertex AI');
+      $('#info-project-id').text(projectId || '-');
+      $('#info-location').text(location || '-');
+      $('#info-agent-id').text(agentId || '-');
+    }
+
+    $('#info-row-local-agent').toggle(isLocal);
+    $('#info-row-project-id, #info-row-location, #info-row-agent-id').toggle(!isLocal);
     $('#info-session-id').text(currentSessionId || 'No active session');
-    $('#info-user-id').text(userId || 'default_user_id');
+    $('#info-user-id').text(userId);
   };
 
   /**
@@ -45,11 +56,55 @@ $(function() {
     $messagesContainer.html(`
             <div class="message system-message">
                 <div class="message-content">
-                    Hi! I am your AI Assistant. Configure your target remote agent in the panel on the left, and type a query below to load the sandbox stream.
+                    Hi! I am your AI Assistant. Configure your target agent in the panel on the left, and type a query below to load the sandbox stream.
                 </div>
             </div>
         `);
   };
+
+  const onAgentConfigChange = () => {
+    currentSessionId = null;
+    resetChatFeed();
+    updateAgentInfoPane();
+  };
+
+  /**
+   * Asynchronously fetches the list of available local agents from the backend
+   * API and populates the local agent selection dropdown.
+   */
+  function loadLocalAgents(showAlert = false) {
+    const $localSelect = $('#local-agent-select');
+
+    $.getJSON('/list_local_agents')
+        .done(data => {
+          if (data.error) {
+            if (showAlert) alert(`Local Agent Error: ${data.error}`);
+            console.error(`Local agent fetch error: ${data.error}`);
+          } else if (data.agents) {
+            $localSelect.html('<md-select-option value=""><div slot="headline">Select an agent...</div></md-select-option>');
+            data.agents.forEach(agent => {
+              $localSelect.append(
+                  $('<md-select-option>').val(agent.id).append(
+                      $('<div>').attr('slot', 'headline').text(`${agent.name} (${agent.id}.py)`)
+                  )
+              );
+            });
+
+            const currentLocalAgent = $('#local-agent').val();
+            if (currentLocalAgent) {
+              $localSelect.val(currentLocalAgent);
+            } else if (data.agents.length > 0) {
+              $localSelect.val(data.agents[0].id);
+              $('#local-agent').val(data.agents[0].id);
+            }
+            updateAgentInfoPane();
+          }
+        })
+        .fail((jqXHR, textStatus, errorThrown) => {
+          console.error('Failed to load local agents:', errorThrown);
+          if (showAlert) alert('Failed to communicate with local agent directory.');
+        });
+  }
 
   /**
    * Asynchronously fetches the list of available remote agents from the backend
@@ -102,12 +157,22 @@ $(function() {
         });
   }
 
+  $('#agent-type-select').on('change', function() {
+    const isLocal = $(this).val() === 'local';
+    $('#local-settings').toggle(isLocal);
+    $('#remote-settings').toggle(!isLocal);
+    if (isLocal) loadLocalAgents();
+    onAgentConfigChange();
+  });
+
+  $('#local-agent-select').on('change', function() {
+    $('#local-agent').val($(this).val());
+    onAgentConfigChange();
+  });
+
   $('#agent-select').on('change', function() {
-    const selectedId = $(this).val();
-    $('#agent-id').val(selectedId);
-    currentSessionId = null;
-    resetChatFeed();
-    updateAgentInfoPane();
+    $('#agent-id').val($(this).val());
+    onAgentConfigChange();
   });
 
   /**
@@ -115,24 +180,35 @@ $(function() {
    * and updates the active agent profile panel accordingly.
    */
   const loadSettings = () => {
+    const agentType = 'remote';
     const projectId = '';
     const location = '';
     const agentId = '';
     const userId = 'default_user_id';
 
+    $('#agent-type-select').val(agentType);
     $('#project-id').val(projectId);
     $('#location').val(location);
     $('#agent-id').val(agentId);
     $('#user-id').val(userId);
 
+    loadLocalAgents();
     updateAgentInfoPane();
   };
 
   // Apply configs to active session
   $('#save-settings').on('click', () => {
-    const selectVal = $('#agent-select').val();
-    if (selectVal) {
-      $('#agent-id').val(selectVal);
+    const agentType = $('#agent-type-select').val();
+    if (agentType === 'remote') {
+      const selectVal = $('#agent-select').val();
+      if (selectVal) {
+        $('#agent-id').val(selectVal);
+      }
+    } else {
+      const selectVal = $('#local-agent-select').val();
+      if (selectVal) {
+        $('#local-agent').val(selectVal);
+      }
     }
 
     currentSessionId = null;
@@ -212,12 +288,12 @@ $(function() {
       $contentDiv = $agentMessageDiv.find('.message-content');
     }
 
-    const agentType = 'remote';
-    const localAgent = '';
-    const projectId = $('#project-id').val();
-    const location = $('#location').val();
-    const agentId = $('#agent-id').val() || $('#agent-select').val();
-    const userId = $('#user-id').val();
+    const agentType = $('#agent-type-select').val() || 'remote';
+    const localAgent = $('#local-agent').val() || $('#local-agent-select').val() || '';
+    const projectId = $('#project-id').val() || '';
+    const location = $('#location').val() || '';
+    const agentId = $('#agent-id').val() || $('#agent-select').val() || '';
+    const userId = $('#user-id').val() || 'default_user_id';
 
     const formatAgentText = (inputVal) => {
       if (typeof inputVal !== 'string') return inputVal;

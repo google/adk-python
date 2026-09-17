@@ -14,9 +14,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Any
-from typing import Optional
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -37,7 +37,7 @@ class ReadonlyContext:
     self._invocation_context = invocation_context
 
   @property
-  def user_content(self) -> Optional[types.Content]:
+  def user_content(self) -> types.Content | None:
     """The user content that started this invocation. READONLY field."""
     return self._invocation_context.user_content
 
@@ -69,10 +69,16 @@ class ReadonlyContext:
     return self._invocation_context.user_id
 
   @property
-  def run_config(self) -> Optional[RunConfig]:
+  def run_config(self) -> RunConfig | None:
     """The run config of the current invocation. READONLY field."""
     return self._invocation_context.run_config
 
-  def get_credential(self, key: str) -> Optional[AuthCredential]:
+  @property
+  def custom_metadata(self) -> Mapping[str, Any]:
+    """Returns the custom metadata dictionary as a read-only view."""
+    # pylint: disable=protected-access
+    return MappingProxyType(self._invocation_context._custom_metadata)
+
+  def get_credential(self, key: str) -> AuthCredential | None:
     """Gets a resolved credential by key for this invocation."""
     return self._invocation_context.credential_by_key.get(key)

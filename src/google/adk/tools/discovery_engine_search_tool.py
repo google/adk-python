@@ -19,6 +19,7 @@ import enum
 import json
 import logging
 import re
+import threading
 from typing import Any
 from typing import Optional
 
@@ -184,6 +185,7 @@ class DiscoveryEngineSearchTool(FunctionTool):
     self._filter = filter
     self._max_results = max_results
     self._search_result_mode = search_result_mode
+    self._search_result_mode_lock = threading.Lock()
     self._location = location
 
     credentials, _ = google.auth.default()
@@ -216,19 +218,29 @@ class DiscoveryEngineSearchTool(FunctionTool):
       if mode is not None:
         return self._do_search(query, mode)
 
-      # Auto-detect: try CHUNKS first, fall back to DOCUMENTS
-      # if the datastore requires it.
-      try:
-        return self._do_search(query, SearchResultMode.CHUNKS)
-      except GoogleAPICallError as e:
-        if _STRUCTURED_STORE_ERROR_PATTERN.search(str(e)):
-          logger.info(
-              'CHUNKS mode failed for structured datastore,'
-              ' retrying with DOCUMENTS mode.'
-          )
-          self._search_result_mode = SearchResultMode.DOCUMENTS
-          return self._do_search(query, SearchResultMode.DOCUMENTS)
-        raise
+      # Auto-detect is per datastore, not per query. Keep the probe
+      # single-flight so concurrent first calls do not all spend a CHUNKS
+      # request before learning the same DOCUMENTS fallback.
+      with self._search_result_mode_lock:
+        mode = self._search_result_mode
+        if mode is None:
+          try:
+            result = self._do_search(query, SearchResultMode.CHUNKS)
+          except GoogleAPICallError as e:
+            if _STRUCTURED_STORE_ERROR_PATTERN.search(str(e)):
+              logger.info(
+                  'CHUNKS mode failed for structured datastore,'
+                  ' retrying with DOCUMENTS mode.'
+              )
+              self._search_result_mode = SearchResultMode.DOCUMENTS
+              mode = SearchResultMode.DOCUMENTS
+            else:
+              raise
+          else:
+            self._search_result_mode = SearchResultMode.CHUNKS
+            return result
+
+      return self._do_search(query, mode)
     except GoogleAPICallError as e:
       return {'status': 'error', 'error_message': str(e)}
 

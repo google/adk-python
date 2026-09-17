@@ -52,6 +52,8 @@ PluginCallbackName = Literal[
     "after_model_callback",
     "on_tool_error_callback",
     "on_model_error_callback",
+    "on_agent_error_callback",
+    "on_run_error_callback",
 ]
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -154,7 +156,7 @@ class PluginManager:
       self, *, invocation_context: InvocationContext
   ) -> Optional[None]:
     """Runs the `after_run_callback` for all plugins."""
-    return await self._run_callbacks(
+    await self._run_callbacks(
         "after_run_callback", invocation_context=invocation_context
     )
 
@@ -194,7 +196,7 @@ class PluginManager:
       tool: BaseTool,
       tool_args: dict[str, Any],
       tool_context: ToolContext,
-  ) -> Optional[dict]:
+  ) -> Optional[dict[str, Any]]:
     """Runs the `before_tool_callback` for all plugins."""
     return await self._run_callbacks(
         "before_tool_callback",
@@ -209,8 +211,8 @@ class PluginManager:
       tool: BaseTool,
       tool_args: dict[str, Any],
       tool_context: ToolContext,
-      result: dict,
-  ) -> Optional[dict]:
+      result: dict[str, Any],
+  ) -> Optional[dict[str, Any]]:
     """Runs the `after_tool_callback` for all plugins."""
     return await self._run_callbacks(
         "after_tool_callback",
@@ -262,7 +264,7 @@ class PluginManager:
       tool_args: dict[str, Any],
       tool_context: ToolContext,
       error: Exception,
-  ) -> Optional[dict]:
+  ) -> Optional[dict[str, Any]]:
     """Runs the `on_tool_error_callback` for all plugins."""
     return await self._run_callbacks(
         "on_tool_error_callback",
@@ -320,6 +322,61 @@ class PluginManager:
         raise RuntimeError(error_message) from e
 
     return None
+
+  async def run_on_agent_error_callback(
+      self,
+      *,
+      agent: BaseAgent,
+      callback_context: CallbackContext,
+      error: Exception,
+  ) -> None:
+    """Runs the `on_agent_error_callback` for all plugins."""
+    await self._run_notification_callbacks(
+        "on_agent_error_callback",
+        agent=agent,
+        callback_context=callback_context,
+        error=error,
+    )
+
+  async def run_on_run_error_callback(
+      self,
+      *,
+      invocation_context: InvocationContext,
+      error: Exception,
+  ) -> None:
+    """Runs the `on_run_error_callback` for all plugins."""
+    await self._run_notification_callbacks(
+        "on_run_error_callback",
+        invocation_context=invocation_context,
+        error=error,
+    )
+
+  async def _run_notification_callbacks(
+      self, callback_name: PluginCallbackName, **kwargs: Any
+  ) -> None:
+    """Executes a notification-only callback for all registered plugins.
+
+    Unlike ``_run_callbacks``, this method is best-effort: it always
+    iterates all plugins regardless of return values or exceptions.
+    If a plugin's callback raises, the error is logged and iteration
+    continues so that every plugin gets notified.
+
+    Args:
+      callback_name: The name of the callback method to execute.
+      **kwargs: Keyword arguments to be passed to the callback method.
+    """
+    for plugin in self.plugins:
+      callback_method = getattr(plugin, callback_name)
+      try:
+        await callback_method(**kwargs)
+      except Exception as e:
+        logger.error(
+            "Error in plugin '%s' during '%s' callback: %s",
+            plugin.name,
+            callback_name,
+            e,
+            exc_info=True,
+        )
 
   async def close(self) -> None:
     """Calls the close method on all registered plugins concurrently.

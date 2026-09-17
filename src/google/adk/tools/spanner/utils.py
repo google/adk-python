@@ -18,6 +18,8 @@ import asyncio
 import itertools
 import json
 import logging
+from typing import Any
+from typing import cast
 from typing import Generator
 from typing import Iterable
 from typing import Optional
@@ -25,6 +27,7 @@ from typing import TYPE_CHECKING
 
 from google.auth.credentials import Credentials
 from google.cloud.spanner_admin_database_v1.types import DatabaseDialect
+from google.genai import types as genai_types
 
 from . import client
 from ...features import experimental
@@ -36,6 +39,7 @@ from .settings import SpannerVectorStoreSettings
 
 if TYPE_CHECKING:
   from google.cloud import spanner
+  from google.cloud.spanner_v1.database import Database
   from google.genai import Client
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -51,9 +55,9 @@ def execute_sql(
     credentials: Credentials,
     settings: SpannerToolSettings,
     tool_context: ToolContext,
-    params: Optional[dict] = None,
-    params_types: Optional[dict] = None,
-) -> dict:
+    params: Optional[dict[str, Any]] = None,
+    params_types: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
   """Utility function to run a Spanner Read-Only query in the spanner database and return the result.
 
   Args:
@@ -76,9 +80,11 @@ def execute_sql(
             query not returned in the result.
   """
 
+  spanner_client: spanner.Client | None = None
+  database: Database | None = None
   try:
     # Get Spanner client
-    spanner_client = client.get_spanner_client(
+    spanner_client = client._get_typed_spanner_client(
         project=project_id, credentials=credentials
     )
     instance = spanner_client.instance(instance_id)
@@ -102,10 +108,11 @@ def execute_sql(
           if settings and settings.max_executed_query_result_rows > 0
           else DEFAULT_MAX_EXECUTED_QUERY_RESULT_ROWS
       )
+      rows_to_read: Iterable[object] = result_set
       if settings and settings.query_result_mode is QueryResultMode.DICT_LIST:
-        result_set = result_set.to_dict_list()
+        rows_to_read = result_set.to_dict_list()
 
-      for row in result_set:
+      for row in rows_to_read:
         try:
           # if the json serialization of the row succeeds, use it as is
           json.dumps(row)
@@ -117,7 +124,7 @@ def execute_sql(
         if counter <= 0:
           break
 
-      result = {"status": "SUCCESS", "rows": rows}
+      result: dict[str, Any] = {"status": "SUCCESS", "rows": rows}
       if counter <= 0:
         result["result_is_likely_truncated"] = True
       return result
@@ -126,6 +133,9 @@ def execute_sql(
         "status": "ERROR",
         "error_details": str(ex),
     }
+  finally:
+    if spanner_client is not None:
+      client._close_spanner_resources(spanner_client, database)
 
 
 def embed_contents(
@@ -137,18 +147,21 @@ def embed_contents(
   """Embed the given contents into list of vectors using the Vertex AI embedding model endpoint."""
   try:
     from google.genai import Client
-    from google.genai.types import EmbedContentConfig
 
     genai_client = genai_client or Client()
-    config = EmbedContentConfig()
+    config = genai_types.EmbedContentConfig()
     if output_dimensionality:
       config.output_dimensionality = output_dimensionality
+    embedding_contents: list[genai_types.PartUnion] = list(contents)
     response = genai_client.models.embed_content(
         model=vertex_ai_embedding_model_name,
-        contents=contents,
+        contents=embedding_contents,
         config=config,
     )
-    return [list(e.values) for e in response.embeddings]
+    return [
+        list(cast(list[float], e.values))
+        for e in cast(list[Any], response.embeddings)
+    ]
   except Exception as ex:
     raise RuntimeError(f"Failed to embed content: {ex!r}") from ex
 
@@ -162,18 +175,21 @@ async def embed_contents_async(
   """Embed the given contents into list of vectors using the Vertex AI embedding model endpoint."""
   try:
     from google.genai import Client
-    from google.genai.types import EmbedContentConfig
 
     genai_client = genai_client or Client()
-    config = EmbedContentConfig()
+    config = genai_types.EmbedContentConfig()
     if output_dimensionality:
       config.output_dimensionality = output_dimensionality
+    embedding_contents: list[genai_types.PartUnion] = list(contents)
     response = await genai_client.aio.models.embed_content(
         model=vertex_ai_embedding_model_name,
-        contents=contents,
+        contents=embedding_contents,
         config=config,
     )
-    return [list(e.values) for e in response.embeddings]
+    return [
+        list(cast(list[float], e.values))
+        for e in cast(list[Any], response.embeddings)
+    ]
   except Exception as ex:
     raise RuntimeError(f"Failed to embed content: {ex!r}") from ex
 
@@ -219,12 +235,12 @@ class SpannerVectorStore:
     self._settings = settings
 
     if not spanner_client:
-      self._spanner_client = client.get_spanner_client(
+      self._spanner_client = client._get_typed_spanner_client(
           project=self._vector_store_settings.project_id,
           credentials=credentials,
       )
     else:
-      self._spanner_client = spanner_client
+      self._spanner_client = cast(client._SpannerClient, spanner_client)
       client_user_agent = self._spanner_client._client_info.user_agent
       if not client_user_agent:
         self._spanner_client._client_info.user_agent = client.USER_AGENT
@@ -233,7 +249,7 @@ class SpannerVectorStore:
             [client_user_agent, client.USER_AGENT]
         )
     self._spanner_client._client_info.user_agent = " ".join([
-        self._spanner_client._client_info.user_agent,
+        self._spanner_client._client_info.user_agent or "",
         self.SPANNER_VECTOR_STORE_USER_AGENT,
     ])
 
@@ -441,7 +457,7 @@ class SpannerVectorStore:
 
     return statement.strip()
 
-  def create_vector_store(self):
+  def create_vector_store(self) -> None:
     """Creates a new vector store within the Google Cloud Spanner database.
 
     Raises:
@@ -470,7 +486,7 @@ class SpannerVectorStore:
       logger.error("Failed to create the vector store. Error: %s", e)
       raise
 
-  def create_vector_search_index(self):
+  def create_vector_search_index(self) -> None:
     """Creates a vector search index within the Google Cloud Spanner database.
 
     Raises:
@@ -506,7 +522,7 @@ class SpannerVectorStore:
       logger.error("Failed to create the vector search index. Error: %s", e)
       raise
 
-  async def create_vector_store_async(self):
+  async def create_vector_store_async(self) -> None:
     """Asynchronously creates a new vector store within the Google Cloud Spanner database.
 
     Raises:
@@ -514,7 +530,7 @@ class SpannerVectorStore:
     """
     await asyncio.to_thread(self.create_vector_store)
 
-  async def create_vector_search_index_async(self):
+  async def create_vector_search_index_async(self) -> None:
     """Asynchronously creates a vector search index within the Google Cloud Spanner database.
 
     Raises:
@@ -525,9 +541,9 @@ class SpannerVectorStore:
   def _prepare_and_validate_batches(
       self,
       contents: Iterable[str],
-      additional_columns_values: Iterable[dict] | None,
+      additional_columns_values: Iterable[dict[str, Any]] | None,
       batch_size: int,
-  ) -> Generator[tuple[list[str], list[dict], int], None, None]:
+  ) -> Generator[tuple[list[str], list[dict[str, Any]], int], None, None]:
     """Prepares and validates batches of contents and additional columns for insertion into the vector store."""
     content_iter = iter(contents)
 
@@ -562,9 +578,9 @@ class SpannerVectorStore:
       self,
       contents: Iterable[str],
       *,
-      additional_columns_values: Iterable[dict] | None = None,
+      additional_columns_values: Iterable[dict[str, Any]] | None = None,
       batch_size: int = 200,
-  ):
+  ) -> None:
     """Adds text contents to the vector store.
 
     Performs batch embedding generation and subsequent insertion of the contents
@@ -658,9 +674,9 @@ class SpannerVectorStore:
       self,
       contents: Iterable[str],
       *,
-      additional_columns_values: Iterable[dict] | None = None,
+      additional_columns_values: Iterable[dict[str, Any]] | None = None,
       batch_size: int = 200,
-  ):
+  ) -> None:
     """Asynchronously adds text contents to the vector store.
 
     Performs batch embedding generation and subsequent insertion of the contents
@@ -714,7 +730,9 @@ class SpannerVectorStore:
             for c, e, extra in zip(content_b, embeddings, extra_b)
         ]
 
-        def _commit_batch(columns, rows_to_commit):
+        def _commit_batch(
+            columns: list[str], rows_to_commit: list[list[Any]]
+        ) -> None:
           with self._database.batch() as batch:
             batch.insert_or_update(
                 table=self._vector_store_settings.table_name,

@@ -17,11 +17,19 @@
 import json
 
 from google.adk.agents import LlmAgent
+from google.adk.agents.context_cache_config import ContextCacheConfig
+from google.adk.apps.app import App
+from google.adk.apps.app import ResumabilityConfig
 from google.adk.cli.utils.graph_serialization import serialize_agent
+from google.adk.cli.utils.graph_serialization import serialize_app_info
+from google.adk.cli.utils.graph_serialization import serialize_node
+from google.adk.cli.utils.graph_serialization import serialize_node_like
 from google.adk.models.lite_llm import LiteLlm
+from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.tools.base_toolset import BaseToolset
 from google.adk.workflow import START
 from google.adk.workflow import Workflow
+import pytest
 
 from tests.unittests.workflow.workflow_testing_utils import TestingNode
 
@@ -161,3 +169,163 @@ def test_serialize_agent_skips_excluded_fields() -> None:
 
   assert 'secret' not in result
   assert result['name'] == 'a'
+
+
+def test_serialize_node_like_passes_through_start_and_primitives() -> None:
+  assert serialize_node_like('START') == 'START'
+  assert serialize_node_like('plain') == 'plain'
+  assert serialize_node_like(7) == 7
+  assert serialize_node_like(1.5) == 1.5
+  assert serialize_node_like(False) is False
+
+
+def test_serialize_node_like_serializes_agents_as_dicts() -> None:
+  result = serialize_node_like(LlmAgent(name='sub', description='d'))
+
+  assert result == serialize_agent(LlmAgent(name='sub', description='d'))
+  assert result['name'] == 'sub'
+  assert result['description'] == 'd'
+
+
+def test_serialize_node_like_describes_callables_by_name() -> None:
+  def my_tool_fn():
+    pass
+
+  assert serialize_node_like(my_tool_fn) == {
+      'name': 'my_tool_fn',
+      'type': 'function',
+  }
+
+
+def test_serialize_node_like_falls_back_to_str_for_unknown_objects() -> None:
+  class _Opaque:
+
+    def __str__(self):
+      return 'opaque-repr'
+
+  assert serialize_node_like(_Opaque()) == 'opaque-repr'
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason='BaseNode has no get_name(), so the BaseNode branch never fires',
+)
+def test_serialize_node_like_serializes_base_nodes_as_dicts() -> None:
+  from google.adk.workflow import BaseNode
+
+  assert serialize_node_like(BaseNode(name='n1')) == serialize_node(
+      BaseNode(name='n1')
+  )
+
+
+def test_serialize_node_marks_the_start_sentinel_without_dumping_fields() -> (
+    None
+):
+  result = serialize_node(START)
+
+  assert result == {
+      'name': '__START__',
+      'type': 'start',
+      'rerun_on_resume': False,
+  }
+
+
+def test_serialize_node_uses_class_name_lookup_for_known_node_types() -> None:
+  from google.adk.workflow import BaseNode
+
+  class FunctionNode(BaseNode):
+    pass
+
+  class ToolNode(BaseNode):
+    pass
+
+  class SomethingElse(BaseNode):
+    pass
+
+  assert serialize_node(FunctionNode(name='f'))['type'] == 'function'
+  assert serialize_node(ToolNode(name='t'))['type'] == 'tool'
+  assert serialize_node(SomethingElse(name='s'))['type'] == 'node'
+
+
+def test_serialize_node_types_a_node_owning_a_graph_as_workflow() -> None:
+  node_a = TestingNode(name='NodeA')
+  workflow = Workflow(name='wf', edges=[(START, node_a)])
+
+  assert serialize_node(workflow)['type'] == 'workflow'
+  assert serialize_node(workflow)['name'] == 'wf'
+
+
+def test_serialize_node_emits_minimal_dict_for_non_pydantic_nodes() -> None:
+  class JoinNode:
+
+    def __init__(self):
+      self.name = 'joiner'
+      self.rerun_on_resume = True
+      self.internal_only = 'should not be serialized'
+
+  assert serialize_node(JoinNode()) == {
+      'name': 'joiner',
+      'type': 'join',
+      'rerun_on_resume': True,
+  }
+
+
+def test_serialize_app_info_returns_name_and_serialized_root_agent() -> None:
+  app = App(name='my_app', root_agent=LlmAgent(name='root', description='d'))
+
+  info = serialize_app_info(app)
+
+  assert info['name'] == 'my_app'
+  assert info['root_agent'] == serialize_agent(app.root_agent)
+  # Optional sections stay absent rather than being emitted as None.
+  assert 'plugins' not in info
+  assert 'context_cache_config' not in info
+  assert 'resumability_config' not in info
+  assert 'readme' not in info
+
+
+def test_serialize_app_info_lists_plugins_by_name() -> None:
+  class _Plugin(BasePlugin):
+    pass
+
+  app = App(
+      name='my_app',
+      root_agent=LlmAgent(name='root'),
+      plugins=[_Plugin(name='first'), _Plugin(name='second')],
+  )
+
+  info = serialize_app_info(app)
+
+  assert info['plugins'] == [{'name': 'first'}, {'name': 'second'}]
+
+
+def test_serialize_app_info_includes_optional_configs_and_readme() -> None:
+  app = App(
+      name='my_app',
+      root_agent=LlmAgent(name='root'),
+      context_cache_config=ContextCacheConfig(ttl_seconds=60),
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+
+  info = serialize_app_info(app, readme='# how to run')
+
+  assert info['context_cache_config']['ttl_seconds'] == 60
+  assert info['resumability_config'] == {'is_resumable': True}
+  assert info['readme'] == '# how to run'
+
+
+def test_serialize_app_info_propagates_root_agent_failures() -> None:
+  """Optional config failures are swallowed; a bad root agent is not."""
+
+  class _Unserializable:
+    pass
+
+  class _FakeApp:
+    name = 'boom'
+    root_agent = _Unserializable()
+    plugins = []
+    context_cache_config = None
+    resumability_config = None
+
+  with pytest.raises(AttributeError):
+    serialize_app_info(_FakeApp())

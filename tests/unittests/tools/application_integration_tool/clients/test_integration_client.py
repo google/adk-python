@@ -162,6 +162,7 @@ class TestIntegrationClient:
               }],
               "fileFormat": "JSON",
           },
+          timeout=30,
       )
 
   def test_get_openapi_spec_for_integration_success_mtls(
@@ -218,6 +219,7 @@ class TestIntegrationClient:
               }],
               "fileFormat": "JSON",
           },
+          timeout=30,
       )
 
   def test_get_openapi_spec_for_integration_credential_error(

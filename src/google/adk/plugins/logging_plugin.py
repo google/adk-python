@@ -80,9 +80,10 @@ class LoggingPlugin(BasePlugin):
     self._log(f"   Session ID: {invocation_context.session.id}")
     self._log(f"   User ID: {invocation_context.user_id}")
     self._log(f"   App Name: {invocation_context.app_name}")
+    agent = invocation_context.agent
     self._log(
         "   Root Agent:"
-        f" {invocation_context.agent.name if hasattr(invocation_context.agent, 'name') else 'Unknown'}"
+        f" {agent.name if agent is not None and hasattr(agent, 'name') else 'Unknown'}"
     )
     self._log(f"   User Content: {self._format_content(user_message)}")
     if invocation_context.branch:
@@ -96,9 +97,10 @@ class LoggingPlugin(BasePlugin):
     """Log invocation start."""
     self._log(f"🏃 INVOCATION STARTING")
     self._log(f"   Invocation ID: {invocation_context.invocation_id}")
+    agent = invocation_context.agent
     self._log(
         "   Starting Agent:"
-        f" {invocation_context.agent.name if hasattr(invocation_context.agent, 'name') else 'Unknown'}"
+        f" {agent.name if agent is not None and hasattr(agent, 'name') else 'Unknown'}"
     )
     return None
 
@@ -133,9 +135,10 @@ class LoggingPlugin(BasePlugin):
     """Log invocation completion."""
     self._log(f"✅ INVOCATION COMPLETED")
     self._log(f"   Invocation ID: {invocation_context.invocation_id}")
+    agent = invocation_context.agent
     self._log(
         "   Final Agent:"
-        f" {invocation_context.agent.name if hasattr(invocation_context.agent, 'name') else 'Unknown'}"
+        f" {agent.name if agent is not None and hasattr(agent, 'name') else 'Unknown'}"
     )
     return None
 
@@ -171,9 +174,11 @@ class LoggingPlugin(BasePlugin):
     self._log(f"   Agent: {callback_context.agent_name}")
 
     # Log system instruction if present
-    if llm_request.config and llm_request.config.system_instruction:
-      sys_instruction = llm_request.config.system_instruction[:200]
-      if len(llm_request.config.system_instruction) > 200:
+    system_instruction = llm_request.config.system_instruction
+    if system_instruction:
+      rendered_instruction = self._render_system_instruction(system_instruction)
+      sys_instruction = rendered_instruction[:200]
+      if len(rendered_instruction) > 200:
         sys_instruction += "..."
       self._log(f"   System Instruction: '{sys_instruction}'")
 
@@ -222,7 +227,7 @@ class LoggingPlugin(BasePlugin):
       tool: BaseTool,
       tool_args: dict[str, Any],
       tool_context: ToolContext,
-  ) -> Optional[dict]:
+  ) -> Optional[dict[str, Any]]:
     """Log tool execution start."""
     self._log(f"🔧 TOOL STARTING")
     self._log(f"   Tool Name: {tool.name}")
@@ -238,8 +243,8 @@ class LoggingPlugin(BasePlugin):
       tool: BaseTool,
       tool_args: dict[str, Any],
       tool_context: ToolContext,
-      result: dict,
-  ) -> Optional[dict]:
+      result: dict[str, Any],
+  ) -> Optional[dict[str, Any]]:
     """Log tool execution completion."""
     self._log(f"🔧 TOOL COMPLETED")
     self._log(f"   Tool Name: {tool.name}")
@@ -271,7 +276,7 @@ class LoggingPlugin(BasePlugin):
       tool_args: dict[str, Any],
       tool_context: ToolContext,
       error: Exception,
-  ) -> Optional[dict]:
+  ) -> Optional[dict[str, Any]]:
     """Log tool error."""
     self._log(f"🔧 TOOL ERROR")
     self._log(f"   Tool Name: {tool.name}")
@@ -286,6 +291,25 @@ class LoggingPlugin(BasePlugin):
     # ANSI color codes: \033[90m for grey, \033[0m to reset
     formatted_message: str = f"\033[90m[{self.name}] {message}\033[0m"
     print(formatted_message)
+
+  def _render_system_instruction(self, system_instruction: Any) -> str:
+    """Renders a system instruction for logging.
+
+    The field accepts a string, a Content, a Part, a File, an image, or a list
+    of those. Only the text-bearing shapes are worth rendering in a log line,
+    so anything else falls back to its string form.
+    """
+    if isinstance(system_instruction, str):
+      return system_instruction
+    if isinstance(system_instruction, types.Content):
+      return self._format_content(system_instruction)
+    if isinstance(system_instruction, types.Part):
+      return self._format_content(types.Content(parts=[system_instruction]))
+    if isinstance(system_instruction, list):
+      return " | ".join(
+          self._render_system_instruction(entry) for entry in system_instruction
+      )
+    return str(system_instruction)
 
   def _format_content(
       self, content: Optional[types.Content], max_length: int = 200

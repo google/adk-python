@@ -19,69 +19,37 @@ This script is used as a pre-commit hook and in CI to enforce coding standards.
 """
 
 import argparse
+import ast
 import os
 import re
 import sys
 
-# Legacy files that are temporarily excluded from the mTLS check.
-# Do not add new files to this list. All new code must support mTLS.
+# Legacy files that still hardcode a non-mTLS googleapis.com endpoint. A file
+# belongs here only while it would fail the mTLS check; once it passes on its
+# own, drop its entry so the check applies again. Do not add new files to this
+# list. All new code must support mTLS.
 _EXCLUDED_FROM_MTLS = {
     'contributing/samples/environment_and_skills/e2b_environment/agent.py',
-    'contributing/samples/integrations/bigquery_mcp/agent.py',
-    'contributing/samples/integrations/bigtable/agent.py',
-    'contributing/samples/integrations/data_agent/agent.py',
     'contributing/samples/integrations/gcp_auth/agent.py',
-    'contributing/samples/integrations/gcs/agent.py',
-    'contributing/samples/integrations/gcs_admin/agent.py',
     'contributing/samples/integrations/integration_connector_euc_agent/agent.py',
     'contributing/samples/integrations/oauth_calendar_agent/agent.py',
-    'contributing/samples/integrations/spanner/agent.py',
-    'contributing/samples/integrations/spanner_admin/agent.py',
-    'contributing/samples/integrations/spanner_rag_agent/agent.py',
     'contributing/samples/mcp/mcp_service_account_agent/agent.py',
     'contributing/samples/models/interactions_api/main.py',
     'contributing/samples/multimodal/static_non_text_content/agent.py',
     'src/google/adk/auth/auth_credential.py',
-    'src/google/adk/integrations/api_registry/api_registry.py',
-    'src/google/adk/integrations/bigquery/bigquery_credentials.py',
-    'src/google/adk/integrations/bigquery/data_insights_tool.py',
     'src/google/adk/integrations/bigquery/metadata_tool.py',
-    'src/google/adk/integrations/gcs/gcs_credentials.py',
-    'src/google/adk/plugins/bigquery_agent_analytics_plugin.py',
     'src/google/adk/tools/_google_credentials.py',
     'src/google/adk/tools/apihub_tool/clients/apihub_client.py',
-    'src/google/adk/tools/application_integration_tool/application_integration_toolset.py',
-    'src/google/adk/tools/application_integration_tool/clients/connections_client.py',
-    'src/google/adk/tools/application_integration_tool/clients/integration_client.py',
-    'src/google/adk/tools/bigtable/bigtable_credentials.py',
-    'src/google/adk/tools/data_agent/credentials.py',
-    'src/google/adk/tools/data_agent/data_agent_tool.py',
     'src/google/adk/tools/google_api_tool/google_api_toolset.py',
-    'src/google/adk/tools/google_api_tool/googleapi_to_openapi_converter.py',
-    'src/google/adk/tools/mcp_tool/mcp_session_manager.py',
-    'src/google/adk/tools/openapi_tool/auth/auth_helpers.py',
-    'src/google/adk/tools/openapi_tool/auth/credential_exchangers/service_account_exchanger.py',
-    'src/google/adk/tools/pubsub/pubsub_credentials.py',
-    'src/google/adk/tools/spanner/spanner_credentials.py',
     'tests/unittests/auth/test_credential_manager.py',
-    'tests/unittests/cli/utils/test_gcp_utils.py',
-    'tests/unittests/flows/llm_flows/test_functions_request_euc.py',
-    'tests/unittests/integrations/api_registry/test_api_registry.py',
-    'tests/unittests/integrations/bigquery/test_bigquery_credentials.py',
-    'tests/unittests/tools/apihub_tool/clients/test_apihub_client.py',
-    'tests/unittests/tools/application_integration_tool/clients/test_connections_client.py',
-    'tests/unittests/tools/application_integration_tool/clients/test_integration_client.py',
+    'tests/unittests/flows/llm_flows/tools/test_functions_request_euc.py',
     'tests/unittests/tools/application_integration_tool/test_application_integration_toolset.py',
     'tests/unittests/tools/data_agent/test_data_agent_tool.py',
     'tests/unittests/tools/google_api_tool/test_docs_batchupdate.py',
-    'tests/unittests/tools/google_api_tool/test_google_api_toolset.py',
-    'tests/unittests/tools/google_api_tool/test_googleapi_to_openapi_converter.py',
     'tests/unittests/tools/openapi_tool/auth/credential_exchangers/test_service_account_exchanger.py',
     'tests/unittests/tools/openapi_tool/openapi_spec_parser/test_openapi_toolset.py',
     'tests/unittests/tools/openapi_tool/openapi_spec_parser/test_rest_api_tool.py',
-    'tests/unittests/tools/spanner/test_spanner_credentials.py',
     'tests/unittests/tools/test_base_google_credentials_manager.py',
-    'tests/unittests/tools/test_google_tool.py',
     'tests/unittests/workflow/utils/test_workflow_hitl_utils.py',
 }
 
@@ -118,14 +86,105 @@ def check_cli_import(content: str, filename: str) -> bool:
   return not pattern.search(content)
 
 
+# An internal shortlink resolves for nobody reading this repository. Anchored
+# so that a public URL with a '/go/' path segment, or a Go file name, is not
+# mistaken for one.
+_INTERNAL_LINK_RE = re.compile(r'(?<![/.\w])go/[a-z0-9][-a-z0-9_]*')
+
+
+def check_internal_links(content: str) -> bool:
+  return not _INTERNAL_LINK_RE.search(content)
+
+
 def check_mtls(content: str, filename: str) -> bool:
   if filename in _EXCLUDED_FROM_MTLS:
     return True
-  # Pattern for googleapis: https?://[a-zA-Z0-9.-]+\.googleapis\.com
-  endpoint_pattern = re.compile(r'https?://[a-zA-Z0-9.-]+\.googleapis\.com')
-  if endpoint_pattern.search(content):
+  urls = re.findall(
+      r'https?://[a-zA-Z0-9.-]+\.googleapis\.com[^"\'\s]*', content
+  )
+  non_scope_urls = [
+      url
+      for url in urls
+      if not re.match(r'https?://www\.googleapis\.com/auth(/|$)', url)
+  ]
+  if non_scope_urls:
     return '.mtls.googleapis.com' in content
   return True
+
+
+# Methods on a FastAPI app or router that register a request handler.
+_ROUTE_DECORATOR_METHODS = frozenset({
+    'api_route',
+    'delete',
+    'get',
+    'head',
+    'options',
+    'patch',
+    'post',
+    'put',
+    'trace',
+    'websocket',
+    'websocket_route',
+})
+
+
+def _is_route_decorator(node: ast.expr) -> bool:
+  """Reports whether a decorator registers a FastAPI route."""
+  if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+    return False
+  if node.func.attr not in _ROUTE_DECORATOR_METHODS:
+    return False
+  # A routing decorator always takes the path as its first argument. Requiring
+  # one keeps unrelated calls such as @cache.get('key') out of the check.
+  return (
+      bool(node.args)
+      and isinstance(node.args[0], ast.Constant)
+      and isinstance(node.args[0].value, str)
+      and node.args[0].value.startswith('/')
+  )
+
+
+def _decorator_label(node: ast.expr) -> str:
+  """The dotted name of a decorator, without its arguments."""
+  return ast.unparse(node.func if isinstance(node, ast.Call) else node)
+
+
+def check_route_decorator_order(content: str) -> list[tuple[int, str]]:
+  """Finds decorators stacked above a FastAPI routing decorator.
+
+  Decorators apply bottom-up, and a routing decorator registers the handler it
+  receives and then returns it unchanged. Anything above one therefore wraps a
+  function the route no longer refers to, so it never runs for a request. A
+  guard written that way is silently absent.
+
+  Returns:
+    One (line number, decorator name) pair per offending decorator.
+  """
+  try:
+    tree = ast.parse(content)
+  except SyntaxError:
+    # The formatter and the type checker both report syntax errors already.
+    return []
+
+  offenders: list[tuple[int, str]] = []
+  for node in ast.walk(tree):
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+      continue
+    route_index = next(
+        (
+            i
+            for i, decorator in enumerate(node.decorator_list)
+            if _is_route_decorator(decorator)
+        ),
+        None,
+    )
+    if route_index is None:
+      continue
+    offenders.extend(
+        (decorator.lineno, _decorator_label(decorator))
+        for decorator in node.decorator_list[:route_index]
+    )
+  return offenders
 
 
 def main() -> None:
@@ -169,6 +228,21 @@ def main() -> None:
       print(
           f'❌ {f}: Found hardcoded googleapis.com endpoints without mTLS'
           ' support.'
+      )
+      failed = True
+
+    if not check_internal_links(content):
+      print(
+          f'❌ {f}: Found an internal shortlink, which resolves for nobody'
+          ' reading this repository. Say what it says in plain words instead.'
+      )
+      failed = True
+
+    for lineno, decorator in check_route_decorator_order(content):
+      print(
+          f'❌ {f}:{lineno}: @{decorator} sits above a FastAPI routing'
+          ' decorator, so it never runs for a request. Move the routing'
+          ' decorator to the top of the stack.'
       )
       failed = True
 

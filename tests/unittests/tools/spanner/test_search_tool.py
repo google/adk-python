@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 from unittest import mock
 from unittest.mock import MagicMock
 
@@ -33,7 +34,7 @@ def mock_spanner_ids():
       "project_id": "test-project",
       "instance_id": "test-instance",
       "database_id": "test-database",
-      "table_name": "test-table",
+      "table_name": "test_table",
   }
 
 
@@ -104,6 +105,8 @@ async def test_similarity_search_knn_success(
   )
   assert result["status"] == "SUCCESS", result
   assert result["rows"] == [("result1",), ("result2",)]
+  mock_database.close.assert_called_once()
+  mock_spanner_client.close.assert_called_once()
 
   # Check the generated SQL for kNN search
   call_args = mock_snapshot.execute_sql.call_args
@@ -193,6 +196,43 @@ async def test_similarity_search_error(
 @pytest.mark.asyncio
 @mock.patch.object(utils, "embed_contents_async")
 @mock.patch.object(client, "get_spanner_client")
+async def test_similarity_search_closes_client_on_base_exception(
+    mock_get_spanner_client,
+    mock_embed_contents_async,
+    mock_spanner_ids,
+    mock_credentials,
+):
+  """A BaseException escapes the except clause but must still release the client."""
+  mock_spanner_client = MagicMock()
+  mock_instance = MagicMock()
+  mock_database = MagicMock()
+  mock_database.database_dialect = DatabaseDialect.GOOGLE_STANDARD_SQL
+  mock_instance.database.return_value = mock_database
+  mock_spanner_client.instance.return_value = mock_instance
+  mock_get_spanner_client.return_value = mock_spanner_client
+  mock_embed_contents_async.side_effect = asyncio.CancelledError
+
+  with pytest.raises(asyncio.CancelledError):
+    await search_tool.similarity_search(
+        project_id=mock_spanner_ids["project_id"],
+        instance_id=mock_spanner_ids["instance_id"],
+        database_id=mock_spanner_ids["database_id"],
+        table_name=mock_spanner_ids["table_name"],
+        query="test query",
+        embedding_column_to_search="embedding_col",
+        columns=["col1"],
+        embedding_options={
+            "vertex_ai_embedding_model_name": "text-embedding-005"
+        },
+        credentials=mock_credentials,
+    )
+
+  mock_spanner_client.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+@mock.patch.object(utils, "embed_contents_async")
+@mock.patch.object(client, "get_spanner_client")
 async def test_similarity_search_circular_row_fallback_to_string(
     mock_get_spanner_client,
     mock_embed_contents_async,
@@ -264,7 +304,7 @@ async def test_similarity_search_postgresql_knn_success(
       columns=["col1"],
       embedding_options={
           "spanner_postgresql_vertex_ai_embedding_model_endpoint": (
-              "test_endpoint"
+              "projects/test-project/locations/us-central1/publishers/google/models/text-embedding-005"
           )
       },
       credentials=mock_credentials,
@@ -302,7 +342,7 @@ async def test_similarity_search_postgresql_ann_unsupported(
       columns=["col1"],
       embedding_options={
           "spanner_postgresql_vertex_ai_embedding_model_endpoint": (
-              "test_endpoint"
+              "projects/test-project/locations/us-central1/publishers/google/models/text-embedding-005"
           )
       },
       credentials=mock_credentials,
@@ -341,7 +381,7 @@ async def test_similarity_search_gsql_missing_embedding_model_error(
       columns=["col1"],
       embedding_options={
           "spanner_postgresql_vertex_ai_embedding_model_endpoint": (
-              "test_endpoint"
+              "projects/p/locations/l/publishers/google/models/m"
           )
       },
       credentials=mock_credentials,
@@ -396,35 +436,35 @@ async def test_similarity_search_pg_missing_embedding_model_error(
     [
         pytest.param(
             {
-                "vertex_ai_embedding_model_name": "test-model",
-                "spanner_googlesql_embedding_model_name": "test-model-2",
+                "vertex_ai_embedding_model_name": "test_model",
+                "spanner_googlesql_embedding_model_name": "test_model_2",
             },
             id="vertex_ai_and_googlesql",
         ),
         pytest.param(
             {
-                "vertex_ai_embedding_model_name": "test-model",
+                "vertex_ai_embedding_model_name": "test_model",
                 "spanner_postgresql_vertex_ai_embedding_model_endpoint": (
-                    "test-endpoint"
+                    "projects/p/locations/l/publishers/google/models/m"
                 ),
             },
             id="vertex_ai_and_postgresql",
         ),
         pytest.param(
             {
-                "spanner_googlesql_embedding_model_name": "test-model",
+                "spanner_googlesql_embedding_model_name": "test_model",
                 "spanner_postgresql_vertex_ai_embedding_model_endpoint": (
-                    "test-endpoint"
+                    "projects/p/locations/l/publishers/google/models/m"
                 ),
             },
             id="googlesql_and_postgresql",
         ),
         pytest.param(
             {
-                "vertex_ai_embedding_model_name": "test-model",
-                "spanner_googlesql_embedding_model_name": "test-model-2",
+                "vertex_ai_embedding_model_name": "test_model",
+                "spanner_googlesql_embedding_model_name": "test_model_2",
                 "spanner_postgresql_vertex_ai_embedding_model_endpoint": (
-                    "test-endpoint"
+                    "projects/p/locations/l/publishers/google/models/m"
                 ),
             },
             id="all_three_models",
@@ -530,3 +570,168 @@ async def test_similarity_search_unsupported_algorithm_error(
   )
   assert result["status"] == "ERROR"
   assert "Unsupported search_options" in result["error_details"]
+
+
+@pytest.mark.asyncio
+@mock.patch.object(utils, "embed_contents_async", autospec=True)
+@mock.patch.object(client, "get_spanner_client")
+async def test_vector_store_similarity_search_bypass_validation(
+    mock_get_spanner_client,
+    mock_embed_contents_async,
+    mock_credentials,
+):
+  """Test that vector_store_similarity_search bypasses validation for complex filter."""
+  from google.adk.tools.spanner.settings import SpannerToolSettings
+  from google.adk.tools.spanner.settings import SpannerVectorStoreSettings
+
+  mock_spanner_client = MagicMock()
+  mock_instance = MagicMock()
+  mock_database = MagicMock()
+  mock_snapshot = MagicMock()
+  mock_database.snapshot.return_value.__enter__.return_value = mock_snapshot
+  mock_database.database_dialect = DatabaseDialect.GOOGLE_STANDARD_SQL
+  mock_instance.database.return_value = mock_database
+  mock_spanner_client.instance.return_value = mock_instance
+  mock_get_spanner_client.return_value = mock_spanner_client
+
+  mock_embed_contents_async.return_value = [[0.1, 0.2, 0.3]]
+  mock_snapshot.execute_sql.return_value = iter([("result1",), ("result2",)])
+
+  # col1 = col2 is rejected by _validate_additional_filter, but should pass here
+  vector_store_settings = SpannerVectorStoreSettings(
+      project_id="test-project",
+      instance_id="test-instance",
+      database_id="test-database",
+      table_name="test_table",
+      content_column="content",
+      embedding_column="embedding",
+      vector_length=3,
+      vertex_ai_embedding_model_name="text-embedding-005",
+      selected_columns=["col1"],
+      additional_filter="col1 = col2",
+  )
+  tool_settings = SpannerToolSettings(
+      vector_store_settings=vector_store_settings,
+  )
+
+  result = await search_tool.vector_store_similarity_search(
+      query="test query",
+      credentials=mock_credentials,
+      settings=tool_settings,
+  )
+  assert result["status"] == "SUCCESS", result
+  assert result["rows"] == [("result1",), ("result2",)]
+
+
+@pytest.mark.parametrize(
+    ("embedding_options", "search_options", "expected_error"),
+    [
+        pytest.param(
+            {
+                "vertex_ai_embedding_model_name": "test-model",
+                "output_dimensionality": "many",
+            },
+            None,
+            "Option 'output_dimensionality' must be an integer, got 'many'.",
+            id="output_dimensionality_not_a_number",
+        ),
+        pytest.param(
+            {"vertex_ai_embedding_model_name": "test-model"},
+            {"top_k": "10; DROP TABLE t"},
+            "Option 'top_k' must be an integer, got '10; DROP TABLE t'.",
+            id="top_k_carrying_sql",
+        ),
+        pytest.param(
+            {"vertex_ai_embedding_model_name": "test-model"},
+            {"top_k": 3.5},
+            "Option 'top_k' must be an integer, got 3.5.",
+            id="top_k_not_a_whole_number",
+        ),
+        pytest.param(
+            {"vertex_ai_embedding_model_name": 123},
+            None,
+            "Option 'vertex_ai_embedding_model_name' must be a string, got"
+            " 123.",
+            id="embedding_model_name_as_int",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+@mock.patch.object(client, "get_spanner_client")
+async def test_similarity_search_wrongly_typed_option_error(
+    mock_get_spanner_client,
+    mock_spanner_ids,
+    mock_credentials,
+    embedding_options,
+    search_options,
+    expected_error,
+):
+  """Test similarity_search rejects an option whose value has the wrong type."""
+  mock_spanner_client = MagicMock()
+  mock_instance = MagicMock()
+  mock_database = MagicMock()
+  mock_database.database_dialect = DatabaseDialect.GOOGLE_STANDARD_SQL
+  mock_instance.database.return_value = mock_database
+  mock_spanner_client.instance.return_value = mock_instance
+  mock_get_spanner_client.return_value = mock_spanner_client
+
+  result = await search_tool.similarity_search(
+      project_id=mock_spanner_ids["project_id"],
+      instance_id=mock_spanner_ids["instance_id"],
+      database_id=mock_spanner_ids["database_id"],
+      table_name=mock_spanner_ids["table_name"],
+      query="test query",
+      embedding_column_to_search="embedding_col",
+      columns=["col1"],
+      embedding_options=embedding_options,
+      credentials=mock_credentials,
+      search_options=search_options,
+  )
+  assert result["status"] == "ERROR"
+  assert expected_error in result["error_details"]
+
+
+@pytest.mark.asyncio
+@mock.patch.object(client, "get_spanner_client")
+async def test_similarity_search_numeric_string_options(
+    mock_get_spanner_client, mock_spanner_ids, mock_credentials
+):
+  """Test similarity_search accepts numeric options given as strings."""
+  mock_spanner_client = MagicMock()
+  mock_instance = MagicMock()
+  mock_database = MagicMock()
+  mock_snapshot = MagicMock()
+  mock_embedding_result = MagicMock()
+  mock_embedding_result.one.return_value = ([0.1, 0.2, 0.3],)
+  mock_snapshot.execute_sql.side_effect = [
+      mock_embedding_result,
+      iter([("ann_result1",)]),
+  ]
+  mock_database.snapshot.return_value.__enter__.return_value = mock_snapshot
+  mock_database.database_dialect = DatabaseDialect.GOOGLE_STANDARD_SQL
+  mock_instance.database.return_value = mock_database
+  mock_spanner_client.instance.return_value = mock_instance
+  mock_get_spanner_client.return_value = mock_spanner_client
+
+  result = await search_tool.similarity_search(
+      project_id=mock_spanner_ids["project_id"],
+      instance_id=mock_spanner_ids["instance_id"],
+      database_id=mock_spanner_ids["database_id"],
+      table_name=mock_spanner_ids["table_name"],
+      query="test query",
+      embedding_column_to_search="embedding_col",
+      columns=["col1"],
+      embedding_options={
+          "spanner_googlesql_embedding_model_name": "test_model"
+      },
+      credentials=mock_credentials,
+      search_options={
+          "nearest_neighbors_algorithm": "APPROXIMATE_NEAREST_NEIGHBORS",
+          "top_k": "10",
+          "num_leaves_to_search": "500",
+      },
+  )
+  assert result["status"] == "SUCCESS", result
+  sql = mock_snapshot.execute_sql.call_args.args[0]
+  assert "LIMIT 10" in sql
+  assert '"num_leaves_to_search": 500' in sql

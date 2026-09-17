@@ -15,11 +15,11 @@
 """Tests for LlmAgent output_key visibility in callbacks."""
 
 from google.adk.agents.callback_context import CallbackContext
-from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.auto_flow import AutoFlow
+from google.adk.live import LiveRequestQueue
 from google.genai import types
 import pytest
 from pytest_mock import MockerFixture

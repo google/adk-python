@@ -49,7 +49,7 @@ You can read about the [Auth Code grant / flow type](https://developer.okta.com/
 # Go to the cloned directory
 cd adk-python
 # Navigate to the all in one authentication sample
-cd contributing/samples/authn-adk-all-in-one/
+cd contributing/samples/integrations/authn-adk-all-in-one/
 
 python3 -m venv .venv
 
@@ -110,7 +110,7 @@ Updated `jwks.json` (notice the key is added in the existing array)
 # Go to the cloned directory
 cd adk-python
 # Navigate to the all in one authentication sample
-cd contributing/samples/authn-adk-all-in-one/
+cd contributing/samples/integrations/authn-adk-all-in-one/
 
 # Activate Env for this shell
 . .venv/bin/activate
@@ -128,7 +128,7 @@ python main.py
 # Go to the cloned directory
 cd adk-python
 # Navigate to the all in one authentication sample
-cd contributing/samples/authn-adk-all-in-one/
+cd contributing/samples/integrations/authn-adk-all-in-one/
 
 # Activate Env for this shell
 . .venv/bin/activate

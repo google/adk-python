@@ -15,6 +15,7 @@
 """Tests for LlmRequest functionality."""
 
 import asyncio
+import logging
 from typing import Optional
 
 from google.adk.agents.invocation_context import InvocationContext
@@ -186,107 +187,6 @@ def test_append_instructions_with_string_list_multiple_calls():
   assert request.config.system_instruction == expected
 
 
-def test_append_instructions_with_content():
-  """Test that append_instructions works with types.Content (new behavior)."""
-  request = LlmRequest()
-
-  # Create a Content object
-  content = types.Content(
-      role='user', parts=[types.Part(text='This is content-based instruction')]
-  )
-
-  # Append content
-  request.append_instructions(content)
-
-  # Should be set as system_instruction
-  assert len(request.contents) == 0
-  assert request.config.system_instruction == content
-
-
-def test_append_instructions_with_content_multiple_calls():
-  """Test multiple calls to append_instructions with Content objects."""
-  request = LlmRequest()
-
-  # Add some existing content first
-  existing_content = types.Content(
-      role='user', parts=[types.Part(text='Existing content')]
-  )
-  request.contents.append(existing_content)
-
-  # First Content instruction
-  content1 = types.Content(
-      role='user', parts=[types.Part(text='First instruction')]
-  )
-  request.append_instructions(content1)
-
-  # Should be set as system_instruction, existing content unchanged
-  assert len(request.contents) == 1
-  assert request.contents[0] == existing_content
-  assert request.config.system_instruction == content1
-
-  # Second Content instruction
-  content2 = types.Content(
-      role='user', parts=[types.Part(text='Second instruction')]
-  )
-  request.append_instructions(content2)
-
-  # Second Content should be merged with first in system_instruction
-  assert len(request.contents) == 1
-  assert request.contents[0] == existing_content
-  assert isinstance(request.config.system_instruction, types.Content)
-  assert len(request.config.system_instruction.parts) == 2
-  assert request.config.system_instruction.parts[0].text == 'First instruction'
-  assert request.config.system_instruction.parts[1].text == 'Second instruction'
-
-
-def test_append_instructions_with_content_multipart():
-  """Test append_instructions with Content containing multiple parts."""
-  request = LlmRequest()
-
-  # Create Content with multiple parts (text and potentially files)
-  content = types.Content(
-      role='user',
-      parts=[
-          types.Part(text='Text instruction'),
-          types.Part(text='Additional text part'),
-      ],
-  )
-
-  request.append_instructions(content)
-
-  assert len(request.contents) == 0
-  assert request.config.system_instruction == content
-  assert len(request.config.system_instruction.parts) == 2
-  assert request.config.system_instruction.parts[0].text == 'Text instruction'
-  assert (
-      request.config.system_instruction.parts[1].text == 'Additional text part'
-  )
-
-
-def test_append_instructions_mixed_string_and_content():
-  """Test mixing string list and Content instructions."""
-  request = LlmRequest()
-
-  # First add string instructions
-  request.append_instructions(['String instruction'])
-  assert request.config.system_instruction == 'String instruction'
-
-  # Then add Content instruction
-  content = types.Content(
-      role='user', parts=[types.Part(text='Content instruction')]
-  )
-  request.append_instructions(content)
-
-  # String and Content should be merged in system_instruction
-  assert len(request.contents) == 0
-  assert isinstance(request.config.system_instruction, types.Content)
-  assert len(request.config.system_instruction.parts) == 2
-  assert request.config.system_instruction.parts[0].text == 'String instruction'
-  assert (
-      request.config.system_instruction.parts[1].text == 'Content instruction'
-  )
-
-
 def test_append_instructions_empty_string_list():
   """Test append_instructions with empty list of strings."""
   request = LlmRequest()
@@ -298,27 +198,47 @@ def test_append_instructions_empty_string_list():
   assert len(request.contents) == 0
 
 
+def test_append_instructions_content_without_parts_is_noop():
+  """An SDK Content with omitted parts is an empty instruction."""
+  request = LlmRequest()
+
+  user_contents = request.append_instructions(types.Content(role='user'))
+
+  assert user_contents == []
+  assert request.config.system_instruction is None
+  assert request.contents == []
+
+
 def test_append_instructions_invalid_input():
   """Test append_instructions with invalid input types."""
   request = LlmRequest()
 
   # Test with invalid types
   with pytest.raises(
-      TypeError, match='instructions must be list\\[str\\] or types.Content'
+      TypeError,
+      match=r'instructions must be list\[str\] or types.Content, got str\.',
   ):
     request.append_instructions('single string')  # Should be list[str]
 
   with pytest.raises(
-      TypeError, match='instructions must be list\\[str\\] or types.Content'
+      TypeError,
+      match=r'instructions must be list\[str\] or types.Content, got int\.',
   ):
     request.append_instructions(123)  # Invalid type
 
   with pytest.raises(
-      TypeError, match='instructions must be list\\[str\\] or types.Content'
+      TypeError,
+      match=r'instructions must be list\[str\] or types.Content, got list\.',
   ):
     request.append_instructions(
         ['valid string', 123]
     )  # Mixed valid/invalid in list
+
+  with pytest.raises(
+      TypeError,
+      match=r'instructions must be list\[str\] or types.Content, got dict\.',
+  ):
+    request.append_instructions({'instruction': 'test'})
 
 
 def test_append_instructions_content_preserves_role_and_parts():
@@ -847,3 +767,87 @@ def test_is_managed_agent_can_be_set_true():
   request = LlmRequest()
   request._is_managed_agent = True
   assert request._is_managed_agent is True
+
+
+def test_append_tools_declared_name_matches_registered_name():
+  """A callable object is advertised under the name it is registered as."""
+
+  class Calc:
+    """Adds two numbers."""
+
+    def __call__(self, a: int, b: int) -> int:
+      return a + b
+
+  request = LlmRequest()
+  request.append_tools([FunctionTool(Calc())])
+
+  declaration = request.config.tools[0].function_declarations[0]
+  assert declaration.name in request.tools_dict
+
+
+def test_append_tools_warns_on_duplicate_tool_name(caplog):
+  """A shadowed duplicate tool name is reported rather than silently dropped."""
+
+  def search(q: str) -> str:
+    """Search."""
+    return q
+
+  request = LlmRequest()
+  with caplog.at_level(logging.WARNING):
+    request.append_tools([FunctionTool(search), FunctionTool(search)])
+
+  assert 'Duplicate tool name' in caplog.text
+  assert len(request.tools_dict) == 1
+
+
+def test_set_output_schema_sets_schema_and_forces_json_mime_type():
+  """Structured output requires both the schema and the JSON mime type."""
+  request = LlmRequest()
+  schema = types.Schema(
+      type=types.Type.OBJECT,
+      properties={'answer': types.Schema(type=types.Type.STRING)},
+  )
+
+  request.set_output_schema(schema)
+
+  assert request.config.response_schema is schema
+  assert request.config.response_mime_type == 'application/json'
+
+
+def test_set_output_schema_accepts_deprecated_base_model_alias():
+  """base_model is a deprecated alias and must behave like output_schema."""
+  request = LlmRequest()
+  schema = {'type': 'object', 'properties': {'answer': {'type': 'string'}}}
+
+  request.set_output_schema(base_model=schema)
+
+  assert request.config.response_schema == schema
+  assert request.config.response_mime_type == 'application/json'
+
+
+def test_set_output_schema_prefers_output_schema_over_base_model():
+  """When both are supplied the non-deprecated argument wins."""
+  request = LlmRequest()
+  preferred = types.Schema(type=types.Type.STRING)
+  legacy = types.Schema(type=types.Type.INTEGER)
+
+  request.set_output_schema(preferred, base_model=legacy)
+
+  assert request.config.response_schema is preferred
+
+
+def test_set_output_schema_without_any_schema_raises_value_error():
+  """Calling with neither argument is a caller error, not a silent no-op."""
+  request = LlmRequest()
+
+  with pytest.raises(
+      ValueError,
+      match=(
+          r'Either output_schema or base_model must be provided\.'
+          r' Pass output_schema=<your_schema> \(base_model is deprecated\)\.'
+      ),
+  ):
+    request.set_output_schema()
+
+  assert request.config.response_schema is None
+  assert request.config.response_mime_type is None

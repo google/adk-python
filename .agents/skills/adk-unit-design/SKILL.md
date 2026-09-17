@@ -1,88 +1,69 @@
 ---
 name: adk-unit-design
-description: Creates or updates code unit design documents for source code documentation.
+description: >-
+  Writes an as-built architecture document for one ADK code unit — purpose,
+  execution flow, data flow, cross-class dependencies, extension points, and
+  the parts that must not change — to `docs/design/{topic}/{unit}/index.md`. It
+  describes the code as implemented, not a proposed design, and its reader is a
+  developer about to change or extend that unit. Use when asked to "write a
+  design doc for {file}", "document the architecture of {class}", "document the
+  extension points of {unit}", or after adding a core class, node type, or
+  plugin base. Don't use for documentation aimed at developers who only call the
+  unit from their own application — that is a usage guide with runnable examples
+  under `docs/guides/` (use `adk-unit-guide`). Don't use to answer a
+  framework-wide architecture question (use `adk-architecture`).
 ---
 
-# ADK Code Unit Design
+# ADK code unit design
 
-This skill creates or updates a detailed software engineering design document for new or updated code file or specified code unit. The design document it generates is meant to explain the code to a developer who wants to modify or extend the code unit as part of the ADK development framework. Similar to a *unit test*, a *unit design* provides a generated software engineering design based on the *actual, implemented code* rather than any proposed code design or proposed software architecture.
+A unit design documents a code unit **as implemented**, the way a unit test
+exercises it as implemented. Nothing proposed or aspirational belongs in one.
+The reader is deciding what they may safely change, so answer "what breaks if I
+touch this?" — not "how do I call this?".
 
-## Input
+## Inputs
 
-- Code files containing new functionality
-- Names of new methods and classes (optional)
-- Code files for base classes or interfaces that the new functionality depends on (optional)
-- Code unit tests (optional)
-- Example code files (optional)
+Require the source file, or a class or method named inside it. Also read, when
+they exist: the base classes and interfaces the unit implements, its unit tests
+(the best evidence of intended behaviour), and example usage.
 
-## Analysis
+## Analyse before writing
 
-- Review specified code files for changes and named methods to determine:
-  - Purpose and intended use of the new or updated code units
-  - Any data flows handled by the new or updated code units
-  - Dependencies required by the new or updated code units
-  - Approaches for extending or customizing the code unit to add new capabilities
-  - Classes that depend on the new or updated code units
-  - Operational limitations of the new or updated code units
+Answer each of these from the source. Anything the code does not show stays out
+of the document — do not infer a design intent from a name.
 
-## Output
+- Purpose and intended use of the unit.
+- Execution flow, and the data that flows in and out.
+- Upstream dependencies, and which classes depend on this unit.
+- Extension surfaces: abstract methods, hooks, callbacks, configurable fields.
+- Constraints — what a subclass or caller must not change, and why.
+- Operational limitations.
 
-- Look for an existing design document in the `/docs/design/***` directory of this repository.
-  - If a design already exists, update the existing design incrementally and prioritize preserving the previous content as much as possible.
-  - If no design document exists, create a design file for the new code unit in the `/docs/design/***` directory of this repository, using the relative path of the code unit. For example, if the code unit is called `/topic/function/class.ext`, create a design document in the location `/docs/design/topic/function/class/index.md`.
-- Any links to local code files should be translated to URL links to the `google/adk-python` repository on GitHub. For example, if the local code unit path is `***/adk-python/topic/function/class.ext#L93`, the URL to the code file should be `https://github.com/google/adk-python/blob/main/topic/function/class.ext#L93`.
+## Where the document goes
 
-### Design document structure and content
+Mirror the source path under `docs/design/`, one directory per unit, document
+named `index.md`. Drop the leading underscore of a private module:
 
-Use the following structure and instructions to create the design document for the code unit:
+| Source | Design document |
+| :--- | :--- |
+| `src/google/adk/workflow/_function_node.py` | `docs/design/workflow/function_node/index.md` |
+| `src/google/adk/events/event.py` | `docs/design/events/event/index.md` |
 
-```
-# (name of code unit or code file) - Code Unit Design
+If a document already exists at that path, update it in place and keep the
+existing wording wherever the code has not changed, so the diff shows only what
+the change actually altered.
 
-- 2-sentence summary of the code unit
+`docs/design/` does not exist in this repository yet — the first design document
+creates it. `docs/guides/` is the established sibling tree; match its directory
+shape.
 
-## Introduction
+## Link to GitHub, not to local paths
 
-- Paragraph(s) explaining:
-  - The purpose and application of the code unit, including intended use cases
-  - Developer problems solved by this code unit
-  - Agent capabilities enabled by this code unit
+These documents render on GitHub, where a local filesystem path is dead.
+Rewrite `{repo_root}/src/google/adk/{topic}/{unit}.py#L93` as
+`https://github.com/google/adk-python/blob/main/src/google/adk/{topic}/{unit}.py#L93`.
 
-## High-level architecture
+## Structure
 
-- Describe the software architecture of this code unit and how it fits into the larger ADK framework
-- Explain general execution flow of this code unit
-- Describe any data flows handled by the code unit including inputs and outputs
-- Explain any cross-class dependencies of the code unit, including upstream dependencies and downstream dependencies
-
-### Extension points
-
-- Describe how the code unit could be extended or customized to add new features or capabilities
-- Note specific parts of the code unit that are designed to be extended or customized, including:
-  - Abstract classes
-  - Interfaces
-  - Hooks
-  - Callbacks
-  - Configurable parameters
-  - Plugin architecture
-  - Other extension points
-
-### Extension constraints
-
-- Describe what parts of the code unit should not be modified, based on:
-  - architectural constraints
-  - implementation limitations
-  - cross-class dependencies
-  - other constraints
-
-## Limitations
-
-- Mention any limitations of the code unit, if known, such as:
-  - input constraints
-  - data structure constraints
-  - output constraints
-  - performance limitations
-  - memory limitations
-  - other limitations
-
-```
+Follow [references/design-template.md](references/design-template.md) section by
+section.

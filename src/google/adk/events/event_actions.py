@@ -18,6 +18,7 @@ import logging
 from typing import Any
 from typing import cast
 from typing import Optional
+from typing import TYPE_CHECKING
 from typing import Union
 
 from google.genai.types import Content
@@ -26,12 +27,17 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import field_serializer
+from pydantic import field_validator
 from pydantic import SerializerFunctionWrapHandler
 from pydantic_core import to_jsonable_python
 
-from ..auth.auth_tool import AuthConfig
 from ..tools.tool_confirmation import ToolConfirmation
 from .ui_widget import UiWidget
+
+if TYPE_CHECKING:
+  from ..auth.auth_tool import AuthConfig
+else:
+  AuthConfig = Any
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -116,6 +122,9 @@ class EventActions(BaseModel):  # type: ignore[misc]
   transfer_to_agent: Optional[str] = None
   """If set, the event transfers to the specified agent."""
 
+  transfer_reason: Optional[str] = None
+  """The reason for transferring to the target agent."""
+
   escalate: Optional[bool] = None
   """The agent is escalating to a higher level agent."""
 
@@ -130,6 +139,18 @@ class EventActions(BaseModel):  # type: ignore[misc]
   identify the function call.
   - Values: The requested auth config.
   """
+
+  @field_validator('requested_auth_configs', mode='after')
+  @classmethod
+  def _parse_auth_configs(cls, v: dict[str, Any]) -> dict[str, Any]:
+    if not v:
+      return v
+    from ..auth.auth_tool import AuthConfig
+
+    return {
+        k: AuthConfig.model_validate(val) if isinstance(val, dict) else val
+        for k, val in v.items()
+    }
 
   requested_tool_confirmations: dict[str, ToolConfirmation] = Field(
       default_factory=dict

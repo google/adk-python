@@ -15,16 +15,21 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import inspect
 import sys
 import types
 from typing import Any
+from typing import NamedTuple
 from unittest import mock
 
+from google.adk.auth import auth_credential
 from google.adk.plugins import auto_tracing_helpers
 from google.adk.plugins import auto_tracing_plugin
 from opentelemetry.sdk import trace as trace_sdk
 from opentelemetry.sdk.trace import export as trace_export
 from opentelemetry.sdk.trace.export import in_memory_span_exporter
+import pydantic
 import pytest
 
 _FIXTURE_MODULE_NAME = (
@@ -52,9 +57,24 @@ def _build_fixture_module() -> types.ModuleType:
   async def _async_method(unused_self, x: int) -> int:
     return x + 10
 
-  _method.__module__ = _FIXTURE_MODULE_NAME
-  _async_method.__module__ = _FIXTURE_MODULE_NAME
-  cls = type("C", (), {"method": _method, "async_method": _async_method})
+  def _static_method(x: int) -> int:
+    return x * 3
+
+  def _class_method(unused_cls, x: int) -> int:
+    return x * 5
+
+  for fn in (_method, _async_method, _static_method, _class_method):
+    fn.__module__ = _FIXTURE_MODULE_NAME
+  cls = type(
+      "C",
+      (),
+      {
+          "method": _method,
+          "async_method": _async_method,
+          "static_method": staticmethod(_static_method),
+          "class_method": classmethod(_class_method),
+      },
+  )
   cls.__module__ = _FIXTURE_MODULE_NAME
 
   module.sync_fn = _sync_fn
@@ -86,6 +106,10 @@ def _run_class_method(module):
 
 def _run_class_async_method(module):
   return asyncio.run(module.C().async_method(5))
+
+
+def _run_class_static_method(module):
+  return module.C().static_method(5)
 
 
 class _Ctx:
@@ -148,6 +172,7 @@ def _instrument(
         (_run_async, "_async_fn"),
         (_run_class_method, "._method"),
         (_run_class_async_method, "._async_method"),
+        (_run_class_static_method, "._static_method"),
     ],
 )
 def test_emits_span(fixture, run_fn, expected_substr):
@@ -191,6 +216,22 @@ def test_wrapper_marker_is_true(fixture, attr):
       getattr(getattr(fixture.module, attr), auto_tracing_helpers.WRAPPED_ATTR)
       is True
   )
+
+
+def test_staticmethod_stays_a_staticmethod(fixture):
+  _instrument(fixture.tracer)
+  cls = fixture.module.C
+  assert isinstance(inspect.getattr_static(cls, "static_method"), staticmethod)
+  assert cls.static_method(5) == 15
+  assert cls().static_method(5) == 15
+
+
+def test_classmethod_is_left_alone(fixture):
+  _instrument(fixture.tracer)
+  cls = fixture.module.C
+  assert isinstance(inspect.getattr_static(cls, "class_method"), classmethod)
+  assert cls.class_method(5) == 25
+  assert cls().class_method(5) == 25
 
 
 def test_out_of_scope_module_is_not_instrumented(fixture):
@@ -432,6 +473,295 @@ def test_async_gen_caps_buffered_items(fixture):
     assert f"+ {total_yields - cap} more" in rendered, rendered
   finally:
     sys.modules.pop(name, None)
+
+
+_SENTINEL_TOKEN = "sentinel-token-do-not-trace"
+
+
+def _sentinel_credential() -> auth_credential.AuthCredential:
+  return auth_credential.AuthCredential(
+      auth_type=auth_credential.AuthCredentialTypes.OAUTH2,
+      oauth2=auth_credential.OAuth2Auth(
+          access_token=_SENTINEL_TOKEN, refresh_token=_SENTINEL_TOKEN
+      ),
+  )
+
+
+def test_credential_return_is_redacted(fixture):
+  name = "auto_tracing_plugin_test_cred_return"
+
+  def issue_credential(user: str):
+    del user
+    return _sentinel_credential()
+
+  mod = _install_module(name, issue_credential)
+  try:
+    _instrument(fixture.tracer, scope_prefixes=(name,))
+    mod.fn("alice")
+    attrs = _attrs_for(fixture.exporter, "issue_credential")
+    assert attrs.get("adk.fn.return") == "<AuthCredential>"
+    assert _SENTINEL_TOKEN not in repr(attrs), attrs
+    # Ordinary args are still traced.
+    assert attrs.get("adk.fn.arg.user") == "'alice'"
+  finally:
+    sys.modules.pop(name, None)
+
+
+def test_credential_named_args_are_not_recorded(fixture):
+  name = "auto_tracing_plugin_test_cred_args"
+
+  def login(user: str, token: str, api_key: str, refresh_token: str):
+    del token, api_key, refresh_token
+    return user
+
+  mod = _install_module(name, login)
+  try:
+    _instrument(fixture.tracer, scope_prefixes=(name,))
+    mod.fn(
+        "alice", _SENTINEL_TOKEN, _SENTINEL_TOKEN, refresh_token=_SENTINEL_TOKEN
+    )
+    attrs = _attrs_for(fixture.exporter, "login")
+    assert "adk.fn.arg.token" not in attrs
+    assert "adk.fn.arg.api_key" not in attrs
+    assert "adk.fn.arg.refresh_token" not in attrs
+    assert _SENTINEL_TOKEN not in repr(attrs), attrs
+    # Ordinary args and returns are still traced.
+    assert attrs.get("adk.fn.arg.user") == "'alice'"
+    assert attrs.get("adk.fn.return") == "'alice'"
+  finally:
+    sys.modules.pop(name, None)
+
+
+def test_credential_field_of_default_repr_object_is_redacted():
+  # The slot is deliberately *not* named like a credential, so only the type
+  # check can catch it.
+  class _Holder:
+    __slots__ = ("payload",)
+
+    def __init__(self):
+      self.payload = _sentinel_credential()
+
+  rendered = auto_tracing_helpers.safe_repr(
+      _Holder(), auto_tracing_helpers.Caps()
+  )
+  assert _SENTINEL_TOKEN not in rendered, rendered
+  assert "payload=<AuthCredential>" in rendered, rendered
+
+
+def test_credential_in_namedtuple_return_is_redacted(fixture):
+  name = "auto_tracing_plugin_test_cred_namedtuple"
+
+  class _ExchangeResult(NamedTuple):
+    credential: auth_credential.AuthCredential
+    was_exchanged: bool
+
+  def exchange(user: str):
+    del user
+    return _ExchangeResult(
+        credential=_sentinel_credential(), was_exchanged=True
+    )
+
+  mod = _install_module(name, exchange)
+  try:
+    _instrument(fixture.tracer, scope_prefixes=(name,))
+    mod.fn("alice")
+    attrs = _attrs_for(fixture.exporter, "exchange")
+    assert _SENTINEL_TOKEN not in repr(attrs), attrs
+    assert (
+        attrs.get("adk.fn.return")
+        == "_ExchangeResult(credential=<AuthCredential>, was_exchanged=True)"
+    )
+  finally:
+    sys.modules.pop(name, None)
+
+
+def test_credential_in_dict_return_is_redacted(fixture):
+  name = "auto_tracing_plugin_test_cred_dict"
+
+  def load_bucket(user: str):
+    return {user: _sentinel_credential()}
+
+  mod = _install_module(name, load_bucket)
+  try:
+    _instrument(fixture.tracer, scope_prefixes=(name,))
+    mod.fn("alice")
+    attrs = _attrs_for(fixture.exporter, "load_bucket")
+    assert _SENTINEL_TOKEN not in repr(attrs), attrs
+    assert attrs.get("adk.fn.return") == "{'alice': <AuthCredential>}"
+  finally:
+    sys.modules.pop(name, None)
+
+
+@dataclasses.dataclass
+class _Session:
+  owner: str
+  creds: list[Any]
+
+
+class _Envelope(NamedTuple):
+  label: str
+  sessions: dict[str, _Session]
+
+
+def test_credential_deeply_nested_is_redacted():
+  # dict -> NamedTuple -> dict -> dataclass -> list -> tuple -> credential.
+  value = {
+      "envelope": _Envelope(
+          label="e1",
+          sessions={
+              "s1": _Session(owner="alice", creds=[(_sentinel_credential(),)])
+          },
+      )
+  }
+  rendered = auto_tracing_helpers.safe_repr(value, auto_tracing_helpers.Caps())
+  assert _SENTINEL_TOKEN not in rendered, rendered
+  assert "<AuthCredential>" in rendered, rendered
+  # Non-secret structure around it survives.
+  assert "label='e1'" in rendered, rendered
+  assert "owner='alice'" in rendered, rendered
+
+
+def test_credential_in_pydantic_field_is_redacted():
+  class _Wrapper(pydantic.BaseModel):
+    model_config = pydantic.ConfigDict(arbitrary_types_allowed=True)
+
+    label: str
+    payload: Any
+
+  rendered = auto_tracing_helpers.safe_repr(
+      _Wrapper(label="w", payload=_sentinel_credential()),
+      auto_tracing_helpers.Caps(),
+  )
+  assert _SENTINEL_TOKEN not in rendered, rendered
+  assert rendered == "_Wrapper(label='w', payload=<AuthCredential>)", rendered
+
+
+def test_credential_subclass_is_redacted():
+  class _MyCredential(auth_credential.AuthCredential):
+    pass
+
+  value = [
+      _MyCredential(
+          auth_type=auth_credential.AuthCredentialTypes.OAUTH2,
+          oauth2=auth_credential.OAuth2Auth(access_token=_SENTINEL_TOKEN),
+      )
+  ]
+  rendered = auto_tracing_helpers.safe_repr(value, auto_tracing_helpers.Caps())
+  assert rendered == "[<_MyCredential>]", rendered
+
+
+def test_secret_named_key_is_masked_by_name():
+  # A token-response dict: no credential *type* anywhere, only key names.
+  rendered = auto_tracing_helpers.safe_repr(
+      {"access_token": _SENTINEL_TOKEN, "expires_in": 3600},
+      auto_tracing_helpers.Caps(),
+  )
+  assert _SENTINEL_TOKEN not in rendered, rendered
+  assert rendered == "{'access_token': <str>, 'expires_in': 3600}", rendered
+
+
+def test_secret_behind_private_attr_forces_summary():
+  class _Store:
+
+    def __init__(self):
+      self._value = {"cred": _sentinel_credential()}
+      self.name = "store"
+
+    def __repr__(self):
+      return f"_Store({self._value!r})"
+
+  rendered = auto_tracing_helpers.safe_repr(
+      _Store(), auto_tracing_helpers.Caps()
+  )
+  assert _SENTINEL_TOKEN not in rendered, rendered
+  assert rendered == "<_Store fields={name='store'}>", rendered
+
+
+def test_clean_values_render_exactly_like_repr():
+  caps = auto_tracing_helpers.Caps()
+  for value in (
+      {"a": [1, 2], "b": ("x",)},
+      [{"n": None}, {1, 2}],
+      frozenset({7}),
+      _Session(owner="alice", creds=[1, 2]),
+      _Envelope(label="e", sessions={}),
+  ):
+    assert auto_tracing_helpers.safe_repr(value, caps) == repr(value), value
+
+
+def test_credential_yielded_by_generator_is_redacted(fixture):
+  name = "auto_tracing_plugin_test_cred_gen"
+
+  def issue_all(user: str):
+    del user
+    yield {"bundle": _sentinel_credential()}
+
+  mod = _install_module(name, issue_all)
+  try:
+    _instrument(fixture.tracer, scope_prefixes=(name,))
+    assert len(list(mod.fn("alice"))) == 1
+    attrs = _attrs_for(fixture.exporter, "issue_all")
+    rendered = attrs.get("adk.fn.return", "")
+    assert _SENTINEL_TOKEN not in repr(attrs), attrs
+    assert "1 items yielded" in rendered, rendered
+    assert "{'bundle': <AuthCredential>}" in rendered, rendered
+  finally:
+    sys.modules.pop(name, None)
+
+
+def test_cyclic_and_deep_values_are_bounded():
+  caps = auto_tracing_helpers.Caps()
+  cycle: dict[str, Any] = {"cred": _sentinel_credential()}
+  cycle["self"] = cycle
+  rendered = auto_tracing_helpers.safe_repr(cycle, caps)
+  assert _SENTINEL_TOKEN not in rendered, rendered
+  assert "<dict ...>" in rendered, rendered
+
+  deep: Any = _sentinel_credential()
+  for _ in range(200):
+    deep = [deep]
+  rendered = auto_tracing_helpers.safe_repr(deep, caps)
+  assert _SENTINEL_TOKEN not in rendered, rendered
+  assert "<list ...>" in rendered, rendered
+
+
+@pytest.mark.parametrize(
+    "name,expected",
+    [
+        ("token", True),
+        ("api_key", True),
+        ("refresh_token", True),
+        ("CLIENT_SECRET", True),
+        ("user_token_count", False),
+        ("tokenizer", False),
+        ("secretary", False),
+        ("authorization", True),
+        ("cookie", True),
+        ("cookies", True),
+        ("private_key", True),
+        ("service_account_private_key", True),
+        ("custom_authorization", True),
+        ("session_cookie", True),
+        ("session_cookies", True),
+        ("tool_auth_config", True),
+        ("authorization_url", False),
+        ("cookiecutter", False),
+    ],
+)
+def test_credential_arg_name_matching(name, expected):
+  assert auto_tracing_helpers._is_credential_arg_name(name) is expected
+
+
+def test_failed_redaction_walk_elides_rather_than_raising():
+  class _AngryList(list):
+
+    def __iter__(self):
+      raise RuntimeError("boom")
+
+  rendered = auto_tracing_helpers.safe_repr(
+      _AngryList([_sentinel_credential()]), auto_tracing_helpers.Caps()
+  )
+  assert rendered == "<_AngryList ...>", rendered
 
 
 def test_sync_gen_caps_buffered_items(fixture):

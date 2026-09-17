@@ -631,10 +631,7 @@ async def test_start_node_with_invalid_input_schema():
   msg = types.Content(parts=[types.Part(text='hello')], role='user')
 
   # We expect it to raise ValidationError
-  with pytest.raises(
-      ValueError,
-      match=r"Runtime schema validation failed for dynamic node 'node'",
-  ):
+  with pytest.raises(ValidationError):
     async for event in runner.run_async(
         user_id='u', session_id=session.id, new_message=msg
     ):

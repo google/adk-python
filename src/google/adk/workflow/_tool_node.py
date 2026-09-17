@@ -19,15 +19,16 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 import json
 from typing import Any
-import uuid
 
 from google.genai import types
+from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 from typing_extensions import override
 
 from ..agents.context import Context
 from ..events.event import Event
+from ..platform import uuid as platform_uuid
 from ..tools.base_tool import BaseTool
 from ..tools.tool_context import ToolContext
 from ..utils.content_utils import extract_text_from_content
@@ -66,14 +67,16 @@ class _ToolNode(BaseNode):
   ) -> AsyncGenerator[Any, None]:
     tool_context = ToolContext(
         invocation_context=ctx.get_invocation_context(),
-        function_call_id=str(uuid.uuid4()),
+        function_call_id=platform_uuid.new_uuid(),
     )
 
     args = node_input
     if isinstance(args, types.Content):
       args = extract_text_from_content(args)
 
-    if isinstance(args, str):
+    if isinstance(args, BaseModel):
+      args = args.model_dump()
+    elif isinstance(args, str):
       args = args.strip()
       if not args:
         args = None
@@ -85,11 +88,32 @@ class _ToolNode(BaseNode):
 
     if args is None:
       args = {}
-    elif not isinstance(args, dict):
+    elif isinstance(args, dict):
+      args = dict(args)
+    else:
       raise TypeError(
           'The input to ToolNode must be a dictionary of tool arguments or'
           f' None, but got {type(args)}.'
       )
+
+    # Fallback to ctx.state for missing required parameters declared in tool declaration
+    declaration = getattr(self.tool, '_get_declaration', lambda: None)()
+    if declaration is not None:
+      required_params = ()
+      if getattr(declaration, 'parameters_json_schema', None) and isinstance(
+          declaration.parameters_json_schema, dict
+      ):
+        required_params = (
+            declaration.parameters_json_schema.get('required', ()) or ()
+        )
+      elif getattr(declaration, 'parameters', None) and getattr(
+          declaration.parameters, 'required', None
+      ):
+        required_params = declaration.parameters.required or ()
+
+      for param_name in required_params:
+        if param_name not in args and param_name in ctx.state:
+          args[param_name] = ctx.state[param_name]
 
     response = await self.tool.run_async(args=args, tool_context=tool_context)
     state_delta = (

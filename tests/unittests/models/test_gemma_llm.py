@@ -518,6 +518,51 @@ def test_process_response_last_json_object():
   assert part.text is None
 
 
+def test_process_response_skips_partial_streaming_chunk():
+  """A partial chunk is a fragment; parsing it would eat the streamed text."""
+  # Text that WOULD parse as a function call if the guard were missing.
+  json_function_call_str = (
+      '{"name": "search_web", "parameters": {"query": "latest news"}}'
+  )
+  llm_response = LlmResponse(
+      content=Content(
+          role="model", parts=[Part.from_text(text=json_function_call_str)]
+      ),
+      partial=True,
+  )
+
+  gemma = Gemma()
+  gemma._extract_function_calls_from_response(llm_response)
+
+  assert llm_response.content
+  assert llm_response.content.parts
+  assert len(llm_response.content.parts) == 1
+  assert llm_response.content.parts[0].text == json_function_call_str
+  assert llm_response.content.parts[0].function_call is None
+
+
+def test_process_response_skips_turn_complete_marker():
+  """The turn_complete marker closes the turn; its text must not be reparsed."""
+  json_function_call_str = (
+      '{"name": "search_web", "parameters": {"query": "latest news"}}'
+  )
+  llm_response = LlmResponse(
+      content=Content(
+          role="model", parts=[Part.from_text(text=json_function_call_str)]
+      ),
+      turn_complete=True,
+  )
+
+  gemma = Gemma()
+  gemma._extract_function_calls_from_response(llm_response)
+
+  assert llm_response.content
+  assert llm_response.content.parts
+  assert len(llm_response.content.parts) == 1
+  assert llm_response.content.parts[0].text == json_function_call_str
+  assert llm_response.content.parts[0].function_call is None
+
+
 # Tests for Gemma 4 registry routing
 def test_gemma4_resolves_to_gemini_not_gemma():
   """Gemma 4 models should resolve to Gemini, not the Gemma workaround class."""

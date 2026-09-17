@@ -47,6 +47,7 @@ def _daytona_patch(sandbox: mock.MagicMock):
   """Patch AsyncDaytona to return a mock client."""
   mock_client = mock.MagicMock(name="AsyncDaytona")
   mock_client.create = mock.AsyncMock(return_value=sandbox)
+  mock_client.close = mock.AsyncMock()
 
   with mock.patch.object(daytona, "AsyncDaytona", autospec=True) as mock_class:
     mock_class.return_value = mock_client
@@ -103,14 +104,18 @@ async def test_close_deletes_sandbox_and_is_idempotent(daytona_patch, sandbox):
   env = DaytonaEnvironment()
   await env.initialize()
   assert env.is_initialized is True
+  client = daytona_patch.return_value
   await env.close()
   sandbox.delete.assert_awaited_once()
+  client.close.assert_awaited_once()
   assert env._sandbox is None
+  assert env._client is None
   assert env.is_initialized is False
 
   # Second close is a no-op.
   await env.close()
   sandbox.delete.assert_awaited_once()
+  client.close.assert_awaited_once()
 
 
 async def test_working_dir_requires_initialize():

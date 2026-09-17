@@ -5,8 +5,8 @@ A multi-agent setup with a sequential workflow.
 The whole process is:
 
 1. An agent backed by a cheap and fast model to write initial version.
-1. An agent backed by a smarter and a little more expensive to review the code.
-1. A final agent backed by the smartest and slowest model to write the final revision.
+1. An agent backed by the same cheap and fast model to review the code.
+1. A final agent backed by a smarter and slower model to write the final revision.
 
 Sample queries:
 

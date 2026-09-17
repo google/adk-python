@@ -1,187 +1,118 @@
-# State and Events Reference
+# Context and Events
 
-Manage shared state across workflow nodes and understand the event system.
-
-## 📋 Agent Verification Checklist (State & Events)
-Use this checklist when working with state and events:
-
-- [ ] **State Updates**: Did you use `Event(state=...)` for state updates? (Captures delta in event history)
-- [ ] **Parameter Resolution**: Are custom parameters named after keys in `ctx.state`?
-- [ ] **Output Serialization**: Is `event.output` JSON-serializable? (Required for DB session services)
-- [ ] **Web UI Display**: Did you use `Event(message=...)` for output meant for users?
-
-## 💡 Quick Reference (Resolution Order)
-
-1. **`ctx`**: Workflow `Context` object.
-2. **`node_input`**: Predecessor output.
-3. **Other names**: Looked up from `ctx.state[param_name]`.
-
-## Workflow Context
-
-Every node receives a `Context` object (when declaring a `ctx` parameter):
+The two objects a node touches: `Context`, which is how it reads its
+surroundings, and `Event`, which is how it says anything.
 
 ```python
-from google.adk.agents.context import Context
+from google.adk import Context, Event
+```
 
+## Getting a `Context`
+
+Declare a parameter named `ctx`. Nodes that do not need it can omit it.
+
+```python
 def my_node(ctx: Context, node_input: str) -> str:
-  # Access shared state
-  value = ctx.state.get("key", "default")
-
-  # Write to state
-  ctx.state["key"] = "new_value"
-
-  # Access session info
-  session_id = ctx.session.id
-  invocation_id = ctx.invocation_id
-
-  # Get node metadata
-  node_path = ctx.node_path          # e.g., "MyWorkflow/my_node"
-  run_id = ctx.run_id                # this node-run's identifier
-  attempt = ctx.attempt_count        # 1 on first attempt, ≥1 thereafter
-
-  return f"Processed: {value}"
+  value = ctx.state.get('key', 'default')
+  return f'{ctx.session.id}: {value}'
 ```
 
-## Context Properties
+## Context properties
 
-### Common Properties (available everywhere)
+Available everywhere (a `Context` is also what a callback and a tool receive —
+`CallbackContext` and `ToolContext` are aliases for this same class):
 
-| Property | Type | Description |
-|----------|------|-------------|
-| `state` | `State` | Delta-aware session state (read/write like a dict) |
-| `session` | `Session` | Current session (with local events merged in workflows) |
-| `invocation_id` | `str` | Current invocation ID |
-| `user_content` | `types.Content` | The user content that started this invocation (read-only) |
-| `agent_name` | `str` | Name of the agent currently running |
-| `user_id` | `str` | The user ID (read-only) |
-| `run_config` | `RunConfig \| None` | Run configuration for this invocation (read-only) |
-| `actions` | `EventActions` | Event actions for state/artifact deltas |
+| Property | Type | Notes |
+|---|---|---|
+| `state` | `State` | Delta-aware session state; reads and writes like a dict |
+| `session` | `Session` | Current session, with the workflow's local events merged in |
+| `invocation_id` | `str` | This invocation |
+| `user_id` | `str` | Read-only |
+| `user_content` | `types.Content \| None` | The message that started the invocation |
+| `agent_name` | `str` | Agent currently running |
+| `run_config` | `RunConfig \| None` | Read-only |
+| `actions` | `EventActions` | State and artifact deltas being accumulated |
+| `branch` | `str \| None` | Event-isolation branch |
+| `function_call_id` | `str \| None` | Set when running as a tool |
 
-### Workflow-Only Properties
+Meaningful only inside a workflow node:
 
-| Property        | Type             | Description                           |
-| --------------- | ---------------- | ------------------------------------- |
-| `node_path`     | `str`            | Full path of current node (e.g.,      |
-:                 :                  : "WorkflowA/node1")                    :
-| `run_id`        | `str`            | Identifier for this node-run (e.g.,   |
-:                 :                  : `"1"`, `"2"`)                         :
-| `attempt_count` | `int`            | Retry attempt number (1 on first try) |
-| `resume_inputs` | `dict[str, Any]` | Inputs for resuming (keyed by         |
-:                 :                  : interrupt_id)                         :
+| Property | Type | Notes |
+|---|---|---|
+| `node` | `BaseNode \| None` | The node being executed |
+| `node_path` | `str` | Full path, e.g. `'WorkflowA/node1'` |
+| `run_id` | `str` | This node-run, e.g. `'1'`, `'2'` |
+| `attempt_count` | `int` | 1 on the first try, higher on a retry |
+| `resume_inputs` | `dict[str, Any]` | Human-in-the-loop answers, keyed by `interrupt_id` |
+| `error`, `error_node_path` | `Exception \| None`, `str` | Set after a node fails |
 
-### Workflow-Only Methods
+## Context methods
 
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `run_node(node, node_input, *, name)` | `Any` | Execute a node dynamically (requires `rerun_on_resume=True`) |
+| Method | Purpose |
+|---|---|
+| `await run_node(node, node_input=None, *, use_as_output=False, run_id=None, use_sub_branch=False, override_branch=None)` | Run a node dynamically; the caller needs `rerun_on_resume=True` |
+| `await save_artifact(filename, part)` / `await load_artifact(filename)` | Session artifacts |
+| `await search_memory(query)` | Long-term memory lookup |
+| `get_auth_response(auth_config)` / `request_credential(auth_config)` | Credentials |
+| `get_invocation_context()` | Escape hatch to the underlying `InvocationContext` |
 
-## State Management
+## Parameters resolved from state
 
-State is shared across all nodes in a workflow invocation. **Prefer `Event(state=...)` over `ctx.state[...] =`** for setting state:
-
-```python
-# ✅ Preferred: set state via Event (persisted in event history, replayable)
-def node_a(node_input: str):
-  return Event(
-      output="done",
-      state={"user_data": {"name": "Alice", "score": 95}},
-  )
-
-# ❌ Avoid: direct ctx.state mutation (not captured in event history)
-def node_a(ctx: Context, node_input: str) -> str:
-  ctx.state["user_data"] = {"name": "Alice", "score": 95}
-  return "done"
-```
-
-**Why `Event(state=...)` is preferred:**
-
-- State deltas are persisted in event history as `event.actions.state_delta`
-- Non-resumable HITL can reconstruct state by replaying events
-- Makes state changes explicit and traceable
-- `ctx.state` mutations are side effects that may be lost on replay
-
-Reading state is always done via `ctx.state`:
+Any function-node parameter that is not `ctx` or `node_input` is looked up in
+`ctx.state` by name, and coerced to its annotation. If the key is absent, the
+parameter's default is used.
 
 ```python
-def node_b(ctx: Context, node_input: str) -> str:
-  user = ctx.state["user_data"]
-  return f"User {user['name']} scored {user['score']}"
-```
-
-The `state` dict is stored as `event.actions.state_delta` and applied to the session.
-
-## State as Function Parameters
-
-FunctionNode automatically resolves parameters from state:
-
-```python
-# If ctx.state["user_name"] = "Alice" and ctx.state["threshold"] = 0.5
+# With state {'user_name': 'Alice', 'threshold': 0.5}
 def my_node(node_input: str, user_name: str, threshold: float) -> str:
-  # user_name = "Alice" (from state)
-  # threshold = 0.5 (from state)
-  return f"{user_name}: {node_input} (threshold={threshold})"
+  return f'{user_name}: {node_input} (threshold={threshold})'
 ```
 
-Resolution order:
+Resolution order: `ctx` → `node_input` → `ctx.state[name]` → default.
 
-1. `ctx` -> Context object
-2. `node_input` -> predecessor output
-3. Other names -> `ctx.state[param_name]` (with auto type conversion)
-4. Default values if not in state
+## Event fields
 
-## Event Fields
+`Event` extends `LlmResponse`. Three of its constructor arguments are
+conveniences that write somewhere else:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `output` | `Any` | Output data passed to downstream nodes |
-| `route` | `str\|bool\|int\|list` | Routing signal for conditional edges (convenience kwarg → `actions.route`) |
-| `state` | `dict` (constructor only) | State delta to apply (convenience kwarg → `actions.state_delta`) |
-| `message` | `ContentUnion` (constructor only) | User-facing content (convenience kwarg → `content`) |
-| `content` | `types.Content` | Content for display (set directly or via `message=`) |
-| `node_path` | `str` | Set by workflow (convenience kwarg → `node_info.path`) |
+| Constructor argument | Where it lands |
+|---|---|
+| `output=` | `event.output` — data for the next node |
+| `message=` | `event.content` — what the UI renders |
+| `state=` | `event.actions.state_delta` |
+| `route=` | `event.actions.route` |
 
-## Workflow Data Rules
+`message` and `content` are mutually exclusive; passing both raises. `message`
+accepts a string, a `types.Part`, a list of parts, or a `types.Content`.
 
-- **`Event.output` must be JSON-serializable.** FunctionNode auto-converts Pydantic `BaseModel` returns via `model_dump()`, so returning a model is safe. But `types.Content` and other non-serializable objects will fail with SQLite/database session services.
-- **`output_key` stores dicts, not BaseModel instances.** LLM agents with `output_schema` use `validate_schema()` → `model_dump()` internally, so `ctx.state[output_key]` is always a plain dict.
-- **`ctx.state.get(key)` returns a dict.** Use dict access (`data["field"]`) or reconstruct the model (`MyModel(**data)`) if you need typed access.
+Other fields you will read: `author`, `content`, `partial`, `branch`,
+`node_info` (with `node_info.path` identifying the emitting node), and
+`is_final_response()`.
 
-```python
-# Reading output_key from state — it's a dict, not a BaseModel
-def use_plan(ctx: Context, node_input: Any) -> str:
-  plan = ctx.state.get('task_plan', {})  # dict, not TaskPlan
-  return plan['project_name']            # dict access
-
-  # Or reconstruct if you need typed access:
-  plan_model = TaskPlan(**plan)
-  return plan_model.project_name
-```
-
-## Content Events (User-Visible Output)
-
-In the ADK web UI, only `event.content` is rendered — `event.output` is internal and not displayed. Emit content events for any user-facing output:
+## Emitting user-visible messages
 
 ```python
-# Simple text message
-yield Event(message="Processing step 1...")
+yield Event(message='Processing step 1...')
 
-# Multimodal message (text + image)
+# Multimodal
 from google.genai import types
-yield Event(
-    message=[
-        types.Part.from_text(text="Here is the result:"),
-        types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
-    ]
-)
 
-# Streaming: multiple messages from same node
+yield Event(message=[
+    types.Part.from_text(text='Here is the result:'),
+    types.Part.from_bytes(data=image_bytes, mime_type='image/png'),
+])
+
+# Streaming chunks, then the real output
 async def verbose_node(ctx: Context, node_input: str):
-  yield Event(message="Processing step 1...")
-  await asyncio.sleep(1.0)
-  yield Event(message="Processing step 2...")
-  yield Event(output="final result")
+  yield Event(message='Processing step 1...', partial=True)
+  yield Event(message='Processing step 2...', partial=True)
+  yield Event(output='final result')
 ```
 
-## Workflow Output
+## What the workflow itself outputs
 
-The Workflow emits its own output Event in `_finalize_workflow` after all nodes complete. Terminal nodes (nodes with no outgoing edges) have their data collected and emitted as the workflow's output. This output event has `author=workflow.name` and `node_path=workflow's own path`.
+After every node settles, the workflow emits one more event of its own. Its
+value comes from the terminal nodes — those with no outgoing edges. That event
+is authored by the workflow, with `node_info.path` set to the workflow's own
+path, which is why filtering test assertions on `event.author` picks up the
+wrapper rather than the node you meant.

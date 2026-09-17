@@ -19,6 +19,7 @@ from typing import List
 
 from adk_answering_agent.settings import ADK_GCP_SA_KEY
 from adk_answering_agent.settings import GEMINI_API_DATASTORE_ID
+from adk_answering_agent.settings import LLM_MODEL_NAME
 from adk_answering_agent.utils import error_response
 from google.adk.agents.llm_agent import Agent
 from google.api_core.exceptions import GoogleAPICallError
@@ -72,7 +73,7 @@ def search_gemini_api_docs(queries: List[str]) -> Dict[str, Any]:
 
 
 root_agent = Agent(
-    model="gemini-3.5-flash",
+    model=LLM_MODEL_NAME,
     name="gemini_assistant",
     description="Answer questions about Gemini API.",
     instruction="""

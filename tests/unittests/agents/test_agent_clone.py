@@ -568,6 +568,69 @@ def test_clone_shallow_copies_lists_with_sub_agents():
   )
 
 
+def test_clone_rebinds_callbacks_bound_to_the_original_agent():
+  """A callback that is one of the agent's own methods follows the clone."""
+  ran_for: list[str] = []
+
+  class _Agent(LlmAgent):
+
+    def __init__(self, **kwargs: Any):
+      super().__init__(**kwargs)
+      self.before_agent_callback = self._record
+
+    def _record(self, callback_context: Any) -> None:
+      ran_for.append(self.name)
+
+  original = _Agent(name="agent")
+  cloned = original.clone(update={"name": "cloned"})
+
+  cloned.before_agent_callback(None)
+
+  assert ran_for == ["cloned"]
+
+
+def test_clone_rebinds_callbacks_bound_to_the_original_agent_in_a_list():
+  """Every one of the agent's own methods in a list field follows the clone."""
+  ran_for: list[str] = []
+
+  class _Agent(LlmAgent):
+
+    def __init__(self, **kwargs: Any):
+      super().__init__(**kwargs)
+      self.before_agent_callback = [self._record]
+
+    def _record(self, callback_context: Any) -> None:
+      ran_for.append(self.name)
+
+  original = _Agent(name="agent")
+  cloned = original.clone(update={"name": "cloned"})
+
+  cloned.before_agent_callback[0](None)
+
+  assert ran_for == ["cloned"]
+
+
+def test_clone_keeps_callbacks_bound_to_another_object():
+  """A callback bound to something other than the agent is left alone."""
+
+  class _Recorder:
+
+    def __init__(self) -> None:
+      self.contexts: list[Any] = []
+
+    def before(self, callback_context: Any) -> None:
+      self.contexts.append(callback_context)
+
+  recorder = _Recorder()
+  original = LlmAgent(name="agent", before_agent_callback=recorder.before)
+  cloned = original.clone()
+
+  cloned.before_agent_callback(None)
+
+  assert cloned.before_agent_callback.__self__ is recorder
+  assert len(recorder.contexts) == 1
+
+
 if __name__ == "__main__":
   # Run a specific test for debugging
   test_three_level_nested_agent()

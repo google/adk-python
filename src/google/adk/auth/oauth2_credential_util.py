@@ -30,6 +30,11 @@ from .auth_schemes import OpenIdConnectWithConfig
 
 logger = logging.getLogger("google_adk." + __name__)
 
+# Token exchange and refresh run on worker threads, so a token endpoint that
+# accepts the connection but never answers would hold a thread forever without
+# this bound.
+_TOKEN_REQUEST_TIMEOUT_SECONDS = 10
+
 
 @experimental
 def create_oauth2_session(
@@ -91,6 +96,7 @@ def create_oauth2_session(
       state=auth_credential.oauth2.state,
       token_endpoint_auth_method=auth_credential.oauth2.token_endpoint_auth_method,
       code_challenge_method=auth_credential.oauth2.code_challenge_method,
+      default_timeout=_TOKEN_REQUEST_TIMEOUT_SECONDS,
   )
 
   # When a client certificate is configured, route Google token requests through

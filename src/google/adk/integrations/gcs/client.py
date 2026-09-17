@@ -28,23 +28,15 @@ def _get_client_info() -> google.api_core.client_info.ClientInfo:
   return google.api_core.client_info.ClientInfo(user_agent=USER_AGENT)
 
 
-_client_cache: dict[tuple[int, str | None], storage.Client] = {}
-
-
 def get_gcs_client(
     *, credentials: Credentials, project: str | None = None
 ) -> storage.Client:
   """Get a GCS client."""
-  cache_key = (id(credentials), project)
+  kwargs = {
+      "credentials": credentials,
+      "client_info": _get_client_info(),
+  }
+  if project is not None:
+    kwargs["project"] = project
 
-  if cache_key not in _client_cache:
-    kwargs = {
-        "credentials": credentials,
-        "client_info": _get_client_info(),
-    }
-    if project is not None:
-      kwargs["project"] = project
-
-    _client_cache[cache_key] = storage.Client(**kwargs)
-
-  return _client_cache[cache_key]
+  return storage.Client(**kwargs)

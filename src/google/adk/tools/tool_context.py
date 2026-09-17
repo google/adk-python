@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import importlib
+from typing import Any
 from typing import TYPE_CHECKING
 
 from ..agents.callback_context import CallbackContext as CallbackContext
@@ -32,7 +33,7 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str]] = {
 }
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> Any:
   if name in _LAZY_REEXPORTS:
     module_path, attr = _LAZY_REEXPORTS[name]
     module = importlib.import_module(module_path)

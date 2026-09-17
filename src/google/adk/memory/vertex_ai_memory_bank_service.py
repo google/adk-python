@@ -23,6 +23,7 @@ import logging
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from google.auth.credentials import Credentials
 from google.genai import types
 from typing_extensions import override
 
@@ -42,9 +43,10 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 # Strong references to fire-and-forget tasks to prevent garbage collection.
 # See https://docs.python.org/3/library/asyncio-task.html#creating-tasks
-_background_tasks: set[asyncio.Task] = set()
+_background_tasks: set[asyncio.Task[object]] = set()
 
 _GENERATE_MEMORIES_CONFIG_FALLBACK_KEYS = frozenset({
+    'allowed_topics',
     'disable_consolidation',
     'disable_memory_revisions',
     'http_options',
@@ -63,6 +65,7 @@ _CREATE_MEMORY_CONFIG_FALLBACK_KEYS = frozenset({
     'display_name',
     'expire_time',
     'http_options',
+    'memory_id',
     'metadata',
     'revision_labels',
     'revision_expire_time',
@@ -179,6 +182,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
       agent_engine_id: Optional[str] = None,
       *,
       express_mode_api_key: Optional[str] = None,
+      credentials: Optional[Credentials] = None,
   ):
     """Initializes a VertexAiMemoryBankService.
 
@@ -195,6 +199,11 @@ class VertexAiMemoryBankService(BaseMemoryService):
         be used. It will only be used if GOOGLE_GENAI_USE_ENTERPRISE is true. Do
         not use Google AI Studio API key for this field. For more details, visit
         https://cloud.google.com/vertex-ai/generative-ai/docs/start/express-mode/overview
+      credentials: The credentials to use when calling the Memory Bank API,
+        e.g. credentials obtained via Workload Identity Federation outside of
+        GCP. If not provided, Application Default Credentials are used.
+        Ignored in Express Mode, which authenticates via
+        express_mode_api_key instead.
     """
     if not agent_engine_id:
       raise ValueError(
@@ -211,6 +220,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
     self._project = project
     self._location = location
     self._agent_engine_id = agent_engine_id
+    self._credentials = credentials
     self._express_mode_api_key = get_express_mode_api_key(
         project, location, express_mode_api_key
     )
@@ -264,12 +274,15 @@ class VertexAiMemoryBankService(BaseMemoryService):
             ``{"generation_rule": {"idle_duration": "60s"}}``.
 
         **GenerateMemories keys** (used when any of these are present):
-          ttl: Time-to-live for generated memories, e.g. ``"6000s"``.
-          revision_ttl: Time-to-live for memory revisions.
+          ttl: Alias for ``revision_ttl``, the only TTL ``memories.generate``
+            accepts. Ignored when ``revision_ttl`` is also set.
+          revision_ttl: Time-to-live for memory revisions, e.g. ``"6000s"``.
           metadata: A mapping of custom metadata key-value pairs.
           wait_for_completion: Whether to wait for generation to complete.
           disable_consolidation: Disable memory consolidation.
           disable_memory_revisions: Disable memory revisions.
+          allowed_topics: A sequence of topic names to scope generation to, so
+            only memories matching those topics are extracted.
     """
     _ = session_id
     await self._add_events_to_memory_from_events(
@@ -294,6 +307,11 @@ class VertexAiMemoryBankService(BaseMemoryService):
     If `custom_metadata["enable_consolidation"]` is set to True, this uses
     `memories.generate` with `direct_memories_source` so provided memories are
     consolidated server-side.
+
+    When a `MemoryEntry.id` is set, it is forwarded as the `memory_id` of the
+    created memory, so the caller picks the last component of the memory
+    resource name instead of letting the service generate one. An explicit
+    `custom_metadata["memory_id"]` takes precedence over `MemoryEntry.id`.
     """
     if _is_consolidation_enabled(custom_metadata):
       await self._add_memories_via_generate_direct_memories_source(
@@ -474,6 +492,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
       config = _build_create_memory_config(
           memory_metadata,
           memory_revision_labels=memory_revision_labels,
+          memory_id=memory.id,
       )
       operation = await api_client.agent_engines.memories.create(
           name='reasoningEngines/' + self._agent_engine_id,
@@ -521,7 +540,9 @@ class VertexAiMemoryBankService(BaseMemoryService):
       logger.debug('Generate direct memory response: %s', operation)
 
   @override
-  async def search_memory(self, *, app_name: str, user_id: str, query: str):
+  async def search_memory(
+      self, *, app_name: str, user_id: str, query: str
+  ) -> SearchMemoryResponse:
     api_client = self._get_api_client()
     retrieved_memories_iterator = (
         await api_client.agent_engines.memories.retrieve(
@@ -559,6 +580,9 @@ class VertexAiMemoryBankService(BaseMemoryService):
                       role='user',
                   ),
                   timestamp=update_time.isoformat() if update_time else None,
+                  custom_metadata=_from_vertex_metadata(
+                      getattr(memory, 'metadata', None)
+                  ),
               )
           )
         except AttributeError:
@@ -618,10 +642,14 @@ class VertexAiMemoryBankService(BaseMemoryService):
 
     if self._express_mode_api_key:
       return vertexai.Client(api_key=self._express_mode_api_key).aio
-    return vertexai.Client(project=self._project, location=self._location).aio
+    return vertexai.Client(
+        project=self._project,
+        location=self._location,
+        credentials=self._credentials,
+    ).aio
 
 
-def _log_ingest_task_error(task: asyncio.Task) -> None:
+def _log_ingest_task_error(task: asyncio.Task[object]) -> None:
   """Logs errors from fire-and-forget ingest_events tasks."""
   if task.cancelled():
     return
@@ -630,7 +658,7 @@ def _log_ingest_task_error(task: asyncio.Task) -> None:
     logger.error('Background ingest_events task failed: %s', exception)
 
 
-def _should_filter_out_event(content: types.Content) -> bool:
+def _should_filter_out_event(content: types.Content | None) -> bool:
   """Returns whether the event should be filtered out."""
   if not content or not content.parts:
     return True
@@ -682,7 +710,7 @@ def _build_generate_memories_config(
         )
         continue
       if isinstance(value, Mapping):
-        config['metadata'] = _build_vertex_metadata(value)
+        config['metadata'] = _to_vertex_metadata(value)
       else:
         logger.warning(
             'Ignoring metadata because custom_metadata["metadata"] is not a'
@@ -709,12 +737,12 @@ def _build_generate_memories_config(
 
   existing_metadata = config.get('metadata')
   if existing_metadata is None:
-    config['metadata'] = _build_vertex_metadata(metadata_by_key)
+    config['metadata'] = _to_vertex_metadata(metadata_by_key)
     return config
 
   if isinstance(existing_metadata, Mapping):
     merged_metadata = dict(existing_metadata)
-    merged_metadata.update(_build_vertex_metadata(metadata_by_key))
+    merged_metadata.update(_to_vertex_metadata(metadata_by_key))
     config['metadata'] = merged_metadata
     return config
 
@@ -730,6 +758,7 @@ def _build_create_memory_config(
     custom_metadata: Mapping[str, object] | None,
     *,
     memory_revision_labels: Mapping[str, str] | None = None,
+    memory_id: str | None = None,
 ) -> dict[str, object]:
   """Builds a valid memories.create config from caller metadata."""
   config: dict[str, object] = {'wait_for_completion': False}
@@ -755,7 +784,7 @@ def _build_create_memory_config(
         )
         continue
       if isinstance(value, Mapping):
-        config['metadata'] = _build_vertex_metadata(value)
+        config['metadata'] = _to_vertex_metadata(value)
       else:
         logger.warning(
             'Ignoring metadata because custom_metadata["metadata"] is not a'
@@ -789,10 +818,10 @@ def _build_create_memory_config(
     else:
       existing_metadata = config.get('metadata')
       if existing_metadata is None:
-        config['metadata'] = _build_vertex_metadata(metadata_by_key)
+        config['metadata'] = _to_vertex_metadata(metadata_by_key)
       elif isinstance(existing_metadata, Mapping):
         merged_metadata = dict(existing_metadata)
-        merged_metadata.update(_build_vertex_metadata(metadata_by_key))
+        merged_metadata.update(_to_vertex_metadata(metadata_by_key))
         config['metadata'] = merged_metadata
       else:
         logger.warning(
@@ -800,6 +829,15 @@ def _build_create_memory_config(
             ' mapping.',
             sorted(metadata_by_key.keys()),
         )
+
+  if memory_id is not None and 'memory_id' not in config:
+    if 'memory_id' in config_keys:
+      config['memory_id'] = memory_id
+    else:
+      logger.warning(
+          'Ignoring memory_id because installed Vertex SDK does not support'
+          ' create config.memory_id.'
+      )
 
   revision_labels = dict(custom_revision_labels)
   if memory_revision_labels:
@@ -841,11 +879,12 @@ def _memory_entry_to_fact(
     index: int,
 ) -> str:
   """Builds a memories.create fact payload from MemoryEntry text content."""
-  if _should_filter_out_event(memory.content):
+  parts = memory.content.parts
+  if not parts or _should_filter_out_event(memory.content):
     raise ValueError(f'memories[{index}] must include text.')
 
   text_parts: list[str] = []
-  for part in memory.content.parts:
+  for part in parts:
     if part.inline_data or part.file_data:
       raise ValueError(
           f'memories[{index}] must include text only; inline_data and '
@@ -956,17 +995,25 @@ def _iter_memory_batches(memories: Sequence[str]) -> Sequence[Sequence[str]]:
   return memory_batches
 
 
-def _build_vertex_metadata(
-    metadata_by_key: Mapping[str, object],
+_VERTEX_METADATA_KEYS = (
+    'bool_value',
+    'double_value',
+    'string_value',
+    'timestamp_value',
+)
+
+
+def _to_vertex_metadata(
+    metadata_by_key: Mapping[str, object] | None,
 ) -> dict[str, object]:
   """Converts metadata values to Vertex MemoryMetadataValue objects."""
-  vertex_metadata: dict[str, object] = {}
-  for key, value in metadata_by_key.items():
-    converted_value = _to_vertex_metadata_value(key, value)
-    if converted_value is None:
-      continue
-    vertex_metadata[key] = converted_value
-  return vertex_metadata
+  if not metadata_by_key:
+    return {}
+  return {
+      key: converted_value
+      for key, value in metadata_by_key.items()
+      if (converted_value := _to_vertex_metadata_value(key, value)) is not None
+  }
 
 
 def _to_vertex_metadata_value(
@@ -983,12 +1030,7 @@ def _to_vertex_metadata_value(
   if isinstance(value, datetime.datetime):
     return {'timestamp_value': value}
   if isinstance(value, Mapping):
-    if value.keys() <= {
-        'bool_value',
-        'double_value',
-        'string_value',
-        'timestamp_value',
-    }:
+    if value.keys() <= set(_VERTEX_METADATA_KEYS):
       return dict(value)
     return {'string_value': str(dict(value))}
   if value is None:
@@ -998,3 +1040,28 @@ def _to_vertex_metadata_value(
     )
     return None
   return {'string_value': str(value)}
+
+
+def _from_vertex_metadata(
+    vertex_metadata: Mapping[str, object] | None,
+) -> dict[str, object]:
+  """Converts Vertex MemoryMetadataValue objects back to plain Python values."""
+  if not vertex_metadata:
+    return {}
+  return {
+      key: _from_vertex_metadata_value(value)
+      for key, value in vertex_metadata.items()
+  }
+
+
+def _from_vertex_metadata_value(value: object) -> object:
+  """Converts one Vertex MemoryMetadataValue back to a plain Python value."""
+  getter = (
+      value.get
+      if isinstance(value, Mapping)
+      else lambda k: getattr(value, k, None)
+  )
+  for key in _VERTEX_METADATA_KEYS:
+    if (val := getter(key)) is not None:
+      return val
+  return value

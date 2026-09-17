@@ -1,84 +1,115 @@
 ---
 name: adk-setup
-description: Set up a local development environment for the ADK Python project. Use when the user wants to get started developing, set up their environment, install dependencies, or prepare for contributing.
+description: >-
+  Sets up a local ADK Python development environment in a git clone of the
+  open-source adk-python repository: a uv virtual environment, all dependency
+  extras, pre-commit hooks, and a first unit-test run. Runs only when
+  explicitly requested, never on its own. Use when asked to set up, bootstrap,
+  or repair a development checkout, install project dependencies, fix a
+  missing or broken .venv, or prepare a machine for contributing a pull
+  request. Don't use for debugging a running agent (use adk-debug), for commit
+  and pull-request mechanics (use adk-git), or for re-running formatters on a
+  checkout that is already set up (pre-commit run --all-files).
 disable-model-invocation: true
 ---
 
-Set up the local development environment for ADK Python.
+# ADK Python Development Setup
+
+Set up a working `adk-python` checkout: a uv-managed virtual environment with
+every dependency extra, pre-commit hooks, and a green unit-test run.
 
 ## Prerequisites
 
-Check the following before proceeding:
-
-1. **Python 3.10+**
+1. **Python.** ADK supports 3.10 through 3.14 (`requires-python = ">=3.10"` in
+   `pyproject.toml`). These steps use 3.11, the version the repo's own tooling
+   defaults to.
 
    ```bash
    python3 --version
    ```
 
-2. **uv package manager** (required — do not use pip/venv directly)
+2. **uv.** Dependencies are pinned in `uv.lock`; a hand-rolled `pip`/`venv`
+   environment will not reproduce the locked versions.
+
    ```bash
    uv --version
    ```
-   If not installed:
+
+   Install it if missing:
+
    ```bash
    curl -LsSf https://astral.sh/uv/install.sh | sh
    ```
 
-## Setup Steps
+## Setup
 
-Run these commands from the project root:
+Run these from the repository root.
 
-3. **Create and activate a virtual environment:**
+1. **Create and activate the virtual environment:**
 
    ```bash
    uv venv --python "python3.11" ".venv"
    source .venv/bin/activate
    ```
 
-4. **Install all dependencies for development:**
+2. **Install every dependency extra:**
 
    ```bash
    uv sync --all-extras
    ```
 
-5. **Install development tools:**
+   `--all-extras` is what pulls in the `test` and `dev` extras. Syncing only
+   the default dependencies leaves `pytest` and the linters uninstalled.
+
+3. **Install pre-commit and tox as standalone tools:**
 
    ```bash
    uv tool install pre-commit
    uv tool install tox --with tox-uv
    ```
 
-6. **Install addlicense (requires Go):**
+   Both are also in the `dev` extra; installing them as uv tools puts them on
+   PATH so the git hook and multi-version test runs work without an activated
+   venv.
+
+4. **Install `addlicense` (optional, requires Go):**
 
    ```bash
-   go version && go install github.com/google/addlicense@latest
+   go install github.com/google/addlicense@latest
    ```
 
-   > [!NOTE]
-   > If Go is not installed, tell the user:
-   > "Go is required for the addlicense tool. Please install Go from https://go.dev/dl/ and then re-run the `adk-setup` skill to complete the setup."
+   Without it the pre-commit hook prints `Warning: addlicense not installed,
+   skipping` and passes, so a missing Go toolchain does not block setup — CI
+   catches missing license headers instead.
 
-7. **Set up pre-commit hooks:**
+5. **Install the git hooks:**
 
    ```bash
    pre-commit install
    ```
 
-8. **Verify everything works by running tests locally:**
+   On each commit the hooks auto-format with `isort`, `pyink`, and `mdformat`,
+   then run `ruff`, `addlicense`, `codespell`, and the repo's own compliance
+   checks.
+
+6. **Verify the environment:**
+
    ```bash
    pytest tests/unittests -n auto
    ```
 
-## Key Commands Reference
+   A green run here is the success criterion for setup. `-n auto` needs
+   `pytest-xdist`, which arrives with the `test` extra in step 2.
 
-| Task                                 | Command                                           |
-| :----------------------------------- | :------------------------------------------------ |
-| Run unit tests (Fast)                | `pytest tests/unittests`                          |
-| Run tests across all Python versions | `tox`                                             |
-| Format codebase                      | `pre-commit run --all-files`                      |
-| Run tests in parallel                | `pytest tests/unittests -n auto`                  |
-| Run specific test file               | `pytest tests/unittests/agents/test_llm_agent.py` |
-| Launch web UI                        | `adk web path/to/agents_dir`                      |
-| Run agent via CLI                    | `adk run path/to/my_agent`                        |
-| Build wheel                          | `uv build`                                        |
+## Key commands
+
+| Task                                 | Command                                            |
+| :----------------------------------- | :------------------------------------------------- |
+| Run unit tests                       | `pytest tests/unittests`                           |
+| Run unit tests in parallel           | `pytest tests/unittests -n auto`                   |
+| Run one test file                    | `pytest tests/unittests/agents/test_base_agent.py` |
+| Run tests on every supported Python  | `tox` (uv downloads any missing interpreters)      |
+| Format and lint everything           | `pre-commit run --all-files`                       |
+| Launch the web UI                    | `adk web {agents_dir}`                             |
+| Run an agent from the CLI            | `adk run {agent_dir}`                              |
+| Build the wheel                      | `uv build`                                         |

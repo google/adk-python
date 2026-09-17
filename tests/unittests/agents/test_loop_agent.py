@@ -84,6 +84,24 @@ class _TestingAgentWithEscalateAction(BaseAgent):
     )
 
 
+class _TestingAgentEscalatingOnThirdRun(BaseAgent):
+  """Escalates on its third run so that an uncapped loop still terminates."""
+
+  runs: int = 0
+
+  @override
+  async def _run_async_impl(
+      self, ctx: InvocationContext
+  ) -> AsyncGenerator[Event, None]:
+    self.runs += 1
+    yield Event(
+        author=self.name,
+        invocation_id=ctx.invocation_id,
+        content=types.Content(parts=[types.Part(text=f'Run {self.runs}!')]),
+        actions=EventActions(escalate=self.runs == 3),
+    )
+
+
 async def _create_parent_invocation_context(
     test_name: str, agent: BaseAgent, resumable: bool = False
 ) -> InvocationContext:
@@ -166,6 +184,34 @@ async def test_resume_async(request: pytest.FixtureRequest):
       (loop_agent.name, END_OF_AGENT),
   ]
   assert simplified_events == expected_events
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'max_iterations, expected_runs',
+    [(0, 0), (-1, 0), (None, 3), (2, 2)],
+)
+async def test_run_async_number_of_passes(
+    request: pytest.FixtureRequest,
+    max_iterations: int | None,
+    expected_runs: int,
+):
+  agent = _TestingAgentEscalatingOnThirdRun(
+      name=f'{request.function.__name__}_test_agent'
+  )
+  loop_agent = LoopAgent(
+      name=f'{request.function.__name__}_test_loop_agent',
+      max_iterations=max_iterations,
+      sub_agents=[agent],
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, loop_agent
+  )
+
+  async for _ in loop_agent.run_async(parent_ctx):
+    pass
+
+  assert agent.runs == expected_runs
 
 
 @pytest.mark.asyncio

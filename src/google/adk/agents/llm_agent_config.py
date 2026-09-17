@@ -77,7 +77,11 @@ class LlmAgentConfig(BaseAgentConfig):
   @model_validator(mode='after')
   def _validate_model_sources(self) -> LlmAgentConfig:
     if self.model and self.model_code:
-      raise ValueError('Only one of `model` or `model_code` should be set.')
+      raise ValueError(
+          'Only one of `model` or `model_code` should be set, but both'
+          f' were provided. Got model={self.model!r} and'
+          f' model_code={self.model_code!r}.'
+      )
 
     return self
 

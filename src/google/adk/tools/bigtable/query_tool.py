@@ -43,7 +43,7 @@ async def execute_sql(
     parameters: Dict[str, Any] | None = None,
     parameter_types: Dict[str, Any] | None = None,
     _view_parameters: Dict[str, Any] | None = None,
-) -> dict:
+) -> Dict[str, Any]:
   """Execute a GoogleSQL query from a Bigtable table.
 
   Args:
@@ -83,7 +83,7 @@ async def execute_sql(
   """
   del tool_context  # Unused for now
 
-  def _execute_sql():
+  def _execute_sql() -> Dict[str, Any]:
     try:
       bt_client = client.get_bigtable_data_client(
           project=project_id, credentials=credentials
@@ -122,7 +122,7 @@ async def execute_sql(
       finally:
         eqi.close()
 
-      result = {"status": "SUCCESS", "rows": rows}
+      result: Dict[str, Any] = {"status": "SUCCESS", "rows": rows}
       if truncated:
         result["result_is_likely_truncated"] = True
       return result

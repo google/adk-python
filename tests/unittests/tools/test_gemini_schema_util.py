@@ -212,10 +212,109 @@ class TestToGeminiSchema:
     assert gemini_schema.properties["list_field"].type == Type.ARRAY
     assert gemini_schema.properties["list_field"].items.type == Type.STRING
 
+  def test_to_gemini_schema_one_of_sanitizes_branches(self):
+    openapi_schema = {
+        "type": "object",
+        "properties": {
+            "body": {
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "properties": {
+                            "area": {"type": "string", "example": "north"}
+                        },
+                    },
+                    {"type": "integer", "format": "uint8"},
+                ]
+            }
+        },
+    }
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.type == Type.OBJECT
+    # The branches must survive conversion, not merely fail to crash: Gemini's
+    # Schema has no one_of, so an unlowered union arrives as an empty schema.
+    body = gemini_schema.properties["body"]
+    assert body.any_of is not None
+    assert [branch.type for branch in body.any_of] == [
+        Type.OBJECT,
+        Type.INTEGER,
+    ]
+    assert body.any_of[0].properties["area"].type == Type.STRING
+
+  def test_sanitize_schema_formats_for_gemini_one_of(self):
+    schema = {
+        "oneOf": [
+            {"type": "string", "example": "north"},
+            {"type": "null"},
+        ],
+    }
+    sanitized = _sanitize_schema_formats_for_gemini(schema)
+    assert "one_of" not in sanitized
+    assert sanitized["any_of"] == [{"type": "string"}, {"type": "null"}]
+
+  def test_sanitize_schema_formats_for_gemini_one_of_merges_with_any_of(self):
+    schema = {
+        "anyOf": [{"type": "boolean"}],
+        "oneOf": [{"type": "string"}],
+    }
+    sanitized = _sanitize_schema_formats_for_gemini(schema)
+    assert sanitized["any_of"] == [{"type": "boolean"}, {"type": "string"}]
+
+  def test_sanitize_schema_formats_for_gemini_one_of_before_any_of(self):
+    schema = {
+        "oneOf": [{"type": "string"}],
+        "anyOf": [{"type": "boolean"}],
+    }
+    sanitized = _sanitize_schema_formats_for_gemini(schema)
+    assert sanitized["any_of"] == [{"type": "string"}, {"type": "boolean"}]
+
   def test_to_gemini_schema_enum(self):
     openapi_schema = {"type": "string", "enum": ["a", "b", "c"]}
     gemini_schema = _to_gemini_schema(openapi_schema)
     assert gemini_schema.enum == ["a", "b", "c"]
+
+  def test_to_gemini_schema_stringifies_int_enum_on_string_type(self):
+    openapi_schema = {"type": "string", "enum": [256, 512, 1024]}
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.type == Type.STRING
+    assert gemini_schema.enum == ["256", "512", "1024"]
+
+  def test_to_gemini_schema_stringifies_nested_int_enum(self):
+    openapi_schema = {
+        "type": "object",
+        "properties": {
+            "p": {"type": "string", "enum": [256, 512]},
+        },
+    }
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.properties["p"].type == Type.STRING
+    assert gemini_schema.properties["p"].enum == ["256", "512"]
+
+  def test_to_gemini_schema_int_enum_on_integer_type_unchanged(self):
+    openapi_schema = {"type": "integer", "enum": [1, 2]}
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.type == Type.INTEGER
+    assert gemini_schema.enum == [1, 2]
+
+  def test_to_gemini_schema_nullable_string_enum(self):
+    openapi_schema = {"type": ["string", "null"], "enum": [256]}
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.type == Type.STRING
+    assert gemini_schema.nullable
+    assert gemini_schema.enum == ["256"]
+
+  def test_to_gemini_schema_drops_null_enum_member(self):
+    openapi_schema = {"type": ["string", "null"], "enum": ["a", None]}
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.type == Type.STRING
+    assert gemini_schema.nullable
+    assert gemini_schema.enum == ["a"]
+
+  def test_to_gemini_schema_stringifies_bool_enum_as_json(self):
+    openapi_schema = {"type": "string", "enum": [True, False]}
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.type == Type.STRING
+    assert gemini_schema.enum == ["true", "false"]
 
   def test_to_gemini_schema_required(self):
     openapi_schema = {

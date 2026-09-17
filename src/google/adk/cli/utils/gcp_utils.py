@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import subprocess
 from typing import Any
+from typing import cast
 from typing import Dict
 from typing import List
 from typing import Optional
@@ -103,7 +104,7 @@ def _call_vertex_express_api(
     raise ValueError(f"Unsupported method: {method}")
 
   response.raise_for_status()
-  return response.json()
+  return cast(Dict[str, Any], response.json())
 
 
 def retrieve_express_project(
@@ -187,7 +188,7 @@ def list_gcp_projects(limit: int = 20) -> List[Tuple[str, str]]:
     client = resourcemanager_v3.ProjectsClient()
     search_results = client.search_projects()
 
-    projects = []
+    projects: List[Tuple[str, str]] = []
     for project in search_results:
       if len(projects) >= limit:
         break

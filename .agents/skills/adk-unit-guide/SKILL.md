@@ -1,87 +1,149 @@
 ---
 name: adk-unit-guide
-description: Creates detailed code unit guides for source code documentation.
+description: >-
+  Writes a hands-on developer guide for one ADK code unit — a minimal runnable
+  example, how it works, a configuration-option table, advanced uses,
+  limitations, and links to related samples — to
+  `docs/guides/{topic}/{unit}/index.md`, then lists it in the index at
+  `docs/guides/README.md`. Its reader is a developer calling the unit from their
+  own application, at more depth than the published adk.dev documentation
+  carries. Use when asked to "write a unit guide for {class}", "document how to
+  use {feature}", "add a guide for {file}", or after shipping a user-facing
+  class, node, or plugin. Don't use for internals documentation aimed at someone
+  changing or extending the unit — that is a design document under
+  `docs/design/` (use `adk-unit-design`). Don't use to write a runnable sample
+  under `contributing/samples/` (use `adk-sample-creator`).
 ---
 
 # ADK code unit guide
-This skill creates a detailed developer guide for new or updated code file or direct code input. The guide it generates is meant to explain the code to a developer who wants to use it in an application, but with a higher level of technical detail than what would appear in published developer documentation. Similar to a *unit test*, a *unit guide* provides generated, granular-level documentation for a unit of code, without worrying about bloating the actual developer documentation with too many details.
 
-## Input
+A unit guide is granular usage documentation for one code unit, deeper than what
+ships on adk.dev — so detail that would bloat the published documentation has
+somewhere to live. The reader wants to call the unit from an application, so
+lead with working code.
 
-- Code files containing new functionality
-- Code unit tests (optional)
-- Code design files (optional)
-- Names of new methods and classes (optional)
+Unit guides focus on public APIs and caller-visible behavior. Do not
+discuss internal implementation details (such as private methods, internal state
+mechanisms, or unexported helpers).
 
-## Analysis
+## Voice
 
-- Review the code design files, if provided. Make note of:
-  - Purpose and intended use of the new or updated code units
-  - Classes that depend on the new or updated code units
-  - Additional dependencies required by the new or updated code units
-  - Limitations of the new or updated code units
-- Review specified code file for changes and named methods, if provided.
-- Determine what classes and code files may depend on the new or updated code units.
+Write to help the reader understand, not to instruct them from above.
 
-## Output
+- **Give the reason, not only the rule.** Whenever the guide states a
+  constraint, a default, or a recommendation, say why it is that way. A reader
+  who knows the reason can handle the case the guide did not anticipate.
+- **Do not decide for the reader.** Phrasings such as "most applications never
+  need this" or "you will rarely" tell people what they want. State the
+  trade-off and let them choose.
+- **Explain at the caller's level.** Explaining what happens is required;
+  explaining the machinery that makes it happen is not. If an explanation needs
+  a private symbol to make sense, it is pitched at the wrong layer.
+- **Length follows understanding.** Brevity is not the goal. Where a reader
+  would have a follow-up question, answer it. Where the sentence already lands,
+  leave it.
+- **Problem before syntax.** Say what the reader is trying to do, then show the
+  code.
+- Every heading has at least one sentence under it before the next heading, and
+  every code block has a sentence introducing what it does.
 
-- Look for an existing guide in the `/docs/guides/***` directory of this repository.
-  - If a guide already exists, update the existing guide incrementally and prioritize preserving the previous content as much as possible.
-  - If no guide exists, create a guide file for the new code unit in the `/docs/guides/***` directory of this repository, using the relative path of the code unit. For example, if the code unit is called `/topic/function/class.ext`, create a guide in the location `/docs/guides/topic/function/class/index.md`.
-- **Update the Index**: Whenever a new guide is created, or an existing guide's title/summary changes, update the index file `/docs/guides/README.md`. Ensure the guide is listed under the correct category with a link and a brief summary.
+Sentence-level rules, following the Google developer documentation style guide:
+present tense, no contractions, no parentheticals (use commas), no bare "This"
+as a subject, no `e.g.` or `etc.`, no superlatives, sentence case in headings,
+and no heading deeper than H3.
 
-### Guide structure and content
+### What the difference looks like
 
-Use the following structure and instructions to create the guide for the code unit:
+From the `BaseNode` guide. Before:
 
-```
-# Title: name of the code file or code unit
+> Most applications never subclass `BaseNode`, so the sections that follow cover
+> the settings first.
 
-- 2-sentence summary of the code unit
+That decides for the reader and gives them nothing to check their own case
+against. After:
 
-## Introduction
+> You usually configure a node rather than subclass one, because the settings
+> below cover what most graphs need. Subclassing earns its keep when you want
+> behavior the settings cannot express, and that case is at the end.
 
-- Paragraph(s) explaining:
-  - The purpose and application of the code unit
-  - Key classes that depend on this code unit
-  - Developer problems solved by this code unit
+Same length, same facts. The second one names the reason, so a reader can tell
+which of the two situations is theirs.
 
-## Get started
+A second pair, from the `JoinNode` guide. Before:
 
-- Present a single, minimum implementation of the code unit to demonstrate its use.
-- Show enough of the containing classes to make it clear where the code could be used.
-- Use unit test code as a starting point for the code example, if available.
-- When writing a sample agent, do not set the `model` attribute.
-- For workflow node samples, prefer using a simple Python function rather than extending `BaseNode` to demonstrate the node's logic, unless class extension is explicitly required for the use case.
-- When wrapping Python functions as workflow nodes, prefer using the `@node` decorator instead of `FunctionNode` directly, whenever possible.
+> Here three tasks run in parallel on the same input, and a `JoinNode` collects
+> their results.
 
-## How it works
+That opens in speech rather than documentation, and it drops the name of the
+pattern the reader would search for. After:
 
-- Explain how the code unit accomplishes its purpose or solves a problem.
-- Mention key code classes that depend on this code unit.
-- Mention code classes that this code unit depends on.
-- Explain any cross-class dependencies of the code unit.
+> This example builds a fan-out/fan-in workflow. Three tasks run in parallel on
+> the same input, and a `JoinNode` aggregates their results so that a final node
+> can present all three together.
 
-## Configuration options
+## Inputs
 
-- If the code unit has configuration options (e.g., settings, configuration objects), document them in a table detailing parameters, types, default values, and descriptions.
-- **Do NOT** list options inherited from base classes. Focus only on options introduced by the code unit itself.
-- Dive into each option to provide detailed description and usage patterns, rather than just repeating the type and a brief description.
-- **Do NOT** list references of all attributes or methods of the classes. Exhaustive API references belong in auto-generated reference documentation, not in guides. Guides should focus on how to use the code unit.
+Require the source file, or a class or method named inside it. Also read, when
+they exist: its unit tests (they give you an example to adapt) and its design
+document at `docs/design/{topic}/{unit}/index.md`.
 
-## Advanced applications
+## Analyse before writing
 
-- Determine if there are advanced use cases for the code unit.
-- Add advanced applications of the code unit, including:
-  - Problem solved
-  - Implementations for special circumstances
+- Purpose and intended use of the unit.
+- Which classes depend on it, and which it depends on.
+- Configuration options the unit itself introduces, ignoring inherited ones.
+- Known limitations.
+- Exclude internal implementation details such as private methods and
+  attributes, internal helper functions, private execution state, or internal
+  data structures.
 
-## Limitations
+## Where the guide goes
 
-- Mention any limitations of the code unit, if known.
+Mirror the source path under `docs/guides/`, one directory per unit, guide named
+`index.md`. Drop the leading underscore of a private module:
 
-## Related samples
+| Source | Guide |
+| :--- | :--- |
+| `src/google/adk/workflow/_function_node.py` | `docs/guides/workflow/function_node/index.md` |
+| `src/google/adk/plugins/reflect_retry_tool_plugin.py` | `docs/guides/plugins/reflect_retry_tool_plugin/index.md` |
 
-- Link to relevant samples in the `contributing/` directory that demonstrate the use of this code unit.
+Use named files instead of `index.md` only when one source file has genuinely
+separate usage modes — `docs/guides/agents/llm_agent/` holds `single_turn.md`
+and `task.md` for that reason.
 
-```
+Update an existing guide in place, keeping the existing wording wherever the
+code has not changed, so the diff shows only what the change actually altered.
+
+Then add the guide to `docs/guides/README.md` under the right category heading,
+as `* [Title](path/index.md) - one-line summary.` That index is the only table
+of contents; a guide missing from it is unreachable.
+
+## Code examples
+
+- One minimal example under "Get started", with enough of the surrounding
+  classes to show where the call belongs. Start from a unit test if one exists.
+- Keep the `google.adk` import lines, because the import path is the single
+  most error-prone thing a reader copies. Omit unrelated standard-library
+  imports and `asyncio.run(main())` runner boilerplate, which add nothing about
+  the unit.
+- Show what a developer would actually write. An example that only demonstrates
+  the shape of an interface, or that drives a service the reader would normally
+  reach through `Runner`, does not belong in a guide.
+- Do not set `model=` on a sample agent — guides stay model-agnostic, and no
+  guide in `docs/guides/` currently pins a model.
+- For workflow nodes, show the logic as a plain Python function rather than a
+  `BaseNode` subclass, unless the use case genuinely requires the subclass.
+- Wrap a function as a node with the `@node` decorator rather than
+  `FunctionNode` directly, except when demonstrating `FunctionNode`
+  configuration itself.
+
+## Link related samples
+
+Link samples by repo-relative path from the guide, not by GitHub URL:
+`[Node Output](../../../../contributing/samples/workflows/node_output/agent.py)`.
+Confirm the file exists before linking it.
+
+## Structure
+
+Follow [references/guide-template.md](references/guide-template.md) section by
+section.

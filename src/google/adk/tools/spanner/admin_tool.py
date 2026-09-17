@@ -17,11 +17,24 @@
 from __future__ import annotations
 
 from typing import Any
+from typing import cast
+from typing import Protocol
 
 from google.auth.credentials import Credentials
 from google.cloud import spanner_admin_instance_v1
 from google.cloud.spanner_admin_database_v1 import DatabaseAdminAsyncClient
 from google.cloud.spanner_admin_instance_v1 import InstanceAdminAsyncClient
+
+
+class _AsyncOperation(Protocol):
+
+  async def result(self, timeout: float | None = None) -> object:
+    ...
+
+
+async def _wait_for_operation(operation: object, *, timeout: float) -> None:
+  """Wait for an unannotated Google API Core async operation."""
+  await cast(_AsyncOperation, operation).result(timeout=timeout)
 
 
 async def list_instances(
@@ -48,14 +61,16 @@ async def list_instances(
       }
   """
   try:
-    instance_admin_api = InstanceAdminAsyncClient(credentials=credentials)
-    instances = []
-    async for instance in await instance_admin_api.list_instances(
-        parent=f"projects/{project_id}"
-    ):
-      instances.append(instance.name.split("/")[-1])
+    async with InstanceAdminAsyncClient(
+        credentials=credentials
+    ) as instance_admin_api:
+      instances = []
+      async for instance in await instance_admin_api.list_instances(
+          parent=f"projects/{project_id}"
+      ):
+        instances.append(instance.name.split("/")[-1])
 
-    return {"status": "SUCCESS", "results": instances}
+      return {"status": "SUCCESS", "results": instances}
   except Exception as ex:
     return {
         "status": "ERROR",
@@ -95,21 +110,23 @@ async def get_instance(
       }
   """
   try:
-    instance_admin_api = InstanceAdminAsyncClient(credentials=credentials)
-    instance_path = instance_admin_api.instance_path(project_id, instance_id)
-    instance = await instance_admin_api.get_instance(name=instance_path)
+    async with InstanceAdminAsyncClient(
+        credentials=credentials
+    ) as instance_admin_api:
+      instance_path = instance_admin_api.instance_path(project_id, instance_id)
+      instance = await instance_admin_api.get_instance(name=instance_path)
 
-    return {
-        "status": "SUCCESS",
-        "results": {
-            "instance_id": instance_id,
-            "display_name": instance.display_name,
-            "config": instance.config,
-            "node_count": instance.node_count,
-            "processing_units": instance.processing_units,
-            "labels": dict(instance.labels),
-        },
-    }
+      return {
+          "status": "SUCCESS",
+          "results": {
+              "instance_id": instance_id,
+              "display_name": instance.display_name,
+              "config": instance.config,
+              "node_count": instance.node_count,
+              "processing_units": instance.processing_units,
+              "labels": dict(instance.labels),
+          },
+      }
   except Exception as ex:
     return {
         "status": "ERROR",
@@ -141,13 +158,15 @@ async def list_instance_configs(
       }
   """
   try:
-    instance_admin_api = InstanceAdminAsyncClient(credentials=credentials)
-    configs = await instance_admin_api.list_instance_configs(
-        parent=instance_admin_api.common_project_path(project_id)
-    )
-    config_ids = [config.name.split("/")[-1] async for config in configs]
+    async with InstanceAdminAsyncClient(
+        credentials=credentials
+    ) as instance_admin_api:
+      configs = await instance_admin_api.list_instance_configs(
+          parent=instance_admin_api.common_project_path(project_id)
+      )
+      config_ids = [config.name.split("/")[-1] async for config in configs]
 
-    return {"status": "SUCCESS", "results": config_ids}
+      return {"status": "SUCCESS", "results": config_ids}
   except Exception as ex:
     return {
         "status": "ERROR",
@@ -188,32 +207,36 @@ async def get_instance_config(
       }
   """
   try:
-    instance_admin_api = InstanceAdminAsyncClient(credentials=credentials)
-    config_name = instance_admin_api.instance_config_path(project_id, config_id)
-    config = await instance_admin_api.get_instance_config(name=config_name)
+    async with InstanceAdminAsyncClient(
+        credentials=credentials
+    ) as instance_admin_api:
+      config_name = instance_admin_api.instance_config_path(
+          project_id, config_id
+      )
+      config = await instance_admin_api.get_instance_config(name=config_name)
 
-    replicas = [
-        {
-            "location": r.location,
-            "type": (
-                spanner_admin_instance_v1.types.ReplicaInfo.ReplicaType(
-                    r.type
-                ).name
-            ),
-            "default_leader_location": r.default_leader_location,
-        }
-        for r in config.replicas
-    ]
+      replicas = [
+          {
+              "location": r.location,
+              "type": (
+                  spanner_admin_instance_v1.types.ReplicaInfo.ReplicaType(
+                      r.type
+                  ).name
+              ),
+              "default_leader_location": r.default_leader_location,
+          }
+          for r in config.replicas
+      ]
 
-    return {
-        "status": "SUCCESS",
-        "results": {
-            "name": config.name,
-            "display_name": config.display_name,
-            "replicas": replicas,
-            "labels": dict(config.labels),
-        },
-    }
+      return {
+          "status": "SUCCESS",
+          "results": {
+              "name": config.name,
+              "display_name": config.display_name,
+              "replicas": replicas,
+              "labels": dict(config.labels),
+          },
+      }
   except Exception as ex:
     return {
         "status": "ERROR",
@@ -254,26 +277,28 @@ async def create_instance(
       }
   """
   try:
-    instance_admin_api = InstanceAdminAsyncClient(credentials=credentials)
-    instance_config = instance_admin_api.instance_config_path(
-        project_id, config_id
-    )
-    instance = spanner_admin_instance_v1.types.Instance(
-        display_name=display_name,
-        config=instance_config,
-        node_count=nodes,
-    )
-    operation = await instance_admin_api.create_instance(
-        parent=instance_admin_api.common_project_path(project_id),
-        instance_id=instance_id,
-        instance=instance,
-    )
-    await operation.result(timeout=300)  # waits for completion
+    async with InstanceAdminAsyncClient(
+        credentials=credentials
+    ) as instance_admin_api:
+      instance_config = instance_admin_api.instance_config_path(
+          project_id, config_id
+      )
+      instance = spanner_admin_instance_v1.types.Instance(
+          display_name=display_name,
+          config=instance_config,
+          node_count=nodes,
+      )
+      operation = await instance_admin_api.create_instance(
+          parent=instance_admin_api.common_project_path(project_id),
+          instance_id=instance_id,
+          instance=instance,
+      )
+      await _wait_for_operation(operation, timeout=300)
 
-    return {
-        "status": "SUCCESS",
-        "results": f"Instance {instance_id} created successfully.",
-    }
+      return {
+          "status": "SUCCESS",
+          "results": f"Instance {instance_id} created successfully.",
+      }
   except Exception as ex:
     return {
         "status": "ERROR",
@@ -309,15 +334,17 @@ async def list_databases(
       }
   """
   try:
-    database_admin_api = DatabaseAdminAsyncClient(credentials=credentials)
-    databases = await database_admin_api.list_databases(
-        parent=database_admin_api.instance_path(project_id, instance_id)
-    )
-    database_ids = [
-        database.name.split("/")[-1] async for database in databases
-    ]
+    async with DatabaseAdminAsyncClient(
+        credentials=credentials
+    ) as database_admin_api:
+      databases = await database_admin_api.list_databases(
+          parent=database_admin_api.instance_path(project_id, instance_id)
+      )
+      database_ids = [
+          database.name.split("/")[-1] async for database in databases
+      ]
 
-    return {"status": "SUCCESS", "results": database_ids}
+      return {"status": "SUCCESS", "results": database_ids}
   except Exception as ex:
     return {
         "status": "ERROR",
@@ -352,19 +379,21 @@ async def create_database(
       }
   """
   try:
-    database_admin_api = DatabaseAdminAsyncClient(credentials=credentials)
-    operation = await database_admin_api.create_database(
-        parent=database_admin_api.instance_path(project_id, instance_id),
-        create_statement=f"CREATE DATABASE `{database_id}`",
-    )
-    # Wait for the operation to complete (default timeout 5 minutes).
-    # Result on success is
-    # google.cloud.spanner_admin_database_v1.types.Database
-    await operation.result(timeout=300)
+    async with DatabaseAdminAsyncClient(
+        credentials=credentials
+    ) as database_admin_api:
+      operation = await database_admin_api.create_database(
+          parent=database_admin_api.instance_path(project_id, instance_id),
+          create_statement=f"CREATE DATABASE `{database_id}`",
+      )
+      # Wait for the operation to complete (default timeout 5 minutes).
+      # Result on success is
+      # google.cloud.spanner_admin_database_v1.types.Database
+      await _wait_for_operation(operation, timeout=300)
 
-    return {
-        "status": "SUCCESS",
-    }
+      return {
+          "status": "SUCCESS",
+      }
   except Exception as ex:
     return {
         "status": "ERROR",

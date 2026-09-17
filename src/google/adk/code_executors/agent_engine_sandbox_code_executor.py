@@ -20,8 +20,12 @@ import mimetypes
 import os
 import re
 import threading
-from typing import Optional
+from typing import Any
+from typing import cast
+from typing import TYPE_CHECKING
+import warnings
 
+from pydantic import PrivateAttr
 from typing_extensions import override
 
 from ..agents.invocation_context import InvocationContext
@@ -29,8 +33,12 @@ from .base_code_executor import BaseCodeExecutor
 from .code_execution_utils import CodeExecutionInput
 from .code_execution_utils import CodeExecutionResult
 from .code_execution_utils import File
+from .code_executor_context import _CONTEXT_KEY
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+if TYPE_CHECKING:
+  import vertexai
 
 
 class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
@@ -45,17 +53,19 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
       projects/123/locations/us-central1/reasoningEngines/456
   """
 
-  sandbox_resource_name: str = None
+  sandbox_resource_name: str | None = None
 
-  agent_engine_resource_name: str = None
-  _agent_engine_creation_lock: Optional[threading.Lock] = None
+  agent_engine_resource_name: str | None = None
+  _agent_engine_creation_lock: threading.Lock | None = None
+  _project_id: str | None = PrivateAttr(default=None)
+  _location: str = PrivateAttr(default='us-central1')
 
   def __init__(
       self,
-      sandbox_resource_name: Optional[str] = None,
-      agent_engine_resource_name: Optional[str] = None,
-      **data,
-  ):
+      sandbox_resource_name: str | None = None,
+      agent_engine_resource_name: str | None = None,
+      **data: object,
+  ) -> None:
     """Initializes the AgentEngineSandboxCodeExecutor.
 
     Args:
@@ -78,6 +88,16 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
 
     # Case 1: sandbox_resource_name is provided.
     if sandbox_resource_name is not None:
+      msg = (
+          f'Using a static sandbox_resource_name ({sandbox_resource_name}) on'
+          ' shared agent definitions may cause state leak across user sessions.'
+          ' To avoid state leakage in multi-tenant applications, omit'
+          ' sandbox_resource_name; the executor then either auto-creates a'
+          ' sandbox per session, or reuses the one named by'
+          " invocation_context.session.state['sandbox_name'] if you set it."
+      )
+      logger.warning(msg)
+      warnings.warn(msg, UserWarning, stacklevel=2)
       self._project_id, self._location = (
           self._get_project_id_and_location_from_resource_name(
               sandbox_resource_name, sandbox_resource_name_pattern
@@ -112,6 +132,7 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
         self.sandbox_resource_name is None
         and self.agent_engine_resource_name is None
     ):
+      assert self._agent_engine_creation_lock is not None
       with self._agent_engine_creation_lock:
         if self.agent_engine_resource_name is None:
           logger.info(
@@ -120,7 +141,9 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
           try:
             # Create a default Agent Engine.
             created_engine = self._get_api_client().agent_engines.create()
-            self.agent_engine_resource_name = created_engine.api_resource.name
+            self.agent_engine_resource_name = cast(
+                str, created_engine.api_resource.name
+            )
             logger.info(
                 'Created Agent Engine: %s', self.agent_engine_resource_name
             )
@@ -135,7 +158,16 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
       from vertexai import types
 
       # use sandbox name stored in session if available.
-      sandbox_name = invocation_context.session.state.get('sandbox_name', None)
+      sandbox_name = cast(
+          'str | None',
+          invocation_context.session.state.get('sandbox_name', None),
+      )
+      if sandbox_name is None:
+        exec_ctx = invocation_context.session.state.get(_CONTEXT_KEY, {})
+        if isinstance(exec_ctx, dict):
+          sandbox_name = exec_ctx.get('sandbox_name') or None
+          if sandbox_name:
+            invocation_context.session.state['sandbox_name'] = sandbox_name
       create_new_sandbox = False
       if sandbox_name is None:
         create_new_sandbox = True
@@ -169,11 +201,15 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
                 ttl='31536000s',
             ),
         )
-        sandbox_name = operation.response.name
-        invocation_context.session.state['sandbox_name'] = sandbox_name
+        sandbox_name = cast(str, operation.response.name)
+
+      invocation_context.session.state['sandbox_name'] = sandbox_name
+      # Must mutate in-place so CodeExecutorContext._context reference aliasing is preserved.
+      exec_ctx = invocation_context.session.state.setdefault(_CONTEXT_KEY, {})
+      exec_ctx['sandbox_name'] = sandbox_name
 
     # Execute the code.
-    input_data = {
+    input_data: dict[str, object] = {
         'code': code_execution_input.code,
     }
     if code_execution_input.input_files:
@@ -202,7 +238,9 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
           or output.metadata.attributes is None
           or 'file_name' not in output.metadata.attributes
       ):
-        json_output_data = json.loads(output.data.decode('utf-8'))
+        json_output_data: dict[str, Any] = json.loads(
+            output.data.decode('utf-8')
+        )
         stdout = json_output_data.get('msg_out', '')
         stderr = json_output_data.get('msg_err', '')
       else:
@@ -211,9 +249,11 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
             output.metadata is not None
             and output.metadata.attributes is not None
         ):
-          file_name = output.metadata.attributes.get('file_name', b'').decode(
-              'utf-8'
-          )
+          raw_file_name = output.metadata.attributes.get('file_name', b'')
+          if isinstance(raw_file_name, bytes):
+            file_name = raw_file_name.decode('utf-8')
+          elif isinstance(raw_file_name, str):
+            file_name = raw_file_name
         mime_type = output.mime_type
         if not mime_type:
           mime_type, _ = mimetypes.guess_type(file_name)
@@ -221,7 +261,7 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
             File(
                 name=file_name,
                 content=output.data,
-                mime_type=mime_type,
+                mime_type=mime_type or 'application/octet-stream',
             )
         )
 
@@ -232,7 +272,7 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
         output_files=saved_files,
     )
 
-  def _get_api_client(self):
+  def _get_api_client(self) -> vertexai.Client:
     """Instantiates an API client for the given project and location.
 
     It needs to be instantiated inside each request so that the event loop

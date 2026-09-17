@@ -20,6 +20,8 @@ from typing import Any
 from google.genai import types
 from typing_extensions import override
 
+from ...features import FeatureName
+from ...features import is_feature_enabled
 from ...tools import _automatic_function_calling_util
 from ...tools.function_tool import FunctionTool
 from ...tools.tool_configs import BaseToolConfig
@@ -59,6 +61,35 @@ class CrewaiTool(FunctionTool):
       self.description = tool.description
 
   @override
+  def _preprocess_args_with_validation(
+      self, args: dict[str, Any]
+  ) -> tuple[dict[str, Any], list[str]]:
+    """Preprocess, validate, and convert function arguments for CrewAI tools.
+
+    CrewAI tools define their parameter schema in `self.tool.args_schema`
+    (a Pydantic BaseModel) rather than in the signature of `tool.run`, which is
+    typically `(*args, **kwargs)`.
+    """
+    preprocessed_args = self._preprocess_args(args)
+    if not is_feature_enabled(FeatureName.FUNCTION_TOOL_ARG_VALIDATION):
+      return preprocessed_args, []
+
+    if (
+        hasattr(self.tool, 'args_schema')
+        and self.tool.args_schema is not None
+        and hasattr(self.tool.args_schema, 'model_fields')
+    ):
+      return self._validate_args(
+          preprocessed_args,
+          (
+              (n, f.annotation)
+              for n, f in self.tool.args_schema.model_fields.items()
+          ),
+      )
+
+    return super()._preprocess_args_with_validation(args)
+
+  @override
   async def run_async(
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
@@ -72,8 +103,14 @@ class CrewaiTool(FunctionTool):
     duplicates, but is re-added if the function signature explicitly requires it
     as a parameter.
     """
-    # Preprocess arguments (includes Pydantic model conversion)
-    args_to_call = self._preprocess_args(args)
+    # Preprocess arguments (includes Pydantic model conversion and type
+    # validation)
+    args_to_call, validation_errors = self._preprocess_args_with_validation(
+        args
+    )
+
+    if validation_errors:
+      return self._build_validation_error_response(validation_errors)
 
     signature = inspect.signature(self.func)
     valid_params = {param for param in signature.parameters}
