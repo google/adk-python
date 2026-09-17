@@ -31,6 +31,7 @@ from ...events._branch_path import _BranchPath
 from ...events._node_path_builder import _NodePathBuilder
 from ...events.event import Event
 from .._errors import WorkflowDataError
+from ._workflow_hitl_utils import get_request_input_interrupt_ids
 from ._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
 
 if TYPE_CHECKING:
@@ -415,8 +416,6 @@ def _reconstruct_node_states(
 
     # Fallback for older session JSONs where RequestInput/Auth events were exported
     # without populating long_running_tool_ids. We extract the IDs directly from the function calls.
-    from ._workflow_hitl_utils import get_request_input_interrupt_ids
-
     interrupt_ids_to_process.update(get_request_input_interrupt_ids(event))
 
     if interrupt_ids_to_process:

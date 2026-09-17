@@ -50,6 +50,7 @@ from ..telemetry import _instrumentation
 from ..utils._callback_pipeline import _normalize_callbacks
 from ..utils._callback_pipeline import _run_callbacks
 from ..utils._callback_pipeline import _stop_on_truthy
+from ..utils._runner_utils import _with_caller_context
 from ..utils.context_utils import Aclosing
 from ..workflow import BaseNode
 from .base_agent_config import BaseAgentConfig as BaseAgentConfig
@@ -91,21 +92,6 @@ class BaseAgentState(BaseModel):
 
 
 AgentState = TypeVar('AgentState', bound=BaseAgentState)
-_T = TypeVar('_T')
-
-
-async def _with_caller_context(
-    agen: AsyncGenerator[_T, None],
-    caller_ctx: context.Context,
-) -> AsyncGenerator[_T, None]:
-  """Wraps an async generator to attach caller_ctx around each yield."""
-  async with Aclosing(agen) as a:
-    async for item in a:
-      token = context.attach(caller_ctx)
-      try:
-        yield item
-      finally:
-        context.detach(token)
 
 
 # TODO: drop the explicit abc.ABC base once BaseNode surfaces ABCMeta to

@@ -283,10 +283,6 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
         )
 
       curr_parent_ctx = next_parent_ctx
-      if not curr_parent_ctx:
-        raise AssertionError(
-            'curr_parent_ctx cannot be None during active workflow execution'
-        )
       curr_node = target_agent
       curr_name = target_agent.name
       curr_run_id = None
@@ -561,7 +557,6 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
           status=NodeStatus.RUNNING,
           input=node_input,
           run_id=run_id,
-          parent_run_id=ctx.run_id,
       )
       run = DynamicNodeRun(state=state)
       if self._enable_replay:

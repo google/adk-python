@@ -810,7 +810,7 @@ class BaseLlmFlow(ABC):
           llm_request.config.labels[_ADK_AGENT_NAME_LABEL_KEY] = agent.name
 
         # Calls the LLM.
-        llm = await self.__get_llm(invocation_context)
+        llm = await self._get_llm(invocation_context)
 
         # Check if we can make this llm call or not. If the current
         # call pushes the counter beyond the max set value, then the
@@ -968,9 +968,6 @@ class BaseLlmFlow(ABC):
     )
 
   async def _get_llm(self, invocation_context: InvocationContext) -> BaseLlm:
-    return await self.__get_llm(invocation_context)
-
-  async def __get_llm(self, invocation_context: InvocationContext) -> BaseLlm:
     """Resolves the model this invocation should call.
 
     Resolution goes through the agent's async accessors, so that it can
