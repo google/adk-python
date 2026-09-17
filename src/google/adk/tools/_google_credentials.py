@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import List
 from typing import Optional
@@ -193,7 +194,9 @@ class GoogleCredentialsManager:
     if creds and not isinstance(creds, google.oauth2.credentials.Credentials):
       if not creds.valid:
         try:
-          creds.refresh(Request())
+          # Credentials.refresh is a blocking network call; run it off the
+          # event loop.
+          await asyncio.to_thread(creds.refresh, Request())
         except Exception:  # pylint: disable=broad-except
           # If refresh fails, we still return the creds as they might work
           # for some libraries that handle refresh internally.
@@ -207,7 +210,7 @@ class GoogleCredentialsManager:
     # Try to refresh expired credentials
     if creds and creds.expired and creds.refresh_token:
       try:
-        creds.refresh(Request())
+        await asyncio.to_thread(creds.refresh, Request())
         if creds.valid:
           # Cache the refreshed credentials if token cache key is set
           if self.credentials_config._token_cache_key:

@@ -84,6 +84,39 @@ def test_failing_hook_exits_one(
 
 
 @pytest.mark.parametrize(
+    'status, expected',
+    [(0, True), (1, False), (2, False)],
+)
+def test_check_new_py_prefix_forwards_pass_and_fail(
+    status: int, expected: bool
+) -> None:
+  with mock.patch.object(precommit, '_exec_status', return_value=status):
+    assert (
+        precommit.run_check_new_py_prefix(
+            _hook('check-new-py-prefix'), [], False
+        )
+        is expected
+    )
+
+
+def test_check_new_py_prefix_skips_when_indeterminate(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+  """Exit 3 means nothing was checked, which must not read as a failure.
+
+  CI runs this hook against an exported tree with no VCS to diff against, so
+  reporting a failure there would fail every change.
+  """
+  with mock.patch.object(precommit, '_exec_status', return_value=3):
+    result = precommit.run_check_new_py_prefix(
+        _hook('check-new-py-prefix'), [], False
+    )
+
+  assert result is None
+  assert 'SKIPPED' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
     'hook_id, expected',
     [
         ('pyink', 'pyink'),

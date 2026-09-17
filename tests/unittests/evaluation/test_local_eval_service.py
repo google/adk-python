@@ -1180,3 +1180,146 @@ async def test_perform_inference_live_forwards_app(
 
   mock_generate_live.assert_awaited_once()
   assert mock_generate_live.await_args.kwargs["app"] is app
+
+
+@pytest.mark.asyncio
+async def test_evaluate_single_inference_result_failed_inference_with_conversation(
+    eval_service, mock_eval_sets_manager
+):
+  eval_case = EvalCase(
+      eval_id="case1",
+      conversation=[
+          Invocation(
+              user_content=genai_types.Content(
+                  parts=[genai_types.Part(text="hello")]
+              ),
+              final_response=genai_types.Content(
+                  parts=[genai_types.Part(text="world")]
+              ),
+          )
+      ],
+      session_input=None,
+  )
+  mock_eval_sets_manager.get_eval_case.return_value = eval_case
+
+  inference_result = InferenceResult(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      eval_case_id="case1",
+      inferences=[],
+      session_id="session1",
+      status=InferenceStatus.FAILURE,
+      error_message="model crashed",
+  )
+  eval_metric = EvalMetric(metric_name="fake_metric", threshold=0.5)
+  evaluate_config = EvaluateConfig(eval_metrics=[eval_metric], parallelism=1)
+
+  _, result = await eval_service._evaluate_single_inference_result(
+      inference_result=inference_result, evaluate_config=evaluate_config
+  )
+
+  assert result.eval_id == "case1"
+  assert result.final_eval_status == EvalStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_perform_inference_single_eval_item_failure(
+    eval_service, dummy_agent, mocker
+):
+  eval_case = EvalCase(eval_id="case1", conversation=[], session_input=None)
+  mocker.patch(
+      "google.adk.evaluation.evaluation_generator.EvaluationGenerator._generate_inferences_from_root_agent",
+      side_effect=RuntimeError("model crashed"),
+  )
+
+  result = await eval_service._perform_inference_single_eval_item(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      eval_case=eval_case,
+      root_agent=dummy_agent,
+      use_live=False,
+      live_timeout_seconds=300,
+  )
+
+  assert result.status == InferenceStatus.FAILURE
+  assert result.error_message == "model crashed"
+  assert result.inferences is None
+
+
+@pytest.mark.asyncio
+async def test_eval_injects_session_input_state_into_instruction(
+    mock_eval_sets_manager, mock_eval_set_results_manager
+):
+  """EvalCase.session_input.state must populate `{placeholders}` in instructions.
+
+  Tools already see this state; instruction templates must too (google/adk-python#5037).
+  """
+  from tests.unittests.testing_utils import MockModel
+
+  mock_model = MockModel.create(responses=["ok"])
+  agent = LlmAgent(
+      model=mock_model,
+      name="stateful_agent",
+      instruction="You will receive {some_key}.",
+  )
+  eval_case = EvalCase(
+      eval_id="state_case",
+      conversation=[
+          Invocation(
+              user_content=genai_types.Content(
+                  parts=[genai_types.Part(text="hello")]
+              )
+          )
+      ],
+      session_input=SessionInput(
+          app_name="test_app",
+          user_id="test_user",
+          state={"some_key": "secret-value"},
+      ),
+  )
+  mock_eval_sets_manager.get_eval_set.return_value = EvalSet(
+      eval_set_id="set-1",
+      eval_cases=[eval_case],
+  )
+  service = LocalEvalService(
+      root_agent=agent,
+      eval_sets_manager=mock_eval_sets_manager,
+      eval_set_results_manager=mock_eval_set_results_manager,
+  )
+  request = InferenceRequest(
+      app_name="test_app",
+      eval_set_id="set-1",
+      eval_case_ids=["state_case"],
+      inference_config=InferenceConfig(),
+  )
+
+  results = []
+  async for result in service.perform_inference(inference_request=request):
+    results.append(result)
+
+  assert results
+  assert results[0].status == InferenceStatus.SUCCESS, results[0].error_message
+  assert results[0].inferences
+  app_details = results[0].inferences[0].app_details
+  assert app_details
+  instruction_text = app_details.get_developer_instructions("stateful_agent")
+  assert "secret-value" in instruction_text
+  assert "{some_key}" not in instruction_text
+
+
+def test_default_user_simulator_provider_is_not_shared_between_services(
+    dummy_agent, mock_eval_sets_manager
+):
+  service = LocalEvalService(
+      root_agent=dummy_agent,
+      eval_sets_manager=mock_eval_sets_manager,
+  )
+  other_service = LocalEvalService(
+      root_agent=dummy_agent,
+      eval_sets_manager=mock_eval_sets_manager,
+  )
+
+  assert (
+      service._user_simulator_provider
+      is not other_service._user_simulator_provider
+  )

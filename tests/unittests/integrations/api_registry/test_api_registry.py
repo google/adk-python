@@ -20,6 +20,7 @@ from unittest.mock import patch
 from google.adk.integrations import api_registry
 from google.adk.integrations.api_registry import ApiRegistry
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
+from google.adk.utils._google_client_headers import merge_tracking_headers
 import requests
 
 MOCK_MCP_SERVERS_LIST = {
@@ -119,9 +120,9 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
     self.assertIn("test-mcp-server-https", api_registry_instance._mcp_servers)
     self.mock_session.get.assert_called_once_with(
         f"https://cloudapiregistry.googleapis.com/v1beta/projects/{self.project_id}/locations/{self.location}/mcpServers",
-        headers={
+        headers=merge_tracking_headers({
             "Content-Type": "application/json",
-        },
+        }),
         params={"filter": "enabled=false"},
     )
 
@@ -138,12 +139,28 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(len(api_registry_instance._mcp_servers), 7)
     self.mock_session.get.assert_called_once_with(
         f"https://cloudapiregistry.googleapis.com/v1beta/projects/{self.project_id}/locations/{self.location}/mcpServers",
-        headers={
+        headers=merge_tracking_headers({
             "Content-Type": "application/json",
             "x-goog-user-project": "quota-project",
-        },
+        }),
         params={"filter": "enabled=false"},
     )
+
+  def test_registry_request_identifies_adk(self):
+    """Registry calls carry the ADK client label.
+
+    Without it, server-side usage data cannot separate ADK traffic from any
+    other caller of the Cloud API Registry API.
+    """
+    mock_response = MagicMock()
+    mock_response.json.return_value = MOCK_MCP_SERVERS_LIST
+    self.mock_session.get.return_value = mock_response
+
+    ApiRegistry(api_registry_project_id=self.project_id, location=self.location)
+
+    headers = self.mock_session.get.call_args.kwargs["headers"]
+    self.assertIn("google-adk/", headers["x-goog-api-client"])
+    self.assertIn("google-adk/", headers["user-agent"])
 
   def test_init_with_pagination_success(self):
     mock_response1 = MagicMock()
@@ -186,16 +203,16 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(self.mock_session.get.call_count, 2)
     self.mock_session.get.assert_any_call(
         f"https://cloudapiregistry.googleapis.com/v1beta/projects/{self.project_id}/locations/{self.location}/mcpServers",
-        headers={
+        headers=merge_tracking_headers({
             "Content-Type": "application/json",
-        },
+        }),
         params={"filter": "enabled=false"},
     )
     self.mock_session.get.assert_called_with(
         f"https://cloudapiregistry.googleapis.com/v1beta/projects/{self.project_id}/locations/{self.location}/mcpServers",
-        headers={
+        headers=merge_tracking_headers({
             "Content-Type": "application/json",
-        },
+        }),
         params={"filter": "enabled=false", "pageToken": "next_page_token"},
     )
 

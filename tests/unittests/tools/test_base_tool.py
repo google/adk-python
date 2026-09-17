@@ -12,7 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Any
+from typing import Callable
 from typing import Optional
+from typing import Union
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.sequential_agent import SequentialAgent
@@ -155,6 +158,54 @@ def test_defers_response_flag():
   t2 = SimpleTool(name='test2', description='desc')
   t2._defers_response = True
   assert t2._defers_response is True
+
+
+def _sample_handler(value: str) -> str:
+  return value
+
+
+def test_from_config_resolves_parametrized_callable():
+  """A ``Callable[..., ...]`` arg is resolved, not skipped as unsupported."""
+  from google.adk.tools.tool_configs import ToolArgsConfig
+
+  class CallbackTool(BaseTool):
+
+    def __init__(self, handler: Callable[[str], str]):
+      super().__init__(name='callback_tool', description='desc')
+      self.handler = handler
+
+    async def run_async(self, **kwargs):
+      pass
+
+  config = ToolArgsConfig(handler=f'{__name__}._sample_handler')
+  tool = CallbackTool.from_config(config, '')
+
+  assert tool.handler is _sample_handler
+
+
+def test_from_config_skips_list_of_non_class():
+  """Non-class ``list`` element types are skipped, not an issubclass error."""
+  from google.adk.tools.tool_configs import ToolArgsConfig
+
+  class ListTool(BaseTool):
+
+    def __init__(
+        self,
+        unions: Optional[list[Union[int, str]]] = None,
+        anys: Optional[list[Any]] = None,
+    ):
+      super().__init__(name='list_tool', description='desc')
+      self.unions = unions
+      self.anys = anys
+
+    async def run_async(self, **kwargs):
+      pass
+
+  config = ToolArgsConfig(unions=[1, 'two'], anys=[1, 'two'])
+  tool = ListTool.from_config(config, '')
+
+  assert tool.unions is None
+  assert tool.anys is None
 
 
 def test_response_scheduling_defaults_to_none():

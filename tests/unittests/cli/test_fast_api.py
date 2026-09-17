@@ -18,6 +18,7 @@ import logging
 import os
 from pathlib import Path
 import signal
+import sys
 import tempfile
 from typing import Any
 from typing import Optional
@@ -1002,6 +1003,7 @@ def test_app_with_gemini_enterprise(
 ):
   """Create a TestClient with gemini_enterprise_app_name set."""
   monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+  monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
   mock_agent_loader.list_agents = MagicMock(
       return_value=["test_app", "gemini_app"]
   )
@@ -2034,6 +2036,159 @@ def test_agent_run_sse_yields_error_object_on_exception(
     assert error_event["error"] == "ValueError: boom"
     assert "stacktrace" in error_event["error_details"]
     assert "ValueError: boom" in error_event["error_details"]["stacktrace"]
+
+
+async def test_agent_run_sse_disconnect_with_cleanup_exception(
+    test_app, create_test_session, monkeypatch
+):
+  """Test that exception during aclose() of runner is caught in /run_sse."""
+  from google.adk.cli.api_server import RunAgentRequest
+
+  info = create_test_session
+
+  class MockAsyncGenerator:
+
+    def __init__(self):
+      self.yielded = False
+
+    def __aiter__(self):
+      return self
+
+    async def __anext__(self):
+      if not self.yielded:
+        self.yielded = True
+        return Event(
+            author="dummy agent",
+            invocation_id="invocation_id",
+            content=types.Content(
+                role="model", parts=[types.Part(text="LLM reply")]
+            ),
+        )
+      raise StopAsyncIteration
+
+    async def aclose(self):
+      raise ValueError("cleanup failed")
+
+  def run_async_mock(self, **kwargs):
+    return MockAsyncGenerator()
+
+  monkeypatch.setattr(Runner, "run_async", run_async_mock)
+
+  # Get the app and handler
+  app = test_app.app
+  handler = None
+  for route in app.routes:
+    if route.path == "/run_sse":
+      handler = route.endpoint
+      break
+  assert handler is not None
+
+  # Prepare request
+  req = RunAgentRequest(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      new_message={"role": "user", "parts": [{"text": "Hello agent"}]},
+      streaming=True,
+  )
+
+  # Call handler
+  response = await handler(req)
+  assert response.status_code == 200
+
+  # Iterate generator and close it early
+  generator = response.body_iterator
+
+  event = await generator.__anext__()
+  assert "LLM reply" in event
+
+  # Close the generator early (simulating disconnect)
+  try:
+    await generator.aclose()
+  except Exception as e:
+    pytest.fail(f"generator.aclose() raised exception: {e}")
+
+
+async def test_agent_run_sse_disconnect_with_cleanup_exception_and_cancellation(
+    test_app, create_test_session, monkeypatch
+):
+  """Test that CancelledError is propagated during /run_sse even if cleanup fails."""
+  from google.adk.cli.api_server import RunAgentRequest
+
+  info = create_test_session
+
+  class MockAsyncGenerator:
+
+    def __init__(self):
+      self.yielded = False
+
+    def __aiter__(self):
+      return self
+
+    async def __anext__(self):
+      if not self.yielded:
+        self.yielded = True
+        return Event(
+            author="dummy agent",
+            invocation_id="invocation_id",
+            content=types.Content(
+                role="model", parts=[types.Part(text="LLM reply")]
+            ),
+        )
+      # Block indefinitely to allow cancellation simulation
+      await asyncio.sleep(10)
+      raise StopAsyncIteration
+
+    async def aclose(self):
+      raise ValueError("cleanup failed")
+
+  def run_async_mock(self, **kwargs):
+    return MockAsyncGenerator()
+
+  monkeypatch.setattr(Runner, "run_async", run_async_mock)
+
+  # Get the app and handler
+  app = test_app.app
+  handler = None
+  for route in app.routes:
+    if route.path == "/run_sse":
+      handler = route.endpoint
+      break
+  assert handler is not None
+
+  # Prepare request
+  req = RunAgentRequest(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      new_message={"role": "user", "parts": [{"text": "Hello agent"}]},
+      streaming=True,
+  )
+
+  # Call handler
+  response = await handler(req)
+  assert response.status_code == 200
+
+  # Iterate generator
+  generator = response.body_iterator
+
+  # Read first event (this enters the generator and yields)
+  event = await generator.__anext__()
+  assert "LLM reply" in event
+
+  # Now the generator is blocked on the next __anext__ (which is sleeping)
+  # Run the next __anext__ in a task so we can cancel it
+  task = asyncio.create_task(generator.__anext__())
+
+  # Yield control to let the task start and block on sleep
+  await asyncio.sleep(0.1)
+
+  # Cancel the task
+  task.cancel()
+
+  # Verify that the task raises CancelledError, and NOT ValueError (cleanup failed)
+  with pytest.raises(asyncio.CancelledError):
+    await task
 
 
 def test_list_artifact_names(test_app, create_test_session):
@@ -4617,10 +4772,6 @@ def test_get_eval_result_returns_saved_eval_set_result(
   assert data["evalSetId"] == "my_eval_set"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="legacy create-eval-set route references an undefined name",
-)
 def test_create_eval_set_legacy_route_creates_eval_set(
     test_app, mock_eval_sets_manager
 ):

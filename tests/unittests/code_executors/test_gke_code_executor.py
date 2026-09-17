@@ -60,6 +60,27 @@ def mock_k8s_clients():
     }
 
 
+def mock_pod(name: str = "test-pod-name", exit_code: int | None = None):
+  """Builds a mock Pod, reporting a terminated code container if asked to.
+
+  Args:
+    name: The name of the pod.
+    exit_code: The status the code container terminated with, or None to
+      simulate a pod that reports no terminated container at all.
+  """
+  pod = MagicMock()
+  pod.metadata.name = name
+  if exit_code is None:
+    pod.status.container_statuses = None
+    return pod
+
+  container_status = MagicMock()
+  container_status.name = "code-runner"
+  container_status.state.terminated.exit_code = exit_code
+  pod.status.container_statuses = [container_status]
+  return pod
+
+
 class TestGkeCodeExecutor:
   """Unit tests for the GkeCodeExecutor."""
 
@@ -155,8 +176,7 @@ class TestGkeCodeExecutor:
     mock_watch.return_value.stream.return_value = [{"object": mock_job}]
 
     mock_pod_list = MagicMock()
-    mock_pod_list.items = [MagicMock()]
-    mock_pod_list.items[0].metadata.name = "test-pod-name"
+    mock_pod_list.items = [mock_pod(exit_code=0)]
     mock_k8s_clients["core_v1"].list_namespaced_pod.return_value = mock_pod_list
     mock_k8s_clients["core_v1"].read_namespaced_pod_log.return_value = (
         "hello world"
@@ -170,6 +190,7 @@ class TestGkeCodeExecutor:
     # Assert
     assert result.stdout == "hello world"
     assert result.stderr == ""
+    assert result.exit_code == 0
     mock_k8s_clients[
         "core_v1"
     ].create_namespaced_config_map.assert_called_once()
@@ -189,6 +210,9 @@ class TestGkeCodeExecutor:
     mock_job.status.succeeded = None
     mock_job.status.failed = True
     mock_watch.return_value.stream.return_value = [{"object": mock_job}]
+    mock_pod_list = MagicMock()
+    mock_pod_list.items = [mock_pod(exit_code=2)]
+    mock_k8s_clients["core_v1"].list_namespaced_pod.return_value = mock_pod_list
     mock_k8s_clients["core_v1"].read_namespaced_pod_log.return_value = (
         "Traceback...\nValueError: failure"
     )
@@ -201,6 +225,33 @@ class TestGkeCodeExecutor:
     assert result.stdout == ""
     assert "Job failed. Logs:" in result.stderr
     assert "ValueError: failure" in result.stderr
+    assert result.exit_code == 2
+
+  @patch("google.adk.code_executors.gke_code_executor.Watch")
+  def test_execute_code_job_failed_without_terminated_container(
+      self,
+      mock_watch,
+      mock_k8s_clients,
+      mock_invocation_context,
+  ):
+    """Tests the fallback when the pod reports no terminated container."""
+    mock_job = MagicMock()
+    mock_job.status.succeeded = None
+    mock_job.status.failed = True
+    mock_watch.return_value.stream.return_value = [{"object": mock_job}]
+    mock_pod_list = MagicMock()
+    mock_pod_list.items = [mock_pod(exit_code=None)]
+    mock_k8s_clients["core_v1"].list_namespaced_pod.return_value = mock_pod_list
+    mock_k8s_clients["core_v1"].read_namespaced_pod_log.return_value = "gone"
+
+    executor = GkeCodeExecutor()
+    result = executor.execute_code(
+        mock_invocation_context, CodeExecutionInput(code="fail")
+    )
+
+    # Nothing reported a status, so the code is narrowed to what the Job's
+    # outcome implies.
+    assert result.exit_code == 1
 
   def test_execute_code_api_exception(
       self, mock_k8s_clients, mock_invocation_context
@@ -216,6 +267,8 @@ class TestGkeCodeExecutor:
 
     assert result.stdout == ""
     assert "Kubernetes API error: Test API Error" in result.stderr
+    # The executor failed before the code ran, so there is no status to report.
+    assert result.exit_code is None
 
   @patch("google.adk.code_executors.gke_code_executor.Watch")
   def test_execute_code_timeout(
@@ -393,10 +446,8 @@ class TestGkeCodeExecutor:
     mock_job.status.succeeded = True
     mock_watch.return_value.stream.return_value = [{"object": mock_job}]
 
-    mock_pod = MagicMock()
-    mock_pod.metadata.name = "pod-1"
     mock_k8s_clients["core_v1"].list_namespaced_pod.return_value.items = [
-        mock_pod
+        mock_pod(name="pod-1", exit_code=None)
     ]
     mock_k8s_clients["core_v1"].read_namespaced_pod_log.return_value = (
         "job stdout"
@@ -411,6 +462,8 @@ class TestGkeCodeExecutor:
 
     # Assertions
     assert result.stdout == "job stdout"
+    # No terminated container to read, so the succeeding Job implies 0.
+    assert result.exit_code == 0
 
     # Verify Job path WAS taken
     mock_k8s_clients["batch_v1"].create_namespaced_job.assert_called_once()

@@ -15,11 +15,18 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from .base_code_executor import BaseCodeExecutor
-from .built_in_code_executor import BuiltInCodeExecutor
-from .code_executor_context import CodeExecutorContext
 from .unsafe_local_code_executor import UnsafeLocalCodeExecutor
+
+if TYPE_CHECKING:
+  from .agent_engine_sandbox_code_executor import AgentEngineSandboxCodeExecutor
+  from .built_in_code_executor import BuiltInCodeExecutor
+  from .code_executor_context import CodeExecutorContext
+  from .container_code_executor import ContainerCodeExecutor
+  from .gke_code_executor import GkeCodeExecutor
+  from .vertex_ai_code_executor import VertexAiCodeExecutor
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -36,7 +43,15 @@ __all__ = [
 
 
 def __getattr__(name: str) -> object:
-  if name == 'VertexAiCodeExecutor':
+  if name == 'BuiltInCodeExecutor':
+    from .built_in_code_executor import BuiltInCodeExecutor
+
+    return BuiltInCodeExecutor
+  elif name == 'CodeExecutorContext':
+    from .code_executor_context import CodeExecutorContext
+
+    return CodeExecutorContext
+  elif name == 'VertexAiCodeExecutor':
     try:
       from .vertex_ai_code_executor import VertexAiCodeExecutor
 

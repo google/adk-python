@@ -20,6 +20,7 @@ import os
 import re
 import sys
 import urllib.parse
+import wave
 
 import httpx
 import pyaudio
@@ -73,7 +74,7 @@ SERVER_HOST = "127.0.0.1"
 SERVER_PORT = 8000
 
 # APP_NAME is the folder name of your agent.
-APP_NAME = "hello_world"
+APP_NAME = "live_bidi_streaming_single_agent"
 # The following default ones also work
 USER_ID = "your_user_id_123"
 SESSION_ID = "your_session_id_abc"
@@ -243,7 +244,7 @@ class AudioStreamingComponent:
           if audio_data_bytes:
             payload_str = create_audio_request_payload(
                 audio_data_bytes,
-                REC_AUDIO_MIME_TYPE,  # REC_AUDIO_MIME_TYPE is likely "audio/wav"
+                f"{REC_AUDIO_MIME_TYPE};rate={INPUT_RATE}",
             )
 
             await websocket.send(payload_str)
@@ -401,7 +402,8 @@ async def ensure_session_exists(
     server_host: str,
     server_port: int,
 ) -> bool:
-  session_url = f"http://{server_host}:{server_port}/apps/{app_name}/users/{user_id}/sessions/{session_id}"
+  sessions_url = f"http://{server_host}:{server_port}/apps/{app_name}/users/{user_id}/sessions"
+  session_url = f"{sessions_url}/{session_id}"
   try:
     async with httpx.AsyncClient() as client:
       logging.info(f"Checking if session exists via GET: {session_url}")
@@ -413,7 +415,9 @@ async def ensure_session_exists(
         logging.info(
             f"Session '{session_id}' not found. Attempting to create via POST."
         )
-        response_post = await client.post(session_url, json={}, timeout=10)
+        response_post = await client.post(
+            sessions_url, json={"session_id": session_id}, timeout=10
+        )
         if response_post.status_code == 200:
           logging.info(f"Session '{session_id}' created.")
           return True
@@ -458,7 +462,7 @@ async def websocket_client():
   agent_response_audio_player = AgentResponseAudioPlayer()
   audio_streaming_component = AudioStreamingComponent()
   if (
-      APP_NAME == "hello_world"
+      APP_NAME == "live_bidi_streaming_single_agent"
       or USER_ID.startswith("your_user_id")
       or SESSION_ID.startswith("your_session_id")
   ):
@@ -656,19 +660,23 @@ async def websocket_client():
 
               try:
                 logging.info(f"Reading audio file: {filepath}")
-                with open(filepath, "rb") as f:
-                  audio_file_bytes = f.read()
+                # The server expects raw PCM samples, so read the frames out of
+                # the WAV container rather than the container bytes, which
+                # would prepend the RIFF header to the audio.
+                with wave.open(filepath, "rb") as wav_file:
+                  audio_file_bytes = wav_file.readframes(wav_file.getnframes())
+                  audio_mime_type = (
+                      f"{REC_AUDIO_MIME_TYPE};rate={wav_file.getframerate()}"
+                  )
 
-                # We assume the file is already in WAV format.
-                # REC_AUDIO_MIME_TYPE is "audio/wav"
                 payload_str = create_audio_request_payload(
-                    audio_file_bytes, REC_AUDIO_MIME_TYPE
+                    audio_file_bytes, audio_mime_type
                 )
                 logging.info(
                     ">>> Sending audio file"
                     f" {os.path.basename(filepath)} (Size:"
                     f" {len(audio_file_bytes)} bytes) with MIME type"
-                    f" {REC_AUDIO_MIME_TYPE}"
+                    f" {audio_mime_type}"
                 )
                 await ws.send(payload_str)
                 logging.info("Audio file sent.")
@@ -797,7 +805,7 @@ async def websocket_client():
 if __name__ == "__main__":
   logging.info("Script's main execution block started.")
   if (
-      APP_NAME == "hello_world"
+      APP_NAME == "live_bidi_streaming_single_agent"
       or USER_ID.startswith("your_user_id")
       or SESSION_ID.startswith("your_session_id")
   ):

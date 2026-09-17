@@ -149,7 +149,8 @@ class LongRunningFunctions:
       # If the function is a request for EUC, set the task state to
       # auth_required. Otherwise, set it to input_required. Save the state of
       # the last function call, as it will be the state of the task.
-      if meta.get("name") == REQUEST_EUC_FUNCTION_CALL_NAME:
+      data = _compat.data_part_dict(a2a_part)
+      if data.get("name") == REQUEST_EUC_FUNCTION_CALL_NAME:
         self._task_state = _compat.TS_AUTH_REQUIRED
       else:
         self._task_state = _compat.TS_INPUT_REQUIRED

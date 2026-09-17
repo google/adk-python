@@ -14,11 +14,11 @@
 
 from unittest import mock
 
-from google.adk.agents.live_request_queue import LiveRequest
-from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.run_config import RunConfig
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
+from google.adk.live import LiveRequest
+from google.adk.live import LiveRequestQueue
 from google.adk.models.llm_request import LlmRequest
 from google.genai import types
 import pytest
@@ -74,7 +74,9 @@ async def test_send_to_model_with_disabled_vad(test_blob, mock_llm_connection):
   invocation_context.live_request_queue.close()
 
   # Run _send_to_model
-  await flow._send_to_model(mock_llm_connection, invocation_context)
+  await flow._send_to_model(
+      mock_llm_connection, invocation_context, LlmRequest()
+  )
 
   mock_llm_connection.send_realtime.assert_called_once_with(test_blob)
 
@@ -108,7 +110,9 @@ async def test_send_to_model_with_enabled_vad(test_blob, mock_llm_connection):
   invocation_context.live_request_queue.close()
 
   # Run _send_to_model
-  await flow._send_to_model(mock_llm_connection, invocation_context)
+  await flow._send_to_model(
+      mock_llm_connection, invocation_context, LlmRequest()
+  )
 
   mock_llm_connection.send_realtime.assert_called_once_with(test_blob)
 
@@ -134,7 +138,9 @@ async def test_send_to_model_without_realtime_config(
   invocation_context.live_request_queue.close()
 
   # Run _send_to_model
-  await flow._send_to_model(mock_llm_connection, invocation_context)
+  await flow._send_to_model(
+      mock_llm_connection, invocation_context, LlmRequest()
+  )
 
   mock_llm_connection.send_realtime.assert_called_once_with(test_blob)
 
@@ -167,7 +173,9 @@ async def test_send_to_model_with_none_automatic_activity_detection(
   invocation_context.live_request_queue.close()
 
   # Run _send_to_model
-  await flow._send_to_model(mock_llm_connection, invocation_context)
+  await flow._send_to_model(
+      mock_llm_connection, invocation_context, LlmRequest()
+  )
 
   mock_llm_connection.send_realtime.assert_called_once_with(test_blob)
 
@@ -194,7 +202,9 @@ async def test_send_to_model_with_text_content(mock_llm_connection):
   invocation_context.live_request_queue.close()
 
   # Run _send_to_model
-  await flow._send_to_model(mock_llm_connection, invocation_context)
+  await flow._send_to_model(
+      mock_llm_connection, invocation_context, LlmRequest()
+  )
 
   # Verify send_content was called instead of send_realtime
   mock_llm_connection._send_content.assert_called_once_with(
@@ -224,7 +234,9 @@ async def test_send_to_model_with_intermediate_text_content(
   )
   invocation_context.live_request_queue.close()
 
-  await flow._send_to_model(mock_llm_connection, invocation_context)
+  await flow._send_to_model(
+      mock_llm_connection, invocation_context, LlmRequest()
+  )
 
   mock_llm_connection._send_content.assert_called_once_with(
       content, partial=True
@@ -248,7 +260,9 @@ async def test_send_to_model_applies_state_delta(mock_llm_connection):
   )
   invocation_context.live_request_queue.close()
 
-  await flow._send_to_model(mock_llm_connection, invocation_context)
+  await flow._send_to_model(
+      mock_llm_connection, invocation_context, LlmRequest()
+  )
 
   assert invocation_context.session.state['k'] == 'v'
   mock_llm_connection._send_content.assert_not_called()
@@ -271,7 +285,9 @@ async def test_send_to_model_state_delta_with_content(mock_llm_connection):
   )
   invocation_context.live_request_queue.close()
 
-  await flow._send_to_model(mock_llm_connection, invocation_context)
+  await flow._send_to_model(
+      mock_llm_connection, invocation_context, LlmRequest()
+  )
 
   assert invocation_context.session.state['k'] == 'v'
   # The state delta rides on the single user content event (no extra event).
@@ -305,7 +321,9 @@ async def test_send_to_model_state_delta_with_partial_content(
   )
   invocation_context.live_request_queue.close()
 
-  await flow._send_to_model(mock_llm_connection, invocation_context)
+  await flow._send_to_model(
+      mock_llm_connection, invocation_context, LlmRequest()
+  )
 
   assert invocation_context.session.state['k'] == 'v'
   # The partial content does not create a user content event.
@@ -341,7 +359,9 @@ async def test_send_to_model_state_delta_with_function_response(
   )
   invocation_context.live_request_queue.close()
 
-  await flow._send_to_model(mock_llm_connection, invocation_context)
+  await flow._send_to_model(
+      mock_llm_connection, invocation_context, LlmRequest()
+  )
 
   assert invocation_context.session.state['k'] == 'v'
   # Function responses do not create a user content event.
@@ -366,7 +386,58 @@ async def test_send_to_model_state_delta_with_close(mock_llm_connection):
       LiveRequest(state_delta={'k': 'v'}, close=True)
   )
 
-  await flow._send_to_model(mock_llm_connection, invocation_context)
+  await flow._send_to_model(
+      mock_llm_connection, invocation_context, LlmRequest()
+  )
 
   assert invocation_context.session.state['k'] == 'v'
   mock_llm_connection.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_send_to_model_does_not_cache_input_audio_by_default(
+    test_blob, mock_llm_connection
+):
+  """User audio is not retained when save_live_blob is left at its default."""
+  agent = Agent(name='test_agent', model='mock')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  flow = TestBaseLlmFlow()
+
+  invocation_context.live_request_queue.send(LiveRequest(blob=test_blob))
+  invocation_context.live_request_queue.close()
+
+  await flow._send_to_model(
+      mock_llm_connection, invocation_context, LlmRequest()
+  )
+
+  assert not invocation_context.input_realtime_cache
+  mock_llm_connection.send_realtime.assert_called_once_with(test_blob)
+
+
+@pytest.mark.asyncio
+async def test_send_to_model_caches_input_audio_when_save_live_blob(
+    test_blob, mock_llm_connection
+):
+  """User audio is retained when save_live_blob asks for it."""
+  agent = Agent(name='test_agent', model='mock')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='', run_config=RunConfig(save_live_blob=True)
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  flow = TestBaseLlmFlow()
+
+  invocation_context.live_request_queue.send(LiveRequest(blob=test_blob))
+  invocation_context.live_request_queue.close()
+
+  await flow._send_to_model(
+      mock_llm_connection, invocation_context, LlmRequest()
+  )
+
+  assert invocation_context.input_realtime_cache
+  assert invocation_context.input_realtime_cache[0].data == test_blob
+  mock_llm_connection.send_realtime.assert_called_once_with(test_blob)

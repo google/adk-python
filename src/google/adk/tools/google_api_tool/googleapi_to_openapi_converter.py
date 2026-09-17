@@ -15,12 +15,12 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 import json
 import logging
 import socket
 from typing import Any
 from typing import Dict
-from typing import List
 
 # Google API client
 from googleapiclient.discovery import build
@@ -50,9 +50,11 @@ class GoogleApiToOpenApiConverter:
     self._api_name = api_name
     self._api_version = api_version
     self._discovery_url = discovery_url
-    self._google_api_resource = None
-    self._google_api_spec = None
-    self._openapi_spec = {
+    self._google_api_resource: object | None = None
+    # Discovery documents are heterogeneous JSON objects, and this attribute
+    # is only populated once the document has been fetched.
+    self._google_api_spec: Any = None
+    self._openapi_spec: dict[str, Any] = {
         "openapi": "3.0.0",
         "info": {},
         "servers": [],
@@ -108,10 +110,12 @@ class GoogleApiToOpenApiConverter:
         )
 
       # Access the underlying API discovery document
-      self._google_api_spec = self._google_api_resource._rootDesc
-
-      if not self._google_api_spec:
+      root_desc = getattr(self._google_api_resource, "_rootDesc", None)
+      if not isinstance(root_desc, dict) or not root_desc:
         raise ValueError("Failed to retrieve API specification")
+      if not all(isinstance(key, str) for key in root_desc):
+        raise ValueError("API specification keys must be strings")
+      self._google_api_spec = root_desc
 
       logger.info("Successfully fetched %s API specification", self._api_name)
     except HttpError as e:
@@ -200,7 +204,7 @@ class GoogleApiToOpenApiConverter:
     if oauth2:
       # Handle OAuth2
       scopes = oauth2.get("scopes", {})
-      formatted_scopes = {}
+      formatted_scopes: dict[str, str] = {}
 
       for scope, scope_info in scopes.items():
         formatted_scopes[scope] = scope_info.get("description", "")
@@ -244,8 +248,8 @@ class GoogleApiToOpenApiConverter:
       ] = converted_schema
 
   def _convert_schema_object(
-      self, schema_def: Dict[str, Any]
-  ) -> Dict[str, Any]:
+      self, schema_def: Mapping[str, Any]
+  ) -> dict[str, Any]:
     """Recursively convert a Google API schema object to OpenAPI schema.
 
     Args:
@@ -254,7 +258,7 @@ class GoogleApiToOpenApiConverter:
     Returns:
         Converted OpenAPI schema object
     """
-    result = {}
+    result: dict[str, Any] = {}
 
     # Convert the type
     if "type" in schema_def:
@@ -332,7 +336,7 @@ class GoogleApiToOpenApiConverter:
     return result
 
   def _convert_resources(
-      self, resources: Dict[str, Any], parent_path: str = ""
+      self, resources: Mapping[str, Any], parent_path: str = ""
   ) -> None:
     """Recursively convert all resources and their methods.
 
@@ -352,7 +356,7 @@ class GoogleApiToOpenApiConverter:
         self._convert_resources(nested_resources, resource_path)
 
   def _convert_methods(
-      self, methods: Dict[str, Any], resource_path: str
+      self, methods: Mapping[str, Any], resource_path: str
   ) -> None:
     """Convert methods for a specific resource path.
 
@@ -382,7 +386,7 @@ class GoogleApiToOpenApiConverter:
           self._convert_operation(method_data, path_params)
       )
 
-  def _extract_path_parameters(self, path: str) -> List[str]:
+  def _extract_path_parameters(self, path: str) -> list[str]:
     """Extract path parameters from a URL path.
 
     Args:
@@ -403,8 +407,8 @@ class GoogleApiToOpenApiConverter:
     return params
 
   def _convert_operation(
-      self, method_data: Dict[str, Any], path_params: List[str]
-  ) -> Dict[str, Any]:
+      self, method_data: Mapping[str, Any], path_params: list[str]
+  ) -> dict[str, Any]:
     """Convert a Google API method to an OpenAPI operation.
 
     Args:
@@ -414,7 +418,7 @@ class GoogleApiToOpenApiConverter:
     Returns:
         OpenAPI operation object
     """
-    operation = {
+    operation: dict[str, Any] = {
         "operationId": method_data.get("id", ""),
         "summary": method_data.get("description", ""),
         "description": method_data.get("description", ""),
@@ -491,8 +495,8 @@ class GoogleApiToOpenApiConverter:
     return operation
 
   def _convert_parameter_schema(
-      self, param_data: Dict[str, Any]
-  ) -> Dict[str, Any]:
+      self, param_data: Mapping[str, Any]
+  ) -> dict[str, Any]:
     """Convert a parameter definition to an OpenAPI schema.
 
     Args:
@@ -501,7 +505,7 @@ class GoogleApiToOpenApiConverter:
     Returns:
         OpenAPI schema for the parameter
     """
-    schema = {}
+    schema: dict[str, Any] = {}
 
     # Convert type
     param_type = param_data.get("type", "string")
@@ -536,7 +540,7 @@ class GoogleApiToOpenApiConverter:
     logger.info("OpenAPI specification saved to %s", output_path)
 
 
-def main():
+def main() -> int:
   """Command line interface for the converter."""
   parser = argparse.ArgumentParser(
       description=(
@@ -575,4 +579,4 @@ def main():
 
 
 if __name__ == "__main__":
-  main()
+  raise SystemExit(main())

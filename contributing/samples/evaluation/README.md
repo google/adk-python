@@ -32,7 +32,7 @@ they resolve through the same model registry and credentials.
 
 Because live responses vary from run to run, the deterministic, reference-based
 criteria use lenient response thresholds (e.g. `response_match_score` at
-`0.5`) so that harmless phrasing differences don't fail an otherwise-correct
+`0.6`) so that harmless phrasing differences don't fail an otherwise-correct
 answer.
 
 ## Samples

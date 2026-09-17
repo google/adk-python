@@ -20,11 +20,14 @@ from google.adk.telemetry import _agent_engine
 from google.adk.telemetry import google_cloud
 from google.adk.telemetry._agent_engine import telemetry_user_agent_headers
 from google.adk.telemetry._agent_engine_metric_exporter import MIN_EXPORT_INTERVAL_MS
+from google.adk.telemetry.google_cloud import _DEFAULT_MTLS_TELEMETRY_LOGS_ENDPOINT
 from google.adk.telemetry.google_cloud import _DEFAULT_MTLS_TELEMETRY_METRICS_ENDPOINT
-from google.adk.telemetry.google_cloud import _DEFAULT_MTLS_TELEMETRY_TRACES_ENPOINT
+from google.adk.telemetry.google_cloud import _DEFAULT_MTLS_TELEMETRY_TRACES_ENDPOINT
+from google.adk.telemetry.google_cloud import _DEFAULT_TELEMETRY_LOGS_ENDPOINT
 from google.adk.telemetry.google_cloud import _DEFAULT_TELEMETRY_METRICS_ENDPOINT
-from google.adk.telemetry.google_cloud import _DEFAULT_TELEMETRY_TRACES_ENPOINT
+from google.adk.telemetry.google_cloud import _DEFAULT_TELEMETRY_TRACES_ENDPOINT
 from google.adk.telemetry.google_cloud import _get_api_endpoint
+from google.adk.telemetry.google_cloud import _get_gcp_logs_exporter
 from google.adk.telemetry.google_cloud import _get_gcp_metrics_exporter
 from google.adk.telemetry.google_cloud import _get_gcp_otlp_metric_exporter
 from google.adk.telemetry.google_cloud import _get_gcp_span_exporter
@@ -35,7 +38,10 @@ import google.auth.credentials
 from google.auth.transport import mtls
 from google.auth.transport import requests
 from opentelemetry.exporter.otlp.proto.http import trace_exporter
+from opentelemetry.sdk._logs import ReadWriteLogRecord
+from opentelemetry.sdk._logs._internal import LogRecord
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+from opentelemetry.sdk.resources import Resource
 import pytest
 
 
@@ -70,7 +76,7 @@ def test_get_gcp_exporters(
   )
   monkeypatch.setattr(
       "google.adk.telemetry.google_cloud._get_gcp_logs_exporter",
-      lambda project_id: mock.MagicMock(),
+      lambda credentials, project_id: mock.MagicMock(),
   )
 
   # Act.
@@ -119,6 +125,37 @@ def test_get_gcp_resource(
       otel_resource.attributes.get("gcp.project_id", None)
       == expected_project_id
   )
+
+
+def test_get_gcp_resource_is_not_agent_engine_off_agent_engine(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """Local, GCE, GKE and Cloud Run runs are not Agent Engine deployments."""
+  monkeypatch.delenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", raising=False)
+
+  otel_resource = get_gcp_resource("my-project")
+
+  # Whatever the platform is, the GCP detector decides it -- not us.
+  assert otel_resource.attributes.get("cloud.platform") != "gcp.agent_engine"
+  assert "cloud.resource_id" not in otel_resource.attributes
+  assert otel_resource.attributes["gcp.project_id"] == "my-project"
+
+
+def test_get_gcp_resource_describes_the_agent_engine_deployment(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "1234567890")
+  monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+
+  otel_resource = get_gcp_resource("my-project")
+
+  assert otel_resource.attributes["cloud.platform"] == "gcp.agent_engine"
+  assert otel_resource.attributes["service.name"] == "1234567890"
+  assert otel_resource.attributes["cloud.region"] == "us-central1"
+  assert otel_resource.attributes["cloud.account.id"] == "my-project"
+  # Contributed by `Resource.create`, as they were before OTLP export.
+  assert otel_resource.attributes["telemetry.sdk.language"] == "python"
+  assert otel_resource.attributes["telemetry.sdk.name"] == "opentelemetry"
 
 
 def test_get_gcp_resource_sets_standard_cloud_resource_id(
@@ -177,11 +214,11 @@ def test_use_client_cert_effective_from_env(
 @pytest.mark.parametrize(
     "env_val, cert_source, expected",
     [
-        ("auto", lambda: b"cert", _DEFAULT_MTLS_TELEMETRY_TRACES_ENPOINT),
-        ("auto", None, _DEFAULT_TELEMETRY_TRACES_ENPOINT),
-        ("always", None, _DEFAULT_MTLS_TELEMETRY_TRACES_ENPOINT),
-        ("never", lambda: b"cert", _DEFAULT_TELEMETRY_TRACES_ENPOINT),
-        ("invalid", None, _DEFAULT_TELEMETRY_TRACES_ENPOINT),
+        ("auto", lambda: b"cert", _DEFAULT_MTLS_TELEMETRY_TRACES_ENDPOINT),
+        ("auto", None, _DEFAULT_TELEMETRY_TRACES_ENDPOINT),
+        ("always", None, _DEFAULT_MTLS_TELEMETRY_TRACES_ENDPOINT),
+        ("never", lambda: b"cert", _DEFAULT_TELEMETRY_TRACES_ENDPOINT),
+        ("invalid", None, _DEFAULT_TELEMETRY_TRACES_ENDPOINT),
     ],
 )
 def test_get_api_endpoint(
@@ -193,13 +230,27 @@ def test_get_api_endpoint(
 ):
   monkeypatch.setenv("GOOGLE_API_USE_MTLS_ENDPOINT", env_val)
   if env_val == "invalid":
-    assert _get_api_endpoint(cert_source) == expected
+    assert (
+        _get_api_endpoint(
+            cert_source,
+            _DEFAULT_TELEMETRY_TRACES_ENDPOINT,
+            _DEFAULT_MTLS_TELEMETRY_TRACES_ENDPOINT,
+        )
+        == expected
+    )
     assert (
         "Environment variable `GOOGLE_API_USE_MTLS_ENDPOINT` must be one of"
         in caplog.text
     )
   else:
-    assert _get_api_endpoint(cert_source) == expected
+    assert (
+        _get_api_endpoint(
+            cert_source,
+            _DEFAULT_TELEMETRY_TRACES_ENDPOINT,
+            _DEFAULT_MTLS_TELEMETRY_TRACES_ENDPOINT,
+        )
+        == expected
+    )
 
 
 @pytest.mark.parametrize(
@@ -223,8 +274,8 @@ def test_get_api_endpoint_for_metrics(
   assert (
       _get_api_endpoint(
           cert_source,
-          default_endpoint=_DEFAULT_TELEMETRY_METRICS_ENDPOINT,
-          mtls_endpoint=_DEFAULT_MTLS_TELEMETRY_METRICS_ENDPOINT,
+          _DEFAULT_TELEMETRY_METRICS_ENDPOINT,
+          _DEFAULT_MTLS_TELEMETRY_METRICS_ENDPOINT,
       )
       == expected
   )
@@ -269,7 +320,7 @@ def test_get_gcp_span_exporter_mtls(
   mock_session.return_value.configure_mtls_channel.assert_called_once()
   mock_exporter.assert_called_once_with(
       session=mock_session.return_value,
-      endpoint=_DEFAULT_MTLS_TELEMETRY_TRACES_ENPOINT,
+      endpoint=_DEFAULT_MTLS_TELEMETRY_TRACES_ENDPOINT,
       headers=None,
   )
 
@@ -469,3 +520,290 @@ def test_agent_engine_uses_only_request_driven_reader(
 
   assert otel_hooks.metric_readers == [fake_state.reader]
   assert otel_hooks.span_processors == [fake_state.span_processor]
+
+
+@mock.patch.object(requests, "AuthorizedSession", autospec=True)
+@mock.patch(
+    "opentelemetry.exporter.otlp.proto.http._log_exporter.OTLPLogExporter",
+    autospec=True,
+)
+@mock.patch(
+    "google.adk.telemetry.google_cloud._use_client_cert_effective",
+    autospec=True,
+)
+def test_get_gcp_logs_exporter_targets_telemetry_api(
+    mock_use_cert: mock.MagicMock,
+    mock_exporter: mock.MagicMock,
+    mock_session: mock.MagicMock,
+):
+  """Logs go to telemetry.googleapis.com, not the Cloud Logging API."""
+  credentials = mock.create_autospec(
+      google.auth.credentials.Credentials, instance=True
+  )
+  mock_use_cert.return_value = False
+
+  _get_gcp_logs_exporter(credentials, "my-project")
+
+  mock_session.assert_called_once_with(credentials=credentials)
+  mock_exporter.assert_called_once_with(
+      session=mock_session.return_value,
+      endpoint=_DEFAULT_TELEMETRY_LOGS_ENDPOINT,
+      headers=telemetry_user_agent_headers(),
+  )
+
+
+@mock.patch.object(requests, "AuthorizedSession", autospec=True)
+@mock.patch(
+    "opentelemetry.exporter.otlp.proto.http._log_exporter.OTLPLogExporter",
+    autospec=True,
+)
+@mock.patch(
+    "google.adk.telemetry.google_cloud._use_client_cert_effective",
+    autospec=True,
+)
+@mock.patch(
+    "google.auth.transport.mtls.has_default_client_cert_source", autospec=True
+)
+@mock.patch(
+    "google.auth.transport.mtls.default_client_cert_source", autospec=True
+)
+def test_get_gcp_logs_exporter_mtls(
+    mock_default_cert: mock.MagicMock,
+    mock_has_cert: mock.MagicMock,
+    mock_use_cert: mock.MagicMock,
+    mock_exporter: mock.MagicMock,
+    mock_session: mock.MagicMock,
+):
+  """Logs take the mTLS branch onto the *logs* endpoint."""
+  credentials = mock.create_autospec(
+      google.auth.credentials.Credentials, instance=True
+  )
+  mock_use_cert.return_value = True
+  mock_has_cert.return_value = True
+  mock_default_cert.return_value = b"cert"
+
+  _get_gcp_logs_exporter(credentials, "my-project")
+
+  mock_session.return_value.configure_mtls_channel.assert_called_once()
+  mock_exporter.assert_called_once_with(
+      session=mock_session.return_value,
+      endpoint=_DEFAULT_MTLS_TELEMETRY_LOGS_ENDPOINT,
+      headers=telemetry_user_agent_headers(),
+  )
+
+
+def _emit(
+    processor, resource: Resource | None = None, **log_record_kwargs
+) -> ReadWriteLogRecord:
+  """Runs a record through `processor` and returns it as the exporter sees it."""
+  return _emit_record(
+      processor,
+      ReadWriteLogRecord(
+          log_record=LogRecord(**log_record_kwargs),
+          resource=resource if resource is not None else Resource.get_empty(),
+      ),
+  )
+
+
+def _emit_record(processor, record: ReadWriteLogRecord) -> ReadWriteLogRecord:
+  """Returns the record `processor` forwards to the batching base class."""
+  forwarded = []
+  with mock.patch.object(
+      type(processor).__mro__[1],
+      "on_emit",
+      lambda self, emitted: forwarded.append(emitted),
+  ):
+    processor.on_emit(record)
+  return forwarded[0]
+
+
+@pytest.mark.parametrize(
+    "agent_engine_id, log_name_env, expected_default",
+    [
+        (None, None, "adk-otel"),
+        (None, "custom-log", "custom-log"),
+        (
+            "1234567890",
+            None,
+            "aiplatform.googleapis.com/reasoning_engine_stdout",
+        ),
+    ],
+)
+def test_logs_exporter_falls_back_to_default_log_name(
+    agent_engine_id: Optional[str],
+    log_name_env: Optional[str],
+    expected_default: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """Unnamed records keep the log name the Cloud Logging exporter gave them.
+
+  telemetry.googleapis.com would otherwise file them under a generic `otlp`
+  log, breaking existing log filters.
+  """
+  monkeypatch.delenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", raising=False)
+  monkeypatch.delenv("GCP_DEFAULT_LOG_NAME", raising=False)
+  if agent_engine_id is not None:
+    monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", agent_engine_id)
+  if log_name_env is not None:
+    monkeypatch.setenv("GCP_DEFAULT_LOG_NAME", log_name_env)
+  monkeypatch.setattr(requests, "AuthorizedSession", mock.MagicMock())
+  credentials = mock.create_autospec(
+      google.auth.credentials.Credentials, instance=True
+  )
+
+  processor = _get_gcp_logs_exporter(credentials, "my-project")
+
+  assert (
+      _emit(processor).log_record.attributes["gcp.log_name"] == expected_default
+  )
+  processor.shutdown()
+
+
+def test_logs_exporter_preserves_event_name_as_label(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """The Cloud Logging exporter published `event.name` as a log entry label."""
+  monkeypatch.delenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", raising=False)
+  monkeypatch.setattr(requests, "AuthorizedSession", mock.MagicMock())
+  credentials = mock.create_autospec(
+      google.auth.credentials.Credentials, instance=True
+  )
+
+  processor = _get_gcp_logs_exporter(credentials, "my-project")
+
+  record = _emit(
+      processor, event_name="gen_ai.client.inference.operation.details"
+  )
+
+  assert dict(record.log_record.attributes) == {
+      "event.name": "gen_ai.client.inference.operation.details",
+      "gcp.log_name": "adk-otel",
+  }
+  # Cloud Logging names the log after `event_name` ahead of `gcp.log_name`,
+  # which would scatter one log per event type.
+  assert not record.log_record.event_name
+  processor.shutdown()
+
+
+def test_logs_exporter_keeps_explicit_log_name(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """An explicit `gcp.log_name` wins over the default, as it did before."""
+  monkeypatch.delenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", raising=False)
+  monkeypatch.setattr(requests, "AuthorizedSession", mock.MagicMock())
+  credentials = mock.create_autospec(
+      google.auth.credentials.Credentials, instance=True
+  )
+
+  processor = _get_gcp_logs_exporter(credentials, "my-project")
+
+  record = _emit(processor, attributes={"gcp.log_name": "my-log"})
+  assert record.log_record.attributes["gcp.log_name"] == "my-log"
+  processor.shutdown()
+
+
+def _agent_engine_logs_processor(monkeypatch: pytest.MonkeyPatch):
+  """Returns the log processor as it is built on Agent Engine."""
+  monkeypatch.setattr(requests, "AuthorizedSession", mock.MagicMock())
+  credentials = mock.create_autospec(
+      google.auth.credentials.Credentials, instance=True
+  )
+  return _get_gcp_logs_exporter(credentials, "my-project")
+
+
+def test_logs_processor_pins_reasoning_engine_monitored_resource(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """Logs must land on the same MonitoredResource the old exporter produced."""
+  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "1234567890")
+  monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+  processor = _agent_engine_logs_processor(monkeypatch)
+
+  attributes = _emit(processor).resource.attributes
+
+  assert (
+      attributes["gcp.resource_type"]
+      == "aiplatform.googleapis.com/ReasoningEngine"
+  )
+  assert attributes["location"] == "us-central1"
+  assert attributes["reasoning_engine_id"] == "1234567890"
+  # Must be a full resource name. A bare project id makes Cloud Logging build
+  # an invalid log name, and the export fails with HTTP 400.
+  assert attributes["resource_container"] == "projects/my-project"
+  # Traces and metrics must not see the type hint: the metrics pipeline reads
+  # the same key and would move Agent Engine off `prometheus_target`.
+  assert "gcp.resource_type" not in get_gcp_resource("my-project").attributes
+  processor.shutdown()
+
+
+def test_logs_processor_pins_without_a_location(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """A missing location empties the label rather than dropping the pin.
+
+  Every log line from one deployment must land on the same MonitoredResource,
+  so the set of labels can't depend on which env vars happen to be set.
+  """
+  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "1234567890")
+  monkeypatch.delenv("GOOGLE_CLOUD_AGENT_ENGINE_LOCATION", raising=False)
+  monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
+  processor = _agent_engine_logs_processor(monkeypatch)
+
+  attributes = _emit(processor).resource.attributes
+
+  assert (
+      attributes["gcp.resource_type"]
+      == "aiplatform.googleapis.com/ReasoningEngine"
+  )
+  assert attributes["location"] == ""
+  processor.shutdown()
+
+
+def test_logs_processor_republishes_service_version_as_a_label(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """Resource attributes are dropped once ingested as a MonitoredResource."""
+  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "1234567890")
+  processor = _agent_engine_logs_processor(monkeypatch)
+
+  record = _emit(
+      processor, resource=Resource(attributes={"service.version": "42"})
+  )
+
+  assert record.log_record.attributes["service.version"] == "42"
+  processor.shutdown()
+
+
+def test_logs_processor_leaves_the_resource_alone_off_agent_engine(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """Outside Agent Engine, normal GCP resource detection still applies."""
+  monkeypatch.delenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", raising=False)
+  processor = _agent_engine_logs_processor(monkeypatch)
+
+  record = _emit(processor)
+
+  assert "gcp.resource_type" not in record.resource.attributes
+  assert "service.version" not in record.log_record.attributes
+  processor.shutdown()
+
+
+def test_logs_processor_does_not_mutate_the_record_it_is_handed(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """The provider hands the same record to every processor it has."""
+  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "1234567890")
+  processor = _agent_engine_logs_processor(monkeypatch)
+  incoming = ReadWriteLogRecord(
+      log_record=LogRecord(event_name="gen_ai.choice", attributes={"a": "1"}),
+      resource=Resource(attributes={"service.version": "42"}),
+  )
+
+  emitted = _emit_record(processor, incoming)
+
+  assert emitted is not incoming
+  assert incoming.log_record.event_name == "gen_ai.choice"
+  assert dict(incoming.log_record.attributes) == {"a": "1"}
+  assert "gcp.resource_type" not in incoming.resource.attributes
+  assert emitted.log_record.attributes["event.name"] == "gen_ai.choice"
+  processor.shutdown()

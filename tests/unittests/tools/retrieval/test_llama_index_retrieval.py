@@ -63,6 +63,20 @@ async def test_run_async_returns_the_text_of_the_top_result():
 
 
 @pytest.mark.asyncio
+async def test_run_async_reports_no_match_when_nothing_is_retrieved():
+  """Matching nothing is a normal outcome, so the model is told, not crashed."""
+  retriever = _FakeRetriever([])
+
+  result = await _tool(retriever).run_async(
+      args={'query': 'nothing matches this'}, tool_context=None
+  )
+
+  assert (
+      result == 'No matching result found for the query: nothing matches this'
+  )
+
+
+@pytest.mark.asyncio
 async def test_run_async_passes_the_query_argument_to_the_retriever():
   """The retriever gets the query string itself, not the whole args dict."""
   retriever = _FakeRetriever([_FakeNode('a document')])

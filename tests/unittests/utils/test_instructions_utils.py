@@ -129,7 +129,8 @@ async def test_inject_session_state_with_missing_state_raises_key_error():
   )
 
   with pytest.raises(
-      KeyError, match="Context variable not found: `missing_key`."
+      KeyError,
+      match=r"Context variable not found: `missing_key` in agent 'agent'\.",
   ):
     await instructions_utils.inject_session_state(
         instruction_template, invocation_context
@@ -146,7 +147,9 @@ async def test_inject_session_state_with_missing_artifact_raises_key_error():
       artifact_service=mock_artifact_service
   )
 
-  with pytest.raises(KeyError, match="Artifact missing_file not found."):
+  with pytest.raises(
+      KeyError, match=r"Artifact 'missing_file' not found in agent 'agent'\."
+  ):
     await instructions_utils.inject_session_state(
         instruction_template, invocation_context
     )
@@ -232,7 +235,9 @@ async def test_inject_session_state_with_empty_artifact_name_raises_key_error():
       artifact_service=mock_artifact_service
   )
 
-  with pytest.raises(KeyError, match="Artifact  not found."):
+  with pytest.raises(
+      KeyError, match=r"Artifact '' not found in agent 'agent'\."
+  ):
     await instructions_utils.inject_session_state(
         instruction_template, invocation_context
     )
@@ -341,6 +346,22 @@ async def test_inject_session_state_jinja2_artifact():
       instruction_template, invocation_context, use_jinja2=True
   )
   assert populated_instruction == "Content: artifact data"
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_jinja2_missing_artifact_raises_key_error():
+  instruction_template = "Content: {{ artifact('missing_file') }}"
+  mock_artifact_service = MockArtifactService({})
+  invocation_context = await _create_test_readonly_context(
+      artifact_service=mock_artifact_service
+  )
+
+  with pytest.raises(
+      KeyError, match=r"Artifact 'missing_file' not found in agent 'agent'\."
+  ):
+    await instructions_utils.inject_session_state(
+        instruction_template, invocation_context, use_jinja2=True
+    )
 
 
 @pytest.mark.asyncio

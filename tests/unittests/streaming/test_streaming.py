@@ -18,8 +18,8 @@ from typing import Any
 from typing import AsyncGenerator
 from typing import Awaitable
 
-from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
+from google.adk.live import LiveRequestQueue
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 import pytest

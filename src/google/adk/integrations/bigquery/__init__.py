@@ -26,6 +26,12 @@ if typing.TYPE_CHECKING:
   from .bigquery_skill import get_bigquery_skill
   from .bigquery_toolset import BigQueryToolset
 
+__all__ = [
+    "BigQueryCredentialsConfig",
+    "BigQueryToolset",
+    "get_bigquery_skill",
+]
+
 # Map attribute names to relative module paths
 _lazy_imports = {
     "BigQueryCredentialsConfig": ".bigquery_credentials",

@@ -17,21 +17,99 @@
 from __future__ import annotations
 
 import inspect
+import types as typing_types
 from typing import Any
+from typing import cast
+from typing import get_args
+from typing import get_origin
 from typing import Optional
+from typing import Union
 
 from google.genai import types
+from pydantic import BaseModel
 from pydantic import TypeAdapter
 from pydantic import ValidationError
+from pydantic.fields import FieldInfo
 from typing_extensions import override
 
 from ..utils._schema_utils import get_list_inner_type
 from ..utils._schema_utils import is_basemodel_schema
-from ..utils._schema_utils import is_list_of_basemodel
 from ..utils._schema_utils import SchemaType
 from ._automatic_function_calling_util import build_function_declaration
 from .base_tool import BaseTool
 from .tool_context import ToolContext
+
+
+def _merge_json_schema_descriptions(
+    target: dict[str, Any], source: dict[str, Any]
+) -> None:
+  """Copies ``description`` values from ``source`` onto ``target`` in place.
+
+  Walks ``properties`` / ``items`` so nested object and list schemas keep the
+  Field(description=...) metadata from the original Pydantic output schema.
+  """
+  source_props = source.get('properties')
+  target_props = target.get('properties')
+  if isinstance(source_props, dict) and isinstance(target_props, dict):
+    for name, source_prop in source_props.items():
+      if name not in target_props or not isinstance(source_prop, dict):
+        continue
+      target_prop = target_props[name]
+      if not isinstance(target_prop, dict):
+        continue
+      description = source_prop.get('description')
+      if isinstance(description, str) and description:
+        target_prop['description'] = description
+      _merge_json_schema_descriptions(target_prop, source_prop)
+
+  source_items = source.get('items')
+  target_items = target.get('items')
+  if isinstance(source_items, dict) and isinstance(target_items, dict):
+    description = source_items.get('description')
+    if isinstance(description, str) and description:
+      target_items['description'] = description
+    _merge_json_schema_descriptions(target_items, source_items)
+
+
+def _apply_descriptions_to_schema_properties(
+    properties: dict[str, types.Schema] | None,
+    model_fields: dict[str, FieldInfo],
+) -> None:
+  """Sets Schema.description from Pydantic FieldInfo.description when present."""
+  if not properties:
+    return
+  for name, field_info in model_fields.items():
+    prop = properties.get(name)
+    if prop is None:
+      continue
+    if field_info.description:
+      prop.description = field_info.description
+    _apply_nested_descriptions(prop, field_info.annotation)
+
+
+def _apply_nested_descriptions(prop: types.Schema, annotation: Any) -> None:
+  """Recursively applies descriptions to nested BaseModel properties."""
+  if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+    if prop.properties:
+      _apply_descriptions_to_schema_properties(
+          prop.properties, annotation.model_fields
+      )
+  elif get_origin(annotation) is list:
+    args = get_args(annotation)
+    if (
+        args
+        and isinstance(args[0], type)
+        and issubclass(args[0], BaseModel)
+        and prop.items
+        and prop.items.properties
+    ):
+      _apply_descriptions_to_schema_properties(
+          prop.items.properties, args[0].model_fields
+      )
+  elif get_origin(annotation) in (Union, typing_types.UnionType):
+    for arg in get_args(annotation):
+      if arg is not type(None):
+        _apply_nested_descriptions(prop, arg)
 
 
 class SetModelResponseTool(BaseTool):
@@ -58,8 +136,14 @@ class SetModelResponseTool(BaseTool):
       output_schema = output_schema.model_dump(exclude_none=True)
 
     self.output_schema = output_schema
-    self._is_basemodel = is_basemodel_schema(output_schema)
-    self._is_list_of_basemodel = is_list_of_basemodel(output_schema)
+    self._model_type: Optional[type[BaseModel]] = (
+        cast('type[BaseModel]', output_schema)
+        if is_basemodel_schema(output_schema)
+        else None
+    )
+    self._list_model_type = get_list_inner_type(output_schema)
+    self._is_basemodel = self._model_type is not None
+    self._is_list_of_basemodel = self._list_model_type is not None
 
     # Create a function that matches the output schema
     def set_model_response() -> str:
@@ -71,9 +155,9 @@ class SetModelResponseTool(BaseTool):
       return 'Response set successfully.'
 
     # Add the schema fields as parameters to the function dynamically
-    if self._is_basemodel:
+    if self._model_type is not None:
       # For regular BaseModel, use the model's fields
-      schema_fields = output_schema.model_fields
+      schema_fields = self._model_type.model_fields
       params = []
       for field_name, field_info in schema_fields.items():
         # Carry the field's default across. Without it every parameter looks
@@ -90,14 +174,13 @@ class SetModelResponseTool(BaseTool):
             ),
         )
         params.append(param)
-    elif self._is_list_of_basemodel:
+    elif self._list_model_type is not None:
       # For list[BaseModel], create a single 'items' parameter
-      inner_type = get_list_inner_type(output_schema)
       params = [
           inspect.Parameter(
               'items',
               inspect.Parameter.KEYWORD_ONLY,
-              annotation=list[inner_type],
+              annotation=typing_types.GenericAlias(list, self._list_model_type),
           )
       ]
     elif isinstance(output_schema, dict):
@@ -136,6 +219,45 @@ class SetModelResponseTool(BaseTool):
         description=self.func.__doc__.strip() if self.func.__doc__ else '',
     )
 
+  def _preserve_output_schema_field_descriptions(
+      self, function_decl: types.FunctionDeclaration
+  ) -> None:
+    """Restores Field(description=...) lost during function-declaration build.
+
+    ``build_function_declaration`` rebuilds parameters from ``inspect.Parameter``
+    objects, which cannot carry Pydantic field descriptions. Re-apply them from
+    the original ``output_schema`` so the model still sees the semantic hints.
+    """
+    if isinstance(self.output_schema, type) and issubclass(
+        self.output_schema, BaseModel
+    ):
+      source_schema = self.output_schema.model_json_schema()
+      if function_decl.parameters_json_schema is not None:
+        _merge_json_schema_descriptions(
+            function_decl.parameters_json_schema, source_schema
+        )
+      elif function_decl.parameters is not None:
+        _apply_descriptions_to_schema_properties(
+            function_decl.parameters.properties,
+            self.output_schema.model_fields,
+        )
+      return
+
+    if self._is_list_of_basemodel:
+      inner_type = get_list_inner_type(self.output_schema)
+      if inner_type is None:
+        return
+      if (
+          function_decl.parameters is not None
+          and function_decl.parameters.properties
+          and 'items' in function_decl.parameters.properties
+      ):
+        items_schema = function_decl.parameters.properties['items']
+        if items_schema.items is not None:
+          _apply_descriptions_to_schema_properties(
+              items_schema.items.properties, inner_type.model_fields
+          )
+
   @override
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
     """Gets the OpenAPI specification of this tool."""
@@ -146,6 +268,7 @@ class SetModelResponseTool(BaseTool):
             variant=self._api_variant,
         )
     )
+    self._preserve_output_schema_field_descriptions(function_decl)
     return function_decl
 
   @override
@@ -166,18 +289,21 @@ class SetModelResponseTool(BaseTool):
         - raw value for other schema types (list[str], dict, etc.)
         - dict with an error message when Pydantic validation fails
     """
+    result: object
     try:
-      if self._is_basemodel:
+      if self._model_type is not None:
         # For regular BaseModel, validate directly
-        validated_response = self.output_schema.model_validate(args)
-        result = validated_response.model_dump(exclude_none=True)
-      elif self._is_list_of_basemodel:
+        validated_model = self._model_type.model_validate(args)
+        result = validated_model.model_dump(exclude_none=True)
+      elif self._list_model_type is not None:
         # For list[BaseModel], extract and validate the 'items' field
         items = args.get('items', [])
-        type_adapter = TypeAdapter(self.output_schema)
-        validated_response = type_adapter.validate_python(items)
+        type_adapter: TypeAdapter[list[BaseModel]] = TypeAdapter(
+            self.output_schema
+        )
+        validated_items = type_adapter.validate_python(items)
         result = [
-            item.model_dump(exclude_none=True) for item in validated_response
+            item.model_dump(exclude_none=True) for item in validated_items
         ]
       else:
         # For other schema types (list[str], dict, etc.),

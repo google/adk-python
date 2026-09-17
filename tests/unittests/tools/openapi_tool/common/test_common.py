@@ -492,6 +492,20 @@ class TestPydocHelper:
     responses = {'default': {'description': 'Only a default response'}}
     assert PydocHelper.generate_return_doc(dict_to_responses(responses)) == ''
 
+  def test_generate_return_doc_ignores_default_response(self):
+    responses = {
+        'default': {'description': 'Fallback response'},
+        '200': {
+            'description': 'Successful response',
+            'content': {'application/json': {'schema': {'type': 'string'}}},
+        },
+    }
+
+    assert (
+        PydocHelper.generate_return_doc(dict_to_responses(responses))
+        == 'Returns (str): Successful response'
+    )
+
 
 if __name__ == '__main__':
   pytest.main([__file__])

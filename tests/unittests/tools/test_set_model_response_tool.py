@@ -137,6 +137,117 @@ def test_get_declaration_preserves_field_defaults():
   assert properties['is_active']['default'] is True
 
 
+def test_get_declaration_preserves_field_descriptions():
+  """Field(description=...) from output_schema must reach the tool schema."""
+  tool = SetModelResponseTool(PersonSchema)
+
+  declaration = tool._get_declaration()
+
+  assert declaration is not None
+  properties = declaration.model_dump(exclude_none=True)[
+      'parameters_json_schema'
+  ]['properties']
+  assert properties['name']['description'] == "A person's name"
+  assert properties['age']['description'] == "A person's age"
+  assert properties['city']['description'] == 'The city they live in'
+
+
+def test_get_declaration_preserves_nested_basemodel_field_descriptions():
+  """Nested BaseModel Field descriptions reach the schema in fallback and default mode."""
+
+  class Address(BaseModel):
+    street: str = Field(description='Street address')
+    city: str = Field(description='City name')
+
+  class User(BaseModel):
+    name: str = Field(description="User's name")
+    address: Address = Field(description="User's address")
+    previous_addresses: list[Address] = Field(
+        default_factory=list, description='Past addresses'
+    )
+
+  # Default JSON_SCHEMA_FOR_FUNC_DECL mode
+  tool = SetModelResponseTool(User)
+  declaration = tool._get_declaration()
+  assert declaration is not None
+  schema = declaration.model_dump(exclude_none=True)['parameters_json_schema']
+  assert schema['properties']['name']['description'] == "User's name"
+  assert schema['properties']['address']['description'] == "User's address"
+  assert (
+      schema['properties']['previous_addresses']['description']
+      == 'Past addresses'
+  )
+  assert (
+      schema['$defs']['Address']['properties']['street']['description']
+      == 'Street address'
+  )
+  assert (
+      schema['$defs']['Address']['properties']['city']['description']
+      == 'City name'
+  )
+
+  # Fallback mode (types.Schema)
+  with temporary_feature_override(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, False):
+    fallback_tool = SetModelResponseTool(User)
+    fallback_decl = fallback_tool._get_declaration()
+
+  assert fallback_decl is not None
+  assert fallback_decl.parameters is not None
+  props = fallback_decl.parameters.properties
+  assert props['name'].description == "User's name"
+  assert props['address'].description == "User's address"
+  assert props['address'].properties['street'].description == 'Street address'
+  assert props['address'].properties['city'].description == 'City name'
+  assert props['previous_addresses'].description == 'Past addresses'
+  assert (
+      props['previous_addresses'].items.properties['street'].description
+      == 'Street address'
+  )
+  assert (
+      props['previous_addresses'].items.properties['city'].description
+      == 'City name'
+  )
+
+
+def test_get_declaration_preserves_list_item_field_descriptions():
+  """list[BaseModel] item Field descriptions reach the schema in fallback mode."""
+
+  class Item(BaseModel):
+    id: int = Field(description='Item ID')
+    name: str = Field(description='Item name')
+
+  with temporary_feature_override(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, False):
+    tool = SetModelResponseTool(list[Item])
+    declaration = tool._get_declaration()
+
+  assert declaration is not None
+  assert declaration.parameters is not None
+  items_schema = declaration.parameters.properties['items']
+  assert items_schema.items is not None
+  item_props = items_schema.items.properties
+  assert item_props['id'].description == 'Item ID'
+  assert item_props['name'].description == 'Item name'
+
+
+def test_get_declaration_preserves_list_item_field_descriptions_default_mode():
+  """list[BaseModel] item Field descriptions reach the schema in default mode."""
+
+  class Item(BaseModel):
+    id: int = Field(description='Item ID')
+    name: str = Field(description='Item name')
+
+  tool = SetModelResponseTool(list[Item])
+  declaration = tool._get_declaration()
+
+  assert declaration is not None
+  schema = declaration.model_dump(exclude_none=True)['parameters_json_schema']
+  assert schema['$defs']['Item']['properties']['id']['description'] == 'Item ID'
+  assert (
+      schema['$defs']['Item']['properties']['name']['description']
+      == 'Item name'
+  )
+
+
 @pytest.mark.asyncio
 async def test_run_async_valid_data():
   """Test tool execution with valid data."""

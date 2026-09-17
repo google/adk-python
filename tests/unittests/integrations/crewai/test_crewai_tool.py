@@ -25,9 +25,12 @@ pytest.importorskip(
 
 from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.features import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.integrations.crewai import CrewaiTool
 from google.adk.sessions.session import Session
 from google.adk.tools.tool_context import ToolContext
+import pydantic
 
 
 @pytest.fixture
@@ -67,17 +70,26 @@ def _crewai_tool_with_context_type(ctx: Context, *args, **kwargs):
 class MockCrewaiBaseTool:
   """Mock CrewAI BaseTool for testing."""
 
-  def __init__(self, run_func, name="mock_tool", description="Mock tool"):
+  def __init__(
+      self,
+      run_func,
+      name="mock_tool",
+      description="Mock tool",
+      args_schema=None,
+  ):
     self.run = run_func
     self.name = name
     self.description = description
-    self.args_schema = MagicMock()
-    self.args_schema.model_json_schema.return_value = {
-        "type": "object",
-        "properties": {
-            "search_query": {"type": "string", "description": "Search query"}
-        },
-    }
+    if args_schema is not None:
+      self.args_schema = args_schema
+    else:
+      self.args_schema = MagicMock()
+      self.args_schema.model_json_schema.return_value = {
+          "type": "object",
+          "properties": {
+              "search_query": {"type": "string", "description": "Search query"}
+          },
+      }
 
 
 def test_crewai_tool_initialization():
@@ -215,3 +227,76 @@ async def test_crewai_tool_with_context_type_annotation(mock_tool_context):
 
   assert result["search_query"] == "test query"
   assert result["context_present"]
+
+
+@pytest.mark.asyncio
+async def test_crewai_tool_invalid_argument_validation(mock_tool_context):
+  """Test that CrewaiTool returns validation errors when argument types are invalid."""
+
+  class TypedArgsSchema(pydantic.BaseModel):
+    arg1: str
+    arg2: int
+
+  def mock_crewai_run(*args, **kwargs):
+    """CrewAI tool run signature is (*args, **kwargs)."""
+    return {"arg1": kwargs.get("arg1"), "arg2": kwargs.get("arg2")}
+
+  mock_crewai_tool = MockCrewaiBaseTool(
+      mock_crewai_run,
+      name="typed_tool",
+      description="Typed tool",
+      args_schema=TypedArgsSchema,
+  )
+  tool = CrewaiTool(
+      mock_crewai_tool, name="typed_tool", description="Typed tool"
+  )
+
+  with temporary_feature_override(
+      FeatureName.FUNCTION_TOOL_ARG_VALIDATION, True
+  ):
+    # Pass an invalid type (non-numeric string for int parameter)
+    result = await tool.run_async(
+        args={"arg1": "test", "arg2": "invalid_int"},
+        tool_context=mock_tool_context,
+    )
+
+    assert isinstance(result, dict)
+    assert "error" in result
+    assert "validation error" in result["error"].lower()
+    assert "arg2" in result["error"]
+
+    # Verify valid coercion succeeds
+    result_valid = await tool.run_async(
+        args={"arg1": "test", "arg2": "42"},
+        tool_context=mock_tool_context,
+    )
+    assert result_valid == {"arg1": "test", "arg2": 42}
+
+
+@pytest.mark.asyncio
+async def test_crewai_tool_validation_disabled_by_default(mock_tool_context):
+  """Test that CrewaiTool allows lax argument types when flag is disabled."""
+
+  class TypedArgsSchema(pydantic.BaseModel):
+    arg1: str
+    arg2: int
+
+  def mock_crewai_run(*args, **kwargs):
+    return {"arg1": kwargs.get("arg1"), "arg2": kwargs.get("arg2")}
+
+  mock_crewai_tool = MockCrewaiBaseTool(
+      mock_crewai_run,
+      name="typed_tool",
+      description="Typed tool",
+      args_schema=TypedArgsSchema,
+  )
+  tool = CrewaiTool(
+      mock_crewai_tool, name="typed_tool", description="Typed tool"
+  )
+
+  # Flag is disabled by default; unvalidated arguments pass through to the tool
+  result = await tool.run_async(
+      args={"arg1": "test", "arg2": "invalid_int"},
+      tool_context=mock_tool_context,
+  )
+  assert result == {"arg1": "test", "arg2": "invalid_int"}

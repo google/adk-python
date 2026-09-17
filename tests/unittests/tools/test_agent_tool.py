@@ -24,6 +24,7 @@ from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
+from google.adk.agents.run_config import StreamingMode
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
@@ -289,6 +290,35 @@ async def test_agent_tool_does_not_forward_support_cfc(monkeypatch):
   assert nested_run_config.support_cfc is False
   assert nested_run_config.max_llm_calls == 7
   assert parent_run_config.support_cfc is True
+
+
+@mark.asyncio
+async def test_agent_tool_forces_unary_nested_run(monkeypatch):
+  """The response is read from the last event, so the nested run must be unary."""
+  parent_run_config = RunConfig(
+      streaming_mode=StreamingMode.SSE, max_llm_calls=7
+  )
+
+  nested_run_config = await _capture_nested_run_config(
+      monkeypatch, parent_run_config
+  )
+
+  assert nested_run_config.streaming_mode == StreamingMode.NONE
+  # Other settings are still forwarded, and the caller is left untouched.
+  assert nested_run_config.max_llm_calls == 7
+  assert parent_run_config.streaming_mode == StreamingMode.SSE
+
+
+@mark.asyncio
+async def test_agent_tool_keeps_unary_run_unchanged(monkeypatch):
+  """A caller already running unary is forwarded unchanged."""
+  parent_run_config = RunConfig(streaming_mode=StreamingMode.NONE)
+
+  nested_run_config = await _capture_nested_run_config(
+      monkeypatch, parent_run_config
+  )
+
+  assert nested_run_config.streaming_mode == StreamingMode.NONE
 
 
 def test_no_schema():

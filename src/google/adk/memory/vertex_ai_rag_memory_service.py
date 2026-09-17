@@ -284,8 +284,15 @@ class VertexAiRagMemoryService(BaseMemoryService):
       if temp_file_path:
         try:
           os.remove(temp_file_path)
-        except FileNotFoundError:
-          pass
+        except OSError:
+          # Best effort: this runs in a finally, so raising here would
+          # displace the exception already propagating, and a cancelled
+          # upload can leave the worker thread still holding the file.
+          logger.warning(
+              "Could not remove the temporary transcript at %s",
+              temp_file_path,
+              exc_info=True,
+          )
 
   @override
   async def search_memory(

@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 
 from opentelemetry.util.types import AnyValue
 
+from ._finish_reason import is_reported_finish_reason
 from ._serialization import serialize_content
 from .context import TelemetryConfig
 
@@ -136,11 +137,6 @@ def choice_body(
       ),
       "index": 0,  # ADK always returns a single candidate.
   }
-  if llm_response.finish_reason is not None:
-    finish_reason = llm_response.finish_reason
-    body["finish_reason"] = (
-        finish_reason.value
-        if hasattr(finish_reason, "value")
-        else str(finish_reason)
-    )
+  if is_reported_finish_reason(llm_response.finish_reason):
+    body["finish_reason"] = llm_response.finish_reason.value
   return body

@@ -296,6 +296,12 @@ class Event(LlmResponse):
     """
     if self.actions.skip_summarization or self.long_running_tool_ids:
       return True
+    if (
+        bool(self.error_code)
+        and not self.partial
+        and not self.get_function_calls()
+    ):
+      return True
     return (
         not self.get_function_calls()
         and not self.get_function_responses()

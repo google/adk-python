@@ -58,6 +58,8 @@ def test_list_table_names_success(
   )
   assert result["status"] == "SUCCESS"
   assert result["results"] == ["table1"]
+  mock_database.close.assert_called_once()
+  mock_spanner_client.close.assert_called_once()
 
 
 @patch("google.adk.tools.spanner.client.get_spanner_client")
@@ -294,3 +296,26 @@ def test_list_named_schemas_success(
   )
   assert result["status"] == "SUCCESS"
   assert result["results"] == ["schema1", "schema2"]
+
+
+@patch("google.adk.tools.spanner.client.get_spanner_client")
+def test_list_table_names_closes_client_after_sdk_error(
+    mock_get_spanner_client, mock_spanner_ids, mock_credentials
+):
+  """The client is released even when the SDK call fails."""
+  mock_spanner_client = MagicMock()
+  mock_spanner_client.instance.side_effect = RuntimeError("request failed")
+  mock_get_spanner_client.return_value = mock_spanner_client
+
+  result = metadata_tool.list_table_names(
+      mock_spanner_ids["project_id"],
+      mock_spanner_ids["instance_id"],
+      mock_spanner_ids["database_id"],
+      mock_credentials,
+  )
+
+  assert result == {
+      "status": "ERROR",
+      "error_details": "request failed",
+  }
+  mock_spanner_client.close.assert_called_once()

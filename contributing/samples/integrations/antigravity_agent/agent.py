@@ -14,8 +14,8 @@
 
 """Game-developer agent that writes browser games as self-contained HTML.
 
-Wraps a Google Antigravity SDK agent as an ADK agent. See the package README
-for setup and details.
+Wraps a Google Antigravity SDK agent as an ADK agent. See the AntigravityAgent
+guide at docs/guides/labs/antigravity/index.md for setup and details.
 """
 
 import os
@@ -53,7 +53,7 @@ in a browser).""",
     save_dir=_trajectories,
 )
 
-# 2. Wrap the SDK config as a standalone ADK root agent.
+# 2. Wrap the Antigravity SDK config as a standalone ADK root agent.
 root_agent = AntigravityAgent(
     name="antigravity_game_developer",
     description=(

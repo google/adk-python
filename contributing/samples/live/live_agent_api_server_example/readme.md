@@ -16,9 +16,10 @@ the response is always audio.
 - Please ensure you grant the right mic/sound device permission to the terminal
   that runs the script. Sometimes, terminal inside VSCode etc doesn't really work
   well. So try native terminals if you have permission issue.
-- start api server first for your agent folder. For example, my agents are
-  located in contributing/samples. So I will run
-  `adk api_server contributing/samples/`. Keep this running.
+- start api server first for the folder that directly contains your agent
+  folder. `APP_NAME` defaults to `live_bidi_streaming_single_agent`, which lives
+  in contributing/samples/live, so run
+  `adk api_server contributing/samples/live`. Keep this running.
 - then in a separate window, run `python3 live_agent_example.py`
 
 ## Misc

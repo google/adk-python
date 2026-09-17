@@ -23,8 +23,10 @@ from __future__ import annotations
 
 from typing import Optional
 
+from google.adk.dependencies._mcp import Tool as McpTool
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.telemetry._experimental_semconv import _model_dump_to_tool_definition
 from google.adk.telemetry._experimental_semconv import set_operation_details_attributes_from_request
 from google.adk.telemetry._experimental_semconv import set_operation_details_attributes_from_response
 from google.adk.telemetry._stable_semconv import choice_body
@@ -235,6 +237,44 @@ def test_request_attributes_describe_function_tools_with_parameters():
   }]
 
 
+def test_request_attributes_describe_a_raw_mcp_tool():
+  """A caller bypassing ADK's tool pipeline can hand genai a raw MCP tool.
+
+  Recognizing it means asking `sys.modules` whether the MCP SDK is loaded, so
+  the SDK's name has to be the one the dependencies seam resolves. Get that
+  wrong and every MCP tool is reported as an unserializable one instead.
+  """
+  llm_request = LlmRequest(
+      model='some-model',
+      config=types.GenerateContentConfig(
+          tools=[
+              McpTool(
+                  name='get_weather',
+                  description='Gets the weather.',
+                  inputSchema={
+                      'type': 'object',
+                      'properties': {'city': {'type': 'string'}},
+                      'required': ['city'],
+                  },
+              )
+          ]
+      ),
+  )
+
+  attributes = _request_attributes(llm_request)
+
+  assert attributes[GEN_AI_TOOL_DEFINITIONS] == [{
+      'name': 'get_weather',
+      'description': 'Gets the weather.',
+      'parameters': {
+          'type': 'object',
+          'properties': {'city': {'type': 'string'}},
+          'required': ['city'],
+      },
+      'type': 'function',
+  }]
+
+
 # ---------------------------------------------------------------------------
 # set_operation_details_attributes_from_response
 # ---------------------------------------------------------------------------
@@ -267,6 +307,63 @@ def test_response_attributes_split_between_details_and_common():
       'gen_ai.usage.output_tokens': 20,
       'gen_ai.usage.cache_read.input_tokens': 4,
   }
+
+
+def test_response_attributes_accumulate_output_messages_across_a_stream():
+  """Keeping only the last chunk truncated the log to it."""
+  details: dict = {}
+  common: dict = {}
+
+  for text in ('text ', 'response'):
+    set_operation_details_attributes_from_response(
+        LlmResponse(
+            content=types.Content(role='model', parts=[types.Part(text=text)]),
+            finish_reason=types.FinishReason.STOP,
+        ),
+        details,
+        common,
+    )
+
+  assert details == {
+      'gen_ai.output.messages': [
+          {
+              'role': 'assistant',
+              'parts': [{'content': 'text ', 'type': 'text'}],
+              'finish_reason': 'stop',
+          },
+          {
+              'role': 'assistant',
+              'parts': [{'content': 'response', 'type': 'text'}],
+              'finish_reason': 'stop',
+          },
+      ]
+  }
+
+
+def test_streamed_chunks_are_reported_one_message_each():
+  """Each chunk is its own message, as the OTel instrumentor reports a stream."""
+  details: dict = {}
+  common: dict = {}
+
+  # Only the chunk that ends the turn reports why generation stopped.
+  for text, finish_reason in (
+      ('text ', types.FinishReason.FINISH_REASON_UNSPECIFIED),
+      ('response', types.FinishReason.STOP),
+  ):
+    set_operation_details_attributes_from_response(
+        LlmResponse(
+            content=types.Content(role='model', parts=[types.Part(text=text)]),
+            finish_reason=finish_reason,
+        ),
+        details,
+        common,
+    )
+
+  assert [
+      message['parts'][0]['content']
+      for message in details['gen_ai.output.messages']
+  ] == ['text ', 'response']
+  assert common == {'gen_ai.response.finish_reasons': ['stop']}
 
 
 def test_response_attributes_omit_output_messages_without_content():
@@ -306,7 +403,6 @@ def test_response_attributes_omit_finish_reasons_but_keep_empty_message_field():
         (types.FinishReason.STOP, 'stop'),
         (types.FinishReason.MAX_TOKENS, 'length'),
         (types.FinishReason.OTHER, 'error'),
-        (types.FinishReason.FINISH_REASON_UNSPECIFIED, 'error'),
         (types.FinishReason.SAFETY, 'safety'),
     ],
 )
@@ -323,6 +419,19 @@ def test_response_attributes_normalize_finish_reason(
 
   assert common[GEN_AI_RESPONSE_FINISH_REASONS] == [expected]
   assert details[GEN_AI_OUTPUT_MESSAGES][0]['finish_reason'] == expected
+
+
+def test_response_attributes_treat_unspecified_finish_reason_as_unreported():
+  """The proto3 zero value means unreported, not failed."""
+  llm_response = LlmResponse(
+      content=types.Content(role='model', parts=[types.Part(text='Response')]),
+      finish_reason=types.FinishReason.FINISH_REASON_UNSPECIFIED,
+  )
+
+  details, common = _response_attributes(llm_response)
+
+  assert GEN_AI_RESPONSE_FINISH_REASONS not in common
+  assert details[GEN_AI_OUTPUT_MESSAGES][0]['finish_reason'] == ''
 
 
 def test_response_attributes_omit_token_usage_without_metadata():
@@ -372,3 +481,51 @@ def test_stable_and_experimental_encode_the_same_choice_differently():
       'parts': [{'content': 'Response', 'type': 'text'}],
       'finish_reason': 'length',
   }
+
+
+class _DumpingTool:
+  """A pydantic-shaped tool whose dump uses the given schema key."""
+
+  def __init__(self, schema_key: str):
+    self._schema_key = schema_key
+
+  def model_dump(self, *, exclude_none: bool = False) -> dict[str, object]:
+    del exclude_none
+    return {
+        'name': 'mcp_tool',
+        'description': 'A standalone mcp tool',
+        self._schema_key: {
+            'type': 'object',
+            'properties': {'id': {'type': 'integer'}},
+        },
+    }
+
+
+class TestModelDumpToolDefinitionSchemaKey:
+  """The schema key an MCP tool dumps under changes with the SDK version.
+
+  A dumped tool reaches telemetry through `_model_dump_to_tool_definition`.
+  Reading the wrong key is not an error there: the tool is still reported, and
+  reported with no parameters, so the loss shows up only as an emptier span.
+  """
+
+  @pytest.mark.parametrize(
+      'schema_key', ['parameters', 'inputSchema', 'input_schema']
+  )
+  def test_parameters_are_read_under_every_spelling(self, schema_key):
+    definition = _model_dump_to_tool_definition(_DumpingTool(schema_key))
+
+    assert definition['parameters'] == {
+        'type': 'object',
+        'properties': {'id': {'type': 'integer'}},
+    }
+
+  def test_an_unknown_spelling_is_still_reported_without_parameters(self):
+    """The fallback must stay lossy-but-alive, not raise.
+
+    Telemetry is not worth failing a tool call over.
+    """
+    definition = _model_dump_to_tool_definition(_DumpingTool('schemaOfInput'))
+
+    assert definition['name'] == 'mcp_tool'
+    assert definition.get('parameters') is None

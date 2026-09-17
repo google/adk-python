@@ -74,8 +74,12 @@ class HttpCredentials(BaseModelWithConfig):
   password: Annotated[str | None, Field(repr=False)] = None
   token: Annotated[str | None, Field(repr=False)] = None
 
+  # Narrows pydantic's model_validate(obj: Any, *, strict, from_attributes,
+  # context) -> Self to a dict-only form, which is not a compatible override.
   @classmethod
-  def model_validate(cls, data: Dict[str, Any]) -> "HttpCredentials":
+  def model_validate(  # type: ignore[override]
+      cls, data: Dict[str, Any]
+  ) -> "HttpCredentials":
     return cls(
         username=data.get("username"),
         password=data.get("password"),

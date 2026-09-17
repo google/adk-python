@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import abc
 from collections.abc import AsyncGenerator
 from typing import Any
 from typing import final
@@ -26,6 +27,7 @@ from pydantic import field_validator
 
 from ..utils._schema_utils import SchemaType
 from ..utils._schema_utils import validate_node_data
+from ._errors import WorkflowConfigurationError
 from ._retry_config import RetryConfig
 
 if TYPE_CHECKING:
@@ -33,7 +35,13 @@ if TYPE_CHECKING:
   from ..events.event import Event
 
 
-class BaseNode(BaseModel):
+# The `abc.ABC` base is load-bearing and must not be dropped. Subclasses
+# declare `@abc.abstractmethod` without inheriting `abc.ABC` themselves, relying
+# on this class for the metaclass. Static type checkers do not see `ABCMeta`
+# through pydantic's `ModelMetaclass`, so without an explicit base they treat
+# those subclasses as concrete and report the abstract methods as returning
+# `None`.
+class BaseNode(BaseModel, abc.ABC):
   """A base class for all nodes in the workflow graph."""
 
   model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -44,8 +52,12 @@ class BaseNode(BaseModel):
   @field_validator('name')
   @classmethod
   def _validate_name(cls, v: str) -> str:
+    # Pydantic re-wraps this as a ValidationError, so the class below records
+    # whose mistake it is rather than being catchable on its own.
     if not v.isidentifier():
-      raise ValueError(f"Node name '{v}' must be a valid Python identifier.")
+      raise WorkflowConfigurationError(
+          f"Node name '{v}' must be a valid Python identifier."
+      )
     return v
 
   description: str = ''
@@ -72,8 +84,15 @@ class BaseNode(BaseModel):
   retry_config: RetryConfig | None = None
   """Configuration for retrying the node on failure.
 
-  If set, exceptions raised by the node will trigger retries according
-  to the specified policy.
+  If set, failures of the node will trigger retries according to the
+  specified policy.
+
+  On a ``Workflow``, a failure of any node inside it is a failure of the
+  workflow, so the whole sub-workflow is retried. Children that already
+  produced an output or a state change are replayed rather than run again;
+  a child that produced neither leaves nothing to replay and runs again.
+
+  ``None`` means the node is not retried (the default).
   """
 
   timeout: float | None = None
@@ -90,23 +109,24 @@ class BaseNode(BaseModel):
   input_schema: SchemaType | None = None
   """Schema to validate and coerce node input data.
 
-  Supports all ``SchemaType`` variants. Validation uses ``TypeAdapter``
-  and runs centrally in the node runner before ``node.run()`` is called.
+  Validated with ``TypeAdapter``. A raw ``dict`` JSON schema or a genai
+  ``Schema`` is accepted but never enforced.
 
-  ``None`` means no input validation (the default).
+  ``None`` means no input validation (the default). ``FunctionNode`` fills
+  this in after construction from the wrapped function's type hints, so on
+  that subclass ``None`` also means inference found nothing usable.
   """
 
   output_schema: SchemaType | None = None
   """Schema to validate and coerce node output data.
 
-  Supports all ``SchemaType`` variants (Pydantic ``BaseModel`` subclass,
-  generic aliases like ``list[str]``, raw ``dict`` schemas, etc.).
+  Validated with ``TypeAdapter``; a validated ``BaseModel`` is dumped to a
+  dict with ``None`` fields dropped. A raw ``dict`` JSON schema or a genai
+  ``Schema`` is accepted but never enforced.
 
-  When set to a ``BaseModel`` subclass, the node's output data is validated:
-    - dict → ``output_schema.model_validate(data).model_dump()``
-    - BaseModel instance → ``data.model_dump()`` (already converted)
-
-  ``None`` means no output validation (the default).
+  ``None`` means no output validation (the default). ``FunctionNode`` fills
+  this in after construction from the wrapped function's return hint, so on
+  that subclass ``None`` also means inference found nothing usable.
   """
 
   state_schema: type[BaseModel] | None = None
@@ -151,6 +171,10 @@ class BaseNode(BaseModel):
   ) -> AsyncGenerator[Event, None]:
     """Public entry point. Calls _run_impl, normalizes yields to Event.
 
+    ``node_input`` is passed through ``_validate_input_data`` before
+    ``_run_impl`` sees it, and every yielded output through
+    ``_validate_output_data``.
+
     Normalization rules:
     - None -> skipped
     - Event -> pass through
@@ -189,6 +213,11 @@ class BaseNode(BaseModel):
     Yields any of: Event, RequestInput, raw data, or None.
     BaseNode.run() normalizes all yields to Event before the caller
     sees them.
+
+    The base implementation raises ``NotImplementedError``, but because this
+    is an async generator it does so on the first iteration rather than at the
+    call. ``BaseNode`` therefore stays constructible without an override,
+    which ``START`` relies on.
     """
     raise NotImplementedError(
         f'_run_impl for {type(self).__name__} is not implemented.'
@@ -201,9 +230,56 @@ class BaseNode(BaseModel):
     return False
 
 
+def find_static_node_path(root: BaseNode, target: BaseNode) -> str | None:
+  """Returns the static (run-id-free) path of ``target`` within ``root``.
+
+  The path is the chain of node names from ``root`` down to ``target``, joined
+  by ``/`` and carrying no run ids, so it identifies a node's position in the
+  tree independently of any particular run. Returns ``None`` when ``target`` is
+  not reachable from ``root``.
+
+  Children are discovered through the node's Pydantic fields, so nodes held in
+  a list or dict field are traversed as well.
+  """
+  visited: set[int] = set()
+
+  def _recurse(curr: BaseNode) -> list[str] | None:
+    if id(curr) in visited:
+      return None
+    visited.add(id(curr))
+
+    if curr is target:
+      return [curr.name]
+
+    for _, val in curr:
+      if isinstance(val, BaseNode):
+        path = _recurse(val)
+        if path:
+          return [curr.name] + path
+      elif isinstance(val, list):
+        for item in val:
+          if isinstance(item, BaseNode):
+            path = _recurse(item)
+            if path:
+              return [curr.name] + path
+      elif isinstance(val, dict):
+        for item in val.values():
+          if isinstance(item, BaseNode):
+            path = _recurse(item)
+            if path:
+              return [curr.name] + path
+    return None
+
+  path_list = _recurse(root)
+  if path_list:
+    return '/'.join(path_list)
+  return None
+
+
 START = BaseNode(name='__START__')
 """Sentinel node marking the entry point of a workflow graph.
 
-START is never executed — ``Workflow._seed_start_triggers`` bypasses it
-and seeds triggers for its successors directly.
+START is never executed. ``Workflow._seed_start_triggers`` records the
+workflow's input and branch under START's name, then seeds triggers for
+its successors directly.
 """

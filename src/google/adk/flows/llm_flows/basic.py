@@ -26,8 +26,10 @@ from ...events.event import Event
 from ...models.llm_request import LlmRequest
 from ...utils import model_name_utils
 from ._base_llm_processor import BaseLlmRequestProcessor
-from ._invocation_utils import as_llm_agent
-from ._invocation_utils import require_run_config
+from .core._utils import as_llm_agent
+from .core._utils import copy_http_options as _copy_http_options
+from .core._utils import copy_or_none as _copy_or_none
+from .core._utils import require_run_config
 
 
 def _merge_run_config_http_options(
@@ -55,22 +57,6 @@ def _merge_run_config_http_options(
     value = getattr(run_config_http_options, field, None)
     if value is not None:
       setattr(config.http_options, field, value)
-
-
-def _copy_http_options(
-    http_options: types.HttpOptions,
-) -> types.HttpOptions:
-  """Copies http_options far enough that assembly cannot write through it.
-
-  Deliberately not a deep copy: the field can carry a live httpx or aiohttp
-  client and an SSL context, which raise ``TypeError: cannot pickle`` on a deep
-  copy. Only ``headers`` is mutated in place during assembly.
-  """
-  return http_options.model_copy(
-      update={'headers': dict(http_options.headers)}
-      if http_options.headers is not None
-      else {}
-  )
 
 
 def _copy_request_scoped_fields(
@@ -151,6 +137,23 @@ def _build_basic_request(
     if not agent.tools or model.capabilities.output_schema_and_tools:
       llm_request.set_output_schema(agent.output_schema)
 
+  # A live session reads `live_connect_config`, not `llm_request.config`, so
+  # the agent's sampling settings would not otherwise reach it.
+  if generate_content_config:
+    live_config = llm_request.live_connect_config
+    if live_config.temperature is None:
+      live_config.temperature = generate_content_config.temperature
+    if live_config.top_p is None:
+      live_config.top_p = generate_content_config.top_p
+    if live_config.top_k is None:
+      live_config.top_k = generate_content_config.top_k
+    if live_config.max_output_tokens is None:
+      live_config.max_output_tokens = generate_content_config.max_output_tokens
+    if live_config.seed is None:
+      live_config.seed = generate_content_config.seed
+    if live_config.media_resolution is None:
+      live_config.media_resolution = generate_content_config.media_resolution
+
   llm_request.live_connect_config.response_modalities = (
       [types.Modality(m) for m in run_config.response_modalities]
       if run_config.response_modalities is not None
@@ -183,10 +186,20 @@ def _build_basic_request(
   llm_request.live_connect_config.proactivity = (
       None if is_gemini_3_x else run_config.proactivity
   )
-  llm_request.live_connect_config.session_resumption = (
+  # Copied rather than aliased: live request assembly writes into both of these
+  # while the session runs. `BaseLlmFlow.run_live` stamps each server-issued
+  # resumption handle onto `session_resumption`, and sets
+  # `initial_history_in_client_content` on `history_config` when it seeds a
+  # fresh connection with history. Aliasing the RunConfig's own objects makes
+  # those writes outlive the invocation, so a RunConfig reused for a later run
+  # would carry a stale handle into it. This mirrors what
+  # `_copy_request_scoped_fields` already does for `llm_request.config`.
+  llm_request.live_connect_config.session_resumption = _copy_or_none(
       run_config.session_resumption
   )
-  llm_request.live_connect_config.history_config = run_config.history_config
+  llm_request.live_connect_config.history_config = _copy_or_none(
+      run_config.history_config
+  )
   llm_request.live_connect_config.context_window_compression = (
       run_config.context_window_compression
   )

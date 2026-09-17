@@ -15,8 +15,8 @@
 import asyncio
 from typing import AsyncGenerator
 
-from google.adk.agents import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
+from google.adk.live import LiveRequestQueue
 from google.adk.tools.function_tool import FunctionTool
 from google.genai import types as genai_types
 

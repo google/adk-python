@@ -14,6 +14,7 @@
 
 """Tests for log_utils module."""
 
+import base64
 import sys
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -111,6 +112,24 @@ class TestBuildMessagePartLog:
       assert "42.0" in result
     else:
       assert "42" in result
+
+  def test_file_part_omits_raw_bytes(self):
+    """Test that a file part's payload never reaches the log line."""
+
+    payload = b"attachment-payload-bytes" * 20
+    part = _compat.make_file_part_with_bytes(
+        data=payload, mime_type="application/pdf", name="invoice.pdf"
+    )
+
+    result = build_message_part_log(part)
+
+    encoded = base64.b64encode(payload).decode("utf-8")
+    assert encoded not in result
+    # A truncated payload is still a leak.
+    assert encoded[:32] not in result
+    # The descriptive fields are still logged.
+    assert "invoice.pdf" in result
+    assert "application/pdf" in result
 
   @pytest.mark.skipif(
       _compat.IS_A2A_V1, reason="0.3-only .root/model_dump fallback structure"

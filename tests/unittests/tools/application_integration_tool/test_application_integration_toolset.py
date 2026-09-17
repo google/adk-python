@@ -496,13 +496,14 @@ def test_initialization_with_connection_details(
     location,
     mock_integration_client,
     mock_connections_client,
-    mock_openapi_toolset,
+    mock_openapi_entity_spec_parser,
 ):
   connection_name = "test-connection"
   entity_operations_list = ["list"]
   tool_name = "My Connection Tool"
   tool_instructions = "Use this tool."
   mock_connections_client.return_value.get_connection_details.return_value = {
+      "name": connection_name,
       "serviceName": "custom-service",
       "host": "custom.host",
   }

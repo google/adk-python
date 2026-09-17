@@ -14,12 +14,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import AsyncGenerator
 
 from google.genai import types
 
-from ..agents.base_agent import BaseAgent
 from ..events._rewind_events import _apply_rewinds
 from ..events.event import Event
 from ..sessions.base_session_service import BaseSessionService
@@ -27,6 +27,7 @@ from ..sessions.session import Session
 from ..telemetry.tracing import _build_compaction_attributes
 from ..telemetry.tracing import _build_compaction_result_attributes
 from ..telemetry.tracing import tracer
+from ..workflow import BaseNode
 from .app import App
 from .app import EventsCompactionConfig
 from .llm_event_summarizer import LlmEventSummarizer
@@ -65,13 +66,36 @@ async def _summarize_events_with_trace(
     return compaction_event
 
 
-def _count_text_chars_in_content(content: types.Content | None) -> int:
-  """Returns the number of text characters in a content object."""
+def _count_chars_in_content(content: types.Content | None) -> int:
+  """Returns the number of characters in a content object."""
   total_chars = 0
   if content and content.parts:
     for part in content.parts:
       if part.text:
         total_chars += len(part.text)
+      if part.function_call:
+        total_chars += len(part.function_call.name or '')
+        if part.function_call.args:
+          try:
+            total_chars += len(json.dumps(part.function_call.args))
+          except Exception:  # pylint: disable=broad-exception-caught
+            logger.debug(
+                'Failed to serialize function_call.args, falling back to str',
+                exc_info=True,
+            )
+            total_chars += len(str(part.function_call.args))
+      if part.function_response:
+        total_chars += len(part.function_response.name or '')
+        if part.function_response.response:
+          try:
+            total_chars += len(json.dumps(part.function_response.response))
+          except Exception:  # pylint: disable=broad-exception-caught
+            logger.debug(
+                'Failed to serialize function_response.response, falling back'
+                ' to str',
+                exc_info=True,
+            )
+            total_chars += len(str(part.function_response.response))
   return total_chars
 
 
@@ -146,7 +170,7 @@ def _estimate_prompt_token_count(
   )
   total_chars = 0
   for content in effective_contents:
-    total_chars += _count_text_chars_in_content(content)
+    total_chars += _count_chars_in_content(content)
 
   if total_chars <= 0:
     return None
@@ -163,6 +187,9 @@ def _latest_prompt_token_count(
 ) -> int | None:
   """Returns the most recently observed prompt token count, if available."""
   for event in reversed(events):
+    if event.actions and event.actions.compaction:
+      # Counts at or before a summarization describe a prompt it replaced.
+      break
     if (
         event.usage_metadata
         and event.usage_metadata.prompt_token_count is not None
@@ -223,7 +250,7 @@ def _has_sliding_window_config(config: EventsCompactionConfig | None) -> bool:
 
 
 def _ensure_compaction_summarizer(
-    *, config: EventsCompactionConfig, agent: BaseAgent
+    *, config: EventsCompactionConfig, agent: BaseNode
 ) -> None:
   """Ensures compaction config has a summarizer initialized."""
   if config.summarizer is not None:
@@ -374,7 +401,7 @@ async def _run_compaction_for_token_threshold_config(
     config: EventsCompactionConfig | None,
     session: Session,
     session_service: BaseSessionService,
-    agent: BaseAgent,
+    agent: BaseNode,
     agent_name: str = '',
     current_branch: str | None = None,
 ) -> bool:

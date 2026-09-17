@@ -56,6 +56,19 @@ def _is_truthy_env(var_name: str) -> bool:
   return value.strip().lower() in ("1", "true", "yes", "on")
 
 
+# Repeating an unchanging notice buries warnings the user can act on, and the
+# interpreter's own per-location deduplication is discarded whenever anything
+# in the process touches the warning filters.
+_WARNED_MESSAGES: set[str] = set()
+
+
+def _warn_once(msg: str) -> None:
+  if msg in _WARNED_MESSAGES:
+    return
+  _WARNED_MESSAGES.add(msg)
+  warnings.warn(msg, category=UserWarning, stacklevel=3)
+
+
 def _make_feature_decorator(
     *,
     label: str,
@@ -107,7 +120,7 @@ def _create_decorator(
         elif block_usage:
           raise RuntimeError(msg)
         else:
-          warnings.warn(msg, category=UserWarning, stacklevel=2)
+          _warn_once(msg)
         return orig_init(self, *args, **kwargs)
 
       cast(Any, cls).__init__ = new_init
@@ -129,7 +142,7 @@ def _create_decorator(
         elif block_usage:
           raise RuntimeError(msg)
         else:
-          warnings.warn(msg, category=UserWarning, stacklevel=2)
+          _warn_once(msg)
         return func(*args, **kwargs)
 
       return cast(T, wrapper)

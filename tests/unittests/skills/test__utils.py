@@ -340,11 +340,8 @@ def test__list_skills_in_gcs_dir(mock_client_class):
   assert skills["my-skill"].name == "my-skill"
 
 
-@mock.patch("google.cloud.storage.Client")
-@mock.patch("logging.warning")
-def test__list_skills_in_gcs_dir_skips_invalid(
-    mock_logging_warning, mock_client_class
-):
+def _mock_gcs_bucket_with_one_invalid_skill(mock_client_class):
+  """Wires a mocked GCS client to a bucket with one valid, one invalid skill."""
   mock_client = mock.MagicMock()
   mock_client_class.return_value = mock_client
   mock_bucket = mock.MagicMock()
@@ -367,6 +364,14 @@ def test__list_skills_in_gcs_dir_skips_invalid(
 
   mock_bucket.blob.side_effect = mock_blob_side_effect
 
+
+@mock.patch("google.cloud.storage.Client")
+@mock.patch("logging.warning")
+def test__list_skills_in_gcs_dir_skips_invalid(
+    mock_logging_warning, mock_client_class
+):
+  _mock_gcs_bucket_with_one_invalid_skill(mock_client_class)
+
   skills = _list_skills_in_gcs_dir("my-bucket", "skills/")
   assert "valid-skill" in skills
   assert "invalid-skill" not in skills
@@ -377,6 +382,27 @@ def test__list_skills_in_gcs_dir_skips_invalid(
   assert "Skipping invalid skill" in args[0]
   assert args[1] == "invalid-skill"
   assert args[2] == "my-bucket"
+
+
+@mock.patch("google.cloud.storage.Client")
+@mock.patch("logging.warning")
+def test__list_skills_in_gcs_dir_reports_invalid_to_on_error(
+    mock_logging_warning, mock_client_class
+):
+  """on_error gets each failure so the caller can surface it, not just a log."""
+  _mock_gcs_bucket_with_one_invalid_skill(mock_client_class)
+  failures = []
+
+  skills = _list_skills_in_gcs_dir(
+      "my-bucket",
+      "skills/",
+      on_error=lambda skill_id, error: failures.append((skill_id, error)),
+  )
+
+  assert "valid-skill" in skills
+  assert [skill_id for skill_id, _ in failures] == ["invalid-skill"]
+  assert isinstance(failures[0][1], ValueError)
+  mock_logging_warning.assert_not_called()
 
 
 @mock.patch("google.cloud.storage.Client")
@@ -514,6 +540,49 @@ def test_list_skills_in_dir_missing_base_path(tmp_path):
 
   skills = list_skills_in_dir(tmp_path / "nonexistent")
   assert skills == {}
+
+
+def _skills_dir_with_one_invalid(tmp_path):
+  """Builds a skills dir holding 'good' plus a 'bad' whose name mismatches."""
+  skills_dir = tmp_path / "skills"
+  (skills_dir / "good").mkdir(parents=True)
+  (skills_dir / "good" / "SKILL.md").write_text(
+      "---\nname: good\ndescription: desc\n---\nbody"
+  )
+  (skills_dir / "bad").mkdir()
+  (skills_dir / "bad" / "SKILL.md").write_text(
+      "---\nname: not-bad\ndescription: desc\n---\nbody"
+  )
+  return skills_dir
+
+
+@mock.patch("logging.warning")
+def test_list_skills_in_dir_reports_invalid_to_on_error(
+    mock_logging_warning, tmp_path
+):
+  """on_error gets each failure so the caller can surface it, not just a log."""
+  failures = []
+
+  skills = list_skills_in_dir(
+      _skills_dir_with_one_invalid(tmp_path),
+      on_error=lambda skill_id, error: failures.append((skill_id, error)),
+  )
+
+  assert list(skills) == ["good"]
+  assert [skill_id for skill_id, _ in failures] == ["bad"]
+  assert isinstance(failures[0][1], ValueError)
+  mock_logging_warning.assert_not_called()
+
+
+def test_list_skills_in_dir_on_error_can_abort(tmp_path):
+  """Raising from on_error fails the listing instead of dropping the skill."""
+
+  def strict(skill_id, error):
+    del skill_id  # Unused: the error already names the skill.
+    raise error
+
+  with pytest.raises(ValueError, match="does not match directory"):
+    list_skills_in_dir(_skills_dir_with_one_invalid(tmp_path), on_error=strict)
 
 
 def test__load_skill_from_zip_bytes():
@@ -934,6 +1003,19 @@ async def test_load_skills_from_dir_async_propagates_errors(tmp_path):
   """Errors raised in the worker thread must surface to the caller."""
   with pytest.raises(FileNotFoundError, match="does not exist"):
     await _load_skills_from_dir_async(tmp_path / "nonexistent")
+
+
+async def test_list_skills_in_dir_async_forwards_on_error(tmp_path):
+  """The async wrapper hands on_error through to the blocking listing."""
+  failures = []
+
+  skills = await _list_skills_in_dir_async(
+      _skills_dir_with_one_invalid(tmp_path),
+      on_error=lambda skill_id, error: failures.append((skill_id, error)),
+  )
+
+  assert list(skills) == ["good"]
+  assert [skill_id for skill_id, _ in failures] == ["bad"]
 
 
 async def test_list_skills_in_dir_async(tmp_path):

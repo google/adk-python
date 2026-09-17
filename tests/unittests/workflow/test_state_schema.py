@@ -88,6 +88,15 @@ def test_state_allows_prefixed_keys() -> None:
   assert state['app:anything'] == 'value'
 
 
+def test_state_rejects_unrecognized_colon_keys() -> None:
+  """Arbitrary keys containing colons do not bypass schema validation."""
+  state = State(value={}, delta={}, schema=_PipelineSchema)
+  with pytest.raises(StateSchemaError, match='users:pref'):
+    state['users:pref'] = 42
+  with pytest.raises(StateSchemaError, match='custom:key'):
+    state['custom:key'] = 'val'
+
+
 def test_state_update_validates_all_keys() -> None:
   """State.update validates each key-value pair."""
   state = State(value={}, delta={}, schema=_PipelineSchema)

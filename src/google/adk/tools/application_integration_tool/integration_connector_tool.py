@@ -74,9 +74,9 @@ class IntegrationConnectorTool(BaseTool):
       connection_name: str,
       connection_host: str,
       connection_service_name: str,
-      entity: str,
+      entity: Optional[str],
       operation: str,
-      action: str,
+      action: Optional[str],
       rest_api_tool: RestApiTool,
       auth_scheme: Optional[Union[AuthScheme, str]] = None,
       auth_credential: Optional[Union[AuthCredential, str]] = None,
@@ -93,9 +93,11 @@ class IntegrationConnectorTool(BaseTool):
         connection_name: The name of the Integration Connector connection.
         connection_host: The hostname or IP address for the connection.
         connection_service_name: The specific service name within the host.
-        entity: The Integration Connector entity being targeted.
+        entity: The Integration Connector entity being targeted. None when the
+          operation names an action instead.
         operation: The specific operation being performed on the entity.
-        action: The action associated with the operation (e.g., 'execute').
+        action: The action associated with the operation (e.g., 'execute'). None
+          when the operation names an entity instead.
         rest_api_tool: An initialized RestApiTool instance that handles the
           underlying REST API communication based on an OpenAPI specification
           operation. This tool will be called by ApplicationIntegrationTool with

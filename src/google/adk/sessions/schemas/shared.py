@@ -21,11 +21,14 @@ from typing import cast
 
 from sqlalchemy import Dialect
 from sqlalchemy import Text
+from sqlalchemy.dialects import mssql
 from sqlalchemy.dialects import mysql
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.types import DateTime
 from sqlalchemy.types import TypeDecorator
 from sqlalchemy.types import TypeEngine
+
+from ...utils import _json_utils
 
 DEFAULT_MAX_KEY_LENGTH = 128
 DEFAULT_MAX_VARCHAR_LENGTH = 256
@@ -77,7 +80,9 @@ class DynamicJSON(TypeDecorator[dict[str, Any]]):  # type: ignore[misc]
       return None
     decoded: object = value
     if dialect.name != "postgresql":
-      decoded = json.loads(cast("str | bytes | bytearray", value))
+      decoded = _json_utils.safe_json_loads(
+          cast("str | bytes | bytearray", value), context="session state"
+      )
     return cast("dict[str, Any]", decoded)
 
 
@@ -90,6 +95,12 @@ class PreciseTimestamp(TypeDecorator[datetime.datetime]):  # type: ignore[misc]
   def load_dialect_impl(self, dialect: Dialect) -> TypeEngine[Any]:
     if dialect.name == "mysql":
       return dialect.type_descriptor(mysql.DATETIME(fsp=6))
+    if dialect.name == "mssql":
+      # SQL Server's legacy DATETIME has ~3.33ms precision, which destroys
+      # the microsecond update marker used by the optimistic-concurrency
+      # check (a session's second append is falsely rejected as stale).
+      # DATETIME2(6) retains microseconds.
+      return dialect.type_descriptor(mssql.DATETIME2(precision=6))
     return self.impl_instance
 
   def result_processor(

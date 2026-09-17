@@ -14,41 +14,79 @@
 
 from __future__ import annotations
 
+from typing import Any
+from typing import AsyncGenerator
+
+from google.adk.models.llm_response import LlmResponse
 from google.adk.telemetry import tracing
 from opentelemetry.instrumentation.google_genai import GoogleGenAiSdkInstrumentor
 from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 import pytest
 
 from .functional._aclosing import aclosing_wrapping_assertions
-from .functional._digests import SpanDigest
+from .functional._recording import check_case
 from .functional._recording import FunctionalTestCase
-from .functional._recording import record_case
-from .functional._scenarios import build_mcp_test_runner
-from .functional._scenarios import build_test_runner
-from .functional._scenarios import CAPTURE_CONTENT
-from .functional._scenarios import EXPERIMENTAL_OPT_IN
-from .functional._scenarios import FakeMcpSession
-from .functional._scenarios import install_telemetry
-from .functional._scenarios import OTEL_OPT_IN
-from .functional._scenarios import run_agent_scenario
+from .functional.scenarios.agent import build_test_runner
+from .functional.scenarios.agent import run_agent_scenario
+from .functional.scenarios.conversation import TOOL_ERROR
+from .functional.scenarios.inference import mock_test_model
+from .functional.scenarios.mcp import build_mcp_test_runner
+from .functional.scenarios.mcp import FakeMcpSession
+from .functional.scenarios.telemetry_setup import _PATCHED_COUNTERS
+from .functional.scenarios.telemetry_setup import _PATCHED_HISTOGRAMS
+from .functional.scenarios.telemetry_setup import CAPTURE_CONTENT
+from .functional.scenarios.telemetry_setup import CounterSpec
+from .functional.scenarios.telemetry_setup import EXPERIMENTAL_OPT_IN
+from .functional.scenarios.telemetry_setup import HistogramSpec
+from .functional.scenarios.telemetry_setup import install_telemetry
+from .functional.scenarios.telemetry_setup import OTEL_OPT_IN
 from .functional_test_cases import ALL_CASES
 from .functional_test_cases import MCP_CASE
+from .functional_test_cases import MCP_HTTP_CASE
+
+CASES = [*ALL_CASES, MCP_CASE, MCP_HTTP_CASE]
 
 
-@pytest.mark.parametrize("case", ALL_CASES, ids=lambda c: c.test_id)
+@pytest.mark.parametrize(
+    "spec",
+    [*_PATCHED_HISTOGRAMS, *_PATCHED_COUNTERS],
+    ids=lambda spec: spec.attr,
+)
+def test_patched_instrument_keeps_its_production_name(
+    spec: HistogramSpec | CounterSpec,
+) -> None:
+  """The harness re-creates each instrument under the name ADK ships it as.
+
+  ``install_telemetry`` swaps the instruments out by attribute and names the
+  replacements itself, so a metric renamed in ``_metrics`` would otherwise go
+  on being recorded -- and asserted -- under its old name, in the goldens and
+  in every test that reads a point by name.
+  """
+  instrument = getattr(spec.module, spec.attr)
+  # ADK builds its instruments before a meter provider is set, so they are
+  # proxies, which keep the name privately rather than as a property.
+  name = getattr(instrument, "name", None) or instrument._name
+
+  assert name == spec.metric_name
+
+
+@pytest.mark.parametrize(
+    "case", CASES, ids=lambda c: f"{c.scenario}-{c.test_id}"
+)
 @pytest.mark.asyncio
 async def test_telemetry_schema(case: FunctionalTestCase) -> None:
   """Tests creation of spans/logs/metrics in an E2E runner invocation.
 
   Asserts the entire telemetry schema (spans + attributes + per-span logs +
-  recorded metric points) matches the shape recorded for the given semconv +
-  content-capture configuration in ``functional_goldens/``.
+  recorded metric points) ADK's own instrumentation records matches the
+  golden, under the case's semconv + content-capture configuration, and that
+  the OTel instrumentor diverges from it only where it already did.
   """
-  recording = await record_case(case)
-
-  assert recording.digest == case.expected
+  await check_case(case)
 
 
 @pytest.mark.asyncio
@@ -72,7 +110,65 @@ async def test_async_generators_wrapped_in_aclosing(
   )
 
   with aclosing_wrapping_assertions():
-    await run_agent_scenario(build_test_runner())
+    await run_agent_scenario(build_test_runner(mock_test_model()))
+
+
+@pytest.mark.asyncio
+async def test_span_opened_by_the_model_does_not_parent_the_tool_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """A span the model opens must not adopt the tool call that follows it.
+
+  The goldens pin that ``execute_tool`` hangs off ``invoke_agent`` rather
+  than off ADK's own model-call spans. This pins the same for a span a
+  caller's model wrapper opens around its request: it is only current while
+  the model is answering, so it cannot become an ancestor of work the flow
+  starts once the answer is in.
+  """
+  span_exporter = InMemorySpanExporter()
+  install_telemetry(
+      monkeypatch,
+      span_exporter,
+      InMemoryLogRecordExporter(),
+      InMemoryMetricReader(),
+  )
+  wrapper_provider = TracerProvider()
+  wrapper_provider.add_span_processor(SimpleSpanProcessor(span_exporter))
+  wrapper_tracer = wrapper_provider.get_tracer(__name__)
+
+  runner = build_test_runner(mock_test_model())
+  model_type = type(runner.agent.canonical_model)
+  respond = model_type.generate_content_async
+
+  async def _respond_within_a_span(
+      self, *args: Any, **kwargs: Any
+  ) -> AsyncGenerator[LlmResponse, None]:
+    with wrapper_tracer.start_as_current_span("model_wrapper"):
+      async for response in respond(self, *args, **kwargs):
+        yield response
+
+  monkeypatch.setattr(
+      model_type, "generate_content_async", _respond_within_a_span
+  )
+
+  await run_agent_scenario(runner)
+
+  spans = {
+      span.context.span_id: span for span in span_exporter.get_finished_spans()
+  }
+  wrapper_span_ids = {
+      span_id for span_id, span in spans.items() if span.name == "model_wrapper"
+  }
+  tool_spans = [
+      span for span in spans.values() if span.name.startswith("execute_tool")
+  ]
+
+  assert wrapper_span_ids
+  assert tool_spans
+  for span in tool_spans:
+    assert span.parent is not None
+    assert span.parent.span_id not in wrapper_span_ids
+    assert spans[span.parent.span_id].name.startswith("invoke_agent")
 
 
 @pytest.mark.asyncio
@@ -90,7 +186,9 @@ async def test_exception_preserves_attributes(
   )
 
   with pytest.raises(ValueError, match="This tool always fails"):
-    _ = await run_agent_scenario(build_test_runner(failing=True))
+    _ = await run_agent_scenario(
+        build_test_runner(mock_test_model(), tool_exception=TOOL_ERROR)
+    )
 
   spans = span_exporter.get_finished_spans()
 
@@ -126,7 +224,7 @@ async def test_no_generate_content_for_gemini_model_when_already_instrumented(
       lambda _: True,
   )
 
-  _ = await run_agent_scenario(build_test_runner())
+  _ = await run_agent_scenario(build_test_runner(mock_test_model()))
 
   spans = span_exporter.get_finished_spans()
   assert not any(span.name.startswith("generate_content") for span in spans)
@@ -210,20 +308,17 @@ async def test_mcp_list_tools_called_once_under_experimental_semconv(
   monkeypatch.setenv(CAPTURE_CONTENT, "span_and_event")
   monkeypatch.setenv("ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS", "false")
 
-  span_exporter = InMemorySpanExporter()
-  log_exporter = InMemoryLogRecordExporter()
   install_telemetry(
-      monkeypatch, span_exporter, log_exporter, InMemoryMetricReader()
+      monkeypatch,
+      InMemorySpanExporter(),
+      InMemoryLogRecordExporter(),
+      InMemoryMetricReader(),
   )
 
   fake_session = FakeMcpSession()
 
-  await run_agent_scenario(build_mcp_test_runner(monkeypatch, fake_session))
+  await run_agent_scenario(
+      build_mcp_test_runner(mock_test_model(), monkeypatch, fake_session)
+  )
 
   assert fake_session.list_tools_call_count == 1
-
-  digest = SpanDigest.build(
-      span_exporter.get_finished_spans(),
-      log_exporter.get_finished_logs(),
-  )
-  assert digest == MCP_CASE.expected.root_span

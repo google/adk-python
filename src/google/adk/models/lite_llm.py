@@ -57,7 +57,10 @@ from typing_extensions import NotRequired
 from typing_extensions import override
 from typing_extensions import Required
 
+from . import _prompt_cache
+from ..utils import streaming_utils
 from ..utils._google_client_headers import merge_tracking_headers
+from ..utils._schema_utils import lowercase_schema_types
 from ._capabilities import LlmCapabilities
 from .base_llm import BaseLlm
 from .interactions_utils import extract_system_instruction
@@ -80,6 +83,8 @@ if TYPE_CHECKING:
   from litellm import ModelResponseStream
   from litellm import OpenAIMessageContent
   from litellm.types.utils import Delta
+
+  from ..agents.context_cache_config import ContextCacheConfig
 else:
   litellm = None
   acompletion = None
@@ -246,6 +251,19 @@ _FILE_ID_REQUIRED_PROVIDERS = frozenset({"openai", "azure"})
 # payload must still be shaped for the provider named in the next segment.
 _PROXY_PROVIDER = "litellm_proxy"
 
+_MIME_TYPE_TO_EXTENSION = {
+    "application/pdf": ".pdf",
+    "application/msword": ".doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": (
+        ".docx"
+    ),
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": (
+        ".pptx"
+    ),
+    "application/json": ".json",
+    "application/x-sh": ".sh",
+}
+
 _MISSING_TOOL_RESULT_MESSAGE = (
     "Error: Missing tool result (tool execution may have been interrupted "
     "before a response was recorded)."
@@ -311,6 +329,27 @@ def _map_finish_reason(
     return finish_reason
   finish_reason_str = str(finish_reason).lower()
   return _FINISH_REASON_MAPPING.get(finish_reason_str, types.FinishReason.OTHER)
+
+
+def _malformed_args_outrank_provider(
+    *,
+    response_finish_reason: types.FinishReason | None,
+    provider_finish_reason: types.FinishReason | None,
+) -> bool:
+  """Whether unparseable arguments explain a response better than the provider.
+
+  A provider does not parse the arguments it forwards, so it reports a
+  malformed tool call as an ordinary completion, and that clean reason must not
+  replace the one derived from the arguments. A word this adapter does not
+  recognize becomes ``OTHER``, which says nothing about the response either.
+  Only a reason saying the provider cut the response short explains arguments
+  that do not parse.
+  """
+  return (
+      response_finish_reason == types.FinishReason.MALFORMED_FUNCTION_CALL
+      and provider_finish_reason
+      in (None, types.FinishReason.STOP, types.FinishReason.OTHER)
+  )
 
 
 def _strip_proxy_prefix(model: str) -> str:
@@ -843,6 +882,7 @@ class UsageMetadataChunk(BaseModel):
   total_tokens: int
   cached_prompt_tokens: int = 0
   reasoning_tokens: int = 0
+  cache_creation_tokens: Optional[int] = None
 
 
 class LiteLLMClient:
@@ -1014,7 +1054,11 @@ def _extract_cached_prompt_tokens(usage: Any) -> int:
       if total > 0:
         return total
 
-    for key in ("cached_prompt_tokens", "cached_tokens"):
+    for key in (
+        "cached_prompt_tokens",
+        "cached_tokens",
+        "cache_read_input_tokens",
+    ):
       value = usage_dict.get(key)
       if isinstance(value, int):
         return value
@@ -1022,6 +1066,71 @@ def _extract_cached_prompt_tokens(usage: Any) -> int:
     logger.debug("Error extracting cached prompt tokens: %s", e)
 
   return 0
+
+
+def _extract_cache_creation_tokens(usage: Any) -> Optional[int]:
+  """Extracts cache creation (write) tokens from LiteLLM usage.
+
+  Args:
+    usage: Usage dictionary from LiteLLM response.
+
+  Returns:
+    Integer number of cache creation tokens if present; otherwise None.
+  """
+  try:
+    usage_dict = usage
+    if hasattr(usage, "model_dump"):
+      usage_dict = usage.model_dump()
+    elif isinstance(usage, str):
+      try:
+        usage_dict = json.loads(usage)
+      except json.JSONDecodeError:
+        return None
+
+    if not isinstance(usage_dict, dict):
+      return None
+
+    for key in ("cache_creation_input_tokens", "cache_write_input_tokens"):
+      if key in usage_dict:
+        value = usage_dict.get(key)
+        if isinstance(value, int):
+          return value
+  except (TypeError, AttributeError) as e:
+    logger.debug("Error extracting cache creation tokens: %s", e)
+
+  return None
+
+
+def _cache_control_injection_points(
+    cache_config: ContextCacheConfig,
+) -> List[Dict[str, Any]]:
+  """Describes the prefix LiteLLM should mark as cacheable.
+
+  LiteLLM applies these itself and then lets each provider decide what to do
+  with them, so the same two points are correct whatever the model turns out
+  to be: a provider that caches by marked prefix, such as Claude, honors them,
+  and a provider that caches automatically or not at all has them dropped
+  before the request leaves.
+
+  The system instruction is one point because it is the stable head of the
+  prompt. The final message is the other, which caches the conversation so far
+  and moves forward on its own as the conversation grows. Tool definitions get
+  no point of their own, because LiteLLM's only tool-level location is
+  specific to one provider.
+
+  Args:
+    cache_config: Cache configuration for the request.
+
+  Returns:
+    Injection points to hand to LiteLLM.
+  """
+  control: Dict[str, Any] = {"type": "ephemeral"}
+  if _prompt_cache.use_one_hour_ttl(cache_config):
+    control["ttl"] = "1h"
+  return [
+      {"location": "message", "role": "system", "control": control},
+      {"location": "message", "index": -1, "control": control},
+  ]
 
 
 def _decode_thought_signature(value: Any) -> Optional[bytes]:
@@ -1083,9 +1192,10 @@ def _extract_reasoning_tokens(usage: Any) -> int:
 def _merge_reasoning_texts(reasoning_parts: Iterable[types.Part]) -> str:
   """Merges reasoning text fragments into a single provider payload.
 
-  Streaming providers such as vLLM can emit reasoning as token-sized chunks.
-  ADK stores those chunks as consecutive thought parts, so inserting separators
-  here changes the model's original reasoning text.
+  Streaming providers such as vLLM emit reasoning as token-sized chunks, and
+  Anthropic splits one thinking block across many deltas. Both are joined
+  here without separators, because any separator would not be part of the
+  model's own reasoning text.
   """
   reasoning_texts = []
   for part in reasoning_parts:
@@ -1182,7 +1292,7 @@ async def _content_to_message_param(
     *,
     provider: str = "",
     model: str = "",
-) -> Union[Message, list[Message]]:
+) -> Union[Message, list[Message]] | None:
   """Converts a types.Content to a litellm Message or list of Messages.
 
   Handles multipart function responses by returning a list of
@@ -1194,14 +1304,18 @@ async def _content_to_message_param(
     model: The LiteLLM model string, used for provider-specific behavior.
 
   Returns:
-    A litellm Message, a list of litellm Messages.
+    A litellm Message, a list of litellm Messages, or None if skipped.
   """
   _ensure_litellm_imported()
 
+  # Skip content if there are no parts to avoid LiteLLM adapter errors.
+  parts = content.parts or []
+  if not parts:
+    return None
+
   tool_messages: list[Message] = []
   non_tool_parts: list[types.Part] = []
-  content_parts_or_empty = content.parts or []
-  for part in content_parts_or_empty:
+  for part in parts:
     if part.function_response:
       function_response = part.function_response
       response = function_response.response
@@ -1249,7 +1363,7 @@ async def _content_to_message_param(
   role = _to_litellm_role(content.role)
 
   if role == "user":
-    user_parts = [part for part in content_parts_or_empty if not part.thought]
+    user_parts = [part for part in parts if not part.thought]
     message_content = (
         await _get_content(user_parts, provider=provider, model=model) or None
     )
@@ -1261,7 +1375,7 @@ async def _content_to_message_param(
     tool_calls: list[_OutboundToolCall] = []
     content_parts: list[types.Part] = []
     reasoning_parts: list[types.Part] = []
-    for part in content_parts_or_empty:
+    for part in parts:
       if part.function_call:
         function_call = part.function_call
         if not function_call.name:
@@ -1526,8 +1640,14 @@ async def _get_content(
               if model.lower().startswith(_PROXY_PROVIDER + "/")
               else provider
           )
+          ext = (
+              mimetypes.guess_extension(mime_type)
+              or _MIME_TYPE_TO_EXTENSION.get(mime_type)
+              or ".bin"
+          )
+          filename = f"document{ext}"
           file_response = await litellm.acreate_file(
-              file=part.inline_data.data,
+              file=(filename, part.inline_data.data, mime_type),
               purpose="assistants",
               custom_llm_provider=upload_provider,
           )
@@ -2038,20 +2158,31 @@ def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict[str, Any]:
   Returns:
     The dictionary representation of the schema.
   """
-  schema_dict = (
-      schema.model_dump(exclude_none=True)
-      if isinstance(schema, types.Schema)
-      else dict(schema)
-  )
+  if isinstance(schema, types.Schema):
+    schema_dict = schema.model_dump(by_alias=True, exclude_none=True)
+  else:
+    schema_dict = dict(schema)
   enum_values = schema_dict.get("enum")
   if isinstance(enum_values, (list, tuple)):
     schema_dict["enum"] = [value for value in enum_values if value is not None]
 
   if "type" in schema_dict and schema_dict["type"] is not None:
     t = schema_dict["type"]
-    schema_dict["type"] = (
-        t.value if isinstance(t, types.Type) else str(t)
-    ).lower()
+    if isinstance(t, types.Type):
+      schema_dict["type"] = (
+          t.value.lower() if isinstance(t.value, str) else str(t.value).lower()
+      )
+    elif isinstance(t, str):
+      schema_dict["type"] = t.lower()
+    elif isinstance(t, (list, tuple)):
+      schema_dict["type"] = [
+          item.value.lower()
+          if isinstance(item, types.Type)
+          else (item.lower() if isinstance(item, str) else item)
+          for item in t
+      ]
+    else:
+      schema_dict["type"] = str(t).lower()
 
   if "items" in schema_dict:
     items = schema_dict["items"]
@@ -2061,6 +2192,22 @@ def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict[str, Any]:
         else items
     )
 
+  # `model_dump()` spells these with pydantic field names (`any_of`,
+  # `min_items`, ...), but every downstream JSON Schema consumer reads the
+  # camelCase alias, so an un-renamed union is silently dropped and the
+  # argument reaches the model as a bare `{"type": "object"}`. `by_alias=True`
+  # renames all nine; the recursion below also lowercases nested types.
+  any_of = schema_dict.pop("any_of", None)
+  if any_of is None:
+    any_of = schema_dict.get("anyOf")
+  if any_of is not None:
+    schema_dict["anyOf"] = [
+        _schema_to_dict(item)
+        if isinstance(item, (types.Schema, dict))
+        else item
+        for item in any_of
+    ]
+
   if "properties" in schema_dict:
     new_props = {}
     for key, value in schema_dict["properties"].items():
@@ -2069,6 +2216,16 @@ def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict[str, Any]:
       else:
         new_props[key] = value
     schema_dict["properties"] = new_props
+
+  additional_properties = schema_dict.pop("additional_properties", None)
+  if additional_properties is None:
+    additional_properties = schema_dict.get("additionalProperties")
+  if additional_properties is not None:
+    schema_dict["additionalProperties"] = (
+        _schema_to_dict(additional_properties)
+        if isinstance(additional_properties, (types.Schema, dict))
+        else additional_properties
+    )
 
   return schema_dict
 
@@ -2087,24 +2244,20 @@ def _function_declaration_to_tool_param(
 
   assert function_declaration.name
 
-  parameters: dict[str, Any] = {
-      "type": "object",
-      "properties": {},
-  }
-  if (
-      function_declaration.parameters
-      and function_declaration.parameters.properties
-  ):
-    properties = {}
-    for key, value in function_declaration.parameters.properties.items():
-      properties[key] = _schema_to_dict(value)
-
+  if function_declaration.parameters_json_schema:
+    parameters = copy.deepcopy(function_declaration.parameters_json_schema)
+    lowercase_schema_types(parameters)
+  elif function_declaration.parameters:
+    parameters = _schema_to_dict(function_declaration.parameters)
+    if "type" not in parameters:
+      parameters["type"] = "object"
+    if "properties" not in parameters:
+      parameters["properties"] = {}
+  else:
     parameters = {
         "type": "object",
-        "properties": properties,
+        "properties": {},
     }
-  elif function_declaration.parameters_json_schema:
-    parameters = function_declaration.parameters_json_schema
 
   tool_params: dict[str, Any] = {
       "type": "function",
@@ -2116,11 +2269,15 @@ def _function_declaration_to_tool_param(
   }
 
   required_fields = (
-      getattr(function_declaration.parameters, "required", None)
-      if function_declaration.parameters
+      function_declaration.parameters.required
+      if not function_declaration.parameters_json_schema
+      and function_declaration.parameters
       else None
   )
-  if required_fields:
+  if (
+      required_fields
+      and "required" not in tool_params["function"]["parameters"]
+  ):
     tool_params["function"]["parameters"]["required"] = required_fields
 
   return tool_params
@@ -2177,11 +2334,13 @@ def _model_response_to_chunk(
         "Unexpected response type from LiteLLM: %r" % (type(response),)
     )
 
-  choices = response.get("choices")
-  if not choices:
+  # Extra candidates arrive as extra choices, either in the same chunk or in
+  # chunks carrying only a non-zero index; only the first candidate is used.
+  choices = response.get("choices") or []
+  choice = next((c for c in choices if not c.get("index")), None)
+  if choice is None:
     yield None, None
   else:
-    choice = choices[0]
     finish_reason = choice.get("finish_reason")
     if message_field == "delta":
       message = choice.get("delta")
@@ -2249,6 +2408,7 @@ def _model_response_to_chunk(
           total_tokens=usage.get("total_tokens", 0) or 0,
           cached_prompt_tokens=_extract_cached_prompt_tokens(usage),
           reasoning_tokens=_extract_reasoning_tokens(usage),
+          cache_creation_tokens=_extract_cache_creation_tokens(usage),
       ), None
     except AttributeError as e:
       raise TypeError(
@@ -2304,6 +2464,11 @@ def _model_response_to_generate_content_response(
   message = None
   finish_reason = None
   if (choices := response.get("choices")) and choices:
+    if len(choices) > 1:
+      logger.error(
+          "Multiple choices found in response but only the first one will be"
+          " used."
+      )
     first_choice = choices[0]
     message = first_choice.get("message", None)
     finish_reason = first_choice.get("finish_reason", None)
@@ -2327,13 +2492,11 @@ def _model_response_to_generate_content_response(
     )
 
   mapped_finish_reason = _map_finish_reason(finish_reason)
-  if mapped_finish_reason:
-    llm_response.finish_reason = mapped_finish_reason
-    if mapped_finish_reason != types.FinishReason.STOP:
-      llm_response.error_code = mapped_finish_reason
-      llm_response.error_message = _finish_reason_to_error_message(
-          mapped_finish_reason
-      )
+  if mapped_finish_reason and not _malformed_args_outrank_provider(
+      response_finish_reason=llm_response.finish_reason,
+      provider_finish_reason=mapped_finish_reason,
+  ):
+    _apply_provider_finish_reason(llm_response, mapped_finish_reason)
   if response.get("usage", None):
     usage_dict = response["usage"]
     reasoning_tokens = _extract_reasoning_tokens(usage_dict)
@@ -2344,6 +2507,13 @@ def _model_response_to_generate_content_response(
         cached_content_token_count=_extract_cached_prompt_tokens(usage_dict),
         thoughts_token_count=reasoning_tokens if reasoning_tokens else None,
     )
+    cache_creation = _extract_cache_creation_tokens(usage_dict)
+    if cache_creation is not None:
+      object.__setattr__(
+          llm_response.usage_metadata,
+          "cache_creation_input_tokens",
+          cache_creation,
+      )
 
   grounding_metadata = _extract_grounding_metadata(response)
   if grounding_metadata:
@@ -2367,7 +2537,8 @@ def _message_to_generate_content_response(
     model_version: The model version used to generate the response.
 
   Returns:
-    The LlmResponse.
+    The LlmResponse. A tool call whose arguments are not a valid JSON object is
+    left out of the content and reported as MALFORMED_FUNCTION_CALL.
   """
   _ensure_litellm_imported()
 
@@ -2382,13 +2553,36 @@ def _message_to_generate_content_response(
   if isinstance(message_content, str) and message_content:
     parts.append(types.Part.from_text(text=message_content))
 
+  malformed_tool_calls: list[tuple[str, int]] = []
   if tool_calls:
     for tool_call in tool_calls:
       if tool_call.type == "function":
         thought_signature = _extract_thought_signature_from_tool_call(tool_call)
+        try:
+          args = _parse_tool_call_arguments(tool_call.function.arguments)
+        except json.JSONDecodeError:
+          args = None
+        # Report the condition the way Gemini reports it natively instead of
+        # unwinding the invocation, so a retry policy can act on it and any
+        # text the model did produce still reaches the caller. Arguments that
+        # decode to something other than an object are just as unusable, and
+        # would otherwise fail further in, during part validation.
+        if not isinstance(args, dict):
+          # A provider can hand back a name or a payload that is not the
+          # string the OpenAI types promise, so only a string is reported as
+          # a name, and only a string has a length to report.
+          raw_name = tool_call.function.name
+          raw_arguments = tool_call.function.arguments
+          malformed_tool_calls.append((
+              raw_name
+              if isinstance(raw_name, str) and raw_name
+              else "<unnamed>",
+              len(raw_arguments) if isinstance(raw_arguments, str) else 0,
+          ))
+          continue
         part = types.Part.from_function_call(
             name=tool_call.function.name,
-            args=_parse_tool_call_arguments(tool_call.function.arguments),
+            args=args,
         )
         function_call = part.function_call
         if function_call is None:
@@ -2400,11 +2594,32 @@ def _message_to_generate_content_response(
           part.thought_signature = thought_signature
         parts.append(part)
 
-  return LlmResponse(
+  llm_response = LlmResponse(
       content=types.Content(role="model", parts=parts),
       partial=is_partial,
       model_version=model_version,
   )
+  # A partial holds one chunk of a stream, and the finalizer reports the same
+  # call again once the whole message is assembled, so only the assembled
+  # response is stamped. Stamping a partial too would show a retry policy two
+  # failures for one bad tool call.
+  if malformed_tool_calls and not is_partial:
+    for name, argument_length in malformed_tool_calls:
+      # The arguments themselves are never logged: they can be arbitrarily
+      # large and may carry user data.
+      logger.warning(
+          "Discarding tool call %r with unparseable arguments (%d chars).",
+          name,
+          argument_length,
+      )
+    llm_response.finish_reason = types.FinishReason.MALFORMED_FUNCTION_CALL
+    llm_response.error_code = types.FinishReason.MALFORMED_FUNCTION_CALL
+    llm_response.error_message = (
+        "Arguments for the following function calls were not a valid JSON"
+        " object: "
+        + ", ".join(name for name, _ in malformed_tool_calls)
+    )
+  return llm_response
 
 
 def _finish_reason_to_error_message(
@@ -2414,6 +2629,47 @@ def _finish_reason_to_error_message(
   if finish_reason == types.FinishReason.MAX_TOKENS:
     return "Maximum tokens reached"
   return f"Finished with {finish_reason.name}"
+
+
+def _apply_provider_finish_reason(
+    llm_response: LlmResponse,
+    provider_finish_reason: Optional[types.FinishReason],
+) -> None:
+  """Stamps the provider's finish reason onto an already built response.
+
+  Whether the provider's reason should win at all is decided before this is
+  called, with ``_malformed_args_outrank_provider``: a provider does not parse
+  the arguments it forwards, so a clean reason from it explains nothing about
+  arguments that do not parse.
+
+  Once it does win, a reason of None or ``STOP`` is the whole verdict and
+  clears the error outright, a malformed-arguments report included. Any other
+  reason keeps that report, since only the message built from the arguments
+  names the tool calls that could not be parsed, so that detail is appended
+  rather than dropped.
+  """
+  malformed_args_message = (
+      llm_response.error_message
+      if llm_response.finish_reason
+      == types.FinishReason.MALFORMED_FUNCTION_CALL
+      else None
+  )
+  llm_response.finish_reason = provider_finish_reason
+  if (
+      provider_finish_reason is None
+      or provider_finish_reason == types.FinishReason.STOP
+  ):
+    # The stamped reason is the whole verdict, so an error left over from the
+    # reason it replaced would outlive what it described.
+    llm_response.error_code = None
+    llm_response.error_message = None
+    return
+  llm_response.error_code = provider_finish_reason
+  llm_response.error_message = _finish_reason_to_error_message(
+      provider_finish_reason
+  )
+  if malformed_args_message:
+    llm_response.error_message += ". " + malformed_args_message
 
 
 def _enforce_strict_openai_schema(schema: dict[str, Any]) -> None:
@@ -2500,7 +2756,9 @@ def _to_litellm_response_format(
     if isinstance(response_schema, types.Schema):
       # GenAI Schema instances already represent JSON schema definitions.
       schema_dict = copy.deepcopy(
-          response_schema.model_dump(exclude_none=True, mode="json")
+          response_schema.model_dump(
+              by_alias=True, exclude_none=True, mode="json"
+          )
       )
       if "title" in schema_dict:
         schema_name = str(schema_dict["title"])
@@ -2529,6 +2787,7 @@ def _to_litellm_response_format(
   # OpenAI-compatible format (default) per LiteLLM docs:
   # https://docs.litellm.ai/docs/completion/json_mode
   if isinstance(schema_dict, dict):
+    lowercase_schema_types(schema_dict)
     _enforce_strict_openai_schema(schema_dict)
 
   return {
@@ -2633,6 +2892,7 @@ async def _get_completion_inputs(
         "max_output_tokens",
         "top_p",
         "top_k",
+        "seed",
         "stop_sequences",
         "presence_penalty",
         "frequency_penalty",
@@ -3013,6 +3273,18 @@ class LiteLlm(BaseLlm):
     }
     completion_args.update(self._additional_args)
 
+    # A caller who named their own injection points at construction has said
+    # more about their provider than the app-level config can, so leave those
+    # alone.
+    cache_config = _prompt_cache.resolve_cache_config(llm_request)
+    if (
+        cache_config is not None
+        and "cache_control_injection_points" not in completion_args
+    ):
+      completion_args["cache_control_injection_points"] = (
+          _cache_control_injection_points(cache_config)
+      )
+
     # merge headers
     if _is_litellm_vertex_model(effective_model) or _is_litellm_gemini_model(
         effective_model
@@ -3069,22 +3341,26 @@ class LiteLlm(BaseLlm):
       aggregated_llm_response_with_tool_call = None
       usage_metadata = None
       grounding_metadata = None
+      last_finish_reason: str | None = None
       fallback_index = 0
+      multiple_choices_logged = False
 
       def _finalize_tool_call_response(
           *, model_version: str, finish_reason: str
       ) -> LlmResponse:
+        # The finish reason cannot reveal a truncated call: LiteLLM
+        # substitutes "stop" when a provider ends a stream without sending
+        # one. Whether the arguments parse is the only evidence left.
         tool_calls = []
         has_incomplete_tool_call_args = False
         for index, func_data in function_calls.items():
           if func_data["id"]:
             args = "".join(func_data["args_parts"])
-            if finish_reason == "length":
-              try:
-                _parse_tool_call_arguments(args)
-              except json.JSONDecodeError:
-                has_incomplete_tool_call_args = True
-                continue
+            try:
+              _parse_tool_call_arguments(args)
+            except json.JSONDecodeError:
+              has_incomplete_tool_call_args = True
+              continue
             tool_calls.append(
                 ChatCompletionMessageToolCall(
                     type="function",
@@ -3098,14 +3374,26 @@ class LiteLlm(BaseLlm):
             )
 
         if has_incomplete_tool_call_args:
+          if finish_reason == "length":
+            return LlmResponse(
+                error_code=types.FinishReason.MAX_TOKENS,
+                error_message=(
+                    "Tool call arguments were truncated while streaming and"
+                    " could not be parsed as valid JSON. Increase"
+                    " `max_output_tokens` and retry."
+                ),
+                finish_reason=types.FinishReason.MAX_TOKENS,
+                model_version=model_version,
+            )
+          # Any other ending blames no token limit, so saying MAX_TOKENS here
+          # would send the caller off to raise a limit that was not involved.
           return LlmResponse(
-              error_code=types.FinishReason.MAX_TOKENS,
+              error_code=types.FinishReason.MALFORMED_FUNCTION_CALL,
               error_message=(
-                  "Tool call arguments were truncated while streaming and"
-                  " could not be parsed as valid JSON. Increase"
-                  " `max_output_tokens` and retry."
+                  "A tool call's arguments could not be parsed as valid JSON."
+                  " The stream carrying them most likely ended early."
               ),
-              finish_reason=types.FinishReason.MAX_TOKENS,
+              finish_reason=types.FinishReason.MALFORMED_FUNCTION_CALL,
               model_version=model_version,
           )
 
@@ -3116,18 +3404,20 @@ class LiteLlm(BaseLlm):
                 tool_calls=tool_calls,
             ),
             model_version=model_version,
-            thought_parts=list(reasoning_parts) if reasoning_parts else None,
+            thought_parts=(
+                _aggregate_streaming_thought_parts(reasoning_parts)
+                if reasoning_parts
+                else None
+            ),
         )
         mapped_finish_reason = _map_finish_reason(finish_reason)
-        llm_response.finish_reason = mapped_finish_reason
-        if (
-            mapped_finish_reason is not None
-            and mapped_finish_reason != types.FinishReason.STOP
+        if _malformed_args_outrank_provider(
+            response_finish_reason=llm_response.finish_reason,
+            provider_finish_reason=mapped_finish_reason,
         ):
-          llm_response.error_code = mapped_finish_reason
-          llm_response.error_message = _finish_reason_to_error_message(
-              mapped_finish_reason
-          )
+          return llm_response
+
+        _apply_provider_finish_reason(llm_response, mapped_finish_reason)
         return llm_response
 
       def _finalize_text_response(
@@ -3140,34 +3430,51 @@ class LiteLlm(BaseLlm):
                 content=message_content,
             ),
             model_version=model_version,
-            thought_parts=list(reasoning_parts) if reasoning_parts else None,
+            thought_parts=(
+                _aggregate_streaming_thought_parts(reasoning_parts)
+                if reasoning_parts
+                else None
+            ),
         )
         mapped_finish_reason = _map_finish_reason(finish_reason)
-        llm_response.finish_reason = mapped_finish_reason
-        if (
-            mapped_finish_reason is not None
-            and mapped_finish_reason != types.FinishReason.STOP
+        if _malformed_args_outrank_provider(
+            response_finish_reason=llm_response.finish_reason,
+            provider_finish_reason=mapped_finish_reason,
         ):
-          llm_response.error_code = mapped_finish_reason
-          llm_response.error_message = _finish_reason_to_error_message(
-              mapped_finish_reason
-          )
+          return llm_response
+
+        _apply_provider_finish_reason(llm_response, mapped_finish_reason)
         return llm_response
 
       def _reset_stream_buffers() -> None:
-        nonlocal reasoning_parts
+        nonlocal reasoning_parts, last_finish_reason
         text_parts.clear()
         reasoning_parts = []
         function_calls.clear()
         tool_call_trackers.clear()
+        # The reason belongs to the segment just finalized; carrying it into
+        # the next one would stamp the wrong reason on the next response.
+        last_finish_reason = None
 
       async for part in await self.llm_client.acompletion(**completion_args):
+        part_choices = part.get("choices") or []
+        if not multiple_choices_logged and (
+            len(part_choices) > 1
+            or any(choice.get("index") for choice in part_choices)
+        ):
+          multiple_choices_logged = True
+          logger.error(
+              "Multiple choices found in streaming response but only the first"
+              " one will be used."
+          )
         # Grounding metadata can arrive on the first chunk (search queries) or
         # the final chunk (supports); keep the latest non-empty one.
         part_grounding = _extract_grounding_metadata(part)
         if part_grounding:
           grounding_metadata = part_grounding
         for chunk, finish_reason in _model_response_to_chunk(part):
+          if finish_reason:
+            last_finish_reason = finish_reason
           if isinstance(chunk, FunctionChunk):
             index = chunk.index or fallback_index
             if index not in function_calls:
@@ -3193,6 +3500,31 @@ class LiteLlm(BaseLlm):
 
             function_calls[index]["id"] = (
                 chunk.id or function_calls[index]["id"] or str(index)
+            )
+
+            partial_args = None
+            if chunk.args:
+              path_tracker = function_calls[index].setdefault(
+                  "path_tracker", streaming_utils._JsonPathTracker()
+              )
+              partial_args = path_tracker.handle_chunk(chunk.args)
+
+            yield LlmResponse(
+                partial=True,
+                content=types.Content(
+                    role="model",
+                    parts=[
+                        types.Part(
+                            function_call=types.FunctionCall(
+                                id=function_calls[index]["id"],
+                                name=function_calls[index]["name"] or None,
+                                partial_args=partial_args or None,
+                                will_continue=True,
+                            )
+                        )
+                    ],
+                ),
+                model_version=part.model,
             )
           elif isinstance(chunk, TextChunk):
             if chunk.text:
@@ -3223,6 +3555,12 @@ class LiteLlm(BaseLlm):
                 if chunk.reasoning_tokens
                 else None,
             )
+            if chunk.cache_creation_tokens is not None:
+              object.__setattr__(
+                  usage_metadata,
+                  "cache_creation_input_tokens",
+                  chunk.cache_creation_tokens,
+              )
 
           # LiteLLM 1.81+ can set finish_reason="stop" on partial chunks. Only
           # finalize tool calls on an explicit tool_calls/length finish_reason,
@@ -3253,19 +3591,42 @@ class LiteLlm(BaseLlm):
             )
             _reset_stream_buffers()
 
+      # The in-loop finalizers only fire on the reasons known to end a stream,
+      # so any other terminal reason ("content_filter" above all) reaches the
+      # end of the stream with the buffers still full. Finalize with the reason
+      # the provider actually sent rather than assuming a clean stop, so a
+      # filtered stream reports the same finish_reason and error_code that the
+      # non-streaming path reports.
       if function_calls and not aggregated_llm_response_with_tool_call:
         aggregated_llm_response_with_tool_call = _finalize_tool_call_response(
             model_version=part.model,
-            finish_reason="tool_calls",
+            finish_reason=last_finish_reason or "tool_calls",
         )
         _reset_stream_buffers()
 
       if (text_parts or reasoning_parts) and not aggregated_llm_response:
         aggregated_llm_response = _finalize_text_response(
             model_version=part.model,
-            finish_reason="stop",
+            finish_reason=last_finish_reason or "stop",
         )
         _reset_stream_buffers()
+      elif (
+          not aggregated_llm_response
+          and not aggregated_llm_response_with_tool_call
+      ):
+        # The stream ended abnormally without ever producing content (an
+        # immediate content filter, or truncation before the first token).
+        # Non-streaming reports that as an error response; without this the
+        # generator ends having yielded nothing at all, so the reason, the
+        # error and the usage are all dropped and the caller sees a silent stop.
+        trailing_finish_reason = last_finish_reason or ""
+        if trailing_finish_reason and _map_finish_reason(
+            trailing_finish_reason
+        ) not in (None, types.FinishReason.STOP):
+          aggregated_llm_response = _finalize_text_response(
+              model_version=part.model,
+              finish_reason=trailing_finish_reason,
+          )
 
       # waiting until streaming ends to yield the llm_response as litellm tends
       # to send chunk that contains usage_metadata after the chunk with

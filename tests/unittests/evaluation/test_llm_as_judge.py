@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 
 from google.adk.evaluation.eval_case import Invocation
@@ -30,6 +31,7 @@ from google.adk.evaluation.llm_as_judge_utils import get_eval_status
 from google.adk.evaluation.llm_as_judge_utils import get_text_from_content
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types as genai_types
+import pydantic
 import pytest
 
 
@@ -289,3 +291,128 @@ async def test_evaluate_invocations_grades_criterion_only_metric(
   assert [r.eval_status for r in result.per_invocation_results] == [
       EvalStatus.PASSED
   ]
+
+
+@pytest.mark.asyncio
+async def test_evaluate_invocations_parallelism_limit(
+    mock_llm_as_judge, mocker
+):
+  mock_llm_as_judge._judge_model_options.parallelism_limit = 2
+
+  active_calls = 0
+  max_active_calls = 0
+
+  async def mock_generate_content_async(llm_request):
+    nonlocal active_calls, max_active_calls
+    active_calls += 1
+    max_active_calls = max(max_active_calls, active_calls)
+    await asyncio.sleep(0.1)
+    active_calls -= 1
+    yield LlmResponse(
+        content=genai_types.Content(
+            parts=[genai_types.Part(text="auto rater response")],
+        )
+    )
+
+  mock_judge_model = mocker.MagicMock()
+  mock_judge_model.generate_content_async = mock_generate_content_async
+  mock_llm_as_judge._judge_model = mock_judge_model
+
+  actual_invocations = [
+      Invocation(
+          invocation_id="id1",
+          user_content=genai_types.Content(parts=[genai_types.Part(text="u1")]),
+          final_response=genai_types.Content(
+              parts=[genai_types.Part(text="r1")]
+          ),
+      ),
+      Invocation(
+          invocation_id="id2",
+          user_content=genai_types.Content(parts=[genai_types.Part(text="u2")]),
+          final_response=genai_types.Content(
+              parts=[genai_types.Part(text="r2")]
+          ),
+      ),
+  ]
+
+  mock_llm_as_judge._judge_model_options.num_samples = 3
+
+  await mock_llm_as_judge.evaluate_invocations(
+      actual_invocations, actual_invocations
+  )
+
+  assert max_active_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_evaluate_invocations_sample_failure(mock_llm_as_judge, mocker):
+  call_count = 0
+
+  async def mock_generate_content_async(llm_request):
+    nonlocal call_count
+    call_count += 1
+    if call_count == 1:
+      raise RuntimeError("Simulated LLM failure")
+    yield LlmResponse(
+        content=genai_types.Content(
+            parts=[genai_types.Part(text="auto rater response")],
+        )
+    )
+
+  mock_judge_model = mocker.MagicMock()
+  mock_judge_model.generate_content_async = mock_generate_content_async
+  mock_llm_as_judge._judge_model = mock_judge_model
+
+  mock_aggregate_per_invocation_samples = mocker.MagicMock(
+      wraps=mock_llm_as_judge.aggregate_per_invocation_samples
+  )
+  mock_llm_as_judge.aggregate_per_invocation_samples = (
+      mock_aggregate_per_invocation_samples
+  )
+
+  def mock_aggregate_invocation_results(per_invocation_results):
+    return EvaluationResult(
+        per_invocation_results=per_invocation_results,
+    )
+
+  mock_llm_as_judge.aggregate_invocation_results = (
+      mock_aggregate_invocation_results
+  )
+
+  actual_invocations = [
+      Invocation(
+          invocation_id="id1",
+          user_content=genai_types.Content(parts=[genai_types.Part(text="u1")]),
+          final_response=genai_types.Content(
+              parts=[genai_types.Part(text="r1")]
+          ),
+      ),
+      Invocation(
+          invocation_id="id2",
+          user_content=genai_types.Content(parts=[genai_types.Part(text="u2")]),
+          final_response=genai_types.Content(
+              parts=[genai_types.Part(text="r2")]
+          ),
+      ),
+  ]
+
+  mock_llm_as_judge._judge_model_options.num_samples = 2
+
+  result = await mock_llm_as_judge.evaluate_invocations(
+      actual_invocations, actual_invocations
+  )
+
+  assert len(result.per_invocation_results) == 2
+  assert (
+      result.per_invocation_results[0].eval_status == EvalStatus.NOT_EVALUATED
+  )
+  assert result.per_invocation_results[0].score is None
+  assert result.per_invocation_results[1].eval_status == EvalStatus.PASSED
+  assert result.per_invocation_results[1].score == 1.0
+  assert mock_aggregate_per_invocation_samples.call_count == 1
+
+
+@pytest.mark.parametrize("invalid_limit", [0, -1])
+def test_judge_model_options_invalid_parallelism_limit(invalid_limit):
+  with pytest.raises(pydantic.ValidationError):
+    JudgeModelOptions(parallelism_limit=invalid_limit)

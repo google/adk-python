@@ -21,13 +21,13 @@ from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
 
-def reimburse(amount: int, tool_context: ToolContext) -> dict[str, str]:
+def reimburse(amount: float, tool_context: ToolContext) -> dict[str, str]:
   """Reimburse the employee for the given amount."""
   return {'status': 'ok'}
 
 
 async def confirmation_threshold(
-    amount: int, tool_context: ToolContext
+    amount: float, tool_context: ToolContext
 ) -> bool:
   """Returns true if the amount is greater than 1000."""
   return amount > 1000

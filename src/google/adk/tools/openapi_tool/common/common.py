@@ -18,9 +18,8 @@ import keyword
 from typing import Any
 from typing import Dict
 from typing import List
-from typing import Optional
-from typing import Union
 
+from fastapi.openapi.models import Reference
 from fastapi.openapi.models import Response
 from fastapi.openapi.models import Schema
 from pydantic import BaseModel
@@ -28,6 +27,28 @@ from pydantic import Field
 from pydantic import model_serializer
 
 from ..._gemini_schema_util import _to_snake_case
+
+
+def _schema_from_openapi(value: object, *, context: str) -> Schema:
+  """Normalizes a schema-bearing OpenAPI field to a concrete Schema.
+
+  OpenAPI models permit unresolved references and boolean JSON schemas. ADK's
+  generated Python signature needs a concrete schema, so those cases are
+  handled once at this boundary instead of leaking unions through the parser.
+  """
+  if value is None or value is True:
+    return Schema()
+  if value is False:
+    raise ValueError(f'{context} uses an unsatisfiable false schema')
+  if isinstance(value, Schema):
+    return value
+  if isinstance(value, Reference):
+    raise ValueError(f'{context} contains unresolved reference {value.ref!r}')
+  if isinstance(value, str):
+    return Schema.model_validate_json(value)
+  if isinstance(value, dict):
+    return Schema.model_validate(value)
+  raise TypeError(f'{context} must be an OpenAPI schema, got {type(value)!r}')
 
 
 def rename_python_keywords(s: str, prefix: str = 'param_') -> str:
@@ -56,24 +77,33 @@ class ApiParameter(BaseModel):
 
   original_name: str
   param_location: str
-  param_schema: Union[str, Schema]
-  description: Optional[str] = ''
-  py_name: Optional[str] = ''
-  type_value: type[Any] = Field(default=None, init_var=False)
-  type_hint: str = Field(default=None, init_var=False)
+  param_schema: str | Schema
+  # Kept optional: callers pass None, and model_post_init normalizes it to ''.
+  description: str | None = ''
+  py_name: str | None = ''
+  # Both are derived in model_post_init; the None defaults are never observed.
+  type_value: object = Field(default=None, init_var=False)
+  type_hint: str | None = Field(default=None, init_var=False)
   required: bool = False
 
-  def model_post_init(self, _: Any):
+  def model_post_init(self, _: Any) -> None:
     if not self.py_name:
       inferred_name = rename_python_keywords(_to_snake_case(self.original_name))
       self.py_name = inferred_name or self._default_py_name()
     if isinstance(self.param_schema, str):
       self.param_schema = Schema.model_validate_json(self.param_schema)
 
-    self.description = self.description or self.param_schema.description or ''
-    self.type_value = TypeHintHelper.get_type_value(self.param_schema)
-    self.type_hint = TypeHintHelper.get_type_hint(self.param_schema)
-    return self
+    schema = self.param_schema
+    self.description = self.description or schema.description or ''
+    self.type_value = TypeHintHelper.get_type_value(schema)
+    self.type_hint = TypeHintHelper.get_type_hint(schema)
+
+  @property
+  def _openapi_schema(self) -> Schema:
+    """Returns the normalized schema established during model validation."""
+    if not isinstance(self.param_schema, Schema):
+      raise RuntimeError('ApiParameter schema was not normalized')
+    return self.param_schema
 
   def _default_py_name(self) -> str:
     location_defaults = {
@@ -86,7 +116,7 @@ class ApiParameter(BaseModel):
     return location_defaults.get(self.param_location or '', 'value')
 
   @model_serializer
-  def _serialize(self):
+  def _serialize(self) -> dict[str, object]:
     return {
         'original_name': self.original_name,
         'param_location': self.param_location,
@@ -95,18 +125,18 @@ class ApiParameter(BaseModel):
         'py_name': self.py_name,
     }
 
-  def __str__(self):
+  def __str__(self) -> str:
     return f'{self.py_name}: {self.type_hint}'
 
-  def to_arg_string(self):
+  def to_arg_string(self) -> str:
     """Converts the parameter to an argument string for function call."""
     return f'{self.py_name}={self.py_name}'
 
-  def to_dict_property(self):
+  def to_dict_property(self) -> str:
     """Converts the parameter to a key:value string for dict property."""
     return f'"{self.py_name}": {self.py_name}'
 
-  def to_pydoc_string(self):
+  def to_pydoc_string(self) -> str:
     """Converts the parameter to a PyDoc parameter docstr."""
     return PydocHelper.generate_param_doc(self)
 
@@ -115,9 +145,23 @@ class TypeHintHelper:
   """Helper class for generating type hints."""
 
   @staticmethod
-  def get_type_value(schema: Schema) -> Any:
+  def _get_schema_type(schema: Schema | bool | None) -> str | None:
+    if schema is None or isinstance(schema, bool):
+      return None
+    schema_type = schema.type
+    if isinstance(schema_type, list):
+      non_null_types = [value for value in schema_type if value != 'null']
+      return non_null_types[0] if len(non_null_types) == 1 else None
+    return schema_type
+
+  # `object` is the true return type, but this one is public: narrowing it
+  # would break callers that feed the result straight into an annotation.
+  @staticmethod
+  def get_type_value(schema: Schema | bool) -> Any:
     """Generates the Python type value for a given parameter."""
-    param_type = schema.type if schema.type else Any
+    if isinstance(schema, bool):
+      return Any
+    param_type = TypeHintHelper._get_schema_type(schema)
 
     if param_type == 'integer':
       return int
@@ -128,31 +172,27 @@ class TypeHintHelper:
     elif param_type == 'string':
       return str
     elif param_type == 'array':
-      items_type = Any
-      if schema.items and schema.items.type:
-        items_type = schema.items.type
-
-      if items_type == 'object':
-        return List[Dict[str, Any]]
-      else:
-        type_map = {
-            'integer': int,
-            'number': float,
-            'boolean': bool,
-            'string': str,
-            'object': Dict[str, Any],
-            'array': List[Any],
-        }
-        return List[type_map.get(items_type, 'Any')]
+      items_type = TypeHintHelper._get_schema_type(schema.items)
+      array_type_map: dict[str, object] = {
+          'integer': List[int],
+          'number': List[float],
+          'boolean': List[bool],
+          'string': List[str],
+          'object': List[Dict[str, Any]],
+          'array': List[List[Any]],
+      }
+      return array_type_map.get(items_type or '', List[Any])
     elif param_type == 'object':
       return Dict[str, Any]
     else:
       return Any
 
   @staticmethod
-  def get_type_hint(schema: Schema) -> str:
+  def get_type_hint(schema: Schema | bool) -> str:
     """Generates the Python type in string for a given parameter."""
-    param_type = schema.type if schema.type else 'Any'
+    if isinstance(schema, bool):
+      return 'Any'
+    param_type = TypeHintHelper._get_schema_type(schema)
 
     if param_type == 'integer':
       return 'int'
@@ -163,9 +203,7 @@ class TypeHintHelper:
     elif param_type == 'string':
       return 'str'
     elif param_type == 'array':
-      items_type = 'Any'
-      if schema.items and schema.items.type:
-        items_type = schema.items.type
+      items_type = TypeHintHelper._get_schema_type(schema.items)
 
       if items_type == 'object':
         return 'List[Dict[str, Any]]'
@@ -176,7 +214,7 @@ class TypeHintHelper:
             'boolean': 'bool',
             'string': 'str',
         }
-        return f"List[{type_map.get(items_type, 'Any')}]"
+        return f"List[{type_map.get(items_type or '', 'Any')}]"
     elif param_type == 'object':
       return 'Dict[str, Any]'
     else:
@@ -201,17 +239,24 @@ class PydocHelper:
     description = param.description.strip() if param.description else ''
     param_doc = f'{param.py_name} ({param.type_hint}): {description}'
 
-    if param.param_schema.type == 'object':
-      properties = param.param_schema.properties
+    schema = param._openapi_schema
+    if schema.type == 'object':
+      properties = schema.properties
       if properties:
         param_doc += ' Object properties:\n'
         for prop_name, prop_details in properties.items():
-          prop_desc = prop_details.description or ''
+          prop_desc = (
+              prop_details.description
+              if isinstance(prop_details, Schema) and prop_details.description
+              else ''
+          )
           prop_type = TypeHintHelper.get_type_hint(prop_details)
           param_doc += f'       {prop_name} ({prop_type}): {prop_desc}\n'
 
     return param_doc
 
+  # The public annotation stays `Dict[str, Response]`; the body still guards
+  # the looser values OpenAPI actually permits here.
   @staticmethod
   def generate_return_doc(responses: Dict[str, Response]) -> str:
     """Generates a return value documentation string.
@@ -229,16 +274,20 @@ class PydocHelper:
     # Returns the 2xx response with the smallest status code number and with
     # content defined. Non-numeric OpenAPI response keys (e.g. 'default' or
     # range codes like '2XX') are valid and sorted after numeric status codes.
-    sorted_responses = sorted(
-        responses.items(),
-        key=lambda item: int(item[0]) if item[0].isdigit() else float('inf'),
-    )
-    qualified_response = next(
-        filter(
-            lambda r: r[0].startswith('2') and r[1].content,
-            sorted_responses,
+    qualified_responses = [
+        (status, response)
+        for status, response in responses.items()
+        if status.startswith('2')
+        and isinstance(response, Response)
+        and response.content
+    ]
+    qualified_response = min(
+        qualified_responses,
+        key=lambda item: (
+            0 if item[0].isdigit() else 1,
+            int(item[0]) if item[0].isdigit() else item[0],
         ),
-        None,
+        default=None,
     )
     if not qualified_response:
       return ''
@@ -255,7 +304,9 @@ class PydocHelper:
     if schema_details is None:
       return return_doc
 
-    schema = schema_details.schema_ or Schema()
+    schema = _schema_from_openapi(
+        schema_details.schema_, context='response body'
+    )
 
     # Use a dummy Parameter object for return type hinting.
     dummy_param = ApiParameter(
@@ -269,7 +320,11 @@ class PydocHelper:
       if properties:
         return_doc += ' Object properties:\n'
         for prop_name, prop_details in properties.items():
-          prop_desc = prop_details.description or ''
+          prop_desc = (
+              prop_details.description
+              if isinstance(prop_details, Schema) and prop_details.description
+              else ''
+          )
           prop_type = TypeHintHelper.get_type_hint(prop_details)
           return_doc += f'        {prop_name} ({prop_type}): {prop_desc}\n'
 

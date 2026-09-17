@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import math
+import warnings
 
 from google.adk.agents.common_configs import CodeConfig
 from google.adk.errors.not_found_error import NotFoundError
@@ -171,6 +172,105 @@ class TestMetricEvaluatorRegistry:
     eval_metric = EvalMetric(metric_name="non_existent_metric", threshold=0.5)
     with pytest.raises(NotFoundError):
       registry.get_evaluator(eval_metric)
+
+
+class TestFork:
+  """Test cases for MetricEvaluatorRegistry.fork."""
+
+  _CUSTOM_METRIC_NAME = "custom_metric_for_fork_test"
+
+  def test_fork_carries_over_existing_registrations(self):
+    registry = MetricEvaluatorRegistry()
+    registry.register_evaluator(_DUMMY_METRIC_INFO, DummyEvaluator)
+
+    forked = registry.fork()
+
+    assert isinstance(
+        forked.get_evaluator(
+            EvalMetric(metric_name=_DUMMY_METRIC_NAME, threshold=0.5)
+        ),
+        DummyEvaluator,
+    )
+
+  def test_fork_carries_over_custom_function_paths(self):
+    """A metric registered from a config stays runnable through the fork."""
+    registry = MetricEvaluatorRegistry()
+    register_custom_metrics_from_config(
+        EvalConfig(
+            custom_metrics={
+                self._CUSTOM_METRIC_NAME: CustomMetricConfig(
+                    code_config=CodeConfig(name="math.sqrt")
+                )
+            }
+        ),
+        registry,
+    )
+
+    forked = registry.fork()
+
+    evaluator = forked.get_evaluator(
+        EvalMetric(metric_name=self._CUSTOM_METRIC_NAME, threshold=0.5)
+    )
+    assert evaluator._metric_function is math.sqrt  # pylint: disable=protected-access
+
+  def test_fork_is_quiet_and_keeps_the_registry_type(self):
+    """Forking happens once per eval run, so it must not warn or downcast."""
+    registry = MetricEvaluatorRegistry()
+
+    with warnings.catch_warnings(record=True) as caught:
+      warnings.simplefilter("always")
+      forked = registry.fork()
+
+    assert not caught
+    assert type(forked) is type(registry)
+    assert forked.get_registered_metrics() == registry.get_registered_metrics()
+
+  def test_registrations_on_the_fork_do_not_reach_the_source(self):
+    registry = MetricEvaluatorRegistry()
+    forked = registry.fork()
+
+    forked.register_evaluator(_DUMMY_METRIC_INFO, DummyEvaluator)
+
+    with pytest.raises(NotFoundError):
+      registry.get_evaluator(
+          EvalMetric(metric_name=_DUMMY_METRIC_NAME, threshold=0.5)
+      )
+
+  def test_registrations_on_the_source_do_not_reach_the_fork(self):
+    registry = MetricEvaluatorRegistry()
+    forked = registry.fork()
+
+    registry.register_evaluator(_DUMMY_METRIC_INFO, DummyEvaluator)
+
+    with pytest.raises(NotFoundError):
+      forked.get_evaluator(
+          EvalMetric(metric_name=_DUMMY_METRIC_NAME, threshold=0.5)
+      )
+
+  def test_overriding_a_standard_metric_on_the_fork_leaves_the_source_alone(
+      self,
+  ):
+    """Replacing a standard evaluator on a fork must not affect the source."""
+    registry = MetricEvaluatorRegistry()
+    tool_trajectory = EvalMetric(
+        metric_name=PrebuiltMetrics.TOOL_TRAJECTORY_AVG_SCORE.value,
+        threshold=0.5,
+    )
+    forked = registry.fork()
+
+    forked.register_evaluator(
+        _DUMMY_METRIC_INFO.model_copy(
+            update={
+                "metric_name": PrebuiltMetrics.TOOL_TRAJECTORY_AVG_SCORE.value
+            }
+        ),
+        DummyEvaluator,
+    )
+
+    assert isinstance(forked.get_evaluator(tool_trajectory), DummyEvaluator)
+    assert isinstance(
+        registry.get_evaluator(tool_trajectory), TrajectoryEvaluator
+    )
 
 
 class TestRegisterCustomMetricsFromConfig:

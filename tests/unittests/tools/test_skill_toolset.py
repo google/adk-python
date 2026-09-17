@@ -19,6 +19,7 @@ import json
 import logging
 from pathlib import Path
 from pathlib import PurePosixPath
+import re
 import sys
 from unittest import mock
 
@@ -27,8 +28,11 @@ from google.adk.code_executors.base_code_executor import BaseCodeExecutor
 from google.adk.code_executors.code_execution_utils import CodeExecutionResult
 from google.adk.code_executors.unsafe_local_code_executor import UnsafeLocalCodeExecutor
 from google.adk.environment import BaseEnvironment
+from google.adk.features import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.models import llm_request as llm_request_model
 from google.adk.skills import models
+from google.adk.telemetry import _instrumentation
 from google.adk.tools import skill_toolset
 from google.adk.tools import tool_context
 from google.genai import types
@@ -218,6 +222,56 @@ def test_clone_with_updated_skills(mock_skill1, mock_skill2):
   assert new_toolset._code_executor is executor
   assert new_toolset._script_timeout == 42
   assert "my_tool" in new_toolset._provided_tools_by_name
+
+
+@pytest.mark.asyncio
+async def test_clone_with_updated_skills_keeps_filter_and_prefix(
+    mock_skill1, tool_context_instance
+):
+  """The clone exposes the same tools, under the same names, as the original."""
+  mock_skill2 = mock.create_autospec(models.Skill, instance=True)
+  mock_skill2.name = "skill2"
+
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1],
+      tool_name_prefix="acme",
+      tool_filter=["list_skills"],
+  )
+
+  new_toolset = toolset.clone_with_updated_skills([mock_skill2])
+
+  assert new_toolset.tool_name_prefix == "acme"
+  assert new_toolset.tool_filter == ["list_skills"]
+
+  original_names = [
+      t.name for t in await toolset.get_tools(tool_context_instance)
+  ]
+  clone_names = [
+      t.name for t in await new_toolset.get_tools(tool_context_instance)
+  ]
+  assert clone_names == original_names == ["list_skills"]
+
+
+@pytest.mark.asyncio
+async def test_clone_with_updated_skills_keeps_discovery_mode(
+    mock_skill1, mock_skill2, tool_context_instance
+):
+  """The clone stays in EAGER mode, so list_skills stays hidden."""
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1],
+      discovery_mode=skill_toolset.SkillDiscoveryMode.EAGER,
+  )
+
+  new_toolset = toolset.clone_with_updated_skills([mock_skill2])
+
+  original_names = [
+      t.name for t in await toolset.get_tools(tool_context_instance)
+  ]
+  clone_names = [
+      t.name for t in await new_toolset.get_tools(tool_context_instance)
+  ]
+  assert "list_skills" not in original_names
+  assert clone_names == original_names
 
 
 def test_init_accepts_environment(mock_skill1):
@@ -606,13 +660,10 @@ async def test_process_llm_request_with_list_skills_tool(
 async def test_process_llm_request_without_list_skills_tool(
     mock_skill1, mock_skill2, tool_context_instance
 ):
-  toolset = skill_toolset.SkillToolset([mock_skill1, mock_skill2])
-  # Manually remove ListSkillsTool from self._tools to simulate it not being available
-  toolset._tools = [
-      t
-      for t in toolset._tools
-      if not isinstance(t, skill_toolset.ListSkillsTool)
-  ]
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1, mock_skill2],
+      discovery_mode=skill_toolset.SkillDiscoveryMode.EAGER,
+  )
 
   llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
 
@@ -624,7 +675,7 @@ async def test_process_llm_request_without_list_skills_tool(
   args, _ = llm_req.append_instructions.call_args
   instructions = args[0]
   assert len(instructions) == 2
-  assert instructions[0] == skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION
+  assert "NOT available: `list_skills`" in instructions[0]
   assert "<available_skills>" in instructions[1]
   assert "skill1" in instructions[1]
   assert "skill2" in instructions[1]
@@ -785,11 +836,11 @@ def _make_tool_context_with_agent(agent=None, invocation_id="test_invocation"):
   return ctx
 
 
-def _make_mock_executor(stdout="", stderr=""):
+def _make_mock_executor(stdout="", stderr="", exit_code=None):
   """Creates a mock code executor that returns the given output."""
   executor = mock.create_autospec(BaseCodeExecutor, instance=True)
   executor.execute_code.return_value = CodeExecutionResult(
-      stdout=stdout, stderr=stderr
+      stdout=stdout, stderr=stderr, exit_code=exit_code
   )
   return executor
 
@@ -1713,6 +1764,29 @@ def _make_real_executor_toolset(skills, **kwargs):
   return skill_toolset.SkillToolset(skills, code_executor=executor, **kwargs)
 
 
+@pytest.fixture(name="recorded_script_telemetry")
+def _recorded_script_telemetry(monkeypatch):
+  """Collects the telemetry objects the run_skill_script tool fills in.
+
+  The exit code reaches telemetry rather than the tool result, so asserting on
+  the result alone would leave it unchecked.
+  """
+  recorded = []
+  tracker = skill_toolset._instrumentation.track_skill_script_execution
+
+  def _spy(*args, **kwargs):
+    skill_telemetry = tracker(*args, **kwargs)
+    recorded.append(skill_telemetry)
+    return skill_telemetry
+
+  monkeypatch.setattr(
+      skill_toolset._instrumentation,
+      "track_skill_script_execution",
+      _spy,
+  )
+  return recorded
+
+
 @pytest.mark.asyncio
 async def test_integration_python_stdout():
   """Real executor: Python script stdout is captured."""
@@ -1834,7 +1908,7 @@ async def test_integration_shell_stdout_and_stderr():
 
 
 @pytest.mark.asyncio
-async def test_integration_shell_stderr_only():
+async def test_integration_shell_stderr_only(recorded_script_telemetry):
   """Real executor: shell script with only stderr reports error."""
   script = models.Script(src="echo failure >&2")
   skill = _make_skill_with_script("test_skill", "err.sh", script)
@@ -1851,6 +1925,114 @@ async def test_integration_shell_stderr_only():
   assert "status" in result, f"Result missing status: {result}"
   assert result["status"] == "error"
   assert "failure" in result["stderr"]
+  assert recorded_script_telemetry[0].script_exit_code == 0
+
+
+# ── Exit codes reported by the executor ──
+#
+# A Python script runs as the executed process itself, so the status that
+# process exits with is the script's own. These go through the real executor,
+# because the point is that the two agree.
+
+
+@pytest.mark.asyncio
+async def test_integration_python_reports_exit_code_after_writing_stdout(
+    recorded_script_telemetry,
+):
+  """Output written before a crash does not make the run a success."""
+  script = models.Script(src="print('progress')\nraise ValueError('boom')")
+  skill = _make_skill_with_script("test_skill", "crash.py", script)
+  toolset = _make_real_executor_toolset([skill])
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  result = await tool.run_async(
+      args={"skill_name": "test_skill", "file_path": "crash.py"},
+      tool_context=ctx,
+  )
+
+  assert result["status"] == "error"
+  assert "progress" in result["stdout"]
+  assert "ValueError: boom" in result["stderr"]
+  assert recorded_script_telemetry[0].script_exit_code == 1
+
+
+@pytest.mark.asyncio
+async def test_integration_python_reports_a_chosen_exit_code(
+    recorded_script_telemetry,
+):
+  """The status the script picked survives to telemetry."""
+  script = models.Script(src="import sys\nsys.exit(3)")
+  skill = _make_skill_with_script("test_skill", "exit_three.py", script)
+  toolset = _make_real_executor_toolset([skill])
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  result = await tool.run_async(
+      args={"skill_name": "test_skill", "file_path": "exit_three.py"},
+      tool_context=ctx,
+  )
+
+  assert result["status"] == "error"
+  assert recorded_script_telemetry[0].script_exit_code == 3
+
+
+@pytest.mark.asyncio
+async def test_integration_python_success_reports_exit_code_zero(
+    recorded_script_telemetry,
+):
+  script = models.Script(src="print('all good')")
+  skill = _make_skill_with_script("test_skill", "ok.py", script)
+  toolset = _make_real_executor_toolset([skill])
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  result = await tool.run_async(
+      args={"skill_name": "test_skill", "file_path": "ok.py"},
+      tool_context=ctx,
+  )
+
+  assert result["status"] == "success"
+  assert result["stdout"] == "all good\n"
+  assert recorded_script_telemetry[0].script_exit_code == 0
+
+
+@pytest.mark.asyncio
+async def test_executor_exit_code_is_not_overridden_by_stderr(
+    mock_skill1, recorded_script_telemetry
+):
+  """A reported status stands even when the run wrote only to stderr."""
+  executor = _make_mock_executor(stdout="", stderr="a warning\n", exit_code=0)
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "run.py"},
+      tool_context=ctx,
+  )
+
+  assert result["status"] == "error"
+  assert recorded_script_telemetry[0].script_exit_code == 0
+
+
+@pytest.mark.asyncio
+async def test_missing_executor_exit_code_falls_back_to_stderr(
+    mock_skill1, recorded_script_telemetry
+):
+  """Executors that report no status still get an outcome inferred."""
+  executor = _make_mock_executor(stdout="", stderr="fatal error\n")
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "run.py"},
+      tool_context=ctx,
+  )
+
+  assert result["status"] == "error"
+  assert recorded_script_telemetry[0].script_exit_code == 1
 
 
 # ── Shell JSON envelope parsing (unit tests with mock executor) ──
@@ -2668,7 +2850,7 @@ async def test_turn_scoped_skill_cache(
 
   # Setup executor for script tool
   executor = mock.create_autospec(skill_toolset.BaseCodeExecutor, instance=True)
-  executor.execute_code.return_value = mock.MagicMock(
+  executor.execute_code.return_value = CodeExecutionResult(
       stdout="hello\n", stderr=""
   )
   toolset._code_executor = executor
@@ -2763,19 +2945,13 @@ async def test_close_cancels_futures_and_clears_cache():
 async def test_process_llm_request_with_tool_name_prefix(
     mock_skill1, mock_skill2, tool_context_instance, mock_registry
 ):
+  # EAGER so that instructions[1] is generated with available_skills.
   toolset = skill_toolset.SkillToolset(
       [mock_skill1, mock_skill2],
       registry=mock_registry,
       tool_name_prefix="my_prefix",
+      discovery_mode=skill_toolset.SkillDiscoveryMode.EAGER,
   )
-
-  # Manually remove ListSkillsTool from self._tools to simulate it not being available
-  # so that instructions[1] is generated with available_skills
-  toolset._tools = [
-      t
-      for t in toolset._tools
-      if not isinstance(t, skill_toolset.ListSkillsTool)
-  ]
 
   llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
 
@@ -2844,3 +3020,980 @@ async def test_skill_toolset_with_dynamic_tools_filter(
   assert "list_skills" in tool_names
   assert "my_custom_tool" in tool_names
   assert "load_skill" not in tool_names
+
+
+# ── tool_filter vs system instruction consistency ──
+
+
+def test_filtered_system_instruction_appends_banned_notice():
+  """Filtered builder must document all tools but append a banned notice."""
+  instruction = skill_toolset._build_skill_system_instruction(
+      allowed_tools={"list_skills", "load_skill"}
+  )
+  assert "Use `run_skill_script` to run scripts" in instruction
+  assert "The `load_skill_resource` tool is for viewing" in instruction
+  assert "`load_skill`" in instruction
+  assert "NOT available" in instruction
+  assert "Do NOT call them" in instruction
+  assert "normal model text" in instruction
+  # Ban clause may still name the filtered tools.
+  assert "`run_skill_script`" in instruction
+  assert "`load_skill_resource`" in instruction
+
+
+def test_filtered_system_instruction_bans_load_and_list_skills():
+  """Filtered builder must include load_skill and list_skills in ban notice when filtered."""
+  instruction = skill_toolset._build_skill_system_instruction(
+      allowed_tools={"run_skill_script"}
+  )
+  assert (
+      "The following tools are NOT available: `load_skill_resource`,"
+      " `load_skill`, `list_skills`."
+      in instruction
+  )
+  assert "Do NOT call them" in instruction
+
+
+def test_tool_classes_define_tool_name_constants():
+  """Core tool classes must define TOOL_NAME attributes matching their names."""
+  assert skill_toolset.ListSkillsTool.TOOL_NAME == "list_skills"
+  assert skill_toolset.SearchSkillsTool.TOOL_NAME == "search_skills"
+  assert skill_toolset.LoadSkillTool.TOOL_NAME == "load_skill"
+  assert skill_toolset.UnloadSkillTool.TOOL_NAME == "unload_skill"
+  assert skill_toolset.LoadSkillResourceTool.TOOL_NAME == "load_skill_resource"
+  assert skill_toolset.RunSkillScriptTool.TOOL_NAME == "run_skill_script"
+
+
+def test_unfiltered_system_instruction_documents_all_tools():
+  """Unfiltered path must keep documenting script/resource tools."""
+  instruction = skill_toolset._build_skill_system_instruction()
+  assert instruction == skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION
+  assert "Use `run_skill_script` to run scripts" in instruction
+  assert "The `load_skill_resource` tool is for viewing" in instruction
+  assert "NOT available" not in instruction
+
+
+def test_default_skill_system_instruction_contract_unchanged():
+  """Public DEFAULT export must remain the full unfiltered instruction."""
+  assert "run_skill_script" in skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION
+  assert "load_skill_resource" in skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION
+  assert (
+      "does NOT complete your turn"
+      in skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION
+  )
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_respects_list_tool_filter(
+    mock_skill1, tool_context_instance
+):
+  toolset = skill_toolset.SkillToolset(
+      skills=[mock_skill1],
+      tool_filter=["list_skills", "load_skill"],
+  )
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+
+  llm_req.append_instructions.assert_called_once()
+  args, _ = llm_req.append_instructions.call_args
+  instructions = args[0]
+  assert len(instructions) == 1
+  instruction = instructions[0]
+  assert "Use `run_skill_script` to run scripts" in instruction
+  assert "The `load_skill_resource` tool is for viewing" in instruction
+  assert "Do NOT call them" in instruction
+  assert "normal model text" in instruction
+  assert instruction != skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_injects_skills_xml_when_list_skills_filtered(
+    mock_skill1, mock_skill2, tool_context_instance
+):
+  """Deprecated: a filter that hides list_skills still injects the catalog."""
+  toolset = skill_toolset.SkillToolset(
+      skills=[mock_skill1, mock_skill2],
+      tool_filter=["load_skill"],
+  )
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  with pytest.warns(FutureWarning, match="discovery_mode"):
+    await toolset.process_llm_request(
+        tool_context=tool_context_instance, llm_request=llm_req
+    )
+
+  args, _ = llm_req.append_instructions.call_args
+  instructions = args[0]
+  assert len(instructions) == 2
+  assert "<available_skills>" in instructions[1]
+  assert "skill1" in instructions[1]
+  assert "skill2" in instructions[1]
+
+
+@pytest.mark.asyncio
+async def test_filtered_list_skills_warns_only_once(
+    mock_skill1, tool_context_instance, recwarn
+):
+  """The deprecation fires once per toolset, not once per request."""
+  toolset = skill_toolset.SkillToolset(
+      skills=[mock_skill1],
+      tool_filter=["load_skill"],
+  )
+
+  for _ in range(3):
+    llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+    await toolset.process_llm_request(
+        tool_context=tool_context_instance, llm_request=llm_req
+    )
+
+  deprecations = [w for w in recwarn if issubclass(w.category, FutureWarning)]
+  assert len(deprecations) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_tools_omits_list_skills_in_eager_mode(mock_skill1):
+  """EAGER hides list_skills and keeps the other tools."""
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1],
+      discovery_mode=skill_toolset.SkillDiscoveryMode.EAGER,
+  )
+
+  tool_names = [t.name for t in await toolset.get_tools()]
+
+  assert "list_skills" not in tool_names
+  assert "load_skill" in tool_names
+  assert "load_skill_resource" in tool_names
+  assert "run_skill_script" in tool_names
+
+
+@pytest.mark.asyncio
+async def test_lazy_mode_keeps_list_skills_first(mock_skill1):
+  """LAZY is the default and keeps list_skills at the head of the tool list."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+
+  tool_names = [t.name for t in await toolset.get_tools()]
+
+  assert tool_names[0] == "list_skills"
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_injects_skills_xml_in_eager_mode(
+    mock_skill1, mock_skill2, tool_context_instance, recwarn
+):
+  """EAGER injects the L1 catalog into the system prompt, without warning."""
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1, mock_skill2],
+      discovery_mode=skill_toolset.SkillDiscoveryMode.EAGER,
+  )
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+
+  args, _ = llm_req.append_instructions.call_args
+  instructions = args[0]
+  assert len(instructions) == 2
+  assert "NOT available: `list_skills`" in instructions[0]
+  assert "<available_skills>" in instructions[1]
+  assert "skill1" in instructions[1]
+  assert "skill2" in instructions[1]
+  assert not [w for w in recwarn if issubclass(w.category, FutureWarning)]
+
+
+@pytest.mark.asyncio
+async def test_eager_mode_keeps_search_skills(
+    mock_skill1, mock_registry, tool_context_instance
+):
+  """EAGER still exposes search_skills when a registry is set."""
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1],
+      registry=mock_registry,
+      discovery_mode=skill_toolset.SkillDiscoveryMode.EAGER,
+  )
+
+  tool_names = [t.name for t in await toolset.get_tools(tool_context_instance)]
+  assert "list_skills" not in tool_names
+  assert "search_skills" in tool_names
+  assert "load_skill" in tool_names
+
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+  await toolset.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+  args, _ = llm_req.append_instructions.call_args
+  instructions = args[0]
+  assert "<available_skills>" in instructions[1]
+  assert "search_skills" in instructions[2]
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_omits_search_skills_hint_when_filtered(
+    mock_registry, tool_context_instance
+):
+  toolset = skill_toolset.SkillToolset(
+      registry=mock_registry,
+      tool_filter=["list_skills", "load_skill"],
+  )
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+
+  args, _ = llm_req.append_instructions.call_args
+  instructions = args[0]
+  assert len(instructions) == 1
+  assert "search_skills" not in instructions[0]
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_includes_search_skills_hint_when_allowed(
+    mock_registry, tool_context_instance
+):
+  toolset = skill_toolset.SkillToolset(
+      registry=mock_registry,
+      tool_filter=["list_skills", "load_skill", "search_skills"],
+  )
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+
+  args, _ = llm_req.append_instructions.call_args
+  instructions = args[0]
+  assert len(instructions) == 2
+  assert "search_skills" in instructions[1]
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_with_prefix_and_tool_filter(
+    mock_skill1, tool_context_instance
+):
+  toolset = skill_toolset.SkillToolset(
+      skills=[mock_skill1],
+      tool_name_prefix="my",
+      tool_filter=["list_skills", "load_skill"],
+  )
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+
+  args, _ = llm_req.append_instructions.call_args
+  instruction = args[0][0]
+  assert "`my_load_skill`" in instruction
+  assert "Use `my_run_skill_script` to run scripts" in instruction
+  assert "The `my_load_skill_resource` tool is for viewing" in instruction
+  assert "`my_run_skill_script`" in instruction  # ban clause
+  assert "Do NOT call them" in instruction
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_respects_predicate_tool_filter(
+    mock_skill1, tool_context_instance
+):
+  toolset = skill_toolset.SkillToolset(
+      skills=[mock_skill1],
+      tool_filter=lambda tool, ctx=None: tool.name
+      in ("list_skills", "load_skill"),
+  )
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+
+  args, _ = llm_req.append_instructions.call_args
+  instruction = args[0][0]
+  assert "Use `run_skill_script` to run scripts" in instruction
+  assert "Do NOT call them" in instruction
+
+
+# ── run_skill_script is only offered when something can run scripts ──
+
+
+def _make_readonly_context(agent):
+  """Creates a ReadonlyContext whose invocation context holds `agent`."""
+  ctx = mock.MagicMock(spec=ReadonlyContext)
+  ctx._invocation_context = mock.MagicMock()
+  ctx._invocation_context.agent = agent
+  ctx.agent_name = "test_agent"
+  ctx.invocation_id = "test_invocation"
+  ctx.state = {}
+  return ctx
+
+
+_AGENTS_WITHOUT_EXECUTOR = {
+    "no_attribute": lambda: mock.MagicMock(spec=[]),
+    "attribute_is_none": lambda: mock.MagicMock(code_executor=None),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "make_agent",
+    _AGENTS_WITHOUT_EXECUTOR.values(),
+    ids=_AGENTS_WITHOUT_EXECUTOR.keys(),
+)
+async def test_get_tools_hides_run_skill_script_without_backend(
+    mock_skill1, make_agent
+):
+  """Without a backend every call returns NO_CODE_EXECUTOR, so drop the tool."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+
+  tools = await toolset.get_tools(_make_readonly_context(make_agent()))
+
+  assert [type(t) for t in tools] == [
+      skill_toolset.ListSkillsTool,
+      skill_toolset.LoadSkillTool,
+      skill_toolset.LoadSkillResourceTool,
+  ]
+
+
+@pytest.mark.asyncio
+async def test_get_tools_keeps_run_skill_script_with_toolset_executor(
+    mock_skill1,
+):
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1], code_executor=_make_mock_executor()
+  )
+
+  tools = await toolset.get_tools(
+      _make_readonly_context(mock.MagicMock(spec=[]))
+  )
+
+  assert any(isinstance(t, skill_toolset.RunSkillScriptTool) for t in tools)
+
+
+@pytest.mark.asyncio
+async def test_get_tools_keeps_run_skill_script_with_environment(mock_skill1):
+  mock_env = mock.create_autospec(BaseEnvironment, instance=True)
+  toolset = skill_toolset.SkillToolset([mock_skill1], environment=mock_env)
+
+  tools = await toolset.get_tools(
+      _make_readonly_context(mock.MagicMock(spec=[]))
+  )
+
+  assert any(isinstance(t, skill_toolset.RunSkillScriptTool) for t in tools)
+
+
+@pytest.mark.asyncio
+async def test_get_tools_keeps_run_skill_script_with_agent_executor(
+    mock_skill1,
+):
+  """RunSkillScriptTool falls back to the agent's executor, so keep the tool."""
+  agent = mock.MagicMock()
+  agent.code_executor = _make_mock_executor()
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+
+  tools = await toolset.get_tools(_make_readonly_context(agent))
+
+  assert any(isinstance(t, skill_toolset.RunSkillScriptTool) for t in tools)
+
+
+@pytest.mark.asyncio
+async def test_get_tools_keeps_run_skill_script_without_context(mock_skill1):
+  """No context means no agent to inspect, so the tool is left in place."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+
+  tools = await toolset.get_tools()
+
+  assert any(isinstance(t, skill_toolset.RunSkillScriptTool) for t in tools)
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_drops_script_guidance_without_backend(
+    mock_skill1,
+):
+  """The prompt must not advertise a tool the model is not even given."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  ctx = _make_tool_context_with_agent(agent=mock.MagicMock(spec=[]))
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(tool_context=ctx, llm_request=llm_req)
+
+  instruction = llm_req.append_instructions.call_args[0][0][0]
+  assert "run_skill_script" not in instruction
+  assert "can be run via bash" not in instruction
+  # The surviving steps stay contiguously numbered.
+  assert re.findall(r"^(\d+)\. ", instruction, re.MULTILINE) == [
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+  ]
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_keeps_script_guidance_with_backend(
+    mock_skill1,
+):
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1], code_executor=_make_mock_executor()
+  )
+  ctx = _make_tool_context_with_agent(agent=mock.MagicMock(spec=[]))
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(tool_context=ctx, llm_request=llm_req)
+
+  instruction = llm_req.append_instructions.call_args[0][0][0]
+  assert instruction == skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_with_bare_autospec_context(mock_skill1):
+  """A context that exposes no agent must not break instruction building.
+
+  Callers pass strict autospec mocks, which have no `_invocation_context`. The
+  agent's executor cannot be ruled out there, so the guidance stays.
+  """
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  ctx = mock.create_autospec(
+      tool_context.ToolContext, instance=True, spec_set=True
+  )
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(tool_context=ctx, llm_request=llm_req)
+
+  llm_req.append_instructions.assert_called_once_with(
+      [skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION]
+  )
+
+
+# Programmatic activation API tests
+
+
+@pytest.fixture(name="stateful_context")
+def _stateful_context():
+  """A tool context whose state is a real dict, not a mock."""
+  ctx = mock.create_autospec(tool_context.ToolContext, instance=True)
+  ctx.agent_name = "test_agent"
+  ctx.invocation_id = "test_invocation"
+  ctx.state = {}
+  return ctx
+
+
+def test_list_active_skills_empty(mock_skill1, stateful_context):
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  assert toolset.list_active_skills(stateful_context) == []
+
+
+def test_list_active_skills_returns_activation_order(
+    mock_skill1, mock_skill2, stateful_context
+):
+  toolset = skill_toolset.SkillToolset([mock_skill1, mock_skill2])
+  stateful_context.state["_adk_activated_skill_test_agent"] = [
+      "skill2",
+      "skill1",
+  ]
+
+  assert toolset.list_active_skills(stateful_context) == ["skill2", "skill1"]
+
+
+def test_list_active_skills_does_not_alias_state(mock_skill1, stateful_context):
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  stateful_context.state["_adk_activated_skill_test_agent"] = ["skill1"]
+
+  toolset.list_active_skills(stateful_context).append("skill2")
+
+  assert toolset.list_active_skills(stateful_context) == ["skill1"]
+
+
+def test_list_active_skills_is_per_agent(mock_skill1, stateful_context):
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  stateful_context.state["_adk_activated_skill_other_agent"] = ["skill1"]
+
+  assert toolset.list_active_skills(stateful_context) == []
+
+
+@pytest.mark.asyncio
+async def test_load_skill_api_activates(mock_skill1, stateful_context):
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+
+  assert await toolset.load_skill(stateful_context, "skill1") is True
+  assert stateful_context.state["_adk_activated_skill_test_agent"] == ["skill1"]
+
+
+@pytest.mark.asyncio
+async def test_load_skill_api_is_idempotent(mock_skill1, stateful_context):
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  await toolset.load_skill(stateful_context, "skill1")
+
+  assert await toolset.load_skill(stateful_context, "skill1") is False
+  assert stateful_context.state["_adk_activated_skill_test_agent"] == ["skill1"]
+
+
+@pytest.mark.asyncio
+async def test_load_skill_api_skips_registry_when_already_active(
+    mock_registry, stateful_context
+):
+  mock_registry.get_skill.side_effect = RuntimeError("registry is down")
+  toolset = skill_toolset.SkillToolset([], registry=mock_registry)
+  stateful_context.state["_adk_activated_skill_test_agent"] = ["gone"]
+
+  assert await toolset.load_skill(stateful_context, "gone") is False
+  mock_registry.get_skill.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_load_skill_api_propagates_registry_error(
+    mock_registry, stateful_context
+):
+  mock_registry.get_skill.side_effect = RuntimeError("registry is down")
+  toolset = skill_toolset.SkillToolset([], registry=mock_registry)
+
+  with pytest.raises(RuntimeError, match="registry is down"):
+    await toolset.load_skill(stateful_context, "skill2")
+
+  assert "_adk_activated_skill_test_agent" not in stateful_context.state
+
+
+@pytest.mark.asyncio
+async def test_load_skill_api_concurrent_activations_both_recorded(
+    mock_registry, mock_skill1, mock_skill2, stateful_context
+):
+  """Both activations survive when two loads interleave over the fetch await."""
+
+  async def slow_get_skill(name):
+    await asyncio.sleep(0)
+    return mock_skill1 if name == "skill1" else mock_skill2
+
+  mock_registry.get_skill.side_effect = slow_get_skill
+  toolset = skill_toolset.SkillToolset([], registry=mock_registry)
+
+  results = await asyncio.gather(
+      toolset.load_skill(stateful_context, "skill1"),
+      toolset.load_skill(stateful_context, "skill2"),
+  )
+
+  assert results == [True, True]
+  assert sorted(toolset.list_active_skills(stateful_context)) == [
+      "skill1",
+      "skill2",
+  ]
+
+
+@pytest.mark.asyncio
+async def test_load_skill_api_raises_for_unknown_skill(
+    mock_skill1, stateful_context
+):
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+
+  with pytest.raises(ValueError, match="Skill 'nope' not found."):
+    await toolset.load_skill(stateful_context, "nope")
+
+  assert "_adk_activated_skill_test_agent" not in stateful_context.state
+
+
+@pytest.mark.asyncio
+async def test_load_skill_api_falls_back_to_registry(
+    mock_registry, mock_skill2, stateful_context
+):
+  mock_registry.get_skill.return_value = mock_skill2
+  toolset = skill_toolset.SkillToolset([], registry=mock_registry)
+
+  assert await toolset.load_skill(stateful_context, "skill2") is True
+  assert toolset.list_active_skills(stateful_context) == ["skill2"]
+
+
+@pytest.mark.asyncio
+async def test_load_skill_api_registers_additional_tools(
+    mock_skill1, mock_skill1_frontmatter, stateful_context
+):
+  mock_skill1_frontmatter.metadata = {"adk_additional_tools": ["my_tool"]}
+  custom_tool = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+  custom_tool.name = "my_tool"
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1], additional_tools=[custom_tool]
+  )
+
+  assert "my_tool" not in {
+      t.name for t in await toolset.get_tools(stateful_context)
+  }
+
+  await toolset.load_skill(stateful_context, "skill1")
+
+  assert "my_tool" in {
+      t.name for t in await toolset.get_tools(stateful_context)
+  }
+
+
+@pytest.mark.asyncio
+async def test_unload_skill_api_releases_additional_tools(
+    mock_skill1, mock_skill1_frontmatter, stateful_context
+):
+  mock_skill1_frontmatter.metadata = {"adk_additional_tools": ["my_tool"]}
+  custom_tool = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+  custom_tool.name = "my_tool"
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1], additional_tools=[custom_tool]
+  )
+  await toolset.load_skill(stateful_context, "skill1")
+
+  assert toolset.unload_skill(stateful_context, "skill1") is True
+
+  assert toolset.list_active_skills(stateful_context) == []
+  assert "my_tool" not in {
+      t.name for t in await toolset.get_tools(stateful_context)
+  }
+
+
+def test_unload_skill_api_returns_false_when_not_active(
+    mock_skill1, stateful_context
+):
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+
+  assert toolset.unload_skill(stateful_context, "skill1") is False
+
+
+def test_unload_skill_api_works_for_skill_not_in_registry(stateful_context):
+  toolset = skill_toolset.SkillToolset([])
+  stateful_context.state["_adk_activated_skill_test_agent"] = ["gone"]
+
+  assert toolset.unload_skill(stateful_context, "gone") is True
+  assert toolset.list_active_skills(stateful_context) == []
+
+
+def test_unload_skill_api_leaves_other_skills_active(
+    mock_skill1, mock_skill2, stateful_context
+):
+  toolset = skill_toolset.SkillToolset([mock_skill1, mock_skill2])
+  stateful_context.state["_adk_activated_skill_test_agent"] = [
+      "skill1",
+      "skill2",
+  ]
+
+  assert toolset.unload_skill(stateful_context, "skill1") is True
+  assert toolset.list_active_skills(stateful_context) == ["skill2"]
+
+
+# ── unload_skill ──
+
+
+@pytest.fixture(name="skill_lifecycle_enabled")
+def _skill_lifecycle_enabled():
+  """Turns on the SKILL_LIFECYCLE flag for the duration of a test."""
+  with temporary_feature_override(FeatureName.SKILL_LIFECYCLE, True):
+    yield
+
+
+def _dict_state_context(initial=None, agent_name="test_agent"):
+  """A tool context whose `state` is backed by a real dict."""
+  ctx = mock.create_autospec(tool_context.ToolContext, instance=True)
+  ctx.agent_name = agent_name
+  ctx.invocation_id = "test_invocation"
+  state = dict(initial or {})
+  ctx.state.get.side_effect = lambda key, default=None: state.get(key, default)
+  ctx.state.__getitem__.side_effect = state.__getitem__
+  ctx.state.__setitem__.side_effect = state.__setitem__
+  return ctx, state
+
+
+@pytest.mark.asyncio
+async def test_unload_skill_tool_absent_when_flag_off(mock_skill1):
+  """The flag is off by default, so nothing changes for existing callers."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tools = await toolset.get_tools()
+
+  assert {t.name for t in tools} == {
+      "list_skills",
+      "load_skill",
+      "load_skill_resource",
+      "run_skill_script",
+  }
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("skill_lifecycle_enabled")
+async def test_unload_skill_tool_registered_when_flag_on(mock_skill1):
+  """Opting in adds the tool to the toolset."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tools = await toolset.get_tools()
+
+  assert "unload_skill" in {t.name for t in tools}
+
+
+def test_default_system_instruction_omits_unload():
+  """The default export must stay byte-identical while the flag is off."""
+  assert "unload_skill" not in skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION
+
+
+def test_system_instruction_documents_unload_when_enabled():
+  """Opting in adds the release guidance to the instruction."""
+  instruction = skill_toolset._build_skill_system_instruction(
+      unload_enabled=True
+  )
+  assert "`unload_skill`" in instruction
+  assert "never unload a skill just because you loaded it" in instruction
+
+
+def test_system_instruction_bans_unload_when_filtered_out():
+  """A filtered-out unload_skill must be named in the ban notice."""
+  instruction = skill_toolset._build_skill_system_instruction(
+      allowed_tools={"list_skills", "load_skill"}, unload_enabled=True
+  )
+  assert "NOT available" in instruction
+  assert "`unload_skill`" in instruction.split("NOT available")[1]
+
+
+def test_unload_skill_declaration(mock_skill1):
+  """The model sees a single required string parameter."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  declaration = skill_toolset.UnloadSkillTool(toolset)._get_declaration()
+
+  assert declaration.name == "unload_skill"
+  assert declaration.parameters_json_schema["required"] == ["skill_name"]
+  assert (
+      declaration.parameters_json_schema["properties"]["skill_name"]["type"]
+      == "string"
+  )
+
+
+@pytest.mark.asyncio
+async def test_unload_skill_removes_from_state(mock_skill1):
+  """Unloading drops just that skill and reports what is left."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.UnloadSkillTool(toolset)
+  ctx, state = _dict_state_context(
+      {"_adk_activated_skill_test_agent": ["skill1", "skill2"]}
+  )
+
+  result = await tool.run_async(args={"skill_name": "skill1"}, tool_context=ctx)
+
+  assert result == {
+      "skill_name": "skill1",
+      "unloaded": True,
+      "active_skills": ["skill2"],
+  }
+  assert state["_adk_activated_skill_test_agent"] == ["skill2"]
+
+
+@pytest.mark.asyncio
+async def test_unload_skill_keeps_state_value_a_list_of_str(mock_skill1):
+  """Downstream consumers scan this key expecting list[str]; keep it so."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.UnloadSkillTool(toolset)
+  ctx, state = _dict_state_context(
+      {"_adk_activated_skill_test_agent": ["skill1"]}
+  )
+
+  await tool.run_async(args={"skill_name": "skill1"}, tool_context=ctx)
+
+  value = state["_adk_activated_skill_test_agent"]
+  assert isinstance(value, list)
+  assert not value
+
+
+@pytest.mark.asyncio
+async def test_unload_skill_is_scoped_to_its_own_agent(mock_skill1):
+  """A sibling agent's activation of the same skill is left alone."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.UnloadSkillTool(toolset)
+  ctx, state = _dict_state_context({
+      "_adk_activated_skill_test_agent": ["skill1"],
+      "_adk_activated_skill_other_agent": ["skill1"],
+  })
+
+  await tool.run_async(args={"skill_name": "skill1"}, tool_context=ctx)
+
+  assert not state["_adk_activated_skill_test_agent"]
+  assert state["_adk_activated_skill_other_agent"] == ["skill1"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "args, expected_result",
+    [
+        (
+            {},
+            {
+                "error": "Argument 'skill_name' is required.",
+                "error_code": "INVALID_ARGUMENTS",
+            },
+        ),
+        (
+            {"skill_name": ""},
+            {
+                "error": "Argument 'skill_name' is required.",
+                "error_code": "INVALID_ARGUMENTS",
+            },
+        ),
+        (
+            {"skill_name": "never_loaded"},
+            {
+                "error": "Skill 'never_loaded' is not active.",
+                "error_code": "SKILL_NOT_ACTIVE",
+            },
+        ),
+    ],
+)
+async def test_unload_skill_errors(mock_skill1, args, expected_result):
+  """Bad input and an inactive skill both come back as tool errors."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.UnloadSkillTool(toolset)
+  ctx, _ = _dict_state_context({"_adk_activated_skill_test_agent": ["skill1"]})
+
+  result = await tool.run_async(args=args, tool_context=ctx)
+
+  assert result == expected_result
+
+
+@pytest.mark.asyncio
+async def test_unload_skill_with_no_state(mock_skill1):
+  """An agent that never loaded anything has nothing to unload."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.UnloadSkillTool(toolset)
+  ctx, state = _dict_state_context()
+
+  result = await tool.run_async(args={"skill_name": "skill1"}, tool_context=ctx)
+
+  assert result["error_code"] == "SKILL_NOT_ACTIVE"
+  assert not state
+
+
+@pytest.mark.asyncio
+async def test_unload_skill_never_consults_the_registry(
+    mock_registry, mock_skill1
+):
+  """Unloading is pure state, so it survives a skill leaving the registry."""
+  mock_registry.get_skill.return_value = mock_skill1
+  toolset = skill_toolset.SkillToolset(registry=mock_registry)
+  tool = skill_toolset.UnloadSkillTool(toolset)
+  ctx, _ = _dict_state_context(
+      {"_adk_activated_skill_test_agent": ["gone_from_registry"]}
+  )
+
+  result = await tool.run_async(
+      args={"skill_name": "gone_from_registry"}, tool_context=ctx
+  )
+
+  assert result["unloaded"]
+  mock_registry.get_skill.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("skill_lifecycle_enabled")
+async def test_unload_skill_drops_the_skills_additional_tools(
+    mock_skill1, mock_skill1_frontmatter
+):
+  """Round trip: load exposes the dynamic tool, unload takes it away."""
+  mock_skill1_frontmatter.metadata = {"adk_additional_tools": ["my_tool"]}
+  custom_tool = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+  custom_tool.name = "my_tool"
+
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1], additional_tools=[custom_tool]
+  )
+  ctx, _ = _dict_state_context()
+
+  await skill_toolset.LoadSkillTool(toolset).run_async(
+      args={"skill_name": "skill1"}, tool_context=ctx
+  )
+  assert "my_tool" in {t.name for t in await toolset.get_tools(ctx)}
+
+  await skill_toolset.UnloadSkillTool(toolset).run_async(
+      args={"skill_name": "skill1"}, tool_context=ctx
+  )
+  assert "my_tool" not in {t.name for t in await toolset.get_tools(ctx)}
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("skill_lifecycle_enabled")
+async def test_unload_skill_can_be_reloaded(
+    mock_skill1, mock_skill1_frontmatter
+):
+  """Unloading is not permanent; the skill can come back."""
+  mock_skill1_frontmatter.metadata = {"adk_additional_tools": ["my_tool"]}
+  custom_tool = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+  custom_tool.name = "my_tool"
+
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1], additional_tools=[custom_tool]
+  )
+  load_tool = skill_toolset.LoadSkillTool(toolset)
+  unload_tool = skill_toolset.UnloadSkillTool(toolset)
+  ctx, state = _dict_state_context()
+
+  await load_tool.run_async(args={"skill_name": "skill1"}, tool_context=ctx)
+  await unload_tool.run_async(args={"skill_name": "skill1"}, tool_context=ctx)
+  await load_tool.run_async(args={"skill_name": "skill1"}, tool_context=ctx)
+
+  assert state["_adk_activated_skill_test_agent"] == ["skill1"]
+  assert "my_tool" in {t.name for t in await toolset.get_tools(ctx)}
+
+
+@pytest.mark.parametrize(
+    "response, expected",
+    [
+        ({"unloaded": True}, None),
+        (
+            {"error": "boom", "error_code": "SKILL_NOT_ACTIVE"},
+            "SKILL_NOT_ACTIVE",
+        ),
+        ({"error": "boom"}, "TOOL_ERROR"),
+    ],
+)
+def test_unload_skill_error_telemetry(mock_skill1, response, expected):
+  """The telemetry hook reports the error code, or None on success."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.UnloadSkillTool(toolset)
+
+  assert tool._detect_error_in_response(response) == expected
+
+
+async def _instruction_from_process_llm_request(toolset):
+  """Runs process_llm_request and returns the instruction it appended."""
+  ctx, _ = _dict_state_context()
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+  await toolset.process_llm_request(tool_context=ctx, llm_request=llm_req)
+  return llm_req.append_instructions.call_args[0][0][0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("skill_lifecycle_enabled")
+async def test_process_llm_request_mentions_unload_when_enabled(mock_skill1):
+  """The guidance reaches the request the toolset actually builds."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+
+  instruction = await _instruction_from_process_llm_request(toolset)
+
+  assert "`unload_skill`" in instruction
+  assert "NOT available" not in instruction
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("skill_lifecycle_enabled")
+async def test_process_llm_request_bans_a_filtered_out_unload(mock_skill1):
+  """Enabled but filtered out, unload_skill must be named in the ban notice.
+
+  Regression: unload_enabled was derived from the post-filter tool set, so it
+  was true exactly when unload_skill was not banned, leaving the branch dead.
+  """
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1], tool_filter=["list_skills", "load_skill"]
+  )
+
+  instruction = await _instruction_from_process_llm_request(toolset)
+
+  assert "NOT available" in instruction
+  assert "`unload_skill`" in instruction.split("NOT available")[1]
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_never_bans_unload_when_disabled(mock_skill1):
+  """With the feature off the tool does not exist, so it is not worth naming."""
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1], tool_filter=["list_skills", "load_skill"]
+  )
+
+  instruction = await _instruction_from_process_llm_request(toolset)
+
+  assert "NOT available" in instruction
+  assert "unload_skill" not in instruction

@@ -330,8 +330,10 @@ def test_model_input_context_with_include_contents_none_sub_agent():
       (
           "user",
           [
-              types.Part(text="For context:"),
-              types.Part(text="[agent1] said: Agent1 response: XYZ"),
+              testing_utils.other_agent_preamble_part(),
+              testing_utils.other_agent_part(
+                  "[agent1] said:", "Agent1 response: XYZ"
+              ),
           ],
       ),
   ]

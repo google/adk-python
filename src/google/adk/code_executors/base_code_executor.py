@@ -17,10 +17,12 @@ from __future__ import annotations
 import abc
 from typing import List
 from typing import Optional
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
-from ..agents.invocation_context import InvocationContext
+if TYPE_CHECKING:
+  from ..agents.invocation_context import InvocationContext
 from .code_execution_utils import CodeExecutionInput
 from .code_execution_utils import CodeExecutionResult
 

@@ -29,9 +29,11 @@ from .base_credential_service import BaseCredentialService
 class InMemoryCredentialService(BaseCredentialService):
   """Class for in memory implementation of credential service(Experimental)"""
 
-  def __init__(self):
+  def __init__(self) -> None:
     super().__init__()
-    self._credentials = {}
+    self._credentials: dict[
+        str, dict[str, dict[Optional[str], Optional[AuthCredential]]]
+    ] = {}
 
   @override
   async def load_credential(
@@ -55,7 +57,7 @@ class InMemoryCredentialService(BaseCredentialService):
 
   def _get_bucket_for_current_context(
       self, callback_context: CallbackContext
-  ) -> str:
+  ) -> dict[Optional[str], Optional[AuthCredential]]:
     app_name = callback_context._invocation_context.app_name
     user_id = callback_context._invocation_context.user_id
 

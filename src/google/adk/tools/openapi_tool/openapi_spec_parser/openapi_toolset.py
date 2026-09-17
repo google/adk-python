@@ -81,7 +81,7 @@ class OpenAPIToolset(BaseToolset):
       ] = None,
       httpx_client_factory: Optional[HttpxClientFactory] = None,
       preserve_property_names: bool = False,
-  ):
+  ) -> None:
     """Initializes the OpenAPIToolset.
 
     Usage::
@@ -166,7 +166,8 @@ class OpenAPIToolset(BaseToolset):
         else None
     )
     if not spec_dict:
-      spec_dict = self._load_spec(spec_str, spec_str_type)
+      # One of spec_dict or spec_str has to be provided by the caller.
+      spec_dict = self._load_spec(cast(str, spec_str), spec_str_type)
     self._ssl_verify = ssl_verify
     self._httpx_client_factory = httpx_client_factory
     self._tools: Final[List[RestApiTool]] = list(self._parse(spec_dict))
@@ -176,7 +177,9 @@ class OpenAPIToolset(BaseToolset):
       self._configure_credential_key_all(credential_key)
 
   def _configure_auth_all(
-      self, auth_scheme: AuthScheme, auth_credential: AuthCredential
+      self,
+      auth_scheme: Optional[AuthScheme],
+      auth_credential: Optional[AuthCredential],
   ) -> None:
     """Configure auth scheme and credential for all tools."""
 
@@ -212,7 +215,9 @@ class OpenAPIToolset(BaseToolset):
       tool.configure_ssl_verify(ssl_verify)
 
   @override
-  async def get_tools(
+  # list is invariant, so the narrower element type is not a compatible
+  # override; widening it to BaseTool would change this public signature.
+  async def get_tools(  # type: ignore[override]
       self, readonly_context: Optional[ReadonlyContext] = None
   ) -> List[RestApiTool]:
     """Get all tools in the toolset."""
@@ -232,11 +237,16 @@ class OpenAPIToolset(BaseToolset):
   ) -> Dict[str, Any]:
     """Loads the OpenAPI spec string into a dictionary."""
     if spec_type == "json":
-      return cast(Dict[str, Any], json.loads(spec_str))
+      loaded_spec: object = json.loads(spec_str)
     elif spec_type == "yaml":
-      return cast(Dict[str, Any], yaml.safe_load(spec_str))
+      loaded_spec = yaml.safe_load(spec_str)
     else:
       raise ValueError(f"Unsupported spec type: {spec_type}")
+
+    if not isinstance(loaded_spec, dict):
+      raise ValueError("The OpenAPI specification must be an object")
+
+    return cast(Dict[str, Any], loaded_spec)
 
   def _parse(self, openapi_spec_dict: Dict[str, Any]) -> List[RestApiTool]:
     """Parse OpenAPI spec into a list of RestApiTool."""
@@ -245,7 +255,7 @@ class OpenAPIToolset(BaseToolset):
     )
     operations = parser.parse(openapi_spec_dict)
 
-    tools = []
+    tools: List[RestApiTool] = []
     for o in operations:
       tool = RestApiTool.from_parsed_operation(
           o,

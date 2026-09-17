@@ -14,14 +14,18 @@
 
 from __future__ import annotations
 
+import collections
 import functools
 import json
+import re
+import threading
 import types
 from typing import Any
 from typing import Callable
 from typing import Optional
 import uuid
 
+from google.api_core import exceptions as api_exceptions
 from google.auth.credentials import Credentials
 from google.cloud import bigquery
 
@@ -30,7 +34,136 @@ from ...tools.tool_context import ToolContext
 from .config import BigQueryToolConfig
 from .config import WriteMode
 
+# The tool context state key the BigQuery session used to be read from. Nothing
+# in ADK reads or writes it any more.
 BIGQUERY_SESSION_INFO_KEY = "bigquery_session_info"
+
+# Number of sessions whose BigQuery session is remembered by this process
+_MAX_REMEMBERED_SESSIONS = 1024
+
+# BigQuery session id and anonymous dataset id of every session served so far,
+# keyed by the identity of the session. They are kept here rather than in the
+# tool context state because state is writable by the caller, and a BigQuery
+# session taken from there would run the queries in a session created for
+# someone else, and would decide which dataset the protected write mode
+# accepts writes to.
+_bq_sessions: collections.OrderedDict[tuple[str, str, str], tuple[Any, Any]] = (
+    collections.OrderedDict()
+)
+_bq_sessions_lock = threading.Lock()
+
+
+def _escape_single_quotes(s: str) -> str:
+  """Escape single quotes in a string for SQL literals.
+
+  This guards against SQL injection by ensuring that dynamic strings used within
+  SQL string literals (e.g., '...') cannot "break out" of the literal context.
+  It escapes backslashes first to prevent them from "eating" the closing quote
+  of the literal, and then escapes single quotes.
+
+  Example:
+      Input: "O'Reilly"
+      If used in a query: "SELECT * FROM users WHERE name =
+      '{}'".format(_escape_single_quotes(input))
+      Resulting SQL: "SELECT * FROM users WHERE name = 'O\'Reilly'"
+
+      Input: "'; DROP TABLE users; --"
+      Resulting SQL: "SELECT * FROM users WHERE name = '\'; DROP TABLE users;
+      --'"
+      (The single quote is escaped, so it is treated as part of the string value
+      rather than terminating it).
+  """
+  return s.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def _is_valid_table_identifier(name: str) -> bool:
+  """Check if a string is a valid BigQuery table identifier.
+
+  This guards against SQL injection by validating that dynamic identifiers
+  (like table names), which cannot be parameterized,
+  contain only safe characters (alphanumeric, underscores, dots, hyphens,
+  colons).
+
+  Example:
+      Valid: "my_project:my_dataset.my_table"
+      Valid: "my_table_name"
+      Invalid: "my_table; DROP TABLE users;"
+      Invalid: "my_table ;"
+
+  Returns:
+      bool: True if valid, False otherwise.
+  """
+  if not isinstance(name, str):
+    return False
+  return bool(re.fullmatch(r"[A-Za-z0-9_.:-]+", name))
+
+
+def _is_valid_column_identifier(name: str) -> bool:
+  """Check if a string is a valid BigQuery column identifier.
+
+  This guards against SQL injection by validating that column identifiers
+  contain only safe characters (alphanumeric, underscores, hyphens).
+  Excluding dots or colons here is appropriate as defense-in-depth, ensuring
+  we are dealing with simple column names in contexts where they are dynamically
+  injected.
+
+  Example:
+      Valid: "my_column_name"
+      Valid: "my-column-name"
+      Invalid: "my_project:my_dataset.my_table"
+      Invalid: "my_table; DROP TABLE users;"
+
+  Returns:
+      bool: True if valid, False otherwise.
+  """
+  if not isinstance(name, str):
+    return False
+  return bool(re.fullmatch(r"[A-Za-z0-9_-]+", name))
+
+
+def _validate_subquery(
+    subquery: str,
+    project_id: str,
+    credentials: Credentials,
+    settings: BigQueryToolConfig,
+    caller_id: str,
+) -> Optional[dict[str, Any]]:
+  """Dry runs a subquery and validates it is a SELECT statement."""
+  try:
+    bq_client = client.get_bigquery_client(
+        project=project_id,
+        credentials=credentials,
+        location=settings.location,
+        user_agent=[settings.application_name, caller_id],
+    )
+    bq_job_labels = (
+        settings.job_labels.copy() if settings and settings.job_labels else {}
+    )
+    bq_job_labels["adk-bigquery-tool"] = caller_id
+    if settings and settings.application_name:
+      bq_job_labels["adk-bigquery-application-name"] = settings.application_name
+
+    dry_run_job = bq_client.query(
+        subquery,
+        project=project_id,
+        job_config=bigquery.QueryJobConfig(dry_run=True, labels=bq_job_labels),
+    )
+    if dry_run_job.statement_type != "SELECT":
+      return {
+          "status": "ERROR",
+          "error_details": "Subquery must be a SELECT statement.",
+      }
+    return None
+  except (api_exceptions.BadRequest, api_exceptions.NotFound) as ex:
+    return {
+        "status": "ERROR",
+        "error_details": f"Invalid subquery: {str(ex)}",
+    }
+  except Exception as ex:  # pylint: disable=broad-except
+    return {
+        "status": "ERROR",
+        "error_details": f"Subquery dry run validation failed: {str(ex)}",
+    }
 
 
 def _execute_sql(
@@ -95,8 +228,14 @@ def _execute_sql(
       # In protected write mode, write operation only to a temporary artifact is
       # allowed. This artifact must have been created in a BigQuery session. In
       # such a scenario, the session info (session id and the anonymous dataset
-      # containing the artifact) is persisted in the tool context.
-      bq_session_info = tool_context.state.get(BIGQUERY_SESSION_INFO_KEY, None)
+      # containing the artifact) is remembered for the invocation's session.
+      session_key = (
+          tool_context.session.app_name,
+          tool_context.session.user_id,
+          tool_context.session.id,
+      )
+      with _bq_sessions_lock:
+        bq_session_info = _bq_sessions.get(session_key)
       if bq_session_info:
         bq_session_id, bq_session_dataset_id = bq_session_info
       else:
@@ -111,10 +250,13 @@ def _execute_sql(
         bq_session_dataset_id = session_creator_job.destination.dataset_id
 
         # Remember the BigQuery session info for subsequent queries
-        tool_context.state[BIGQUERY_SESSION_INFO_KEY] = (
-            bq_session_id,
-            bq_session_dataset_id,
-        )
+        with _bq_sessions_lock:
+          _bq_sessions[session_key] = (
+              bq_session_id,
+              bq_session_dataset_id,
+          )
+          if len(_bq_sessions) > _MAX_REMEMBERED_SESSIONS:
+            _bq_sessions.popitem(last=False)
 
       # Session connection property will be set in the query execution
       bq_connection_properties.append(
@@ -912,19 +1054,54 @@ def forecast(
   """
   model = "TimesFM 2.0"
   confidence_level = 0.95
+
+  try:
+    horizon = int(horizon)
+  except (TypeError, ValueError):
+    return {
+        "status": "ERROR",
+        "error_details": "horizon must be an integer.",
+    }
+
   trimmed_upper_history_data = history_data.strip().upper()
   if trimmed_upper_history_data.startswith(
       "SELECT"
   ) or trimmed_upper_history_data.startswith("WITH"):
+    validation_error = _validate_subquery(
+        history_data, project_id, credentials, settings, "forecast"
+    )
+    if validation_error:
+      return validation_error
     history_data_source = f"({history_data})"
   else:
+    if not _is_valid_table_identifier(history_data):
+      return {
+          "status": "ERROR",
+          "error_details": f"Invalid BigQuery identifier: {history_data}",
+      }
     history_data_source = f"TABLE `{history_data}`"
+
+  if not _is_valid_column_identifier(data_col):
+    return {
+        "status": "ERROR",
+        "error_details": f"Invalid BigQuery identifier: {data_col}",
+    }
+  if not _is_valid_column_identifier(timestamp_col):
+    return {
+        "status": "ERROR",
+        "error_details": f"Invalid BigQuery identifier: {timestamp_col}",
+    }
 
   if id_cols:
     if not all(isinstance(item, str) for item in id_cols):
       return {
           "status": "ERROR",
           "error_details": "All elements in id_cols must be strings.",
+      }
+    if not all(_is_valid_column_identifier(item) for item in id_cols):
+      return {
+          "status": "ERROR",
+          "error_details": "All elements in id_cols must be valid identifiers.",
       }
     id_cols_str = "[" + ", ".join([f"'{col}'" for col in id_cols]) + "]"
 
@@ -1076,15 +1253,37 @@ def analyze_contribution(
         "error_details": "All elements in dimension_id_cols must be strings.",
     }
 
+  if not all(_is_valid_column_identifier(item) for item in dimension_id_cols):
+    return {
+        "status": "ERROR",
+        "error_details": (
+            "All elements in dimension_id_cols must be valid identifiers."
+        ),
+    }
+
   # Generate a unique temporary model name
   model_name = (
       f"contribution_analysis_model_{str(uuid.uuid4()).replace('-', '_')}"
   )
 
+  try:
+    top_k_insights = int(top_k_insights)
+  except (TypeError, ValueError):
+    return {
+        "status": "ERROR",
+        "error_details": "top_k_insights must be an integer.",
+    }
+
+  if not _is_valid_column_identifier(is_test_col):
+    return {
+        "status": "ERROR",
+        "error_details": f"Invalid BigQuery identifier: {is_test_col}",
+    }
+
   id_cols_str = "[" + ", ".join([f"'{col}'" for col in dimension_id_cols]) + "]"
   options = [
       "MODEL_TYPE = 'CONTRIBUTION_ANALYSIS'",
-      f"CONTRIBUTION_METRIC = '{contribution_metric}'",
+      f"CONTRIBUTION_METRIC = '{_escape_single_quotes(contribution_metric)}'",
       f"IS_TEST_COL = '{is_test_col}'",
       f"DIMENSION_ID_COLS = {id_cols_str}",
   ]
@@ -1105,8 +1304,18 @@ def analyze_contribution(
   if trimmed_upper_input_data.startswith(
       "SELECT"
   ) or trimmed_upper_input_data.startswith("WITH"):
+    validation_error = _validate_subquery(
+        input_data, project_id, credentials, settings, "analyze_contribution"
+    )
+    if validation_error:
+      return validation_error
     input_data_source = f"({input_data})"
   else:
+    if not _is_valid_table_identifier(input_data):
+      return {
+          "status": "ERROR",
+          "error_details": f"Invalid BigQuery identifier: {input_data}",
+      }
     input_data_source = f"SELECT * FROM `{input_data}`"
 
   create_model_query = f"""
@@ -1293,12 +1502,53 @@ def detect_anomalies(
             location US"
           }
   """
+  try:
+    horizon = int(horizon)
+  except (TypeError, ValueError):
+    return {
+        "status": "ERROR",
+        "error_details": "horizon must be an integer.",
+    }
+
+  try:
+    anomaly_prob_threshold = float(anomaly_prob_threshold)
+  except (TypeError, ValueError):
+    return {
+        "status": "ERROR",
+        "error_details": "anomaly_prob_threshold must be a number.",
+    }
+
+  if not _is_valid_column_identifier(times_series_timestamp_col):
+    return {
+        "status": "ERROR",
+        "error_details": (
+            f"Invalid BigQuery identifier: {times_series_timestamp_col}"
+        ),
+    }
+  if not _is_valid_column_identifier(times_series_data_col):
+    return {
+        "status": "ERROR",
+        "error_details": (
+            f"Invalid BigQuery identifier: {times_series_data_col}"
+        ),
+    }
+
   trimmed_upper_history_data = history_data.strip().upper()
   if trimmed_upper_history_data.startswith(
       "SELECT"
   ) or trimmed_upper_history_data.startswith("WITH"):
+    validation_error = _validate_subquery(
+        history_data, project_id, credentials, settings, "detect_anomalies"
+    )
+    if validation_error:
+      return validation_error
     history_data_source = f"({history_data})"
   else:
+    if not _is_valid_table_identifier(history_data):
+      return {
+          "status": "ERROR",
+          "error_details": f"Invalid BigQuery identifier: {history_data}",
+      }
     history_data_source = f"SELECT * FROM `{history_data}`"
 
   options = [
@@ -1316,6 +1566,15 @@ def detect_anomalies(
               "All elements in times_series_id_cols must be strings."
           ),
       }
+    if not all(
+        _is_valid_column_identifier(item) for item in times_series_id_cols
+    ):
+      return {
+          "status": "ERROR",
+          "error_details": (
+              "All elements in times_series_id_cols must be valid identifiers."
+          ),
+      }
     times_series_id_cols_str = (
         "[" + ", ".join([f"'{col}'" for col in times_series_id_cols]) + "]"
     )
@@ -1331,25 +1590,35 @@ def detect_anomalies(
   AS {history_data_source}
   """
   order_by_id_cols = (
-      ", ".join(col for col in times_series_id_cols) + ", "
+      ", ".join(f"`{col}`" for col in times_series_id_cols) + ", "
       if times_series_id_cols
       else ""
   )
 
   anomaly_detection_query = f"""
-  SELECT * FROM ML.DETECT_ANOMALIES(MODEL {model_name}, STRUCT({anomaly_prob_threshold} AS anomaly_prob_threshold)) ORDER BY {order_by_id_cols}{times_series_timestamp_col}
+  SELECT * FROM ML.DETECT_ANOMALIES(MODEL {model_name}, STRUCT({anomaly_prob_threshold} AS anomaly_prob_threshold)) ORDER BY {order_by_id_cols}`{times_series_timestamp_col}`
   """
   if target_data:
     trimmed_upper_target_data = target_data.strip().upper()
     if trimmed_upper_target_data.startswith(
         "SELECT"
     ) or trimmed_upper_target_data.startswith("WITH"):
+      validation_error = _validate_subquery(
+          target_data, project_id, credentials, settings, "detect_anomalies"
+      )
+      if validation_error:
+        return validation_error
       target_data_source = f"({target_data})"
     else:
+      if not _is_valid_table_identifier(target_data):
+        return {
+            "status": "ERROR",
+            "error_details": f"Invalid BigQuery identifier: {target_data}",
+        }
       target_data_source = f"(SELECT * FROM `{target_data}`)"
 
     anomaly_detection_query = f"""
-    SELECT * FROM ML.DETECT_ANOMALIES(MODEL {model_name}, STRUCT({anomaly_prob_threshold} AS anomaly_prob_threshold), {target_data_source}) ORDER BY {order_by_id_cols}{times_series_timestamp_col}
+    SELECT * FROM ML.DETECT_ANOMALIES(MODEL {model_name}, STRUCT({anomaly_prob_threshold} AS anomaly_prob_threshold), {target_data_source}) ORDER BY {order_by_id_cols}`{times_series_timestamp_col}`
     """
 
   # Create a session and run the create model query.

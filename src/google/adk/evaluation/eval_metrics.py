@@ -107,6 +107,14 @@ class JudgeModelOptions(EvalBaseModel):
       ),
   )
 
+  parallelism_limit: int = Field(
+      default=1,
+      ge=1,
+      description=(
+          "The maximum number of parallel LLM evaluation calls to execute."
+      ),
+  )
+
 
 class BaseCriterion(BaseModel):
   """Base criterion to use for an Eval Metric."""
@@ -248,6 +256,13 @@ class ToolTrajectoryCriterion(BaseCriterion):
       description=(
           "The type of Match between actual and expected tool call"
           " trajectories."
+      ),
+  )
+
+  ignore_args: bool = Field(
+      default=False,
+      description=(
+          "If True, only tool names are compared; arguments are ignored."
       ),
   )
 

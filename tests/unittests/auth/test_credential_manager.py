@@ -330,6 +330,70 @@ class TestCredentialManager:
     assert result is None
 
   @pytest.mark.asyncio
+  async def test_get_auth_credential_service_account_skips_cache(
+      self, mocker, service_account_credential
+  ):
+    """Test that Service Account credentials bypass the load/save cache."""
+    from fastapi.openapi.models import OAuth2
+    from fastapi.openapi.models import OAuthFlowClientCredentials
+    from fastapi.openapi.models import OAuthFlows
+    from google.adk.auth.auth_credential import HttpAuth
+    from google.adk.auth.auth_credential import HttpCredentials
+
+    auth_scheme = OAuth2(
+        flows=OAuthFlows(
+            clientCredentials=OAuthFlowClientCredentials(
+                tokenUrl="https://example.com/token",
+                scopes={},
+            )
+        )
+    )
+
+    auth_config = AuthConfig(
+        auth_scheme=auth_scheme,
+        raw_auth_credential=service_account_credential,
+    )
+
+    exchanged_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.HTTP,
+        http=HttpAuth(
+            scheme="bearer",
+            credentials=HttpCredentials(token="sa-access-token"),
+        ),
+    )
+
+    tool_context = mocker.Mock(spec=CallbackContext)
+
+    manager = CredentialManager(auth_config)
+
+    # Mock the private methods
+    manager._validate_credential = mocker.AsyncMock()
+    manager._is_credential_ready = mocker.Mock(return_value=False)
+    manager._load_existing_credential = mocker.AsyncMock()
+    manager._load_from_auth_response = mocker.AsyncMock(return_value=None)
+    manager._exchange_credential = mocker.AsyncMock(
+        return_value=(exchanged_credential, True)
+    )
+    manager._refresh_credential = mocker.AsyncMock(
+        return_value=(exchanged_credential, False)
+    )
+    manager._save_credential = mocker.AsyncMock()
+    manager._is_client_credentials_flow = mocker.Mock(return_value=True)
+
+    result = await manager.get_auth_credential(tool_context)
+
+    # Verify load and save were NOT called
+    manager._load_existing_credential.assert_not_called()
+    manager._save_credential.assert_not_called()
+
+    # Verify exchange WAS called
+    manager._exchange_credential.assert_called_once()
+    called_arg = manager._exchange_credential.call_args[0][0]
+    assert called_arg.auth_type == AuthCredentialTypes.SERVICE_ACCOUNT
+
+    assert result == exchanged_credential
+
+  @pytest.mark.asyncio
   async def test_load_existing_credential_already_exchanged(self):
     """Test _load_existing_credential ignores shared config cache."""
     auth_config = Mock(spec=AuthConfig)

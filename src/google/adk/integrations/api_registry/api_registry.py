@@ -25,6 +25,7 @@ from google.adk.tools.base_toolset import ToolPredicate
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.adk.utils import _mtls_utils
+from google.adk.utils._google_client_headers import merge_tracking_headers
 import google.auth
 from google.auth.transport import mtls
 from google.auth.transport import requests as requests_auth
@@ -116,6 +117,7 @@ class ApiRegistry:
       }
       if quota_project_id:
         headers["x-goog-user-project"] = quota_project_id
+      headers = merge_tracking_headers(headers)
 
       page_token = None
       with requests_auth.AuthorizedSession(

@@ -17,9 +17,9 @@ from typing import Any
 from typing import AsyncGenerator
 
 from google.adk.agents.context import Context
-from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.events.event import Event
+from google.adk.live import LiveRequestQueue
 from google.adk.models.llm_response import LlmResponse
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService

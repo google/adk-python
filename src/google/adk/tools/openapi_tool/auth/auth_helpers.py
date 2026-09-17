@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import base64
 from typing import Any
 from typing import Dict
 from typing import List
@@ -26,6 +27,8 @@ from fastapi.openapi.models import APIKeyIn
 from fastapi.openapi.models import HTTPBase
 from fastapi.openapi.models import HTTPBearer
 from fastapi.openapi.models import OAuth2
+from fastapi.openapi.models import OAuthFlowClientCredentials
+from fastapi.openapi.models import OAuthFlows
 from fastapi.openapi.models import OpenIdConnect
 from fastapi.openapi.models import Schema
 import httpx
@@ -152,13 +155,40 @@ def token_to_scheme_credential(
     raise ValueError(f"Invalid security scheme type: {type}")
 
 
+def _service_account_auth_scheme() -> OAuth2:
+  """Auth scheme for Google Service Account credentials.
+
+  CredentialManager only auto-loads raw non-interactive credentials when the
+  scheme is an OAuth2/OIDC client-credentials flow. An HTTPBearer scheme makes
+  ``_is_client_credentials_flow`` return False, so ``get_auth_credential``
+  returns None and the tool falls back to ``adk_request_credential`` instead of
+  exchanging the service account for a token.
+
+  The token URL is unused by ServiceAccountCredentialExchanger (ADC / JWT
+  assertion), but is required by the OAuth2 client-credentials model.
+  """
+  return OAuth2(
+      flows=OAuthFlows(
+          clientCredentials=OAuthFlowClientCredentials(
+              # Placeholder only; SA exchange does not call this endpoint.
+              # Use the mTLS host form for compliance with Google API endpoint
+              # requirements.
+              tokenUrl="https://oauth2.mtls.googleapis.com/token",
+              scopes={},
+          )
+      )
+  )
+
+
 def service_account_dict_to_scheme_credential(
     config: Dict[str, Any],
     scopes: List[str],
 ) -> Tuple[AuthScheme, AuthCredential]:
   """Creates AuthScheme and AuthCredential for Google Service Account.
 
-  Returns a bearer token scheme, and a service account credential.
+  Returns an OAuth2 client-credentials scheme (so CredentialManager can
+  exchange the service account) and a service account credential. After
+  exchange the credential is an HTTP bearer token.
 
   Args:
       config: A ServiceAccount object containing the Google Service Account
@@ -168,7 +198,6 @@ def service_account_dict_to_scheme_credential(
   Returns:
       Tuple: (AuthScheme, AuthCredential)
   """
-  auth_scheme = HTTPBearer(bearerFormat="JWT")
   service_account = ServiceAccount(
       service_account_credential=ServiceAccountCredential.model_construct(
           **config
@@ -179,7 +208,7 @@ def service_account_dict_to_scheme_credential(
       auth_type=AuthCredentialTypes.SERVICE_ACCOUNT,
       service_account=service_account,
   )
-  return auth_scheme, auth_credential
+  return _service_account_auth_scheme(), auth_credential
 
 
 def service_account_scheme_credential(
@@ -187,7 +216,9 @@ def service_account_scheme_credential(
 ) -> Tuple[AuthScheme, AuthCredential]:
   """Creates AuthScheme and AuthCredential for Google Service Account.
 
-  Returns a bearer token scheme, and a service account credential.
+  Returns an OAuth2 client-credentials scheme (so CredentialManager can
+  exchange the service account) and a service account credential. After
+  exchange the credential is an HTTP bearer token.
 
   Args:
       config: A ServiceAccount object containing the Google Service Account
@@ -196,11 +227,10 @@ def service_account_scheme_credential(
   Returns:
       Tuple: (AuthScheme, AuthCredential)
   """
-  auth_scheme = HTTPBearer(bearerFormat="JWT")
   auth_credential = AuthCredential(
       auth_type=AuthCredentialTypes.SERVICE_ACCOUNT, service_account=config
   )
-  return auth_scheme, auth_credential
+  return _service_account_auth_scheme(), auth_credential
 
 
 def openid_dict_to_scheme_credential(
@@ -323,6 +353,7 @@ def credential_to_param(
 
   This function now supports all credential types returned by the exchangers:
   - API Key
+  - HTTP Basic
   - HTTP Bearer (for Bearer tokens, OAuth2, Service Account, OpenID Connect)
   - OAuth2 and OpenID Connect (returns None, None, as the token is now a Bearer
   token)
@@ -334,6 +365,9 @@ def credential_to_param(
 
   Returns:
       Tuple: (ApiParameter, Dict[str, Any])
+
+  Raises:
+      ValueError: If the API key location or HTTP auth credentials are invalid.
   """
   if not auth_credential:
     return None, None
@@ -389,14 +423,37 @@ def credential_to_param(
     elif (
         auth_credential
         and auth_credential.http
+        and auth_credential.http.scheme
+        and auth_credential.http.scheme.lower() == "basic"
         and auth_credential.http.credentials
         and (
-            auth_credential.http.credentials.username
-            or auth_credential.http.credentials.password
+            auth_credential.http.credentials.username is not None
+            or auth_credential.http.credentials.password is not None
         )
     ):
-      # Basic Auth is explicitly NOT supported
-      raise NotImplementedError("Basic Authentication is not supported.")
+      credentials = auth_credential.http.credentials
+      username = credentials.username or ""
+      if ":" in username:
+        raise ValueError(
+            "Invalid HTTP auth credentials: username cannot contain colons"
+        )
+      password = credentials.password or ""
+      encoded_credentials = base64.b64encode(
+          f"{username}:{password}".encode("utf-8")
+      ).decode("ascii")
+      python_name = INTERNAL_AUTH_PREFIX + "Authorization"
+      param = ApiParameter(
+          original_name="Authorization",
+          param_location="header",
+          param_schema=Schema(type="string"),
+          description=(
+              getattr(auth_scheme, "description", None)
+              or "Basic authentication"
+          ),
+          py_name=python_name,
+      )
+      kwargs = {python_name: f"Basic {encoded_credentials}"}
+      return param, kwargs
     else:
       raise ValueError("Invalid HTTP auth credentials")
 

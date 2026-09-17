@@ -34,8 +34,8 @@ class LlmResponse(BaseModel):
   Attributes:
     content: The content of the response.
     grounding_metadata: The grounding metadata of the response.
-    partial: Indicates whether the text content is part of an unfinished text
-      stream. Only used for streaming mode and when the content is plain text.
+    partial: Marks this response as an incomplete fragment of a larger
+      response. Only used for streaming mode.
     turn_complete: Indicates whether the response from the model is complete.
       Only used for streaming mode.
     error_code: Error code if the response is an error. Code varies by model.
@@ -70,9 +70,16 @@ class LlmResponse(BaseModel):
   """The grounding metadata of the response."""
 
   partial: Optional[bool] = None
-  """Indicates whether the text content is part of an unfinished text stream.
+  """Marks this response as an incomplete fragment of a larger response.
 
-  Only used for streaming mode and when the content is plain text.
+  Only used in streaming mode, where a producer emits zero or more fragments
+  and then one response with ``partial`` false or unset that carries the
+  complete content.
+
+  A fragment is a display hint. Its content may be truncated, may be repeated
+  by the completed response, and may hold a function call whose arguments have
+  not finished arriving. Nothing may execute a tool, persist an event, or end a
+  turn based on a fragment.
   """
 
   turn_complete: Optional[bool] = None
@@ -85,6 +92,26 @@ class LlmResponse(BaseModel):
   """The reason why the turn is complete.
 
   Only used for streaming mode.
+  """
+
+  interaction_status: Optional[types.InteractionStatus] = None
+  """The activity status of the live session, reported with `turn_complete`.
+
+  Newer live models may answer a single user prompt with several model turns, so
+  `turn_complete` alone no longer means the model is done. This field
+  disambiguates the two:
+
+  * `IN_PROGRESS`: the model is still working on the user's prompt; more turns
+    will follow, so the app should not treat the interaction as finished (e.g.
+    should not re-enable the microphone yet).
+  * `IDLE`: the model has finished processing the user's prompt and is waiting
+    for further user input.
+
+  It stays `None` for models that don't report it. Callers building a
+  turn-taking UI should fall back to treating `turn_complete == True` as
+  terminal whenever `interaction_status` is `None`.
+
+  NOTE: this is not related to the Interactions API InteractionStatusUpdate.
   """
 
   finish_reason: Optional[types.FinishReason] = None

@@ -461,3 +461,41 @@ async def test_optimize_logs_warning_on_overlapping_ids(
       " aliasing issues unless each common UID refers to the same example"
       " in both sets."
   )
+
+
+def test_adapter_evaluate_missing_example_id_in_scores(
+    mocker, mock_gepa, mock_sampler, mock_agent, caplog
+):
+  del mock_gepa  # only needed to mock gepa in background
+  loop = mocker.create_autospec(asyncio.AbstractEventLoop, instance=True)
+  mock_reflection_lm = mocker.create_autospec(Callable)
+  _AdapterClass = _create_agent_gepa_adapter_class()
+  adapter = _AdapterClass(mock_agent, mock_sampler, loop, mock_reflection_lm)
+
+  candidate = {"agent_prompt": "New prompt"}
+  batch = ["train1", "train2"]
+
+  mock_future = mocker.create_autospec(asyncio.Future, instance=True)
+  expected_result = UnstructuredSamplingResult(
+      scores={"train1": 0.8},
+      data={"train1": {"output": "result"}},
+  )
+  mock_future.result.return_value = expected_result
+
+  mocker.patch.object(
+      asyncio,
+      "run_coroutine_threadsafe",
+      return_value=mock_future,
+      autospec=True,
+  )
+  with caplog.at_level("WARNING"):
+    eval_batch = adapter.evaluate(batch, candidate, capture_traces=True)
+
+  assert isinstance(eval_batch, MockEvaluationBatchSpec)
+  assert eval_batch.scores == [0.8, 0.0]
+  assert eval_batch.outputs == [{"output": "result"}, {}]
+  assert eval_batch.trajectories == [{"output": "result"}, {}]
+  assert (
+      "Example train2 missing from sampling result; scoring it 0.0."
+      in caplog.text
+  )

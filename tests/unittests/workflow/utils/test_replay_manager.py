@@ -19,7 +19,9 @@ from unittest.mock import MagicMock
 
 from google.adk.events.event import Event
 from google.adk.events.event import NodeInfo
+from google.adk.events.event_actions import EventActions
 from google.adk.workflow.utils._replay_manager import ReplayManager
+from google.genai import types
 import pytest
 
 
@@ -39,6 +41,7 @@ def _make_event(
   event.invocation_id = invocation_id
   event.author = "node"
   event.output = output
+  event.error_code = None
   event.partial = False
   event.node_info = MagicMock(spec=NodeInfo)
   event.node_info.path = path
@@ -137,7 +140,7 @@ def test_build_event_index_groups_events_by_parent_and_transitive_ancestors():
   )
   events = [e_a, e_b, e_c, e_user]
 
-  mgr._build_event_index(events, invocation_id="inv-1")
+  mgr._build_event_index(events)
 
   assert mgr._events_by_parent["wf@1"] == [e_a, e_c, e_user]
   assert mgr._events_by_parent["wf@1/child_a@1"] == [e_b]
@@ -146,6 +149,52 @@ def test_build_event_index_groups_events_by_parent_and_transitive_ancestors():
   assert e_a in mgr._transitive_events_by_parent["wf@1"]
   assert e_a not in mgr._transitive_events_by_parent.get("wf@1/child_a@1", [])
   assert e_user in mgr._transitive_events_by_parent["wf@1"]
+
+
+def test_build_event_index_matches_branch_run_ids_not_substrings():
+  """A branch places the event only under the parent owning its exact run id.
+
+  `fc-1` is a substring of `fc-10`, so a raw `in` test on the branch string
+  would file the event under both. The two calls sit on separate branches so
+  that their parent paths — what the index is keyed by — differ.
+  """
+  from google.genai import types
+
+  mgr = ReplayManager()
+  e_short = Event(
+      author="node",
+      node_info=NodeInfo(path="wf@1/branch_x@1/child_a@1"),
+      invocation_id="inv-1",
+      long_running_tool_ids=["fc-1"],
+  )
+  e_long = Event(
+      author="node",
+      node_info=NodeInfo(path="wf@1/branch_y@1/child_b@1"),
+      invocation_id="inv-1",
+      long_running_tool_ids=["fc-10"],
+  )
+  # Its own response id matches no call, so only the branch can place it.
+  e_user = Event(
+      author="user",
+      invocation_id="inv-1",
+      branch="wf@1.child_b@fc-10",
+      content=types.Content(
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      name="adk_request_input",
+                      id="resp-99",
+                      response={"result": "ok"},
+                  )
+              )
+          ]
+      ),
+  )
+
+  mgr._build_event_index([e_short, e_long, e_user])
+
+  assert e_user in mgr._events_by_parent["wf@1/branch_y@1"]
+  assert e_user not in mgr._events_by_parent.get("wf@1/branch_x@1", [])
 
 
 def test_get_events_for_rehydration_lazily_builds_event_index():
@@ -399,6 +448,43 @@ async def test_scan_workflow_events_sequence_empty_when_all_events_are_prior():
   await asyncio.wait_for(mgr.sequence_barrier.wait("anything"), timeout=1)
 
 
+def test_scan_workflow_events_sequence_ignores_reemitted_completion_echo() -> (
+    None
+):
+  """A fast-forwarded node's resurfaced output does not reorder the sequence."""
+  mgr = ReplayManager()
+  hitl_1 = Event(
+      author="node",
+      node_info=NodeInfo(path="wf@1/hitl@1", run_id="1"),
+      invocation_id="inv-1",
+      output="rejected_1",
+      actions=EventActions(route="rejected"),
+  )
+  revise_1 = Event(
+      author="node",
+      node_info=NodeInfo(path="wf@1/revise@1", run_id="1"),
+      invocation_id="inv-1",
+      actions=EventActions(route="review"),
+  )
+  hitl_1_echo = Event(
+      author="node",
+      node_info=NodeInfo(path="wf@1/hitl@1", run_id="1"),
+      invocation_id="inv-1",
+      output="rejected_1",
+  )
+
+  ctx = MagicMock()
+  ctx._invocation_context = MagicMock()
+  ctx._invocation_context.invocation_id = "inv-1"
+  ctx._invocation_context.session = MagicMock()
+  ctx._invocation_context.session.events = [hitl_1, revise_1, hitl_1_echo]
+  ctx.node_path = "wf@1"
+
+  _, sequence = mgr.scan_workflow_events(ctx)
+
+  assert sequence == ["hitl@1", "revise@1"]
+
+
 def _recorded_two_step_ctx():
   """A ctx whose session records alpha completing before beta."""
   alpha = Event(
@@ -493,3 +579,440 @@ async def test_advance_sequence_for_unprepared_path_leaves_other_barriers_alone(
 
   assert barrier.current_index == 0
   assert not barrier.events["beta@1"].is_set()
+
+
+def _ctx_over(events):
+  """A Context whose session holds `events`."""
+  ctx = MagicMock()
+  ctx._invocation_context = MagicMock()
+  ctx._invocation_context.invocation_id = "inv-1"
+  ctx._invocation_context.session = MagicMock()
+  ctx._invocation_context.session.events = events
+  return ctx
+
+
+def _index_snapshot(mgr):
+  """The index contents, keyed by parent path, as identity lists."""
+  return (
+      {k: [id(e) for e in v] for k, v in mgr._events_by_parent.items()},
+      {
+          k: [id(e) for e in v]
+          for k, v in mgr._transitive_events_by_parent.items()
+      },
+  )
+
+
+def test_extending_the_index_matches_a_full_rebuild() -> None:
+  """Indexing events in batches gives the same index as indexing them at once.
+
+  The session grows while a run is in flight, so the index is extended rather
+  than rebuilt on every append. That is only sound if the incremental result is
+  indistinguishable from the one-shot result.
+  """
+  events = [
+      _make_event(path="wf/a@1", output="a"),
+      _make_event(path="wf/b@1", output="b"),
+      _make_event(path="wf/b@1/deep@1", output="deep"),
+      _make_event(path="wf/c@1", output="c"),
+  ]
+
+  one_shot = ReplayManager()
+  one_shot._ensure_index(_ctx_over(list(events)))
+
+  incremental = ReplayManager()
+  growing: list = []
+  for event in events:
+    growing.append(event)
+    incremental._ensure_index(_ctx_over(growing))
+
+  assert _index_snapshot(incremental) == _index_snapshot(one_shot)
+
+
+def test_index_is_rebuilt_when_history_is_replaced() -> None:
+  """A rewind that keeps the event count must not leave a stale index.
+
+  Detecting staleness by event count alone would keep buckets pointing at
+  events the session no longer has.
+  """
+  original = [
+      _make_event(path="wf/a@1", output="a"),
+      _make_event(path="wf/b@1", output="b"),
+  ]
+  mgr = ReplayManager()
+  mgr._ensure_index(_ctx_over(original))
+
+  # Same length, different events -- as after a rewind or a compaction.
+  replaced = [
+      _make_event(path="wf/x@1", output="x"),
+      _make_event(path="wf/y@1", output="y"),
+  ]
+  mgr._ensure_index(_ctx_over(replaced))
+
+  indexed = {
+      id(e) for v in mgr._transitive_events_by_parent.values() for e in v
+  }
+  assert indexed == {id(e) for e in replaced}
+
+
+def test_interrupt_ownership_survives_an_incremental_update() -> None:
+  """A user reply indexed later still routes to the call indexed earlier.
+
+  Interrupt ownership used to be a local of the one-shot build; extending the
+  index in batches only works if it is carried across calls.
+  """
+  call = _make_event(path="wf/asker@1", interrupt_ids=["fc_1"])
+  mgr = ReplayManager()
+  mgr._ensure_index(_ctx_over([call]))
+
+  reply = _make_event(path="", invocation_id="inv-1")
+  reply.author = "user"
+  reply.content = MagicMock()
+  part = MagicMock()
+  part.function_response = MagicMock()
+  part.function_response.id = "fc_1"
+  reply.content.parts = [part]
+
+  mgr._ensure_index(_ctx_over([call, reply]))
+
+  # The reply is filed under the asker's parent path, not under root.
+  assert id(reply) in [id(e) for e in mgr._events_by_parent.get("wf", [])]
+
+
+def test_scan_workflow_events_sequence_ignores_reemitted_echo_for_message_as_output() -> (
+    None
+):
+  """A re-emitted output echo for message_as_output must not reorder the sequence."""
+  mgr = ReplayManager()
+  agent_1 = Event(
+      author="agent",
+      node_info=NodeInfo(
+          path="wf@1/agent@1", run_id="1", message_as_output=True
+      ),
+      invocation_id="inv-1",
+      content=types.Content(parts=[types.Part(text="done_a")]),
+  )
+  step_1 = Event(
+      author="node",
+      node_info=NodeInfo(path="wf@1/step@1", run_id="1"),
+      invocation_id="inv-1",
+      output="done_step",
+  )
+  agent_1_echo = Event(
+      author="agent",
+      node_info=NodeInfo(path="wf@1/agent@1", run_id="1"),
+      invocation_id="inv-1",
+      output=types.Content(parts=[types.Part(text="done_a")]),
+  )
+
+  ctx = MagicMock()
+  ctx._invocation_context = MagicMock()
+  ctx._invocation_context.invocation_id = "inv-1"
+  ctx._invocation_context.session = MagicMock()
+  ctx._invocation_context.session.events = [agent_1, step_1, agent_1_echo]
+  ctx.node_path = "wf@1"
+
+  _, sequence = mgr.scan_workflow_events(ctx)
+
+  assert sequence == ["agent@1", "step@1"]
+
+
+def test_scan_workflow_events_sequence_composite_child_keys_on_own_completion() -> (
+    None
+):
+  """An inner completion in a composite child does not freeze sequence ahead of siblings."""
+  mgr = ReplayManager()
+  # 1. Inner completion deep inside composite@1
+  inner_1 = Event(
+      author="node",
+      node_info=NodeInfo(
+          path="wf@1/composite@1/inner_1@1",
+          run_id="1",
+          output_for=["wf@1/composite@1/inner_1@1"],
+      ),
+      invocation_id="inv-1",
+      output="out_1",
+  )
+  # 2. Sibling finishes while composite@1 is still running
+  sibling_1 = Event(
+      author="node",
+      node_info=NodeInfo(
+          path="wf@1/sibling@1",
+          run_id="1",
+          output_for=["wf@1/sibling@1"],
+      ),
+      invocation_id="inv-1",
+      output="sibling_out",
+  )
+  # 3. Terminal completion of composite@1 (delegated output)
+  composite_term = Event(
+      author="node",
+      node_info=NodeInfo(
+          path="wf@1/composite@1/inner_2@1",
+          run_id="1",
+          output_for=[
+              "wf@1/composite@1/inner_2@1",
+              "wf@1/composite@1",
+          ],
+      ),
+      invocation_id="inv-1",
+      output="composite_out",
+  )
+  # 4. Fast-forward echo of composite@1 on a subsequent resume
+  composite_echo = Event(
+      author="node",
+      node_info=NodeInfo(
+          path="wf@1/composite@1",
+          run_id="1",
+      ),
+      invocation_id="inv-1",
+      output="composite_out",
+  )
+
+  ctx = MagicMock()
+  ctx._invocation_context = MagicMock()
+  ctx._invocation_context.invocation_id = "inv-1"
+  ctx._invocation_context.session = MagicMock()
+  ctx._invocation_context.session.events = [
+      inner_1,
+      sibling_1,
+      composite_term,
+      composite_echo,
+  ]
+  ctx.node_path = "wf@1"
+
+  _, sequence = mgr.scan_workflow_events(ctx)
+
+  assert sequence == ["sibling@1", "composite@1"]
+
+
+def test_scan_workflow_events_sequence_composite_child_keys_on_direct_completion() -> (
+    None
+):
+  """A direct completion event on a composite child updates sequence and marks it completed."""
+  mgr = ReplayManager()
+  inner_1 = Event(
+      author="node",
+      node_info=NodeInfo(
+          path="wf@1/composite@1/inner_1@1",
+          run_id="1",
+          output_for=["wf@1/composite@1/inner_1@1"],
+      ),
+      invocation_id="inv-1",
+      output="out_1",
+  )
+  sibling_1 = Event(
+      author="node",
+      node_info=NodeInfo(
+          path="wf@1/sibling@1",
+          run_id="1",
+          output_for=["wf@1/sibling@1"],
+      ),
+      invocation_id="inv-1",
+      output="sibling_out",
+  )
+  composite_term = Event(
+      author="node",
+      node_info=NodeInfo(
+          path="wf@1/composite@1",
+          run_id="1",
+      ),
+      invocation_id="inv-1",
+      output="composite_out",
+  )
+  composite_echo = Event(
+      author="node",
+      node_info=NodeInfo(
+          path="wf@1/composite@1",
+          run_id="1",
+      ),
+      invocation_id="inv-1",
+      output="composite_out",
+  )
+
+  ctx = MagicMock()
+  ctx._invocation_context = MagicMock()
+  ctx._invocation_context.invocation_id = "inv-1"
+  ctx._invocation_context.session = MagicMock()
+  ctx._invocation_context.session.events = [
+      inner_1,
+      sibling_1,
+      composite_term,
+      composite_echo,
+  ]
+  ctx.node_path = "wf@1"
+
+  _, sequence = mgr.scan_workflow_events(ctx)
+
+  assert sequence == ["sibling@1", "composite@1"]
+
+
+def test_scan_workflow_events_sequence_inner_terminal_event_does_not_order_composite_child() -> (
+    None
+):
+  """A terminal event inside a composite child must not add the child to the replay sequence."""
+  mgr = ReplayManager()
+  # 1. Inner completion deep inside composite@1 (composite@1 is not complete yet)
+  inner_1 = Event(
+      author="node",
+      node_info=NodeInfo(
+          path="wf@1/composite@1/inner_1@1",
+          run_id="1",
+          output_for=["wf@1/composite@1/inner_1@1"],
+      ),
+      invocation_id="inv-1",
+      output="out_1",
+  )
+  # 2. Sibling genuinely finishes while composite@1 is still running
+  sibling_1 = Event(
+      author="node",
+      node_info=NodeInfo(
+          path="wf@1/sibling@1",
+          run_id="1",
+          output_for=["wf@1/sibling@1"],
+      ),
+      invocation_id="inv-1",
+      output="sibling_out",
+  )
+
+  ctx = MagicMock()
+  ctx._invocation_context = MagicMock()
+  ctx._invocation_context.invocation_id = "inv-1"
+  ctx._invocation_context.session = MagicMock()
+  ctx._invocation_context.session.events = [
+      inner_1,
+      sibling_1,
+  ]
+  ctx.node_path = "wf@1"
+
+  _, sequence = mgr.scan_workflow_events(ctx)
+
+  assert sequence == ["sibling@1"]
+
+
+def test_scan_workflow_events_sequence_composite_child_keys_on_descendant_interrupt() -> (
+    None
+):
+  """A descendant interrupt event inside a composite child updates the replay sequence."""
+  mgr = ReplayManager()
+  # 1. Descendant interrupt deep inside composite@1
+  inner_interrupt = Event(
+      author="node",
+      node_info=NodeInfo(
+          path="wf@1/composite@1/inner_hitl@1",
+          run_id="1",
+      ),
+      invocation_id="inv-1",
+      long_running_tool_ids=["int-1"],
+  )
+  # 2. Sibling finishes after the composite child paused
+  sibling_1 = Event(
+      author="node",
+      node_info=NodeInfo(
+          path="wf@1/sibling@1",
+          run_id="1",
+          output_for=["wf@1/sibling@1"],
+      ),
+      invocation_id="inv-1",
+      output="sibling_out",
+  )
+
+  ctx = MagicMock()
+  ctx._invocation_context = MagicMock()
+  ctx._invocation_context.invocation_id = "inv-1"
+  ctx._invocation_context.session = MagicMock()
+  ctx._invocation_context.session.events = [
+      inner_interrupt,
+      sibling_1,
+  ]
+  ctx.node_path = "wf@1"
+
+  raw_results, sequence = mgr.scan_workflow_events(ctx)
+
+  assert raw_results["composite@1"].interrupt_ids == {"int-1"}
+  assert sequence == ["composite@1", "sibling@1"]
+
+
+def test_scan_workflow_events_sequence_composite_child_keys_on_descendant_request_input() -> (
+    None
+):
+  """A descendant request_input function call inside a composite child updates the replay sequence."""
+  mgr = ReplayManager()
+  inner_interrupt = Event(
+      author="node",
+      node_info=NodeInfo(
+          path="wf@1/composite@1/inner_hitl@1",
+          run_id="1",
+      ),
+      invocation_id="inv-1",
+      content=types.Content(
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      name="adk_request_input",
+                      id="req-1",
+                  )
+              )
+          ]
+      ),
+  )
+  sibling_1 = Event(
+      author="node",
+      node_info=NodeInfo(
+          path="wf@1/sibling@1",
+          run_id="1",
+          output_for=["wf@1/sibling@1"],
+      ),
+      invocation_id="inv-1",
+      output="sibling_out",
+  )
+
+  ctx = MagicMock()
+  ctx._invocation_context = MagicMock()
+  ctx._invocation_context.invocation_id = "inv-1"
+  ctx._invocation_context.session = MagicMock()
+  ctx._invocation_context.session.events = [
+      inner_interrupt,
+      sibling_1,
+  ]
+  ctx.node_path = "wf@1"
+
+  raw_results, sequence = mgr.scan_workflow_events(ctx)
+
+  assert raw_results["composite@1"].interrupt_ids == {"req-1"}
+  assert sequence == ["composite@1", "sibling@1"]
+
+
+def test_scan_workflow_events_registers_parent_sequence_barrier():
+  """scan_workflow_events registers a transitive sequence barrier under ctx.node_path for prepare_parent_sequence_barrier."""
+  mgr = ReplayManager()
+  nested_ev = Event(
+      author="sub_agent",
+      node_info=NodeInfo(
+          path="wf@1/alpha@1/sub_agent@1",
+          run_id="1",
+          output_for=["wf@1/alpha@1"],
+      ),
+      invocation_id="inv-1",
+      output="alpha_nested_out",
+  )
+  direct_ev = Event(
+      author="beta",
+      node_info=NodeInfo(path="wf@1/beta@1", run_id="1"),
+      invocation_id="inv-1",
+      output="beta_out",
+  )
+
+  ctx = MagicMock()
+  ctx._invocation_context = MagicMock()
+  ctx._invocation_context.invocation_id = "inv-1"
+  ctx._invocation_context.session = MagicMock()
+  ctx._invocation_context.session.events = [nested_ev, direct_ev]
+  ctx.node_path = "wf@1"
+
+  _, sequence = mgr.scan_workflow_events(ctx)
+
+  assert sequence == ["alpha@1", "beta@1"]
+  assert mgr.sequence_barrier is not None
+  barrier = mgr.prepare_parent_sequence_barrier(ctx, "wf@1")
+  assert barrier is mgr.sequence_barrier
+  assert barrier.sequence == ["alpha@1", "beta@1"]

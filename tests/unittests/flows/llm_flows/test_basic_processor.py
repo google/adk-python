@@ -584,3 +584,137 @@ class TestBasicLlmRequestProcessor:
       pass
 
     assert len(second_request.config.safety_settings) == 1
+
+  @pytest.mark.asyncio
+  async def test_run_config_session_resumption_object_is_not_aliased(self):
+    """The request must not hold the RunConfig's own SessionResumptionConfig.
+
+    `BaseLlmFlow.run_live` stamps every server-issued handle onto the request's
+    `session_resumption`, so aliasing would write those handles back into the
+    caller's RunConfig.
+    """
+    agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+    invocation_context = await _create_invocation_context(agent)
+    run_config_session_resumption = types.SessionResumptionConfig(
+        handle='caller_handle'
+    )
+    invocation_context.run_config.session_resumption = (
+        run_config_session_resumption
+    )
+    llm_request = LlmRequest()
+
+    processor = _BasicLlmRequestProcessor()
+    async for _ in processor.run_async(invocation_context, llm_request):
+      pass
+
+    assert (
+        llm_request.live_connect_config.session_resumption.handle
+        == 'caller_handle'
+    )
+    llm_request.live_connect_config.session_resumption.handle = 'server_handle'
+    assert run_config_session_resumption.handle == 'caller_handle'
+
+  @pytest.mark.asyncio
+  async def test_run_config_history_config_object_is_not_aliased(self):
+    """The request must not hold the RunConfig's own HistoryConfig.
+
+    `BaseLlmFlow.run_live` sets `initial_history_in_client_content` on the
+    request when it seeds a fresh connection with history, so aliasing would
+    write that back into the caller's RunConfig.
+    """
+    agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+    invocation_context = await _create_invocation_context(agent)
+    run_config_history_config = types.HistoryConfig()
+    invocation_context.run_config.history_config = run_config_history_config
+    llm_request = LlmRequest()
+
+    processor = _BasicLlmRequestProcessor()
+    async for _ in processor.run_async(invocation_context, llm_request):
+      pass
+
+    llm_request.live_connect_config.history_config.initial_history_in_client_content = (
+        True
+    )
+    assert run_config_history_config.initial_history_in_client_content is None
+
+  @pytest.mark.asyncio
+  async def test_absent_live_sub_configs_stay_none(self):
+    """Copying must not turn an unset RunConfig sub-config into an object."""
+    agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+    invocation_context = await _create_invocation_context(agent)
+    llm_request = LlmRequest()
+
+    processor = _BasicLlmRequestProcessor()
+    async for _ in processor.run_async(invocation_context, llm_request):
+      pass
+
+    assert llm_request.live_connect_config.session_resumption is None
+    assert llm_request.live_connect_config.history_config is None
+
+  @pytest.mark.asyncio
+  async def test_copies_agent_generation_config_to_live_connect_config(self):
+    """A live session is configured separately, so sampling fields are copied."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-2.5-flash-live',
+        generate_content_config=types.GenerateContentConfig(
+            temperature=0.25,
+            top_p=0.9,
+            top_k=5,
+            max_output_tokens=123,
+            seed=42,
+            media_resolution=types.MediaResolution.MEDIA_RESOLUTION_LOW,
+        ),
+    )
+    invocation_context = await _create_invocation_context(agent)
+    llm_request = LlmRequest()
+
+    processor = _BasicLlmRequestProcessor()
+    async for _ in processor.run_async(invocation_context, llm_request):
+      pass
+
+    live_config = llm_request.live_connect_config
+    assert live_config.temperature == 0.25
+    assert live_config.top_p == 0.9
+    assert live_config.top_k == 5
+    assert live_config.max_output_tokens == 123
+    assert live_config.seed == 42
+    assert (
+        live_config.media_resolution
+        == types.MediaResolution.MEDIA_RESOLUTION_LOW
+    )
+
+  @pytest.mark.asyncio
+  async def test_does_not_overwrite_a_live_generation_field_already_set(self):
+    """Anything already on the live config outranks the agent's config."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-2.5-flash-live',
+        generate_content_config=types.GenerateContentConfig(temperature=0.25),
+    )
+    invocation_context = await _create_invocation_context(agent)
+    llm_request = LlmRequest()
+    llm_request.live_connect_config.temperature = 0.9
+
+    processor = _BasicLlmRequestProcessor()
+    async for _ in processor.run_async(invocation_context, llm_request):
+      pass
+
+    assert llm_request.live_connect_config.temperature == 0.9
+
+  @pytest.mark.asyncio
+  async def test_live_generation_fields_stay_none_without_agent_config(self):
+    """Copying must not invent values the agent never set."""
+    agent = LlmAgent(name='test_agent', model='gemini-2.5-flash-live')
+    invocation_context = await _create_invocation_context(agent)
+    llm_request = LlmRequest()
+
+    processor = _BasicLlmRequestProcessor()
+    async for _ in processor.run_async(invocation_context, llm_request):
+      pass
+
+    live_config = llm_request.live_connect_config
+    assert live_config.temperature is None
+    assert live_config.top_p is None
+    assert live_config.max_output_tokens is None
+    assert live_config.seed is None

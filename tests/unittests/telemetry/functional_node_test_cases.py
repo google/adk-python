@@ -12,11 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The cases driving the node scenario: a workflow run end to end."""
+"""The node/workflow functional test matrix.
+
+The same grid as ``functional_test_cases.py``, run against the canonical
+Workflow + nested workflow + node + agent + tool scenario.
+"""
 
 from __future__ import annotations
 
 from .functional._recording import FunctionalTestCase
+from .functional_test_cases import experimental_adk_matrix
 from .functional_test_cases import semconv_matrix
 
-ALL_NODE_CASES: list[FunctionalTestCase] = semconv_matrix("node")
+ALL_NODE_CASES: list[FunctionalTestCase] = (
+    semconv_matrix("node")
+    + experimental_adk_matrix("agent_tool")
+    + experimental_adk_matrix("nested_agents_in_workflow", schema_versions=(2,))
+)

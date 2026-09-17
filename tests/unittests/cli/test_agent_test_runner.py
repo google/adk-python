@@ -16,6 +16,11 @@
 
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+from unittest import mock
+
+from google.adk.cli import agent_test_runner
 from google.adk.cli.agent_test_runner import make_sort_key
 from google.adk.cli.agent_test_runner import normalize_events
 from google.adk.events.event import Event
@@ -169,3 +174,78 @@ def test_make_sort_key_ignores_dict_key_order_but_separates_content():
   # otherwise fixture comparison depends on dict ordering.
   assert make_sort_key(same_content_a) == make_sort_key(same_content_b)
   assert make_sort_key(same_content_a) < make_sort_key(other_content)
+
+
+def test_rebuild_tests_preserves_non_ascii_event_text(
+    tmp_path, monkeypatch, capsys
+):
+  """Rebuilt test files preserve non-ASCII event text."""
+  agent_dir = tmp_path / 'test_agent'
+  tests_dir = agent_dir / 'tests'
+  tests_dir.mkdir(parents=True)
+  (agent_dir / 'agent.py').write_text('', encoding='utf-8')
+  test_file = tests_dir / 'unicode.json'
+  session_data = {
+      'events': [{
+          'author': 'user',
+          'content': {
+              'role': 'user',
+              'parts': [{'text': '日本語の質問'}],
+          },
+      }]
+  }
+  test_file.write_text(
+      json.dumps(session_data, ensure_ascii=False), encoding='utf-8'
+  )
+
+  class _Runner:
+
+    def __init__(self):
+      self.session = SimpleNamespace(user_id='test_user', id='test_session')
+      self.runner = self
+
+    async def run_async(self, **kwargs):
+      del kwargs
+      yield Event(
+          author='test_agent',
+          invocation_id='live-invocation',
+          content=types.Content(
+              role='model',
+              parts=[types.Part.from_text(text='日本語の回答')],
+          ),
+      )
+
+  loader = mock.create_autospec(
+      agent_test_runner.AgentLoader, instance=True, spec_set=True
+  )
+  loader.load_agent.return_value = object()
+  loader_factory = mock.create_autospec(
+      agent_test_runner.AgentLoader, spec_set=True, return_value=loader
+  )
+  monkeypatch.setattr(
+      agent_test_runner,
+      'AgentLoader',
+      loader_factory,
+  )
+  runner_factory = mock.create_autospec(
+      agent_test_runner.InMemoryRunner,
+      spec_set=True,
+      return_value=_Runner(),
+  )
+  monkeypatch.setattr(
+      agent_test_runner,
+      'InMemoryRunner',
+      runner_factory,
+  )
+
+  agent_test_runner.rebuild_tests(str(agent_dir))
+
+  # rebuild_tests swallows per-fixture exceptions into a printed line, so check
+  # it here; otherwise any breakage surfaces as an opaque substring mismatch.
+  stdout = capsys.readouterr().out
+  assert 'Error rebuilding' not in stdout, stdout
+
+  rebuilt = test_file.read_text(encoding='utf-8')
+  assert '日本語の質問' in rebuilt
+  assert '日本語の回答' in rebuilt
+  assert '\\u' not in rebuilt

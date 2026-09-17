@@ -66,6 +66,7 @@ code does not. Paths below are relative to `src/google/adk/`.
 | Branch paths (`parent.child@1`) | `events/_branch_path.py` |
 | Node paths (`wf@1/child@2`) | `events/_node_path_builder.py` |
 | `Runner`, `InMemoryRunner` | `runners.py` |
+| `LiveRequestQueue`, `LiveRequest` | `live/live_request_queue.py` |
 | Node spans, `TelemetryContext` | `telemetry/node_tracing.py` |
 | `ResumabilityConfig` | `apps/_configs.py` |
 

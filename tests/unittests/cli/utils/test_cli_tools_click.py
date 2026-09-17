@@ -36,6 +36,7 @@ from click.testing import CliRunner
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.run_config import StreamingMode
 from google.adk.cli import cli_tools_click
+from google.adk.cli.deployers import DeployerFactory
 from google.adk.cli.utils import gcp_utils
 from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_set import EvalSet
@@ -100,6 +101,15 @@ def _mute_click(request, monkeypatch: pytest.MonkeyPatch) -> None:
   monkeypatch.setattr(click, "echo", lambda *a, **k: None)
   # Keep secho for error messages
   # monkeypatch.setattr(click, "secho", lambda *a, **k: None)
+
+
+def test_main_disables_click_windows_glob_expansion() -> None:
+  """Verifies the ADK CLI disables Click's Windows glob expansion."""
+  with mock.patch.object(click.Group, "main", return_value=None) as mock_main:
+    from google.adk.cli import main
+
+    main(args=["web", ".", "--allow_origins", "*"])
+  assert mock_main.call_args.kwargs["windows_expand_args"] is False
 
 
 # validate_exclusive
@@ -199,6 +209,15 @@ def test_cli_create_cmd_invokes_run_cmd(
   )
   assert result.exit_code == 0, (result.output, repr(result.exception))
   assert rec.calls, "cli_create.run_cmd must be called"
+
+
+@pytest.mark.unmute_click
+def test_cli_create_help_shows_type_option() -> None:
+  """`adk create --help` should list the --type option."""
+  runner = CliRunner()
+  result = runner.invoke(cli_tools_click.main, ["create", "--help"])
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert "--type" in result.output
 
 
 def test_cli_telemetry_captures_subcommand_flags(
@@ -1171,9 +1190,9 @@ def test_cli_run_no_use_local_storage_with_query(
 def test_cli_deploy_cloud_run_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-  """Successful path should call cli_deploy.to_cloud_run once."""
+  """Successful path should call cli_deploy.run once."""
   rec = _Recorder()
-  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.run", rec)
 
   agent_dir = tmp_path / "agent2"
   agent_dir.mkdir()
@@ -1191,18 +1210,40 @@ def test_cli_deploy_cloud_run_success(
       ],
   )
   assert result.exit_code == 0
-  assert rec.calls, "cli_deploy.to_cloud_run must be invoked"
+  assert rec.calls, "cli_deploy.run must be invoked"
+
+
+def test_cli_deploy_docker_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Successful path should call cli_deploy.run once."""
+  rec = _Recorder()
+  monkeypatch.setattr("google.adk.cli.cli_deploy.run", rec)
+
+  agent_dir = tmp_path / "agent2"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "docker",
+          str(agent_dir),
+      ],
+  )
+  assert result.exit_code == 0
+  assert rec.calls, "cli_deploy.run must be invoked"
 
 
 def test_cli_deploy_cloud_run_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-  """Exception from to_cloud_run should be caught and surfaced via click.secho."""
+  """Exception from run should be caught and surfaced via click.secho with non-zero exit."""
 
   def _boom(*_a: Any, **_k: Any) -> None:  # noqa: D401
     raise RuntimeError("boom")
 
-  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", _boom)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.run", _boom)
 
   agent_dir = tmp_path / "agent3"
   agent_dir.mkdir()
@@ -1211,7 +1252,28 @@ def test_cli_deploy_cloud_run_failure(
       cli_tools_click.main, ["deploy", "cloud_run", str(agent_dir)]
   )
 
-  assert result.exit_code == 0
+  assert result.exit_code == 1
+  assert "Deploy failed: boom" in result.output
+
+
+def test_cli_deploy_docker_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Exception from run should be caught and surfaced via click.secho with non-zero exit."""
+
+  def _boom(*_a: Any, **_k: Any) -> None:  # noqa: D401
+    raise RuntimeError("boom")
+
+  monkeypatch.setattr("google.adk.cli.cli_deploy.run", _boom)
+
+  agent_dir = tmp_path / "agent4"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main, ["deploy", "docker", str(agent_dir)]
+  )
+
+  assert result.exit_code == 1
   assert "Deploy failed: boom" in result.output
 
 
@@ -1220,7 +1282,7 @@ def test_cli_deploy_cloud_run_passthrough_args(
 ) -> None:
   """Extra args after '--' should be passed through to the gcloud command."""
   rec = _Recorder()
-  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.run", rec)
 
   agent_dir = tmp_path / "agent_passthrough"
   agent_dir.mkdir()
@@ -1248,7 +1310,7 @@ def test_cli_deploy_cloud_run_passthrough_args(
     print(f"Exception: {result.exception}")
 
   assert result.exit_code == 0
-  assert rec.calls, "cli_deploy.to_cloud_run must be invoked"
+  assert rec.calls, "cli_deploy.run must be invoked"
 
   # Check that extra_gcloud_args were passed correctly
   called_kwargs = rec.calls[0][1]
@@ -1264,7 +1326,7 @@ def test_cli_deploy_cloud_run_allows_empty_gcloud_args(
 ) -> None:
   """No gcloud args after '--' should be allowed."""
   rec = _Recorder()
-  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.run", rec)
 
   agent_dir = tmp_path / "agent_empty_gcloud"
   agent_dir.mkdir()
@@ -1285,7 +1347,7 @@ def test_cli_deploy_cloud_run_allows_empty_gcloud_args(
   )
 
   assert result.exit_code == 0
-  assert rec.calls, "cli_deploy.to_cloud_run must be invoked"
+  assert rec.calls, "cli_deploy.run must be invoked"
 
   # Check that extra_gcloud_args is empty
   called_kwargs = rec.calls[0][1]
@@ -1297,9 +1359,9 @@ def test_cli_deploy_cloud_run_allows_empty_gcloud_args(
 def test_cli_deploy_cloud_run_sandbox(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, with_sandbox: bool
 ) -> None:
-  """Verify --with_cloud_run_sandbox parameter gets forwarded to to_cloud_run."""
+  """Verify --with_cloud_run_sandbox parameter gets forwarded to run."""
   rec = _Recorder()
-  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.run", rec)
 
   agent_dir = tmp_path / "agent_sandbox"
   agent_dir.mkdir()
@@ -1312,7 +1374,7 @@ def test_cli_deploy_cloud_run_sandbox(
       args,
   )
   assert result.exit_code == 0
-  assert rec.calls, "cli_deploy.to_cloud_run must be invoked"
+  assert rec.calls, "cli_deploy.run must be invoked"
   assert rec.calls[0][1].get("with_cloud_run_sandbox") == with_sandbox
 
 
@@ -1321,7 +1383,7 @@ def test_cli_deploy_cloud_run_interspersed_options(
 ) -> None:
   """Options placed after the positional argument should be parsed correctly."""
   rec = _Recorder()
-  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.run", rec)
 
   agent_dir = tmp_path / "agent_interspersed"
   agent_dir.mkdir()
@@ -1340,7 +1402,7 @@ def test_cli_deploy_cloud_run_interspersed_options(
   )
 
   assert result.exit_code == 0
-  assert rec.calls, "cli_deploy.to_cloud_run must be invoked"
+  assert rec.calls, "cli_deploy.run must be invoked"
 
   called_kwargs = rec.calls[0][1]
   assert called_kwargs.get("project") == "test-project"
@@ -1352,7 +1414,7 @@ def test_cli_deploy_cloud_run_rejects_unknown_option_before_separator(
 ) -> None:
   """Unknown option placed before '--' separator should be rejected by Click."""
   rec = _Recorder()
-  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.run", rec)
 
   agent_dir = tmp_path / "agent_bad_order"
   agent_dir.mkdir()
@@ -1372,7 +1434,7 @@ def test_cli_deploy_cloud_run_rejects_unknown_option_before_separator(
 
   assert result.exit_code == 2
   assert "No such option" in result.output
-  assert not rec.calls, "cli_deploy.to_cloud_run should not be called"
+  assert not rec.calls, "cli_deploy.run should not be called"
 
 
 def test_cli_deploy_cloud_run_forwards_extra_positional_arg(
@@ -1380,7 +1442,7 @@ def test_cli_deploy_cloud_run_forwards_extra_positional_arg(
 ) -> None:
   """Extra positional argument before '--' is forwarded to the deployment runner."""
   rec = _Recorder()
-  monkeypatch.setattr("google.adk.cli.cli_deploy.to_cloud_run", rec)
+  monkeypatch.setattr("google.adk.cli.cli_deploy.run", rec)
 
   agent_dir = tmp_path / "agent_extra_pos"
   agent_dir.mkdir()
@@ -1919,21 +1981,19 @@ def test_cli_deploy_cloud_run_gcloud_arg_conflict(
 ) -> None:
   """Extra gcloud args that conflict with ADK deploy args should raise ClickException."""
 
-  def _mock_to_cloud_run(*_a, **kwargs):
+  def _mock_run(*_a, **kwargs):
     # Import and call the validation function
-    from google.adk.cli.cli_deploy import _validate_gcloud_extra_args
+    deployer = DeployerFactory.get_deployer("cloud_run")
 
     # Build the same set of managed args as the real function would
     adk_managed_args = {"--source", "--project", "--port", "--verbosity"}
     if kwargs.get("region"):
       adk_managed_args.add("--region")
-    _validate_gcloud_extra_args(
+    deployer._validate_gcloud_extra_args(
         kwargs.get("extra_gcloud_args"), adk_managed_args
     )
 
-  monkeypatch.setattr(
-      "google.adk.cli.cli_deploy.to_cloud_run", _mock_to_cloud_run
-  )
+  monkeypatch.setattr("google.adk.cli.cli_deploy.run", _mock_run)
 
   agent_dir = tmp_path / "agent_conflict"
   agent_dir.mkdir()
@@ -2594,6 +2654,39 @@ def test_fast_api_common_options_leaves_trigger_sources_none_when_unset() -> (
   assert captured["trigger_sources"] is None
 
 
+def test_fast_api_common_options_trigger_oidc_options() -> None:
+  """OIDC audience and comma-separated service accounts are passed and parsed."""
+  command, captured = _fast_api_command()
+
+  result = CliRunner().invoke(
+      command,
+      [
+          "--trigger_oidc_audience",
+          "https://my-service.run.app",
+          "--trigger_oidc_service_accounts",
+          " a@project.iam , b@project.iam ,",
+      ],
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert captured["trigger_oidc_audience"] == "https://my-service.run.app"
+  assert captured["trigger_oidc_service_accounts"] == [
+      "a@project.iam",
+      "b@project.iam",
+  ]
+
+
+def test_fast_api_common_options_leaves_trigger_oidc_none_when_unset() -> None:
+  """Unset OIDC options stay None."""
+  command, captured = _fast_api_command()
+
+  result = CliRunner().invoke(command, [])
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert captured["trigger_oidc_audience"] is None
+  assert captured["trigger_oidc_service_accounts"] is None
+
+
 def test_fast_api_common_options_verbose_only_overrides_default_log_level() -> (
     None
 ):
@@ -2846,6 +2939,110 @@ def test_cli_conformance_test_forwards_mode_and_report_options(
       "report_dir": os.path.realpath(report_dir),
       "streaming_mode": StreamingMode.SSE,
   }]
+
+
+def test_cli_conformance_test_accepts_multiple_directories(
+    tmp_path: Path, fake_conformance_test
+) -> None:
+  """Every PATHS argument is forwarded to the conformance runner."""
+  first_dir = tmp_path / "cases_one"
+  second_dir = tmp_path / "cases_two"
+  first_dir.mkdir()
+  second_dir.mkdir()
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      ["conformance", "test", str(first_dir), str(second_dir)],
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert fake_conformance_test == [{
+      "test_paths": [
+          Path(os.path.realpath(first_dir)),
+          Path(os.path.realpath(second_dir)),
+      ],
+      "mode": "replay",
+      "generate_report": False,
+      "report_dir": None,
+      "streaming_mode": None,
+  }]
+
+
+def test_cli_conformance_test_forwards_live_mode(
+    tmp_path: Path, fake_conformance_test
+) -> None:
+  """--mode live is propagated to the conformance runner."""
+  case_dir = tmp_path / "cases"
+  case_dir.mkdir()
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      ["conformance", "test", str(case_dir), "--mode", "live"],
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert fake_conformance_test == [{
+      "test_paths": [Path(os.path.realpath(case_dir))],
+      "mode": "live",
+      "generate_report": False,
+      "report_dir": None,
+      "streaming_mode": None,
+  }]
+
+
+def test_cli_conformance_test_forwards_bidi_streaming_mode(
+    tmp_path: Path, fake_conformance_test
+) -> None:
+  """--streaming-mode bidi is parsed to the StreamingMode enum."""
+  case_dir = tmp_path / "cases"
+  case_dir.mkdir()
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      ["conformance", "test", str(case_dir), "--streaming-mode", "bidi"],
+  )
+
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert fake_conformance_test == [{
+      "test_paths": [Path(os.path.realpath(case_dir))],
+      "mode": "replay",
+      "generate_report": False,
+      "report_dir": None,
+      "streaming_mode": StreamingMode.BIDI,
+  }]
+
+
+def test_cli_conformance_test_rejects_invalid_mode(
+    tmp_path: Path,
+) -> None:
+  """An unknown --mode value is rejected by Click before any dispatch."""
+  case_dir = tmp_path / "cases"
+  case_dir.mkdir()
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      ["conformance", "test", str(case_dir), "--mode", "fast"],
+  )
+
+  assert result.exit_code == 2
+  assert "Invalid value for '--mode'" in result.output
+  assert "'fast' is not one of 'replay', 'live'" in result.output
+
+
+def test_cli_conformance_test_rejects_invalid_streaming_mode(
+    tmp_path: Path,
+) -> None:
+  """An unknown --streaming-mode value is rejected by Click before dispatch."""
+  case_dir = tmp_path / "cases"
+  case_dir.mkdir()
+
+  result = CliRunner().invoke(
+      cli_tools_click.main,
+      ["conformance", "test", str(case_dir), "--streaming-mode", "eventstream"],
+  )
+
+  assert result.exit_code == 2
+  assert "Invalid value for '--streaming-mode'" in result.output
 
 
 # adk eval_set create
