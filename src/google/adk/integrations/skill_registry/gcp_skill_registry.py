@@ -51,7 +51,7 @@ _SAFE_REGISTRY_ID_PATTERN = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
 
 def _is_safe_registry_id(name: str) -> bool:
   """True if `name` is safe to use as a single skill-registry path segment."""
-  return len(name) <= 64 and bool(_SAFE_REGISTRY_ID_PATTERN.match(name))
+  return len(name) <= 256 and bool(_SAFE_REGISTRY_ID_PATTERN.match(name))
 
 
 class GCPSkillRegistry(SkillRegistry):
@@ -195,7 +195,7 @@ class GCPSkillRegistry(SkillRegistry):
     if not _is_safe_registry_id(name):
       raise ValueError(
           f"Invalid skill name {name!r}: name must be a single safe path"
-          " segment of at most 64 characters (lowercase letters, digits,"
+          " segment of at most 256 characters (lowercase letters, digits,"
           " and non-consecutive '.', '_', '-' separators), with no leading,"
           " trailing, or consecutive delimiters."
       )

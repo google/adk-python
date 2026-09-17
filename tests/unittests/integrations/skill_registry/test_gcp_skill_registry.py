@@ -192,7 +192,7 @@ async def test_search_skills_success():
         # otherwise an allowed registry-id character.
         ("..", "Description bad"),
         ("Skill-With-Caps", "Description bad"),
-        ("a" * 65, "Description bad"),
+        ("a" * 257, "Description bad"),
         ("skill-no-description", ""),
     ],
 )
@@ -422,7 +422,7 @@ async def test_get_skill_raises_on_invalid_skill_name():
         "",
         ".",
         "..",
-        "a" * 65,
+        "a" * 257,
     ],
 )
 @pytest.mark.asyncio
@@ -444,6 +444,9 @@ async def test_get_skill_rejects_unsafe_name_before_any_request(unsafe_name):
         "my_skill",
         "skill2",
         "cloud.google.com-agent-platform-eval-flywheel",
+        # Real catalog ids longer than the old 64-char cap (80 and 65 chars).
+        "cloud.google.com-google-cloud-solution-agentic-analytics-spark-knowledge-catalog",
+        "cloud.google.com-gke-ai-troubleshooting-handle-disruption-gpu-tpu",
     ],
 )
 @pytest.mark.asyncio
