@@ -35,6 +35,8 @@ from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_schemes import AuthScheme
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.integrations.agent_identity.gcp_auth_provider_scheme import GcpAuthProviderScheme
+from google.adk.skills import _utils
+from google.adk.skills.models import Skill
 from google.adk.telemetry.tracing import GCP_MCP_SERVER_DESTINATION_ID
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
@@ -68,6 +70,18 @@ logger = logging.getLogger("google_adk." + __name__)
 
 AGENT_REGISTRY_BASE_URL = "https://agentregistry.googleapis.com/v1"
 AGENT_REGISTRY_MTLS_BASE_URL = "https://agentregistry.mtls.googleapis.com/v1"
+AGENT_REGISTRY_V1ALPHA_BASE_URL = "https://agentregistry.googleapis.com/v1alpha"
+AGENT_REGISTRY_V1ALPHA_MTLS_BASE_URL = (
+    "https://agentregistry.mtls.googleapis.com/v1alpha"
+)
+
+_SAFE_REGISTRY_ID_PATTERN = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
+
+
+def _is_safe_registry_id(name: str) -> bool:
+  """True if `name` is safe to use as a single skill-registry path segment."""
+  return len(name) <= 256 and bool(_SAFE_REGISTRY_ID_PATTERN.fullmatch(name))
+
 
 _TRANSPORT_MAPPING = {
     "HTTP_JSON": _compat.TP_HTTP_JSON,
@@ -317,6 +331,35 @@ def _select_auth_provider(
   return chosen
 
 
+_SKILL_RESOURCE_NAME_PATTERN = re.compile(
+    r"^projects/([^/]+)/locations/([^/]+)/skills/([^/]+)$"
+)
+
+
+class PublishedSkills:
+  """Accessor for interacting with published skills in Agent Registry."""
+
+  def __init__(self, registry: AgentRegistry):
+    self._registry = registry
+
+  def get(self, name: str) -> Skill:
+    """Retrieves and loads a published skill by full resource name.
+
+    Args:
+      name: Full resource name of the skill, in the format
+        ``projects/{project}/locations/{location}/skills/{skill_id}``.
+
+    Returns:
+      A loaded `Skill` ready to pass to `SkillToolset(skills=[...])`.
+
+    Raises:
+      ValueError: If the skill name does not match the expected resource name
+        format, or the skill does not contain a default revision.
+      RuntimeError: If an API request to fetch metadata or media fails.
+    """
+    return self._registry._fetch_published_skill_sync(name)
+
+
 class AgentRegistry:
   """Client for interacting with the Google Cloud Agent Registry service.
 
@@ -329,6 +372,7 @@ class AgentRegistry:
 
   # The class default also covers registries pickled by older versions.
   _deployed_agent_id: str | None = None
+  _skills_base_url_override: str | None = None
 
   def __init__(
       self,
@@ -337,6 +381,7 @@ class AgentRegistry:
       header_provider: (
           Callable[[ReadonlyContext], Dict[str, str]] | None
       ) = None,
+      project: str | None = None,
   ):
     """Initializes the AgentRegistry client.
 
@@ -344,12 +389,20 @@ class AgentRegistry:
       project_id: The Google Cloud project ID.
       location: The Google Cloud location (region).
       header_provider: Optional provider for custom headers.
+      project: Optional alias for project_id.
     """
-    self.project_id = project_id
+    if project_id and project and project_id != project:
+      raise ValueError(
+          "Cannot specify both 'project_id' and 'project' with different"
+          f" values: {project_id!r} vs {project!r}."
+      )
+    self.project_id = project_id or project
     self.location = location
 
     if not self.project_id or not self.location:
       raise ValueError("project_id and location must be provided")
+
+    self._published_skills = PublishedSkills(self)
 
     self._base_path = f"projects/{self.project_id}/locations/{self.location}"
     self._header_provider = header_provider
@@ -407,6 +460,33 @@ class AgentRegistry:
     self.__dict__.update(state)
     self._connect_lock = threading.Lock()
 
+  @property
+  def project(self) -> str | None:
+    return self.project_id
+
+  @property
+  def published_skills(self) -> PublishedSkills:
+    return self._published_skills
+
+  @property
+  def _skills_base_url(self) -> str:
+    """Returns the base URL for skill endpoints, defaulting to v1alpha."""
+    if self._skills_base_url_override:
+      return self._skills_base_url_override
+    if "AGENT_REGISTRY_ENDPOINT" in os.environ:
+      return os.environ["AGENT_REGISTRY_ENDPOINT"]
+    if getattr(self, "_use_mtls", False):
+      return AGENT_REGISTRY_V1ALPHA_MTLS_BASE_URL
+    return _mtls_utils.get_api_endpoint(
+        location="",
+        default_template=AGENT_REGISTRY_V1ALPHA_BASE_URL,
+        mtls_template=AGENT_REGISTRY_V1ALPHA_MTLS_BASE_URL,
+    )
+
+  @_skills_base_url.setter
+  def _skills_base_url(self, value: str | None) -> None:
+    self._skills_base_url_override = value
+
   def _get_auth_headers(self) -> Dict[str, str]:
     """Refreshes credentials and returns authorization headers."""
     self._ensure_connected()
@@ -430,13 +510,15 @@ class AgentRegistry:
       params: Dict[str, Any] | None = None,
       json_data: Dict[str, Any] | None = None,
       timeout: float | None = None,
+      base_url: str | None = None,
   ) -> Dict[str, Any]:
     """Helper function to make requests to the Agent Registry API."""
     self._ensure_connected()
+    root_url = base_url or self._base_url
     if path.startswith("projects/"):
-      url = f"{self._base_url}/{path}"
+      url = f"{root_url}/{path}"
     else:
-      url = f"{self._base_url}/{self._base_path}/{path}"
+      url = f"{root_url}/{self._base_path}/{path}"
     quota_project_id = (
         getattr(self._credentials, "quota_project_id", None) or self.project_id
     )
@@ -457,9 +539,12 @@ class AgentRegistry:
       data: Dict[str, Any] = response.json()
       return data
     except requests.exceptions.HTTPError as e:
+      status_code = (
+          e.response.status_code if e.response is not None else "unknown"
+      )
+      error_text = e.response.text if e.response is not None else str(e)
       raise RuntimeError(
-          f"API request failed with status {e.response.status_code}:"
-          f" {e.response.text}"
+          f"API request failed with status {status_code}: {error_text}"
       ) from e
     except requests.exceptions.RequestException as e:
       raise RuntimeError(f"API request failed (network error): {e}") from e
@@ -983,6 +1068,91 @@ class AgentRegistry:
         auth_scheme=auth_scheme,
         auth_credential=auth_credential,
     )
+
+  def get_published_skill(self, name: str) -> Skill:
+    """Retrieves and loads a published skill by full resource name.
+
+    Args:
+      name: Full resource name of the skill, in the format
+        ``projects/{project}/locations/{location}/skills/{skill_id}``.
+
+    Returns:
+      A loaded `Skill` ready to pass to `SkillToolset(skills=[...])`.
+    """
+    return self.published_skills.get(name)
+
+  def _download_media(
+      self,
+      path_or_url: str,
+      params: Dict[str, Any] | None = None,
+  ) -> bytes:
+    self._ensure_connected()
+    if path_or_url.startswith("http://") or path_or_url.startswith("https://"):
+      url = path_or_url
+    elif path_or_url.startswith("projects/"):
+      url = f"{self._skills_base_url}/{path_or_url}"
+    else:
+      url = f"{self._skills_base_url}/{self._base_path}/{path_or_url}"
+
+    quota_project_id = (
+        getattr(self._credentials, "quota_project_id", None) or self.project_id
+    )
+    headers = merge_tracking_headers(
+        {"x-goog-user-project": quota_project_id} if quota_project_id else {}
+    )
+    try:
+      response = self._session.get(
+          url,
+          headers=headers,
+          params=params,
+          allow_redirects=True,
+      )
+      response.raise_for_status()
+      return bytes(response.content)
+    except requests.exceptions.HTTPError as e:
+      status_code = (
+          e.response.status_code if e.response is not None else "unknown"
+      )
+      error_text = e.response.text if e.response is not None else str(e)
+      raise RuntimeError(
+          f"API request failed with status {status_code}: {error_text}"
+      ) from e
+    except requests.exceptions.RequestException as e:
+      raise RuntimeError(f"API request failed (network error): {e}") from e
+    except Exception as e:
+      raise RuntimeError(f"API request failed: {e}") from e
+
+  def _fetch_published_skill_sync(self, name: str) -> Skill:
+    if not isinstance(name, str):
+      raise ValueError(
+          f"Invalid skill resource name {name!r}. Expected format: "
+          "'projects/{project}/locations/{location}/skills/{skill_id}'."
+      )
+    match = _SKILL_RESOURCE_NAME_PATTERN.match(name)
+    if not match or not all(
+        _is_safe_registry_id(seg) for seg in match.groups()
+    ):
+      raise ValueError(
+          f"Invalid skill resource name '{name}'. Expected format: "
+          "'projects/{project}/locations/{location}/skills/{skill_id}'."
+      )
+
+    skill_data = self._make_request(name, base_url=self._skills_base_url)
+    default_revision = skill_data.get("defaultRevision") or skill_data.get(
+        "default_revision"
+    )
+    if (
+        not default_revision
+        or not isinstance(default_revision, str)
+        or not default_revision.startswith("projects/")
+    ):
+      raise ValueError(f"Skill '{name}' does not contain default revision.")
+
+    revision_url = f"{self._skills_base_url}/{default_revision}"
+    zip_bytes = self._download_media(revision_url, params={"alt": "media"})
+    skill = _utils._load_skill_from_zip_bytes(zip_bytes)
+    skill._uri = revision_url
+    return skill
 
 
 def _use_client_cert_effective() -> bool:

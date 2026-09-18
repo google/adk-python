@@ -13,7 +13,9 @@
 # limitations under the License.
 
 from .agent_registry import AgentRegistry
+from .agent_registry import PublishedSkills
 
 __all__ = [
     'AgentRegistry',
+    'PublishedSkills',
 ]

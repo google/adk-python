@@ -13,11 +13,13 @@
 # limitations under the License.
 
 
+import io
 import os
 import pickle
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
+import zipfile
 
 from fastapi.openapi.models import OAuth2
 from google.adk.a2a import _compat
@@ -27,11 +29,16 @@ from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.integrations.agent_identity.gcp_auth_provider_scheme import GcpAuthProviderScheme
 from google.adk.integrations.agent_registry import AgentRegistry
+from google.adk.integrations.agent_registry import PublishedSkills
 from google.adk.integrations.agent_registry.agent_registry import _ProtocolType
 from google.adk.integrations.agent_registry.agent_registry import _should_use_mtls_endpoint
+from google.adk.integrations.agent_registry.agent_registry import AGENT_REGISTRY_V1ALPHA_BASE_URL
+from google.adk.integrations.agent_registry.agent_registry import AGENT_REGISTRY_V1ALPHA_MTLS_BASE_URL
 from google.adk.integrations.agent_registry.agent_registry import AgentRegistrySingleMcpToolset
+from google.adk.skills.models import Skill
 from google.adk.telemetry.tracing import GCP_MCP_SERVER_DESTINATION_ID
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+from google.adk.tools.skill_toolset import SkillToolset
 from google.adk.utils._google_client_headers import merge_tracking_headers
 import google.oauth2.credentials
 import httpx
@@ -190,6 +197,21 @@ def _enter_agent_engine(monkeypatch):
   monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_LOCATION", "l")
 
 
+def _create_fake_zip_bytes(
+    name: str = "my-skill",
+    description: str = "test",
+    instructions: str = "# My Skill",
+) -> bytes:
+  """Creates a fake zip file in memory and returns its bytes."""
+  zip_buffer = io.BytesIO()
+  with zipfile.ZipFile(zip_buffer, "w") as z:
+    z.writestr(
+        "SKILL.md",
+        f"---\nname: {name}\ndescription: {description}\n---\n{instructions}\n",
+    )
+  return zip_buffer.getvalue()
+
+
 class TestAgentRegistry:
 
   @pytest.fixture
@@ -329,6 +351,63 @@ class TestAgentRegistry:
         ValueError, match="project_id and location must be provided"
     ):
       AgentRegistry(project_id=None, location=None)
+
+  def test_init_with_project_alias(self):
+    mock_creds = MagicMock()
+    mock_creds.quota_project_id = None
+    with (
+        patch("google.auth.default", return_value=(mock_creds, "project-id")),
+        patch(
+            "google.auth.transport.requests.AuthorizedSession",
+            autospec=True,
+        ),
+    ):
+      registry = AgentRegistry(project="my-project", location="global")
+      assert registry.project_id == "my-project"
+      assert registry.project == "my-project"
+      assert registry.location == "global"
+      assert isinstance(registry.published_skills, PublishedSkills)
+
+  def test_init_with_project_and_project_id_matching(self):
+    mock_creds = MagicMock()
+    mock_creds.quota_project_id = None
+    with (
+        patch("google.auth.default", return_value=(mock_creds, "project-id")),
+        patch(
+            "google.auth.transport.requests.AuthorizedSession",
+            autospec=True,
+        ),
+    ):
+      registry = AgentRegistry(
+          project_id="primary-project",
+          project="primary-project",
+          location="global",
+      )
+      assert registry.project_id == "primary-project"
+      assert registry.project == "primary-project"
+
+  def test_init_with_project_and_project_id_differing_raises(self):
+    mock_creds = MagicMock()
+    mock_creds.quota_project_id = None
+    with (
+        patch("google.auth.default", return_value=(mock_creds, "project-id")),
+        patch(
+            "google.auth.transport.requests.AuthorizedSession",
+            autospec=True,
+        ),
+    ):
+      with pytest.raises(
+          ValueError,
+          match=(
+              "Cannot specify both 'project_id' and 'project' with different"
+              " values"
+          ),
+      ):
+        AgentRegistry(
+            project_id="primary-project",
+            project="alias-project",
+            location="global",
+        )
 
   def test_get_connection_uri_mcp_interfaces_top_level(self, registry):
     resource_details = {
@@ -1393,6 +1472,357 @@ class TestAgentRegistry:
 
     assert agent._auth_config is None
 
+  def test_published_skills_get_success(self, registry):
+    skill_resource_name = (
+        "projects/test-project/locations/global/skills/my-skill"
+    )
+    revision_resource_name = (
+        "projects/test-project/locations/global/skills/my-skill/revisions/rev-1"
+    )
+    fake_zip = _create_fake_zip_bytes(
+        name="my-skill",
+        description="A test skill",
+        instructions="# Instructions",
+    )
+
+    mock_metadata_response = MagicMock()
+    mock_metadata_response.json.return_value = {
+        "name": skill_resource_name,
+        "defaultRevision": revision_resource_name,
+        "description": "A test skill",
+    }
+    mock_metadata_response.raise_for_status = MagicMock()
+
+    mock_media_response = MagicMock()
+    mock_media_response.status_code = 200
+    mock_media_response.headers = {}
+    mock_media_response.content = fake_zip
+    mock_media_response.raise_for_status = MagicMock()
+
+    def mock_get(url, *args, **kwargs):
+      if kwargs.get("params") and kwargs.get("params").get("alt") == "media":
+        return mock_media_response
+      return mock_metadata_response
+
+    registry._session.get.side_effect = mock_get
+
+    skill = registry.published_skills.get(name=skill_resource_name)
+
+    assert isinstance(skill, Skill)
+    assert skill.name == "my-skill"
+    assert skill.description == "A test skill"
+    assert skill.instructions == "# Instructions"
+    assert (
+        skill._uri
+        == f"{AGENT_REGISTRY_V1ALPHA_BASE_URL}/{revision_resource_name}"
+    )
+
+    assert registry._session.get.call_count == 2
+    metadata_call = registry._session.get.call_args_list[0]
+    assert (
+        metadata_call.args[0]
+        == f"{AGENT_REGISTRY_V1ALPHA_BASE_URL}/{skill_resource_name}"
+    )
+    media_call = registry._session.get.call_args_list[1]
+    assert (
+        media_call.args[0]
+        == f"{AGENT_REGISTRY_V1ALPHA_BASE_URL}/{revision_resource_name}"
+    )
+    assert media_call.kwargs.get("params") == {"alt": "media"}
+    assert media_call.kwargs.get("allow_redirects") is True
+
+  def test_published_skills_get_positional_arg(self, registry):
+    skill_resource_name = (
+        "projects/test-project/locations/global/skills/my-skill"
+    )
+    revision_resource_name = (
+        "projects/test-project/locations/global/skills/my-skill/revisions/rev-1"
+    )
+    fake_zip = _create_fake_zip_bytes()
+
+    mock_metadata_response = MagicMock()
+    mock_metadata_response.json.return_value = {
+        "name": skill_resource_name,
+        "defaultRevision": revision_resource_name,
+    }
+    mock_metadata_response.raise_for_status = MagicMock()
+
+    mock_media_response = MagicMock()
+    mock_media_response.status_code = 200
+    mock_media_response.headers = {}
+    mock_media_response.content = fake_zip
+    mock_media_response.raise_for_status = MagicMock()
+
+    def mock_get(url, *args, **kwargs):
+      if kwargs.get("params") and kwargs.get("params").get("alt") == "media":
+        return mock_media_response
+      return mock_metadata_response
+
+    registry._session.get.side_effect = mock_get
+
+    skill = registry.published_skills.get(skill_resource_name)
+    assert isinstance(skill, Skill)
+    assert skill.name == "my-skill"
+    assert (
+        skill._uri
+        == f"{AGENT_REGISTRY_V1ALPHA_BASE_URL}/{revision_resource_name}"
+    )
+
+  def test_get_published_skill_convenience_method(self, registry):
+    skill_resource_name = (
+        "projects/test-project/locations/global/skills/my-skill"
+    )
+    revision_resource_name = (
+        "projects/test-project/locations/global/skills/my-skill/revisions/rev-1"
+    )
+    fake_zip = _create_fake_zip_bytes()
+
+    mock_metadata_response = MagicMock()
+    mock_metadata_response.json.return_value = {
+        "name": skill_resource_name,
+        "defaultRevision": revision_resource_name,
+    }
+    mock_metadata_response.raise_for_status = MagicMock()
+
+    mock_media_response = MagicMock()
+    mock_media_response.status_code = 200
+    mock_media_response.headers = {}
+    mock_media_response.content = fake_zip
+    mock_media_response.raise_for_status = MagicMock()
+
+    def mock_get(url, *args, **kwargs):
+      if kwargs.get("params") and kwargs.get("params").get("alt") == "media":
+        return mock_media_response
+      return mock_metadata_response
+
+    registry._session.get.side_effect = mock_get
+
+    skill = registry.get_published_skill(skill_resource_name)
+    assert isinstance(skill, Skill)
+    assert skill.name == "my-skill"
+    assert (
+        skill._uri
+        == f"{AGENT_REGISTRY_V1ALPHA_BASE_URL}/{revision_resource_name}"
+    )
+
+  def test_published_skills_get_with_endpoint_override(self, registry):
+    skill_resource_name = (
+        "projects/test-project/locations/global/skills/my-skill"
+    )
+    revision_resource_name = (
+        "projects/test-project/locations/global/skills/my-skill/revisions/rev-1"
+    )
+    fake_zip = _create_fake_zip_bytes()
+
+    mock_metadata_response = MagicMock()
+    mock_metadata_response.json.return_value = {
+        "name": skill_resource_name,
+        "defaultRevision": revision_resource_name,
+    }
+    mock_metadata_response.raise_for_status = MagicMock()
+
+    mock_media_response = MagicMock()
+    mock_media_response.status_code = 200
+    mock_media_response.headers = {}
+    mock_media_response.content = fake_zip
+    mock_media_response.raise_for_status = MagicMock()
+
+    def mock_get(url, *args, **kwargs):
+      if kwargs.get("params") and kwargs.get("params").get("alt") == "media":
+        return mock_media_response
+      return mock_metadata_response
+
+    registry._session.get.side_effect = mock_get
+
+    with patch.dict(
+        os.environ, {"AGENT_REGISTRY_ENDPOINT": "https://custom.endpoint.com"}
+    ):
+      skill = registry.published_skills.get(name=skill_resource_name)
+
+    assert skill._uri == f"https://custom.endpoint.com/{revision_resource_name}"
+    assert registry._session.get.call_count == 2
+    metadata_call = registry._session.get.call_args_list[0]
+    assert (
+        metadata_call.args[0]
+        == f"https://custom.endpoint.com/{skill_resource_name}"
+    )
+    media_call = registry._session.get.call_args_list[1]
+    assert (
+        media_call.args[0]
+        == f"https://custom.endpoint.com/{revision_resource_name}"
+    )
+
+  def test_published_skills_get_dotted_id_success(self, registry):
+    skill_resource_name = (
+        "projects/test-project/locations/global/skills/"
+        "cloud.google.com-google-cloud-networking-observability"
+    )
+    revision_resource_name = f"{skill_resource_name}/revisions/rev-1"
+    fake_zip = _create_fake_zip_bytes(name="networking-observability")
+
+    mock_metadata_response = MagicMock()
+    mock_metadata_response.json.return_value = {
+        "name": skill_resource_name,
+        "defaultRevision": revision_resource_name,
+    }
+    mock_metadata_response.raise_for_status = MagicMock()
+
+    mock_media_response = MagicMock()
+    mock_media_response.status_code = 200
+    mock_media_response.headers = {}
+    mock_media_response.content = fake_zip
+    mock_media_response.raise_for_status = MagicMock()
+
+    def mock_get(url, *args, **kwargs):
+      if kwargs.get("params") and kwargs.get("params").get("alt") == "media":
+        return mock_media_response
+      return mock_metadata_response
+
+    registry._session.get.side_effect = mock_get
+
+    skill = registry.published_skills.get(name=skill_resource_name)
+    assert skill.name == "networking-observability"
+
+  def test_published_skills_passed_to_skill_toolset(self, registry):
+    skill_resource_name = (
+        "projects/test-project/locations/global/skills/my-skill"
+    )
+    revision_resource_name = (
+        "projects/test-project/locations/global/skills/my-skill/revisions/rev-1"
+    )
+    fake_zip = _create_fake_zip_bytes()
+
+    mock_metadata_response = MagicMock()
+    mock_metadata_response.json.return_value = {
+        "name": skill_resource_name,
+        "defaultRevision": revision_resource_name,
+    }
+    mock_metadata_response.raise_for_status = MagicMock()
+
+    mock_media_response = MagicMock()
+    mock_media_response.status_code = 200
+    mock_media_response.headers = {}
+    mock_media_response.content = fake_zip
+    mock_media_response.raise_for_status = MagicMock()
+
+    def mock_get(url, *args, **kwargs):
+      if kwargs.get("params") and kwargs.get("params").get("alt") == "media":
+        return mock_media_response
+      return mock_metadata_response
+
+    registry._session.get.side_effect = mock_get
+
+    skill = registry.published_skills.get(skill_resource_name)
+    toolset = SkillToolset(skills=[skill])
+    assert toolset is not None
+    assert "my-skill" in toolset._skills
+
+  @pytest.mark.parametrize(
+      "invalid_name",
+      [
+          "my-skill",
+          "skills/my-skill",
+          "projects/test-project/skills/my-skill",
+          "projects/test-project/locations/global/agents/my-agent",
+          "projects/test-project/locations/global/skills/",
+          "projects/../locations/global/skills/my-skill",
+          "projects/test-project/locations/../skills/my-skill",
+          "projects/test-project/locations/global/skills/..",
+          "projects/test-project/locations/global/skills/.",
+          "projects/test-project/locations/global/skills/x?alt=media",
+          "projects/test-project/locations/global/skills/x%2f",
+          "projects/test-project/locations/global/skills/MySkill",
+          f"projects/test-project/locations/global/skills/{'a' * 257}",
+          f"projects/{'a' * 257}/locations/global/skills/my-skill",
+          f"projects/test-project/locations/{'a' * 257}/skills/my-skill",
+          "",
+          12345,
+          None,
+      ],
+  )
+  def test_published_skills_get_invalid_name_raises(
+      self, registry, invalid_name
+  ):
+    with pytest.raises(ValueError, match="Invalid skill resource name"):
+      registry.published_skills.get(invalid_name)
+    registry._session.get.assert_not_called()
+
+  @pytest.mark.parametrize(
+      "bad_revision",
+      [
+          None,
+          "",
+          "https://storage.googleapis.com/evil/archive.zip",
+          "http://evil.com/archive.zip",
+          "revisions/rev-1",
+      ],
+  )
+  def test_published_skills_get_missing_or_invalid_default_revision_raises(
+      self, registry, bad_revision
+  ):
+    skill_resource_name = (
+        "projects/test-project/locations/global/skills/my-skill"
+    )
+    mock_metadata_response = MagicMock()
+    mock_metadata_response.json.return_value = {
+        "name": skill_resource_name,
+        "defaultRevision": bad_revision,
+    }
+    mock_metadata_response.raise_for_status = MagicMock()
+    registry._session.get.return_value = mock_metadata_response
+
+    with pytest.raises(ValueError, match="does not contain default revision"):
+      registry.published_skills.get(name=skill_resource_name)
+
+  def test_published_skills_get_metadata_http_error_raises(self, registry):
+    skill_resource_name = (
+        "projects/test-project/locations/global/skills/my-skill"
+    )
+    mock_response = MagicMock()
+    mock_response.status_code = 404
+    mock_response.text = "Not Found"
+    error = requests.exceptions.HTTPError(
+        "404 Client Error", request=MagicMock(), response=mock_response
+    )
+    registry._session.get.side_effect = error
+
+    with pytest.raises(
+        RuntimeError, match="API request failed with status 404"
+    ):
+      registry.published_skills.get(name=skill_resource_name)
+
+  def test_published_skills_get_media_http_error_raises(self, registry):
+    skill_resource_name = (
+        "projects/test-project/locations/global/skills/my-skill"
+    )
+    mock_metadata_response = MagicMock()
+    mock_metadata_response.json.return_value = {
+        "name": skill_resource_name,
+        "defaultRevision": (
+            "projects/test-project/locations/global/skills/my-skill/revisions/r1"
+        ),
+    }
+    mock_metadata_response.raise_for_status = MagicMock()
+
+    mock_error_response = MagicMock()
+    mock_error_response.status_code = 500
+    mock_error_response.text = "Internal Server Error"
+    error = requests.exceptions.HTTPError(
+        "500 Server Error", request=MagicMock(), response=mock_error_response
+    )
+
+    def mock_get(url, *args, **kwargs):
+      if kwargs.get("params") and kwargs.get("params").get("alt") == "media":
+        raise error
+      return mock_metadata_response
+
+    registry._session.get.side_effect = mock_get
+
+    with pytest.raises(
+        RuntimeError, match="API request failed with status 500"
+    ):
+      registry.published_skills.get(name=skill_resource_name)
+
 
 class TestAgentRegistryMtls:
 
@@ -1463,6 +1893,69 @@ class TestAgentRegistryMtls:
       mock_session.configure_mtls_channel.assert_called_once()
       args, kwargs = mock_session.get.call_args
       assert "agentregistry.mtls.googleapis.com" in args[0]
+
+  @patch(
+      "google.auth.transport.mtls.has_default_client_cert_source",
+      return_value=True,
+  )
+  @patch("google.auth.transport.mtls.default_client_cert_source")
+  @patch.dict(os.environ, {"GOOGLE_API_USE_CLIENT_CERTIFICATE": "true"})
+  def test_published_skills_get_configures_mtls(
+      self, mock_cert_source, registry
+  ):
+    mock_cert_source.return_value = lambda: (b"cert", b"key")
+    with (
+        patch(
+            "google.auth.default", return_value=(MagicMock(), "test-project")
+        ),
+        patch(
+            "google.adk.integrations.agent_registry.agent_registry._use_client_cert_effective",
+            return_value=True,
+        ),
+        patch("google.auth.transport.requests.AuthorizedSession"),
+    ):
+      registry = AgentRegistry(project_id="test-project", location="global")
+      skill_resource_name = (
+          "projects/test-project/locations/global/skills/my-skill"
+      )
+      revision_resource_name = "projects/test-project/locations/global/skills/my-skill/revisions/rev-1"
+      fake_zip = _create_fake_zip_bytes()
+
+      mock_metadata_response = MagicMock()
+      mock_metadata_response.json.return_value = {
+          "name": skill_resource_name,
+          "defaultRevision": revision_resource_name,
+      }
+      mock_metadata_response.raise_for_status = MagicMock()
+
+      mock_media_response = MagicMock()
+      mock_media_response.status_code = 200
+      mock_media_response.headers = {}
+      mock_media_response.content = fake_zip
+      mock_media_response.raise_for_status = MagicMock()
+
+      def mock_get(url, *args, **kwargs):
+        if kwargs.get("params") and kwargs.get("params").get("alt") == "media":
+          return mock_media_response
+        return mock_metadata_response
+
+      registry._session.get.side_effect = mock_get
+
+      skill = registry.published_skills.get(name=skill_resource_name)
+      assert (
+          skill._uri
+          == f"{AGENT_REGISTRY_V1ALPHA_MTLS_BASE_URL}/{revision_resource_name}"
+      )
+      metadata_call = registry._session.get.call_args_list[0]
+      assert (
+          metadata_call.args[0]
+          == f"{AGENT_REGISTRY_V1ALPHA_MTLS_BASE_URL}/{skill_resource_name}"
+      )
+      media_call = registry._session.get.call_args_list[1]
+      assert (
+          media_call.args[0]
+          == f"{AGENT_REGISTRY_V1ALPHA_MTLS_BASE_URL}/{revision_resource_name}"
+      )
 
   @pytest.mark.parametrize(
       "env_val, has_cert, expected",
