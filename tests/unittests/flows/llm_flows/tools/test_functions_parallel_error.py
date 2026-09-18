@@ -13,10 +13,14 @@
 # limitations under the License.
 
 import asyncio
+from contextlib import aclosing
 from typing import Any
 
 from google.adk.agents.llm_agent import Agent
+from google.adk.agents.run_config import RunConfig
+from google.adk.agents.run_config import StreamingMode
 from google.adk.flows.llm_flows import functions
+from google.adk.live import LiveRequestQueue
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 import pytest
@@ -101,6 +105,7 @@ def _parallel_tool_responses() -> list[list[types.Part]]:
 async def _run_parallel_child_cancel(
     stopper,
     sibling,
+    execution: str = 'run_async',
 ) -> None:
   agent = Agent(
       name='root_agent',
@@ -110,16 +115,60 @@ async def _run_parallel_child_cancel(
       tools=[stopper, sibling],
   )
   runner = testing_utils.InMemoryRunner(agent)
+  session = runner.session
+  user_message = types.Content(
+      role='user', parts=[types.Part(text='test')]
+  )
   # Runner swallows CancelledError at root-task cleanup so the caller is
   # not itself cancelled; the invariant is that sibling tools are torn down
   # before that iterator returns.
-  await runner.run_async(
-      new_message=types.Content(parts=[types.Part(text='test')]),
+  if execution == 'live':
+    live_queue = LiveRequestQueue()
+    live_queue.send_content(user_message)
+    live_queue.close()
+
+    async def _consume_live() -> None:
+      async with aclosing(
+          runner.runner.run_live(
+              user_id=session.user_id,
+              session_id=session.id,
+              live_request_queue=live_queue,
+              run_config=RunConfig(response_modalities=['TEXT']),
+          )
+      ) as agen:
+        async for _ in agen:
+          pass
+
+    await asyncio.wait_for(_consume_live(), timeout=10)
+    return
+
+  streaming_mode = (
+      StreamingMode.SSE if execution == 'sse' else StreamingMode.NONE
   )
+  async with aclosing(
+      runner.runner.run_async(
+          user_id=session.user_id,
+          session_id=session.id,
+          new_message=user_message,
+          run_config=RunConfig(streaming_mode=streaming_mode),
+      )
+  ) as agen:
+    async for _ in agen:
+      pass
+
+
+_EXECUTIONS = [
+    pytest.param('run_async', id='run-async'),
+    pytest.param('sse', id='run-async-sse'),
+    pytest.param('live', id='run-live'),
+]
 
 
 @pytest.mark.asyncio
-async def test_parallel_function_call_cancels_siblings_on_cancelled_error():
+@pytest.mark.parametrize('execution', _EXECUTIONS)
+async def test_parallel_function_call_cancels_siblings_on_cancelled_error(
+    execution: str,
+):
   """A tool that raises CancelledError cancels unfinished sibling tools."""
   started = asyncio.Event()
   release = asyncio.Event()
@@ -143,7 +192,7 @@ async def test_parallel_function_call_cancels_siblings_on_cancelled_error():
       sibling_cancelled = True
       raise
 
-  await _run_parallel_child_cancel(stopper, sibling)
+  await _run_parallel_child_cancel(stopper, sibling, execution=execution)
 
   pending = sibling_task is not None and not sibling_task.done()
   release.set()
@@ -157,7 +206,10 @@ async def test_parallel_function_call_cancels_siblings_on_cancelled_error():
 
 
 @pytest.mark.asyncio
-async def test_parallel_function_call_cancels_siblings_when_tool_cancels_itself():
+@pytest.mark.parametrize('execution', _EXECUTIONS)
+async def test_parallel_function_call_cancels_siblings_when_tool_cancels_itself(
+    execution: str,
+):
   """A tool that cancels its own task cancels unfinished sibling tools."""
   started = asyncio.Event()
   release = asyncio.Event()
@@ -185,7 +237,7 @@ async def test_parallel_function_call_cancels_siblings_when_tool_cancels_itself(
       sibling_cancelled = True
       raise
 
-  await _run_parallel_child_cancel(stopper, sibling)
+  await _run_parallel_child_cancel(stopper, sibling, execution=execution)
 
   pending = sibling_task is not None and not sibling_task.done()
   release.set()
