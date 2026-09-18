@@ -383,6 +383,68 @@ async def test_same_session_id_for_different_users_does_not_collide(
 
 
 @pytest.mark.asyncio
+async def test_add_events_to_memory_writes_the_given_events(
+    mock_firestore_client,
+):
+  """add_events_to_memory stores each given event under the app and user."""
+  service = FirestoreMemoryService(client=mock_firestore_client)
+  batch = mock_firestore_client.batch.return_value
+  batch.commit = mock.AsyncMock()
+
+  await service.add_events_to_memory(
+      app_name="test_app",
+      user_id="test_user",
+      session_id="s1",
+      events=[_text_event("quick brown fox", "e1")],
+  )
+
+  data = batch.set.call_args.args[1]
+  assert data["appName"] == "test_app"
+  assert data["userId"] == "test_user"
+  assert data["sessionId"] == "s1"
+  assert "quick" in data["keywords"]
+
+
+@pytest.mark.asyncio
+async def test_add_events_to_memory_without_session_id(mock_firestore_client):
+  """Events added without a session ID are stored with no session ID."""
+  service = FirestoreMemoryService(client=mock_firestore_client)
+  batch = mock_firestore_client.batch.return_value
+  batch.commit = mock.AsyncMock()
+
+  await service.add_events_to_memory(
+      app_name="test_app",
+      user_id="test_user",
+      events=[_text_event("quick brown fox", "e1")],
+  )
+
+  assert batch.set.call_args.args[1]["sessionId"] is None
+  batch.commit.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_add_events_then_session_does_not_duplicate(
+    mock_firestore_client,
+):
+  """An event added as a delta and later with its session keeps one entry."""
+  from google.adk.sessions.session import Session
+
+  service = FirestoreMemoryService(client=mock_firestore_client)
+  mock_firestore_client.batch.return_value.commit = mock.AsyncMock()
+  event = _text_event("quick brown fox", "e1")
+
+  await service.add_events_to_memory(
+      app_name="test_app", user_id="test_user", session_id="s1", events=[event]
+  )
+  await service.add_session_to_memory(
+      Session(id="s1", app_name="test_app", user_id="test_user", events=[event])
+  )
+
+  delta_id, session_id = _written_doc_ids(mock_firestore_client)
+  assert delta_id == session_id
+
+
+@pytest.mark.asyncio
 async def test_add_session_to_memory_no_events(mock_firestore_client):
   service = FirestoreMemoryService(client=mock_firestore_client)
 

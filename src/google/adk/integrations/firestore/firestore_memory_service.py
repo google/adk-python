@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from collections.abc import Sequence
 import hashlib
 import logging
@@ -102,6 +103,28 @@ class FirestoreMemoryService(BaseMemoryService):  # type: ignore[misc]
         user_id=session.user_id,
         session_id=session.id,
         events=session.events,
+    )
+
+  @override
+  async def add_events_to_memory(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      events: Sequence[Event],
+      session_id: Optional[str] = None,
+      custom_metadata: Optional[Mapping[str, object]] = None,
+  ) -> None:
+    """Adds events, such as the latest turn, to the memories collection.
+
+    Re-adding an event with the same session ID overwrites its entry.
+    """
+    _ = custom_metadata
+    await self._write_memories(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        events=events,
     )
 
   async def _write_memories(
