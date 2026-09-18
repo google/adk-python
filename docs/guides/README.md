@@ -6,6 +6,7 @@ This directory contains specific developer guides for the ADK Python implementat
 
 ### Agents
 * [BaseAgent](agents/base_agent/index.md) - The foundational base class for custom agents, container orchestrators, and lifecycle callbacks.
+* [CallerPrincipal](agents/caller_principal/index.md) - The caller identity a serving layer establishes for an invocation, and how tool confirmation uses it.
 * [Context](agents/context/index.md) - The runtime interface for state, artifacts, memory, credentials, and dynamic execution.
 * [Creating Agents with Configurations](agents/config/index.md) - Building and wiring multi-agent graphs from external YAML configuration files.
 * [LlmAgent](agents/llm_agent/index.md) - The primary conversational reasoning agent orchestrating models, tools, and workflows.

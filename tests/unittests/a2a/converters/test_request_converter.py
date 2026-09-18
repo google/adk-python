@@ -17,6 +17,7 @@ from unittest.mock import Mock
 from a2a.server.agent_execution import RequestContext
 from google.adk.a2a import _compat
 from google.adk.a2a.converters.request_converter import _get_user_id
+from google.adk.a2a.converters.request_converter import build_caller_principal
 from google.adk.a2a.converters.request_converter import convert_a2a_request_to_agent_run_request
 from google.adk.runners import RunConfig
 from google.genai import types as genai_types
@@ -457,3 +458,112 @@ class TestIntegration:
     assert result.new_message.role == "user"
     assert result.new_message.parts == [mock_genai_part]
     assert isinstance(result.run_config, RunConfig)
+
+
+class TestBuildCallerPrincipal:
+  """Test cases for build_caller_principal."""
+
+  def _request_with_user(self, user):
+    """Builds a RequestContext whose call context carries the given user."""
+    mock_call_context = Mock()
+    mock_call_context.user = user
+    request = Mock(spec=RequestContext)
+    request.call_context = mock_call_context
+    request.context_id = "test_context"
+    return request
+
+  def test_authenticated_when_call_context_names_the_user(self):
+    """The serving layer verified the caller, so the principal says so."""
+    mock_user = Mock()
+    mock_user.user_name = "authenticated_user"
+
+    principal = build_caller_principal(self._request_with_user(mock_user))
+
+    assert principal.authenticated
+    assert principal.user_name == "authenticated_user"
+    assert principal.source == "a2a"
+
+  def test_unauthenticated_without_call_context(self):
+    """No call context means no authenticator ran."""
+    request = Mock(spec=RequestContext)
+    request.call_context = None
+    request.context_id = "test_context"
+
+    principal = build_caller_principal(request)
+
+    assert not principal.authenticated
+    assert principal.user_name is None
+    assert principal.source == "a2a"
+
+  def test_unauthenticated_when_call_context_has_no_user(self):
+    """A call context without a user vouches for nobody."""
+    principal = build_caller_principal(self._request_with_user(None))
+
+    assert not principal.authenticated
+    assert principal.user_name is None
+
+  def test_unauthenticated_with_empty_user_name(self):
+    """An a2a UnauthenticatedUser reports an empty name."""
+    mock_user = Mock()
+    mock_user.user_name = ""
+
+    principal = build_caller_principal(self._request_with_user(mock_user))
+
+    assert not principal.authenticated
+    assert principal.user_name is None
+
+  def test_unauthenticated_when_the_user_says_so_despite_a_name(self):
+    """is_authenticated False wins over a populated name."""
+    mock_user = Mock()
+    mock_user.user_name = "looks_real"
+    mock_user.is_authenticated = False
+
+    principal = build_caller_principal(self._request_with_user(mock_user))
+
+    assert not principal.authenticated
+    assert principal.user_name is None
+
+  @pytest.mark.parametrize(
+      "user_name, expect_authenticated",
+      [("real_user", True), ("", False), (None, False)],
+  )
+  def test_principal_never_disagrees_with_get_user_id(
+      self, user_name, expect_authenticated
+  ):
+    """The principal is authenticated exactly when _get_user_id trusts the name.
+
+    Both functions read the same call context. Deriving them from the same
+    condition is what keeps them from drifting apart, which is the failure
+    mode behind the original bug: an authentication fact computed and then
+    thrown away.
+    """
+    mock_user = Mock()
+    mock_user.user_name = user_name
+    request = self._request_with_user(mock_user)
+
+    principal = build_caller_principal(request)
+    used_call_context_name = _get_user_id(request) == user_name
+
+    assert principal.authenticated is expect_authenticated
+    assert principal.authenticated is used_call_context_name
+
+  def test_conversion_attaches_the_principal(self):
+    """The converter must put the principal on the AgentRunRequest."""
+    mock_message = Mock()
+    mock_message.parts = []
+    mock_user = Mock()
+    mock_user.user_name = "authenticated_user"
+    mock_call_context = Mock()
+    mock_call_context.user = mock_user
+
+    request = Mock(spec=RequestContext)
+    request.message = mock_message
+    request.context_id = "test_context"
+    request.call_context = mock_call_context
+    request.metadata = None
+
+    result = convert_a2a_request_to_agent_run_request(request, Mock())
+
+    assert result.caller_principal is not None
+    assert result.caller_principal.authenticated
+    assert result.caller_principal.user_name == "authenticated_user"

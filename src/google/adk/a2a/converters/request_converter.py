@@ -23,6 +23,7 @@ from google.genai import types as genai_types
 from pydantic import BaseModel
 
 from .. import _compat
+from ...agents._caller_principal import CallerPrincipal
 from ...agents.run_config import RunConfig
 from ..experimental import a2a_experimental
 from .part_converter import A2APartToGenAIPartConverter
@@ -41,6 +42,7 @@ class AgentRunRequest(BaseModel):
   new_message: Optional[genai_types.Content] = None
   state_delta: Optional[dict[str, Any]] = None
   run_config: Optional[RunConfig] = None
+  caller_principal: Optional[CallerPrincipal] = None
 
 
 A2ARequestToAgentRunRequestConverter = Callable[
@@ -75,6 +77,37 @@ def _get_user_id(request: RequestContext) -> str:
 
   # Get user from context id
   return f'A2A_USER_{request.context_id}'
+
+
+def build_caller_principal(request: RequestContext) -> CallerPrincipal:
+  """Records what the A2A serving layer established about the caller.
+
+  ``_get_user_id`` above already reads ``call_context.user``, but it collapses
+  the result to a bare string and drops the one bit that matters downstream:
+  whether an authenticator produced that name or whether it was synthesized
+  from the caller-supplied context id. This keeps that bit.
+
+  Args:
+    request: The incoming request context from the A2A server.
+
+  Returns:
+    An authenticated principal when the A2A server authenticated the caller,
+    and an unauthenticated one otherwise. Never ``None``: an A2A request has
+    crossed a remote trust boundary either way, and ``None`` has to keep
+    meaning that no boundary was crossed at all.
+  """
+  user = request.call_context.user if request.call_context else None
+  user_name = getattr(user, 'user_name', None) if user is not None else None
+  # Authenticated exactly when _get_user_id above takes its first branch, so
+  # the principal and the user id can never disagree about the same request,
+  # plus one extra check: an a2a User that reports is_authenticated False is
+  # not vouched for even if it carries a name. Stricter by one condition,
+  # never looser.
+  if not isinstance(user_name, str) or not user_name:
+    return CallerPrincipal(authenticated=False, source='a2a')
+  if getattr(user, 'is_authenticated', True) is False:
+    return CallerPrincipal(authenticated=False, source='a2a')
+  return CallerPrincipal(authenticated=True, user_name=user_name, source='a2a')
 
 
 @a2a_experimental
@@ -118,4 +151,5 @@ def convert_a2a_request_to_agent_run_request(
           parts=output_parts,
       ),
       run_config=RunConfig(custom_metadata=custom_metadata),
+      caller_principal=build_caller_principal(request),
   )

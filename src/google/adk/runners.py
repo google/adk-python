@@ -36,6 +36,7 @@ from google.genai import types
 from opentelemetry import context
 from typing_extensions import Self
 
+from .agents._caller_principal import CallerPrincipal
 from .agents.base_agent import BaseAgent
 from .agents.context_cache_config import ContextCacheConfig
 from .agents.invocation_context import InvocationContext
@@ -1053,6 +1054,7 @@ class Runner:
       new_message: Optional[types.Content] = None,
       state_delta: Optional[dict[str, Any]] = None,
       run_config: Optional[RunConfig] = None,
+      caller_principal: Optional[CallerPrincipal] = None,
       yield_user_message: bool = False,
   ) -> AsyncGenerator[Event, None]:
     """Main entry method to run the agent in this runner.
@@ -1071,6 +1073,10 @@ class Runner:
       new_message: A new message to append to the session.
       state_delta: Optional state changes to apply to the session.
       run_config: The run config for the agent.
+      caller_principal: Set by a serving layer to record whether it
+        authenticated the caller of this invocation, and as whom. Leave it
+        unset for in-process callers: no remote trust boundary is crossed, so
+        there is nothing to vouch for.
       yield_user_message: If True, yield the user message event before
         agent/node events.
 
@@ -1230,6 +1236,7 @@ class Runner:
               run_config=run_config,
               state_delta=state_delta,
               invocation_id=invocation_id,
+              caller_principal=caller_principal,
           )
         else:
           invocation_id = self._resolve_invocation_id(
@@ -1245,6 +1252,7 @@ class Runner:
                 new_message=new_message,
                 run_config=run_config,
                 state_delta=state_delta,
+                caller_principal=caller_principal,
             )
           else:
             invocation_context = (
@@ -1254,6 +1262,7 @@ class Runner:
                     invocation_id=invocation_id,
                     run_config=run_config,
                     state_delta=state_delta,
+                    caller_principal=caller_principal,
                 )
             )
             active_agent = invocation_context.agent
@@ -1898,6 +1907,7 @@ class Runner:
       run_config: RunConfig,
       state_delta: Optional[dict[str, Any]],
       invocation_id: Optional[str] = None,
+      caller_principal: Optional[CallerPrincipal] = None,
   ) -> InvocationContext:
     """Sets up the context for a new invocation.
 
@@ -1907,6 +1917,8 @@ class Runner:
       run_config: The run config of the agent.
       state_delta: Optional state changes to apply to the session.
       invocation_id: Optional invocation identifier.
+      caller_principal: Optional caller identity established by a serving
+        layer.
 
     Returns:
       The invocation context for the new invocation.
@@ -1917,6 +1929,7 @@ class Runner:
         new_message=new_message,
         run_config=run_config,
         invocation_id=invocation_id,
+        caller_principal=caller_principal,
     )
     # Step 2: Handle new message, by running callbacks and appending to
     # session.
@@ -1945,6 +1958,7 @@ class Runner:
       invocation_id: str,
       run_config: RunConfig,
       state_delta: Optional[dict[str, Any]],
+      caller_principal: Optional[CallerPrincipal] = None,
   ) -> InvocationContext:
     """Sets up the context for a resumed invocation.
 
@@ -1954,6 +1968,8 @@ class Runner:
       invocation_id: The invocation id to resume.
       run_config: The run config of the agent.
       state_delta: Optional state changes to apply to the session.
+      caller_principal: Optional caller identity established by a serving
+        layer.
 
     Returns:
       The invocation context for the resumed invocation.
@@ -1979,6 +1995,7 @@ class Runner:
         new_message=user_message,
         run_config=run_config,
         invocation_id=invocation_id,
+        caller_principal=caller_principal,
     )
     # Step 3: Maybe handle new message.
     if new_message:
@@ -2029,6 +2046,7 @@ class Runner:
       new_message: Optional[types.Content] = None,
       live_request_queue: Optional[LiveRequestQueue] = None,
       run_config: Optional[RunConfig] = None,
+      caller_principal: Optional[CallerPrincipal] = None,
   ) -> InvocationContext:
     """Creates a new invocation context.
 
@@ -2038,6 +2056,8 @@ class Runner:
         new_message: The new message for the context.
         live_request_queue: The live request queue for the context.
         run_config: The run config for the context.
+        caller_principal: The caller identity a serving layer established for
+            this invocation, or None when no serving layer was involved.
 
     Returns:
         The new invocation context.
@@ -2072,6 +2092,7 @@ class Runner:
         user_content=new_message,
         live_request_queue=live_request_queue,
         run_config=run_config,
+        caller_principal=caller_principal,
         resumability_config=self.resumability_config,
     )
 
