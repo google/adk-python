@@ -454,6 +454,100 @@ async def test_generate_content_async(
 
 
 @pytest.mark.asyncio
+async def test_generate_content_async_multiple_candidates_logs_error(
+    gemini_llm, llm_request, generate_content_response, caplog
+):
+  generate_content_response.candidates = [
+      types.Candidate(
+          content=Content(
+              role="model", parts=[Part.from_text(text="First candidate")]
+          ),
+          finish_reason=types.FinishReason.STOP,
+      ),
+      types.Candidate(
+          content=Content(
+              role="model", parts=[Part.from_text(text="Second candidate")]
+          ),
+          finish_reason=types.FinishReason.STOP,
+      ),
+  ]
+
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+
+    async def mock_coro():
+      return generate_content_response
+
+    mock_client.aio.models.generate_content.return_value = mock_coro()
+
+    with caplog.at_level(logging.ERROR):
+      responses = [
+          response
+          async for response in gemini_llm.generate_content_async(
+              llm_request, stream=False
+          )
+      ]
+
+    mock_client.aio.models.generate_content.assert_called_once()
+    assert len(responses) == 1
+    assert responses[0].content.parts[0].text == "First candidate"
+    errors = [
+        record
+        for record in caplog.records
+        if "Multiple candidates found in response" in record.getMessage()
+    ]
+    assert len(errors) == 1
+    assert errors[0].name == "google_adk.google.adk.models.google_llm"
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_multiple_candidates_logs_error(
+    gemini_llm, llm_request, caplog
+):
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    mock_responses = [
+        types.GenerateContentResponse(
+            candidates=[
+                types.Candidate(
+                    content=Content(
+                        role="model", parts=[Part.from_text(text=first)]
+                    ),
+                    finish_reason=None,
+                ),
+                types.Candidate(
+                    content=Content(
+                        role="model", parts=[Part.from_text(text=second)]
+                    ),
+                    finish_reason=None,
+                ),
+            ]
+        )
+        for first, second in (("Hello", "World"), ("Hello2", "World2"))
+    ]
+
+    async def mock_coro():
+      return MockAsyncIterator(mock_responses)
+
+    mock_client.aio.models.generate_content_stream.return_value = mock_coro()
+
+    with caplog.at_level(logging.ERROR):
+      _ = [
+          response
+          async for response in gemini_llm.generate_content_async(
+              llm_request, stream=True
+          )
+      ]
+
+    errors = [
+        record
+        for record in caplog.records
+        if "Multiple candidates found in streaming response"
+        in record.getMessage()
+    ]
+    assert len(errors) == 1
+    assert errors[0].name == "google_adk.google.adk.models.google_llm"
+
+
+@pytest.mark.asyncio
 async def test_generate_content_async_stream(gemini_llm, llm_request):
   with mock.patch.object(gemini_llm, "api_client") as mock_client:
     mock_responses = [
@@ -3043,3 +3137,182 @@ async def test_connect_does_not_log_request_headers(
   # The log is still emitted and still useful.
   assert "gemini-2.5-flash" in caplog.text
   assert "Modality.AUDIO" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_secondary_candidate_chunk(
+    gemini_llm, llm_request, caplog
+):
+  """Test a candidate streamed in its own chunk is detected and skipped."""
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    mock_responses = [
+        types.GenerateContentResponse(
+            candidates=[
+                types.Candidate(
+                    index=0,
+                    content=Content(
+                        role="model", parts=[Part.from_text(text="Hello")]
+                    ),
+                    finish_reason=None,
+                )
+            ]
+        ),
+        types.GenerateContentResponse(
+            candidates=[
+                types.Candidate(
+                    index=1,
+                    content=Content(
+                        role="model", parts=[Part.from_text(text="Other")]
+                    ),
+                    finish_reason=None,
+                )
+            ]
+        ),
+        types.GenerateContentResponse(
+            candidates=[
+                types.Candidate(
+                    index=0,
+                    content=Content(
+                        role="model", parts=[Part.from_text(text=" world")]
+                    ),
+                    finish_reason=types.FinishReason.STOP,
+                )
+            ]
+        ),
+    ]
+
+    async def mock_coro():
+      return MockAsyncIterator(mock_responses)
+
+    mock_client.aio.models.generate_content_stream.return_value = mock_coro()
+
+    with caplog.at_level(logging.ERROR):
+      responses = [
+          response
+          async for response in gemini_llm.generate_content_async(
+              llm_request, stream=True
+          )
+      ]
+
+    assert responses[-1].content.parts[0].text == "Hello world"
+    errors = [
+        record
+        for record in caplog.records
+        if "Multiple candidates found in streaming response"
+        in record.getMessage()
+    ]
+    assert len(errors) == 1
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_secondary_candidate_chunk_is_skipped(
+    gemini_llm, llm_request
+):
+  """Test a chunk holding only secondary candidates yields no partial response."""
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    mock_responses = [
+        types.GenerateContentResponse(
+            candidates=[
+                types.Candidate(
+                    index=0,
+                    content=Content(
+                        role="model", parts=[Part.from_text(text="Hello")]
+                    ),
+                    finish_reason=None,
+                )
+            ]
+        ),
+        types.GenerateContentResponse(
+            candidates=[
+                types.Candidate(
+                    index=1,
+                    content=Content(
+                        role="model", parts=[Part.from_text(text="Other")]
+                    ),
+                    finish_reason=None,
+                )
+            ]
+        ),
+        types.GenerateContentResponse(
+            candidates=[
+                types.Candidate(
+                    index=0,
+                    content=Content(
+                        role="model", parts=[Part.from_text(text=" world")]
+                    ),
+                    finish_reason=types.FinishReason.STOP,
+                )
+            ]
+        ),
+    ]
+
+    async def mock_coro():
+      return MockAsyncIterator(mock_responses)
+
+    mock_client.aio.models.generate_content_stream.return_value = mock_coro()
+
+    responses = [
+        response
+        async for response in gemini_llm.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+
+    assert len(responses) == 3
+    assert [r.content.parts[0].text for r in responses] == [
+        "Hello",
+        " world",
+        "Hello world",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_secondary_candidate_chunk_preserves_usage_metadata(
+    gemini_llm, llm_request
+):
+  """Test that usage metadata on a chunk holding only secondary candidates is preserved."""
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    mock_responses = [
+        types.GenerateContentResponse(
+            candidates=[
+                types.Candidate(
+                    index=0,
+                    content=Content(
+                        role="model", parts=[Part.from_text(text="Hello")]
+                    ),
+                    finish_reason=None,
+                )
+            ]
+        ),
+        types.GenerateContentResponse(
+            candidates=[
+                types.Candidate(
+                    index=1,
+                    content=Content(
+                        role="model", parts=[Part.from_text(text="Other")]
+                    ),
+                    finish_reason=types.FinishReason.STOP,
+                )
+            ],
+            usage_metadata=types.GenerateContentResponseUsageMetadata(
+                prompt_token_count=10,
+                candidates_token_count=5,
+                total_token_count=15,
+            ),
+        ),
+    ]
+
+    async def mock_coro():
+      return MockAsyncIterator(mock_responses)
+
+    mock_client.aio.models.generate_content_stream.return_value = mock_coro()
+
+    responses = [
+        response
+        async for response in gemini_llm.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+
+    assert responses[-1].usage_metadata is not None
+    assert responses[-1].usage_metadata.total_token_count == 15

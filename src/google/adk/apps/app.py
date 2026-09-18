@@ -14,18 +14,18 @@
 from __future__ import annotations
 
 import re
-from typing import Any
 from typing import Optional
-from typing import Union
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import InstanceOf
 from pydantic import model_validator
+from pydantic import SerializeAsAny
 
-from ..agents.base_agent import BaseAgent
 from ..agents.context_cache_config import ContextCacheConfig
 from ..plugins.base_plugin import BasePlugin
+from ..workflow import BaseNode
 from ._configs import EventsCompactionConfig
 from ._configs import ResumabilityConfig
 
@@ -54,10 +54,8 @@ class App(BaseModel):
   """Represents an LLM-backed agentic application.
 
   An `App` is the top-level container for an agentic system powered by LLMs.
-  It manages either a root agent (`root_agent`) or a root node (`root_node`),
-  which serves as the entry point for execution.
-
-  Exactly one of `root_agent` or `root_node` must be provided.
+  It manages a root node (`root_agent`), which serves as the entry point for
+  execution.
 
   The `plugins` are application-wide components that provide shared capabilities
   and services to the entire system.
@@ -71,11 +69,12 @@ class App(BaseModel):
   name: str
   """The name of the application."""
 
-  # Change to Union[BaseAgent, BaseNode, None] after dependency is fixed.
-  root_agent: Union[BaseAgent, Any, None] = None
+  # InstanceOf rejects dicts rather than coercing them into a bare BaseNode;
+  # SerializeAsAny keeps the subclass fields when an App is dumped.
+  root_agent: Optional[SerializeAsAny[InstanceOf[BaseNode]]] = None
   """The root agent or node in the application.
 
-  Accepts either a BaseAgent or a BaseNode instance.
+  Accepts any BaseNode instance, including a BaseAgent.
   """
 
   plugins: list[BasePlugin] = Field(default_factory=list)
@@ -98,12 +97,4 @@ class App(BaseModel):
     validate_app_name(self.name)
     if self.root_agent is None:
       raise ValueError("root_agent must be provided.")
-
-    from ..workflow._base_node import BaseNode
-
-    if not isinstance(self.root_agent, (BaseAgent, BaseNode)):
-      raise TypeError(
-          "root_agent must be a BaseAgent or BaseNode instance, got"
-          f" {type(self.root_agent).__name__}"
-      )
     return self

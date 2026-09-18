@@ -28,8 +28,6 @@ from google.genai import types
 from websockets.exceptions import ConnectionClosed
 from websockets.exceptions import ConnectionClosedOK
 
-from . import _output_schema_processor
-from . import functions
 from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...events.event_actions import EventActions
@@ -42,9 +40,11 @@ from ...telemetry.tracing import trace_send_data
 from ...telemetry.tracing import tracer
 from ...utils.context_utils import Aclosing
 from ...utils.variant_utils import GoogleLLMVariant
-from ._invocation_utils import as_llm_agent as _as_llm_agent
-from ._invocation_utils import require_run_config as _require_run_config
-from ._invocation_utils import run_config_for_new_live_session
+from .core._utils import as_llm_agent as _as_llm_agent
+from .core._utils import require_run_config as _require_run_config
+from .core._utils import run_config_for_new_live_session
+from .prompt import _schema as _output_schema_processor
+from .tools import _functions as functions
 
 if TYPE_CHECKING:
   from ...agents.llm_agent import LlmAgent
@@ -278,10 +278,17 @@ async def send_to_model(
             session=invocation_context.session,
             event=user_content_event,
         )
-        # Live callback site 1 of 3: Live typed text is screened directly
-        # before sending to the model. Unlike the other callback sites, a
-        # block here does not reconnect because the model has not yet
-        # received the content.
+      # Live callback site 1 of 3: Live typed text is screened directly
+      # before sending to the model. Unlike the other callback sites, a
+      # block here does not reconnect because the model has not yet
+      # received the content.
+      #
+      # Screen everything the model receives, including the partials that the
+      # session-event branch above skips. A pure tool result is not user input.
+      is_only_function_responses = bool(
+          content.parts and all(p.function_response for p in content.parts)
+      )
+      if not is_only_function_responses:
         if blocked_event := await flow._screen_live_user_content(
             invocation_context, content, llm_request
         ):
@@ -615,10 +622,10 @@ async def postprocess_live_flow(
           )
       ):
         # Create and yield a final model response event
-        final_event = (
-            _output_schema_processor.create_final_model_response_event(
-                invocation_context, json_response
-            )
+        final_event = _output_schema_processor.create_final_model_response_event(
+            invocation_context,
+            json_response,
+            validated_response=function_response_event.actions.set_model_response,
         )
         yield final_event
 
@@ -649,7 +656,7 @@ async def run_live_flow(
     live_request_queue = require_live_request_queue(invocation_context)
     llm_request.model = agent.canonical_live_model.model
 
-    llm = flow._get_llm(invocation_context)
+    llm = await flow._get_llm(invocation_context)
     # Only log non-sensitive request metadata. The full request carries the
     # user conversation and http_options.headers, which may hold credentials.
     logger.debug(
@@ -813,6 +820,12 @@ async def run_live_flow(
                 # instead of calling `transfer_to_agent`.
                 transfer_to_agent = event.actions.transfer_to_agent
                 if transfer_to_agent:
+                  # Stop background tools before the transfer delay so:
+                  # 1. In-flight responses are not forwarded to the parent agent
+                  #    during the delay while the request queue drains.
+                  # 2. Function responses are not sent to the sub-agent after
+                  #    the transfer occurs.
+                  await flow._stop_background_tool_tasks(invocation_context)
                   await asyncio.sleep(
                       base_llm_flow.DEFAULT_TRANSFER_AGENT_DELAY
                   )
@@ -821,13 +834,6 @@ async def run_live_flow(
                   logger.debug('Closing live connection')
                   await llm_connection.close()
                   logger.debug('Live connection closed.')
-                  # The sub agent takes over the live request queue, so this
-                  # agent's background tools have to stop here rather than
-                  # when this run_live eventually returns: it does not return
-                  # until the sub agent is done, and until then a tool of this
-                  # agent would keep feeding function responses to a model
-                  # that never made those calls.
-                  await flow._stop_background_tool_tasks(invocation_context)
                   # transfer to the sub agent.
                   logger.debug('Transferring to agent: %s', transfer_to_agent)
                   agent_to_run = flow._get_agent_to_run(

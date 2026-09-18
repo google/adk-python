@@ -144,6 +144,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
       timestamp: float,
       invocation_id: str,
       function_call_id: str,
+      long_running_tool_ids: set[str] | None = None,
   ) -> Event:
     return Event(
         timestamp=timestamp,
@@ -159,6 +160,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
                 )
             ],
         ),
+        long_running_tool_ids=long_running_tool_ids,
     )
 
   def _create_function_response_event(
@@ -519,6 +521,29 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
 
     # Visible text after compaction is: 'S' + ('c' * 20) = 21 chars.
     self.assertEqual(estimated_token_count, 21 // 4)
+
+  def test_latest_prompt_token_count_stops_at_compaction_event(self):
+    events = [
+        self._create_event(1.0, 'inv1', 'a' * 40, prompt_token_count=1000),
+        self._create_compacted_event(1.0, 1.0, 'S'),
+        self._create_event(2.0, 'inv2', 'b' * 20),
+    ]
+
+    estimated_token_count = compaction_module._latest_prompt_token_count(events)
+
+    # Prompt token count recorded before compaction describes the replaced prompt
+    # and must not be picked up; falls back to estimated count ('S' + 20 chars).
+    self.assertEqual(estimated_token_count, 21 // 4)
+
+    events_with_post_count = [
+        self._create_event(1.0, 'inv1', 'a' * 40, prompt_token_count=1000),
+        self._create_compacted_event(1.0, 1.0, 'S'),
+        self._create_event(2.0, 'inv2', 'b' * 20, prompt_token_count=50),
+    ]
+    self.assertEqual(
+        compaction_module._latest_prompt_token_count(events_with_post_count),
+        50,
+    )
 
   def test_latest_prompt_token_count_fallback_uses_effective_contents(self):
     events = [
@@ -1108,7 +1133,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
   async def test_sliding_window_pending_function_call_remains_in_contents(
       self,
   ):
-    """Sliding-window compaction keeps pending tool calls visible in history."""
+    """Sliding-window compaction keeps pending long-running tool calls in history."""
     app = App(
         name='test',
         root_agent=Mock(spec=BaseAgent),
@@ -1120,7 +1145,12 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
     )
     events = [
         self._create_event(1.0, 'inv1', 'e1'),
-        self._create_function_call_event(2.0, 'inv2', 'pending-call-1'),
+        self._create_function_call_event(
+            2.0,
+            'inv2',
+            'pending-call-1',
+            long_running_tool_ids={'pending-call-1'},
+        ),
         self._create_event(3.0, 'inv3', 'e3'),
     ]
     session = Session(app_name='test', user_id='u1', id='s1', events=events)
@@ -1147,6 +1177,50 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         'tool',
     )
     self.assertEqual(result_contents[2].parts[0].text, 'e3')
+
+  async def test_sliding_window_plain_orphaned_function_call_dropped_from_contents(
+      self,
+  ):
+    """Compaction spares plain pending call, but get_contents prunes it as orphan."""
+    app = App(
+        name='test',
+        root_agent=Mock(spec=BaseAgent),
+        events_compaction_config=EventsCompactionConfig(
+            summarizer=self.mock_compactor,
+            compaction_interval=2,
+            overlap_size=0,
+        ),
+    )
+    events = [
+        self._create_event(1.0, 'inv1', 'e1'),
+        self._create_function_call_event(
+            2.0,
+            'inv2',
+            'unanswered-call-1',
+        ),
+        self._create_event(3.0, 'inv3', 'e3'),
+    ]
+    session = Session(app_name='test', user_id='u1', id='s1', events=events)
+    self.mock_compactor.maybe_summarize_events.side_effect = (
+        lambda *, events: self._create_compacted_event(
+            events[0].timestamp,
+            events[-1].timestamp,
+            'Summary safe prefix',
+        )
+    )
+
+    await self._run_sliding_window(app, session, self.mock_session_service)
+
+    appended_event = self.mock_session_service.append_event.call_args[1][
+        'event'
+    ]
+    self.assertEqual(appended_event.actions.compaction.start_timestamp, 1.0)
+    self.assertEqual(appended_event.actions.compaction.end_timestamp, 1.0)
+
+    result_contents = _contents._get_contents(None, events + [appended_event])
+    # The plain unanswered call is pruned as an orphan; e3 survives.
+    self.assertEqual(result_contents[0].parts[0].text, 'Summary safe prefix')
+    self.assertEqual(result_contents[1].parts[0].text, 'e3')
 
   async def test_token_threshold_excludes_pending_function_call_events(self):
     """Token-threshold compaction stays contiguous before pending calls."""
@@ -1187,7 +1261,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
   async def test_token_threshold_pending_function_call_remains_in_contents(
       self,
   ):
-    """Token-threshold compaction keeps pending tool calls visible."""
+    """Token-threshold compaction keeps pending long-running tool calls visible."""
     app = App(
         name='test',
         root_agent=Mock(spec=BaseAgent),
@@ -1201,7 +1275,12 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
     )
     events = [
         self._create_event(1.0, 'inv1', 'e1'),
-        self._create_function_call_event(2.0, 'inv2', 'pending-call-1'),
+        self._create_function_call_event(
+            2.0,
+            'inv2',
+            'pending-call-1',
+            long_running_tool_ids={'pending-call-1'},
+        ),
         self._create_event(3.0, 'inv3', 'e3', prompt_token_count=100),
     ]
     session = Session(app_name='test', user_id='u1', id='s1', events=events)

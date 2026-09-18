@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import inspect
 import sys
 import types
 from typing import Any
@@ -56,9 +57,24 @@ def _build_fixture_module() -> types.ModuleType:
   async def _async_method(unused_self, x: int) -> int:
     return x + 10
 
-  _method.__module__ = _FIXTURE_MODULE_NAME
-  _async_method.__module__ = _FIXTURE_MODULE_NAME
-  cls = type("C", (), {"method": _method, "async_method": _async_method})
+  def _static_method(x: int) -> int:
+    return x * 3
+
+  def _class_method(unused_cls, x: int) -> int:
+    return x * 5
+
+  for fn in (_method, _async_method, _static_method, _class_method):
+    fn.__module__ = _FIXTURE_MODULE_NAME
+  cls = type(
+      "C",
+      (),
+      {
+          "method": _method,
+          "async_method": _async_method,
+          "static_method": staticmethod(_static_method),
+          "class_method": classmethod(_class_method),
+      },
+  )
   cls.__module__ = _FIXTURE_MODULE_NAME
 
   module.sync_fn = _sync_fn
@@ -90,6 +106,10 @@ def _run_class_method(module):
 
 def _run_class_async_method(module):
   return asyncio.run(module.C().async_method(5))
+
+
+def _run_class_static_method(module):
+  return module.C().static_method(5)
 
 
 class _Ctx:
@@ -152,6 +172,7 @@ def _instrument(
         (_run_async, "_async_fn"),
         (_run_class_method, "._method"),
         (_run_class_async_method, "._async_method"),
+        (_run_class_static_method, "._static_method"),
     ],
 )
 def test_emits_span(fixture, run_fn, expected_substr):
@@ -195,6 +216,22 @@ def test_wrapper_marker_is_true(fixture, attr):
       getattr(getattr(fixture.module, attr), auto_tracing_helpers.WRAPPED_ATTR)
       is True
   )
+
+
+def test_staticmethod_stays_a_staticmethod(fixture):
+  _instrument(fixture.tracer)
+  cls = fixture.module.C
+  assert isinstance(inspect.getattr_static(cls, "static_method"), staticmethod)
+  assert cls.static_method(5) == 15
+  assert cls().static_method(5) == 15
+
+
+def test_classmethod_is_left_alone(fixture):
+  _instrument(fixture.tracer)
+  cls = fixture.module.C
+  assert isinstance(inspect.getattr_static(cls, "class_method"), classmethod)
+  assert cls.class_method(5) == 25
+  assert cls().class_method(5) == 25
 
 
 def test_out_of_scope_module_is_not_instrumented(fixture):

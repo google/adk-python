@@ -103,6 +103,8 @@ optional-dependencies.all = [
   "langgraph>=1.0.10,<2",
   "langgraph-checkpoint>=4.1.1,<5",
   "litellm>=1.84",
+  "livekit>=1,<2",
+  "livekit-api>=1,<2",
   "llama-index-embeddings-google-genai>=0.3",
   "llama-index-readers-file>=0.4",
   "lxml>=5.3",
@@ -120,8 +122,10 @@ optional-dependencies.all = [
   "opentelemetry-instrumentation-httpx>=0.54b0,<1",
   "opentelemetry-resourcedetector-gcp>=1.9.0a0,<2",
   "pandas>=2.2.3",
+  "pillow>=10.3",
   "protobuf>=6",
   "pyarrow>=14",
+  "pymongo>=4.9,<5",
   "pypika>=0.50",
   "python-dateutil>=2.9.0.post0,<3",
   "redis>=4.2",
@@ -244,6 +248,11 @@ optional-dependencies.gcp = [
   "opentelemetry-resourcedetector-gcp>=1.9.0a0,<2",
   "python-dateutil>=2.9.0.post0,<3",
 ]
+optional-dependencies.livekit = [
+  "livekit>=1,<2",     # The media SDK (rtc rooms/tracks), not the agent framework.
+  "livekit-api>=1,<2", # Server API; only the call transfer tool needs it.
+  "pillow>=10.3",      # JPEG-encodes inbound video frames.
+]
 optional-dependencies.mcp = [
   # No ADK module imports aiohttp, but google.auth.aio has no default
   # transport without it, and the MCP session manager needs that transport to
@@ -256,6 +265,7 @@ optional-dependencies.mcp = [
   "anyio>=4.9,<5",
   "mcp>=1.24,<3",
 ]
+optional-dependencies.mongodb = [ "pymongo>=4.9,<5" ]
 optional-dependencies.oci = [
   "oci>=2.126", # OCI Generative AI native SDK (OCIGenAILlm)
 ]
@@ -311,6 +321,8 @@ optional-dependencies.test = [
   "langgraph>=1.0.10,<2",
   "langgraph-checkpoint>=4.1.1,<5",                                  # LangGraph's own floor still admits unsafe checkpoint deserialization.
   "litellm>=1.84",
+  "livekit>=1,<2",
+  "livekit-api>=1,<2",
   "llama-index-readers-file>=0.4",
   "lxml>=5.3",
   "mcp>=1.24,<3",
@@ -324,6 +336,7 @@ optional-dependencies.test = [
   "opentelemetry-instrumentation-google-genai>=0.7b1,<1",
   "opentelemetry-resourcedetector-gcp>=1.9.0a0,<2",
   "pandas>=2.2.3",
+  "pillow>=10.3",
   "protobuf>=6",
   "pyarrow>=14",
   "pypika>=0.50",
@@ -385,8 +398,8 @@ known_third_party = [ "a2a", "google.adk" ]
 #   hel/serie/strin -> substrings in test fixtures; te -> local variable;
 #   rouge -> the ROUGE metric; unparseable -> valid spelling variant;
 #   re-use/re-used -> intentional hyphenation; lamda -> Google LaMDA project;
-#   astroid -> AST library used by pylint.
-ignore-words-list = "hel,serie,strin,te,rouge,unparseable,re-use,re-used,lamda,astroid"
+#   astroid -> AST library used by pylint; nin -> the MongoDB $nin operator.
+ignore-words-list = "hel,serie,strin,te,rouge,unparseable,re-use,re-used,lamda,astroid,nin"
 # CHANGELOG.md is generated from commit messages; lockfiles, notebooks, JSON
 # fixtures, bundled JS/source maps, and the vendored CLI browser bundle are
 # generated or data files, not prose we own.

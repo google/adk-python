@@ -14,9 +14,11 @@
 
 from __future__ import annotations
 
+import collections
 import functools
 import json
 import re
+import threading
 import types
 from typing import Any
 from typing import Callable
@@ -32,7 +34,23 @@ from ...tools.tool_context import ToolContext
 from .config import BigQueryToolConfig
 from .config import WriteMode
 
+# The tool context state key the BigQuery session used to be read from. Nothing
+# in ADK reads or writes it any more.
 BIGQUERY_SESSION_INFO_KEY = "bigquery_session_info"
+
+# Number of sessions whose BigQuery session is remembered by this process
+_MAX_REMEMBERED_SESSIONS = 1024
+
+# BigQuery session id and anonymous dataset id of every session served so far,
+# keyed by the identity of the session. They are kept here rather than in the
+# tool context state because state is writable by the caller, and a BigQuery
+# session taken from there would run the queries in a session created for
+# someone else, and would decide which dataset the protected write mode
+# accepts writes to.
+_bq_sessions: collections.OrderedDict[tuple[str, str, str], tuple[Any, Any]] = (
+    collections.OrderedDict()
+)
+_bq_sessions_lock = threading.Lock()
 
 
 def _escape_single_quotes(s: str) -> str:
@@ -210,8 +228,14 @@ def _execute_sql(
       # In protected write mode, write operation only to a temporary artifact is
       # allowed. This artifact must have been created in a BigQuery session. In
       # such a scenario, the session info (session id and the anonymous dataset
-      # containing the artifact) is persisted in the tool context.
-      bq_session_info = tool_context.state.get(BIGQUERY_SESSION_INFO_KEY, None)
+      # containing the artifact) is remembered for the invocation's session.
+      session_key = (
+          tool_context.session.app_name,
+          tool_context.session.user_id,
+          tool_context.session.id,
+      )
+      with _bq_sessions_lock:
+        bq_session_info = _bq_sessions.get(session_key)
       if bq_session_info:
         bq_session_id, bq_session_dataset_id = bq_session_info
       else:
@@ -226,10 +250,13 @@ def _execute_sql(
         bq_session_dataset_id = session_creator_job.destination.dataset_id
 
         # Remember the BigQuery session info for subsequent queries
-        tool_context.state[BIGQUERY_SESSION_INFO_KEY] = (
-            bq_session_id,
-            bq_session_dataset_id,
-        )
+        with _bq_sessions_lock:
+          _bq_sessions[session_key] = (
+              bq_session_id,
+              bq_session_dataset_id,
+          )
+          if len(_bq_sessions) > _MAX_REMEMBERED_SESSIONS:
+            _bq_sessions.popitem(last=False)
 
       # Session connection property will be set in the query execution
       bq_connection_properties.append(
@@ -1576,6 +1603,11 @@ def detect_anomalies(
     if trimmed_upper_target_data.startswith(
         "SELECT"
     ) or trimmed_upper_target_data.startswith("WITH"):
+      validation_error = _validate_subquery(
+          target_data, project_id, credentials, settings, "detect_anomalies"
+      )
+      if validation_error:
+        return validation_error
       target_data_source = f"({target_data})"
     else:
       if not _is_valid_table_identifier(target_data):

@@ -35,6 +35,8 @@ from ._base_node import BaseNode
 from ._base_node import START
 from ._dynamic_node_scheduler import DynamicNodeScheduler
 from ._dynamic_node_scheduler import DynamicNodeState
+from ._errors import WorkflowConfigurationError
+from ._errors import WorkflowInvariantError
 from ._graph import EdgeItem
 from ._graph import Graph
 from ._node_state import NodeState
@@ -47,7 +49,6 @@ from .utils._replay_sequence_barrier import ReplaySequenceBarrier
 
 if TYPE_CHECKING:
   from ..agents.context import Context
-  from ._schedule_dynamic_node import ScheduleDynamicNode
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -124,18 +125,6 @@ class _LoopState(DynamicNodeState):
     moves nodes to RUNNING
   """
 
-  schedule_dynamic_node: ScheduleDynamicNode | None = None
-  """Closure that handles ctx.run_node() calls from child nodes.
-
-  Tracks dynamic nodes in this Workflow's loop state
-  (dynamic_nodes, dynamic_outputs, dynamic_pending_tasks).
-  Handles dedup (cached output), resume (lazy scan + re-run),
-  and fresh execution.
-
-  Set on ctx at Workflow setup, propagated down to descendants
-  via NodeRunner until a nested orchestration node overrides it.
-  """
-
 
 # ---------------------------------------------------------------------------
 # Workflow
@@ -159,7 +148,7 @@ class Workflow(BaseNode):
   )
 
   max_concurrency: int | None = None
-  """Maximum parallel graph-scheduled nodes. None means unlimited.
+  """Maximum parallel graph-scheduled nodes. None or <= 0 means unlimited.
 
   Only applies to nodes triggered by graph edges. Dynamic nodes
   (via ctx.run_node()) are excluded — they are awaited inline by
@@ -170,6 +159,13 @@ class Workflow(BaseNode):
       description="The compiled workflow graph.",
       default=None,
   )
+  """Compiled from ``edges`` in ``model_post_init``.
+
+  Optional only because a Workflow may be constructed with neither edges nor
+  a graph, in which case ``_run_impl`` returns immediately. Helpers reached
+  from the orchestration loop should call ``_require_graph()`` rather than
+  read this field.
+  """
 
   # --- Construction ---
 
@@ -211,6 +207,15 @@ class Workflow(BaseNode):
               f"{sorted(schema_fields)}"
           )
 
+  def _require_graph(self) -> Graph:
+    """Returns the compiled graph the orchestration loop runs against."""
+    if self.graph is None:
+      raise WorkflowInvariantError(
+          f"Workflow {self.name}: graph is not compiled. The orchestration"
+          " loop must not be entered without a compiled graph."
+      )
+    return self.graph
+
   # --- _run_impl: the orchestration loop ---
 
   async def _run_impl(
@@ -241,17 +246,13 @@ class Workflow(BaseNode):
       )
 
     self._seed_start_triggers(loop_state, ctx, node_input)
-
-    # Create closure for dynamic node scheduling
-    loop_state.schedule_dynamic_node = self._make_schedule_dynamic_node(
-        loop_state
-    )
-    ctx._workflow_scheduler = loop_state.schedule_dynamic_node
+    ctx._workflow_scheduler = DynamicNodeScheduler(state=loop_state)
 
     # --- LOOP ---
     try:
       await self._run_loop(loop_state, ctx)
     finally:
+      ctx._workflow_scheduler = None
       await self._cleanup_all_tasks(loop_state)
 
     if loop_state.error_shut_down:
@@ -425,11 +426,9 @@ class Workflow(BaseNode):
       node_input: Any,
   ) -> None:
     """Seed triggers for START's direct successors."""
-    assert self.graph is not None
+    graph = self._require_graph()
 
-    start_edges = [
-        e for e in self.graph.edges if e.from_node.name == START.name
-    ]
+    start_edges = [e for e in graph.edges if e.from_node.name == START.name]
     use_sub_branch = len(start_edges) > 1
     for edge in start_edges:
       if edge.to_node._requires_all_predecessors:
@@ -502,7 +501,8 @@ class Workflow(BaseNode):
   def _at_concurrency_limit(self, loop_state: _LoopState) -> bool:
     """Check if max_concurrency has been reached."""
     return (
-        bool(self.max_concurrency)
+        self.max_concurrency is not None
+        and self.max_concurrency > 0
         and len(loop_state.pending_tasks) >= self.max_concurrency
     )
 
@@ -519,72 +519,57 @@ class Workflow(BaseNode):
     return trigger
 
   @staticmethod
-  def _next_run_id(node_state: NodeState) -> str:
+  def _next_run_id(
+      loop_state: _LoopState, node_name: str, parent_path: str = ""
+  ) -> str:
     """Increment and return the next sequential run_id for a node."""
-    node_state.run_counter += 1
-    return str(node_state.run_counter)
+    return loop_state.next_run_id(node_name, parent_path=parent_path)
 
   @staticmethod
   def _compute_isolation_scope_for_node(
       node: BaseNode,
-      trigger: Trigger,
       parent_ctx: Context | None,
       run_id: str,
+      recovered_isolation_scope: str | None = None,
   ) -> str | None:
     """Decide the isolation_scope for a node about to run.
 
     Order of precedence:
-      1. Explicit ``trigger.isolation_scope`` — set by the resume path
-         (``loop_state.recovered_executions[key].isolation_scope``) so a
-         resumed run continues in its original scope.
-      2. Task-mode LlmAgent node — gets the task agent's full node_path
-         (``<parent_path>/<name>@<run_id>``) as its scope so its
-         multi-turn conversation is isolated from peer workflow nodes.
-         The full path (not just ``<name>@<run_id>``) is required so
-         scopes stay unique across nested workflows or re-used node
-         names in different graph positions.
+      1. Explicit ``recovered_isolation_scope`` from replay history so a
+         resumed run continues in its original recorded scope.
+      2. Task-mode LlmAgent node — gets its full node_path
+         (``<parent_path>/<name>@<run_id>``) as its scope so multi-turn
+         conversations stay isolated from peer workflow nodes.
       3. Otherwise unscoped — workflow nodes share the workflow's
          conversation view by default.
 
-    Note: FC-driven task delegations (chat coordinator → task agent
+    Note: FC-driven task delegations (chat coordinator -> task agent
     via ``ctx.run_node``) take a different path and set
     ``override_isolation_scope=fc.id`` directly on the NodeRunner.
     """
-    if trigger.isolation_scope is not None:
-      return trigger.isolation_scope
+    if recovered_isolation_scope is not None:
+      return recovered_isolation_scope
     if getattr(node, "mode", None) == "task":
       parent_path = parent_ctx.node_path if parent_ctx else ""
       segment = f"{node.name}@{run_id}"
       return f"{parent_path}/{segment}" if parent_path else segment
     return None
 
-  @classmethod
-  def _create_node_state_for_new_run(cls, old_state: NodeState) -> NodeState:
-    """Create a fresh NodeState for a new run, preserving the run counter."""
-    return NodeState(run_counter=old_state.run_counter)
-
   def _prepare_node_state_for_starting(
       self, loop_state: _LoopState, node_name: str, trigger: Trigger
   ) -> None:
     """Prepare NodeState for starting a node.
 
-    This method determines whether to reuse or recreate the node's state:
-    *   Creates a brand new `NodeState` if none exists.
-    *   Creates a fresh `NodeState` (preserving `run_counter`) if this is a new execution
-        (not resuming and not waiting) to avoid state carryover.
-    *   Reuses the existing `NodeState` if resuming from interrupt or waiting for inputs.
+    Always installs a brand new `NodeState`, so nothing carries over from a
+    previous execution of the same node. Sequential run IDs live in
+    `_LoopState.run_counters`, not in the per-node state, so no field needs to
+    survive across runs here.
 
     Outcome: The node's state is updated with the trigger's input and source,
     and its status is set to `RUNNING`.
     """
-    if node_name not in loop_state.nodes:
-      node_state = NodeState()
-      loop_state.nodes[node_name] = node_state
-    else:
-      node_state = loop_state.nodes[node_name]
-      # Create a new NodeState for a fresh execution to avoid carryover bugs.
-      node_state = self._create_node_state_for_new_run(node_state)
-      loop_state.nodes[node_name] = node_state
+    node_state = NodeState()
+    loop_state.nodes[node_name] = node_state
 
     node_state.input = trigger.input
     node_state.status = NodeStatus.RUNNING
@@ -602,22 +587,26 @@ class Workflow(BaseNode):
     it was fast-forwarded from recovered history (a replayed no-op run).
     """
 
-    assert self.graph is not None
+    graph = self._require_graph()
 
     node = self._get_static_node_by_name(node_name)
-    is_terminal = node_name in self.graph._terminal_node_names
+    is_terminal = node_name in graph._terminal_node_names
 
     node_state = loop_state.nodes[node_name]
     # Reuse run_id on resume; assign a new sequential id for fresh runs.
     run_id = node_state.run_id
     if not run_id:
-      run_id = self._next_run_id(node_state)
+      run_id = self._next_run_id(
+          loop_state, node_name, parent_path=ctx.node_path or ""
+      )
     node_state.run_id = run_id
 
     # Intercept execution based on historical session events.
     key = f"{node_name}@{run_id}"
+    recovered_scope: str | None = None
     if key in loop_state.recovered_executions:
       recovered = loop_state.recovered_executions[key]
+      recovered_scope = recovered.isolation_scope
 
       result = check_interception(
           node=node,
@@ -625,7 +614,6 @@ class Workflow(BaseNode):
       )
 
       if not result.should_run:
-        is_terminal = node_name in self.graph._terminal_node_names
         ancestor_path = ctx.node_path if is_terminal else None
 
         if ancestor_path:
@@ -655,18 +643,6 @@ class Workflow(BaseNode):
 
       node_state.resume_inputs = result.resume_inputs or {}
 
-    # when re-running a node from replay, prefer the
-    # recovered isolation_scope so the resumed run continues in its
-    # original scope (rather than computing a fresh wf:<eid>).
-    if (
-        key in loop_state.recovered_executions
-        and loop_state.recovered_executions[key].isolation_scope
-        and trigger.isolation_scope is None
-    ):
-      trigger.isolation_scope = loop_state.recovered_executions[
-          key
-      ].isolation_scope
-
     resume_inputs = (
         dict(node_state.resume_inputs) if node_state.resume_inputs else None
     )
@@ -677,7 +653,7 @@ class Workflow(BaseNode):
             use_sub_branch=trigger.use_sub_branch,
             override_branch=trigger.branch,
             override_isolation_scope=self._compute_isolation_scope_for_node(
-                node, trigger, ctx, run_id
+                node, ctx, run_id, recovered_isolation_scope=recovered_scope
             ),
             return_ctx=True,
             resume_inputs=resume_inputs,
@@ -687,12 +663,6 @@ class Workflow(BaseNode):
         )
     )
     return True
-
-  def _make_schedule_dynamic_node(
-      self, loop_state: _LoopState
-  ) -> ScheduleDynamicNode:
-    """Create a DynamicNodeScheduler for this Workflow's loop state."""
-    return DynamicNodeScheduler(state=loop_state)
 
   # --- Resumability checkpoints ---
 
@@ -831,11 +801,9 @@ class Workflow(BaseNode):
 
     No-op while any predecessor is still outstanding.
     """
-    assert self.graph is not None
+    graph = self._require_graph()
     predecessors = {
-        e.from_node.name
-        for e in self.graph.edges
-        if e.to_node.name == target_name
+        e.from_node.name for e in graph.edges if e.to_node.name == target_name
     }
     # START never executes, so it is satisfied as soon as the workflow begins.
     if not all(
@@ -867,8 +835,8 @@ class Workflow(BaseNode):
       branch: str | None = None,
   ) -> None:
     """Find downstream edges and add triggers to the buffer."""
-    assert self.graph is not None
-    next_nodes = self.graph.get_next_pending_nodes(
+    graph = self._require_graph()
+    next_nodes = graph.get_next_pending_nodes(
         node_name=node_name,
         routes_to_match=route,
     )
@@ -911,16 +879,16 @@ class Workflow(BaseNode):
 
     # Set terminal output on ctx so parent reads ctx.output.
     # Terminal nodes = no outgoing edges.
-    assert self.graph is not None
+    graph = self._require_graph()
     terminal_outputs = [
         loop_state.node_outputs[name]
-        for name in self.graph._terminal_node_names
+        for name in graph._terminal_node_names
         if name in loop_state.node_outputs
     ]
     if len(terminal_outputs) == 1:
       ctx.output = self._validate_output_data(terminal_outputs[0])
     elif terminal_outputs:
-      raise ValueError(
+      raise WorkflowConfigurationError(
           f"Workflow {self.name}: multiple terminal nodes produced"
           f" output ({len(terminal_outputs)}). A workflow must have"
           " at most one terminal output."
@@ -930,19 +898,18 @@ class Workflow(BaseNode):
 
   def _has_terminal_output(self, loop_state: _LoopState) -> bool:
     """Check if any terminal node produced output."""
-    assert self.graph is not None
+    graph = self._require_graph()
     return any(
-        name in loop_state.node_outputs
-        for name in self.graph._terminal_node_names
+        name in loop_state.node_outputs for name in graph._terminal_node_names
     )
 
   def _get_static_node_by_name(self, name: str) -> BaseNode:
     """Find a node in the graph by name."""
-    assert self.graph is not None
-    for node in self.graph.nodes:
+    graph = self._require_graph()
+    for node in graph.nodes:
       if node.name == name:
         return node
-    raise ValueError(f"Node {name} not found in graph.")
+    raise WorkflowInvariantError(f"Node {name} not found in graph.")
 
   def _pop_completed_task(
       self, loop_state: _LoopState, task: asyncio.Task[Context]
@@ -952,7 +919,7 @@ class Workflow(BaseNode):
       if t is task:
         del loop_state.pending_tasks[name]
         return name
-    raise ValueError("Task not found in pending_tasks.")
+    raise WorkflowInvariantError("Task not found in pending_tasks.")
 
   async def _cleanup_all_tasks(self, loop_state: _LoopState) -> None:
     """Cancel remaining tasks to prevent leaks."""
@@ -970,15 +937,3 @@ class Workflow(BaseNode):
         task.cancel()
     if all_tasks:
       await asyncio.gather(*all_tasks, return_exceptions=True)
-      for task in all_tasks:
-        if task.cancelled():
-          # Mark static nodes as CANCELLED
-          for name, t in loop_state.pending_tasks.items():
-            if t is task:
-              loop_state.nodes[name].status = NodeStatus.CANCELLED
-              break
-          # Mark dynamic nodes as CANCELLED
-          for _, run in loop_state.runs.items():
-            if run.task is task:
-              run.state.status = NodeStatus.CANCELLED
-              break

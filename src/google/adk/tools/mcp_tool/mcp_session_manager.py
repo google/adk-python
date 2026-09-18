@@ -102,6 +102,10 @@ _SESSION_IDLE_TTL_SECONDS = 900.0
 # of silently keeping the session alive forever.
 _SESSION_USE_PIN_WARN_SECONDS = 4 * _SESSION_IDLE_TTL_SECONDS
 
+# A failed mTLS probe is not retried for this long. Not cached for the life of
+# the manager, so credentials granted while the process runs are picked up.
+_MTLS_PROBE_RETRY_INTERVAL_SECONDS = 300.0
+
 
 def create_mcp_http_client(
     headers: dict[str, str] | None = None,
@@ -535,9 +539,11 @@ class _RefreshableAsyncCredentials(AsyncCredentials):
       return
 
     # Application Default Credentials are issued to the caller by Google, so
-    # the bearer token only goes to Google API hosts. Other MCP servers are
-    # still reached over the mTLS channel, just without the token.
-    if not _is_google_api_host(parsed_url.hostname):
+    # the bearer token only goes to Google API hosts over https. Other MCP
+    # servers are still reached over the mTLS channel, just without the token.
+    if parsed_url.scheme != 'https' or not _is_google_api_host(
+        parsed_url.hostname
+    ):
       if not self._warned_non_google_host:
         self._warned_non_google_host = True
         logger.warning(
@@ -769,6 +775,10 @@ class MCPSessionManager:
         asyncio.AbstractEventLoop, _GoogleAuthAsyncTransport
     ] = {}
 
+    # When the mTLS probe last failed, per event loop, so that a server which
+    # offers no mTLS is not probed again for every session it is given.
+    self._mtls_probe_failed_at: dict[asyncio.AbstractEventLoop, float] = {}
+
   def _make_on_session_created(self, session_key: str) -> Callable[[str], None]:
     def on_session_created(session_id: str):
       logger.debug('Session created: %s -> %s', session_id, session_key)
@@ -799,7 +809,7 @@ class MCPSessionManager:
       return self._session_lock_map[current_loop]
 
   async def _get_mtls_transport(self) -> _GoogleAuthAsyncTransport | None:
-    """Attempts to create a _GoogleAuthAsyncTransport for mTLS, caching it per loop."""
+    """Attempts to create a _GoogleAuthAsyncTransport for mTLS, caching the outcome per loop."""
     if isinstance(self._connection_params, StdioConnectionParams):
       return None
 
@@ -817,6 +827,13 @@ class MCPSessionManager:
     current_loop = asyncio.get_running_loop()
     if current_loop in self._mtls_transports:
       return self._mtls_transports[current_loop]
+
+    last_failure = self._mtls_probe_failed_at.get(current_loop)
+    if (
+        last_failure is not None
+        and time.monotonic() - last_failure < _MTLS_PROBE_RETRY_INTERVAL_SECONDS
+    ):
+      return None
 
     try:
       scopes = ['https://www.googleapis.com/auth/cloud-platform']
@@ -846,6 +863,7 @@ class MCPSessionManager:
       logger.warning(
           'Failed to configure mTLS using AsyncAuthorizedSession: %s', e
       )
+    self._mtls_probe_failed_at[current_loop] = time.monotonic()
     return None
 
   def _generate_session_key(
@@ -1374,6 +1392,7 @@ class MCPSessionManager:
     state['_eviction_tasks'] = set()
     state['_session_lock_map'] = {}
     state['_mtls_transports'] = {}
+    state['_mtls_probe_failed_at'] = {}
     state['_session_id_to_key'] = {}
     state['_active_debug_lists'] = {}
 
@@ -1395,6 +1414,7 @@ class MCPSessionManager:
     self._eviction_tasks = set()
     self._session_lock_map = {}
     self._mtls_transports = {}
+    self._mtls_probe_failed_at = {}
     self._session_id_to_key = {}
     self._active_debug_lists = {}
     self._lock_map_lock = threading.Lock()
@@ -1427,6 +1447,7 @@ class MCPSessionManager:
       for transport in self._mtls_transports.values():
         await transport.aclose()
       self._mtls_transports.clear()
+      self._mtls_probe_failed_at.clear()
 
     # Awaited outside the lock: a wedged teardown must not park every other
     # caller of this pool, which is the stall detaching them avoided in the

@@ -20,7 +20,12 @@ from enum import Enum
 
 
 class NodeStatus(Enum):
-  """The status of a node in the workflow graph."""
+  """The status of a node in the workflow graph.
+
+  The integer values are persisted in resumable sessions, so an existing
+  member must keep its number and a retired member's number must not be
+  reused.
+  """
 
   INACTIVE = 0
   """The node is not ready to be executed."""

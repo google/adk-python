@@ -29,6 +29,7 @@ from typing_extensions import override
 from . import envs
 from ...agents.base_agent import BaseAgent
 from ...apps.app import App
+from ...workflow import BaseNode
 from .agent_loader import AgentLoader
 from .agent_loader import is_single_agent_directory
 from .agent_loader import SPECIAL_AGENTS_DIR
@@ -350,7 +351,7 @@ class NestedAgentLoader(AgentLoader):
       candidate = Path(agents_dir, expected_full_app_name.replace(".", "/"))
       origin_path = candidate if candidate.exists() else Path(agents_dir)
 
-    def _attach_metadata(target: Union[BaseAgent, App]) -> None:
+    def _attach_metadata(target: Union[BaseNode, App]) -> None:
       setattr(target, "_adk_origin_app_name", expected_full_app_name)
       setattr(target, "_adk_origin_path", origin_path)
 

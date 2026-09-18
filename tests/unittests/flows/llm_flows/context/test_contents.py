@@ -1,0 +1,2413 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import sys
+
+from google.adk.agents.llm_agent import Agent
+from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
+from google.adk.events.event_actions import EventCompaction
+from google.adk.flows.llm_flows import _nl_planning
+from google.adk.flows.llm_flows.context import _contents as contents
+from google.adk.flows.llm_flows.context._contents import request_processor
+from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from google.adk.labs.openai import OpenAIResponsesLlm
+from google.adk.models.anthropic_llm import AnthropicLlm
+from google.adk.models.google_llm import Gemini
+from google.adk.models.llm_request import LlmRequest
+from google.genai import types
+import pytest
+
+from .... import testing_utils
+
+
+@pytest.mark.asyncio
+async def test_include_contents_default_full_history():
+  """Test that include_contents='default' includes full conversation history."""
+  agent = Agent(
+      model="gemini-2.5-flash", name="test_agent", include_contents="default"
+  )
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  # Create a multi-turn conversation
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("First message"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent("First response"),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent("Second message"),
+      ),
+      Event(
+          invocation_id="inv4",
+          author="test_agent",
+          content=types.ModelContent("Second response"),
+      ),
+      Event(
+          invocation_id="inv5",
+          author="user",
+          content=types.UserContent("Third message"),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  # Process the request
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Verify full conversation history is included
+  assert llm_request.contents == [
+      types.UserContent("First message"),
+      types.ModelContent("First response"),
+      types.UserContent("Second message"),
+      types.ModelContent("Second response"),
+      types.UserContent("Third message"),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_chained_interactions_builds_only_current_turn_contents():
+  """Stateful Interactions requests do not copy history the server retains."""
+  agent = Agent(
+      model="gemini-2.5-flash", name="test_agent", include_contents="default"
+  )
+  llm_request = LlmRequest(
+      model="gemini-2.5-flash", previous_interaction_id="interaction-1"
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Historical message"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent("Historical response"),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent("Current message"),
+      ),
+  ]
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  assert llm_request.contents == [types.UserContent("Current message")]
+
+
+@pytest.mark.asyncio
+async def test_include_contents_none_current_turn_only():
+  """Test that include_contents='none' includes only current turn context."""
+  agent = Agent(
+      model="gemini-2.5-flash", name="test_agent", include_contents="none"
+  )
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  # Create a multi-turn conversation
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("First message"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent("First response"),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent("Second message"),
+      ),
+      Event(
+          invocation_id="inv4",
+          author="test_agent",
+          content=types.ModelContent("Second response"),
+      ),
+      Event(
+          invocation_id="inv5",
+          author="user",
+          content=types.UserContent("Current turn message"),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  # Process the request
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Verify only current turn is included (from last user message)
+  assert llm_request.contents == [
+      types.UserContent("Current turn message"),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_include_contents_none_multi_agent_current_turn():
+  """Test current turn detection in multi-agent scenarios with include_contents='none'."""
+  agent = Agent(
+      model="gemini-2.5-flash", name="current_agent", include_contents="none"
+  )
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  # Create multi-agent conversation where current turn starts from user
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("First user message"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="other_agent",
+          content=types.ModelContent("Other agent response"),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="current_agent",
+          content=types.ModelContent("Current agent first response"),
+      ),
+      Event(
+          invocation_id="inv4",
+          author="user",
+          content=types.UserContent("Current turn request"),
+      ),
+      Event(
+          invocation_id="inv5",
+          author="another_agent",
+          content=types.ModelContent("Another agent responds"),
+      ),
+      Event(
+          invocation_id="inv6",
+          author="current_agent",
+          content=types.ModelContent("Current agent in turn"),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  # Process the request
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Verify current turn starts from the most recent other agent message (inv5)
+  assert len(llm_request.contents) == 2
+  assert llm_request.contents[0].role == "user"
+  assert llm_request.contents[0].parts == [
+      testing_utils.other_agent_preamble_part(),
+      testing_utils.other_agent_part(
+          "[another_agent] said:", "Another agent responds"
+      ),
+  ]
+  assert llm_request.contents[1] == types.ModelContent("Current agent in turn")
+
+
+@pytest.mark.asyncio
+async def test_include_contents_none_multi_branch_current_turn():
+  """Test current turn detection in multi-branch scenarios with include_contents='none'."""
+  agent = Agent(
+      model="gemini-2.5-flash", name="current_agent", include_contents="none"
+  )
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.branch = "root.parent_agent"
+
+  # Create multi-branch conversation where current turn starts from user
+  # This can arise from having a Parallel Agent with two or more Sequential
+  # Agents as sub agents, each with two Llm Agents as sub agents
+  events = [
+      Event(
+          invocation_id="inv1",
+          branch="root",
+          author="user",
+          content=types.UserContent("First user message"),
+      ),
+      Event(
+          invocation_id="inv1",
+          branch="root.parent_agent",
+          author="sibling_agent",
+          content=types.ModelContent("Sibling agent response"),
+      ),
+      Event(
+          invocation_id="inv1",
+          branch="root.uncle_agent",
+          author="cousin_agent",
+          content=types.ModelContent("Cousin agent response"),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  # Process the request
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Verify current turn starts from the most recent other agent message of the current branch
+  assert len(llm_request.contents) == 1
+  assert llm_request.contents[0].role == "user"
+  assert llm_request.contents[0].parts == [
+      testing_utils.other_agent_preamble_part(),
+      testing_utils.other_agent_part(
+          "[sibling_agent] said:", "Sibling agent response"
+      ),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_events_with_transfer_to_agent_are_included():
+  """Test that the user input is retained across a transfer_to_agent handoff.
+
+  When include_contents='none' and control is transferred to a sub-agent, the
+  current turn must anchor on the latest user input rather than the trailing
+  transfer_to_agent events, while still including those transfer events as
+  context.
+  """
+  agent = Agent(
+      model="gemini-2.5-flash", name="test_agent", include_contents="none"
+  )
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("First user message"),
+      ),
+      Event(
+          invocation_id="inv1",
+          author="parent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          args={"agent_name": "test_agent"},
+                          id="call_inv1",
+                          name="transfer_to_agent",
+                      )
+                  )
+              ],
+              role="model",
+          ),
+      ),
+      Event(
+          invocation_id="inv1",
+          author="parent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id="call_inv1",
+                          name="transfer_to_agent",
+                          response={"result": None},
+                      ),
+                  ),
+              ],
+              role="user",
+          ),
+          actions=EventActions(transfer_to_agent="test_agent"),
+      ),
+  ]
+
+  invocation_context.session.events = events
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  assert llm_request.contents == [
+      types.UserContent("First user message"),
+      types.Content(
+          parts=[
+              testing_utils.other_agent_preamble_part(),
+              testing_utils.other_agent_part(
+                  "[parent] called tool `transfer_to_agent` with parameters:",
+                  "{'agent_name': 'test_agent'}",
+              ),
+          ],
+          role="user",
+      ),
+      types.Content(
+          parts=[
+              testing_utils.other_agent_preamble_part(),
+              testing_utils.other_agent_part(
+                  "[parent] `transfer_to_agent` tool returned result:",
+                  "{'result': None}",
+              ),
+          ],
+          role="user",
+      ),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_authentication_events_are_filtered():
+  """Test that authentication function calls and responses are filtered out."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  # Create authentication function call and response
+  auth_function_call = types.FunctionCall(
+      id="auth_123",
+      name=REQUEST_EUC_FUNCTION_CALL_NAME,
+      args={"credential_type": "oauth"},
+  )
+  auth_response = types.FunctionResponse(
+      id="auth_123",
+      name=REQUEST_EUC_FUNCTION_CALL_NAME,
+      response={
+          "auth_config": {"exchanged_auth_credential": {"token": "secret"}}
+      },
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Please authenticate"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent(
+              [types.Part(function_call=auth_function_call)]
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.Content(
+              parts=[types.Part(function_response=auth_response)], role="user"
+          ),
+      ),
+      Event(
+          invocation_id="inv4",
+          author="user",
+          content=types.UserContent("Continue after auth"),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  # Process the request
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Verify both authentication call and response are filtered out
+  assert llm_request.contents == [
+      types.UserContent("Please authenticate"),
+      types.UserContent("Continue after auth"),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_confirmation_events_are_filtered():
+  """Test that confirmation function calls and responses are filtered out."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  # Create confirmation function call and response
+  confirmation_function_call = types.FunctionCall(
+      id="confirm_123",
+      name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+      args={"action": "delete_file", "confirmation": True},
+  )
+  confirmation_response = types.FunctionResponse(
+      id="confirm_123",
+      name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+      response={"response": '{"confirmed": true}'},
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Delete the file"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent(
+              [types.Part(function_call=confirmation_function_call)]
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.Content(
+              parts=[types.Part(function_response=confirmation_response)],
+              role="user",
+          ),
+      ),
+      Event(
+          invocation_id="inv4",
+          author="user",
+          content=types.UserContent("File deleted successfully"),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  # Process the request
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Verify both confirmation call and response are filtered out
+  assert llm_request.contents == [
+      types.UserContent("Delete the file"),
+      types.UserContent("File deleted successfully"),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_rewind_events_are_filtered_out():
+  """Test that events are filtered based on rewind action."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("First message"),
+      ),
+      Event(
+          invocation_id="inv1",
+          author="test_agent",
+          content=types.ModelContent("First response"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="user",
+          content=types.UserContent("Second message"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent("Second response"),
+      ),
+      Event(
+          invocation_id="rewind_inv",
+          author="test_agent",
+          actions=EventActions(rewind_before_invocation_id="inv2"),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent("Third message"),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  # Process the request
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Verify rewind correctly filters conversation history
+  assert llm_request.contents == [
+      types.UserContent("First message"),
+      types.ModelContent("First response"),
+      types.UserContent("Third message"),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_other_agent_empty_content():
+  """Test that other agent messages with only thoughts or empty content are filtered out."""
+  agent = Agent(model="gemini-2.5-flash", name="current_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  # Add events: user message, other agents with empty content, user message
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Hello"),
+      ),
+      # Other agent with only thoughts
+      Event(
+          invocation_id="inv2",
+          author="other_agent1",
+          content=types.ModelContent([
+              types.Part(text="This is a private thought", thought=True),
+              types.Part(text="Another private thought", thought=True),
+          ]),
+      ),
+      # Other agent with empty text and thoughts
+      Event(
+          invocation_id="inv3",
+          author="other_agent2",
+          content=types.ModelContent([
+              types.Part(text="", thought=False),
+              types.Part(text="Secret thought", thought=True),
+          ]),
+      ),
+      Event(
+          invocation_id="inv4",
+          author="user",
+          content=types.UserContent("World"),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  # Process the request
+  async for _ in request_processor.run_async(invocation_context, llm_request):
+    pass
+
+  # Verify empty content events are completely filtered out
+  assert llm_request.contents == [
+      types.UserContent("Hello"),
+      types.UserContent("World"),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_events_with_empty_content_are_skipped():
+  """Test that events with empty content (state-only changes) are skipped."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Hello"),
+      ),
+      # Event with no content (state-only change)
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          actions=EventActions(state_delta={"key": "val"}),
+      ),
+      # Event with content that has no meaningful parts
+      Event(
+          invocation_id="inv4",
+          author="test_agent",
+          content=types.Content(parts=[], role="model"),
+      ),
+      Event(
+          invocation_id="inv5",
+          author="user",
+          content=types.UserContent("How are you?"),
+      ),
+      # Event with content that has only empty text part
+      Event(
+          invocation_id="inv6",
+          author="user",
+          content=types.Content(parts=[types.Part(text="")], role="model"),
+      ),
+      # Event with content that has multiple empty text parts
+      Event(
+          invocation_id="inv6_2",
+          author="user",
+          content=types.Content(
+              parts=[types.Part(text=""), types.Part(text="")], role="model"
+          ),
+      ),
+      # Event with content that has only inline data part
+      Event(
+          invocation_id="inv7",
+          author="user",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      inline_data=types.Blob(
+                          data=b"test", mime_type="image/png"
+                      )
+                  )
+              ],
+              role="user",
+          ),
+      ),
+      # Event with content that has only file data part
+      Event(
+          invocation_id="inv8",
+          author="user",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      file_data=types.FileData(
+                          file_uri="gs://test_bucket/test_file.png",
+                          mime_type="image/png",
+                      )
+                  )
+              ],
+              role="user",
+          ),
+      ),
+      # Event with mixed empty and non-empty text parts
+      Event(
+          invocation_id="inv9",
+          author="user",
+          content=types.Content(
+              parts=[types.Part(text=""), types.Part(text="Mixed content")],
+              role="user",
+          ),
+      ),
+      # Event with content that has executable code part
+      Event(
+          invocation_id="inv10",
+          author="test_agent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      executable_code=types.ExecutableCode(
+                          code="print('hello')",
+                          language="PYTHON",
+                      )
+                  )
+              ],
+              role="model",
+          ),
+      ),
+      # Event with content that has code execution result part
+      Event(
+          invocation_id="inv11",
+          author="test_agent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      code_execution_result=types.CodeExecutionResult(
+                          outcome="OUTCOME_OK",
+                          output="hello",
+                      )
+                  )
+              ],
+              role="model",
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  # Process the request
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Verify only events with meaningful content are included
+  assert llm_request.contents == [
+      types.UserContent("Hello"),
+      types.UserContent("How are you?"),
+      types.Content(
+          parts=[
+              types.Part(
+                  inline_data=types.Blob(data=b"test", mime_type="image/png")
+              )
+          ],
+          role="user",
+      ),
+      types.Content(
+          parts=[
+              types.Part(
+                  file_data=types.FileData(
+                      file_uri="gs://test_bucket/test_file.png",
+                      mime_type="image/png",
+                  )
+              )
+          ],
+          role="user",
+      ),
+      types.Content(
+          parts=[types.Part(text=""), types.Part(text="Mixed content")],
+          role="user",
+      ),
+      types.Content(
+          parts=[
+              types.Part(
+                  executable_code=types.ExecutableCode(
+                      code="print('hello')",
+                      language="PYTHON",
+                  )
+              )
+          ],
+          role="model",
+      ),
+      types.Content(
+          parts=[
+              types.Part(
+                  code_execution_result=types.CodeExecutionResult(
+                      outcome="OUTCOME_OK",
+                      output="hello",
+                  )
+              )
+          ],
+          role="model",
+      ),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_code_execution_result_events_are_not_skipped():
+  """Test that events with code execution result are not skipped.
+
+  This is a regression test for the endless loop bug where code executor
+  outputs were not passed to the LLM because the events were incorrectly
+  filtered as empty.
+  """
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Write code to calculate factorial"),
+      ),
+      # Model generates code
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              parts=[
+                  types.Part(text="Here's the code:"),
+                  types.Part(
+                      executable_code=types.ExecutableCode(
+                          code=(
+                              "def factorial(n):\n  return 1 if n <= 1 else n *"
+                              " factorial(n-1)\nprint(factorial(5))"
+                          ),
+                          language="PYTHON",
+                      )
+                  ),
+              ],
+              role="model",
+          ),
+      ),
+      # Code execution result
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      code_execution_result=types.CodeExecutionResult(
+                          outcome="OUTCOME_OK",
+                          output="120",
+                      )
+                  )
+              ],
+              role="model",
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  # Process the request
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Verify all three events are included, especially the code execution result
+  assert len(llm_request.contents) == 3
+  assert llm_request.contents[0] == types.UserContent(
+      "Write code to calculate factorial"
+  )
+  # Second event has executable code
+  assert llm_request.contents[1].parts[1].executable_code is not None
+  # Third event has code execution result - this was the bug!
+  assert llm_request.contents[2].parts[0].code_execution_result is not None
+  assert llm_request.contents[2].parts[0].code_execution_result.output == "120"
+
+
+@pytest.mark.asyncio
+async def test_code_execution_result_not_in_first_part_is_not_skipped():
+  """Test that code execution results aren't skipped.
+
+  This covers results that appear in a non-first part.
+  """
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Run some code."),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              parts=[
+                  types.Part(text=""),
+                  types.Part(
+                      code_execution_result=types.CodeExecutionResult(
+                          outcome="OUTCOME_OK",
+                          output="42",
+                      )
+                  ),
+              ],
+              role="model",
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  assert len(llm_request.contents) == 2
+  assert any(
+      part.code_execution_result is not None
+      and part.code_execution_result.output == "42"
+      for part in llm_request.contents[1].parts
+  )
+
+
+@pytest.mark.asyncio
+async def test_standalone_thought_signature_part_is_not_skipped():
+  """Test that a signature-only part survives the per-turn history rebuild.
+
+  Models return a thought signature on a part carrying no text at all. The
+  signature is opaque state the model expects back verbatim, so losing it
+  makes the model repeat work it already did.
+  """
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("What happens at 3:15?"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      text="",
+                      thought=True,
+                      thought_signature=b"opaque-signature",
+                  )
+              ],
+              role="model",
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.ModelContent("A dog appears."),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  signatures = [
+      part.thought_signature
+      for content in llm_request.contents
+      for part in content.parts or []
+      if part.thought_signature
+  ]
+  assert b"opaque-signature" in signatures
+
+
+@pytest.mark.parametrize(
+    "part",
+    [
+        types.Part(thought=True, thought_signature=b"sig"),
+        types.Part(thought_signature=b"sig"),
+        types.Part(text="reasoning", thought=True, thought_signature=b"sig"),
+        types.Part(text="the answer", thought_signature=b"sig"),
+    ],
+    ids=[
+        "signature_only_marked_thought",
+        "signature_only_unmarked",
+        "thought_text_with_signature",
+        "answer_text_with_signature",
+    ],
+)
+@pytest.mark.asyncio
+async def test_thought_signature_survives_in_every_part_shape(part):
+  """Test that a signature is kept whatever else the part does or doesn't hold.
+
+  Only the answer-text shape used to survive, and it did so incidentally,
+  because the text alone already made the part visible.
+  """
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("What happens at 3:15?"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(parts=[part], role="model"),
+      ),
+  ]
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  signatures = [
+      p.thought_signature
+      for content in llm_request.contents
+      for p in content.parts or []
+      if p.thought_signature
+  ]
+  assert signatures == [b"sig"]
+
+
+@pytest.mark.asyncio
+async def test_server_side_tool_call_events_are_not_skipped():
+  """Test that server-side tool call/response events survive history rebuild.
+
+  The model runs these tools itself and requires the caller to echo the parts
+  back on the next request. Dropping them as "empty" makes the model redo the
+  work, or fail because a call has no matching response.
+  """
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Summarize the linked page."),
+      ),
+      # Model asks the server to run a tool; the part carries nothing else.
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      tool_call=types.ToolCall(
+                          id="tc1",
+                          tool_type=types.ToolType.URL_CONTEXT,
+                          args={"url": "https://example.com"},
+                      )
+                  )
+              ],
+              role="model",
+          ),
+      ),
+      # The matching server-side result, also alone in its event.
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      tool_response=types.ToolResponse(
+                          id="tc1",
+                          tool_type=types.ToolType.URL_CONTEXT,
+                          response={"content": "page text"},
+                      )
+                  )
+              ],
+              role="model",
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  assert len(llm_request.contents) == 3
+  tool_call = llm_request.contents[1].parts[0].tool_call
+  assert tool_call is not None
+  assert tool_call.id == "tc1"
+  tool_response = llm_request.contents[2].parts[0].tool_response
+  assert tool_response is not None
+  assert tool_response.id == "tc1"
+  assert tool_response.response == {"content": "page text"}
+
+
+@pytest.mark.asyncio
+async def test_server_side_tool_call_with_thought_not_filtered():
+  """Test that a server-side tool call marked as thought is still echoed back.
+
+  The echo-back contract holds regardless of how the model labels the part, so
+  a thought marking must not drop it.
+  """
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Summarize the linked page."),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      thought=True,
+                      tool_call=types.ToolCall(
+                          id="tc1",
+                          tool_type=types.ToolType.URL_CONTEXT,
+                          args={"url": "https://example.com"},
+                      ),
+                  )
+              ],
+              role="model",
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  assert len(llm_request.contents) == 2
+  assert llm_request.contents[1].parts[0].tool_call is not None
+  assert llm_request.contents[1].parts[0].tool_call.id == "tc1"
+
+
+@pytest.mark.asyncio
+async def test_function_call_with_thought_not_filtered():
+  """Test that function calls marked as thought are not filtered out.
+
+  Some models (e.g., Gemini 3 Flash Preview) may mark function calls as
+  thought=True. These should still be included in the context because they
+  represent actions that need to be executed.
+  """
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  # Create event with function call marked as thought (as Gemini 3 Flash does)
+  function_call = types.FunctionCall(
+      id="fc_123",
+      name="test_tool",
+      args={"query": "test"},
+  )
+  fc_part = types.Part(function_call=function_call)
+  # Simulate model marking function call as thought
+  fc_part.thought = True
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Call the tool"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(text="Let me think about this", thought=True),
+                  fc_part,  # Function call with thought=True
+                  types.Part(text="Planning next steps", thought=True),
+              ],
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id="fc_123",
+                          name="test_tool",
+                          response={"result": "success"},
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Verify all 3 contents are present (user, model with FC, function response)
+  assert len(llm_request.contents) == 3
+
+  # Verify the function call is included (not filtered out)
+  model_content = llm_request.contents[1]
+  assert model_content.role == "model"
+  fc_parts = [p for p in model_content.parts if p.function_call]
+  assert len(fc_parts) == 1
+  assert fc_parts[0].function_call.name == "test_tool"
+  assert fc_parts[0].function_call.id == "fc_123"
+
+
+@pytest.mark.asyncio
+async def test_function_response_with_thought_not_filtered():
+  """Test that function responses marked as thought are not filtered out."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  function_call = types.FunctionCall(
+      id="fc_456",
+      name="calc_tool",
+      args={"x": 1, "y": 2},
+  )
+  function_response = types.FunctionResponse(
+      id="fc_456",
+      name="calc_tool",
+      response={"result": 3},
+  )
+  fr_part = types.Part(function_response=function_response)
+  # Simulate marking function response as thought
+  fr_part.thought = True
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Calculate 1+2"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              role="model",
+              parts=[types.Part(function_call=function_call)],
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              role="user",
+              parts=[fr_part],  # Function response with thought=True
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Verify all 3 contents are present
+  assert len(llm_request.contents) == 3
+
+  # Verify the function response is included (not filtered out)
+  fr_content = llm_request.contents[2]
+  fr_parts = [p for p in fr_content.parts if p.function_response]
+  assert len(fr_parts) == 1
+  assert fr_parts[0].function_response.name == "calc_tool"
+
+
+@pytest.mark.asyncio
+async def test_adk_function_call_ids_are_stripped_for_non_interactions_model():
+  """Test ADK generated ids are removed for non-interactions requests."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  function_call_id = "adk-test-call-id"
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Call the tool"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id=function_call_id,
+                          name="test_tool",
+                          args={"x": 1},
+                      )
+                  )
+              ],
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id=function_call_id,
+                          name="test_tool",
+                          response={"result": 2},
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  model_fc_part = llm_request.contents[1].parts[0]
+  assert model_fc_part.function_call is not None
+  assert model_fc_part.function_call.id is None
+
+  user_fr_part = llm_request.contents[2].parts[0]
+  assert user_fr_part.function_response is not None
+  assert user_fr_part.function_response.id is None
+
+
+@pytest.mark.asyncio
+async def test_stripping_function_call_ids_does_not_mutate_session_events():
+  """Stripping ``adk-`` ids must not mutate the session-owned events."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  # Shared id so the history rearrange logic can pair call and response.
+  function_call_id = "adk-test-call-id"
+  fc_part = types.Part(
+      function_call=types.FunctionCall(
+          id=function_call_id,
+          name="test_tool",
+          args={"x": 1},
+      )
+  )
+  fr_part = types.Part(
+      function_response=types.FunctionResponse(
+          id=function_call_id,
+          name="test_tool",
+          response={"result": 2},
+      )
+  )
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Call the tool"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(role="model", parts=[fc_part]),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(role="user", parts=[fr_part]),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  model_fc_part = llm_request.contents[1].parts[0]
+  assert model_fc_part.function_call.id is None
+  user_fr_part = llm_request.contents[2].parts[0]
+  assert user_fr_part.function_response.id is None
+
+  assert fc_part.function_call.id == function_call_id
+  assert fr_part.function_response.id == function_call_id
+  assert events[1].content.parts[0].function_call.id == function_call_id
+  assert events[2].content.parts[0].function_response.id == function_call_id
+  assert model_fc_part is not fc_part
+  assert user_fr_part is not fr_part
+
+
+@pytest.mark.asyncio
+async def test_downstream_part_mutation_does_not_corrupt_session_events():
+  """Request parts must survive in-place mutation by later processors."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  # A thought=True function-call part survives context filtering.
+  fc_part = types.Part(
+      function_call=types.FunctionCall(id="fc1", name="t", args={"x": 1}),
+  )
+  fc_part.thought = True
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Call the tool"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(role="model", parts=[fc_part]),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id="fc1", name="t", response={"r": 2}
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # nl_planning clears thoughts in place on the request parts.
+  _nl_planning._remove_thought_from_request(llm_request)
+
+  assert fc_part.thought is True
+  assert events[1].content.parts[0].thought is True
+
+
+@pytest.mark.asyncio
+async def test_adk_function_call_ids_preserved_for_interactions_model():
+  """Test ADK generated ids are preserved for interactions requests."""
+  agent = Agent(
+      model=Gemini(
+          model="gemini-2.5-flash",
+          use_interactions_api=True,
+      ),
+      name="test_agent",
+  )
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  function_call_id = "adk-test-call-id"
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Call the tool"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id=function_call_id,
+                          name="test_tool",
+                          args={"x": 1},
+                      )
+                  )
+              ],
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id=function_call_id,
+                          name="test_tool",
+                          response={"result": 2},
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  model_fc_part = llm_request.contents[1].parts[0]
+  assert model_fc_part.function_call is not None
+  assert model_fc_part.function_call.id == function_call_id
+
+  user_fr_part = llm_request.contents[2].parts[0]
+  assert user_fr_part.function_response is not None
+  assert user_fr_part.function_response.id == function_call_id
+
+
+@pytest.mark.asyncio
+async def test_adk_function_call_ids_preserved_for_anthropic_model():
+  """Anthropic ids must round-trip through replay so Claude can match
+  tool_use blocks with their tool_result blocks.
+  """
+  from google.adk.models.anthropic_llm import AnthropicLlm
+
+  agent = Agent(
+      model=AnthropicLlm(model="claude-sonnet-4-20250514"),
+      name="test_agent",
+  )
+  llm_request = LlmRequest(model="claude-sonnet-4-20250514")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  # ADK fallback ids look like ``adk-<uuid>`` and would previously be
+  # stripped to None for non-Gemini models on the replay path.
+  function_call_id = "adk-test-call-id"
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Call the tool"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id=function_call_id,
+                          name="test_tool",
+                          args={"x": 1},
+                      )
+                  )
+              ],
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id=function_call_id,
+                          name="test_tool",
+                          response={"result": 2},
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  model_fc_part = llm_request.contents[1].parts[0]
+  assert model_fc_part.function_call is not None
+  assert model_fc_part.function_call.id == function_call_id
+
+  user_fr_part = llm_request.contents[2].parts[0]
+  assert user_fr_part.function_response is not None
+  assert user_fr_part.function_response.id == function_call_id
+
+
+@pytest.mark.asyncio
+async def test_adk_function_call_ids_preserved_for_lite_llm_model():
+  """LiteLLM-backed providers (e.g. OpenAI) pair tool calls with their
+  results by id, so `adk-*` fallback ids must survive replay.
+  """
+  from google.adk.models.lite_llm import LiteLlm
+
+  agent = Agent(
+      model=LiteLlm(model="openai/gpt-4o-mini"),
+      name="test_agent",
+  )
+  llm_request = LlmRequest(model="openai/gpt-4o-mini")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  function_call_id = "adk-test-call-id"
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Call the tool"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id=function_call_id,
+                          name="test_tool",
+                          args={"x": 1},
+                      )
+                  )
+              ],
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id=function_call_id,
+                          name="test_tool",
+                          response={"result": 2},
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  model_fc_part = llm_request.contents[1].parts[0]
+  assert model_fc_part.function_call is not None
+  assert model_fc_part.function_call.id == function_call_id
+
+  user_fr_part = llm_request.contents[2].parts[0]
+  assert user_fr_part.function_response is not None
+  assert user_fr_part.function_response.id == function_call_id
+
+
+@pytest.mark.asyncio
+async def test_adk_function_call_ids_preserved_for_openai_responses_model():
+  """Responses API replay needs call_id values to match tool outputs."""
+  agent = Agent(
+      model=OpenAIResponsesLlm(model="gpt-5.5"),
+      name="test_agent",
+  )
+  llm_request = LlmRequest(model="gpt-5.5")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  function_call_id = "adk-test-call-id"
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Call the tool"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id=function_call_id,
+                          name="test_tool",
+                          args={"x": 1},
+                      )
+                  )
+              ],
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id=function_call_id,
+                          name="test_tool",
+                          response={"result": 2},
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  model_fc_part = llm_request.contents[1].parts[0]
+  assert model_fc_part.function_call is not None
+  assert model_fc_part.function_call.id == function_call_id
+
+  user_fr_part = llm_request.contents[2].parts[0]
+  assert user_fr_part.function_response is not None
+  assert user_fr_part.function_response.id == function_call_id
+
+
+def test_id_pairing_model_types_probes_optional_providers_once():
+  """An install without the optional providers must not retry their imports.
+
+  Python does not cache a failed import, so resolving these three inline meant
+  re-running the finder and re-executing the shim module bodies on every LLM
+  request.
+  """
+  optional_modules = (
+      "google.adk.models.anthropic_llm",
+      "google.adk.models.lite_llm",
+      "google.adk.labs.openai",
+  )
+  probed = []
+
+  class _ProvidersAbsent:
+    """Makes the optional providers look uninstalled, and counts the probes."""
+
+    def find_spec(self, name, path=None, target=None):
+      if name in optional_modules:
+        probed.append(name)
+        raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+      return None
+
+  saved = {name: sys.modules.pop(name, None) for name in optional_modules}
+  contents._id_pairing_model_types.cache_clear()
+  sys.meta_path.insert(0, _ProvidersAbsent())
+  try:
+    first = contents._id_pairing_model_types()
+    second = contents._id_pairing_model_types()
+  finally:
+    sys.meta_path.pop(0)
+    for name, module in saved.items():
+      if module is not None:
+        sys.modules[name] = module
+    contents._id_pairing_model_types.cache_clear()
+
+  assert first == ()
+  assert second is first
+  assert probed == list(optional_modules)
+
+
+@pytest.mark.asyncio
+async def test_anthropic_model_preserves_function_call_ids():
+  """AnthropicLlm should preserve function call IDs during session replay."""
+  anthropic_model = AnthropicLlm(model="claude-sonnet-4-20250514")
+  agent = Agent(
+      model=anthropic_model,
+      name="test_agent",
+      include_contents="default",
+  )
+  llm_request = LlmRequest(model="claude-sonnet-4-20250514")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  function_call_id = "toolu_test123"
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.Content(
+              role="user",
+              parts=[types.Part.from_text(text="Use the tool")],
+          ),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id=function_call_id,
+                          name="my_tool",
+                          args={"arg": "value"},
+                      )
+                  )
+              ],
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id=function_call_id,
+                          name="my_tool",
+                          response={"result": "done"},
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  model_fc_part = llm_request.contents[1].parts[0]
+  assert model_fc_part.function_call is not None
+  assert model_fc_part.function_call.id == function_call_id
+
+  user_fr_part = llm_request.contents[2].parts[0]
+  assert user_fr_part.function_response is not None
+  assert user_fr_part.function_response.id == function_call_id
+
+
+def test_get_contents_live_history_rebuild():
+  """Test that _get_contents successfully reconstructs history with Live session IDs."""
+  call_id = "b00a1bcc-42b5-4dc4-9ba2-11c15816b8b1"
+  live_session_id = "live-session-1"
+  agent_name = "root_agent"
+
+  # 1. Model Function Call event (has live_session_id)
+  call_event = Event(
+      invocation_id="inv1",
+      author=agent_name,
+      live_session_id=live_session_id,
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id=call_id,
+                      name="my_tool",
+                      args={"arg": "val"},
+                  )
+              )
+          ],
+      ),
+  )
+
+  # 2. User Function Response event (has live_session_id, preserved by ADK)
+  response_event = Event(
+      invocation_id="inv1",
+      author=agent_name,
+      live_session_id=live_session_id,
+      content=types.Content(
+          role="user",
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      id=call_id,
+                      name="my_tool",
+                      response={"result": "ok"},
+                  )
+              )
+          ],
+      ),
+  )
+
+  events = [call_event, response_event]
+
+  # Rebuild history using _get_contents
+  result = contents._get_contents(
+      current_branch=None,
+      events=events,
+      agent_name=agent_name,
+      preserve_function_call_ids=True,
+  )
+
+  assert len(result) == 2
+
+  assert result[0].role == "user"
+  assert "called tool" in result[0].parts[1].text
+
+  assert result[1].role == "user"
+  assert "returned result" in result[1].parts[1].text
+
+
+def test_rearrange_async_function_responses_backward_compatibility():
+  """contents re-exports rearrange function for backward compatibility."""
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("hi"),
+      ),
+  ]
+  result = contents._rearrange_events_for_async_function_responses_in_history(  # pylint: disable=protected-access
+      events
+  )
+  assert result is events
+
+
+def _long_running_call_event() -> Event:
+  return Event(
+      invocation_id="inv2",
+      author="model",
+      timestamp=2.0,
+      long_running_tool_ids={"lr-1"},
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="lr-1", name="lr_tool", args={}
+                  )
+              )
+          ],
+      ),
+  )
+
+
+def _long_running_response_event(response: dict[str, str]) -> Event:
+  return Event(
+      invocation_id="inv2",
+      author="user",
+      timestamp=4.0,
+      content=types.Content(
+          role="user",
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      id="lr-1", name="lr_tool", response=response
+                  )
+              )
+          ],
+      ),
+  )
+
+
+def test_get_contents_attributes_compaction_summary_to_current_agent():
+  """A compacted summary is the agent's own history, not another agent's reply.
+
+  The materialized summary must stay a model turn for the requesting agent.
+  Attributing it to a fixed author makes every agent whose name differs treat
+  its own compacted history as foreign and rewrite it into a user-role
+  "For context: [...] said:" turn.
+  """
+  compaction = EventCompaction(
+      start_timestamp=1.0,
+      end_timestamp=2.0,
+      compacted_content=types.Content(
+          role="model", parts=[types.Part(text="summary of earlier turns")]
+      ),
+  )
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          timestamp=1.0,
+          content=types.UserContent("hello"),
+      ),
+      Event(
+          invocation_id="inv1",
+          author="my_agent",
+          timestamp=2.0,
+          content=types.ModelContent("hi there"),
+      ),
+      Event(
+          invocation_id="compacted",
+          author="user",
+          timestamp=2.0,
+          content=compaction.compacted_content,
+          actions=EventActions(compaction=compaction),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="user",
+          timestamp=3.0,
+          content=types.UserContent("and now?"),
+      ),
+  ]
+
+  result = contents._get_contents(None, events, agent_name="my_agent")  # pylint: disable=protected-access
+
+  assert result[0].role == "model"
+  assert result[0].parts[0].text == "summary of earlier turns"
+
+
+def test_get_contents_recovers_compacted_long_running_call_on_resume():
+  """A long-running call compacted before resume is restored during assembly.
+
+  The call and its intermediate placeholder response are summarized away, then
+  the real result arrives on resume. Without recovery,
+  assembly raises because the resumed response has no matching call.
+  """
+  compaction = EventCompaction(
+      start_timestamp=1.0,
+      end_timestamp=3.0,
+      compacted_content=types.Content(
+          role="model", parts=[types.Part(text="summary of earlier turns")]
+      ),
+  )
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          timestamp=1.0,
+          content=types.UserContent("start the long job"),
+      ),
+      _long_running_call_event(),
+      # Intermediate placeholder response (same invocation as the call).
+      _long_running_response_event({"status": "pending"}).model_copy(
+          update={"timestamp": 3.0}
+      ),
+      Event(
+          invocation_id="compacted",
+          author="model",
+          timestamp=3.0,
+          content=compaction.compacted_content,
+          actions=EventActions(compaction=compaction),
+      ),
+      # Real result delivered on resume; the runner stamps it with the call's
+      # invocation id, and its timestamp is outside the compacted range.
+      _long_running_response_event({"result": "done"}),
+  ]
+
+  result = contents._get_contents(None, events, agent_name="model")  # pylint: disable=protected-access
+
+  assert len(result) == 3
+  assert result[0].parts[0].text == "summary of earlier turns"
+  assert result[1].parts[0].function_call.id == "lr-1"
+  assert result[2].parts[0].function_response.id == "lr-1"
+  assert result[2].parts[0].function_response.response == {"result": "done"}
+
+
+def test_recover_compacted_parallel_call_reinjects_sibling_response():
+  """A recovered parallel call keeps every part and restores sibling responses.
+
+  The call event issues a long-running call (lr-1) and a regular call (reg-1)
+  together. Both, plus reg-1's response, are compacted; only lr-1 is resumed.
+  The whole call event is re-injected (so parallel-call thought signatures on
+  the first part survive), and reg-1's compacted response is restored so reg-1
+  is not surfaced as a phantom pending call.
+  """
+  parallel_call = Event(
+      invocation_id="inv2",
+      author="model",
+      timestamp=2.0,
+      long_running_tool_ids={"lr-1"},
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="lr-1", name="lr_tool", args={}
+                  )
+              ),
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="reg-1", name="reg_tool", args={}
+                  )
+              ),
+          ],
+      ),
+  )
+  compaction = EventCompaction(
+      start_timestamp=1.0,
+      end_timestamp=3.5,
+      compacted_content=types.Content(
+          role="model", parts=[types.Part(text="summary")]
+      ),
+  )
+  events = [
+      parallel_call,
+      # reg-1's response and lr-1's placeholder, both compacted.
+      _long_running_response_event({"status": "pending"}).model_copy(
+          update={"timestamp": 3.0}
+      ),
+      Event(
+          invocation_id="inv2",
+          author="user",
+          timestamp=3.5,
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id="reg-1", name="reg_tool", response={"result": "ok"}
+                      )
+                  )
+              ],
+          ),
+      ),
+      Event(
+          invocation_id="compacted",
+          author="model",
+          timestamp=3.5,
+          content=compaction.compacted_content,
+          actions=EventActions(compaction=compaction),
+      ),
+      _long_running_response_event({"result": "done"}),
+  ]
+
+  result = contents._get_contents(None, events, agent_name="model")  # pylint: disable=protected-access
+
+  assert len(result) == 3
+  # The whole parallel call event is preserved (both parts, so a thought
+  # signature on the first part is not stripped).
+  call_ids = {
+      part.function_call.id for part in result[1].parts if part.function_call
+  }
+  assert call_ids == {"lr-1", "reg-1"}
+  # Both responses are present, so neither call looks pending.
+  response_ids = {
+      part.function_response.id
+      for part in result[2].parts
+      if part.function_response
+  }
+  assert response_ids == {"lr-1", "reg-1"}
+
+
+def test_task_input_user_content_preserves_non_ascii():
+  """Delegated task input must not escape non-ASCII FC args.
+
+  A chat coordinator delegates to a task sub-agent via a function call; the
+  task agent's first user turn is rebuilt from the FC args. Escaping non-Latin
+  characters to ``\\uXXXX`` there bloats prompt tokens and degrades responses.
+  """
+  fc_id = "fc_task_1"
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="coordinator",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id=fc_id,
+                          name="delegate",
+                          args={"query": "שלום עולם", "city": "北京"},
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+
+  content = contents._build_task_input_user_content(  # pylint: disable=protected-access
+      events, isolation_scope=fc_id
+  )
+
+  assert content is not None and content.parts
+  text = content.parts[0].text
+  assert "שלום עולם" in text
+  assert "北京" in text
+  assert "\\u" not in text
+
+
+@pytest.mark.asyncio
+async def test_include_contents_none_keeps_turn_across_long_running_resume():
+  """A tool result posted back by the caller does not restart the turn.
+
+  A long-running tool is finished by calling the runner again with the result
+  as the new message, which lands as a user-authored function_response event.
+  The current turn must still anchor on the user input that started it, so the
+  model sees the call the result belongs to.
+  """
+  agent = Agent(
+      model="gemini-2.5-flash", name="test_agent", include_contents="none"
+  )
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("approve the request"),
+      ),
+      Event(
+          invocation_id="inv1",
+          author="test_agent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          args={"ticket": "t1"},
+                          id="call_1",
+                          name="ask_for_approval",
+                      )
+                  )
+              ],
+              role="model",
+          ),
+      ),
+      Event(
+          invocation_id="inv1",
+          author="test_agent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id="call_1",
+                          name="ask_for_approval",
+                          response={"status": "pending"},
+                      )
+                  )
+              ],
+              role="user",
+          ),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="user",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id="call_1",
+                          name="ask_for_approval",
+                          response={"status": "approved"},
+                      )
+                  )
+              ],
+              role="user",
+          ),
+      ),
+  ]
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  assert llm_request.contents == [
+      types.UserContent("approve the request"),
+      types.Content(
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      args={"ticket": "t1"},
+                      id="call_1",
+                      name="ask_for_approval",
+                  )
+              )
+          ],
+          role="model",
+      ),
+      types.Content(
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      id="call_1",
+                      name="ask_for_approval",
+                      response={"status": "approved"},
+                  )
+              )
+          ],
+          role="user",
+      ),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_include_contents_none_resume_after_an_interleaved_user_turn():
+  """The slice must still reach the call, even if the user spoke meanwhile.
+
+  A long-running tool is exactly the case where the conversation carries on
+  while the call is pending, so an ordinary turn can sit between the call and
+  the posted-back result.
+  """
+  agent = Agent(
+      model="gemini-2.5-flash", name="test_agent", include_contents="none"
+  )
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("approve the request"),
+      ),
+      Event(
+          invocation_id="inv1",
+          author="test_agent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          args={"ticket": "t1"},
+                          id="call_1",
+                          name="ask_for_approval",
+                      )
+                  )
+              ],
+              role="model",
+          ),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="user",
+          content=types.UserContent("meanwhile, what is the weather?"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(parts=[types.Part(text="sunny")], role="model"),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id="call_1",
+                          name="ask_for_approval",
+                          response={"status": "approved"},
+                      )
+                  )
+              ],
+              role="user",
+          ),
+      ),
+  ]
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # The approval must reach the model, alongside the call it answers.
+  function_responses = [
+      part.function_response
+      for content in llm_request.contents
+      for part in content.parts or []
+      if part.function_response
+  ]
+  assert [r.response for r in function_responses] == [{"status": "approved"}]
+  function_calls = [
+      part.function_call
+      for content in llm_request.contents
+      for part in content.parts or []
+      if part.function_call
+  ]
+  assert [c.id for c in function_calls] == ["call_1"]
