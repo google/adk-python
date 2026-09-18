@@ -84,3 +84,115 @@ async def test_parallel_function_call_error_fail_fast():
   assert sleep_started
   assert not sleep_completed
   assert sleep_cancelled
+
+
+def _parallel_tool_responses() -> list[list[types.Part]]:
+  return [
+      [
+          function_call('id_1', 'stopper', {}),
+          function_call('id_2', 'sibling', {}),
+      ],
+      [
+          types.Part.from_text(text='final response'),
+      ],
+  ]
+
+
+async def _run_parallel_child_cancel(
+    stopper,
+    sibling,
+) -> None:
+  agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(
+          responses=_parallel_tool_responses()
+      ),
+      tools=[stopper, sibling],
+  )
+  runner = testing_utils.InMemoryRunner(agent)
+  # Runner swallows CancelledError at root-task cleanup so the caller is
+  # not itself cancelled; the invariant is that sibling tools are torn down
+  # before that iterator returns.
+  await runner.run_async(
+      new_message=types.Content(parts=[types.Part(text='test')]),
+  )
+
+
+@pytest.mark.asyncio
+async def test_parallel_function_call_cancels_siblings_on_cancelled_error():
+  """A tool that raises CancelledError cancels unfinished sibling tools."""
+  started = asyncio.Event()
+  release = asyncio.Event()
+  sibling_task = None
+  sibling_completed = False
+  sibling_cancelled = False
+
+  async def stopper(tool_context: ToolContext) -> str:
+    await started.wait()
+    raise asyncio.CancelledError()
+
+  async def sibling(tool_context: ToolContext) -> str:
+    nonlocal sibling_task, sibling_completed, sibling_cancelled
+    sibling_task = asyncio.current_task()
+    started.set()
+    try:
+      await release.wait()
+      sibling_completed = True
+      return 'ok'
+    except asyncio.CancelledError:
+      sibling_cancelled = True
+      raise
+
+  await _run_parallel_child_cancel(stopper, sibling)
+
+  pending = sibling_task is not None and not sibling_task.done()
+  release.set()
+  if sibling_task is not None:
+    await asyncio.gather(sibling_task, return_exceptions=True)
+
+  assert sibling_task is not None
+  assert sibling_cancelled
+  assert not sibling_completed
+  assert not pending
+
+
+@pytest.mark.asyncio
+async def test_parallel_function_call_cancels_siblings_when_tool_cancels_itself():
+  """A tool that cancels its own task cancels unfinished sibling tools."""
+  started = asyncio.Event()
+  release = asyncio.Event()
+  sibling_task = None
+  sibling_completed = False
+  sibling_cancelled = False
+
+  async def stopper(tool_context: ToolContext) -> str:
+    await started.wait()
+    task = asyncio.current_task()
+    assert task is not None
+    task.cancel()
+    await asyncio.sleep(0)
+    return 'should not reach'
+
+  async def sibling(tool_context: ToolContext) -> str:
+    nonlocal sibling_task, sibling_completed, sibling_cancelled
+    sibling_task = asyncio.current_task()
+    started.set()
+    try:
+      await release.wait()
+      sibling_completed = True
+      return 'ok'
+    except asyncio.CancelledError:
+      sibling_cancelled = True
+      raise
+
+  await _run_parallel_child_cancel(stopper, sibling)
+
+  pending = sibling_task is not None and not sibling_task.done()
+  release.set()
+  if sibling_task is not None:
+    await asyncio.gather(sibling_task, return_exceptions=True)
+
+  assert sibling_task is not None
+  assert sibling_cancelled
+  assert not sibling_completed
+  assert not pending
