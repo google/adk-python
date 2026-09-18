@@ -1152,6 +1152,9 @@ async def test_add_empty_session_to_memory(mock_vertexai_client):
 @pytest.mark.asyncio
 async def test_search_memory(mock_vertexai_client):
   retrieved_memory = mock.MagicMock()
+  retrieved_memory.memory.name = (
+      'projects/p/locations/l/reasoningEngines/123/memories/mem456'
+  )
   retrieved_memory.memory.fact = 'test_content'
   retrieved_memory.memory.update_time = datetime.datetime(
       2024, 12, 12, 12, 12, 12, 123456
@@ -1173,6 +1176,7 @@ async def test_search_memory(mock_vertexai_client):
   )
 
   assert len(result.memories) == 1
+  assert result.memories[0].id == 'mem456'
   assert result.memories[0].content.parts[0].text == 'test_content'
   assert result.memories[0].custom_metadata == {}
 

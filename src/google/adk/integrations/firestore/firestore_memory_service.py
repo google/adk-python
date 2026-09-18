@@ -147,6 +147,7 @@ class FirestoreMemoryService(BaseMemoryService):  # type: ignore[misc]
           content = types.Content.model_validate(data["content"])
           entries.append(
               MemoryEntry(
+                  id=str(doc.id) if doc.id is not None else None,
                   content=content,
                   author=data.get("author", ""),
                   timestamp=_utils.format_timestamp(data.get("timestamp", 0.0)),

@@ -45,7 +45,20 @@ class BaseMemoryService(ABC):
   """Base class for memory services.
 
   The service provides functionality to ingest conversation history into memory
-  so that it can be used for user queries.
+  so that it can be used for user queries, as well as removal APIs to manage
+  retention and data lifecycles.
+
+  ### Retention & Lifecycle Management
+  Session services persist conversational history within an active session, while
+  memory services persist durable recall across sessions. Deleting a session via
+  a `BaseSessionService` removes only the session record; memories previously
+  ingested or synthesized from that session remain in the memory service until
+  explicitly removed.
+
+  Callers can use `delete_memory` to remove an individual memory by its ID,
+  or `delete_session_memory` to remove memories associated with a specific
+  session. Services that do not support deletion will raise
+  `NotImplementedError`.
   """
 
   @abstractmethod
@@ -120,6 +133,28 @@ class BaseMemoryService(ABC):
         "instead."
     )
 
+  async def delete_memory(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      memory_id: str,
+  ) -> None:
+    """Deletes a single memory item by its id.
+
+    The id is the one carried by `MemoryEntry.id` as returned by
+    `search_memory`. Session-scoped and user-scoped removal are queries over
+    this method rather than separate entry points.
+
+    Args:
+      app_name: The application name for memory scope.
+      user_id: The user ID for memory scope.
+      memory_id: The id of the memory item to delete.
+    """
+    raise NotImplementedError(
+        "This memory service does not support deleting individual memories."
+    )
+
   @abstractmethod
   async def search_memory(
       self,
@@ -138,3 +173,30 @@ class BaseMemoryService(ABC):
     Returns:
         A SearchMemoryResponse containing the matching memories.
     """
+
+  async def delete_session_memory(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+  ) -> None:
+    """Removes all memory items associated with a specific session.
+
+    This enables retention lifecycle management when a session is closed or
+    deleted, ensuring that memories ingested from that session (e.g., via
+    `add_session_to_memory` or `add_events_to_memory`) do not outlive the
+    intended retention window.
+
+    Args:
+      app_name: The application name for memory scope.
+      user_id: The user ID for memory scope.
+      session_id: The session ID whose memories should be removed.
+
+    Raises:
+      NotImplementedError: If the memory service does not support session memory
+        deletion.
+    """
+    raise NotImplementedError(
+        "This memory service does not support session memory deletion."
+    )
