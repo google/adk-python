@@ -548,8 +548,11 @@ class RestApiTool(BaseTool):
           "message": "Needs your authorization to access your data.",
       }
 
-    # Attach parameters from auth into main parameters list
-    api_params, api_args = self._operation_parser.get_parameters().copy(), args
+    # Work on a copy of args: the caller's dict is also handed to after-tool
+    # callbacks and recorded on the tool span, so the defaults and auth
+    # parameters added below must not land in it.
+    api_params = self._operation_parser.get_parameters().copy()
+    api_args = args.copy()
 
     # Add any required arguments that are missing and have defaults:
     for api_param in api_params:
