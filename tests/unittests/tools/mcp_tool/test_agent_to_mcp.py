@@ -381,6 +381,24 @@ async def test_call_tool_reaps_conversation_of_closed_connection():
 
 
 @pytest.mark.asyncio
+async def test_call_tool_retains_sessions_when_deletion_is_opted_out():
+  """delete_orphaned_sessions=False keeps finished conversations in the
+  session service, for persistent services whose records are read later."""
+  agent = _EchoAgent(name="assistant")
+  runner = _FakeRunner([_text_event("ok")])
+  server = to_mcp_server(agent, runner=runner, delete_orphaned_sessions=False)
+
+  async with connected_client_session(server) as client:
+    await client.call_tool("assistant", {"request": "first"})
+  gc.collect()
+  async with connected_client_session(server) as client:
+    await client.call_tool("assistant", {"request": "second"})
+
+  assert runner.session_ids == ["session-1", "session-2"]
+  assert runner.deleted_session_ids == []
+
+
+@pytest.mark.asyncio
 async def test_call_tool_reuses_session_across_calls_on_one_connection():
   agent = _EchoAgent(name="assistant")
   runner = _FakeRunner([_text_event("ok")])

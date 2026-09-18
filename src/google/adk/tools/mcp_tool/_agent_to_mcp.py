@@ -228,6 +228,7 @@ def to_mcp_server(
     name: Optional[str] = None,
     instructions: Optional[str] = None,
     runner: Optional[Runner] = None,
+    delete_orphaned_sessions: bool = True,
 ) -> FastMCP:
   """Exposes an ADK agent as an MCP server.
 
@@ -255,6 +256,12 @@ def to_mcp_server(
     instructions: Optional instructions the MCP host may show to its model.
     runner: A pre-built Runner. If omitted, one is created with in-memory
       services.
+    delete_orphaned_sessions: Whether to delete a connection's ADK session
+      from the session service once the connection is gone. Defaults to True,
+      which keeps a long-running server's memory bounded. Set to False to
+      retain finished conversations in the session service, e.g. when a
+      caller-supplied ``runner`` uses a persistent session service whose
+      records are read after the fact; the caller then owns their cleanup.
 
   Returns:
     A ``FastMCP`` server exposing the agent as a single tool.
@@ -274,13 +281,17 @@ def to_mcp_server(
   # pylint: disable-next=abstract-class-instantiated
   sessions: MutableMapping[object, str] = weakref.WeakKeyDictionary()
   # Ids of every session in `sessions`, kept strongly so the sessions of
-  # collected connections can still be found and deleted.
-  created_session_ids: set[str] = set()
+  # collected connections can still be found and deleted. None disables the
+  # tracking and with it the reaping.
+  created_session_ids: Optional[set[str]] = (
+      set() if delete_orphaned_sessions else None
+  )
 
   async def call_agent(
       request: str, ctx: Context[ServerSession, Any]
   ) -> list[mcp_types.ContentBlock]:
-    await _reap_orphaned_sessions(agent_runner, sessions, created_session_ids)
+    if created_session_ids is not None:
+      await _reap_orphaned_sessions(agent_runner, sessions, created_session_ids)
     return await _run_agent(
         agent_runner, request, ctx, sessions, created_session_ids
     )
