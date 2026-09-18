@@ -142,6 +142,23 @@ Total columns: {df.shape[1]}
 '''
 
 
+def _resolve_code_executor(
+    invocation_context: InvocationContext, agent: object
+) -> Optional[BaseCodeExecutor]:
+  """Resolves the active code executor for an invocation without mutating the agent."""
+  if not hasattr(agent, 'code_executor'):
+    return None
+  code_executor = getattr(agent, 'code_executor', None)
+  if (
+      invocation_context.run_config
+      and invocation_context.run_config.support_cfc
+      and getattr(agent, 'parent_agent', None) is None
+      and not isinstance(code_executor, BuiltInCodeExecutor)
+  ):
+    return BuiltInCodeExecutor()
+  return code_executor
+
+
 class _CodeExecutionRequestProcessor(BaseLlmRequestProcessor):  # type: ignore[misc]
   """Processes code execution requests."""
 
@@ -150,10 +167,7 @@ class _CodeExecutionRequestProcessor(BaseLlmRequestProcessor):  # type: ignore[m
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
     agent = as_llm_agent(invocation_context)
-    if not hasattr(agent, 'code_executor'):
-      return
-
-    code_executor = agent.code_executor
+    code_executor = _resolve_code_executor(invocation_context, agent)
     if not code_executor:
       return
 
@@ -206,10 +220,7 @@ async def _run_pre_processor(
 ) -> AsyncGenerator[Event, None]:
   """Pre-process the user message by adding the user message to the Colab notebook."""
   agent = as_llm_agent(invocation_context)
-  if not hasattr(agent, 'code_executor'):
-    return
-
-  code_executor = agent.code_executor
+  code_executor = _resolve_code_executor(invocation_context, agent)
 
   if not code_executor or not isinstance(code_executor, BaseCodeExecutor):
     return
@@ -321,7 +332,7 @@ async def _run_post_processor(
 ) -> AsyncGenerator[Event, None]:
   """Post-process the model response by extracting and executing the first code block."""
   agent = as_llm_agent(invocation_context)
-  code_executor = agent.code_executor
+  code_executor = _resolve_code_executor(invocation_context, agent)
 
   if not code_executor or not isinstance(code_executor, BaseCodeExecutor):
     return

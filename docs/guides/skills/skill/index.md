@@ -452,8 +452,9 @@ so it has to equal the declared `name`.
 *   **Releasing a skill is opt-in.** A loaded skill stays active, and its
     `metadata.adk_additional_tools` stay declared, for the rest of the session.
     Enabling the `SKILL_LIFECYCLE` feature adds an `unload_skill` tool the model
-    can call to drop one. Its instructions stay in the conversation history;
-    only its tools go away.
+    can call to drop one. Its tools go away, and later requests replace the
+    instructions it was loaded with by a short notice that it was unloaded. The
+    session's stored events keep what was originally said.
 *   **Experimental.** The package's own
     [README](../../../../src/google/adk/skills/README.md) marks skills as
     experimental and under active development, so the API may change without

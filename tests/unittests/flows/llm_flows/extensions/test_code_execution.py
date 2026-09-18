@@ -479,3 +479,103 @@ async def test_pre_processor_does_not_inject_instruction_for_builtin_executor():
 
   system_instruction = str(llm_request.config.system_instruction or '')
   assert 'CRITICAL: Code execution format' not in system_instruction
+
+
+@pytest.mark.asyncio
+async def test_support_cfc_resolves_builtin_code_executor_without_mutating_agent():
+  from google.adk.agents.run_config import RunConfig
+
+  agent = Agent(name='test_agent', code_executor=None)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent,
+      user_content='run some code',
+      run_config=RunConfig(support_cfc=True),
+  )
+  invocation_context.artifact_service = MagicMock()
+  invocation_context.artifact_service.save_artifact = AsyncMock(return_value=1)
+
+  llm_request = LlmRequest(model='gemini-2.0-flash')
+  _ = [
+      event
+      async for event in request_processor.run_async(
+          invocation_context, llm_request
+      )
+  ]
+  assert agent.code_executor is None
+  assert any(
+      tool.code_execution is not None for tool in llm_request.config.tools or []
+  )
+
+  llm_response = LlmResponse(
+      content=types.Content(
+          parts=[
+              types.Part(
+                  inline_data=types.Blob(
+                      data=b'png_bytes',
+                      mime_type='image/png',
+                      display_name='cfc_plot.png',
+                  )
+              )
+          ]
+      )
+  )
+  events = [
+      event
+      async for event in response_processor.run_async(
+          invocation_context, llm_response
+      )
+  ]
+  assert agent.code_executor is None
+  assert len(events) == 1
+  assert events[0].actions.artifact_delta == {'cfc_plot.png': 1}
+
+  # Verify sub-agents (parent_agent is not None) do not inherit BuiltInCodeExecutor
+  sub_agent = Agent(name='sub_agent', code_executor=None)
+  root_agent = Agent(name='root_agent', sub_agents=[sub_agent])
+  del root_agent
+  sub_ctx = await testing_utils.create_invocation_context(
+      agent=sub_agent,
+      user_content='run sub code',
+      run_config=RunConfig(support_cfc=True),
+  )
+  sub_request = LlmRequest(model='gemini-2.0-flash')
+  _ = [
+      event async for event in request_processor.run_async(sub_ctx, sub_request)
+  ]
+  assert not any(
+      tool.code_execution is not None for tool in sub_request.config.tools or []
+  )
+
+
+@pytest.mark.asyncio
+async def test_append_new_message_to_session_stamps_isolation_scope_and_honors_session():
+  from google.adk.events.event import Event
+  from google.adk.events.event_actions import EventActions
+  from google.adk.runners import InMemoryRunner
+
+  agent = Agent(name='test_agent')
+  runner = InMemoryRunner(agent=agent, app_name='test_app')
+  target_session = await runner.session_service.create_session(
+      app_name='test_app', user_id='user_1'
+  )
+  # Seed a paused task event with isolation_scope so _find_active_task_scope finds it
+  paused_event = Event(
+      invocation_id='inv_1',
+      author='sub_agent',
+      isolation_scope='task_scope_1',
+  )
+  await runner.session_service.append_event(
+      session=target_session, event=paused_event
+  )
+
+  ic = await testing_utils.create_invocation_context(
+      agent=agent, user_content='hello'
+  )
+  await runner._append_new_message_to_session(
+      session=target_session,
+      new_message=types.Content(role='user', parts=[types.Part(text='resume')]),
+      invocation_context=ic,
+  )
+
+  assert len(target_session.events) == 2
+  assert target_session.events[-1].isolation_scope == 'task_scope_1'

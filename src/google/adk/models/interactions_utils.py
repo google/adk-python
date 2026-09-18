@@ -72,6 +72,7 @@ from google.genai.interactions import InteractionStatusUpdate
 from google.genai.interactions import MCPServerParam
 from google.genai.interactions import ModelOutputStep
 from google.genai.interactions import ModelOutputStepParam
+from google.genai.interactions import ServiceTier
 from google.genai.interactions import Step
 from google.genai.interactions import StepDelta
 from google.genai.interactions import StepDeltaData
@@ -107,6 +108,12 @@ from .llm_response import LlmResponse
 logger = logging.getLogger('google_adk.' + __name__)
 
 _NEW_LINE = '\n'
+
+# Tier that queues the request to run on off-peak capacity, so the model call
+# waits for room instead of being turned away when capacity is tight. Spelled
+# out because ServiceTier is a Literal union rather than an enum, so there is
+# no member to reference; the annotation is what rejects a typo.
+_DEFERRED_SERVICE_TIER: ServiceTier = 'deferred'
 
 # Sampling knobs the interactions API applies, but that the installed
 # google-genai release does not declare on its request model. That model
@@ -1688,6 +1695,8 @@ async def generate_content_via_interactions(
     api_client: Client,
     llm_request: LlmRequest,
     stream: bool,
+    *,
+    service_tier: ServiceTier | None = None,
 ) -> AsyncGenerator[LlmResponse, None]:
   """Generate content using the interactions API.
 
@@ -1702,10 +1711,22 @@ async def generate_content_via_interactions(
     api_client: The Google GenAI client.
     llm_request: The LLM request to send.
     stream: Whether to stream the response.
+    service_tier: Optional serving tier. ``deferred`` queues the request to run
+      on off-peak capacity and cannot be combined with streaming.
 
   Yields:
     LlmResponse objects converted from interaction responses.
+
+  Raises:
+    ValueError: If ``deferred`` is combined with streaming.
   """
+  if service_tier == _DEFERRED_SERVICE_TIER and stream:
+    raise ValueError(
+        "service_tier='deferred' cannot be used with streaming. A deferred"
+        ' request is queued to run on off-peak capacity and returns an'
+        ' interaction id instead of a result, so there is nothing to stream.'
+        ' Use StreamingMode.NONE.'
+    )
 
   # When previous_interaction_id is set, only send the latest continuous
   # user messages (the current turn) instead of full conversation history
@@ -1755,6 +1776,14 @@ async def generate_content_via_interactions(
       'generation_config': generation_config if generation_config else None,
       'previous_interaction_id': previous_interaction_id,
   }
+
+  if service_tier:
+    create_kwargs['service_tier'] = service_tier
+    if service_tier == _DEFERRED_SERVICE_TIER:
+      # The API rejects deferred without this. 'store' is deliberately left
+      # unset: it already defaults on for a background call, and sending
+      # store=False is rejected outright.
+      create_kwargs['background'] = True
 
   # Re-merge tracking headers into any request-time headers (idempotent) so the
   # interactions path forwards user-supplied headers instead of dropping them.
