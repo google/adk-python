@@ -82,6 +82,15 @@ def mock_firestore_client():
   return client
 
 
+def test_session_service_is_importable_from_package():
+  """FirestoreSessionService can be imported from the integration package."""
+  from google.adk.integrations import firestore as firestore_integration
+
+  assert (
+      firestore_integration.FirestoreSessionService is FirestoreSessionService
+  )
+
+
 @pytest.mark.asyncio
 async def test_create_session(mock_firestore_client):
 

@@ -39,6 +39,13 @@ def mock_firestore_client():
   return client
 
 
+def test_memory_service_is_importable_from_package():
+  """FirestoreMemoryService can be imported from the integration package."""
+  from google.adk.integrations import firestore as firestore_integration
+
+  assert firestore_integration.FirestoreMemoryService is FirestoreMemoryService
+
+
 def test_extract_keywords(mock_firestore_client):
   service = FirestoreMemoryService(client=mock_firestore_client)
   text = "The quick brown fox jumps over the lazy dog."
