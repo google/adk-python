@@ -19,6 +19,7 @@ import json
 import logging
 import sys
 import time
+from types import SimpleNamespace
 from unittest.mock import ANY
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
@@ -50,6 +51,8 @@ from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from mcp import StdioServerParameters
 import pytest
+
+from ._sdk_compat import requires_sdk_v2
 
 try:
   from google.auth.aio.transport.sessions import AsyncAuthorizedSession
@@ -512,6 +515,68 @@ class TestMCPSessionManager:
           mock_session_context_class.assert_called_once()
           # Verify enter_async_context was called (which internally calls __aenter__)
           mock_exit_stack.enter_async_context.assert_called_once()
+
+  @pytest.mark.asyncio
+  @requires_sdk_v2
+  async def test_create_session_passes_extension_arguments(self):
+    """The three extension arguments are forwarded to the SessionContext."""
+    extensions = {"io.modelcontextprotocol/tasks": {}}
+    result_claims = {
+        "io.modelcontextprotocol/tasks": [SimpleNamespace(model=object)]
+    }
+    notification_bindings = ["sentinel-binding"]
+
+    manager = MCPSessionManager(
+        self.mock_stdio_connection_params,
+        extensions=extensions,
+        result_claims=result_claims,
+        notification_bindings=notification_bindings,
+    )
+    mock_exit_stack = MockAsyncExitStack()
+    with patch(
+        "google.adk.tools.mcp_tool.mcp_session_manager.stdio_client"
+    ) as mock_stdio:
+      with patch(
+          "google.adk.tools.mcp_tool.mcp_session_manager.AsyncExitStack"
+      ) as mock_exit_stack_class:
+        with patch(
+            "google.adk.tools.mcp_tool.mcp_session_manager.SessionContext"
+        ) as mock_session_context_class:
+          mock_exit_stack_class.return_value = mock_exit_stack
+          mock_stdio.return_value = AsyncMock()
+          mock_session = AsyncMock()
+          mock_session_context = MockSessionContext(session=mock_session)
+          mock_session_context_class.return_value = mock_session_context
+          mock_exit_stack.enter_async_context.return_value = mock_session
+          await manager.create_session()
+          _, kwargs = mock_session_context_class.call_args
+          assert kwargs["extensions"] is extensions
+          assert kwargs["result_claims"] is result_claims
+          assert kwargs["notification_bindings"] is notification_bindings
+
+  @requires_sdk_v2
+  def test_claim_for_finds_the_claim_that_owns_a_result(self):
+    """A claimed result is routed back to its claim by model type."""
+
+    class _Claimed:
+      pass
+
+    claim = SimpleNamespace(model=_Claimed)
+    manager = MCPSessionManager(
+        self.mock_stdio_connection_params,
+        extensions={"vendor/ext": {}},
+        result_claims={"vendor/ext": [claim]},
+    )
+
+    assert manager._claim_for(_Claimed()) is claim
+    assert manager._claim_for(object()) is None
+
+  def test_claim_index_is_empty_without_claims(self):
+    """No claims registered means nothing to resolve, and nothing claimed."""
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+
+    assert not manager._claims_by_model
+    assert manager._claim_for(object()) is None
 
   @pytest.mark.asyncio
   async def test_create_session_passes_elicitation_callback(self):

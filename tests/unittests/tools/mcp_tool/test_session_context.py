@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from google.adk.dependencies._mcp import McpError
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.tools.mcp_tool.session_context import _format_exception
@@ -30,6 +31,8 @@ from google.adk.tools.mcp_tool.session_context import SessionContext
 import httpx
 from mcp import ClientSession
 import pytest
+
+from ._sdk_compat import requires_sdk_v2
 
 
 class MockClientSession:
@@ -725,6 +728,147 @@ class TestSessionContext:
       assert kwargs['elicitation_callback'] is elicitation_callback
 
 
+class TestSessionContextExtensions:
+  """Tests for the mcp 2.x extension seam and its protocol negotiation."""
+
+  def _patch_client_session(self):
+    return patch(
+        'google.adk.tools.mcp_tool.session_context.ClientSession',
+        autospec=True,
+    )
+
+  @staticmethod
+  def _make_session(mock_client_session_class):
+    session = mock_client_session_class.return_value
+    # The session the context actually uses is what the exit stack enters,
+    # not the constructor's return value.
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=None)
+    session.initialize = AsyncMock()
+    session.discover = AsyncMock(return_value='discover-result')
+    session.adopt = Mock()
+    return session
+
+  @pytest.mark.asyncio
+  @requires_sdk_v2
+  async def test_passes_extension_arguments_to_client_session(self):
+    """The three extension arguments reach ClientSession verbatim."""
+    extensions = {'io.modelcontextprotocol/tasks': {}}
+    result_claims = {'io.modelcontextprotocol/tasks': ['sentinel-claim']}
+    notification_bindings = ['sentinel-binding']
+
+    context = SessionContext(
+        client=MockClient(),
+        timeout=5.0,
+        sse_read_timeout=None,
+        extensions=extensions,
+        result_claims=result_claims,
+        notification_bindings=notification_bindings,
+    )
+    with self._patch_client_session() as mock_client_session_class:
+      self._make_session(mock_client_session_class)
+      async with context:
+        pass
+
+    _, kwargs = mock_client_session_class.call_args
+    assert kwargs['extensions'] is extensions
+    assert kwargs['result_claims'] is result_claims
+    assert kwargs['notification_bindings'] is notification_bindings
+
+  @pytest.mark.asyncio
+  async def test_defaults_to_no_extensions(self):
+    """Without extension arguments the three kwargs are not passed at all.
+
+    Absent rather than `None`: MCP SDK 1.x declares none of them, so naming
+    one would be a `TypeError` on the major the default path still runs on.
+    """
+    context = SessionContext(
+        client=MockClient(), timeout=5.0, sse_read_timeout=None
+    )
+    with self._patch_client_session() as mock_client_session_class:
+      self._make_session(mock_client_session_class)
+      async with context:
+        pass
+
+    _, kwargs = mock_client_session_class.call_args
+    assert 'extensions' not in kwargs
+    assert 'result_claims' not in kwargs
+    assert 'notification_bindings' not in kwargs
+
+  @pytest.mark.asyncio
+  async def test_negotiates_with_initialize_when_no_extensions(self):
+    """The default path is unchanged: initialize(), and no discover probe."""
+    context = SessionContext(
+        client=MockClient(), timeout=5.0, sse_read_timeout=None
+    )
+    with self._patch_client_session() as mock_client_session_class:
+      session = self._make_session(mock_client_session_class)
+      async with context:
+        pass
+
+    session.initialize.assert_awaited_once()
+    session.discover.assert_not_awaited()
+
+  @pytest.mark.asyncio
+  @requires_sdk_v2
+  async def test_negotiates_with_discover_when_extensions_requested(self):
+    """Extensions only bind on a modern connection, so discover comes first."""
+    context = SessionContext(
+        client=MockClient(),
+        timeout=5.0,
+        sse_read_timeout=None,
+        extensions={'io.modelcontextprotocol/tasks': {}},
+    )
+    with self._patch_client_session() as mock_client_session_class:
+      session = self._make_session(mock_client_session_class)
+      async with context:
+        pass
+
+    session.discover.assert_awaited_once()
+    session.adopt.assert_called_once_with('discover-result')
+    session.initialize.assert_not_awaited()
+
+  @pytest.mark.asyncio
+  @requires_sdk_v2
+  async def test_falls_back_to_initialize_when_discover_unsupported(self):
+    """A server too old for server/discover still gets a working session."""
+    context = SessionContext(
+        client=MockClient(),
+        timeout=5.0,
+        sse_read_timeout=None,
+        extensions={'io.modelcontextprotocol/tasks': {}},
+    )
+    with self._patch_client_session() as mock_client_session_class:
+      session = self._make_session(mock_client_session_class)
+      session.discover = AsyncMock(
+          side_effect=McpError(code=-32601, message='Method not found')
+      )
+      async with context:
+        pass
+
+    session.discover.assert_awaited_once()
+    session.initialize.assert_awaited_once()
+    session.adopt.assert_not_called()
+
+  @pytest.mark.asyncio
+  @requires_sdk_v2
+  async def test_falls_back_to_initialize_when_no_mutual_version(self):
+    """`adopt` raising RuntimeError is a negotiation failure, not a crash."""
+    context = SessionContext(
+        client=MockClient(),
+        timeout=5.0,
+        sse_read_timeout=None,
+        result_claims={'io.modelcontextprotocol/tasks': ['sentinel-claim']},
+    )
+    with self._patch_client_session() as mock_client_session_class:
+      session = self._make_session(mock_client_session_class)
+      session.adopt = Mock(side_effect=RuntimeError('no mutual version'))
+      async with context:
+        pass
+
+    session.initialize.assert_awaited_once()
+
+
 class TestSessionContextIsTaskAlive:
   """Tests for the SessionContext._is_task_alive property."""
 
@@ -763,6 +907,71 @@ class TestSessionContextRunGuarded:
   coroutine against the background session task and surfaces transport
   crashes immediately.
   """
+
+  @staticmethod
+  async def _started_context():
+    context = SessionContext(MockClient(), timeout=5.0, sse_read_timeout=None)
+    with patch(
+        'google.adk.tools.mcp_tool.session_context.ClientSession',
+        autospec=True,
+    ) as mock_client_session_class:
+      session = mock_client_session_class.return_value
+      session.__aenter__ = AsyncMock(return_value=session)
+      session.__aexit__ = AsyncMock(return_value=None)
+      session.initialize = AsyncMock()
+      await context.start()
+    return context
+
+  @pytest.mark.asyncio
+  async def test_run_guarded_orphans_the_coroutine_on_cancel_by_default(self):
+    """Documents the default: asyncio.wait does not cancel what it waits on."""
+    context = await self._started_context()
+    cancelled = asyncio.Event()
+
+    async def coro():
+      try:
+        await asyncio.sleep(30)
+      except asyncio.CancelledError:
+        cancelled.set()
+        raise
+
+    task = asyncio.create_task(context._run_guarded(coro()))
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+      await task
+
+    await asyncio.sleep(0)
+    assert not cancelled.is_set()
+    await context.close()
+
+  @pytest.mark.asyncio
+  async def test_run_guarded_propagates_cancel_when_asked(self):
+    """With propagate_cancel the coroutine is told, so it can clean up.
+
+    A resolver that polls a remote task has to send a cancellation of its own;
+    it can only do that if the cancellation actually reaches it.
+    """
+    context = await self._started_context()
+    cancelled = asyncio.Event()
+
+    async def coro():
+      try:
+        await asyncio.sleep(30)
+      except asyncio.CancelledError:
+        cancelled.set()
+        raise
+
+    task = asyncio.create_task(
+        context._run_guarded(coro(), propagate_cancel=True)
+    )
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+      await task
+
+    assert cancelled.is_set()
+    await context.close()
 
   @pytest.mark.asyncio
   async def test_run_guarded_raises_when_task_not_started(self):

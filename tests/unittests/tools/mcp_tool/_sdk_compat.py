@@ -26,8 +26,22 @@ from typing import Any
 
 from google.adk.dependencies._mcp import IS_MCP_SDK_V2
 from google.adk.dependencies._mcp import McpError
+import pytest
 
 _CAMEL_BOUNDARY = re.compile(r'(?<!^)(?=[A-Z])')
+
+# The client extension seam is the one difference between the majors that is
+# not a rename: 1.x has no such parameters on `ClientSession` at all. Tests of
+# what rides on it therefore have nothing to assert there, and the refusal
+# that replaces it gets its own tests instead.
+requires_sdk_v2 = pytest.mark.skipif(
+    not IS_MCP_SDK_V2,
+    reason='the MCP client extension seam exists only in SDK 2.x',
+)
+requires_sdk_v1 = pytest.mark.skipif(
+    IS_MCP_SDK_V2,
+    reason='the refusal only applies where the seam is missing',
+)
 
 
 def field(obj: Any, camel: str) -> Any:
