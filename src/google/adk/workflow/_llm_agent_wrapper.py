@@ -408,8 +408,6 @@ async def run_llm_agent_as_node(
     )
 
   include_contents_explicit = 'include_contents' in agent.model_fields_set
-  if agent.mode == 'single_turn' and not include_contents_explicit:
-    agent.include_contents = 'none'
 
   agent_ctx = prepare_llm_agent_context(agent, ctx)
   prepare_llm_agent_input(agent, agent_ctx, node_input)
@@ -444,9 +442,26 @@ async def run_llm_agent_as_node(
 
   if agent.mode == 'single_turn':
     # is_live is always False here (single_turn forces non-live).
-    async with aclosing(agent.run_async(ic)) as run_iter:
+    #
+    # A node in single_turn mode with no explicit include_contents defaults
+    # to 'none'. That default is invocation-scoped, not part of the agent's
+    # own configuration, so it is applied on a per-invocation clone rather
+    # than by mutating `agent` itself: `agent` is the same node instance
+    # reused across every future run of this workflow, and mutating it here
+    # would leave the override permanently in place for every other
+    # invocation of that shared node, single_turn or not.
+    if include_contents_explicit:
+      run_agent = agent
+    else:
+      run_agent = agent.clone(update={'include_contents': 'none'})
+      # clone() drops parent_agent (it assumes the caller is defining a new,
+      # independent agent); this is a same-invocation stand-in for `agent`,
+      # so it must keep the same parent as the original. See build_node's
+      # identical restoration for the same reason.
+      run_agent.parent_agent = agent.parent_agent
+    async with aclosing(run_agent.run_async(ic)) as run_iter:
       async for event in run_iter:
-        process_llm_agent_output(agent, ctx, event)
+        process_llm_agent_output(run_agent, ctx, event)
         yield event
     return
 
