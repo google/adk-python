@@ -42,9 +42,9 @@ if TYPE_CHECKING:
   from ..telemetry.node_tracing import TelemetryContext
   from ..tools.tool_confirmation import ToolConfirmation
   from ..workflow._base_node import BaseNode
+  from ..workflow._dynamic_node_scheduler import DynamicNodeScheduler
   from ..workflow._graph import NodeLike
   from ..workflow._graph import RouteValue
-  from ..workflow._schedule_dynamic_node import ScheduleDynamicNode
   from .invocation_context import InvocationContext
 
 _MAX_PARENT_DEPTH = 50
@@ -52,7 +52,7 @@ _MAX_PARENT_DEPTH = 50
 
 def _derive_scheduler(
     parent_ctx: Context | None,
-) -> ScheduleDynamicNode | None:
+) -> DynamicNodeScheduler | None:
   """Derives the dynamic node scheduler from the parent context."""
   if parent_ctx:
     return parent_ctx._workflow_scheduler
@@ -116,7 +116,7 @@ class Context(ReadonlyContext):
   fields`` section are available.
   """
 
-  _workflow_scheduler: ScheduleDynamicNode | None = None
+  _workflow_scheduler: DynamicNodeScheduler | None = None
 
   def __init__(
       self,
@@ -496,9 +496,9 @@ class Context(ReadonlyContext):
       return_ctx: If True, returns the child's Context instead of its output.
     """
 
-    from ..workflow import _dynamic_node_executor
+    from ..workflow import _dynamic_node_scheduler
 
-    return await _dynamic_node_executor.run_node_internal(
+    return await _dynamic_node_scheduler.run_node_internal(
         self,
         node,
         node_input=node_input,
@@ -859,9 +859,9 @@ class Context(ReadonlyContext):
       override_isolation_scope: str | None = None,
       resume_inputs: dict[str, Any] | None = None,
   ) -> Context:
-    from ..workflow import _dynamic_node_executor
+    from ..workflow import _dynamic_node_scheduler
 
-    return await _dynamic_node_executor.run_node_standalone(
+    return await _dynamic_node_scheduler.run_node_standalone(
         self,
         node,
         node_input=node_input,

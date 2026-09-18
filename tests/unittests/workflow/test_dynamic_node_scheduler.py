@@ -1401,7 +1401,7 @@ async def test_dynamic_node_scheduler_transfer_defers_to_target_parent_scheduler
   root_ctx._workflow_scheduler = root_scheduler
 
   mock_standalone = mocker.patch(
-      'google.adk.workflow._dynamic_node_executor.run_node_standalone',
+      'google.adk.workflow._dynamic_node_scheduler.run_node_standalone',
       return_value=child_ctx,
   )
 
@@ -1473,7 +1473,7 @@ async def test_dynamic_node_scheduler_transfer_restores_use_as_output_on_hop_bac
 
   # parent_ctx's standalone runs: child1 then child2
   mock_standalone = mocker.patch(
-      'google.adk.workflow._dynamic_node_executor.run_node_standalone',
+      'google.adk.workflow._dynamic_node_scheduler.run_node_standalone',
       side_effect=[child1_ctx, child2_ctx],
   )
 
