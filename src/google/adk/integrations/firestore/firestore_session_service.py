@@ -42,6 +42,7 @@ from ...sessions.state import State
 
 try:
   from google.cloud import firestore
+  from google.cloud.firestore_v1.base_query import FieldFilter
 except ImportError as e:
   raise ImportError(
       "FirestoreSessionService requires google-cloud-firestore. "
@@ -325,7 +326,7 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
           after_dt = datetime.fromtimestamp(
               config.after_timestamp, tz=timezone.utc
           )
-          query = query.where("timestamp", ">=", after_dt)
+          query = query.where(filter=FieldFilter("timestamp", ">=", after_dt))
         if config.num_recent_events is not None:
           query = query.limit_to_last(config.num_recent_events)
 
@@ -369,12 +370,12 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
     """Lists sessions from Firestore."""
     if user_id:
       query = self._get_sessions_ref(app_name, user_id).where(
-          "appName", "==", app_name
+          filter=FieldFilter("appName", "==", app_name)
       )
       docs = await query.get()
     else:
       query = self.client.collection_group(self.sessions_collection).where(
-          "appName", "==", app_name
+          filter=FieldFilter("appName", "==", app_name)
       )
       docs = await query.get()
 

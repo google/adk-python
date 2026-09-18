@@ -35,6 +35,12 @@ from google.cloud import firestore
 import pytest
 
 
+def _where_filter(where_mock):
+  """Returns (field, op, value) of the FieldFilter passed as `filter=`."""
+  field_filter = where_mock.call_args.kwargs["filter"]
+  return field_filter.field_path, field_filter.op_string, field_filter.value
+
+
 @pytest.fixture
 def mock_firestore_client():
   client = mock.MagicMock()
@@ -854,9 +860,9 @@ async def test_list_sessions_without_user_id(mock_firestore_client):
   assert session.last_update_time == 1234567890.0
 
   mock_firestore_client.collection_group.assert_called_once_with("sessions")
-  mock_firestore_client.collection_group.return_value.where.assert_called_once_with(
-      "appName", "==", app_name
-  )
+  where = mock_firestore_client.collection_group.return_value.where
+  where.assert_called_once()
+  assert _where_filter(where) == ("appName", "==", app_name)
 
 
 @pytest.mark.asyncio
@@ -918,9 +924,9 @@ async def test_list_sessions_filters_other_apps(mock_firestore_client):
   assert response.sessions[0].app_name == app_name
 
   mock_firestore_client.collection_group.assert_called_once_with("sessions")
-  mock_firestore_client.collection_group.return_value.where.assert_called_once_with(
-      "appName", "==", app_name
-  )
+  where = mock_firestore_client.collection_group.return_value.where
+  where.assert_called_once()
+  assert _where_filter(where) == ("appName", "==", app_name)
 
 
 @pytest.mark.asyncio
@@ -1093,7 +1099,7 @@ async def test_get_session_after_timestamp_cursor_is_utc_aware(
     )
 
   events_collection_ref.where.assert_called_once()
-  field, operator, cursor = events_collection_ref.where.call_args.args
+  field, operator, cursor = _where_filter(events_collection_ref.where)
   assert (field, operator) == ("timestamp", ">=")
   assert cursor.utcoffset() == timedelta(0), f"cursor is not UTC: {cursor!r}"
   assert _wire_epoch(cursor) == after_timestamp
