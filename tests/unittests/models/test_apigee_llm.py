@@ -1046,6 +1046,24 @@ async def test_api_client_omits_credentials_when_not_provided(
   assert 'credentials' not in kwargs
 
 
+@mock.patch('google.genai.Client')
+def test_api_client_is_rebuilt_for_a_new_event_loop(
+    mock_client_constructor: mock.MagicMock,
+) -> None:
+  """The proxy client is rebuilt per event loop like the base Gemini client."""
+  mock_client_constructor.side_effect = lambda **kwargs: mock.Mock()
+  apigee_llm = ApigeeLlm(model=APIGEE_GEMINI_MODEL_ID, proxy_url=PROXY_URL)
+
+  async def _get_client():
+    return apigee_llm.api_client
+
+  first = asyncio.run(_get_client())
+  second = asyncio.run(_get_client())
+
+  assert first is not second
+  assert mock_client_constructor.call_count == 2
+
+
 def test_parse_response_with_refusal() -> None:
   """Tests that CompletionsHTTPClient parses refusal correctly."""
   client = CompletionsHTTPClient(base_url='http://test')
