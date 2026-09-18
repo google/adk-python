@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.9.2](https://github.com/google/adk-python/compare/v2.9.1...v2.9.2) (2026-09-18)
+
+
+### Bug Fixes
+
+* **telemetry:** only drop the OTel event name on Agent Engine ([9110770](https://github.com/google/adk-python/commit/9110770dc487283b95844ad843db9eec9e56e92d))
+
 ## [2.9.1](https://github.com/google/adk-python/compare/v2.9.0...v2.9.1) (2026-09-15)
 
 
