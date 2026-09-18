@@ -96,6 +96,31 @@ def test_merge_parallel_function_response_events_multiple() -> None:
   assert merged.actions.state_delta == {'key1': 'val1', 'key2': 'val2'}
 
 
+def test_merged_event_keeps_the_custom_metadata_of_its_events() -> None:
+  """Metadata set on the events of a step is carried onto their merged event."""
+
+  def event(text: str, custom_metadata: dict[str, object] | None) -> Event:
+    return Event(
+        invocation_id='inv-1',
+        author='agent',
+        content=types.Content(
+            role='user', parts=[types.Part.from_text(text=text)]
+        ),
+        custom_metadata=custom_metadata,
+    )
+
+  merged = _batch_tool_executor.merge_parallel_function_response_events([
+      event('part1', None),
+      event('part2', {'adk_tool_call_cache_hit': True}),
+      event('part3', {'source': 'cache'}),
+  ])
+
+  assert merged.custom_metadata == {
+      'adk_tool_call_cache_hit': True,
+      'source': 'cache',
+  }
+
+
 def test_is_non_blocking_tool() -> None:
   assert not _batch_tool_executor._is_non_blocking_tool(None)
 

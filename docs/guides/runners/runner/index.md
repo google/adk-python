@@ -117,6 +117,7 @@ Passed per-invocation to `runner.run_async(..., run_config=RunConfig(...))`:
 | `get_session_config` | `GetSessionConfig \| None` | `None` | Fine-grained session retrieval and event window loading configuration. |
 | `model_input_context` | `list[types.Content] \| None` | `None` | Transient unpersisted context added to model input for the current invocation. |
 | `max_llm_calls` | `int` | `500` | Maximum limit on LLM calls per run execution. |
+| `dedupe_tool_calls` | `bool` | `False` | Opt-in sharing of one execution per invocation between identical tool calls (same agent, branch, tool name and arguments). Callbacks still run per call; a result that transfers, escalates or requests confirmation or auth is never shared; a reused result is marked with `custom_metadata['adk_tool_call_cache_hit']`. `LongRunningFunctionTool` calls are always deduped. |
 
 ## Advanced applications
 

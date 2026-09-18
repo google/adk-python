@@ -243,6 +243,32 @@ class RunConfig(BaseModel):
     - Less than or equal to 0: This allows for unbounded number of llm calls.
   """
 
+  dedupe_tool_calls: bool = False
+  """Whether identical tool calls run only once per invocation.
+
+  When enabled, a tool call whose name and arguments match one the same agent
+  already made in this invocation, on the same agent branch, reuses that
+  call's result instead of running the tool again. Models sometimes re-emit a
+  call while a slow or expensive tool is still running, or repeat it in a
+  later step; deduping saves the repeated execution and keeps the two
+  responses consistent. The cache lives for one invocation; a resumed
+  invocation starts with an empty one.
+
+  Only the tool execution is shared. Before-tool and after-tool callbacks still
+  run for every call, every call gets its own function response event, and a
+  duplicate receives its own copy of the result as the tool returned it. State
+  and artifact deltas come from the first execution only. A result is not
+  shared when its run recorded any other action (a transfer, an escalation, a
+  request for authentication or confirmation...), since that action is the
+  effect of the call that made it; a failed execution is not reused either. A
+  reused result is marked with ``custom_metadata['adk_tool_call_cache_hit'] =
+  True`` on its function response event (on the merged event when the
+  responses of one step are merged).
+
+  ``LongRunningFunctionTool`` calls are always deduped, whatever this setting
+  is.
+  """
+
   custom_metadata: Optional[dict[str, Any]] = None
   """Custom metadata for the current invocation."""
 

@@ -219,3 +219,8 @@ def test_max_llm_calls_invalid_env_var_warning(monkeypatch):
     assert config.max_llm_calls == 500
     mock_warning.assert_called_once()
     assert "Invalid value for ADK_MAX_LLM_CALLS" in mock_warning.call_args[0][0]
+
+
+def test_dedupe_tool_calls_is_off_by_default():
+  """Deduping identical tool calls is opt-in."""
+  assert RunConfig().dedupe_tool_calls is False

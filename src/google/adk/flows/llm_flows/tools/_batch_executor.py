@@ -101,6 +101,14 @@ def merge_parallel_function_response_events(
 
   merged_actions = EventActions.model_validate(merged_actions_data)
 
+  # Metadata is merged too, so what a call's own event says about its response
+  # (such as that the result was reused from an identical call) is still said
+  # once the responses of a step are combined.
+  merged_metadata: dict[str, Any] = {}
+  for event in function_response_events:
+    if event.custom_metadata:
+      merged_metadata.update(event.custom_metadata)
+
   # Create the new merged event
   merged_event = Event(
       invocation_id=base_event.invocation_id,
@@ -109,6 +117,7 @@ def merge_parallel_function_response_events(
       content=types.Content(role='user', parts=merged_parts),
       actions=merged_actions,
       live_session_id=base_event.live_session_id,
+      custom_metadata=merged_metadata or None,
   )
 
   # Use the base_event as the timestamp

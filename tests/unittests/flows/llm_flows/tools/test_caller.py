@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncGenerator
 from collections.abc import Awaitable
 import concurrent.futures
 import contextvars
@@ -26,11 +27,14 @@ from unittest import mock
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.run_config import RunConfig
 from google.adk.events.event_actions import EventActions
 from google.adk.flows.llm_flows import functions
 from google.adk.flows.llm_flows.tools import _caller as _tool_caller
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.long_running_tool import LongRunningFunctionTool
+from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 import pytest
@@ -85,6 +89,7 @@ async def test_execute_single_prepared_call_runs_tool_runner() -> None:
   invocation_context = mock.create_autospec(InvocationContext, instance=True)
   invocation_context.invocation_id = 'inv-1'
   invocation_context.branch = 'main'
+  invocation_context.run_config = None
   invocation_context.agent = mock.Mock()
   invocation_context.agent.name = 'test_agent'
   invocation_context.plugin_manager = mock.AsyncMock()
@@ -432,3 +437,275 @@ def test_tool_thread_pool_is_reused_within_one_loop() -> None:
     assert not _is_shut_down(first)
 
   asyncio.run(main())
+
+
+def _record(x: int) -> dict[str, int]:
+  """A plain tool for exercising the dedupe key and predicate helpers."""
+  return {'x': x}
+
+
+def _prepared_call(
+    invocation_context: InvocationContext,
+    tool: BaseTool,
+    *,
+    args: dict[str, Any] | None = None,
+    name: str | None = None,
+    tool_lookup_error: Exception | None = None,
+    tool_confirmation: ToolConfirmation | None = None,
+) -> _tool_caller._PreparedFunctionCall:
+  """A prepared call of `tool` with real contexts, as the prepare phase builds."""
+  function_call = types.FunctionCall(
+      name=name or tool.name, id='call-1', args=args or {}
+  )
+  return _tool_caller._PreparedFunctionCall(
+      function_call=function_call,
+      tool=tool,
+      tool_context=_tool_caller._create_tool_context(
+          invocation_context, function_call, tool_confirmation
+      ),
+      function_args=dict(args or {}),
+      contextvars_snapshot=contextvars.copy_context(),
+      tool_lookup_error=tool_lookup_error,
+  )
+
+
+async def _dedupe_context() -> InvocationContext:
+  return await testing_utils.create_invocation_context(
+      LlmAgent(name='test_agent'),
+      run_config=RunConfig(dedupe_tool_calls=True),
+  )
+
+
+async def test_dedupe_is_off_unless_the_run_opts_in() -> None:
+  """A regular tool is deduped only when RunConfig.dedupe_tool_calls is set."""
+  plain = await testing_utils.create_invocation_context(
+      LlmAgent(name='test_agent')
+  )
+  opted_in = await _dedupe_context()
+  tool = FunctionTool(_record)
+
+  assert not _tool_caller._should_dedupe_tool_call(
+      plain, _prepared_call(plain, tool, args={'x': 1})
+  )
+  assert _tool_caller._should_dedupe_tool_call(
+      opted_in, _prepared_call(opted_in, tool, args={'x': 1})
+  )
+
+
+async def test_long_running_function_tool_is_a_candidate_by_default() -> None:
+  """A LongRunningFunctionTool is deduped even when the run did not opt in."""
+  plain = await testing_utils.create_invocation_context(
+      LlmAgent(name='test_agent')
+  )
+  tool = LongRunningFunctionTool(func=_record)
+
+  assert _tool_caller._should_dedupe_tool_call(
+      plain, _prepared_call(plain, tool, args={'x': 1})
+  )
+
+
+async def test_other_long_running_tools_follow_the_run_setting() -> None:
+  """A tool merely flagged long-running, like a wrapped workflow node, needs the opt-in."""
+  plain = await testing_utils.create_invocation_context(
+      LlmAgent(name='test_agent')
+  )
+  opted_in = await _dedupe_context()
+  tool = BaseTool(
+      name='run_node', description='Runs a workflow node.', is_long_running=True
+  )
+
+  assert not _tool_caller._should_dedupe_tool_call(
+      plain, _prepared_call(plain, tool)
+  )
+  assert _tool_caller._should_dedupe_tool_call(
+      opted_in, _prepared_call(opted_in, tool)
+  )
+
+
+async def test_tool_that_defers_its_response_is_never_deduped() -> None:
+  """A tool whose response another orchestrator synthesizes is never deduped."""
+  invocation_context = await _dedupe_context()
+
+  class _DeferringTool(BaseTool):
+
+    def __init__(self) -> None:
+      super().__init__(name='delegate', description='Runs a sub-agent.')
+      self._defers_response = True
+
+  assert not _tool_caller._should_dedupe_tool_call(
+      invocation_context, _prepared_call(invocation_context, _DeferringTool())
+  )
+
+
+async def test_call_carrying_a_confirmation_answer_is_never_deduped() -> None:
+  """A call re-run with the user's confirmation answer is never deduped."""
+  invocation_context = await _dedupe_context()
+  tool = FunctionTool(_record, require_confirmation=True)
+
+  assert not _tool_caller._should_dedupe_tool_call(
+      invocation_context,
+      _prepared_call(
+          invocation_context,
+          tool,
+          args={'x': 1},
+          tool_confirmation=ToolConfirmation(confirmed=True),
+      ),
+  )
+
+
+async def test_stop_streaming_call_is_never_deduped() -> None:
+  """The stop_streaming live control operation is never deduped."""
+  invocation_context = await _dedupe_context()
+
+  def stop_streaming(function_name: str) -> None:
+    del function_name
+
+  assert not _tool_caller._should_dedupe_tool_call(
+      invocation_context,
+      _prepared_call(
+          invocation_context,
+          FunctionTool(stop_streaming),
+          args={'function_name': 'monitor'},
+      ),
+  )
+
+
+async def test_streaming_tool_is_never_deduped() -> None:
+  """A live streaming tool, whose results arrive on the live queue, is never deduped."""
+  invocation_context = await _dedupe_context()
+
+  async def monitor(x: int) -> AsyncGenerator[dict[str, int], None]:
+    yield {'x': x}
+
+  assert not _tool_caller._should_dedupe_tool_call(
+      invocation_context,
+      _prepared_call(invocation_context, FunctionTool(monitor), args={'x': 1}),
+  )
+
+
+async def test_unresolved_tool_is_never_deduped() -> None:
+  """A call whose tool name resolved to nothing is never deduped."""
+  invocation_context = await _dedupe_context()
+  tool = BaseTool(name='missing_tool', description='Tool not found')
+
+  assert not _tool_caller._should_dedupe_tool_call(
+      invocation_context,
+      _prepared_call(
+          invocation_context,
+          tool,
+          tool_lookup_error=ValueError('Tool missing_tool not found'),
+      ),
+  )
+
+
+async def test_cache_key_ignores_argument_order() -> None:
+  """Calls whose arguments differ only in key order share a cache key."""
+  invocation_context = await _dedupe_context()
+  tool = FunctionTool(_record)
+  first = _prepared_call(
+      invocation_context, tool, args={'a': 1, 'b': [1, {'c': 2, 'd': 3}]}
+  )
+  second = _prepared_call(
+      invocation_context, tool, args={'b': [1, {'d': 3, 'c': 2}], 'a': 1}
+  )
+
+  assert _tool_caller._tool_call_cache_key(
+      invocation_context, first
+  ) == _tool_caller._tool_call_cache_key(invocation_context, second)
+
+
+@pytest.mark.parametrize('other_x', [True, 1.0, '1'])
+async def test_cache_key_tells_equal_values_of_different_types_apart(
+    other_x: Any,
+) -> None:
+  """``1`` and a value that compares equal to it are different arguments."""
+  invocation_context = await _dedupe_context()
+  tool = FunctionTool(_record)
+  first = _prepared_call(invocation_context, tool, args={'x': 1})
+  second = _prepared_call(invocation_context, tool, args={'x': other_x})
+
+  assert _tool_caller._tool_call_cache_key(
+      invocation_context, first
+  ) != _tool_caller._tool_call_cache_key(invocation_context, second)
+
+
+async def test_cache_key_tells_an_empty_dict_from_an_empty_list() -> None:
+  """``{}`` and ``[]`` are different arguments although both are empty."""
+  invocation_context = await _dedupe_context()
+  tool = FunctionTool(_record)
+  first = _prepared_call(invocation_context, tool, args={'x': {}})
+  second = _prepared_call(invocation_context, tool, args={'x': []})
+
+  assert _tool_caller._tool_call_cache_key(
+      invocation_context, first
+  ) != _tool_caller._tool_call_cache_key(invocation_context, second)
+
+
+async def test_cache_key_differs_between_branches() -> None:
+  """The same call on two agent branches has two cache keys."""
+  invocation_context = await _dedupe_context()
+  left = invocation_context.model_copy(update={'branch': 'root.left'})
+  right = invocation_context.model_copy(update={'branch': 'root.right'})
+  tool = FunctionTool(_record)
+
+  assert _tool_caller._tool_call_cache_key(
+      left, _prepared_call(left, tool, args={'x': 1})
+  ) != _tool_caller._tool_call_cache_key(
+      right, _prepared_call(right, tool, args={'x': 1})
+  )
+
+
+async def test_cache_key_differs_between_agents() -> None:
+  """The same call made by two agents on one branch has two cache keys."""
+  invocation_context = await _dedupe_context()
+  other = invocation_context.model_copy(
+      update={'agent': LlmAgent(name='other_agent')}
+  )
+  tool = FunctionTool(_record)
+
+  assert _tool_caller._tool_call_cache_key(
+      invocation_context,
+      _prepared_call(invocation_context, tool, args={'x': 1}),
+  ) != _tool_caller._tool_call_cache_key(
+      other, _prepared_call(other, tool, args={'x': 1})
+  )
+
+
+@pytest.mark.parametrize(
+    ('actions', 'shareable'),
+    [
+        pytest.param(EventActions(), True, id='nothing'),
+        pytest.param(
+            EventActions(state_delta={'runs': 1}, artifact_delta={'report': 1}),
+            True,
+            id='deltas',
+        ),
+        pytest.param(
+            EventActions(transfer_to_agent='child'), False, id='transfer'
+        ),
+        pytest.param(
+            EventActions(escalate=True, skip_summarization=True),
+            False,
+            id='exit_loop',
+        ),
+        pytest.param(
+            EventActions(skip_summarization=True),
+            False,
+            id='skip_summarization',
+        ),
+        pytest.param(
+            EventActions(
+                requested_tool_confirmations={
+                    'call-1': ToolConfirmation(hint='Approve?')
+                }
+            ),
+            False,
+            id='confirmation',
+        ),
+    ],
+)
+def test_result_is_shareable_unless_its_run_acted_beyond_deltas(
+    actions: EventActions, shareable: bool
+) -> None:
+  """A result is shared unless its run recorded an action beyond state and artifact deltas."""
+  assert _tool_caller._tool_result_is_shareable(actions) is shareable
