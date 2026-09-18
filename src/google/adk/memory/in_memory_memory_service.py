@@ -141,8 +141,6 @@ class InMemoryMemoryService(BaseMemoryService):
     with self._lock:
       # Copy the events into a stable snapshot while holding the lock. Iterating
       # a live reference outside the lock would race with concurrent writers
-      # (add_session_to_memory / add_events_to_memory) mutating the same dict
-      # and lists, raising "dictionary changed size during iteration".
       session_event_lists = [
           list(events)
           for events in self._session_events.get(user_key, {}).values()
@@ -188,3 +186,29 @@ class InMemoryMemoryService(BaseMemoryService):
     return SearchMemoryResponse(
         memories=[memory for _, memory in scored_memories[:_MAX_SEARCH_RESULTS]]
     )
+
+  @override
+  async def delete_session_memory(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+  ) -> None:
+    user_key = _user_key(app_name, user_id)
+    with self._lock:
+      if user_key in self._session_events:
+        self._session_events[user_key].pop(session_id, None)
+        if not self._session_events[user_key]:
+          del self._session_events[user_key]
+
+  @override
+  async def delete_user_memory(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+  ) -> None:
+    user_key = _user_key(app_name, user_id)
+    with self._lock:
+      self._session_events.pop(user_key, None)
