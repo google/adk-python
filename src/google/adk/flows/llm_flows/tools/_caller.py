@@ -39,13 +39,16 @@ from google.adk.tools.computer_use.computer_use_tool import ComputerUseTool
 from google.genai import types
 
 from . import _error_handler as _tool_error_handler
+from ....agents.invocation_context import _ToolCallCacheEntry
 from ....events.event import Event
+from ....events.event_actions import EventActions
 from ....live._active_streaming_tool import ActiveStreamingTool
 from ....live.live_request_queue import LiveRequestQueue
 from ....telemetry import _instrumentation
 from ....tools.base_tool import BaseTool
 from ....tools.function_tool import _use_sync_callable_runner
 from ....tools.function_tool import FunctionTool
+from ....tools.long_running_tool import LongRunningFunctionTool
 from ....tools.tool_confirmation import ToolConfirmation
 from ....tools.tool_context import ToolContext
 from ....utils._callback_pipeline import _run_callbacks
@@ -79,6 +82,10 @@ _TOOL_THREAD_POOL_LOCK = threading.Lock()
 _MAX_MEDIA_CONTAINER_DEPTH = 1
 
 _MESSAGE_EVENT_FIELDS = frozenset({'content', 'id', 'timestamp'})
+
+# Set in the custom metadata of a function response event whose result was
+# reused from an earlier identical call instead of running the tool again.
+_TOOL_CALL_CACHE_HIT_KEY = 'adk_tool_call_cache_hit'
 
 
 def _is_live_request_queue_annotation(param: inspect.Parameter) -> bool:
@@ -751,6 +758,225 @@ async def _apply_confirmation_gate(
   return None
 
 
+def _canonicalize_tool_args(value: object) -> object:
+  """Returns a stable, hashable form of a tool argument value.
+
+  A dict becomes a tuple of ``(key, value)`` pairs sorted by key and a list or
+  tuple becomes a tuple, so the order of the keys in a JSON object does not
+  matter. Every value is paired with its type name: ``1``, ``True`` and
+  ``1.0`` hash and compare equal in Python while being different arguments to
+  a tool, and an empty dict would otherwise look like an empty list. Anything
+  else falls back to its ``repr``.
+  """
+  if isinstance(value, dict):
+    return (
+        'dict',
+        tuple(
+            sorted(
+                (
+                    (key, _canonicalize_tool_args(item))
+                    for key, item in value.items()
+                ),
+                key=lambda pair: str(pair[0]),
+            )
+        ),
+    )
+  if isinstance(value, (list, tuple)):
+    return ('list', tuple(_canonicalize_tool_args(item) for item in value))
+  if value is None or isinstance(value, (str, int, float, bool)):
+    return (type(value).__name__, value)
+  return repr(value)
+
+
+def _tool_call_cache_key(
+    invocation_context: InvocationContext,
+    prepared_call: _PreparedFunctionCall,
+) -> tuple[Any, ...]:
+  """Returns the key under which identical calls share one tool execution.
+
+  The key is the calling agent, its branch, the tool name and the canonical
+  arguments as the tool receives them (after the before-tool callbacks).
+  Keying on the agent keeps the same-named tools of two agents apart, since a
+  tool name is only unique within one agent. Keying on the branch means that
+  parallel sibling agents, which run on branches of their own, each execute
+  the call once, while the identical calls one agent makes, in one step or
+  across its steps, share a single execution.
+  """
+  return (
+      _require_agent_name(invocation_context),
+      invocation_context.branch,
+      prepared_call.tool.name,
+      _canonicalize_tool_args(prepared_call.function_args),
+  )
+
+
+def _should_dedupe_tool_call(
+    invocation_context: InvocationContext,
+    prepared_call: _PreparedFunctionCall,
+) -> bool:
+  """Whether a call may share one tool execution with identical calls.
+
+  Deduping is opted into per run with ``RunConfig.dedupe_tool_calls``. A
+  ``LongRunningFunctionTool`` is always deduped: its real response arrives
+  later, and re-firing the call is exactly what a model does while it waits.
+  Other tools flagged as long-running, such as a workflow node wrapped as a
+  tool, run to completion and return their real result, so they follow the
+  run's setting. A call is never deduped when:
+
+  - the tool name resolved to nothing, since that path answers the call on
+    its own before the tool would run;
+  - the tool defers its response, since another orchestrator synthesizes the
+    response and expects one run per function call id;
+  - it carries the end user's answer to a confirmation request, since the
+    answer is bound to one function call id and identical calls may have
+    been answered differently;
+  - it is the ``stop_streaming`` live control operation;
+  - the tool is a live streaming tool, since its return value is only a
+    pending marker and the results stream through the live queue.
+  """
+  tool = prepared_call.tool
+  if prepared_call.tool_lookup_error is not None or tool._defers_response:
+    return False
+  if prepared_call.tool_context.tool_confirmation is not None:
+    return False
+  if prepared_call.function_call.name == 'stop_streaming':
+    return False
+  if inspect.isasyncgenfunction(getattr(tool, 'func', None)):
+    return False
+  if isinstance(tool, LongRunningFunctionTool):
+    return True
+  run_config = invocation_context.run_config
+  return run_config is not None and run_config.dedupe_tool_calls
+
+
+# The actions a tool run may record and still have its result reused: applying
+# a state or artifact delta once is the very point of running the tool once.
+_SHAREABLE_ACTION_FIELDS = frozenset({'state_delta', 'artifact_delta'})
+
+
+def _tool_result_is_shareable(actions: EventActions) -> bool:
+  """Whether identical calls may reuse the result of the run that set `actions`.
+
+  Any action other than a state or artifact delta (a transfer, an escalation,
+  a request for authentication or confirmation, a UI widget...) is the effect
+  of the call that recorded it on the flow of that call. A duplicate reusing
+  the result builds its event from its own, untouched actions and would not
+  replay it, so such a result is not shared. The built-in control tools, for
+  instance, return nothing and act through their actions alone.
+  """
+  recorded = actions.model_dump(exclude_none=True, exclude_defaults=True)
+  return recorded.keys() <= _SHAREABLE_ACTION_FIELDS
+
+
+def _copy_tool_result(result: object) -> object:
+  """Returns a deep copy of a tool result, or the result itself if it has none.
+
+  A result may hold something that cannot be copied, such as a lock or a
+  client handle. Sharing it as is then beats failing a duplicate whose tool
+  run did succeed.
+  """
+  try:
+    return copy.deepcopy(result)
+  except Exception:
+    logger.debug(
+        'A tool result cannot be deep-copied; identical calls share it as is.',
+        exc_info=True,
+    )
+    return result
+
+
+async def _run_tool_single_flight(
+    invocation_context: InvocationContext,
+    prepared_call: _PreparedFunctionCall,
+    *,
+    tool_runner: Callable[[], Awaitable[Any]],
+) -> tuple[object, bool]:
+  """Runs the tool once on behalf of every identical call of the invocation.
+
+  The first call for a key runs ``tool_runner`` in its own task and publishes
+  the result on a future. Identical calls running at the same time await that
+  future; identical calls made later read it once completed. Only the tool
+  execution is shared: the caller still runs the callbacks and builds the
+  response event of every call. What is published is a snapshot of the result
+  taken before any after-tool callback of the first call can alter it, and
+  every duplicate receives its own copy of that snapshot, so no call's
+  callbacks reach another call's event.
+
+  A failed execution is evicted so that a later identical call retries, and
+  every waiter re-raises the failure to its own on-tool-error callbacks. A
+  result whose run recorded an action other than a state or artifact delta
+  (a transfer, an escalation, a request for authentication or confirmation)
+  is the effect of that call alone, so it is evicted and flagged as not
+  shareable, and waiters run the tool themselves.
+
+  Args:
+    invocation_context: The invocation whose calls share executions.
+    prepared_call: The call to run or answer from an earlier run.
+    tool_runner: An async callable that runs the tool for this call.
+
+  Returns:
+    The tool result and whether it was reused from an earlier call.
+  """
+  cache = invocation_context._tool_call_cache
+  key = _tool_call_cache_key(invocation_context, prepared_call)
+  # No lock is needed: every read and write of the cache happens on the event
+  # loop thread, and there is no await between looking a key up and claiming
+  # it, so the check and the insert are atomic.
+  entry = cache.get(key)
+  if entry is None:
+    entry = _ToolCallCacheEntry(
+        future=asyncio.get_running_loop().create_future()
+    )
+    cache[key] = entry
+    try:
+      result = await tool_runner()
+    except BaseException as error:
+      if cache.get(key) is entry:
+        del cache[key]
+      if isinstance(error, Exception):
+        entry.future.set_exception(error)
+        # Reading the exception back marks it as retrieved, so that asyncio
+        # does not log it as never retrieved when no identical call waits.
+        entry.future.exception()
+      else:
+        entry.future.cancel()
+      raise
+    if _tool_result_is_shareable(prepared_call.tool_context.actions):
+      entry.future.set_result(_copy_tool_result(result))
+    else:
+      entry.shareable = False
+      # Waiters run the tool themselves because of the flag; the eviction only
+      # keeps the entry from lingering.
+      if cache.get(key) is entry:
+        del cache[key]
+      entry.future.set_result(None)
+    return result, False
+
+  # Shielded so that cancelling a waiter cannot cancel the shared future out
+  # from under the call that is running the tool and the other waiters.
+  snapshot = await asyncio.shield(entry.future)
+  if not entry.shareable:
+    return await tool_runner(), False
+  logger.debug(
+      'Reusing the result of an identical `%s` call for function call %s.',
+      prepared_call.tool.name,
+      prepared_call.function_call.id,
+  )
+  return _copy_tool_result(snapshot), True
+
+
+def _mark_tool_call_cache_hit(event: Event) -> None:
+  """Flags a response event as carrying the result of an earlier identical call.
+
+  The flag is merged into the event's custom metadata, so whatever metadata is
+  already there is kept.
+  """
+  event.custom_metadata = {
+      **(event.custom_metadata or {}),
+      _TOOL_CALL_CACHE_HIT_KEY: True,
+  }
+
+
 async def _execute_single_prepared_call(
     invocation_context: InvocationContext,
     prepared_call: _PreparedFunctionCall,
@@ -787,6 +1013,7 @@ async def _execute_single_prepared_call(
     5. Building the final FunctionResponse Event to be returned.
     """
     nonlocal function_response, detected_error_type
+    cache_hit = False
 
     # Step 1: Check if plugin before_tool_callback overrides the function
     # response.
@@ -836,14 +1063,24 @@ async def _execute_single_prepared_call(
     # the tool normally. A tool that requires confirmation is answered by the
     # gate instead, so the gate holds for every tool rather than only the ones
     # that check it themselves, and a gate that raises is handled like a tool
-    # that raises.
+    # that raises. The gate runs before any deduping, so a held call is
+    # answered per function call id and never shared. Only the tool execution
+    # itself is shared between identical calls: the callbacks around it are
+    # per-call hooks (guardrails, logging plugins), and running them once would
+    # leave plugin telemetry asymmetric with the response events, one of which
+    # the flow emits per call.
     if function_response is None:
       try:
         function_response = await _apply_confirmation_gate(
             tool, function_args, tool_context
         )
         if function_response is None:
-          function_response = await tool_runner()
+          if _should_dedupe_tool_call(invocation_context, prepared_call):
+            function_response, cache_hit = await _run_tool_single_flight(
+                invocation_context, prepared_call, tool_runner=tool_runner
+            )
+          else:
+            function_response = await tool_runner()
       except Exception as tool_error:
         error_response = await _tool_error_handler.run_on_tool_error_callbacks(
             invocation_context=invocation_context,
@@ -906,9 +1143,12 @@ async def _execute_single_prepared_call(
     # Note: State deltas are not applied here - they are collected in
     # tool_context.actions.state_delta and applied later when the session
     # service processes the events
-    return _build_response_event(
+    function_response_event = _build_response_event(
         tool, function_response, tool_context, invocation_context
     )
+    if cache_hit:
+      _mark_tool_call_cache_hit(function_response_event)
+    return function_response_event
 
   async with _instrumentation.record_tool_execution(
       tool, agent, function_args, invocation_context=invocation_context

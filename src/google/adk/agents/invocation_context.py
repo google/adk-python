@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from typing import Any
 
 from google.adk.platform import uuid as platform_uuid
@@ -103,6 +104,24 @@ class _AbortState:
     self.signal = signal if signal is not None else asyncio.Event()
     self.loop = loop
     self.aborted = False
+
+
+@dataclasses.dataclass
+class _ToolCallCacheEntry:
+  """One tool execution shared by the identical calls of an invocation.
+
+  Attributes:
+    future: Resolves to the tool result once the first call for the key has
+      run the tool, or to the exception that run raised.
+    shareable: Whether identical calls may reuse the result. False when the
+      run recorded an action other than a state or artifact delta, such as a
+      transfer, an escalation or a request for authentication or
+      confirmation: that action is the effect of the call that made it, and
+      reusing the result would not replay it.
+  """
+
+  future: asyncio.Future[object]
+  shareable: bool = True
 
 
 class InvocationContext(BaseModel):
@@ -281,6 +300,18 @@ class InvocationContext(BaseModel):
 
   _abort_state: _AbortState = PrivateAttr(default_factory=_AbortState)
   """Captured abort state (signal, loop, and aborted flag) shared across copies."""
+
+  _tool_call_cache: dict[tuple[Any, ...], _ToolCallCacheEntry] = PrivateAttr(
+      default_factory=dict
+  )
+  """Tool executions shared by the identical tool calls of this invocation.
+
+  Keyed by agent name, branch, tool name and canonical arguments. Which calls
+  are deduped, and how one execution is shared, is decided by the tool caller
+  in the LLM flow; the context only holds the entries. Like ``_abort_state``, the dict is
+  the very same object in every ``model_copy()`` clone of this context, so an
+  identical call made by a sub-agent finds what its ancestor already ran.
+  """
 
   @override
   def model_post_init(self, __context: Any) -> None:
