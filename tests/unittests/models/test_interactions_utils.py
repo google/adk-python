@@ -2905,6 +2905,117 @@ async def test_generate_content_via_interactions_non_streaming_yields_single_res
   assert responses[0].content.parts[0].text == 'Sunny in Tokyo.'
 
 
+class TestServiceTier:
+  """Tests for forwarding a serving tier on the interactions create call.
+
+  ``deferred`` queues the request to run on off-peak capacity rather than
+  being turned away when capacity is tight. The API requires ``background``
+  alongside it, and the queued request returns an id instead of a result.
+  """
+
+  async def test_no_tier_sends_neither_key(self):
+    """An untiered request is unchanged: no tier, no background."""
+    # Arrange.
+    api_client = _FakeApiClient(interaction=_build_non_streaming_interaction())
+
+    # Act.
+    await _drain(
+        interactions_utils.generate_content_via_interactions(
+            api_client, _build_llm_request(), stream=False
+        )
+    )
+
+    # Assert.
+    assert len(api_client.create_calls) == 1
+    assert 'service_tier' not in api_client.create_calls[0]
+    assert 'background' not in api_client.create_calls[0]
+
+  async def test_deferred_sends_tier_and_background(self):
+    """``deferred`` is forwarded together with ``background=True``.
+
+    ``store`` is deliberately left unset: it already defaults on for a
+    background call, and sending ``store=False`` is rejected outright.
+    """
+    # Arrange.
+    api_client = _FakeApiClient(interaction=_build_non_streaming_interaction())
+
+    # Act.
+    await _drain(
+        interactions_utils.generate_content_via_interactions(
+            api_client,
+            _build_llm_request(),
+            stream=False,
+            service_tier='deferred',
+        )
+    )
+
+    # Assert.
+    assert len(api_client.create_calls) == 1
+    call = api_client.create_calls[0]
+    assert call['service_tier'] == 'deferred'
+    assert call['background']
+    assert 'store' not in call
+
+  @pytest.mark.parametrize('tier', ['flex', 'standard', 'priority'])
+  async def test_other_tiers_send_no_background(self, tier):
+    """Only ``deferred`` implies a background call."""
+    # Arrange.
+    api_client = _FakeApiClient(interaction=_build_non_streaming_interaction())
+
+    # Act.
+    await _drain(
+        interactions_utils.generate_content_via_interactions(
+            api_client,
+            _build_llm_request(),
+            stream=False,
+            service_tier=tier,
+        )
+    )
+
+    # Assert.
+    assert len(api_client.create_calls) == 1
+    assert api_client.create_calls[0]['service_tier'] == tier
+    assert 'background' not in api_client.create_calls[0]
+
+  async def test_deferred_with_streaming_raises(self):
+    """Deferred cannot stream: the create returns an id, not a result."""
+    # Arrange.
+    api_client = _FakeApiClient(_build_simple_text_stream())
+
+    # Act / Assert.
+    with pytest.raises(ValueError, match='cannot be used with streaming'):
+      await _drain(
+          interactions_utils.generate_content_via_interactions(
+              api_client,
+              _build_llm_request(),
+              stream=True,
+              service_tier='deferred',
+          )
+      )
+
+    # Assert: rejected before reaching the API.
+    assert not api_client.create_calls
+
+  async def test_other_tiers_may_stream(self):
+    """The streaming guard is specific to deferred."""
+    # Arrange.
+    api_client = _FakeApiClient(_build_simple_text_stream())
+
+    # Act.
+    await _drain(
+        interactions_utils.generate_content_via_interactions(
+            api_client,
+            _build_llm_request(),
+            stream=True,
+            service_tier='flex',
+        )
+    )
+
+    # Assert.
+    assert len(api_client.create_calls) == 1
+    assert api_client.create_calls[0]['service_tier'] == 'flex'
+
+
 def _build_stream_with_environment() -> list[object]:
   """A streamed interaction whose completed event carries an environment id."""
   now = datetime.now(timezone.utc).isoformat()

@@ -3952,6 +3952,8 @@ async def _instruction_from_process_llm_request(toolset):
   """Runs process_llm_request and returns the instruction it appended."""
   ctx, _ = _dict_state_context()
   llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+  # `contents` is a pydantic field, so autospec does not give the mock one.
+  llm_req.contents = []
   await toolset.process_llm_request(tool_context=ctx, llm_request=llm_req)
   return llm_req.append_instructions.call_args[0][0][0]
 
@@ -3997,3 +3999,590 @@ async def test_process_llm_request_never_bans_unload_when_disabled(mock_skill1):
 
   assert "NOT available" in instruction
   assert "unload_skill" not in instruction
+
+
+# ── pruning unloaded skills from the request ──
+
+
+def _load_skill_response_part(
+    skill_name: str,
+    *,
+    tool_name: str = "load_skill",
+    instructions: str = "secret instructions",
+) -> types.Part:
+  """A `load_skill` function response as it appears in the history."""
+  return types.Part.from_function_response(
+      name=tool_name,
+      response={
+          "skill_name": skill_name,
+          "instructions": instructions,
+          "frontmatter": {"name": skill_name},
+      },
+  )
+
+
+async def _prune(toolset, contents, active_skills):
+  """Runs process_llm_request over `contents` and returns them pruned."""
+  ctx, _ = _dict_state_context(
+      {"_adk_activated_skill_test_agent": list(active_skills)}
+  )
+  llm_req = llm_request_model.LlmRequest(contents=contents)
+  await toolset.process_llm_request(tool_context=ctx, llm_request=llm_req)
+  return llm_req.contents
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("skill_lifecycle_enabled")
+async def test_prune_replaces_instructions_of_an_unloaded_skill(mock_skill1):
+  """An unloaded skill's SKILL.md body stops being sent to the model."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  contents = [
+      types.Content(role="user", parts=[_load_skill_response_part("skill1")])
+  ]
+
+  contents = await _prune(toolset, contents, active_skills=[])
+
+  response = contents[0].parts[0].function_response.response
+  assert "instructions" not in response
+  assert response["skill_name"] == "skill1"
+  assert response["status"] == "unloaded"
+  assert "no longer apply" in response["detail"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("skill_lifecycle_enabled")
+async def test_prune_keeps_an_active_skill_intact(mock_skill1):
+  """A skill still active keeps the instructions the model is following."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  contents = [
+      types.Content(role="user", parts=[_load_skill_response_part("skill1")])
+  ]
+
+  contents = await _prune(toolset, contents, active_skills=["skill1"])
+
+  response = contents[0].parts[0].function_response.response
+  assert response["instructions"] == "secret instructions"
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("skill_lifecycle_enabled")
+async def test_prune_leaves_the_session_owned_part_untouched(mock_skill1):
+  """Contents share their parts with session events, so copy before editing.
+
+  A request's `Content` and `Part` objects are shallow copies of the session's,
+  so the response dict is the very one stored in history. Editing it in place
+  would rewrite what the session recorded.
+  """
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  original_part = _load_skill_response_part("skill1")
+  original_response = original_part.function_response.response
+  original_content = types.Content(role="user", parts=[original_part])
+
+  contents = await _prune(toolset, [original_content], active_skills=[])
+
+  assert original_response["instructions"] == "secret instructions"
+  assert original_content.parts[0] is original_part
+  assert contents[0] is not original_content
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("skill_lifecycle_enabled")
+async def test_prune_keeps_the_response_answering_its_call(mock_skill1):
+  """The API wants a response per call, so the part is rewritten, not dropped."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  call = types.Part.from_function_call(
+      name="load_skill", args={"skill_name": "skill1"}
+  )
+  contents = [
+      types.Content(role="model", parts=[call]),
+      types.Content(role="user", parts=[_load_skill_response_part("skill1")]),
+  ]
+
+  contents = await _prune(toolset, contents, active_skills=[])
+
+  assert contents[0].parts[0].function_call.name == "load_skill"
+  assert contents[1].parts[0].function_response.name == "load_skill"
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("skill_lifecycle_enabled")
+async def test_prune_touches_neither_other_tools_nor_other_parts(mock_skill1):
+  """Only `load_skill` responses are rewritten, and only their own part."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  resource_response = types.Part.from_function_response(
+      name="load_skill_resource",
+      response={"skill_name": "skill1", "content": "reference body"},
+  )
+  contents = [
+      types.Content(
+          role="user",
+          parts=[
+              types.Part.from_text(text="hello"),
+              resource_response,
+              _load_skill_response_part("skill1"),
+          ],
+      )
+  ]
+
+  contents = await _prune(toolset, contents, active_skills=[])
+
+  parts = contents[0].parts
+  assert parts[0].text == "hello"
+  assert parts[1].function_response.response["content"] == "reference body"
+  assert "instructions" not in parts[2].function_response.response
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("skill_lifecycle_enabled")
+async def test_prune_covers_every_load_of_the_same_skill(mock_skill1):
+  """A skill loaded twice leaves two bodies behind; both have to go."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  contents = [
+      types.Content(role="user", parts=[_load_skill_response_part("skill1")]),
+      types.Content(role="user", parts=[_load_skill_response_part("skill1")]),
+  ]
+
+  contents = await _prune(toolset, contents, active_skills=[])
+
+  assert all(
+      "instructions" not in c.parts[0].function_response.response
+      for c in contents
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("skill_lifecycle_enabled")
+async def test_prune_matches_the_prefixed_tool_name(mock_skill1):
+  """A prefixed toolset records prefixed names in the history."""
+  toolset = skill_toolset.SkillToolset([mock_skill1], tool_name_prefix="my")
+  contents = [
+      types.Content(
+          role="user",
+          parts=[
+              _load_skill_response_part("skill1", tool_name="my_load_skill")
+          ],
+      )
+  ]
+
+  contents = await _prune(toolset, contents, active_skills=[])
+
+  assert "instructions" not in contents[0].parts[0].function_response.response
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("skill_lifecycle_enabled")
+async def test_prune_ignores_an_unprefixed_name_when_prefixed(mock_skill1):
+  """An unprefixed response belongs to some other toolset; leave it be."""
+  toolset = skill_toolset.SkillToolset([mock_skill1], tool_name_prefix="my")
+  contents = [
+      types.Content(role="user", parts=[_load_skill_response_part("skill1")])
+  ]
+
+  contents = await _prune(toolset, contents, active_skills=[])
+
+  response = contents[0].parts[0].function_response.response
+  assert response["instructions"] == "secret instructions"
+
+
+@pytest.mark.asyncio
+async def test_prune_does_nothing_while_the_feature_is_off(mock_skill1):
+  """Without the flag there is no unloading, so the history is left alone."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  contents = [
+      types.Content(role="user", parts=[_load_skill_response_part("skill1")])
+  ]
+
+  contents = await _prune(toolset, contents, active_skills=[])
+
+  response = contents[0].parts[0].function_response.response
+  assert response["instructions"] == "secret instructions"
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("skill_lifecycle_enabled")
+async def test_prune_handles_a_request_with_no_history(mock_skill1):
+  """The first request of a session has nothing to prune."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+
+  assert await _prune(toolset, [], active_skills=[]) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("skill_lifecycle_enabled")
+async def test_prune_leaves_a_response_without_a_skill_name_alone(mock_skill1):
+  """A nameless response names no skill to check, so it is not touched."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  part = types.Part.from_function_response(
+      name="load_skill", response={"instructions": "secret instructions"}
+  )
+  contents = [types.Content(role="user", parts=[part])]
+
+  contents = await _prune(toolset, contents, active_skills=[])
+
+  response = contents[0].parts[0].function_response.response
+  assert response["instructions"] == "secret instructions"
+
+
+# Skill lifecycle tests
+
+_ACTIVE_KEY = "_adk_activated_skill_test_agent"
+
+
+def _lifecycle_skill(name, additional_tools=None):
+  """A minimal skill, enough for LoadSkillTool to activate it."""
+  frontmatter = mock.create_autospec(models.Frontmatter, instance=True)
+  frontmatter.name = name
+  frontmatter.metadata = (
+      {"adk_additional_tools": additional_tools} if additional_tools else {}
+  )
+  frontmatter.model_dump.return_value = {"name": name}
+
+  skill = mock.create_autospec(models.Skill, instance=True)
+  skill.name = name
+  skill.instructions = f"instructions for {name}"
+  skill.frontmatter = frontmatter
+  skill._uri = None
+  return skill
+
+
+@pytest.fixture(name="lifecycle_context")
+def _lifecycle_context():
+  """A tool context whose state is a real dict, not a mock."""
+  ctx = mock.create_autospec(tool_context.ToolContext, instance=True)
+  ctx.agent_name = "test_agent"
+  ctx.invocation_id = "test_invocation"
+  ctx.state = {}
+  return ctx
+
+
+async def _load(tool, ctx, name):
+  return await tool.run_async(args={"skill_name": name}, tool_context=ctx)
+
+
+@pytest.mark.asyncio
+async def test_persistent_skills_are_never_capped(lifecycle_context):
+  names = [f"s{i}" for i in range(7)]
+  toolset = skill_toolset.SkillToolset([_lifecycle_skill(n) for n in names])
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  for name in names:
+    await _load(tool, lifecycle_context, name)
+
+  assert lifecycle_context.state[_ACTIVE_KEY] == names
+
+
+@pytest.mark.asyncio
+async def test_bounded_skills_evicted_oldest_first(lifecycle_context):
+  names = [f"s{i}" for i in range(4)]
+  toolset = skill_toolset.SkillToolset(
+      [_lifecycle_skill(n) for n in names],
+      lifecycle_config=skill_toolset.SkillLifecycleConfig(
+          default_mode=skill_toolset.SkillLifecycleMode.BOUNDED,
+          max_active_skills=2,
+      ),
+  )
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  for name in names:
+    await _load(tool, lifecycle_context, name)
+
+  assert lifecycle_context.state[_ACTIVE_KEY] == ["s2", "s3"]
+
+
+@pytest.mark.asyncio
+async def test_reloading_bounded_skill_promotes_it(lifecycle_context):
+  toolset = skill_toolset.SkillToolset(
+      [_lifecycle_skill(n) for n in ("a", "b", "c")],
+      lifecycle_config=skill_toolset.SkillLifecycleConfig(
+          default_mode=skill_toolset.SkillLifecycleMode.BOUNDED,
+          max_active_skills=2,
+      ),
+  )
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  await _load(tool, lifecycle_context, "a")
+  await _load(tool, lifecycle_context, "b")
+  # "a" is now the oldest; reloading it should spare it from the next eviction.
+  await _load(tool, lifecycle_context, "a")
+  await _load(tool, lifecycle_context, "c")
+
+  assert lifecycle_context.state[_ACTIVE_KEY] == ["a", "c"]
+
+
+@pytest.mark.asyncio
+async def test_reloading_persistent_skill_leaves_state_untouched(
+    lifecycle_context,
+):
+  toolset = skill_toolset.SkillToolset([_lifecycle_skill("a")])
+  tool = skill_toolset.LoadSkillTool(toolset)
+  await _load(tool, lifecycle_context, "a")
+
+  before = lifecycle_context.state[_ACTIVE_KEY]
+  await _load(tool, lifecycle_context, "a")
+
+  assert lifecycle_context.state[_ACTIVE_KEY] is before
+
+
+@pytest.mark.asyncio
+async def test_persistent_skills_do_not_count_against_the_cap(
+    lifecycle_context,
+):
+  toolset = skill_toolset.SkillToolset(
+      [_lifecycle_skill(n) for n in ("pinned", "a", "b")],
+      lifecycle_config=skill_toolset.SkillLifecycleConfig(
+          default_mode=skill_toolset.SkillLifecycleMode.BOUNDED,
+          max_active_skills=2,
+          skill_overrides={
+              "pinned": skill_toolset.SkillLifecycleMode.PERSISTENT
+          },
+      ),
+  )
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  for name in ("pinned", "a", "b"):
+    await _load(tool, lifecycle_context, name)
+
+  assert lifecycle_context.state[_ACTIVE_KEY] == ["pinned", "a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_persistent_skill_is_not_evicted_by_bounded_pressure(
+    lifecycle_context,
+):
+  toolset = skill_toolset.SkillToolset(
+      [_lifecycle_skill(n) for n in ("pinned", "a", "b", "c")],
+      lifecycle_config=skill_toolset.SkillLifecycleConfig(
+          default_mode=skill_toolset.SkillLifecycleMode.BOUNDED,
+          max_active_skills=1,
+          skill_overrides={
+              "pinned": skill_toolset.SkillLifecycleMode.PERSISTENT
+          },
+      ),
+  )
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  for name in ("pinned", "a", "b", "c"):
+    await _load(tool, lifecycle_context, name)
+
+  assert lifecycle_context.state[_ACTIVE_KEY] == ["pinned", "c"]
+
+
+@pytest.mark.asyncio
+async def test_skill_overrides_can_bound_a_persistent_default(
+    lifecycle_context,
+):
+  toolset = skill_toolset.SkillToolset(
+      [_lifecycle_skill(n) for n in ("a", "b", "keep")],
+      lifecycle_config=skill_toolset.SkillLifecycleConfig(
+          max_active_skills=1,
+          skill_overrides={
+              "a": skill_toolset.SkillLifecycleMode.BOUNDED,
+              "b": skill_toolset.SkillLifecycleMode.BOUNDED,
+          },
+      ),
+  )
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  for name in ("keep", "a", "b"):
+    await _load(tool, lifecycle_context, name)
+
+  assert lifecycle_context.state[_ACTIVE_KEY] == ["keep", "b"]
+
+
+@pytest.mark.asyncio
+async def test_load_skill_reports_evicted_skills(lifecycle_context):
+  toolset = skill_toolset.SkillToolset(
+      [_lifecycle_skill(n) for n in ("a", "b")],
+      lifecycle_config=skill_toolset.SkillLifecycleConfig(
+          default_mode=skill_toolset.SkillLifecycleMode.BOUNDED,
+          max_active_skills=1,
+      ),
+  )
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  first = await _load(tool, lifecycle_context, "a")
+  second = await _load(tool, lifecycle_context, "b")
+
+  assert "unloaded_skills" not in first
+  assert second["unloaded_skills"] == ["a"]
+
+
+@pytest.mark.asyncio
+async def test_eviction_releases_additional_tools(lifecycle_context):
+  tool_a = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+  tool_a.name = "tool_a"
+  tool_b = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+  tool_b.name = "tool_b"
+  toolset = skill_toolset.SkillToolset(
+      [
+          _lifecycle_skill("a", additional_tools=["tool_a"]),
+          _lifecycle_skill("b", additional_tools=["tool_b"]),
+      ],
+      additional_tools=[tool_a, tool_b],
+      lifecycle_config=skill_toolset.SkillLifecycleConfig(
+          default_mode=skill_toolset.SkillLifecycleMode.BOUNDED,
+          max_active_skills=1,
+      ),
+  )
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  await _load(tool, lifecycle_context, "a")
+  assert "tool_a" in {
+      t.name for t in await toolset.get_tools(lifecycle_context)
+  }
+
+  await _load(tool, lifecycle_context, "b")
+
+  names = {t.name for t in await toolset.get_tools(lifecycle_context)}
+  assert "tool_b" in names
+  assert "tool_a" not in names
+
+
+def test_max_active_skills_must_be_positive():
+  with pytest.raises(ValueError, match="must be at least 1"):
+    skill_toolset.SkillLifecycleConfig(max_active_skills=0)
+
+
+def test_clone_with_updated_skills_keeps_lifecycle_config(mock_skill1):
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1],
+      lifecycle_config=skill_toolset.SkillLifecycleConfig(
+          default_mode=skill_toolset.SkillLifecycleMode.BOUNDED,
+          max_active_skills=3,
+          skill_overrides={
+              "pinned": skill_toolset.SkillLifecycleMode.PERSISTENT
+          },
+      ),
+  )
+
+  clone = toolset.clone_with_updated_skills([mock_skill1])
+
+  assert (
+      clone._lifecycle_config.default_mode
+      is skill_toolset.SkillLifecycleMode.BOUNDED
+  )
+  assert clone._lifecycle_config.max_active_skills == 3
+  assert (
+      clone._lifecycle_for("pinned")
+      is skill_toolset.SkillLifecycleMode.PERSISTENT
+  )
+
+
+def test_skill_overrides_are_copied(mock_skill1):
+  overrides = {"a": skill_toolset.SkillLifecycleMode.BOUNDED}
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1],
+      lifecycle_config=skill_toolset.SkillLifecycleConfig(
+          skill_overrides=overrides
+      ),
+  )
+
+  overrides["a"] = skill_toolset.SkillLifecycleMode.PERSISTENT
+
+  assert toolset._lifecycle_for("a") is skill_toolset.SkillLifecycleMode.BOUNDED
+
+
+@pytest.mark.asyncio
+async def test_disabling_the_config_keeps_every_skill_active(
+    lifecycle_context,
+):
+  """One switch to opt back out, whatever the rest of the config says."""
+  toolset = skill_toolset.SkillToolset(
+      [_lifecycle_skill(n) for n in ("a", "b", "c")],
+      lifecycle_config=skill_toolset.SkillLifecycleConfig(
+          enabled=False,
+          default_mode=skill_toolset.SkillLifecycleMode.BOUNDED,
+          max_active_skills=1,
+      ),
+  )
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  for name in ("a", "b", "c"):
+    await _load(tool, lifecycle_context, name)
+
+  assert lifecycle_context.state[_ACTIVE_KEY] == ["a", "b", "c"]
+
+
+def test_no_config_leaves_skills_as_they_were(mock_skill1):
+  """The default has to be the pre-lifecycle behavior."""
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+
+  assert (
+      toolset._lifecycle_for("anything")
+      is skill_toolset.SkillLifecycleMode.PERSISTENT
+  )
+
+
+def _bounded_toolset(names, max_active_skills):
+  return skill_toolset.SkillToolset(
+      [_lifecycle_skill(n) for n in names],
+      lifecycle_config=skill_toolset.SkillLifecycleConfig(
+          default_mode=skill_toolset.SkillLifecycleMode.BOUNDED,
+          max_active_skills=max_active_skills,
+      ),
+  )
+
+
+@pytest.mark.asyncio
+async def test_load_skill_api_enforces_the_cap(lifecycle_context):
+  """Activating without the model is still an activation."""
+  toolset = _bounded_toolset(("a", "b", "c"), max_active_skills=2)
+
+  for name in ("a", "b", "c"):
+    await toolset.load_skill(lifecycle_context, name)
+
+  assert lifecycle_context.state[_ACTIVE_KEY] == ["b", "c"]
+
+
+@pytest.mark.asyncio
+async def test_load_skill_api_reload_counts_as_a_use(lifecycle_context):
+  toolset = _bounded_toolset(("a", "b", "c"), max_active_skills=2)
+
+  await toolset.load_skill(lifecycle_context, "a")
+  await toolset.load_skill(lifecycle_context, "b")
+  # "a" is the oldest; reloading it should spare it from the next eviction,
+  # even though the reload reports False.
+  assert await toolset.load_skill(lifecycle_context, "a") is False
+  await toolset.load_skill(lifecycle_context, "c")
+
+  assert lifecycle_context.state[_ACTIVE_KEY] == ["a", "c"]
+
+
+@pytest.mark.asyncio
+async def test_list_active_skills_puts_a_reloaded_bounded_skill_last(
+    lifecycle_context,
+):
+  toolset = _bounded_toolset(("a", "b"), max_active_skills=2)
+
+  await toolset.load_skill(lifecycle_context, "a")
+  await toolset.load_skill(lifecycle_context, "b")
+  await toolset.load_skill(lifecycle_context, "a")
+
+  assert toolset.list_active_skills(lifecycle_context) == ["b", "a"]
+
+
+@pytest.mark.asyncio
+async def test_load_skill_api_reload_leaves_persistent_state_untouched(
+    lifecycle_context,
+):
+  toolset = skill_toolset.SkillToolset([_lifecycle_skill("a")])
+  await toolset.load_skill(lifecycle_context, "a")
+
+  before = lifecycle_context.state[_ACTIVE_KEY]
+  assert await toolset.load_skill(lifecycle_context, "a") is False
+
+  assert lifecycle_context.state[_ACTIVE_KEY] is before
+
+
+@pytest.mark.asyncio
+async def test_cap_spans_both_activation_paths(lifecycle_context):
+  """A skill loaded either way counts the same against the cap."""
+  toolset = _bounded_toolset(("a", "b", "c"), max_active_skills=2)
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  await toolset.load_skill(lifecycle_context, "a")
+  await _load(tool, lifecycle_context, "b")
+  result = await _load(tool, lifecycle_context, "c")
+
+  assert lifecycle_context.state[_ACTIVE_KEY] == ["b", "c"]
+  assert result["unloaded_skills"] == ["a"]

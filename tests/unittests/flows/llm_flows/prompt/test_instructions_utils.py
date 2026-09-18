@@ -19,12 +19,13 @@ from unittest import mock
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.llm_agent import InstructionProvider as LlmAgentInstructionProvider
 from google.adk.agents.readonly_context import ReadonlyContext
+from google.adk.flows.llm_flows.prompt import _instructions_utils as instructions_utils
+from google.adk.flows.llm_flows.prompt._instructions_utils import _is_valid_state_name
+from google.adk.flows.llm_flows.prompt._instructions_utils import InstructionProvider
 from google.adk.sessions.session import Session
-from google.adk.utils import instructions_utils
-from google.adk.utils.instructions_utils import InstructionProvider
 import pytest
 
-from .. import testing_utils
+from .... import testing_utils
 
 
 class MockArtifactService:
@@ -393,7 +394,9 @@ def test_module_imports_without_jinja2_installed():
   # Jinja2 ships only in the eval and test extras, but this module is on the
   # import path of google.adk.agents, so a module-scope import of it would
   # break every install that does not pull in those extras.
-  spec = importlib.util.find_spec("google.adk.utils.instructions_utils")
+  spec = importlib.util.find_spec(
+      "google.adk.flows.llm_flows.prompt._instructions_utils"
+  )
   module = importlib.util.module_from_spec(spec)
 
   with mock.patch.dict(sys.modules, {"jinja2": None}):
@@ -419,3 +422,28 @@ def test_llm_agent_reexports_same_instruction_provider():
   # Existing importers rely on `from ...llm_agent import InstructionProvider`;
   # it must remain the exact same object after moving the alias here.
   assert LlmAgentInstructionProvider is InstructionProvider
+
+
+def test_is_valid_state_name():
+  assert _is_valid_state_name("valid_name") is True
+  assert _is_valid_state_name("app:valid_name") is True
+  assert _is_valid_state_name("user:valid_name") is True
+  assert _is_valid_state_name("temp:valid_name") is True
+  assert _is_valid_state_name("invalid:prefix:name") is False
+  assert _is_valid_state_name("invalid-identifier!") is False
+
+
+def test_prompt_package_reexports():
+  from google.adk.flows.llm_flows import prompt
+
+  assert prompt.inject_session_state is instructions_utils.inject_session_state
+  assert prompt.InstructionProvider is instructions_utils.InstructionProvider
+
+
+def test_utils_shim_reexports():
+  from google.adk.utils import instructions_utils as shim
+
+  assert shim.inject_session_state is instructions_utils.inject_session_state
+  assert shim.InstructionProvider is instructions_utils.InstructionProvider
+  assert shim.ReadonlyContext is ReadonlyContext
+  assert shim._is_valid_state_name is _is_valid_state_name

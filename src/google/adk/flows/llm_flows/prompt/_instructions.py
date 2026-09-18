@@ -22,9 +22,9 @@ from typing import TYPE_CHECKING
 
 from typing_extensions import override
 
+from . import _instructions_utils as instructions_utils
 from ....agents.readonly_context import ReadonlyContext
 from ....events.event import Event
-from ....utils import instructions_utils
 from .._base_llm_processor import BaseLlmRequestProcessor
 from ..context._fencing import QUOTED_CONTENT_ELIDED
 from ..core._utils import as_llm_agent
