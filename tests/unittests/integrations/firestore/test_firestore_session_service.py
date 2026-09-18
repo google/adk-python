@@ -493,6 +493,91 @@ async def test_create_session_keeps_app_and_user_state_native(
   assert isinstance(persisted_state["session_key"], str)
 
 
+def _stored_snapshot(data):
+  snapshot = mock.MagicMock()
+  snapshot.exists = True
+  snapshot.to_dict.return_value = data
+  return snapshot
+
+
+@pytest.mark.asyncio
+async def test_append_event_replaces_nested_app_and_user_state(
+    mock_firestore_client,
+):
+  """A dict-valued app/user delta replaces the stored dict, dropping old keys."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+  session = Session(id="test_session", app_name="test_app", user_id="test_user")
+  old_value = {"name": "alice", "role": "admin"}
+  new_value = {"name": "bob"}
+
+  root_coll = mock_firestore_client.collection.return_value
+  app_ref = root_coll.document.return_value
+  users_coll = app_ref.collection.return_value
+  user_ref = users_coll.document.return_value
+  session_doc_ref = user_ref.collection.return_value.document.return_value
+  session_doc_ref.get = mock.AsyncMock(
+      return_value=_stored_snapshot({"revision": 0})
+  )
+  app_ref.get = mock.AsyncMock(
+      return_value=_stored_snapshot({"cfg": old_value})
+  )
+  user_ref.get = mock.AsyncMock(
+      return_value=_stored_snapshot({"cfg": old_value})
+  )
+
+  with mock.patch("google.cloud.firestore.async_transactional", lambda x: x):
+    await service.append_event(
+        session,
+        Event(
+            invocation_id="test_inv",
+            author="user",
+            actions=EventActions(
+                state_delta={"app:cfg": new_value, "user:cfg": new_value}
+            ),
+        ),
+    )
+
+  transaction = mock_firestore_client.transaction.return_value
+  writes = {call.args[0]: call for call in transaction.set.call_args_list}
+  for ref in (app_ref, user_ref):
+    assert writes[ref].args[1] == {"cfg": new_value}
+    assert not writes[ref].kwargs.get("merge")
+
+
+@pytest.mark.asyncio
+async def test_create_session_replaces_nested_app_and_user_state(
+    mock_firestore_client,
+):
+  """Initial app and user state replace stored dict values instead of merging."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+  old_value = {"name": "alice", "role": "admin"}
+
+  root_coll = mock_firestore_client.collection.return_value
+  app_ref = root_coll.document.return_value
+  user_ref = app_ref.collection.return_value.document.return_value
+  app_ref.get = mock.AsyncMock(
+      return_value=_stored_snapshot({"cfg": old_value})
+  )
+  user_ref.get = mock.AsyncMock(
+      return_value=_stored_snapshot({"cfg": old_value})
+  )
+
+  with mock.patch("google.cloud.firestore.async_transactional", lambda x: x):
+    session = await service.create_session(
+        app_name="test_app",
+        user_id="test_user",
+        state={"app:cfg": {"name": "bob"}, "user:cfg": {"name": "bob"}},
+    )
+
+  transaction = mock_firestore_client.transaction.return_value
+  writes = {call.args[0]: call for call in transaction.set.call_args_list}
+  for ref in (app_ref, user_ref):
+    assert writes[ref].args[1] == {"cfg": {"name": "bob"}}
+    assert not writes[ref].kwargs.get("merge")
+  assert session.state["app:cfg"] == {"name": "bob"}
+  assert session.state["user:cfg"] == {"name": "bob"}
+
+
 @pytest.mark.asyncio
 async def test_append_event_with_temp_state(mock_firestore_client):
   service = FirestoreSessionService(client=mock_firestore_client)

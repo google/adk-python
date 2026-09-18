@@ -245,14 +245,15 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
           (user_snap.to_dict() or {}) if user_snap.exists else {}
       )
 
-      # 2. Writes
+      # 2. Writes. Documents are written whole: a merge write deep-merges
+      # nested maps and would keep keys that the new value dropped.
       if app_state_delta:
         current_app.update(app_state_delta)
-        transaction.set(app_ref, current_app, merge=True)
+        transaction.set(app_ref, current_app)
 
       if user_state_delta:
         current_user.update(user_state_delta)
-        transaction.set(user_ref, current_user, merge=True)
+        transaction.set(user_ref, current_user)
 
       transaction.set(session_ref, session_data)
       return current_app, current_user
@@ -544,16 +545,16 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
             else None
         )
 
-        # 2. Writes
+        # 2. Writes. Documents are written whole, as in create_session.
         if app_updates and app_snap is not None:
           current_app = (app_snap.to_dict() or {}) if app_snap.exists else {}
           current_app.update(app_updates)
-          transaction.set(app_ref, current_app, merge=True)
+          transaction.set(app_ref, current_app)
 
         if user_updates and user_snap is not None:
-          current_user = user_snap.to_dict() if user_snap.exists else {}
+          current_user = (user_snap.to_dict() or {}) if user_snap.exists else {}
           current_user.update(user_updates)
-          transaction.set(user_ref, current_user, merge=True)
+          transaction.set(user_ref, current_user)
 
         new_revision = current_revision + 1
 
