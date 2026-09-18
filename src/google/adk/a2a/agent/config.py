@@ -25,6 +25,7 @@ from typing import cast
 from a2a.server.events import Event as A2AEvent
 from a2a.types import Message as A2AMessage
 from pydantic import BaseModel
+from pydantic import Field
 from typing_extensions import Self
 
 from .. import _compat
@@ -40,7 +41,10 @@ from ...a2a.converters.to_adk_event import convert_a2a_status_update_to_event
 from ...a2a.converters.to_adk_event import convert_a2a_task_to_event
 from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
+from ...utils.env_utils import is_env_enabled
 from .._compat import A2AClientEvent
+
+ADK_A2A_ALLOW_INSECURE_HTTP = "ADK_A2A_ALLOW_INSECURE_HTTP"
 
 
 class ParametersConfig(BaseModel):
@@ -141,6 +145,10 @@ class A2aRemoteAgentConfig(BaseModel):
   forward_session_id_as_context_id: bool = False
   """Whether to forward the local session ID as context_id when no context_id is present."""
 
+  allow_insecure_http: bool = Field(
+      default_factory=lambda: is_env_enabled(ADK_A2A_ALLOW_INSECURE_HTTP)
+  )
+
   def __deepcopy__(
       self, memo: dict[int, Any] | None = None
   ) -> A2aRemoteAgentConfig:
@@ -149,7 +157,7 @@ class A2aRemoteAgentConfig(BaseModel):
     cls = self.__class__
     copied_values: dict[str, Any] = {}
     for k, v in self.__dict__.items():
-      if not k.startswith('_'):
+      if not k.startswith("_"):
         if callable(v):
           copied_values[k] = v
         else:
