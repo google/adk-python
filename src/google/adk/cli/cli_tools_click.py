@@ -1206,7 +1206,9 @@ def eval_options():
         type=str,
         help=(
             "Optional. The evals storage URI to store agent evals,"
-            " supported URIs: gs://<bucket name>."
+            " supported URIs: gs://<bucket name> or file://<path>. When"
+            " omitted, ADK_EVAL_STORAGE_URI then ADK_EVAL_STORAGE_DIR are"
+            " used."
         ),
         default=None,
     )
@@ -1355,6 +1357,7 @@ def cli_eval(
     from .cli_eval import get_app_or_root_agent
     from .cli_eval import parse_and_get_evals_to_run
     from .cli_eval import pretty_print_eval_result
+    from .utils import evals
   except ModuleNotFoundError as mnf:
     raise click.ClickException(_missing_eval_dependencies_message()) from mnf
 
@@ -1364,16 +1367,17 @@ def cli_eval(
   eval_sets_manager = None
   eval_set_results_manager = None
 
-  if eval_storage_uri:
-    from .utils import evals
-
+  eval_storage = evals.resolve_eval_storage(eval_storage_uri, agents_dir)
+  if eval_storage.gcs_uri:
     gcs_eval_managers = evals.create_gcs_eval_managers_from_uri(
-        eval_storage_uri
+        eval_storage.gcs_uri
     )
     eval_sets_manager = gcs_eval_managers.eval_sets_manager
     eval_set_results_manager = gcs_eval_managers.eval_set_results_manager
   else:
-    eval_set_results_manager = LocalEvalSetResultsManager(agents_dir=agents_dir)
+    eval_set_results_manager = LocalEvalSetResultsManager(
+        agents_dir=eval_storage.local_dir
+    )
 
   inference_requests = []
   eval_set_file_or_id_to_evals = parse_and_get_evals_to_run(
@@ -1440,8 +1444,8 @@ def cli_eval(
     # We assume that what we have are eval set ids instead.
     eval_sets_manager = (
         eval_sets_manager
-        if eval_storage_uri
-        else LocalEvalSetsManager(agents_dir=agents_dir)
+        if eval_storage.gcs_uri
+        else LocalEvalSetsManager(agents_dir=eval_storage.local_dir)
     )
 
     for eval_set_id_key, eval_case_ids in eval_set_file_or_id_to_evals.items():
@@ -2023,7 +2027,9 @@ def fast_api_common_options():
         type=str,
         help=(
             "Optional. The evals storage URI to store agent evals,"
-            " supported URIs: gs://<bucket name>."
+            " supported URIs: gs://<bucket name> or file://<path>. When"
+            " omitted, ADK_EVAL_STORAGE_URI then ADK_EVAL_STORAGE_DIR are"
+            " used."
         ),
         default=None,
     )

@@ -86,6 +86,8 @@ def test_parse_and_get_evals_to_run_parses_eval_set_and_selectors(
 
 def test_get_eval_sets_manager_local(monkeypatch):
   mock_local_manager = mock.MagicMock()
+  monkeypatch.delenv("ADK_EVAL_STORAGE_URI", raising=False)
+  monkeypatch.delenv("ADK_EVAL_STORAGE_DIR", raising=False)
   monkeypatch.setattr(
       "google.adk.evaluation.local_eval_sets_manager.LocalEvalSetsManager",
       lambda *a, **k: mock_local_manager,
@@ -113,6 +115,94 @@ def test_get_eval_sets_manager_gcs(monkeypatch):
   )
   assert manager == mock_gcs_manager
   mock_create_gcs.assert_called_once_with("gs://bucket")
+
+
+def test_get_eval_sets_manager_file_uri(monkeypatch, tmp_path):
+  """file:// eval storage uses a local manager rooted at that directory."""
+  captured = {}
+
+  def fake_local_manager(*, agents_dir):
+    captured["agents_dir"] = agents_dir
+    return mock.MagicMock(name="local-manager")
+
+  monkeypatch.setattr(
+      "google.adk.evaluation.local_eval_sets_manager.LocalEvalSetsManager",
+      fake_local_manager,
+  )
+  from google.adk.cli.cli_eval import get_eval_sets_manager
+
+  storage_dir = tmp_path / "evals"
+  manager = get_eval_sets_manager(
+      eval_storage_uri=storage_dir.as_uri(), agents_dir="some/dir"
+  )
+
+  assert captured["agents_dir"] == str(storage_dir)
+  assert storage_dir.is_dir()
+  assert manager is not None
+
+
+def test_get_eval_sets_manager_eval_storage_dir_env(monkeypatch, tmp_path):
+  """ADK_EVAL_STORAGE_DIR overrides agents_dir for local eval storage."""
+  captured = {}
+
+  def fake_local_manager(*, agents_dir):
+    captured["agents_dir"] = agents_dir
+    return mock.MagicMock(name="local-manager")
+
+  monkeypatch.delenv("ADK_EVAL_STORAGE_URI", raising=False)
+  monkeypatch.setenv("ADK_EVAL_STORAGE_DIR", str(tmp_path / "from_env"))
+  monkeypatch.setattr(
+      "google.adk.evaluation.local_eval_sets_manager.LocalEvalSetsManager",
+      fake_local_manager,
+  )
+  from google.adk.cli.cli_eval import get_eval_sets_manager
+
+  get_eval_sets_manager(eval_storage_uri=None, agents_dir="some/dir")
+
+  assert captured["agents_dir"] == str(tmp_path / "from_env")
+  assert (tmp_path / "from_env").is_dir()
+
+
+def test_get_eval_sets_manager_explicit_uri_beats_env(monkeypatch, tmp_path):
+  """An explicit gs:// URI is used even when ADK_EVAL_STORAGE_DIR is set."""
+  mock_gcs_manager = mock.MagicMock()
+  mock_create_gcs = mock.MagicMock()
+  mock_create_gcs.return_value = SimpleNamespace(
+      eval_sets_manager=mock_gcs_manager
+  )
+  monkeypatch.setenv("ADK_EVAL_STORAGE_DIR", str(tmp_path / "from_env"))
+  monkeypatch.setattr(
+      "google.adk.cli.utils.evals.create_gcs_eval_managers_from_uri",
+      mock_create_gcs,
+  )
+  from google.adk.cli.cli_eval import get_eval_sets_manager
+
+  manager = get_eval_sets_manager(
+      eval_storage_uri="gs://bucket", agents_dir="some/dir"
+  )
+
+  assert manager == mock_gcs_manager
+  mock_create_gcs.assert_called_once_with("gs://bucket")
+
+
+def test_get_eval_sets_manager_eval_storage_uri_env(monkeypatch):
+  """ADK_EVAL_STORAGE_URI selects GCS when no explicit URI is passed."""
+  mock_gcs_manager = mock.MagicMock()
+  mock_create_gcs = mock.MagicMock()
+  mock_create_gcs.return_value = SimpleNamespace(
+      eval_sets_manager=mock_gcs_manager
+  )
+  monkeypatch.setenv("ADK_EVAL_STORAGE_URI", "gs://from-env")
+  monkeypatch.setattr(
+      "google.adk.cli.utils.evals.create_gcs_eval_managers_from_uri",
+      mock_create_gcs,
+  )
+  from google.adk.cli.cli_eval import get_eval_sets_manager
+
+  manager = get_eval_sets_manager(eval_storage_uri=None, agents_dir="some/dir")
+
+  assert manager == mock_gcs_manager
+  mock_create_gcs.assert_called_once_with("gs://from-env")
 
 
 @pytest.mark.asyncio
