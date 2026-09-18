@@ -164,13 +164,14 @@ class LocalEvalSampler(Sampler[UnstructuredSamplingResult]):
     self._train_eval_set = self._config.train_eval_set
     self._train_eval_case_ids = (
         self._config.train_eval_case_ids
-        or self._get_eval_case_ids(self._train_eval_set)
+        if self._config.train_eval_case_ids is not None
+        else self._get_eval_case_ids(self._train_eval_set)
     )
 
     self._validation_eval_set = (
         self._config.validation_eval_set or self._train_eval_set
     )
-    if self._config.validation_eval_case_ids:
+    if self._config.validation_eval_case_ids is not None:
       self._validation_eval_case_ids = self._config.validation_eval_case_ids
     elif self._config.validation_eval_set:
       self._validation_eval_case_ids = self._get_eval_case_ids(
