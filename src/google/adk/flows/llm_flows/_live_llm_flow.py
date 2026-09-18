@@ -622,10 +622,10 @@ async def postprocess_live_flow(
           )
       ):
         # Create and yield a final model response event
-        final_event = (
-            _output_schema_processor.create_final_model_response_event(
-                invocation_context, json_response
-            )
+        final_event = _output_schema_processor.create_final_model_response_event(
+            invocation_context,
+            json_response,
+            validated_response=function_response_event.actions.set_model_response,
         )
         yield final_event
 

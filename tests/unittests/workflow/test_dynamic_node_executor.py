@@ -30,9 +30,9 @@ from google.adk.sessions.session import Session
 from google.adk.workflow import BaseNode
 from google.adk.workflow import FunctionNode
 from google.adk.workflow import Workflow
-from google.adk.workflow._dynamic_node_executor import run_node_internal
-from google.adk.workflow._dynamic_node_executor import run_node_standalone
 from google.adk.workflow._dynamic_node_scheduler import DynamicNodeScheduler
+from google.adk.workflow._dynamic_node_scheduler import run_node_internal
+from google.adk.workflow._dynamic_node_scheduler import run_node_standalone
 from google.adk.workflow._errors import DynamicNodeFailError
 from google.adk.workflow._errors import NodeInterruptedError
 from pydantic import BaseModel
@@ -110,7 +110,7 @@ async def test_run_node_internal_returns_child_context_and_handles_resume_inputs
   child_ctx.output = 'echo data'
 
   mock_standalone = mocker.patch(
-      'google.adk.workflow._dynamic_node_executor.run_node_standalone',
+      'google.adk.workflow._dynamic_node_scheduler.run_node_standalone',
       return_value=child_ctx,
   )
 
@@ -368,7 +368,7 @@ async def test_run_node_internal_merges_interrupt_ids_and_raises(mocker):
   child_ctx._interrupt_ids = {'test-intr-1', 'test-intr-2'}
 
   mocker.patch(
-      'google.adk.workflow._dynamic_node_executor.run_node_standalone',
+      'google.adk.workflow._dynamic_node_scheduler.run_node_standalone',
       return_value=child_ctx,
   )
 
@@ -394,7 +394,7 @@ async def test_run_node_internal_return_ctx_preserves_interrupted_without_raisin
   child_ctx._interrupt_ids = {'test-intr-1'}
 
   mocker.patch(
-      'google.adk.workflow._dynamic_node_executor.run_node_standalone',
+      'google.adk.workflow._dynamic_node_scheduler.run_node_standalone',
       return_value=child_ctx,
   )
 
@@ -423,7 +423,7 @@ async def test_run_node_internal_raise_on_wait_raises_when_child_waiting(
   child_ctx.output = None
 
   mocker.patch(
-      'google.adk.workflow._dynamic_node_executor.run_node_standalone',
+      'google.adk.workflow._dynamic_node_scheduler.run_node_standalone',
       return_value=child_ctx,
   )
 
@@ -511,7 +511,7 @@ async def test_run_node_internal_raise_on_wait_follows_transfer_target(mocker):
   child_ctx_b.output = None
 
   mocker.patch(
-      'google.adk.workflow._dynamic_node_executor.run_node_standalone',
+      'google.adk.workflow._dynamic_node_scheduler.run_node_standalone',
       side_effect=[child_ctx_a, child_ctx_b],
   )
 
@@ -590,7 +590,7 @@ async def test_run_node_internal_transfer_interrupt_lands_on_calling_ctx(
   parent_ctx2._interrupt_ids.add('ask_user')
 
   mocker.patch(
-      'google.adk.workflow._dynamic_node_executor.run_node_standalone',
+      'google.adk.workflow._dynamic_node_scheduler.run_node_standalone',
       side_effect=[child_ctx, parent_ctx2],
   )
 

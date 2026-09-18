@@ -49,7 +49,6 @@ from .utils._replay_sequence_barrier import ReplaySequenceBarrier
 
 if TYPE_CHECKING:
   from ..agents.context import Context
-  from ._schedule_dynamic_node import ScheduleDynamicNode
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -124,18 +123,6 @@ class _LoopState(DynamicNodeState):
   Consumer:
   - _schedule_ready_nodes: pops triggers, creates NodeRunners,
     moves nodes to RUNNING
-  """
-
-  schedule_dynamic_node: ScheduleDynamicNode | None = None
-  """Closure that handles ctx.run_node() calls from child nodes.
-
-  Tracks dynamic nodes in this Workflow's loop state
-  (dynamic_nodes, dynamic_outputs, dynamic_pending_tasks).
-  Handles dedup (cached output), resume (lazy scan + re-run),
-  and fresh execution.
-
-  Set on ctx at Workflow setup, propagated down to descendants
-  via NodeRunner until a nested orchestration node overrides it.
   """
 
 
@@ -259,12 +246,7 @@ class Workflow(BaseNode):
       )
 
     self._seed_start_triggers(loop_state, ctx, node_input)
-
-    # Create closure for dynamic node scheduling
-    loop_state.schedule_dynamic_node = self._make_schedule_dynamic_node(
-        loop_state
-    )
-    ctx._workflow_scheduler = loop_state.schedule_dynamic_node
+    ctx._workflow_scheduler = DynamicNodeScheduler(state=loop_state)
 
     # --- LOOP ---
     try:
@@ -681,12 +663,6 @@ class Workflow(BaseNode):
         )
     )
     return True
-
-  def _make_schedule_dynamic_node(
-      self, loop_state: _LoopState
-  ) -> ScheduleDynamicNode:
-    """Create a DynamicNodeScheduler for this Workflow's loop state."""
-    return DynamicNodeScheduler(state=loop_state)
 
   # --- Resumability checkpoints ---
 

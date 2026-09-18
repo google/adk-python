@@ -749,11 +749,11 @@ class TestContextGetInvocationContext:
 async def test_context_run_node_delegates_to_dynamic_node_executor(
     mock_invocation_context, mocker
 ):
-  """Context.run_node delegates execution to _dynamic_node_executor.run_node_internal."""
-  from google.adk.workflow import _dynamic_node_executor
+  """Context.run_node delegates execution to _dynamic_node_scheduler.run_node_internal."""
+  from google.adk.workflow import _dynamic_node_scheduler
 
   mock_run_internal = mocker.patch.object(
-      _dynamic_node_executor,
+      _dynamic_node_scheduler,
       "run_node_internal",
       return_value="executor_output",
   )
