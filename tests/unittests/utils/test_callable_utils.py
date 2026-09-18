@@ -175,6 +175,31 @@ def test_callable_spec_callable_class_doc():
   assert CallableSpec(UndocCallable()).doc == ""
 
 
+def test_callable_spec_partial_doc():
+  """A partial resolves doc from the callable it wraps unless it has its own."""
+
+  def wrapped(a: int, b: int) -> int:
+    """Wrapped function docstring."""
+    return a + b
+
+  class DocCallable:
+
+    def __call__(self, a: int, b: int) -> int:
+      """Call method docstring."""
+      return a + b
+
+  documented = functools.partial(wrapped, 1)
+  documented.__doc__ = "Partial docstring."
+
+  assert CallableSpec(functools.partial(wrapped, 1)).doc == (
+      "Wrapped function docstring."
+  )
+  assert CallableSpec(functools.partial(DocCallable(), 1)).doc == (
+      "Call method docstring."
+  )
+  assert CallableSpec(documented).doc == "Partial docstring."
+
+
 def test_callable_spec_raises_on_unintrospectable_callable():
   """CallableSpec raises ValueError when signature of unintrospectable callable is accessed."""
   spec = CallableSpec(dir)

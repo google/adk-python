@@ -25,6 +25,7 @@ allowing us to delegate schema generation complexity to Pydantic.
 from __future__ import annotations
 
 import collections.abc
+import functools
 import inspect
 import logging
 from typing import Any
@@ -40,6 +41,7 @@ import pydantic
 from pydantic import create_model
 from pydantic import fields as pydantic_fields
 
+from ..utils._callable_utils import get_callable_doc
 from ..utils.variant_utils import get_google_llm_variant
 from ..utils.variant_utils import GoogleLLMVariant
 
@@ -104,6 +106,8 @@ def get_callable_name(func: Callable[..., Any]) -> str:
   """Returns the name a callable is advertised and registered under.
 
   Callable objects carry no `__name__`, so they fall back to their class name.
+  A functools.partial without a `__name__` of its own takes the name of the
+  callable it wraps, so two partials of different functions do not collide.
   This is the single source of truth for both the declaration sent to the model
   and the key the tool is registered under: if the two disagree, the model is
   told about a tool it cannot invoke.
@@ -114,6 +118,8 @@ def get_callable_name(func: Callable[..., Any]) -> str:
   Returns:
     The name to use for the callable.
   """
+  if isinstance(func, functools.partial) and not hasattr(func, '__name__'):
+    return get_callable_name(func.func)
   return getattr(func, '__name__', None) or func.__class__.__name__
 
 
@@ -334,7 +340,7 @@ def build_function_declaration_with_json_schema(
     )
 
   # Handle Callable functions
-  description = inspect.cleandoc(func.__doc__) if func.__doc__ else None
+  description = get_callable_doc(func) or None
   func_name = get_callable_name(func)
   declaration = types.FunctionDeclaration(
       name=func_name,
