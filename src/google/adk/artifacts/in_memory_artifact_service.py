@@ -126,6 +126,12 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       session_id: Optional[str] = None,
       custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
+    if not self._file_has_user_namespace(filename):
+      if session_id is None:
+        raise InputValidationError(
+            "Session ID must be provided for session-scoped artifacts."
+        )
+      artifact_util._validate_session_id_for_flat_storage(session_id)
     artifact = ensure_part(artifact)
     path = self._artifact_path(app_name, user_id, filename, session_id)
     if path not in self.artifacts:

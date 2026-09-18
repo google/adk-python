@@ -431,3 +431,12 @@ async def test_node_without_schema_inherits_workflow_schema(
   runner = testing_utils.InMemoryRunner(app=app)
   with pytest.raises(StateSchemaError, match='unknown'):
     await runner.run_async(testing_utils.get_user_content('start'))
+
+
+def test_state_iteration() -> None:
+  """State supports key iteration while preserving truthiness when empty."""
+  empty_state = State(value={}, delta={})
+  assert bool(empty_state) is True
+
+  state = State(value={'a': 1, 'b': 2}, delta={'b': 20, 'c': 3})
+  assert list(state) == ['a', 'b', 'c']

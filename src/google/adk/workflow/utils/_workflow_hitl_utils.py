@@ -16,8 +16,6 @@
 
 from __future__ import annotations
 
-"""Utilities for ADK workflows."""
-
 from collections.abc import Mapping
 from typing import Any
 from typing import TYPE_CHECKING
@@ -40,9 +38,6 @@ if TYPE_CHECKING:
 
 REQUEST_INPUT_FUNCTION_CALL_NAME = 'adk_request_input'
 REQUEST_CREDENTIAL_FUNCTION_CALL_NAME = 'adk_request_credential'
-
-_RESULT_KEY = 'result'
-"""Key used to wrap non-dict values in a FunctionResponse dict."""
 
 
 def create_request_input_event(request_input: RequestInput) -> Event:

@@ -20,6 +20,7 @@ import asyncio
 import io
 import logging
 import pathlib
+from typing import Callable
 from typing import Dict
 from typing import Union
 import zipfile
@@ -489,14 +490,23 @@ def _read_skill_properties(
 
 def _list_skills_in_dir(
     skills_base_path: Union[str, pathlib.Path],
+    on_error: Callable[[str, Exception], None] | None = None,
 ) -> dict[str, models.Frontmatter]:
   """List skills in a local directory.
 
   Args:
     skills_base_path: Path to the base directory containing skills.
+    on_error: Called with the skill ID and the error when a skill cannot be
+      listed, in place of the default warning log. Return normally to skip that
+      skill and carry on, or raise to abort the listing. Without it an invalid
+      skill is only logged, so it drops out of the result with no other signal
+      to the caller.
 
   Returns:
     Dictionary mapping skill IDs to their frontmatter.
+
+  Raises:
+    Exception: Whatever `on_error` raises, if it raises.
   """
   skills_base_path = pathlib.Path(skills_base_path).resolve()
   skills = {}
@@ -521,6 +531,9 @@ def _list_skills_in_dir(
         )
       skills[skill_id] = frontmatter
     except (FileNotFoundError, ValueError, ValidationError) as e:
+      if on_error is not None:
+        on_error(skill_id, e)
+        continue
       # log invalid skills during listing and skip them
       logging.warning(
           "Skipping invalid skill '%s' in directory '%s': %s",
@@ -536,15 +549,27 @@ def _list_skills_in_gcs_dir(
     skills_base_path: str = "",
     project_id: str | None = None,
     credentials: auth.Credentials | None = None,
+    on_error: Callable[[str, Exception], None] | None = None,
 ) -> Dict[str, models.Frontmatter]:
   """List skills in a GCS directory.
 
   Args:
     bucket_name: Name of the GCS bucket.
     skills_base_path: Base directory within the bucket (e.g., 'path/to/skills').
+    project_id: Project ID to use for GCS client.
+    credentials: Credentials to use for GCS client.
+    on_error: Called with the skill ID and the error when a skill cannot be
+      listed, in place of the default warning log. Return normally to skip that
+      skill and carry on, or raise to abort the listing. Without it an invalid
+      skill is only logged, so it drops out of the result with no other signal
+      to the caller.
 
   Returns:
     Dictionary mapping skill IDs to their frontmatter.
+
+  Raises:
+    ImportError: If google-cloud-storage is not installed.
+    Exception: Whatever `on_error` raises, if it raises.
   """
   try:
     from google.cloud import storage
@@ -580,6 +605,9 @@ def _list_skills_in_gcs_dir(
         frontmatter = models.Frontmatter.model_validate(parsed)
         skills[skill_id] = frontmatter
       except (ValueError, ValidationError) as e:
+        if on_error is not None:
+          on_error(skill_id, e)
+          continue
         # log invalid skills during listing and skip them
         logging.warning(
             "Skipping invalid skill '%s' in bucket '%s': %s",
@@ -771,6 +799,7 @@ async def _load_skill_from_gcs_dir_async(
 
 async def _list_skills_in_dir_async(
     skills_base_path: str | pathlib.Path,
+    on_error: Callable[[str, Exception], None] | None = None,
 ) -> dict[str, models.Frontmatter]:
   """List skills in a local directory asynchronously.
 
@@ -779,12 +808,19 @@ async def _list_skills_in_dir_async(
 
   Args:
     skills_base_path: Path to the base directory containing skills.
+    on_error: Error handler, as in :func:`_list_skills_in_dir`. It runs in the
+      worker thread.
 
   Returns:
     Dictionary mapping skill IDs to their frontmatter. Invalid skills are
-    logged and skipped.
+    logged and skipped unless `on_error` says otherwise.
+
+  Raises:
+    Exception: Whatever `on_error` raises, if it raises.
   """
-  return await asyncio.to_thread(_list_skills_in_dir, skills_base_path)
+  return await asyncio.to_thread(
+      _list_skills_in_dir, skills_base_path, on_error
+  )
 
 
 async def _list_skills_in_gcs_dir_async(
@@ -792,6 +828,7 @@ async def _list_skills_in_gcs_dir_async(
     skills_base_path: str = "",
     project_id: str | None = None,
     credentials: auth.Credentials | None = None,
+    on_error: Callable[[str, Exception], None] | None = None,
 ) -> dict[str, models.Frontmatter]:
   """List skills in a GCS directory asynchronously.
 
@@ -803,13 +840,16 @@ async def _list_skills_in_gcs_dir_async(
     skills_base_path: Base directory within the bucket (e.g., 'path/to/skills').
     project_id: Project ID to use for GCS client.
     credentials: Credentials to use for GCS client.
+    on_error: Error handler, as in :func:`_list_skills_in_gcs_dir`. It runs in
+      the worker thread.
 
   Returns:
     Dictionary mapping skill IDs to their frontmatter. Invalid skills are
-    logged and skipped.
+    logged and skipped unless `on_error` says otherwise.
 
   Raises:
     ImportError: If google-cloud-storage is not installed.
+    Exception: Whatever `on_error` raises, if it raises.
   """
   return await asyncio.to_thread(
       _list_skills_in_gcs_dir,
@@ -817,4 +857,5 @@ async def _list_skills_in_gcs_dir_async(
       skills_base_path,
       project_id,
       credentials,
+      on_error,
   )

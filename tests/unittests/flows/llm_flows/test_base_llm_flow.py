@@ -35,13 +35,13 @@ from google.adk.code_executors.code_execution_utils import CodeExecutionResult
 from google.adk.events.event import Event
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
-from google.adk.flows.llm_flows._invocation_utils import copy_http_options
-from google.adk.flows.llm_flows._invocation_utils import run_config_for_new_live_session
-from google.adk.flows.llm_flows._model_response_finalizer import handle_after_model_callback
 from google.adk.flows.llm_flows.base_llm_flow import _finalize_dynamic_instructions
 from google.adk.flows.llm_flows.base_llm_flow import _process_agent_tools
 from google.adk.flows.llm_flows.base_llm_flow import _ReconnectSentinel
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
+from google.adk.flows.llm_flows.core._finalizer import handle_after_model_callback
+from google.adk.flows.llm_flows.core._utils import copy_http_options
+from google.adk.flows.llm_flows.core._utils import run_config_for_new_live_session
 from google.adk.live import LiveRequestQueue
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.base_llm_connection import BaseLlmConnection
@@ -451,6 +451,52 @@ async def test_process_agent_tools_marks_streaming_tool_non_blocking_for_live():
 
   declaration = llm_request.config.tools[0].function_declarations[0]
   assert declaration.behavior is types.Behavior.NON_BLOCKING
+
+
+@pytest.mark.asyncio
+async def test_process_agent_tools_marks_behavior_non_blocking_tool_for_live():
+  """Live tools with behavior=NON_BLOCKING are marked NON_BLOCKING."""
+  from google.adk.tools.function_tool import FunctionTool
+
+  tool = FunctionTool(func=_scheduled_tool)
+  tool.behavior = types.Behavior.NON_BLOCKING
+  agent = Agent(name='test_agent', tools=[tool])
+
+  llm_request = await _preprocess(agent, is_live=True)
+
+  declaration = llm_request.config.tools[0].function_declarations[0]
+  assert declaration.behavior is types.Behavior.NON_BLOCKING
+
+
+@pytest.mark.asyncio
+async def test_process_agent_tools_sets_behavior_blocking_tool_for_live():
+  """Live tools with behavior=BLOCKING are marked BLOCKING."""
+  from google.adk.tools.function_tool import FunctionTool
+
+  tool = FunctionTool(func=_scheduled_tool)
+  tool.behavior = types.Behavior.BLOCKING
+  agent = Agent(name='test_agent', tools=[tool])
+
+  llm_request = await _preprocess(agent, is_live=True)
+
+  declaration = llm_request.config.tools[0].function_declarations[0]
+  assert declaration.behavior is types.Behavior.BLOCKING
+
+
+@pytest.mark.asyncio
+async def test_process_agent_tools_behavior_blocking_overrides_scheduling_for_live():
+  """Explicit behavior=BLOCKING overrides response_scheduling in live mode."""
+  from google.adk.tools.function_tool import FunctionTool
+
+  tool = FunctionTool(func=_scheduled_tool)
+  tool.behavior = types.Behavior.BLOCKING
+  tool.response_scheduling = types.FunctionResponseScheduling.WHEN_IDLE
+  agent = Agent(name='test_agent', tools=[tool])
+
+  llm_request = await _preprocess(agent, is_live=True)
+
+  declaration = llm_request.config.tools[0].function_declarations[0]
+  assert declaration.behavior is types.Behavior.BLOCKING
 
 
 @pytest.mark.asyncio
@@ -3422,7 +3468,7 @@ async def test_eof_connection_ends_the_run_instead_of_spinning():
 class _SyncOnlyAgent(BaseAgent):
   """An agent supplying the LlmAgent model surface without subclassing it.
 
-  `_invocation_utils.as_llm_agent` documents that flows drive agents shaped
+  `core._utils.as_llm_agent` documents that flows drive agents shaped
   like this, so resolving a model must not require the async accessors.
   """
 
@@ -3442,7 +3488,7 @@ async def test_get_llm_reads_an_agent_that_has_only_the_sync_properties():
       agent=agent
   )
 
-  llm = await BaseLlmFlow()._BaseLlmFlow__get_llm(invocation_context)
+  llm = await BaseLlmFlow()._get_llm(invocation_context)
 
   assert llm.model == 'gemini-2.5-flash'
 
@@ -3455,4 +3501,4 @@ async def test_get_llm_rejects_an_agent_with_no_model_at_all():
   )
 
   with pytest.raises(TypeError, match='canonical_model'):
-    await BaseLlmFlow()._BaseLlmFlow__get_llm(invocation_context)
+    await BaseLlmFlow()._get_llm(invocation_context)

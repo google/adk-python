@@ -20,17 +20,23 @@ lazy event scan that reconstructs dynamic node state.
 
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
+from unittest.mock import patch
 
 from google.adk.agents.context import Context
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.events.event import Event
 from google.adk.events.event import NodeInfo
+from google.adk.events.event_actions import EventActions
 from google.adk.workflow._base_node import BaseNode
 from google.adk.workflow._dynamic_node_scheduler import DynamicNodeRun
 from google.adk.workflow._dynamic_node_scheduler import DynamicNodeScheduler
 from google.adk.workflow._dynamic_node_scheduler import DynamicNodeState
+from google.adk.workflow._errors import WorkflowInvariantError
 from google.adk.workflow._node_state import NodeState
+from google.adk.workflow._node_state import NodeStatus
 from google.adk.workflow._workflow import _LoopState
 from google.adk.workflow._workflow import Workflow
+from google.adk.workflow.utils._rehydration_utils import _ChildScanState
 from pydantic import BaseModel
 from pydantic import ValidationError
 import pytest
@@ -62,7 +68,6 @@ def _make_parent_ctx(events=None):
   ctx._workflow_scheduler = None
   ctx._output_for_ancestors = []
   ctx._output_delegated = False
-  ctx._child_run_counters = {}
 
   return ctx, collected
 
@@ -988,6 +993,57 @@ async def test_dynamic_node_scheduler_auto_generates_sequential_run_id():
 
 
 @pytest.mark.asyncio
+async def test_dynamic_node_scheduler_standalone_defaults_run_id_to_1():
+  """When enable_replay=False, DynamicNodeScheduler defaults run_id to '1' without incrementing state."""
+
+  class SimpleNode(BaseNode):
+
+    async def _run_impl(self, *, ctx, node_input):
+      yield f'out: {node_input}'
+
+  ctx, _ = _make_parent_ctx()
+  state = DynamicNodeState()
+  scheduler = DynamicNodeScheduler(state=state, enable_replay=False)
+
+  mock_child_ctx1 = MagicMock(spec=Context)
+  mock_child_ctx1.error = None
+  mock_child_ctx1.interrupt_ids = set()
+  mock_child_ctx1.output = 'out: 1'
+  mock_child_ctx1.actions = MagicMock()
+  mock_child_ctx1.actions.transfer_to_agent = None
+
+  mock_child_ctx2 = MagicMock(spec=Context)
+  mock_child_ctx2.error = None
+  mock_child_ctx2.interrupt_ids = set()
+  mock_child_ctx2.output = 'out: 2'
+  mock_child_ctx2.actions = MagicMock()
+  mock_child_ctx2.actions.transfer_to_agent = None
+
+  ctx._run_node_standalone = AsyncMock(
+      side_effect=[mock_child_ctx1, mock_child_ctx2]
+  )
+
+  node = SimpleNode(name='worker')
+
+  # First execution without run_id -> defaults to '1'
+  await scheduler(ctx, node, 'task1', node_name='worker')
+  assert ctx._run_node_standalone.call_count == 1
+  assert ctx._run_node_standalone.call_args_list[0].kwargs.get('run_id') == '1'
+  # Node is passed through directly without cloning
+  assert ctx._run_node_standalone.call_args_list[0].args[0] is node
+
+  # Second execution of same node without run_id -> still '1'
+  await scheduler(ctx, node, 'task2', node_name='worker')
+  assert ctx._run_node_standalone.call_count == 2
+  assert ctx._run_node_standalone.call_args_list[1].kwargs.get('run_id') == '1'
+  assert ctx._run_node_standalone.call_args_list[1].args[0] is node
+
+  # State counters and runs remain empty with replay off
+  assert not state.run_counters
+  assert not state.runs
+
+
+@pytest.mark.asyncio
 async def test_dynamic_node_state_maintains_independent_run_counters():
   """DynamicNodeState maintains independent counters for different nodes and parent paths."""
   state = DynamicNodeState()
@@ -1055,3 +1111,391 @@ async def test_static_and_dynamic_node_sharing_a_name_do_not_collide():
       == '3'
   )
   assert loop_state.run_counters[ctx.node_path] == {'worker': 3}
+
+
+@pytest.mark.asyncio
+async def test_dynamic_node_scheduler_handles_agent_transfer_loop():
+  """DynamicNodeScheduler loops through sequential agent transfers natively."""
+  agent_b = LlmAgent(name='agent_b', rerun_on_resume=True)
+  agent_a = LlmAgent(name='agent_a', rerun_on_resume=True)
+  root = LlmAgent(
+      name='root', sub_agents=[agent_a, agent_b], rerun_on_resume=True
+  )
+  agent_a.parent_agent = root
+  agent_b.parent_agent = root
+
+  ctx, _ = _make_parent_ctx()
+  ctx.node = root
+  state = DynamicNodeState()
+  scheduler = DynamicNodeScheduler(state=state)
+
+  child_ctx_a = MagicMock(spec=Context)
+  child_ctx_a.error = None
+  child_ctx_a.interrupt_ids = set()
+  child_ctx_a.actions = EventActions(transfer_to_agent='agent_b')
+  child_ctx_a.output = None
+
+  child_ctx_b = MagicMock(spec=Context)
+  child_ctx_b.error = None
+  child_ctx_b.interrupt_ids = set()
+  child_ctx_b.actions = EventActions()
+  child_ctx_b.output = 'transferred_result'
+
+  ctx._run_node_standalone = AsyncMock(side_effect=[child_ctx_a, child_ctx_b])
+
+  final_ctx = await scheduler(
+      ctx, agent_a, 'initial_input', node_name='agent_a'
+  )
+
+  assert final_ctx is child_ctx_b
+  assert final_ctx.output == 'transferred_result'
+  assert ctx._run_node_standalone.call_count == 2
+  # First hop
+  assert ctx._run_node_standalone.call_args_list[0].kwargs.get('run_id') == '1'
+  # Second hop
+  assert ctx._run_node_standalone.call_args_list[1].kwargs.get('run_id') == '1'
+  assert state.get_run_counter('agent_a', parent_path=ctx.node_path) == 1
+  assert state.get_run_counter('agent_b', parent_path=ctx.node_path) == 1
+
+
+@pytest.mark.asyncio
+async def test_dynamic_node_scheduler_transfer_stops_on_interrupt():
+  """DynamicNodeScheduler stops transferring and returns context if target interrupts."""
+  agent_b = LlmAgent(name='agent_b', rerun_on_resume=True)
+  agent_a = LlmAgent(name='agent_a', rerun_on_resume=True)
+  root = LlmAgent(
+      name='root', sub_agents=[agent_a, agent_b], rerun_on_resume=True
+  )
+  agent_a.parent_agent = root
+  agent_b.parent_agent = root
+
+  ctx, _ = _make_parent_ctx()
+  ctx.node = root
+  state = DynamicNodeState()
+  scheduler = DynamicNodeScheduler(state=state)
+
+  child_ctx_a = MagicMock(spec=Context)
+  child_ctx_a.error = None
+  child_ctx_a.interrupt_ids = set()
+  child_ctx_a.actions = EventActions(transfer_to_agent='agent_b')
+  child_ctx_a.output = None
+
+  child_ctx_b = MagicMock(spec=Context)
+  child_ctx_b.error = None
+  child_ctx_b.interrupt_ids = {'hitl_1'}
+  child_ctx_b.actions = EventActions()
+  child_ctx_b.output = None
+
+  ctx._run_node_standalone = AsyncMock(side_effect=[child_ctx_a, child_ctx_b])
+
+  final_ctx = await scheduler(
+      ctx, agent_a, 'initial_input', node_name='agent_a'
+  )
+
+  assert final_ctx is child_ctx_b
+  assert 'hitl_1' in final_ctx.interrupt_ids
+  assert 'hitl_1' in state.interrupt_ids
+
+
+@pytest.mark.asyncio
+async def test_dynamic_node_scheduler_transfer_raises_on_invalid_target():
+  """DynamicNodeScheduler raises ValueError when transferring to an unknown agent."""
+  agent_a = LlmAgent(name='agent_a', rerun_on_resume=True)
+  root = LlmAgent(name='root', sub_agents=[agent_a], rerun_on_resume=True)
+  agent_a.parent_agent = root
+
+  ctx, _ = _make_parent_ctx()
+  ctx.node = root
+  state = DynamicNodeState()
+  scheduler = DynamicNodeScheduler(state=state)
+
+  child_ctx_a = MagicMock(spec=Context)
+  child_ctx_a.error = None
+  child_ctx_a.interrupt_ids = set()
+  child_ctx_a.actions = EventActions(transfer_to_agent='nonexistent_agent')
+  child_ctx_a.output = None
+
+  ctx._run_node_standalone = AsyncMock(return_value=child_ctx_a)
+
+  with pytest.raises(
+      ValueError, match="Transfer target agent 'nonexistent_agent' not found."
+  ):
+    await scheduler(ctx, agent_a, 'input', node_name='agent_a')
+
+
+@pytest.mark.asyncio
+async def test_dynamic_node_scheduler_foreign_scheduler_raises_workflow_invariant_error():
+  """Verifies that an unsupported foreign scheduler raises WorkflowInvariantError naming the offending type."""
+  ctx, _ = _make_parent_ctx()
+
+  class CustomForeignScheduler:
+    pass
+
+  ctx._workflow_scheduler = CustomForeignScheduler()
+  state = DynamicNodeState()
+  scheduler = DynamicNodeScheduler(state=state)
+
+  with pytest.raises(WorkflowInvariantError) as exc_info:
+    await scheduler(
+        ctx,
+        BaseNode(name='test_node'),
+        'input_data',
+        node_name='test_node',
+    )
+
+  assert 'CustomForeignScheduler' in str(exc_info.value)
+  assert 'cannot own a transfer hop' in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_dynamic_node_scheduler_transfer_to_foreign_scheduler_raises_workflow_invariant_error():
+  """Verifies that a transfer hop to a parent context with a foreign scheduler raises WorkflowInvariantError."""
+  agent_a = LlmAgent(name='agent_a', rerun_on_resume=True)
+  agent_b = LlmAgent(name='agent_b', rerun_on_resume=True)
+  parent = LlmAgent(name='parent', sub_agents=[agent_a], rerun_on_resume=True)
+  root = LlmAgent(
+      name='root', sub_agents=[parent, agent_b], rerun_on_resume=True
+  )
+  agent_a.parent_agent = parent
+  parent.parent_agent = root
+  agent_b.parent_agent = root
+
+  class OtherForeignScheduler:
+    pass
+
+  root_ctx, _ = _make_parent_ctx()
+  root_ctx.node = root
+  parent_ctx = Context(
+      root_ctx._invocation_context,
+      parent_ctx=root_ctx,
+      node=parent,
+      run_id='1',
+  )
+  # Install foreign scheduler on root_ctx AFTER building parent_ctx so Hop 1
+  # executes on parent_ctx using the current scheduler and transfers to agent_b
+  # (whose parent is root_ctx) on Hop 2.
+  root_ctx._workflow_scheduler = OtherForeignScheduler()
+
+  child_ctx_a = Context(
+      root_ctx._invocation_context,
+      parent_ctx=parent_ctx,
+      node=agent_a,
+      run_id='1',
+      event_actions=EventActions(transfer_to_agent='parent'),
+  )
+  child_ctx_a.output = 'agent_a_out'
+  parent_ctx._run_node_standalone = AsyncMock(return_value=child_ctx_a)
+
+  state = DynamicNodeState()
+  scheduler = DynamicNodeScheduler(state=state)
+
+  with pytest.raises(WorkflowInvariantError) as exc_info:
+    await scheduler(
+        parent_ctx,
+        agent_a,
+        'init_input',
+        node_name='agent_a',
+    )
+
+  # Verify Hop 1 actually ran before Hop 2 failed on the foreign scheduler.
+  parent_ctx._run_node_standalone.assert_awaited_once()
+  assert 'OtherForeignScheduler' in str(exc_info.value)
+  assert 'cannot own a transfer hop' in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_dynamic_node_scheduler_resumed_run_prefers_recovered_isolation_scope():
+  """Resuming an interrupted node prefers its recovered isolation_scope over a newly computed override_isolation_scope."""
+  ctx, _ = _make_parent_ctx()
+  state = DynamicNodeState()
+  scheduler = DynamicNodeScheduler(state=state)
+
+  node_path = f'{ctx.node_path}/task_node@1'
+  recovered = _ChildScanState(
+      run_id='1',
+      interrupt_ids={'req-1'},
+      isolation_scope='wf@1/task_node@1',
+  )
+  run = DynamicNodeRun(
+      state=NodeState(
+          status=NodeStatus.WAITING, run_id='1', interrupts=['req-1']
+      ),
+      recovered_state=recovered,
+  )
+  state.runs[node_path] = run
+
+  node = LlmAgent(name='task_node', rerun_on_resume=True)
+  expected_child_ctx = MagicMock(spec=Context)
+  expected_child_ctx.error = False
+  expected_child_ctx.interrupt_ids = set()
+  expected_child_ctx.actions = EventActions()
+  expected_child_ctx.output = 'resumed_output'
+  ctx._run_node_standalone = AsyncMock(return_value=expected_child_ctx)
+
+  with patch(
+      'google.adk.workflow._dynamic_node_scheduler.check_interception'
+  ) as mock_check:
+    mock_result = MagicMock()
+    mock_result.should_run = True
+    mock_result.resume_inputs = {'req-1': 'user_reply'}
+    mock_check.return_value = mock_result
+
+    result_ctx = await scheduler(
+        ctx,
+        node,
+        'input_data',
+        node_name='task_node',
+        run_id='1',
+        override_isolation_scope='recomputed_task_scope',
+    )
+
+  assert result_ctx is expected_child_ctx
+  ctx._run_node_standalone.assert_awaited_once()
+  assert (
+      ctx._run_node_standalone.call_args.kwargs['override_isolation_scope']
+      == 'wf@1/task_node@1'
+  )
+
+
+@pytest.mark.asyncio
+async def test_dynamic_node_scheduler_transfer_defers_to_target_parent_scheduler(
+    mocker,
+):
+  """A transfer hands the chain to the scheduler owning the target's parent."""
+  # Arrange
+  child = LlmAgent(name='child', rerun_on_resume=True)
+  parent = LlmAgent(name='parent', sub_agents=[child], rerun_on_resume=True)
+  root = LlmAgent(name='root', sub_agents=[parent], rerun_on_resume=True)
+  child.parent_agent = parent
+  parent.parent_agent = root
+
+  root_ctx, _ = _make_parent_ctx()
+  root_ctx.node = root
+  parent_ctx = Context(
+      root_ctx._invocation_context,
+      parent_ctx=root_ctx,
+      node=parent,
+      run_id='1',
+  )
+
+  child_ctx = Context(
+      root_ctx._invocation_context,
+      parent_ctx=parent_ctx,
+      node=child,
+      run_id='1',
+      event_actions=EventActions(transfer_to_agent='parent'),
+  )
+  parent_ctx2 = Context(
+      root_ctx._invocation_context,
+      parent_ctx=root_ctx,
+      node=parent,
+      run_id='2',
+      event_actions=EventActions(),
+  )
+  parent_ctx2.output = 'parent_output'
+
+  # root_ctx owns a different scheduler; installed after parent_ctx is built
+  # so parent_ctx does not inherit it and gets the transfer-only default.
+  root_scheduler = DynamicNodeScheduler(state=DynamicNodeState())
+  root_scheduler._execute_step = AsyncMock(return_value=parent_ctx2)
+  root_ctx._workflow_scheduler = root_scheduler
+
+  mock_standalone = mocker.patch(
+      'google.adk.workflow._dynamic_node_scheduler.run_node_standalone',
+      return_value=child_ctx,
+  )
+
+  scheduler = DynamicNodeScheduler(
+      state=DynamicNodeState(), enable_replay=False
+  )
+
+  # Act
+  result_ctx = await scheduler(
+      parent_ctx, child, node_input='child_input', node_name='child'
+  )
+
+  # Assert
+  assert result_ctx.output == 'parent_output'
+  # The hop after the transfer went through root_ctx's scheduler, not the
+  # one installed on parent_ctx.
+  assert mock_standalone.call_count == 1
+  root_scheduler._execute_step.assert_awaited_once()
+  assert root_scheduler._execute_step.await_args.args[0] is root_ctx
+  assert root_scheduler._execute_step.await_args.args[1] is parent
+
+
+@pytest.mark.asyncio
+async def test_dynamic_node_scheduler_transfer_restores_use_as_output_on_hop_back_to_calling_ctx(
+    mocker,
+):
+  """A transfer chain that leaves the calling context and hops back restores use_as_output."""
+  # Arrange: root -> parent -> [child1, child2]
+  child1 = LlmAgent(name='child1', rerun_on_resume=True)
+  child2 = LlmAgent(name='child2', rerun_on_resume=True)
+  parent = LlmAgent(
+      name='parent', sub_agents=[child1, child2], rerun_on_resume=True
+  )
+  root = LlmAgent(name='root', sub_agents=[parent], rerun_on_resume=True)
+  child1.parent_agent = parent
+  child2.parent_agent = parent
+  parent.parent_agent = root
+
+  root_ctx, _ = _make_parent_ctx()
+  root_ctx.node = root
+  parent_ctx = Context(
+      root_ctx._invocation_context,
+      parent_ctx=root_ctx,
+      node=parent,
+      run_id='1',
+      event_actions=EventActions(transfer_to_agent='child2'),
+  )
+
+  child1_ctx = Context(
+      root_ctx._invocation_context,
+      parent_ctx=parent_ctx,
+      node=child1,
+      run_id='1',
+      event_actions=EventActions(transfer_to_agent='parent'),
+  )
+  child2_ctx = Context(
+      root_ctx._invocation_context,
+      parent_ctx=parent_ctx,
+      node=child2,
+      run_id='1',
+      event_actions=EventActions(),
+  )
+  child2_ctx.output = 'final_output'
+
+  # root_ctx has a different scheduler
+  root_scheduler = DynamicNodeScheduler(state=DynamicNodeState())
+  root_scheduler._execute_step = AsyncMock(return_value=parent_ctx)
+  root_ctx._workflow_scheduler = root_scheduler
+
+  # parent_ctx's standalone runs: child1 then child2
+  mock_standalone = mocker.patch(
+      'google.adk.workflow._dynamic_node_scheduler.run_node_standalone',
+      side_effect=[child1_ctx, child2_ctx],
+  )
+
+  scheduler = DynamicNodeScheduler(state=DynamicNodeState())
+
+  # Act
+  result_ctx = await scheduler(
+      parent_ctx,
+      child1,
+      node_input='init',
+      node_name='child1',
+      use_as_output=True,
+  )
+
+  # Assert
+  assert result_ctx.output == 'final_output'
+  # Hop 1 (child1 on parent_ctx): use_as_output=True
+  assert mock_standalone.call_args_list[0].kwargs['use_as_output'] is True
+  # Hop 2 (parent on root_ctx via root_scheduler): use_as_output=False
+  root_scheduler._execute_step.assert_awaited_once()
+  assert (
+      root_scheduler._execute_step.await_args.kwargs['use_as_output'] is False
+  )
+  # Hop 3 (child2 hopped back to parent_ctx): use_as_output restored to True!
+  assert mock_standalone.call_args_list[1].kwargs['use_as_output'] is True

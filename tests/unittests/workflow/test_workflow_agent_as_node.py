@@ -17,10 +17,12 @@
 from typing import AsyncGenerator
 
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext as BaseInvocationContext
 from google.adk.events.event import Event
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.session import Session
 from google.adk.workflow import START
 from google.adk.workflow._workflow import Workflow
 from google.genai import types
@@ -44,6 +46,42 @@ class SimpleAgent(BaseAgent):
         invocation_id=ctx.invocation_id,
         content=types.Content(parts=[types.Part(text=self.message)]),
     )
+
+
+class MockAgent(BaseAgent):
+  """A mock agent that yields predefined events."""
+
+  async def _run_async_impl(
+      self, ctx: BaseInvocationContext
+  ) -> AsyncGenerator[Event, None]:
+    yield Event(author=self.name)
+    yield Event(author='sub_agent')
+
+
+@pytest.mark.asyncio
+async def test_base_agent_as_node_run():
+  """Tests that BaseAgent runs as a node and preserves event authors."""
+  agent = MockAgent(name='mock_agent')
+
+  session = Session(app_name='test', user_id='user', id='session')
+  session_service = InMemorySessionService()
+  ic = BaseInvocationContext(
+      invocation_id='inv',
+      session=session,
+      session_service=session_service,
+  )
+  ctx = Context(ic, node_path='wf')
+
+  events = []
+  async for event in agent.run(ctx=ctx, node_input=None):
+    events.append(event)
+
+  assert len(events) == 2
+  assert events[0].author == 'mock_agent'
+  assert events[0].node_info.path == 'wf'
+  assert events[1].author == 'sub_agent'
+  assert not events[1].node_info.path
+  assert ctx.event_author == 'sub_agent'
 
 
 @pytest.mark.asyncio

@@ -384,8 +384,6 @@ class FunctionNode(BaseNode):
       return None
 
     if isinstance(data, Event):
-      if data.output is not None:
-        data.output = self._validate_output_data(data.output)
       if state_delta:
         data.actions.state_delta.update(state_delta)
       return data
@@ -399,8 +397,6 @@ class FunctionNode(BaseNode):
 
     if isinstance(data, BaseModel):
       data = data.model_dump()
-
-    data = self._validate_output_data(data)
 
     return Event(
         output=data,

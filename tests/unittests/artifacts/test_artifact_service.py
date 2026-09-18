@@ -306,6 +306,111 @@ async def test_save_load_delete(service_type, artifact_service_factory):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+    ],
+)
+@pytest.mark.parametrize("session_id", ["user", "user/x", "user\\x"])
+async def test_save_artifact_rejects_reserved_user_as_session_id(
+    service_type, session_id, artifact_service_factory
+):
+  """IN_MEMORY and GCS lay session-scoped and user-scoped artifacts out in
+  the same flat namespace, using the literal segment "user" to mark
+  user-scoped ones. A session actually named "user" (or starting with "user/")
+  must be rejected rather than silently colliding with that reserved segment."""
+  artifact_service = artifact_service_factory(service_type)
+
+  with pytest.raises(InputValidationError, match="reserved value 'user'"):
+    await artifact_service.save_artifact(
+        app_name="app0",
+        user_id="user0",
+        session_id=session_id,
+        filename="report.txt",
+        artifact=types.Part(text="hello"),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("session_id", ["user", "user/x", "user\\x"])
+async def test_file_allows_reserved_user_as_session_id(
+    session_id,
+    artifact_service_factory,
+):
+  """Unlike IN_MEMORY and GCS, FILE lays session-scoped artifacts out under
+  their own `sessions/<id>/` subtree, distinct from the user-scoped
+  `artifacts/` subtree, so a session literally named "user" cannot collide
+  with it and is not rejected."""
+  artifact_service = artifact_service_factory(ArtifactServiceType.FILE)
+
+  await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id=session_id,
+      filename="report.txt",
+      artifact=types.Part(text="hello"),
+  )
+  loaded = await artifact_service.load_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id=session_id,
+      filename="report.txt",
+  )
+  assert loaded == types.Part(text="hello")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+    ],
+)
+@pytest.mark.parametrize("session_id", ["user", "user/x", "user\\x"])
+async def test_read_and_delete_paths_allow_reserved_user_as_session_id(
+    service_type, session_id, artifact_service_factory
+):
+  """Reads and deletes must remain permissive for session IDs named "user" or
+  starting with "user/", so existing data already stored under that prefix in a
+  live bucket or memory store remains reachable and removable."""
+  artifact_service = artifact_service_factory(service_type)
+
+  assert (
+      await artifact_service.list_artifact_keys(
+          app_name="app0", user_id="user0", session_id=session_id
+      )
+      == []
+  )
+  assert (
+      await artifact_service.load_artifact(
+          app_name="app0",
+          user_id="user0",
+          session_id=session_id,
+          filename="report.txt",
+      )
+      is None
+  )
+  assert (
+      await artifact_service.list_versions(
+          app_name="app0",
+          user_id="user0",
+          session_id=session_id,
+          filename="report.txt",
+      )
+      == []
+  )
+  await artifact_service.delete_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id=session_id,
+      filename="report.txt",
+  )
+
+
+@pytest.mark.asyncio
 async def test_in_memory_loads_nested_artifact_reference(
     artifact_service_factory,
 ):
@@ -1236,6 +1341,50 @@ async def test_file_list_artifact_versions(tmp_path, artifact_service_factory):
   assert latest.version == version_meta.version
   assert latest.canonical_uri == version_meta.canonical_uri
   assert latest.custom_metadata == version_meta.custom_metadata
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "session_id,filename",
+    [
+        ("session", "report.txt"),
+        ("session", "user:report.txt"),
+        (None, "report.txt"),
+    ],
+)
+@pytest.mark.parametrize(
+    "artifact",
+    [
+        types.Part(text="report"),
+        types.Part.from_bytes(data=b"report", mime_type="text/plain"),
+    ],
+)
+async def test_file_artifact_versions_preserve_create_time(
+    tmp_path, session_id, filename, artifact
+):
+  """Metadata reads preserve each saved timestamp after reopening the service."""
+  service = FileArtifactService(root_dir=tmp_path)
+  scope = dict(
+      app_name="app", user_id="user", session_id=session_id, filename=filename
+  )
+  create_times = [0.0, FIXED_DATETIME.timestamp()]
+  with patch(
+      "google.adk.artifacts.base_artifact_service.platform_time.get_time"
+  ) as get_time:
+    for create_time in create_times:
+      get_time.return_value = create_time
+      await service.save_artifact(**scope, artifact=artifact)
+
+    service = FileArtifactService(root_dir=tmp_path)
+    for read_time in [create_times[-1] + 10, create_times[-1] + 20]:
+      get_time.return_value = read_time
+      versions = await service.list_artifact_versions(**scope)
+      first = await service.get_artifact_version(**scope, version=0)
+      latest = await service.get_artifact_version(**scope)
+
+      assert [version.create_time for version in versions] == create_times
+      assert first.create_time == create_times[0]
+      assert latest.create_time == create_times[-1]
 
 
 @pytest.mark.asyncio

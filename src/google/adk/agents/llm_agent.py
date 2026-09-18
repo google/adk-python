@@ -42,6 +42,7 @@ from ..code_executors.base_code_executor import BaseCodeExecutor
 from ..events.event import Event
 from ..flows.llm_flows.auto_flow import AutoFlow
 from ..flows.llm_flows.base_llm_flow import BaseLlmFlow
+from ..flows.llm_flows.functions import find_matching_function_call
 from ..flows.llm_flows.single_flow import SingleFlow
 from ..models.base_llm import BaseLlm
 from ..models.llm_request import LlmRequest
@@ -55,8 +56,10 @@ from ..tools.tool_context import ToolContext
 from ..utils._callback_pipeline import _normalize_callbacks
 from ..utils._schema_utils import SchemaType
 from ..utils._schema_utils import validate_schema
+from ..utils.content_utils import extract_text_from_content
 from ..utils.context_utils import Aclosing
 from ..utils.instructions_utils import InstructionProvider as InstructionProvider
+from ..workflow._base_node import BaseNode
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
 from .base_agent_config import BaseAgentConfig as BaseAgentConfig
@@ -142,6 +145,21 @@ OnToolErrorCallback: TypeAlias = Union[
 ToolUnion: TypeAlias = Union[Callable, BaseTool, BaseToolset]  # type: ignore[type-arg]
 
 
+def _wrap_base_node_as_tool(node: BaseNode) -> BaseTool:
+  """Wraps a BaseNode into a NodeTool while rejecting direct BaseAgent usage."""
+  from ..tools._node_tool import NodeTool
+
+  if isinstance(node, BaseAgent):
+    raise ValueError(
+        f"Agent '{node.name}' cannot be used directly as a tool. Agents"
+        ' should be invoked as sub-agents.'
+    )
+  return NodeTool(
+      node=node,
+      description=node.description,
+  )
+
+
 async def _convert_tool_union_to_tools(
     tool_union: ToolUnion,
     ctx: Optional[ReadonlyContext],
@@ -167,10 +185,16 @@ async def _convert_tool_union_to_tools(
   # other tools.
   # TODO: Remove once the workaround is no longer needed.
   if multiple_tools and isinstance(tool_union, VertexAiSearchTool):
-    from ..tools.discovery_engine_search_tool import DiscoveryEngineSearchTool
-
     vais_tool = tool_union
     if vais_tool.bypass_multi_tools_limit:
+      try:
+        from ..tools.discovery_engine_search_tool import DiscoveryEngineSearchTool
+      except ImportError as e:
+        raise ImportError(
+            'VertexAiSearchTool with bypass_multi_tools_limit=True requires'
+            ' the google-cloud-discoveryengine package. Install it with'
+            ' `pip install google-adk[gcp]`.'
+        ) from e
       return [
           DiscoveryEngineSearchTool(
               data_store_id=vais_tool.data_store_id,
@@ -183,22 +207,7 @@ async def _convert_tool_union_to_tools(
   from ..workflow._base_node import BaseNode
 
   if isinstance(tool_union, BaseNode):
-    from ..tools._node_tool import NodeTool
-    from .base_agent import BaseAgent
-
-    if isinstance(tool_union, BaseAgent):
-      raise ValueError(
-          f"Agent '{tool_union.name}' cannot be used directly as a tool. Agents"
-          ' should be invoked as sub-agents.'
-      )
-
-    return [
-        NodeTool(
-            node=tool_union,
-            name=tool_union.name,
-            description=tool_union.description,
-        )
-    ]
+    return [_wrap_base_node_as_tool(tool_union)]
 
   if isinstance(tool_union, BaseTool):
     return [tool_union]
@@ -866,7 +875,7 @@ class LlmAgent(BaseAgent, abc.ABC):
     # We may need to wrap some built-in tools if there are other tools
     # because the built-in tools cannot be used together with other tools.
     # TODO: Remove once the workaround is no longer needed.
-    from ..flows.llm_flows.agent_transfer import _get_transfer_targets
+    from ..flows.llm_flows.extensions._agent_transfer import _get_transfer_targets
 
     multiple_tools = len(self.tools) > 1 or bool(_get_transfer_targets(self))
     model = self.canonical_model
@@ -977,7 +986,9 @@ class LlmAgent(BaseAgent, abc.ABC):
 
     # Last event is from user or another agent.
     if last_event.author == 'user':
-      function_call_event = ctx._find_matching_function_call(last_event)
+      function_call_event = find_matching_function_call(
+          ctx._get_events(current_invocation=True), last_event
+      )
       if not function_call_event:
         raise ValueError(
             'No agent to transfer to for resuming agent from function response'
@@ -998,7 +1009,7 @@ class LlmAgent(BaseAgent, abc.ABC):
 
   def __get_agent_to_run(self, agent_name: str) -> BaseAgent:
     """Find the agent this agent transferred to, by name."""
-    from ..flows.llm_flows.agent_transfer import _get_transfer_targets
+    from ..flows.llm_flows.extensions._agent_transfer import _get_transfer_targets
 
     # Prefer this agent's own declared targets, so that resuming a transfer
     # cannot run a same-named agent from an unrelated branch of the tree.
@@ -1097,18 +1108,20 @@ class LlmAgent(BaseAgent, abc.ABC):
       if not has_text_part:
         return
 
-      result = ''.join(
-          part.text
-          for part in event.content.parts
-          if part.text and not part.thought
-      )
+      result: Any = extract_text_from_content(event.content)
       if self.output_schema:
         # If the result from the final chunk is just whitespace or empty,
         # it means this is an empty final chunk of a stream.
         # Do not attempt to parse it as JSON.
         if not result.strip():
           return
-        result = validate_schema(self.output_schema, result)
+        if (
+            validated_output := getattr(event, '_validated_output', None)
+        ) is not None:
+          result = validated_output
+        else:
+          result = validate_schema(self.output_schema, result)
+          object.__setattr__(event, '_validated_output', result)
       event.actions.state_delta[self.output_key] = result
 
   def __maybe_accumulate_streaming_output(
@@ -1246,27 +1259,13 @@ class LlmAgent(BaseAgent, abc.ABC):
   @classmethod
   def _pre_validate_tools(cls, data: Any) -> Any:
     if isinstance(data, dict) and 'tools' in data and data['tools']:
-      from google.adk.agents.base_agent import BaseAgent
-      from google.adk.tools._node_tool import NodeTool
       from google.adk.workflow._base_node import BaseNode
 
-      new_tools = []
-      for t in data['tools']:
-        if isinstance(t, BaseAgent):
-          raise ValueError(
-              f"Agent '{t.name}' cannot be used directly as a tool. Agents"
-              ' should be invoked as sub-agents.'
-          )
-        elif isinstance(t, BaseNode):
-          new_tools.append(NodeTool(node=t, description=t.description))
-        else:
-          new_tools.append(t)
-      data['tools'] = new_tools
+      data['tools'] = [
+          _wrap_base_node_as_tool(t) if isinstance(t, BaseNode) else t
+          for t in data['tools']
+      ]
     return data
-
-  @model_validator(mode='after')
-  def __model_validator_after(self) -> LlmAgent:
-    return self
 
   @field_validator('generate_content_config', mode='after')
   @classmethod

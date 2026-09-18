@@ -17,7 +17,6 @@ from __future__ import annotations
 from abc import ABC
 import asyncio
 import contextlib
-import inspect
 import logging
 from typing import AsyncGenerator
 from typing import cast
@@ -31,7 +30,6 @@ from opentelemetry import context as otel_context
 from opentelemetry import trace
 
 from . import _live_llm_flow
-from . import _output_schema_processor
 from . import functions
 from ...agents._streaming_mode import StreamingMode
 from ...agents.base_agent import BaseAgent
@@ -50,17 +48,20 @@ from ...telemetry.tracing import tracer
 from ...tools.base_toolset import BaseToolset
 from ...tools.tool_context import ToolContext
 from ...utils.context_utils import Aclosing
-from ._invocation_utils import as_llm_agent as _as_llm_agent
-from ._invocation_utils import copy_http_options
-from ._invocation_utils import require_agent as _require_agent
-from ._invocation_utils import require_run_config as _require_run_config
-from ._model_response_finalizer import finalize_model_response_event
-from ._model_response_finalizer import handle_after_model_callback
-from ._model_response_finalizer import handle_before_model_callback
-from ._model_response_finalizer import run_and_handle_error
-from ._resume_utils import decide_step_resume
-from ._resume_utils import ResumeAction
-from .functions import build_auth_request_event
+from .core._finalizer import finalize_model_response_event
+from .core._finalizer import handle_after_model_callback
+from .core._finalizer import handle_before_model_callback
+from .core._finalizer import run_and_handle_error
+from .core._resume import decide_step_resume
+from .core._resume import ResumeAction
+from .core._utils import as_llm_agent as _as_llm_agent
+from .core._utils import copy_http_options
+from .core._utils import require_agent as _require_agent
+from .core._utils import require_run_config as _require_run_config
+from .prompt import _schema as _output_schema_processor
+from .tools._batch_executor import _is_non_blocking_tool
+from .tools._batch_executor import _is_streaming_tool
+from .tools._functions import build_auth_request_event
 
 # Prefix used by toolset auth credential IDs
 TOOLSET_AUTH_CREDENTIAL_ID_PREFIX = '_adk_toolset_auth_'
@@ -238,7 +239,7 @@ async def _process_agent_tools(
     return
   agent = cast('LlmAgent', raw_agent)
 
-  from .agent_transfer import _get_transfer_targets
+  from .extensions._agent_transfer import _get_transfer_targets
 
   multiple_tools = len(agent.tools) > 1 or bool(_get_transfer_targets(agent))
   model = agent.canonical_model
@@ -307,11 +308,10 @@ def _mark_live_async_tools_non_blocking(llm_request: LlmRequest) -> None:
       tool = llm_request.tools_dict.get(declaration_name)
       if tool is None:
         continue
-      is_streaming_tool = hasattr(tool, 'func') and inspect.isasyncgenfunction(
-          tool.func
-      )
-      if tool.response_scheduling is not None or is_streaming_tool:
+      if _is_streaming_tool(tool) or _is_non_blocking_tool(tool):
         declaration.behavior = types.Behavior.NON_BLOCKING
+      elif tool.behavior is types.Behavior.BLOCKING:
+        declaration.behavior = tool.behavior
 
 
 class BaseLlmFlow(ABC):
@@ -712,10 +712,10 @@ class BaseLlmFlow(ABC):
           function_response_event
       ):
         # Create and yield a final model response event
-        final_event = (
-            _output_schema_processor.create_final_model_response_event(
-                invocation_context, json_response
-            )
+        final_event = _output_schema_processor.create_final_model_response_event(
+            invocation_context,
+            json_response,
+            validated_response=function_response_event.actions.set_model_response,
         )
         yield final_event
 
@@ -747,7 +747,7 @@ class BaseLlmFlow(ABC):
 
     from google.adk.agents.llm_agent import LlmAgent
 
-    from .agent_transfer import _get_transfer_targets
+    from .extensions._agent_transfer import _get_transfer_targets
 
     # Restrict transfers to declared targets (or itself) to prevent
     # unauthorized escalation. The agent that runs is taken from those
@@ -810,7 +810,7 @@ class BaseLlmFlow(ABC):
           llm_request.config.labels[_ADK_AGENT_NAME_LABEL_KEY] = agent.name
 
         # Calls the LLM.
-        llm = await self.__get_llm(invocation_context)
+        llm = await self._get_llm(invocation_context)
 
         # Check if we can make this llm call or not. If the current
         # call pushes the counter beyond the max set value, then the
@@ -968,9 +968,6 @@ class BaseLlmFlow(ABC):
     )
 
   async def _get_llm(self, invocation_context: InvocationContext) -> BaseLlm:
-    return await self.__get_llm(invocation_context)
-
-  async def __get_llm(self, invocation_context: InvocationContext) -> BaseLlm:
     """Resolves the model this invocation should call.
 
     Resolution goes through the agent's async accessors, so that it can

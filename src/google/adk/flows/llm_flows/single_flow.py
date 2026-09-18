@@ -19,17 +19,18 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from . import _code_execution
-from . import _nl_planning
-from . import _output_schema_processor
 from . import basic
-from . import contents
-from . import context_cache_processor
-from . import identity
-from . import instructions
-from . import interactions_processor
 from . import request_confirmation
 from .base_llm_flow import BaseLlmFlow
+from .context import _cache
+from .context import _compaction
+from .context import _contents
+from .context import _interactions
+from .extensions import _code_execution
+from .extensions import _planning
+from .prompt import _identity
+from .prompt import _instructions
+from .prompt import _schema as _output_schema_processor
 
 if TYPE_CHECKING:
   from ._base_llm_processor import BaseLlmRequestProcessor
@@ -40,29 +41,28 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 def _create_request_processors() -> list[BaseLlmRequestProcessor]:
   """Create the standard request processor list for a single-agent flow."""
-  from . import compaction
   from ...auth import auth_preprocessor
 
   return [
       basic.request_processor,
       auth_preprocessor.request_processor,
       request_confirmation.request_processor,
-      instructions.request_processor,
-      identity.request_processor,
+      _instructions.request_processor,
+      _identity.request_processor,
       # Compaction should run before contents so compacted events are reflected
       # in the model request context.
-      compaction.request_processor,
+      _compaction.request_processor,
       # Extract the Interactions chain id before contents. Chained requests
       # only need the current turn because the service retains prior state.
-      interactions_processor.request_processor,
-      contents.request_processor,
+      _interactions.request_processor,
+      _contents.request_processor,
       # Context cache processor sets up cache config and finds
       # existing cache metadata.
-      context_cache_processor.request_processor,
+      _cache.request_processor,
       # Some implementations of NL Planning mark planning contents
       # as thoughts in the post processor.  Since these need to be
       # unmarked, NL Planning should be after contents.
-      _nl_planning.request_processor,
+      _planning.request_processor,
       # Code execution should be after the contents as it mutates
       # the contents to optimize data files.
       _code_execution.request_processor,
@@ -76,7 +76,7 @@ def _create_request_processors() -> list[BaseLlmRequestProcessor]:
 def _create_response_processors() -> list[BaseLlmResponseProcessor]:
   """Create the standard response processor list for a single-agent flow."""
   return [
-      _nl_planning.response_processor,
+      _planning.response_processor,
       _code_execution.response_processor,
   ]
 

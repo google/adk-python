@@ -3131,9 +3131,9 @@ async def test_append_user_event_leaves_root_context_branch_alone():
 
   # Stamping is what puts a child branch on the event; the root must not follow.
   with mock.patch.object(
-      InvocationContext,
-      "stamp_event_branch_context",
-      lambda self, event: setattr(event, "branch", "coordinator@1.tool@2"),
+      runners,
+      "_stamp_event_branch_context",
+      lambda ic, event: setattr(event, "branch", "coordinator@1.tool@2"),
   ):
     event = await runner._append_user_event(
         ic, types.Content(parts=[types.Part.from_text(text="hi")])
@@ -4308,6 +4308,74 @@ def test_run_sync_early_break_executes_after_run_plugin():
 
   assert consumed == 1
   assert after_run_called is True
+
+
+def test_stamp_event_branch_context_preserves_isolation_scope():
+  """Tests _stamp_event_branch_context does not overwrite existing isolation_scope with None."""
+  fc = types.Part.from_function_call(name="some_tool", args={})
+  fc.function_call.id = "test_function_call_id"
+  fc_event = Event(
+      invocation_id="inv_1",
+      author="agent",
+      branch="root@1",
+      isolation_scope=None,  # Coordinator FC has None scope
+      content=testing_utils.ModelContent([fc]),
+  )
+  fr = types.Part.from_function_response(
+      name="some_tool", response={"result": "ok"}
+  )
+  fr.function_response.id = "test_function_call_id"
+  fr_event = Event(
+      invocation_id="inv_1",
+      author="agent",
+      isolation_scope="task_123",  # Pre-populated active task scope
+      content=types.Content(role="user", parts=[fr]),
+  )
+  session = mock.Mock(spec=Session, events=[fc_event, fr_event])
+  ic = InvocationContext(
+      session_service=mock.Mock(spec=BaseSessionService),
+      agent=mock.Mock(spec=BaseAgent, name="agent"),
+      invocation_id="inv_1",
+      session=session,
+  )
+
+  runners._stamp_event_branch_context(ic, fr_event)
+  assert fr_event.branch == "root@1"
+  assert fr_event.isolation_scope == "task_123"
+
+
+def test_stamp_event_branch_context_does_not_overwrite_existing_scope():
+  """Tests _stamp_event_branch_context does not overwrite existing isolation_scope if set."""
+  fc = types.Part.from_function_call(name="some_tool", args={})
+  fc.function_call.id = "test_function_call_id"
+  fc_event = Event(
+      invocation_id="inv_1",
+      author="agent",
+      branch="root@1",
+      isolation_scope="task_456",  # Function call has isolation scope
+      content=testing_utils.ModelContent([fc]),
+  )
+  fr = types.Part.from_function_response(
+      name="some_tool", response={"result": "ok"}
+  )
+  fr.function_response.id = "test_function_call_id"
+  fr_event = Event(
+      invocation_id="inv_1",
+      author="agent",
+      isolation_scope="task_123",  # Pre-populated active task scope
+      content=types.Content(role="user", parts=[fr]),
+  )
+  session = mock.Mock(spec=Session, events=[fc_event, fr_event])
+  ic = InvocationContext(
+      session_service=mock.Mock(spec=BaseSessionService),
+      agent=mock.Mock(spec=BaseAgent, name="agent"),
+      invocation_id="inv_1",
+      session=session,
+  )
+
+  runners._stamp_event_branch_context(ic, fr_event)
+  assert fr_event.branch == "root@1"
+  assert fr_event.isolation_scope == "task_123"
 
 
 if __name__ == "__main__":

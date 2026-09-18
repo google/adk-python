@@ -282,12 +282,14 @@ class TestStreamingResponseAggregator:
 
       assert closed_response is not None
       assert closed_response.partial is False
-
+      assert len(results) == 1
       if use_progressive_sse:
+        assert results[0].partial is True
         assert closed_response.content is not None
         assert len(closed_response.content.parts) == 1
         assert closed_response.content.parts[0].function_call.name == "my_tool"
       else:
+        assert results[0].partial is not True
         assert closed_response.content is None
 
   @pytest.mark.asyncio
@@ -584,6 +586,108 @@ class TestStreamingResponseAggregator:
       ]
       assert merged_events, "expected a merged non-partial text event"
       assert merged_events[0].model_version == "gemini-test-2.0"
+
+  @pytest.mark.asyncio
+  async def test_progressive_close_deduplicates_function_calls(self):
+    with temporary_feature_override(
+        FeatureName.PROGRESSIVE_SSE_STREAMING, True
+    ):
+      aggregator = streaming_utils.StreamingResponseAggregator()
+
+      part1 = types.Part(
+          function_call=types.FunctionCall(
+              name="test_func", args={"a": 1}, id="fc_123"
+          )
+      )
+      part2 = types.Part(
+          function_call=types.FunctionCall(
+              name="test_func", args={"a": 1}, id="fc_123"
+          )
+      )
+      part3 = types.Part(
+          function_call=types.FunctionCall(
+              name="test_func2", args={"b": 2}, id="fc_456"
+          )
+      )
+
+      resp1 = types.GenerateContentResponse(
+          candidates=[types.Candidate(content=types.Content(parts=[part1]))]
+      )
+      resp2 = types.GenerateContentResponse(
+          candidates=[types.Candidate(content=types.Content(parts=[part2]))]
+      )
+      resp3 = types.GenerateContentResponse(
+          candidates=[types.Candidate(content=types.Content(parts=[part3]))]
+      )
+
+      async for _ in aggregator.process_response(resp1):
+        pass
+      async for _ in aggregator.process_response(resp2):
+        pass
+      async for _ in aggregator.process_response(resp3):
+        pass
+
+      final_response = aggregator.close()
+
+      assert final_response is not None
+      assert final_response.content is not None
+      assert len(final_response.content.parts) == 2
+      assert final_response.content.parts[0].function_call.id == "fc_123"
+      assert final_response.content.parts[1].function_call.id == "fc_456"
+
+  @pytest.mark.asyncio
+  async def test_progressive_close_deduplicates_function_calls_without_ids(
+      self,
+  ):
+    with temporary_feature_override(
+        FeatureName.PROGRESSIVE_SSE_STREAMING, True
+    ):
+      aggregator = streaming_utils.StreamingResponseAggregator()
+
+      part1 = types.Part(
+          function_call=types.FunctionCall(
+              name="test_func", args={"a": 1}, id=None
+          )
+      )
+      part2 = types.Part(
+          function_call=types.FunctionCall(
+              name="test_func", args={"a": 1}, id=None
+          )
+      )
+      part3 = types.Part(
+          function_call=types.FunctionCall(
+              name="test_func2", args={"b": 2}, id=None
+          )
+      )
+
+      resp1 = types.GenerateContentResponse(
+          candidates=[types.Candidate(content=types.Content(parts=[part1]))]
+      )
+      resp2 = types.GenerateContentResponse(
+          candidates=[types.Candidate(content=types.Content(parts=[part2]))]
+      )
+      resp3 = types.GenerateContentResponse(
+          candidates=[types.Candidate(content=types.Content(parts=[part3]))]
+      )
+
+      async for _ in aggregator.process_response(resp1):
+        pass
+      async for _ in aggregator.process_response(resp2):
+        pass
+      async for _ in aggregator.process_response(resp3):
+        pass
+
+      final_response = aggregator.close()
+
+      assert final_response is not None
+      assert final_response.content is not None
+      assert len(final_response.content.parts) == 2
+      fc1 = final_response.content.parts[0].function_call
+      fc2 = final_response.content.parts[1].function_call
+      assert fc1.id.startswith(AF_FUNCTION_CALL_ID_PREFIX)
+      assert fc2.id.startswith(AF_FUNCTION_CALL_ID_PREFIX)
+      assert fc1.name == "test_func"
+      assert fc2.name == "test_func2"
 
 
 class TestFunctionCallIdGeneration:

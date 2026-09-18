@@ -54,8 +54,6 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_NAME
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_TYPE
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GenAiSystemValues
-from opentelemetry.semconv._incubating.attributes.mcp_attributes import MCP_PROTOCOL_VERSION
-from opentelemetry.semconv._incubating.attributes.mcp_attributes import MCP_SESSION_ID
 from opentelemetry.semconv._incubating.attributes.user_attributes import USER_ID
 from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
 from opentelemetry.semconv.attributes.http_attributes import HTTP_REQUEST_METHOD
@@ -78,6 +76,7 @@ from ._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_CONTENTS_COUNT
 from ._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_FINGERPRINT
 from ._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_HIT
 from ._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_INVOCATIONS_USED
+from ._decorators import experimental_telemetry
 from ._experimental_semconv import maybe_log_completion_details
 from ._experimental_semconv import set_operation_details_attributes_from_request
 from ._experimental_semconv import set_operation_details_attributes_from_response
@@ -95,6 +94,12 @@ from ._stable_semconv import user_message_body
 from ._token_usage import TokenUsage
 from .context import _TRUTHY_ENV_VALUES
 from .context import TelemetryConfig
+
+# Use the import symbols once the minimum OpenTelemetry SDK version is updated to 1.40.0
+# from opentelemetry.semconv._incubating.attributes.mcp_attributes import MCP_PROTOCOL_VERSION
+# from opentelemetry.semconv._incubating.attributes.mcp_attributes import MCP_SESSION_ID
+MCP_PROTOCOL_VERSION: Final[str] = "mcp.protocol.version"
+MCP_SESSION_ID: Final[str] = "mcp.session.id"
 
 # By default some ADK spans include attributes with potential PII data.
 # This env, when set to false, allows to disable populating those attributes.
@@ -346,11 +351,12 @@ def _should_report_mcp_http_exchanges() -> bool:
   """Whether MCP HTTP exchanges are reported to OTel. Off unless asked for.
 
   The record is experimental (`adk.experimental.*`), so it rides on the
-  experimental telemetry opt-in. Resolved from the env rather than from
-  `RunConfig.telemetry`, because the httpx response hook that reports an
-  exchange has no invocation context to read a per-request override from.
+  experimental telemetry opt-in for the `mcp` feature. Resolved from the env
+  rather than from `RunConfig.telemetry`, because the httpx response hook that
+  reports an exchange has no invocation context to read a per-request override
+  from.
   """
-  return TelemetryConfig().should_emit_experimental_telemetry
+  return TelemetryConfig()._experimental_feature_enabled("mcp")
 
 
 def _should_capture_mcp_http_bodies() -> bool:
@@ -531,16 +537,21 @@ def trace_merged_tool_calls(
   span.set_attribute("gcp.vertex.agent.tool_call_args", "N/A")
   span.set_attribute("gcp.vertex.agent.event_id", response_event_id)
   if telemetry_config.should_add_content_to_legacy_spans:
+    # Only the responses: actions carry session state, credentials included.
+    content = function_response_event.content
+    parts = (content.parts or []) if content else []
     try:
-      function_response_event_json = function_response_event.model_dump_json(
-          exclude_none=True
-      )
+      tool_response_json = safe_json_serialize([
+          part.function_response.model_dump(exclude_none=True, mode="json")
+          for part in parts
+          if part.function_response is not None
+      ])
     except Exception:  # pylint: disable=broad-exception-caught
-      function_response_event_json = "<not serializable>"
+      tool_response_json = "<not serializable>"
 
     span.set_attribute(
         "gcp.vertex.agent.tool_response",
-        function_response_event_json,
+        tool_response_json,
     )
   else:
     span.set_attribute("gcp.vertex.agent.tool_response", "{}")
@@ -565,17 +576,13 @@ def _set_usage_metadata_attributes(
   )
 
 
+@experimental_telemetry(gate="context_cache")
 def _set_context_cache_attributes(
     span: Span,
     cache_metadata: CacheMetadata | None,
-    telemetry_config: TelemetryConfig,
 ) -> None:
   """Records context cache state on the given span."""
   if cache_metadata is None:
-    return
-  # The fingerprint is a content hash, so these attributes stay behind the
-  # experimental opt-in rather than landing on every span by default.
-  if not telemetry_config.should_emit_experimental_telemetry:
     return
   attributes: dict[str, AttributeValue] = {
       ADK_EXPERIMENTAL_CONTEXT_CACHE_HIT: cache_metadata.cache_name is not None,
@@ -680,7 +687,7 @@ def trace_call_llm(
 
   _set_usage_metadata_attributes(span, llm_response.usage_metadata)
   _set_context_cache_attributes(
-      span, getattr(llm_response, "cache_metadata", None), telemetry_config
+      telemetry_config, span, getattr(llm_response, "cache_metadata", None)
   )
   if is_reported_finish_reason(finish_reason := llm_response.finish_reason):
     span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, [finish_reason.lower()])
@@ -1234,7 +1241,7 @@ def trace_inference_result(
   # Callers outside adk pass their own response objects here, which are only
   # required to carry the fields this function already read.
   _set_context_cache_attributes(
-      span, getattr(llm_response, "cache_metadata", None), telemetry_config
+      telemetry_config, span, getattr(llm_response, "cache_metadata", None)
   )
 
   if telemetry_config.should_use_experimental_genai_semconv and isinstance(

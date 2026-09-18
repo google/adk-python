@@ -8,6 +8,7 @@ This directory contains specific developer guides for the ADK Python implementat
 * [BaseAgent](agents/base_agent/index.md) - The foundational base class for custom agents, container orchestrators, and lifecycle callbacks.
 * [Context](agents/context/index.md) - The runtime interface for state, artifacts, memory, credentials, and dynamic execution.
 * [Creating Agents with Configurations](agents/config/index.md) - Building and wiring multi-agent graphs from external YAML configuration files.
+* [LlmAgent](agents/llm_agent/index.md) - The primary conversational reasoning agent orchestrating models, tools, and workflows.
 * [LlmAgent Single-Turn Mode](agents/llm_agent/single_turn.md) - Guide on using LlmAgent in single-turn mode.
 * [LlmAgent Task Mode](agents/llm_agent/task.md) - Guide on using LlmAgent in task mode.
 * [ManagedAgent](agents/managed_agent/index.md) - Guide on using ManagedAgent with server-side tools.
@@ -40,6 +41,7 @@ This directory contains specific developer guides for the ADK Python implementat
 * [AntigravityAgent](labs/antigravity/index.md) - Runs a Google Antigravity SDK agent as an ADK agent node.
 
 ### Live
+* [Live tools](live/tools/index.md) - Asynchronous background execution and response scheduling for Gemini Live agents.
 * [LiveRequestQueue](live/live_request_queue/index.md) - Streaming content, realtime audio, and stream control signals to live agents.
 
 ### Memory
@@ -68,6 +70,7 @@ This directory contains specific developer guides for the ADK Python implementat
 * [to_mcp_server](tools/mcp_tool/agent_to_mcp/index.md) - Expose an ADK agent as an MCP server so any MCP host can drive it as a single tool (the MCP counterpart of to_a2a).
 
 ### Workflows
+* [BaseNode](workflow/base_node/index.md) - The foundational base class and configuration settings for all workflow nodes.
 * [Workflow](workflow/workflow/index.md) - Graph-based orchestration of complex, multi-step agent interactions.
 * [Workflow Graphs](workflow/graph/index.md) - Understanding nodes, edges, and graph structures in workflows.
 * [Function Nodes](workflow/function_node/index.md) - Wrapping Python functions and generators as workflow nodes.

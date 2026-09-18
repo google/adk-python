@@ -20,7 +20,6 @@ from typing import AsyncGenerator
 
 from google.genai import types
 
-from ..agents.base_agent import BaseAgent
 from ..events._rewind_events import _apply_rewinds
 from ..events.event import Event
 from ..sessions.base_session_service import BaseSessionService
@@ -28,6 +27,7 @@ from ..sessions.session import Session
 from ..telemetry.tracing import _build_compaction_attributes
 from ..telemetry.tracing import _build_compaction_result_attributes
 from ..telemetry.tracing import tracer
+from ..workflow import BaseNode
 from .app import App
 from .app import EventsCompactionConfig
 from .llm_event_summarizer import LlmEventSummarizer
@@ -250,7 +250,7 @@ def _has_sliding_window_config(config: EventsCompactionConfig | None) -> bool:
 
 
 def _ensure_compaction_summarizer(
-    *, config: EventsCompactionConfig, agent: BaseAgent
+    *, config: EventsCompactionConfig, agent: BaseNode
 ) -> None:
   """Ensures compaction config has a summarizer initialized."""
   if config.summarizer is not None:
@@ -401,7 +401,7 @@ async def _run_compaction_for_token_threshold_config(
     config: EventsCompactionConfig | None,
     session: Session,
     session_service: BaseSessionService,
-    agent: BaseAgent,
+    agent: BaseNode,
     agent_name: str = '',
     current_branch: str | None = None,
 ) -> bool:
