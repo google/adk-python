@@ -804,7 +804,7 @@ class Runner:
           event=event,
       )
 
-      if not event.partial:
+      if not output_event.partial:
         await self.session_service.append_event(
             session=ic.session, event=output_event
         )
@@ -1456,7 +1456,7 @@ class Runner:
             invocation_context=invocation_context,
             event=early_exit_event,
         )
-        if self._should_append_event(early_exit_event, is_live_call):
+        if self._should_append_event(output_event, is_live_call):
           await self.session_service.append_event(
               session=invocation_context.session,
               event=output_event,
@@ -1475,15 +1475,16 @@ class Runner:
 
             if is_live_call:
               # Skip partial transcriptions for Live
-              if event.partial is not True and self._should_append_event(
-                  event, is_live_call
+              if (
+                  output_event.partial is not True
+                  and self._should_append_event(output_event, is_live_call)
               ):
                 logger.debug('Appending live event: %s', output_event)
                 await self.session_service.append_event(
                     session=invocation_context.session, event=output_event
                 )
             else:
-              if event.partial is not True:
+              if output_event.partial is not True:
                 await self.session_service.append_event(
                     session=invocation_context.session, event=output_event
                 )
