@@ -41,6 +41,14 @@ def _where_filter(where_mock):
   return field_filter.field_path, field_filter.op_string, field_filter.value
 
 
+def _stored_snapshot(data):
+  """Returns a snapshot of an existing document holding `data`."""
+  snapshot = mock.MagicMock()
+  snapshot.exists = True
+  snapshot.to_dict.return_value = data
+  return snapshot
+
+
 @pytest.fixture
 def mock_firestore_client():
   client = mock.MagicMock()
@@ -290,6 +298,37 @@ async def test_append_event(mock_firestore_client):
 
 
 @pytest.mark.asyncio
+async def test_append_event_stores_the_event_timestamp(mock_firestore_client):
+  """The stored event time is Event.timestamp, not the Firestore write time."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+  session = Session(id="test_session", app_name="test_app", user_id="test_user")
+  event = Event(
+      invocation_id="test_inv", author="user", timestamp=1700000000.123456
+  )
+
+  root_coll = mock_firestore_client.collection.return_value
+  user_ref = (
+      root_coll.document.return_value.collection.return_value.document.return_value
+  )
+  session_doc_ref = user_ref.collection.return_value.document.return_value
+  session_doc_ref.get = mock.AsyncMock(
+      return_value=_stored_snapshot({"revision": 0})
+  )
+  event_ref = session_doc_ref.collection.return_value.document.return_value
+
+  with mock.patch("google.cloud.firestore.async_transactional", lambda x: x):
+    await service.append_event(session, event)
+
+  transaction = mock_firestore_client.transaction.return_value
+  writes = {
+      call.args[0]: call.args[1] for call in transaction.set.call_args_list
+  }
+  assert writes[event_ref]["timestamp"] == datetime.fromtimestamp(
+      1700000000.123456, tz=timezone.utc
+  )
+
+
+@pytest.mark.asyncio
 async def test_append_event_session_not_found(mock_firestore_client):
   service = FirestoreSessionService(client=mock_firestore_client)
   session = Session(id="test_session", app_name="test_app", user_id="test_user")
@@ -506,13 +545,6 @@ async def test_create_session_keeps_app_and_user_state_native(
   session_doc_ref = sessions_ref.document.return_value
   persisted_state = json.loads(written[session_doc_ref]["state"])
   assert isinstance(persisted_state["session_key"], str)
-
-
-def _stored_snapshot(data):
-  snapshot = mock.MagicMock()
-  snapshot.exists = True
-  snapshot.to_dict.return_value = data
-  return snapshot
 
 
 @pytest.mark.asyncio
@@ -1065,7 +1097,7 @@ async def test_get_session_after_timestamp_cursor_is_utc_aware(
 ):
   """The after_timestamp cursor must be an aware UTC datetime.
 
-  Events are written with an aware UTC server timestamp, so a naive local
+  Events are written with an aware UTC timestamp, so a naive local
   cursor is compared against them shifted by the host's UTC offset: it
   replays events west of UTC and silently drops them east of it.
   """

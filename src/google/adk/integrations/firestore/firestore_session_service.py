@@ -590,7 +590,10 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
             event_ref,
             {
                 "event_data": event_data,
-                "timestamp": firestore.SERVER_TIMESTAMP,
+                # Event time, not write time: after_timestamp filters on it.
+                "timestamp": datetime.fromtimestamp(
+                    event.timestamp, tz=timezone.utc
+                ),
                 "appName": session.app_name,
                 "userId": session.user_id,
             },
