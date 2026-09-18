@@ -33,6 +33,7 @@ from unittest import mock
 
 import click
 from click.testing import CliRunner
+from google.adk.cli.deployers._dockerfile_template import _agent_deps_install_layer
 import pytest
 
 import src.google.adk.cli.cli_deploy as cli_deploy
@@ -97,6 +98,26 @@ def agent_dir(tmp_path: Path) -> Callable[[bool, bool], Path]:
     return base
 
   return _factory
+
+
+def test_agent_deps_install_layer_copies_requirements_before_pip() -> None:
+  """Agent requirements are copied as their own layer, then installed."""
+  layer = _agent_deps_install_layer("my_app", True)
+  req_copy = (
+      'COPY --chown=myuser:myuser "agents/my_app/requirements.txt"'
+      ' "/app/agents/my_app/requirements.txt"'
+  )
+  req_install = 'RUN pip install -r "/app/agents/my_app/requirements.txt"'
+  assert req_copy in layer
+  assert req_install in layer
+  assert layer.index(req_copy) < layer.index(req_install)
+
+
+def test_agent_deps_install_layer_without_requirements() -> None:
+  """Missing requirements.txt is a no-op comment, not a pip install."""
+  assert _agent_deps_install_layer("my_app", False) == (
+      "# No requirements.txt found."
+  )
 
 
 # _resolve_project
@@ -403,6 +424,21 @@ def test_to_gke_happy_path(
   dockerfile_content = dockerfile_path.read_text()
   assert "CMD adk api_server --with_ui --port=9090" in dockerfile_content
   assert 'RUN pip install "google-adk[a2a]==1.2.0"' in dockerfile_content
+  agent_copy = 'COPY --chown=myuser:myuser "agents/agent/" "/app/agents/agent/"'
+  if include_requirements:
+    req_copy = (
+        'COPY --chown=myuser:myuser "agents/agent/requirements.txt"'
+        ' "/app/agents/agent/requirements.txt"'
+    )
+    req_install = 'RUN pip install -r "/app/agents/agent/requirements.txt"'
+    assert dockerfile_content.index(req_copy) < dockerfile_content.index(
+        req_install
+    )
+    assert dockerfile_content.index(req_install) < dockerfile_content.index(
+        agent_copy
+    )
+  else:
+    assert "# No requirements.txt found." in dockerfile_content
 
   assert len(run_recorder.calls) == 3, "Expected 3 subprocess calls"
 
