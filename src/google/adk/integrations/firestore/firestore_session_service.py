@@ -443,6 +443,21 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
     sessions.sort(key=lambda s: (s.last_update_time, s.user_id, s.id))
     return ListSessionsResponse(sessions=sessions)
 
+  async def get_user_state(
+      self, *, app_name: str, user_id: str
+  ) -> dict[str, Any]:
+    """Gets the user-scoped state from Firestore."""
+    user_ref = (
+        self.client.collection(self.user_state_collection)
+        .document(app_name)
+        .collection("users")
+        .document(user_id)
+    )
+    user_doc = await user_ref.get()
+    if not user_doc.exists:
+      return {}
+    return user_doc.to_dict() or {}
+
   async def delete_session(
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:

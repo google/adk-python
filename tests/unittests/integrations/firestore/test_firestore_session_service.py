@@ -962,6 +962,36 @@ async def test_list_sessions_filters_other_apps(mock_firestore_client):
 
 
 @pytest.mark.asyncio
+async def test_get_user_state_returns_stored_user_state(mock_firestore_client):
+  """get_user_state returns the user_states document for the app and user."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+  root_coll = mock_firestore_client.collection.return_value
+  users_coll = root_coll.document.return_value.collection.return_value
+  users_coll.document.return_value.get = mock.AsyncMock(
+      return_value=_stored_snapshot({"theme": "dark"})
+  )
+
+  state = await service.get_user_state(app_name="test_app", user_id="alice")
+
+  assert state == {"theme": "dark"}
+  mock_firestore_client.collection.assert_called_with("user_states")
+  root_coll.document.assert_called_with("test_app")
+  users_coll.document.assert_called_with("alice")
+
+
+@pytest.mark.asyncio
+async def test_get_user_state_is_empty_when_nothing_is_stored(
+    mock_firestore_client,
+):
+  """get_user_state returns an empty dict for a user without stored state."""
+  service = FirestoreSessionService(client=mock_firestore_client)
+
+  state = await service.get_user_state(app_name="test_app", user_id="alice")
+
+  assert state == {}
+
+
+@pytest.mark.asyncio
 async def test_create_session_already_exists(mock_firestore_client):
   service = FirestoreSessionService(client=mock_firestore_client)
   app_name = "test_app"
