@@ -457,6 +457,17 @@ class AgentRegistry:
     if not isinstance(mcp_server_id, str):
       mcp_server_id = None
 
+    # Prefer the App Hub resource-name URI (`RuntimeReference.uri`) for the
+    # destination span attribute, since that is the identifier form the
+    # Agent Platform Topology view's connection matcher resolves against.
+    # Fall back to `mcpServerId` if the attribute is absent.
+    runtime_reference = (server_details.get("attributes") or {}).get(
+        "agentregistry.googleapis.com/system/RuntimeReference"
+    ) or {}
+    destination_resource_id = runtime_reference.get("uri")
+    if not isinstance(destination_resource_id, str):
+      destination_resource_id = mcp_server_id
+
     endpoint_uri, _, _ = self._get_connection_uri(
         server_details, protocol_binding=_compat.TP_JSONRPC
     )
@@ -491,7 +502,7 @@ class AgentRegistry:
       return headers
 
     return AgentRegistrySingleMcpToolset(
-        destination_resource_id=mcp_server_id,
+        destination_resource_id=destination_resource_id,
         connection_params=connection_params,
         tool_name_prefix=name,
         header_provider=combined_header_provider,
