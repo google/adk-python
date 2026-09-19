@@ -685,6 +685,56 @@ def test_parse_spec_with_path_level_parameters(openapi_spec_generator):
   assert local_param.type_value is int
 
 
+def test_parse_spec_operation_parameter_overrides_path_level_parameter(
+    openapi_spec_generator,
+):
+  """A same-named operation parameter replaces the path-level one."""
+  openapi_spec = {
+      "openapi": "3.1.0",
+      "info": {"title": "Accounts API", "version": "1.0.0"},
+      "paths": {
+          "/accounts/{accountId}": {
+              "parameters": [
+                  {
+                      "name": "accountId",
+                      "in": "path",
+                      "required": True,
+                      "schema": {"type": "string"},
+                      "description": "Shared account id",
+                  },
+                  # Same name, different location: not overridden.
+                  {
+                      "name": "accountId",
+                      "in": "header",
+                      "schema": {"type": "string"},
+                  },
+              ],
+              "get": {
+                  "operationId": "getAccount",
+                  "parameters": [{
+                      "name": "accountId",
+                      "in": "path",
+                      "required": True,
+                      "schema": {"type": "string"},
+                      "description": "Account id, e.g. ACC-123",
+                  }],
+                  "responses": {"200": {"description": "ok"}},
+              },
+          }
+      },
+  }
+
+  operation = openapi_spec_generator.parse(openapi_spec)[0]
+
+  assert [
+      (p.original_name, p.param_location) for p in operation.parameters
+  ] == [
+      ("accountId", "path"),
+      ("accountId", "header"),
+  ]
+  assert operation.parameters[0].description == "Account id, e.g. ACC-123"
+
+
 def test_parse_spec_with_invalid_type_any(openapi_spec_generator):
   """Test that schemas with type='Any' are sanitized for Pydantic 2.11+.
 
