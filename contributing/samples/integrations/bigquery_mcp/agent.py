@@ -13,10 +13,12 @@
 # limitations under the License.
 
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.adk.utils import _mtls_utils
 import google.auth
+import google.auth.transport.requests
 
 BIGQUERY_AGENT_NAME = "adk_sample_bigquery_mcp_agent"
 BIGQUERY_MCP_ENDPOINT = _mtls_utils.get_api_endpoint(
@@ -29,14 +31,25 @@ BIGQUERY_SCOPE = "https://www.googleapis.com/auth/bigquery"
 # Initialize the tools to use the application default credentials.
 # https://cloud.google.com/docs/authentication/provide-credentials-adc
 credentials, project_id = google.auth.default(scopes=[BIGQUERY_SCOPE])
-credentials.refresh(google.auth.transport.requests.Request())
-oauth_token = credentials.token
+
+
+def _auth_headers(ctx: ReadonlyContext) -> dict[str, str]:
+  """Returns the auth header, refreshing the access token when it expires.
+
+  Access tokens are valid for about an hour, so a token fetched once at import
+  would stop working in a long-running ``adk web`` or ``adk api_server``
+  process.
+  """
+  if not credentials.valid:
+    credentials.refresh(google.auth.transport.requests.Request())
+  return {"Authorization": f"Bearer {credentials.token}"}
+
 
 bigquery_mcp_toolset = McpToolset(
     connection_params=StreamableHTTPConnectionParams(
         url=BIGQUERY_MCP_ENDPOINT,
-        headers={"Authorization": f"Bearer {oauth_token}"},
-    )
+    ),
+    header_provider=_auth_headers,
 )
 
 # The variable name `root_agent` determines what your root agent is for the
