@@ -38,6 +38,21 @@ logger = logging.getLogger('google_adk.' + __name__)
 _T = TypeVar('_T')
 
 
+async def _cancel_and_drain(task: asyncio.Future[Any]) -> None:
+  """Cancels an in-flight call and waits for it to actually stop.
+
+  Returning before the call has unwound would let it keep reading the
+  transport after the caller believes it is finished.
+  """
+  task.cancel()
+  try:
+    await task
+  except BaseException:
+    # Includes the CancelledError just requested, and a cancellation
+    # delivered to this frame while the drain was in progress.
+    pass
+
+
 def _read_timeout(seconds: Optional[float]) -> Optional[float | timedelta]:
   """Converts a timeout in seconds to the type ``ClientSession`` expects.
 
@@ -273,10 +288,18 @@ class SessionContext:
 
     coro_task = asyncio.ensure_future(coro)
 
-    done, _ = await asyncio.wait(
-        [coro_task, self._task],
-        return_when=asyncio.FIRST_COMPLETED,
-    )
+    try:
+      done, _ = await asyncio.wait(
+          [coro_task, self._task],
+          return_when=asyncio.FIRST_COMPLETED,
+      )
+    except BaseException:
+      # asyncio.wait does not own what it waits on, so it leaves the call
+      # running when this frame is cancelled. The caller's `finally` then
+      # releases the session back to the pool while that call is still
+      # reading the transport, and the pool is free to evict it underneath.
+      await _cancel_and_drain(coro_task)
+      raise
 
     if coro_task in done:
       # If the coroutine itself raised, the exception propagates as-is
@@ -287,11 +310,7 @@ class SessionContext:
 
     # The background task finished first, indicating a transport crash.
     # Cancel the in-flight tool call and surface the original error.
-    coro_task.cancel()
-    try:
-      await coro_task
-    except BaseException:
-      pass
+    await _cancel_and_drain(coro_task)
 
     exc = self._task.exception() if not self._task.cancelled() else None
     raise ConnectionError(
