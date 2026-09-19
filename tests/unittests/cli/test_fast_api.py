@@ -33,6 +33,7 @@ from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
+from google.adk.artifacts.file_artifact_service import FileArtifactService
 from google.adk.cli import fast_api as fast_api_module
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.errors.input_validation_error import InputValidationError
@@ -2398,6 +2399,51 @@ def test_save_artifact_returns_400_on_validation_error(
   response = test_app.post(url, json=payload)
   assert response.status_code == 400
   assert response.json()["detail"] == "invalid artifact"
+
+
+def test_file_artifact_save_rejects_reserved_versions_path(
+    tmp_path,
+    test_session_info,
+    mock_session_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """The HTTP API surfaces file storage path collisions as HTTP 400."""
+  service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  client = _create_test_client(
+      mock_session_service,
+      service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+  info = test_session_info
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/"
+      f"{info['session_id']}/artifacts"
+  )
+
+  rejected = client.post(
+      url,
+      json={
+          "filename": "project/versions/report.txt",
+          "artifact": {"text": "x"},
+      },
+  )
+  accepted = client.post(
+      url,
+      json={
+          "filename": "project/releases/report.txt",
+          "artifact": {"text": "x"},
+      },
+  )
+
+  assert rejected.status_code == 400
+  assert "versions" in rejected.json()["detail"]
+  assert accepted.status_code == 200
 
 
 def test_save_artifact_returns_500_on_unexpected_error(
