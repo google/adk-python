@@ -5100,6 +5100,75 @@ async def test_generate_content_async_stream_reason_does_not_carry_over(
 
 
 @pytest.mark.asyncio
+async def test_generate_content_async_stream_keeps_parallel_tool_calls(
+    mock_completion, lite_llm_instance
+):
+  """Parallel tool calls delivered with the finish reason are all kept.
+
+  A provider that emits several tool calls on the chunk that also carries
+  finish_reason stamps that reason on every one of them, so the segment must
+  not be finalized until the chunk's last call has been buffered.
+  """
+  mock_completion.return_value = iter([
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason="tool_calls",
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_1",
+                              function=Function(
+                                  name="get_weather",
+                                  arguments='{"city":"SF"}',
+                              ),
+                              index=0,
+                          ),
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_2",
+                              function=Function(
+                                  name="get_time", arguments='{"tz":"UTC"}'
+                              ),
+                              index=1,
+                          ),
+                      ],
+                  ),
+              )
+          ],
+      ),
+  ])
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          llm_request, stream=True
+      )
+  ]
+
+  final = responses[-1]
+  function_calls = [
+      part.function_call for part in final.content.parts if part.function_call
+  ]
+  assert [call.name for call in function_calls] == ["get_weather", "get_time"]
+  assert [call.args for call in function_calls] == [
+      {"city": "SF"},
+      {"tz": "UTC"},
+  ]
+
+
+@pytest.mark.asyncio
 async def test_generate_content_async_stream_with_only_finish_reason(
     mock_completion, lite_llm_instance
 ):

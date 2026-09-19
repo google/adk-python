@@ -3562,13 +3562,18 @@ class LiteLlm(BaseLlm):
                   chunk.cache_creation_tokens,
               )
 
-          # LiteLLM 1.81+ can set finish_reason="stop" on partial chunks. Only
-          # finalize tool calls on an explicit tool_calls/length finish_reason,
-          # or on a stop-only chunk (no content/tool deltas).
-          if function_calls and (
-              finish_reason == "tool_calls"
-              or finish_reason == "length"
-              or (finish_reason == "stop" and chunk is None)
+          # LiteLLM 1.81+ can set finish_reason="stop" on partial chunks, and
+          # _model_response_to_chunk repeats a chunk's finish_reason on every
+          # tool call that chunk carries. Ending the segment while a tool-call
+          # delta is still in hand finalizes after the first of several
+          # parallel calls, and _reset_stream_buffers then drops the rest, so
+          # only a chunk that carries no further delta ends it here. Every
+          # other terminal reason falls through to the end-of-stream
+          # finalizer below, which replays last_finish_reason.
+          if (
+              function_calls
+              and chunk is None
+              and finish_reason in ("tool_calls", "length", "stop")
           ):
             aggregated_llm_response_with_tool_call = (
                 _finalize_tool_call_response(
@@ -3577,12 +3582,14 @@ class LiteLlm(BaseLlm):
                 )
             )
             _reset_stream_buffers()
-          elif (text_parts or reasoning_parts) and (
-              finish_reason == "length"
-              or (
-                  finish_reason == "stop"
-                  and chunk is None
-                  and not function_calls
+          elif (
+              (text_parts or reasoning_parts)
+              # Buffered tool calls outrank buffered text, as they did when
+              # the branch above still caught every terminal reason.
+              and not function_calls
+              and (
+                  finish_reason == "length"
+                  or (finish_reason == "stop" and chunk is None)
               )
           ):
             aggregated_llm_response = _finalize_text_response(
