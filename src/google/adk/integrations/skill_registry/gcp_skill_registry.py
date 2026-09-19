@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import ssl
 import tempfile
 from typing import Any
@@ -36,9 +37,21 @@ import google.auth.exceptions
 from google.auth.transport import mtls
 from google.auth.transport import requests as auth_requests
 import httpx
-from pydantic import ValidationError
 
 logger = logging.getLogger("google_adk." + __name__)
+
+# Registry resource ids (e.g. "cloud.google.com-agent-platform-eval-flywheel"
+# for Google-published skills) are a different namespace from SKILL.md
+# frontmatter names: they are not required to be kebab/snake-case and may
+# contain dots. They still need to be safe to interpolate as a single URL
+# path segment, so they get their own, more permissive check instead of
+# reusing the SKILL.md content naming rule.
+_SAFE_REGISTRY_ID_PATTERN = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
+
+
+def _is_safe_registry_id(name: str) -> bool:
+  """True if `name` is safe to use as a single skill-registry path segment."""
+  return len(name) <= 256 and bool(_SAFE_REGISTRY_ID_PATTERN.match(name))
 
 
 class GCPSkillRegistry(SkillRegistry):
@@ -175,15 +188,16 @@ class GCPSkillRegistry(SkillRegistry):
       ValueError: If the name is not a valid skill name.
     """
     # The name reaches here straight from a model-issued tool call, so it must
-    # be a single path segment before it is interpolated into the request URL.
-    # Accept the same character set skill names are already held to; the
-    # snake-or-kebab pattern is the superset of the two accepted spellings.
-    # pylint: disable-next=protected-access
-    if not models._SNAKE_OR_KEBAB_NAME_PATTERN.match(name):
+    # be a single, safe path segment before it is interpolated into the
+    # request URL. This is a registry resource id, not a SKILL.md frontmatter
+    # name, so it is held to its own safe-path-segment rule rather than the
+    # stricter kebab/snake-case naming rule SKILL.md content is held to.
+    if not _is_safe_registry_id(name):
       raise ValueError(
-          f"Invalid skill name {name!r}: name must be lowercase kebab-case"
-          " (a-z, 0-9, hyphens) or snake_case (a-z, 0-9, underscores), with"
-          " no leading, trailing, or consecutive delimiters."
+          f"Invalid skill name {name!r}: name must be a single safe path"
+          " segment of at most 256 characters (lowercase letters, digits,"
+          " and non-consecutive '.', '_', '-' separators), with no leading,"
+          " trailing, or consecutive delimiters."
       )
 
     async with self._create_httpx_client() as client:
@@ -246,18 +260,30 @@ class GCPSkillRegistry(SkillRegistry):
         # fails validation below and takes the skip path.
         raw_name = s.get("name")
         name = raw_name.split("/")[-1] if isinstance(raw_name, str) else ""
-        try:
-          results.append(
-              models.Frontmatter(
-                  name=name,
-                  description=s.get("description", "") or "",
-              )
+        # A registry id is not a SKILL.md frontmatter name (see get_skill),
+        # so it is checked against the safe-path-segment rule instead of
+        # Frontmatter's stricter kebab/snake-case name validator.
+        if not _is_safe_registry_id(name):
+          logger.warning(
+              "Skipping search result %r: not a safe registry id.", name
           )
-        except ValidationError as e:
+          continue
+        try:
+          # pylint: disable-next=protected-access
+          description = models.Frontmatter._validate_description(
+              s.get("description", "") or ""
+          )
+        except ValueError as e:
           logger.warning(
               "Skipping search result %r: it does not pass frontmatter"
               " validation: %s",
               name,
               e,
           )
+          continue
+        results.append(
+            models.Frontmatter.model_construct(
+                name=name, description=description
+            )
+        )
       return results
