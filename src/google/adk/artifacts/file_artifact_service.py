@@ -34,6 +34,7 @@ from typing_extensions import override
 
 from . import artifact_util
 from ..errors.input_validation_error import InputValidationError
+from ..platform import time as platform_time
 from .base_artifact_service import ArtifactVersion
 from .base_artifact_service import BaseArtifactService
 from .base_artifact_service import ensure_part
@@ -445,6 +446,9 @@ class FileArtifactService(BaseArtifactService):
         canonical_uri=canonical_uri,
         custom_metadata=dict(custom_metadata_val),
         mime_type=mime_type,
+        create_time=metadata.create_time
+        if metadata
+        else platform_time.get_time(),
     )
 
   def _latest_metadata(
@@ -657,6 +661,11 @@ class FileArtifactService(BaseArtifactService):
       user_id: str,
       session_id: Optional[str] = None,
   ) -> list[str]:
+    """Lists artifact filenames for the given session/user.
+
+    An artifact saved with `session_id=None` is listed under the bare name it
+    was saved with, so loading it from a session needs the `user:` prefix.
+    """
     return await asyncio.to_thread(
         self._list_artifact_keys_sync,
         app_name,
@@ -670,7 +679,6 @@ class FileArtifactService(BaseArtifactService):
       user_id: str,
       session_id: Optional[str],
   ) -> list[str]:
-    """Lists artifact filenames for the given session/user."""
     filenames: set[str] = set()
     base_root = self._base_root(app_name, user_id)
 

@@ -18,6 +18,7 @@ import asyncio
 import atexit
 import base64
 import collections.abc
+import concurrent.futures
 from concurrent.futures import Future as ConcurrentFuture
 from concurrent.futures import ThreadPoolExecutor
 import contextvars
@@ -31,6 +32,7 @@ from datetime import timezone
 import decimal
 import enum
 import functools
+import inspect
 import json
 import logging
 import math
@@ -179,9 +181,346 @@ def _derive_scope(
 # them proactively in the child, before _ensure_started runs.
 _LIVE_PLUGINS: weakref.WeakSet[BigQueryAgentAnalyticsPlugin] = weakref.WeakSet()
 
+# Track active batch processors across all plugin instances for coordinated,
+# concurrent graceful shutdown on interpreter exit.
+_ACTIVE_PROCESSORS: weakref.WeakSet[BatchProcessor] = weakref.WeakSet()
+_ACTIVE_PROCESSORS_LOCK = threading.Lock()
+_ATEXIT_REGISTERED = False
+
+
+def _register_active_processor(processor: "BatchProcessor") -> None:
+  """Registers an active batch processor for coordinated atexit shutdown."""
+  global _ATEXIT_REGISTERED
+  with _ACTIVE_PROCESSORS_LOCK:
+    _ACTIVE_PROCESSORS.add(processor)
+    if not _ATEXIT_REGISTERED:
+      atexit.register(_atexit_cleanup_all)
+      _ATEXIT_REGISTERED = True
+
+
+def _unregister_active_processor(processor: "BatchProcessor") -> None:
+  """Unregisters a shut down or detached processor from atexit tracking."""
+  with _ACTIVE_PROCESSORS_LOCK:
+    try:
+      _ACTIVE_PROCESSORS.discard(processor)
+    except (ReferenceError, TypeError):
+      pass
+
+
+def _atexit_cleanup_all() -> None:
+  """Coordinates concurrent graceful shutdown across all active processors on interpreter exit."""
+  with _ACTIVE_PROCESSORS_LOCK:
+    processors = list(_ACTIVE_PROCESSORS)
+    _ACTIVE_PROCESSORS.clear()
+
+  if not processors:
+    return
+
+  drained_processors: dict[BatchProcessor, "ConcurrentFuture[Any]"] = {}
+  max_timeout = 5.0
+  total_remaining = 0
+
+  for bp in processors:
+    try:
+      if not bp or bp._shutdown:
+        continue
+      loop = getattr(bp, "_loop", None)
+      if loop is not None and loop.is_running():
+        t = getattr(bp, "shutdown_timeout", 5.0)
+        max_timeout = max(max_timeout, t)
+        fut = asyncio.run_coroutine_threadsafe(bp.shutdown(timeout=t), loop)
+        drained_processors[bp] = fut
+      else:
+        queue = getattr(bp, "_queue", None)
+        if queue is not None:
+          try:
+            while True:
+              item = queue.get_nowait()
+              if item is not _SHUTDOWN_SENTINEL:
+                total_remaining += 1
+          except asyncio.QueueEmpty:
+            pass
+    except (AttributeError, ReferenceError):
+      pass
+
+  if drained_processors:
+    all_futs = list(drained_processors.values())
+    concurrent.futures.wait(all_futs, timeout=max_timeout + 1.0)
+    for bp, fut in drained_processors.items():
+      if not fut.done() or fut.cancelled() or fut.exception() is not None:
+        try:
+          queue = getattr(bp, "_queue", None)
+          if queue is not None:
+            sentinels = getattr(bp, "_sentinel_count", 0)
+            total_remaining += max(0, queue.qsize() - sentinels)
+        except (AttributeError, ReferenceError):
+          pass
+
+  if total_remaining:
+    logger.warning(
+        "%d analytics event(s) were still queued at interpreter exit "
+        "and could not be flushed. Call plugin.flush() before shutdown "
+        "to avoid data loss.",
+        total_remaining,
+    )
+
+
+_BG_LOOP: Optional[asyncio.AbstractEventLoop] = None
+_BG_THREAD: Optional[Any] = None
+_BG_LOOP_LOCK = threading.Lock()
+_BG_LOOP_PID: Optional[int] = None
+
+
+def _make_credentials_key(
+    credentials: Any, explicit_id: Optional[str] = None
+) -> Any:
+  """Derives a stable, hashable cache key for credentials.
+
+  Extracts identity properties (such as service account email, scopes,
+  and project ID) from Google Auth credentials so equivalent credential
+  instances (e.g. RobotCredentials constructed per request turn) share the
+  same background loop state without leaking channels or worker tasks.
+  """
+  if explicit_id:
+    return f"id:{explicit_id}"
+  if credentials is None:
+    return None
+
+  # Check if credentials object defines an explicit identifier
+  for attr in ("credentials_id", "_credentials_id", "credentials_key"):
+    val = getattr(credentials, attr, None)
+    if val:
+      return f"id:{val}"
+
+  # Extract identity attributes common to Google Auth credential objects
+  # (RobotCredentials, ServiceAccountCredentials, ComputeEngineCredentials)
+  email: Optional[str] = None
+  for attr in (
+      "service_account_email",
+      "_robot_account_email",
+      "signer_email",
+      "_service_account_email",
+      "client_email",
+  ):
+    val = getattr(credentials, attr, None)
+    if isinstance(val, str) and val:
+      email = val
+      break
+
+  scopes_key: Optional[tuple[str, ...]] = None
+  for attr in ("scopes", "_scopes"):
+    raw_scopes = getattr(credentials, attr, None)
+    if raw_scopes:
+      if isinstance(raw_scopes, str):
+        scopes_key = tuple(sorted(raw_scopes.split()))
+      elif isinstance(raw_scopes, collections.abc.Iterable):
+        scopes_key = tuple(sorted(str(s) for s in raw_scopes))
+      break
+
+  project_id: Optional[str] = getattr(
+      credentials, "project_id", None
+  ) or getattr(credentials, "quota_project_id", None)
+
+  if email is not None:
+    return (type(credentials).__name__, email, scopes_key, project_id)
+
+  client_id: Optional[str] = getattr(credentials, "client_id", None)
+  if client_id is not None:
+    return (type(credentials).__name__, client_id, scopes_key, project_id)
+
+  try:
+    hash(credentials)
+    return credentials
+  except TypeError:
+    return id(credentials)
+
+
+def _register_thread_for_debugging(name: str) -> None:
+  """Registers the current thread with internal debugging endpoints, if available."""
+  del name  # Unused in open-source.
+
+
+# Module-level registry of shared _LoopState instances hosted on _BG_LOOP.
+# Keyed by (table_key, credentials_key) where table_key is "project.dataset.table".
+_BG_LOOP_STATES: dict[tuple[str, Any], _LoopState] = {}
+_BG_LOOP_STATES_LOCK = threading.RLock()
+_BG_LOOP_STATE_FUTURES: dict[
+    tuple[str, Any], asyncio.Future[_LoopState] | ConcurrentFuture[_LoopState]
+] = {}
+_BG_LOOP_BUILDER_WAITERS: dict[
+    asyncio.Future[_LoopState] | ConcurrentFuture[_LoopState], set[object]
+] = {}
+
+
+def _get_bg_loop() -> asyncio.AbstractEventLoop:
+  """Returns a dedicated singleton process-lifetime event loop on a daemon thread.
+
+  The loop runs on a persistent daemon thread that outlives per-request
+  `asyncio.run()` lifecycles, enabling decoupled background log flushing
+  without losing terminal records when an ephemeral request loop is torn down.
+  """
+  global _BG_LOOP, _BG_THREAD, _BG_LOOP_PID
+  pid = os.getpid()
+  with _BG_LOOP_LOCK:
+    if (
+        _BG_LOOP is None
+        or _BG_LOOP.is_closed()
+        or _BG_THREAD is None
+        or not _BG_THREAD.is_alive()
+        or _BG_LOOP_PID != pid
+    ):
+      ready = threading.Event()
+      abort = threading.Event()
+      start_exc: Optional[BaseException] = None
+
+      def _run() -> None:
+        nonlocal start_exc
+        _register_thread_for_debugging("bqaa-background-writer")
+        loop: Optional[asyncio.AbstractEventLoop] = None
+        try:
+          loop = asyncio.new_event_loop()
+          asyncio.set_event_loop(loop)
+          if abort.is_set():
+            loop.close()
+            return
+          global _BG_LOOP
+          _BG_LOOP = loop
+        except BaseException as e:
+          start_exc = e
+        finally:
+          ready.set()
+        if start_exc is not None or abort.is_set():
+          if loop is not None and not loop.is_closed():
+            loop.close()
+          return
+        if loop is None:
+          raise RuntimeError("BQAA background writer loop was not created.")
+        try:
+          loop.run_forever()
+        except BaseException as e:
+          logger.exception(
+              "Uncaught exception in BQAA background writer loop: %s", e
+          )
+          raise
+        finally:
+          # On worker shutdown (e.g. process exit), cancel remaining tasks.
+          # Background threads are not inherited across os.fork(), so this loop
+          # only runs and tears down in the process that started it.
+          try:
+            pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+            for t in pending:
+              t.cancel()
+            if pending:
+              loop.run_until_complete(
+                  asyncio.gather(*pending, return_exceptions=True)
+              )
+          except Exception:
+            pass
+          loop.close()
+
+      # Use threading.Thread directly with an empty ContextVar context rather
+      # than create_thread (G3Thread) to prevent capturing the initializing
+      # request's base::Context, Dapper trace context, and request-scoped
+      # ContextVars into the process-lifetime background loop.
+      root_ctx = contextvars.Context()
+      thread = threading.Thread(
+          target=root_ctx.run,
+          args=(_run,),
+          name="bqaa-background-writer",
+          daemon=True,
+      )
+      thread.start()
+      if not ready.wait(timeout=2.0):
+        abort.set()
+        if _BG_LOOP is not None and not _BG_LOOP.is_closed():
+          try:
+            _BG_LOOP.call_soon_threadsafe(_BG_LOOP.stop)
+          except Exception:
+            pass
+        _BG_LOOP = None
+        _BG_THREAD = None
+        raise RuntimeError(
+            "Failed to start BQAA background writer thread within timeout."
+        )
+      if start_exc is not None:
+        _BG_LOOP = None
+        _BG_THREAD = None
+        raise RuntimeError(
+            "BQAA background writer thread failed to initialize."
+        ) from start_exc
+      if _BG_LOOP is None or _BG_LOOP.is_closed():
+        _BG_LOOP = None
+        _BG_THREAD = None
+        raise RuntimeError("BQAA background writer loop is unusable.")
+      _BG_THREAD = thread
+      _BG_LOOP_PID = pid
+    return _BG_LOOP
+
+
+async def _get_bg_loop_async() -> asyncio.AbstractEventLoop:
+  """Returns the singleton background loop without blocking the caller loop."""
+  global _BG_LOOP, _BG_THREAD, _BG_LOOP_PID
+  pid = os.getpid()
+  if (
+      _BG_LOOP is not None
+      and not _BG_LOOP.is_closed()
+      and _BG_THREAD is not None
+      and _BG_THREAD.is_alive()
+      and _BG_LOOP_PID == pid
+  ):
+    return _BG_LOOP
+  return await asyncio.to_thread(_get_bg_loop)
+
+
+def _reset_bg_loop_for_testing() -> None:
+  """Resets the singleton background loop reference.
+
+  TEST ONLY: Should only be called by test fixtures or teardown helpers.
+  """
+  global _BG_LOOP, _BG_THREAD, _BG_LOOP_PID
+  with _BG_LOOP_LOCK:
+    if _BG_LOOP is not None and not _BG_LOOP.is_closed():
+      try:
+        _BG_LOOP.call_soon_threadsafe(_BG_LOOP.stop)
+      except Exception:
+        pass
+    _BG_LOOP = None
+    _BG_THREAD = None
+    _BG_LOOP_PID = None
+  with _BG_LOOP_STATES_LOCK:
+    for state in _BG_LOOP_STATES.values():
+      _unregister_active_processor(state.batch_processor)
+    _BG_LOOP_STATES.clear()
+    _BG_LOOP_STATE_FUTURES.clear()
+    _BG_LOOP_BUILDER_WAITERS.clear()
+
+
+# Backward-compatible alias for existing test fixtures.
+_reset_bg_loop = _reset_bg_loop_for_testing
+
 
 def _after_fork_in_child() -> None:
-  """Reset every living plugin instance after os.fork()."""
+  """Reset every living plugin instance after os.fork().
+
+  Note: Background threads are not inherited across os.fork(). The child process
+  must not invoke threadsafe callbacks on the parent's orphaned loop or thread,
+  and must not re-write or drain the parent's queued rows. Reinitializing the
+  lock avoids child deadlock if the lock was held during fork.
+  """
+  global _BG_LOOP, _BG_THREAD, _BG_LOOP_PID, _BG_LOOP_LOCK
+  global _ACTIVE_PROCESSORS_LOCK
+  global _BG_LOOP_STATES, _BG_LOOP_STATES_LOCK, _BG_LOOP_STATE_FUTURES, _BG_LOOP_BUILDER_WAITERS
+  _BG_LOOP_LOCK = threading.Lock()
+  _BG_LOOP = None
+  _BG_THREAD = None
+  _BG_LOOP_PID = None
+  _BG_LOOP_STATES_LOCK = threading.RLock()
+  _BG_LOOP_STATES = {}
+  _BG_LOOP_STATE_FUTURES = {}
+  _BG_LOOP_BUILDER_WAITERS = {}
+  _ACTIVE_PROCESSORS_LOCK = threading.Lock()
+  with _ACTIVE_PROCESSORS_LOCK:
+    _ACTIVE_PROCESSORS.clear()
   for plugin in list(_LIVE_PLUGINS):
     try:
       plugin._reset_runtime_state()
@@ -1795,6 +2134,16 @@ class BigQueryLoggerConfig:
         each run. When False, rows are left to the background batch writer,
         which removes the flush from the response path at the cost of a small
         delay before rows land.
+      use_dedicated_background_loop: Whether to host the background batch writer
+        on a dedicated, process-lifetime background loop thread. When None (the
+        default), this falls back to ``not flush_on_run_end`` (automatically
+        enabled whenever decoupled asynchronous flushing is selected). When
+        True, explicitly forces the use of the background loop thread even if
+        ``flush_on_run_end`` is True. When False, forces the batch writer to run
+        on the caller's active event loop.
+      credentials_identifier: Optional explicit string identifier to
+        disambiguate or share background loop states across plugin instances
+        with equivalent credential identities.
   """
 
   enabled: bool = True
@@ -1875,6 +2224,11 @@ class BigQueryLoggerConfig:
   # so that adding it leaves the positional index of every pre-existing field
   # unchanged; keep new fields at the end for the same reason.
   exactly_once_delivery: bool = False
+  # Opt-in to host the background batch writer on a dedicated persistent loop
+  # thread. When None (the default), this is enabled automatically whenever
+  # flush_on_run_end is False.
+  use_dedicated_background_loop: Optional[bool] = None
+  credentials_identifier: Optional[str] = None
 
 
 # ==============================================================================
@@ -2133,11 +2487,11 @@ class TraceManager:
     because the plugin no longer creates one (see ``_SpanRecord``).
 
     Args:
-      expected_kind: When set, only pop if the top record was pushed
-        with this kind; otherwise leave the stack untouched and return
-        ``(None, None)``.  Error callbacks use this so they never pop a
-        span they do not own (e.g. ``on_agent_error_callback`` firing
-        for a failure that happened before BQAA pushed its agent span).
+      expected_kind: When set, only pop if the top record was pushed with this
+        kind; otherwise leave the stack untouched and return ``(None, None)``.
+        Error callbacks use this so they never pop a span they do not own (e.g.
+        ``on_agent_error_callback`` firing for a failure that happened before
+        BQAA pushed its agent span).
     """
     records = _span_records_ctx.get()
     if not records:
@@ -2237,13 +2591,14 @@ class BatchProcessor:
       write_client: BigQueryWriteAsyncClient,
       arrow_schema: pa.Schema,
       write_stream: str,
-      batch_size: int,
-      flush_interval: float,
-      retry_config: RetryConfig,
-      queue_max_size: int,
-      shutdown_timeout: float,
+      batch_size: int = 1,
+      flush_interval: float = 1.0,
+      retry_config: Optional[RetryConfig] = None,
+      queue_max_size: int = 10000,
+      shutdown_timeout: float = 10.0,
       exactly_once_delivery: bool = False,
       create_stream: Optional[Callable[[], Coroutine[Any, Any, str]]] = None,
+      loop: Optional[asyncio.AbstractEventLoop] = None,
   ):
     """Initializes the instance.
 
@@ -2251,7 +2606,7 @@ class BatchProcessor:
         write_client: BigQueryWriteAsyncClient for writing rows.
         arrow_schema: PyArrow schema for serialization.
         write_stream: BigQuery write stream name.
-        batch_size: Number of rows per batch.
+        batch_size: Number of rows per batch (defaults to 1).
         flush_interval: Max time to wait before flushing a batch.
         retry_config: Retry configuration.
         queue_max_size: Max size of the in-memory queue.
@@ -2260,13 +2615,16 @@ class BatchProcessor:
           prevent retry duplicates. Replacement streams consume stream-creation
           quota, and unrecoverable/ambiguous batches may still be dropped.
         create_stream: Async factory for replacement committed streams.
+        loop: Optional event loop to bind this processor to.
     """
     self.write_client = write_client
     self.arrow_schema = arrow_schema
     self.write_stream = write_stream
     self.batch_size = batch_size
     self.flush_interval = flush_interval
-    self.retry_config = retry_config
+    self.retry_config = (
+        retry_config if retry_config is not None else RetryConfig()
+    )
     self.shutdown_timeout = shutdown_timeout
     self.exactly_once_delivery = exactly_once_delivery
     self._create_stream = create_stream
@@ -2289,7 +2647,15 @@ class BatchProcessor:
     self._sentinel_count = 0
     self._batch_processor_task: Optional[asyncio.Task[None]] = None
     self._shutdown = False
+    if loop is not None:
+      self._loop: Optional[asyncio.AbstractEventLoop] = loop
+    else:
+      try:
+        self._loop = asyncio.get_running_loop()
+      except RuntimeError:
+        self._loop = None
 
+    self._dropped_lock = threading.Lock()
     # Running tally of events/rows dropped without ever being written, keyed by
     # reason. Logging every drop is the only existing signal that data was lost,
     # and those logs are easy to miss at volume; these counters let a host poll
@@ -2306,16 +2672,62 @@ class BatchProcessor:
         "offset_conflict": 0,
     }
 
+  def _record_drop(self, reason: str, count: int = 1) -> int:
+    """Thread-safely records dropped rows and returns updated count for reason."""
+    with self._dropped_lock:
+      self._dropped[reason] = self._dropped.get(reason, 0) + count
+      return self._dropped[reason]
+
   async def flush(self) -> None:
     """Flushes the queue, blocking until in-flight writes complete."""
     # empty() turns true as soon as an item is dequeued, before its write
     # finishes; join() waits for the unfinished-task count to reach zero.
+    try:
+      running_loop = asyncio.get_running_loop()
+    except RuntimeError:
+      running_loop = None
+
+    if (
+        self._loop is not None
+        and running_loop is not None
+        and self._loop is not running_loop
+    ):
+      fut = asyncio.run_coroutine_threadsafe(self._queue.join(), self._loop)
+      await asyncio.wrap_future(fut)
+      return
     await self._queue.join()
 
   async def start(self) -> None:
     """Starts the batch writer worker task."""
+    if self._loop is None:
+      try:
+        self._loop = asyncio.get_running_loop()
+      except RuntimeError:
+        pass
     if self._batch_processor_task is None:
       self._batch_processor_task = asyncio.create_task(self._batch_writer())
+
+  def _append_nowait(self, row: dict[str, Any]) -> None:
+    """Appends a row to the queue for batching synchronously.
+
+    Must run on the processor's event loop.
+    """
+    if self._shutdown:
+      self._record_drop("shutdown_cancelled", 1)
+      logger.warning(
+          "BigQuery batch processor is already shut down, dropping event."
+      )
+      return
+
+    try:
+      self._queue.put_nowait(row)
+    except asyncio.QueueFull:
+      total = self._record_drop("queue_full", 1)
+      logger.warning(
+          "BigQuery log queue full, dropping event. Total events dropped"
+          " (queue full): %s",
+          total,
+      )
 
   async def append(self, row: dict[str, Any]) -> None:
     """Appends a row to the queue for batching.
@@ -2324,14 +2736,17 @@ class BatchProcessor:
         row: Dictionary representing a single row.
     """
     try:
-      self._queue.put_nowait(row)
-    except asyncio.QueueFull:
-      self._dropped["queue_full"] += 1
-      logger.warning(
-          "BigQuery log queue full, dropping event. Total events dropped"
-          " (queue full): %s",
-          self._dropped["queue_full"],
-      )
+      running_loop = asyncio.get_running_loop()
+    except RuntimeError:
+      running_loop = None
+
+    if self._loop is not None and self._loop is not running_loop:
+      try:
+        self._loop.call_soon_threadsafe(self._append_nowait, row)
+      except RuntimeError:
+        self._record_drop("shutdown_cancelled", 1)
+      return
+    self._append_nowait(row)
 
   def get_drop_stats(self) -> dict[str, int]:
     """Returns a snapshot of dropped-row counts keyed by reason.
@@ -2354,12 +2769,14 @@ class BatchProcessor:
     Returns:
         A copy of the per-reason drop counters.
     """
-    return dict(self._dropped)
+    with self._dropped_lock:
+      return dict(self._dropped)
 
   @property
   def dropped_event_count(self) -> int:
     """Total rows dropped without being written, across all reasons."""
-    return sum(self._dropped.values())
+    with self._dropped_lock:
+      return sum(self._dropped.values())
 
   def _prepare_arrow_batch(self, rows: list[dict[str, Any]]) -> pa.RecordBatch:
     """Prepares a PyArrow RecordBatch from a list of rows.
@@ -2481,7 +2898,7 @@ class BatchProcessor:
         # lost — count it — then exit the
         # worker, preserving the original swallow-and-break semantics.
         if batch:
-          self._dropped["shutdown_timeout"] += len(batch)
+          self._record_drop("shutdown_timeout", len(batch))
           logger.warning(
               "%d in-flight row(s) dropped by shutdown cancellation.",
               len(batch),
@@ -2565,7 +2982,7 @@ class BatchProcessor:
         offset,
     )
     self._desync_stream()
-    self._dropped["offset_conflict"] += row_count
+    self._record_drop("offset_conflict", row_count)
 
   async def _ensure_writable_stream(self, row_count: int) -> bool:
     """Rotates a desynchronized committed stream before another append."""
@@ -2573,7 +2990,7 @@ class BatchProcessor:
       return True
     now = time.monotonic()
     if self._create_stream is None or now < self._rotation_retry_at:
-      self._dropped["offset_conflict"] += row_count
+      self._record_drop("offset_conflict", row_count)
       return False
 
     old_stream = self.write_stream
@@ -2587,7 +3004,7 @@ class BatchProcessor:
       raise
     except Exception as e:
       self._rotation_retry_at = now + 30.0
-      self._dropped["offset_conflict"] += row_count
+      self._record_drop("offset_conflict", row_count)
       logger.error(
           "Could not replace desynchronized BigQuery stream %s; dropping %d"
           " row(s): %s",
@@ -2634,16 +3051,16 @@ class BatchProcessor:
           trace_id=f"{trace_id_prefix}/{__version__}",
       )
       if offset_for_batch is not None:
-        req.offset = offset_for_batch
+        req.offset = offset_for_batch  # type: ignore[assignment]
       req.arrow_rows.writer_schema.serialized_schema = serialized_schema
       req.arrow_rows.rows.serialized_record_batch = serialized_batch
     except Exception as e:
-      self._dropped["arrow_prep_failed"] += len(rows)
+      total = self._record_drop("arrow_prep_failed", len(rows))
       logger.error(
           "Failed to prepare Arrow batch (Data Loss): %s. Total rows dropped"
           " (arrow prep failed): %s",
           e,
-          self._dropped["arrow_prep_failed"],
+          total,
           exc_info=True,
       )
       return
@@ -2696,7 +3113,7 @@ class BatchProcessor:
                   return
                 if error_code in (_GRPC_NOT_FOUND, _GRPC_OUT_OF_RANGE):
                   self._desync_stream()
-                  self._dropped["offset_conflict"] += len(rows)
+                  self._record_drop("offset_conflict", len(rows))
                   return
               if error_code in [
                   _GRPC_DEADLINE_EXCEEDED,
@@ -2723,7 +3140,7 @@ class BatchProcessor:
                 )
               if self.exactly_once_delivery and had_ambiguous_send:
                 self._desync_stream()
-              self._dropped["non_retryable"] += len(rows)
+              self._record_drop("non_retryable", len(rows))
               return
             if self.exactly_once_delivery:
               self._confirm_committed_delivery(offset_for_batch, len(rows))
@@ -2744,20 +3161,20 @@ class BatchProcessor:
               had_ambiguous_send=had_ambiguous_send,
           )
           return
-        self._dropped["unexpected_error"] += len(rows)
+        self._record_drop("unexpected_error", len(rows))
         logger.error("Unexpected BigQuery Write API error: %s", e)
         return
       except (api_exceptions.NotFound, api_exceptions.OutOfRange) as e:
         if self.exactly_once_delivery:
           self._desync_stream()
-          self._dropped["offset_conflict"] += len(rows)
+          self._record_drop("offset_conflict", len(rows))
           logger.warning(
               "BigQuery committed stream rejected offset %s: %s",
               offset_for_batch,
               e,
           )
           return
-        self._dropped["unexpected_error"] += len(rows)
+        self._record_drop("unexpected_error", len(rows))
         logger.error("Unexpected BigQuery Write API error: %s", e)
         return
       except (
@@ -2771,7 +3188,7 @@ class BatchProcessor:
           had_ambiguous_send = True
         attempt += 1
         if attempt > self.retry_config.max_retries:
-          self._dropped["retry_exhausted"] += len(rows)
+          total = self._record_drop("retry_exhausted", len(rows))
           if self.exactly_once_delivery and had_ambiguous_send:
             self._desync_stream()
           logger.error(
@@ -2779,7 +3196,7 @@ class BatchProcessor:
               " Total rows dropped (retry exhausted): %s",
               self.retry_config.max_retries + 1,
               e,
-              self._dropped["retry_exhausted"],
+              total,
           )
           return
 
@@ -2796,7 +3213,7 @@ class BatchProcessor:
         await asyncio.sleep(sleep_time)
         delay *= self.retry_config.multiplier
       except Exception as e:
-        self._dropped["unexpected_error"] += len(rows)
+        total_dropped = self._record_drop("unexpected_error", len(rows))
         if request_sent and not definitive_rejection:
           had_ambiguous_send = True
         if self.exactly_once_delivery and had_ambiguous_send:
@@ -2805,7 +3222,7 @@ class BatchProcessor:
             "Unexpected BigQuery Write API error (Dropping batch): %s."
             " Total rows dropped (unexpected error): %s",
             e,
-            self._dropped["unexpected_error"],
+            total_dropped,
             exc_info=True,
         )
         return
@@ -2824,12 +3241,13 @@ class BatchProcessor:
     except asyncio.QueueEmpty:
       pass
     if drained:
-      self._dropped[reason] += drained
+      self._record_drop(reason, drained)
       logger.warning("%d queued row(s) dropped (%s).", drained, reason)
     return drained
 
   async def shutdown(self, timeout: float = 5.0) -> None:
     """Drains queued rows and finalizes an opt-in committed stream."""
+    _unregister_active_processor(self)
     deadline = time.monotonic() + max(0.0, timeout)
     try:
       await self._shutdown_worker(timeout)
@@ -2931,7 +3349,7 @@ class BatchProcessor:
         # cancellation-critical path.
         remaining = max(0, self._queue.qsize() - self._sentinel_count)
         if remaining:
-          self._dropped["shutdown_cancelled"] += remaining
+          self._record_drop("shutdown_cancelled", remaining)
           logger.warning(
               "%d queued row(s) dropped (shutdown_cancelled).", remaining
           )
@@ -2982,7 +3400,7 @@ class BatchProcessor:
     except asyncio.QueueEmpty:
       pass
     if drained:
-      self._dropped["shutdown_timeout"] += drained
+      self._record_drop("shutdown_timeout", drained)
       logger.warning("%d queued row(s) dropped by close timeout.", drained)
 
 
@@ -4173,11 +4591,84 @@ class EventData:
   adk_extras: dict[str, Any] = field(default_factory=dict)
 
 
+async def _close_write_transport_helper(
+    write_client: Any, timeout: float = 10.0
+) -> None:
+  """Best-effort bounded close for a BigQuery write-client transport."""
+  transport = getattr(write_client, "transport", None)
+  close_fn = getattr(transport, "close", None)
+  if close_fn is None:
+    return
+  try:
+    if inspect.iscoroutinefunction(close_fn):
+      await asyncio.wait_for(close_fn(), timeout=timeout)
+    else:
+      loop = asyncio.get_running_loop()
+      result = await asyncio.wait_for(
+          loop.run_in_executor(None, close_fn),
+          timeout=timeout,
+      )
+      if isinstance(result, collections.abc.Awaitable):
+        await asyncio.wait_for(result, timeout=timeout)
+  except asyncio.CancelledError:
+    raise
+  except Exception:
+    logger.warning("Could not close a detached BigQuery write transport.")
+
+
+async def _create_committed_write_stream_helper(
+    write_client: BigQueryWriteAsyncClient,
+    project_id: str,
+    dataset_id: str,
+    table_id: str,
+) -> str:
+  """Creates one loop-local committed stream for offset-aware appends."""
+  parent = f"projects/{project_id}/datasets/{dataset_id}/tables/{table_id}"
+  stream = await write_client.create_write_stream(
+      parent=parent,
+      write_stream=bq_storage_types.WriteStream(
+          type_=bq_storage_types.WriteStream.Type.COMMITTED
+      ),
+  )
+  # ``str(...)`` keeps the declared return type honest: the type checker runs
+  # without the optional BigQuery Storage dependency installed, so the
+  # response and its ``name`` field are untyped there.
+  return str(stream.name)
+
+
 class BigQueryAgentAnalyticsPlugin(BasePlugin):
   """BigQuery Agent Analytics Plugin using Write API.
 
   Logs agent events (LLM requests, tool calls, etc.) to BigQuery for analytics.
   Uses the BigQuery Write API for efficient, asynchronous, and reliable logging.
+
+  ### Dedicated Background Loop & Shared Transport Lifecycle
+  When ``use_dedicated_background_loop=True`` (or ``flush_on_run_end=False``),
+  the
+  plugin hosts its background batch writer on a dedicated process-lifetime
+  daemon
+  thread (``_BG_LOOP``). The underlying ``BatchProcessor`` and gRPC write client
+  are shared process-lifetime singletons across plugin instances that target the
+  same
+  table and credentials to prevent socket churn and leaked workers across
+  per-request turns.
+
+  By default, calling ``plugin.close()`` or ``await plugin.shutdown()``
+  disassociates
+  the individual plugin instance and folds its drop metrics without shutting
+  down the
+  shared background processor, allowing in-flight background logs to complete
+  and
+  subsequent request turns to reuse the connection. The shared transports are
+  automatically drained at interpreter exit via ``atexit``.
+
+  For standalone scripts, clean process teardown, or test fixtures that need to
+  immediately release gRPC channels:
+    - Pass ``close_background_transport=True`` to ``close()`` or ``shutdown()``:
+        ``await plugin.close(close_background_transport=True)``
+    - Or invoke the explicit classmethod:
+        ``await
+        BigQueryAgentAnalyticsPlugin.close_shared_background_transports()``
   """
 
   def __init__(
@@ -4188,6 +4679,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       config: Optional[BigQueryLoggerConfig] = None,
       location: str = "US",
       credentials: Optional[google.auth.credentials.Credentials] = None,
+      credentials_identifier: Optional[str] = None,
       **kwargs: Any,
   ) -> None:
     """Initializes the instance.
@@ -4200,15 +4692,25 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         location: BigQuery location (default: "US").
         credentials: Google Auth credentials (optional). If None, uses
           Application Default Credentials.
+        credentials_identifier: Optional explicit string identifier to
+          disambiguate or share background loop states across plugin instances
+          with equivalent credential identities.
         **kwargs: Additional configuration parameters for BigQueryLoggerConfig.
     """
     super().__init__(name="bigquery_agent_analytics")
     self.project_id = project_id
     self.dataset_id = dataset_id
     self.config = config or BigQueryLoggerConfig()
+    self.credentials_identifier: Optional[str] = (
+        credentials_identifier
+        or getattr(self.config, "credentials_identifier", None)
+    )
 
     # Override config with kwargs if provided
     for key, value in kwargs.items():
+      if key == "credentials_identifier":
+        self.credentials_identifier = value
+        continue
       if hasattr(self.config, key):
         setattr(self.config, key, value)
       else:
@@ -4270,18 +4772,46 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # completes afterwards cannot resurrect _started.
     self._generation = 0
     # Guards ownership changes of _loop_state_by_loop: unsynchronized iteration raced concurrent insertion.
-    self._loop_states_guard = threading.Lock()
+    self._loop_states_guard = threading.RLock()
     self._credentials = credentials
+    self._custom_credentials = credentials is not None
     self.client: bigquery.Client | None = None
     self._loop_state_by_loop: dict[asyncio.AbstractEventLoop, _LoopState] = {}
+    self._loop_state_futures: dict[
+        asyncio.AbstractEventLoop,
+        asyncio.Future[_LoopState] | ConcurrentFuture[_LoopState],
+    ] = {}
+    self._builder_waiters: dict[
+        asyncio.Future[_LoopState] | ConcurrentFuture[_LoopState], set[object]
+    ] = {}
     self._write_stream_name: Optional[str] = None  # Resolved stream name
     self._executor: Optional[ThreadPoolExecutor] = None
     self.offloader: Optional[GCSOffloader] = None
     self.parser: Optional[HybridContentParser] = None
     self._schema: list[bq_schema.SchemaField] | None = None
     self.arrow_schema: pa.Schema | None = None
+    # True once the table and its views have been confirmed ready. Readiness
+    # is a property of the dataset rather than of this process, so unlike the
+    # client and the executor it is not invalidated by shutdown, fork, or
+    # pickling, and the check is not repeated once it has passed.
+    self._schema_ready = False
     self._init_pid = os.getpid()
     _LIVE_PLUGINS.add(self)
+
+  def _get_bg_loop_key(self) -> tuple[str, Any]:
+    """Returns the cache key for shared background-loop states."""
+    creds_key = (
+        _make_credentials_key(self._credentials, self.credentials_identifier)
+        if self._custom_credentials or self.credentials_identifier
+        else None
+    )
+    return (f"{self.project_id}.{self.dataset_id}.{self.table_id}", creds_key)
+
+  def _use_dedicated_loop(self) -> bool:
+    """Returns True if background log flushing should run on a persistent loop thread."""
+    if self.config.use_dedicated_background_loop is not None:
+      return self.config.use_dedicated_background_loop
+    return not self.config.flush_on_run_end
 
   def _cleanup_stale_loop_states(self) -> None:
     """Removes entries for event loops that have been closed."""
@@ -4323,6 +4853,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
               )
       if state is None:
         continue
+      _unregister_active_processor(state.batch_processor)
       logger.warning(
           "Cleaning up stale loop state for closed loop %s (id=%s).",
           loop,
@@ -4339,7 +4870,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             state.write_client, "transport", None
         ):
           close_fn = getattr(state.write_client.transport, "close", None)
-          if close_fn is not None and not asyncio.iscoroutinefunction(close_fn):
+          if close_fn is not None and not inspect.iscoroutinefunction(close_fn):
             close_fn()
       except Exception:
         pass
@@ -4371,23 +4902,39 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
   @property
   def _batch_processor_prop(self) -> Optional["BatchProcessor"]:
-    """The batch processor for the current event loop."""
+    """The batch processor for the current or background event loop."""
     try:
-      loop = asyncio.get_running_loop()
       self._cleanup_stale_loop_states()
-      if loop in self._loop_state_by_loop:
-        return self._loop_state_by_loop[loop].batch_processor
+      target_loop = (
+          _BG_LOOP if self._use_dedicated_loop() else asyncio.get_running_loop()
+      )
+      with self._loop_states_guard:
+        if target_loop is not None and target_loop in self._loop_state_by_loop:
+          return self._loop_state_by_loop[target_loop].batch_processor
+      if target_loop is not None and target_loop is _BG_LOOP:
+        bg_key = self._get_bg_loop_key()
+        with _BG_LOOP_STATES_LOCK:
+          if bg_key in _BG_LOOP_STATES:
+            return _BG_LOOP_STATES[bg_key].batch_processor
     except RuntimeError:
       pass
     return None
 
   @property
   def _write_client_prop(self) -> Optional["BigQueryWriteAsyncClient"]:
-    """The write client for the current event loop."""
+    """The write client for the current or background event loop."""
     try:
-      loop = asyncio.get_running_loop()
-      if loop in self._loop_state_by_loop:
-        return self._loop_state_by_loop[loop].write_client
+      target_loop = (
+          _BG_LOOP if self._use_dedicated_loop() else asyncio.get_running_loop()
+      )
+      with self._loop_states_guard:
+        if target_loop is not None and target_loop in self._loop_state_by_loop:
+          return self._loop_state_by_loop[target_loop].write_client
+      if target_loop is not None and target_loop is _BG_LOOP:
+        bg_key = self._get_bg_loop_key()
+        with _BG_LOOP_STATES_LOCK:
+          if bg_key in _BG_LOOP_STATES:
+            return _BG_LOOP_STATES[bg_key].write_client
     except RuntimeError:
       pass
     return None
@@ -4434,53 +4981,168 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
   async def _close_write_transport(self, write_client: Any) -> None:
     """Best-effort bounded close for a BigQuery write-client transport."""
-    transport = getattr(write_client, "transport", None)
-    close_fn = getattr(transport, "close", None)
-    if close_fn is None:
-      return
-    try:
-      if asyncio.iscoroutinefunction(close_fn):
-        await asyncio.wait_for(close_fn(), timeout=self.config.shutdown_timeout)
-      else:
-        loop = asyncio.get_running_loop()
-        result = await asyncio.wait_for(
-            loop.run_in_executor(None, close_fn),
-            timeout=self.config.shutdown_timeout,
-        )
-        if isinstance(result, collections.abc.Awaitable):
-          await asyncio.wait_for(result, timeout=self.config.shutdown_timeout)
-    except asyncio.CancelledError:
-      raise
-    except Exception:
-      logger.warning("Could not close a detached BigQuery write transport.")
+    await _close_write_transport_helper(
+        write_client, timeout=self.config.shutdown_timeout
+    )
 
   async def _create_committed_write_stream(
       self, write_client: BigQueryWriteAsyncClient
   ) -> str:
     """Creates one loop-local committed stream for offset-aware appends."""
-    parent = (
-        f"projects/{self.project_id}/datasets/{self.dataset_id}/tables/"
-        f"{self.table_id}"
+    return await _create_committed_write_stream_helper(
+        write_client, self.project_id, self.dataset_id, self.table_id
     )
-    stream = await write_client.create_write_stream(
-        parent=parent,
-        write_stream=bq_storage_types.WriteStream(
-            type_=bq_storage_types.WriteStream.Type.COMMITTED
-        ),
-    )
-    # ``str(...)`` keeps the declared return type honest: the type checker runs
-    # without the optional BigQuery Storage dependency installed, so the
-    # response and its ``name`` field are untyped there.
-    return str(stream.name)
 
   async def _close_detached_loop_transport(self, state: _LoopState) -> None:
     """Best-effort bounded close for a terminal loop state's transport."""
+    _unregister_active_processor(state.batch_processor)
+    try:
+      running_loop = asyncio.get_running_loop()
+    except RuntimeError:
+      running_loop = None
+    state_loop = getattr(state.batch_processor, "_loop", None)
+    if (
+        state_loop is not None
+        and state_loop is not running_loop
+        and state_loop.is_running()
+    ):
+      try:
+        t = self.config.shutdown_timeout
+        cf = asyncio.run_coroutine_threadsafe(
+            self._close_write_transport(state.write_client), state_loop
+        )
+        if running_loop is not None:
+          await asyncio.wait_for(asyncio.wrap_future(cf), timeout=t)
+        else:
+          cf.result(timeout=t)
+        return
+      except Exception:
+        logger.warning(
+            "Could not close detached loop transport.", exc_info=True
+        )
     await self._close_write_transport(state.write_client)
+
+  async def _build_loop_state(
+      self, loop: asyncio.AbstractEventLoop, generation: int
+  ) -> _LoopState:
+    """Builds a new _LoopState bound to the given loop."""
+
+    # grpc.aio clients are loop-bound, so we create one per event loop.
+    def get_credentials() -> google.auth.credentials.Credentials:
+      creds, _ = google.auth.default(scopes=[_CLOUD_PLATFORM_SCOPE])
+      return creds
+
+    if self._credentials is None:
+      self._credentials = await loop.run_in_executor(
+          self._executor, get_credentials
+      )
+    quota_project_id = getattr(self._credentials, "quota_project_id", None)
+    options = (
+        client_options.ClientOptions(quota_project_id=quota_project_id)
+        if quota_project_id
+        else None
+    )
+
+    user_agents = [f"google-adk-bq-logger/{__version__}"]
+    if self._visual_builder:
+      user_agents.append(f"google-adk-visual-builder/{__version__}")
+
+    client_info = _CLIENT_INFO_FACTORY(user_agent=" ".join(user_agents))
+
+    write_client = BigQueryWriteAsyncClient(
+        credentials=self._credentials,
+        client_info=client_info,
+        client_options=options,
+    )
+    try:
+      if self.config.exactly_once_delivery:
+        write_stream_name = await self._create_committed_write_stream(
+            write_client
+        )
+      else:
+        if not self._write_stream_name:
+          self._write_stream_name = f"projects/{self.project_id}/datasets/{self.dataset_id}/tables/{self.table_id}/_default"
+        write_stream_name = self._write_stream_name
+
+      batch_processor = BatchProcessor(
+          write_client=write_client,
+          arrow_schema=cast(pa.Schema, self.arrow_schema),
+          write_stream=write_stream_name,
+          batch_size=self.config.batch_size,
+          flush_interval=self.config.batch_flush_interval,
+          retry_config=self.config.retry_config,
+          queue_max_size=self.config.queue_max_size,
+          shutdown_timeout=self.config.shutdown_timeout,
+          exactly_once_delivery=self.config.exactly_once_delivery,
+          create_stream=(
+              functools.partial(
+                  _create_committed_write_stream_helper,
+                  write_client,
+                  self.project_id,
+                  self.dataset_id,
+                  self.table_id,
+              )
+              if self.config.exactly_once_delivery
+              else None
+          ),
+          loop=loop,
+      )
+    except BaseException:
+      # The write client already exists but no _LoopState can own it yet.
+      await self._close_write_transport(write_client)
+      raise
+    state = _LoopState(write_client, batch_processor)
+    try:
+      await batch_processor.start()
+    except BaseException:
+      # start() may create then fail/cancel a worker. Keep the fresh client
+      # under structured ownership as well; the bounded helper retrieves
+      # either sync or async transport-close outcomes.
+      await self._close_detached_loop_transport(state)
+      raise
+
+    with self._loop_states_guard:
+      invalidated = self._is_shutting_down or self._generation != generation
+      if not invalidated:
+        self._loop_state_by_loop[loop] = state
+    if loop is _BG_LOOP and not invalidated:
+      bg_key = self._get_bg_loop_key()
+      with _BG_LOOP_STATES_LOCK:
+        _BG_LOOP_STATES[bg_key] = state
+    if invalidated:
+      # shutdown() ran during construction; its snapshot cannot include
+      # this writer, so publishing it would leave a live processor and
+      # open transport behind after close() returns. Tear the fresh instances down instead of publishing.
+      try:
+        try:
+          await batch_processor.shutdown(timeout=self.config.shutdown_timeout)
+        except Exception:
+          logger.warning(
+              "Could not shut down writer created during shutdown.",
+              exc_info=True,
+          )
+      finally:
+        await self._close_detached_loop_transport(state)
+      raise RuntimeError("BigQuery plugin is shutting down.")
+
+    _register_active_processor(batch_processor)
+    return state
+
+  def _clear_builder_future(
+      self,
+      target_loop: asyncio.AbstractEventLoop,
+      fut: asyncio.Future[_LoopState] | ConcurrentFuture[_LoopState],
+  ) -> None:
+    """Thread-safely removes a completed builder future from tracking."""
+    with self._loop_states_guard:
+      if self._loop_state_futures.get(target_loop) is fut:
+        del self._loop_state_futures[target_loop]
+      self._builder_waiters.pop(fut, None)
 
   async def _get_loop_state(
       self, claimed_generation: Optional[int] = None
   ) -> _LoopState:
-    """Gets or creates the state for the current event loop.
+    """Gets or creates the state for the current or background event loop.
 
     Args:
         claimed_generation: The lifecycle generation the caller claimed BEFORE
@@ -4492,7 +5154,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     Returns:
         The loop-specific state object containing clients and processors.
     """
-    loop = asyncio.get_running_loop()
     if self._is_shutting_down:
       # A callback that passed the early check can resume here after
       # shutdown started; publishing a fresh writer state now would leak
@@ -4511,53 +5172,144 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     if self._generation != generation:
       raise RuntimeError("BigQuery plugin is shutting down.")
     self._cleanup_stale_loop_states()
+
+    target_loop = (
+        await _get_bg_loop_async()
+        if self._use_dedicated_loop()
+        else asyncio.get_running_loop()
+    )
+
     detached_state: Optional[_LoopState] = None
     detached_rows = 0
     detached_reason = "shutdown_timeout"
-    with self._loop_states_guard:
-      state = self._loop_state_by_loop.get(loop)
-      if state is not None:
-        processor = state.batch_processor
-        # Production entries always contain a real BatchProcessor. Keeping
-        # non-production stand-ins opaque also avoids treating truthy mock
-        # attributes as lifecycle flags in compatibility tests.
-        if not isinstance(processor, BatchProcessor):
-          return state
-        worker = processor._batch_processor_task
-        if worker is not None and not worker.done():
-          if processor._shutdown:
-            # It is terminal for admission but still owns a live worker.
-            # Returning it loses rows; detaching/closing it races its drain.
-            raise _LoopStateAdmissionAbortedError(
-                "BigQuery writer is still shutting down."
-            )
-          return state
+    builder_future: Optional[
+        asyncio.Future[_LoopState] | ConcurrentFuture[_LoopState]
+    ] = None
+    is_builder_owner = False
+    bg_key: Optional[tuple[str, Any]] = None
 
-        # A missing/done worker can never consume another appended row.
-        # Claim + fold under the same canonical guard order used by shutdown
-        # so concurrent stats readers see the state either live or folded,
-        # never both/neither. Identity ownership makes this single-winner.
-        detached_state = self._loop_state_by_loop.pop(loop)
-        # Prevent the old atexit registration from trying to run a second,
-        # blocking close over a processor whose rows are accounted below.
-        processor._shutdown = True
-        detached_reason = (
-            "shutdown_cancelled"
-            if worker is not None and worker.cancelled()
-            else "shutdown_timeout"
+    if target_loop is _BG_LOOP:
+      bg_key = self._get_bg_loop_key()
+      with _BG_LOOP_STATES_LOCK:
+        bg_state = _BG_LOOP_STATES.get(bg_key)
+        if bg_state is not None:
+          processor = bg_state.batch_processor
+          if not isinstance(processor, BatchProcessor):
+            with self._loop_states_guard:
+              self._loop_state_by_loop[target_loop] = bg_state
+            return bg_state
+          worker = processor._batch_processor_task
+          if worker is not None and not worker.done():
+            if processor._shutdown:
+              raise _LoopStateAdmissionAbortedError(
+                  "BigQuery writer is still shutting down."
+              )
+            with self._loop_states_guard:
+              self._loop_state_by_loop[target_loop] = bg_state
+            return bg_state
+          # Stale / dead worker on background loop state: remove it
+          _BG_LOOP_STATES.pop(bg_key, None)
+
+        builder_future = _BG_LOOP_STATE_FUTURES.get(bg_key)
+        if builder_future is None:
+          builder_future = asyncio.run_coroutine_threadsafe(
+              self._build_loop_state(target_loop, generation), target_loop
+          )
+          _BG_LOOP_STATE_FUTURES[bg_key] = builder_future
+          is_builder_owner = True
+
+        waiter_token = object()
+        _BG_LOOP_BUILDER_WAITERS.setdefault(builder_future, set()).add(
+            waiter_token
         )
-        queue = processor._queue
-        sentinels = processor._sentinel_count
-        detached_rows = max(0, queue.qsize() - sentinels)
-        with self._drop_counts_guard:
-          for reason, count in processor.get_drop_stats().items():
-            self._local_drop_counts[reason] = (
-                self._local_drop_counts.get(reason, 0) + count
+    else:
+      with self._loop_states_guard:
+        state = self._loop_state_by_loop.get(target_loop)
+        if state is not None:
+          processor = state.batch_processor
+          # Production entries always contain a real BatchProcessor. Keeping
+          # non-production stand-ins opaque also avoids treating truthy mock
+          # attributes as lifecycle flags in compatibility tests.
+          if not isinstance(processor, BatchProcessor):
+            return state
+          worker = processor._batch_processor_task
+          if worker is not None and not worker.done():
+            if processor._shutdown:
+              # It is terminal for admission but still owns a live worker.
+              # Returning it loses rows; detaching/closing it races its drain.
+              raise _LoopStateAdmissionAbortedError(
+                  "BigQuery writer is still shutting down."
+              )
+            return state
+
+          # A missing/done worker can never consume another appended row.
+          # Claim + fold under the same canonical guard order used by shutdown
+          # so concurrent stats readers see the state either live or folded,
+          # never both/neither. Identity ownership makes this single-winner.
+          detached_state = self._loop_state_by_loop.pop(target_loop)
+          # Prevent the old atexit registration from trying to run a second,
+          # blocking close over a processor whose rows are accounted below.
+          processor._shutdown = True
+          detached_reason = (
+              "shutdown_cancelled"
+              if worker is not None and worker.cancelled()
+              else "shutdown_timeout"
+          )
+          queue = processor._queue
+          sentinels = processor._sentinel_count
+          detached_rows = max(0, queue.qsize() - sentinels)
+          with self._drop_counts_guard:
+            for reason, count in processor.get_drop_stats().items():
+              self._local_drop_counts[reason] = (
+                  self._local_drop_counts.get(reason, 0) + count
+              )
+            if detached_rows:
+              self._local_drop_counts[detached_reason] = (
+                  self._local_drop_counts.get(detached_reason, 0)
+                  + detached_rows
+              )
+
+        builder_future = self._loop_state_futures.get(target_loop)
+        if builder_future is None:
+          running_loop = asyncio.get_running_loop()
+          if target_loop is running_loop:
+            builder_future = asyncio.create_task(
+                self._build_loop_state(target_loop, generation)
             )
-          if detached_rows:
-            self._local_drop_counts[detached_reason] = (
-                self._local_drop_counts.get(detached_reason, 0) + detached_rows
+          else:
+            builder_future = asyncio.run_coroutine_threadsafe(
+                self._build_loop_state(target_loop, generation), target_loop
             )
+          self._loop_state_futures[target_loop] = builder_future
+          is_builder_owner = True
+
+        waiter_token = object()
+        self._builder_waiters.setdefault(builder_future, set()).add(
+            waiter_token
+        )
+
+    if is_builder_owner:
+      if target_loop is _BG_LOOP and bg_key is not None:
+
+        def _on_bg_builder_done(
+            f: "asyncio.Future[_LoopState] | ConcurrentFuture[_LoopState]",
+            bk: tuple[str, Any] = bg_key,
+        ) -> None:
+          with _BG_LOOP_STATES_LOCK:
+            if _BG_LOOP_STATE_FUTURES.get(bk) is f:
+              del _BG_LOOP_STATE_FUTURES[bk]
+            _BG_LOOP_BUILDER_WAITERS.pop(f, None)
+
+        builder_future.add_done_callback(_on_bg_builder_done)
+      else:
+
+        def _on_builder_done(
+            f: "asyncio.Future[_LoopState] | ConcurrentFuture[_LoopState]",
+            tl: asyncio.AbstractEventLoop = target_loop,
+        ) -> None:
+          self._clear_builder_future(tl, f)
+
+        builder_future.add_done_callback(_on_builder_done)
 
     if detached_rows:
       logger.warning(
@@ -4565,119 +5317,95 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           detached_rows,
           detached_reason,
       )
+
     # Structured ownership: the claimant that removed a terminal state also
     # owns its bounded transport close. A detached fire-and-forget task left a
     # warning/leak window whenever fresh construction raised before the task
     # was retrieved. The finally runs on success, failure, and cancellation;
     # on success the replacement is published before this await so concurrent
     # callers share it instead of building another writer.
+    if builder_future is None:
+      raise RuntimeError("BigQuery writer initialization failed unexpectedly.")
     try:
-      # grpc.aio clients are loop-bound, so we create one per event loop.
-      def get_credentials() -> google.auth.credentials.Credentials:
-        creds, _ = google.auth.default(scopes=[_CLOUD_PLATFORM_SCOPE])
-        return creds
-
-      if self._credentials is None:
-        self._credentials = await loop.run_in_executor(
-            self._executor, get_credentials
-        )
-      quota_project_id = getattr(self._credentials, "quota_project_id", None)
-      options = (
-          client_options.ClientOptions(quota_project_id=quota_project_id)
-          if quota_project_id
-          else None
-      )
-
-      user_agents = [f"google-adk-bq-logger/{__version__}"]
-      if self._visual_builder:
-        user_agents.append(f"google-adk-visual-builder/{__version__}")
-
-      client_info = _CLIENT_INFO_FACTORY(user_agent=" ".join(user_agents))
-
-      write_client = BigQueryWriteAsyncClient(
-          credentials=self._credentials,
-          client_info=client_info,
-          client_options=options,
-      )
-
-      try:
-        if self.config.exactly_once_delivery:
-          write_stream_name = await self._create_committed_write_stream(
-              write_client
-          )
-        else:
-          if not self._write_stream_name:
-            self._write_stream_name = f"projects/{self.project_id}/datasets/{self.dataset_id}/tables/{self.table_id}/_default"
-          write_stream_name = self._write_stream_name
-
-        batch_processor = BatchProcessor(
-            write_client=write_client,
-            arrow_schema=cast(pa.Schema, self.arrow_schema),
-            write_stream=write_stream_name,
-            batch_size=self.config.batch_size,
-            flush_interval=self.config.batch_flush_interval,
-            retry_config=self.config.retry_config,
-            queue_max_size=self.config.queue_max_size,
-            shutdown_timeout=self.config.shutdown_timeout,
-            exactly_once_delivery=self.config.exactly_once_delivery,
-            create_stream=(
-                functools.partial(
-                    self._create_committed_write_stream, write_client
-                )
-                if self.config.exactly_once_delivery
-                else None
-            ),
-        )
-      except BaseException:
-        # The write client already exists but no _LoopState can own it yet.
-        await self._close_write_transport(write_client)
-        raise
-      state = _LoopState(write_client, batch_processor)
-      try:
-        await batch_processor.start()
-      except BaseException:
-        # start() may create then fail/cancel a worker. Keep the fresh client
-        # under structured ownership as well; the bounded helper retrieves
-        # either sync or async transport-close outcomes.
-        await self._close_detached_loop_transport(state)
-        raise
-
+      if isinstance(builder_future, asyncio.Future):
+        built_state = await asyncio.shield(builder_future)
+      else:
+        built_state = await asyncio.shield(asyncio.wrap_future(builder_future))
       with self._loop_states_guard:
-        invalidated = self._is_shutting_down or self._generation != generation
-        if not invalidated:
-          self._loop_state_by_loop[loop] = state
-      if invalidated:
-        # shutdown() ran during construction; its snapshot cannot include
-        # this writer, so publishing it would leave a live processor and
-        # open transport behind after close() returns. Tear the fresh instances down instead of publishing.
+        if not self._is_shutting_down and self._generation == generation:
+          self._loop_state_by_loop[target_loop] = built_state
+      return built_state
+    except asyncio.CancelledError:
+      sole_waiter = False
+      if target_loop is _BG_LOOP and bg_key is not None:
+        with _BG_LOOP_STATES_LOCK:
+          waiters = _BG_LOOP_BUILDER_WAITERS.get(builder_future)
+          if waiters is not None:
+            waiters.discard(waiter_token)
+            if not waiters:
+              sole_waiter = True
+              _BG_LOOP_BUILDER_WAITERS.pop(builder_future, None)
+              if _BG_LOOP_STATE_FUTURES.get(bg_key) is builder_future:
+                del _BG_LOOP_STATE_FUTURES[bg_key]
+      else:
+        with self._loop_states_guard:
+          waiters = self._builder_waiters.get(builder_future)
+          if waiters is not None:
+            waiters.discard(waiter_token)
+            if not waiters:
+              sole_waiter = True
+              self._builder_waiters.pop(builder_future, None)
+              if self._loop_state_futures.get(target_loop) is builder_future:
+                del self._loop_state_futures[target_loop]
+      if sole_waiter:
+        builder_future.cancel()
         try:
-          try:
-            await batch_processor.shutdown(timeout=self.config.shutdown_timeout)
-          except Exception:
-            logger.warning(
-                "Could not shut down writer created during shutdown.",
-                exc_info=True,
-            )
-        finally:
-          await self._close_detached_loop_transport(state)
-        raise RuntimeError("BigQuery plugin is shutting down.")
-
-      atexit.register(self._atexit_cleanup, weakref.proxy(batch_processor))
-      return state
+          if isinstance(builder_future, asyncio.Future):
+            await builder_future
+          else:
+            await asyncio.wrap_future(builder_future)
+        except (asyncio.CancelledError, Exception):
+          pass
+      raise
     finally:
+      if target_loop is _BG_LOOP:
+        with _BG_LOOP_STATES_LOCK:
+          waiters = _BG_LOOP_BUILDER_WAITERS.get(builder_future)
+          if waiters is not None:
+            waiters.discard(waiter_token)
+            if not waiters:
+              _BG_LOOP_BUILDER_WAITERS.pop(builder_future, None)
+      else:
+        with self._loop_states_guard:
+          waiters = self._builder_waiters.get(builder_future)
+          if waiters is not None:
+            waiters.discard(waiter_token)
+            if not waiters:
+              self._builder_waiters.pop(builder_future, None)
       if detached_state is not None:
         await self._close_detached_loop_transport(detached_state)
 
   async def flush(self) -> None:
     """Flushes any pending events to BigQuery.
 
-    Flushes the processor associated with the CURRENT loop.
+    Flushes the processor associated with the current event loop, or the
+    background processor when decoupled flushing is enabled.
     """
     try:
-      loop = asyncio.get_running_loop()
       self._cleanup_stale_loop_states()
-      if loop in self._loop_state_by_loop:
-        await self._loop_state_by_loop[loop].batch_processor.flush()
+      target_loop = (
+          _BG_LOOP if self._use_dedicated_loop() else asyncio.get_running_loop()
+      )
+      if target_loop is None:
+        return
+      with self._loop_states_guard:
+        state = self._loop_state_by_loop.get(target_loop)
+      if state is None and target_loop is _BG_LOOP:
+        bg_key = self._get_bg_loop_key()
+        with _BG_LOOP_STATES_LOCK:
+          state = _BG_LOOP_STATES.get(bg_key)
+      if state is not None:
+        await state.batch_processor.flush()
     except RuntimeError:
       # No running loop or other issue
       pass
@@ -4778,12 +5506,18 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       # Project out denied payload columns schema-first, so the table
       # schema, Arrow schema, row dict, and views all stay consistent.
       self._schema = _project_schema(_get_events_schema(), self._denied_columns)
-    # Run table readiness on EVERY setup attempt until one succeeds: the
+    # Run table readiness on every setup attempt until one succeeds: the
     # cached _schema must not gate it, or a failed first attempt would skip
     # the table check on retry and mark the plugin started against a
-    # missing/unready table. Once _started is True,
-    # _lazy_setup returns early above, so the steady state pays no extra RPC.
-    await loop.run_in_executor(executor, self._ensure_schema_exists)
+    # missing/unready table. A success is remembered in _schema_ready rather
+    # than in _started, which every close() clears: a host that builds a
+    # short-lived Runner per request over one shared plugin closes it on each
+    # request, and replaying the pass there costs one CREATE OR REPLACE VIEW
+    # per analytics view, on the request path, against a daily quota. A view
+    # that failed leaves the flag False, so the pass runs again.
+    if not self._schema_ready:
+      if await loop.run_in_executor(executor, self._ensure_schema_exists):
+        self._schema_ready = True
 
     if not self.parser:
       self.arrow_schema = to_arrow_schema(self._require_schema())
@@ -4825,45 +5559,24 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
     await self._get_loop_state(claimed_generation=claimed_generation)
 
-  @staticmethod
-  def _atexit_cleanup(batch_processor: "BatchProcessor") -> None:
-    """Clean up batch processor on script exit.
-
-    Drains any remaining items from the queue and logs a warning.
-    Callers should use ``flush()`` before shutdown to ensure all
-    events are written; this handler only reports data that would
-    otherwise be silently lost.
-    """
-    try:
-      if not batch_processor or batch_processor._shutdown:
-        return
-    except ReferenceError:
-      return
-
-    # Drain remaining items and warn — creating a new event loop and
-    # BQ client at interpreter exit is fragile and masks shutdown bugs.
-    remaining = 0
-    try:
-      while True:
-        batch_processor._queue.get_nowait()
-        remaining += 1
-    except (asyncio.QueueEmpty, AttributeError):
-      pass
-
-    if remaining:
-      logger.warning(
-          "%d analytics event(s) were still queued at interpreter exit "
-          "and could not be flushed. Call plugin.flush() before shutdown "
-          "to avoid data loss.",
-          remaining,
-      )
-
-  def _ensure_schema_exists(self) -> None:
+  def _ensure_schema_exists(self) -> bool:
     """Ensures the BigQuery table exists with the correct schema.
 
     When ``config.auto_schema_upgrade`` is True and the table already
     exists, missing columns are added automatically (additive only).
     A ``adk_schema_version`` label is written for governance.
+
+    A missing or unready table raises. View creation does not, so its
+    outcome is reported here instead.
+
+    Returns:
+      True if the table is ready and every requested view was created,
+      False if a view failed and the pass is worth repeating.
+
+    Raises:
+      RuntimeError: The client or the schema is not initialized.
+      google.cloud.exceptions.GoogleCloudError: The table could not be read
+        or created, or a required schema upgrade failed.
     """
     client = self._require_client()
     try:
@@ -4871,7 +5584,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       if self.config.auto_schema_upgrade:
         self._maybe_upgrade_schema(existing_table)
       if self.config.create_views:
-        self._create_analytics_views()
+        return self._create_analytics_views()
+      return True
     except cloud_exceptions.NotFound:
       logger.info("Table %s not found, creating table.", self.full_table_id)
       tbl = bigquery.Table(self.full_table_id, schema=self._schema)
@@ -4904,7 +5618,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         )
         raise
       if self.config.create_views:
-        self._create_analytics_views()
+        return self._create_analytics_views()
+      return True
     except Exception as e:
       # Fail setup: swallowing control-plane errors here let
       # the plugin mark itself started against a missing/unready table.
@@ -5091,15 +5806,19 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       kept.append(expr)
     return kept
 
-  def _create_analytics_views(self) -> None:
+  def _create_analytics_views(self) -> bool:
     """Creates per-event-type BigQuery views (idempotent).
 
     Each view filters the events table by ``event_type`` and
     extracts JSON columns into typed, queryable columns.  Uses
     ``CREATE OR REPLACE VIEW`` so it is safe to call repeatedly.
     Errors are logged but never raised.
+
+    Returns:
+      True if every view was created, False if any of them failed.
     """
     client = self._require_client()
+    created_all = True
     for event_type, extra_cols in _EVENT_VIEW_DEFS.items():
       view_name = self.config.view_prefix + "_" + event_type.lower()
       # Projection-aware views -- drop any derived column whose SQL
@@ -5123,12 +5842,14 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             view_name,
         )
       except Exception as e:
+        created_all = False
         logger.error(
             "Failed to create view %s: %s",
             view_name,
             e,
             exc_info=True,
         )
+    return created_all
 
   async def create_analytics_views(self) -> None:
     """Public async helper to (re-)create all analytics views.
@@ -5143,7 +5864,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           "Plugin initialization failed; cannot create analytics views."
       ) from self._startup_error
     loop = asyncio.get_running_loop()
-    await loop.run_in_executor(self._executor, self._create_analytics_views)
+    self._schema_ready = await loop.run_in_executor(
+        self._executor, self._create_analytics_views
+    )
 
   @staticmethod
   def _schedule_remote_drain(
@@ -5193,11 +5916,20 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     target_loop.call_soon_threadsafe(_callback)
     return cf
 
-  async def shutdown(self, timeout: float | None = None) -> None:
+  async def shutdown(
+      self,
+      timeout: float | None = None,
+      *,
+      close_background_transport: bool = False,
+  ) -> None:
     """Shuts down the plugin and releases resources.
 
     Args:
         timeout: Maximum time to wait for the queue to drain.
+        close_background_transport: When True, also drains and shuts down the
+          shared background loop transport for this plugin's target table and
+          credentials. Defaults to False so background transports persist across
+          ephemeral request turns.
     """
     while True:
       waiter: Optional["ConcurrentFuture[None]"] = None
@@ -5247,8 +5979,27 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       # 1. Shutdown current loop's processor directly.
       drained: list[asyncio.AbstractEventLoop] = []
       if loop in states_snapshot:
-        await states_snapshot[loop].batch_processor.shutdown(timeout=t)
-        drained.append(loop)
+        if loop is _BG_LOOP:
+          with self._loop_states_guard, self._drop_counts_guard:
+            popped_state = self._loop_state_by_loop.pop(loop, None)
+            if popped_state is not None:
+              for (
+                  reason,
+                  count,
+              ) in popped_state.batch_processor.get_drop_stats().items():
+                self._local_drop_counts[reason] = (
+                    self._local_drop_counts.get(reason, 0) + count
+                )
+          if close_background_transport:
+            bg_key = self._get_bg_loop_key()
+            with _BG_LOOP_STATES_LOCK:
+              shared_state = _BG_LOOP_STATES.pop(bg_key, None)
+            if shared_state is not None:
+              await shared_state.batch_processor.shutdown(timeout=t)
+              drained.append(loop)
+        else:
+          await states_snapshot[loop].batch_processor.shutdown(timeout=t)
+          drained.append(loop)
 
       # 1b. Drain batch processors on other (non-current) loops. The
       # wrapped futures are AWAITED, not .result()-ed: the synchronous
@@ -5267,6 +6018,34 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       for other_loop, state in states_snapshot.items():
         if other_loop is loop:
           continue
+        if other_loop is _BG_LOOP:
+          # Background loop writers are process-lifetime singletons shared
+          # across plugin instances. Disassociate from this plugin instance
+          # without draining or shutting down the shared background processor.
+          # Fold drop stats into _local_drop_counts so counters persist across close().
+          with self._loop_states_guard, self._drop_counts_guard:
+            popped_state = self._loop_state_by_loop.pop(other_loop, None)
+            if popped_state is not None:
+              for (
+                  reason,
+                  count,
+              ) in popped_state.batch_processor.get_drop_stats().items():
+                self._local_drop_counts[reason] = (
+                    self._local_drop_counts.get(reason, 0) + count
+                )
+          if close_background_transport:
+            bg_key = self._get_bg_loop_key()
+            with _BG_LOOP_STATES_LOCK:
+              shared_state = _BG_LOOP_STATES.pop(bg_key, None)
+            if shared_state is not None:
+              try:
+                cf = self._schedule_remote_drain(
+                    shared_state.batch_processor, other_loop, t
+                )
+                remote.append((other_loop, cf, asyncio.wrap_future(cf)))
+              except Exception:
+                retained_remote_drains += 1
+          continue
         if other_loop.is_closed():
           # No drain is possible on a closed loop, and its queued rows
           # are NOT guaranteed to have been counted — the state can enter
@@ -5280,6 +6059,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             owned = self._loop_state_by_loop.get(other_loop) is state
             if owned:
               del self._loop_state_by_loop[other_loop]
+              _unregister_active_processor(state.batch_processor)
               for (
                   reason,
                   count,
@@ -5381,17 +6161,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       # States whose drain did not finish stay live (retry ownership).
       for state_loop in drained:
         state = states_snapshot[state_loop]
-        if state.write_client and getattr(
-            state.write_client, "transport", None
-        ):
-          try:
-            close_transport = cast(
-                Callable[[], collections.abc.Awaitable[None]],
-                state.write_client.transport.close,
-            )
-            await close_transport()
-          except Exception:
-            pass
+        await self._close_detached_loop_transport(state)
         with self._loop_states_guard, self._drop_counts_guard:
           if self._loop_state_by_loop.get(state_loop) is state:
             del self._loop_state_by_loop[state_loop]
@@ -5507,6 +6277,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state["_drop_counts_guard"] = None
     state["client"] = None
     state["_loop_state_by_loop"] = {}
+    state["_loop_state_futures"] = {}
+    state["_builder_waiters"] = {}
     state["_write_stream_name"] = None
     state["_executor"] = None
     state["offloader"] = None
@@ -5527,6 +6299,12 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state.setdefault("_local_drop_counts", {})
     state.setdefault("_setup_failures", 0)
     state.setdefault("_setup_retry_at", 0.0)
+    state.setdefault("_schema_ready", False)
+    state.setdefault("_loop_state_futures", {})
+    state.setdefault("_builder_waiters", {})
+    state.setdefault(
+        "_custom_credentials", state.get("_credentials") is not None
+    )
     state.pop("_setup_lock", None)  # replaced by cross-loop future
     state.pop("_setup_locks", None)
     state.pop("_setup_locks_guard", None)
@@ -5535,8 +6313,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._setup_future = None
     self._shutdown_future = None
     self._generation = 0
-    self._loop_states_guard = threading.Lock()
+    self._loop_states_guard = threading.RLock()
     self._drop_counts_guard = threading.Lock()
+    self._loop_state_futures = {}
+    self._builder_waiters = {}
     # Pickles from older code bypass __init__, so re-validate the restored
     # configuration: e.g. a legacy retry_config with max_retries=NaN would
     # otherwise skip the write loop silently.
@@ -5587,10 +6367,12 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._setup_future = None
     self._shutdown_future = None
     self._generation = 0
-    self._loop_states_guard = threading.Lock()
+    self._loop_states_guard = threading.RLock()
     self._drop_counts_guard = threading.Lock()
     self.client = None
     self._loop_state_by_loop = {}
+    self._loop_state_futures = {}
+    self._builder_waiters = {}
     self._write_stream_name = None
     self._executor = None
     self.offloader = None
@@ -5609,17 +6391,39 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           self._local_drop_counts.get(reason, 0) + 1
       )
 
-  async def close(self) -> None:
+  async def close(
+      self,
+      timeout: float | None = None,
+      *,
+      close_background_transport: bool = False,
+  ) -> None:
     """Releases all plugin resources (BasePlugin/PluginManager contract).
 
-    Runner.close() -> PluginManager.close() -> plugin.close() previously
-    hit the inherited no-op, bypassing queue drain, client/executor
-    teardown, and shutdown loss accounting entirely. PluginManager's outer close
-    timeout (5s) may cancel this
-    mid-drain; shutdown()'s cleanup is cancellation-tolerant and counters
-    remain queryable either way.
+    Args:
+        timeout: Maximum time to wait for the queue to drain.
+        close_background_transport: When True, also drains and shuts down the
+          shared background loop transport for this plugin's target table and
+          credentials. Defaults to False so background transports persist across
+          ephemeral request turns.
     """
-    await self.shutdown()
+    await self.shutdown(
+        timeout=timeout, close_background_transport=close_background_transport
+    )
+
+  @classmethod
+  async def close_shared_background_transports(
+      cls, timeout: float = 10.0
+  ) -> None:
+    """Explicitly drains and shuts down all shared background loop transports on _BG_LOOP.
+
+    Useful for standalone scripts, process shutdown handlers, or test cleanup
+    fixtures.
+
+    Args:
+        timeout: Maximum duration in seconds to wait for background processors
+          to drain. Defaults to 10.0s (matching default shutdown_timeout).
+    """
+    await close_shared_background_transports(timeout=timeout)
 
   async def __aenter__(self) -> BigQueryAgentAnalyticsPlugin:
     await self._ensure_started()
@@ -5819,6 +6623,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       # created outlives a shutdown that already returned — release it,
       # holding the rendezvous until the
       # teardown completes.
+      logger.info(
+          "BigQuery plugin setup finished after shutdown and was discarded;"
+          " releasing what it created."
+      )
       try:
         await self._teardown_aborted_setup()
       finally:
@@ -6266,8 +7074,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         callback_context: The callback context.
         raw_content: The raw content to log.
         is_truncated: Whether the content is already truncated.
-        event_data: Typed container for structured fields and extra
-            attributes. Defaults to ``EventData()`` when not provided.
+        event_data: Typed container for structured fields and extra attributes.
+          Defaults to ``EventData()`` when not provided.
     """
     if not self.config.enabled or self._is_shutting_down:
       return
@@ -7555,3 +8363,131 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       _root_agent_name_ctx.set(None)
       if self.config.flush_on_run_end:
         await self.flush()
+
+
+async def close_shared_background_transports(timeout: float = 10.0) -> None:
+  """Explicitly drains and shuts down all shared background loop transports on _BG_LOOP.
+
+  Useful for standalone scripts, process shutdown handlers, or test cleanup
+  fixtures.
+
+  Args:
+      timeout: Maximum duration in seconds to wait for background processors to
+        drain. Defaults to 10.0s (matching default shutdown_timeout).
+
+  Raises:
+      RuntimeError: If any background processor drain fails or times out.
+  """
+  global _BG_LOOP
+  bg_loop = _BG_LOOP
+  if bg_loop is None or bg_loop.is_closed():
+    with _BG_LOOP_STATES_LOCK:
+      _BG_LOOP_STATES.clear()
+      _BG_LOOP_STATE_FUTURES.clear()
+      _BG_LOOP_BUILDER_WAITERS.clear()
+    return
+
+  # Wait for any in-flight builder futures to complete so their states can be drained.
+  with _BG_LOOP_STATES_LOCK:
+    builder_futs = [f for f in _BG_LOOP_STATE_FUTURES.values() if not f.done()]
+  if builder_futs:
+    try:
+      await asyncio.wait_for(
+          asyncio.gather(
+              *[asyncio.wrap_future(f) for f in builder_futs],
+              return_exceptions=True,
+          ),
+          timeout=timeout,
+      )
+    except Exception:
+      pass
+
+  with _BG_LOOP_STATES_LOCK:
+    states_to_drain = dict(_BG_LOOP_STATES)
+  if not states_to_drain:
+    return
+
+  try:
+    current_loop = asyncio.get_running_loop()
+  except RuntimeError:
+    current_loop = None
+
+  drain_futs: list[
+      tuple[
+          tuple[str, Any],
+          _LoopState,
+          Coroutine[Any, Any, None] | asyncio.Future[Any],
+      ]
+  ] = []
+  for key, state in states_to_drain.items():
+    if current_loop is bg_loop:
+      drain_futs.append(
+          (key, state, state.batch_processor.shutdown(timeout=timeout))
+      )
+    else:
+      cf = BigQueryAgentAnalyticsPlugin._schedule_remote_drain(
+          state.batch_processor, bg_loop, timeout
+      )
+      drain_futs.append((key, state, asyncio.wrap_future(cf)))
+
+  failed_errors: list[BaseException] = []
+  drained_keys: list[tuple[str, Any]] = []
+
+  if current_loop is bg_loop:
+    for key, state, coro in drain_futs:
+      try:
+        await cast(Coroutine[Any, Any, None], coro)
+        drained_keys.append(key)
+        await _close_write_transport_helper(state.write_client, timeout=timeout)
+      except BaseException as exc:
+        failed_errors.append(exc)
+  else:
+    wait_tasks = [cast(asyncio.Future[Any], w) for _, _, w in drain_futs]
+    try:
+      done, pending = await asyncio.wait(wait_tasks, timeout=timeout + 1.0)
+    except asyncio.CancelledError:
+      for _, _, w in drain_futs:
+        cast(asyncio.Future[Any], w).cancel()
+      raise
+
+    for key, state, w_fut in drain_futs:
+      w = cast(asyncio.Future[Any], w_fut)
+      if w in pending or w.cancelled():
+        w.cancel()
+        failed_errors.append(
+            TimeoutError(
+                f"Background processor drain for {key} did not finish within"
+                f" {timeout:.1f}s."
+            )
+        )
+      else:
+        drain_error = w.exception()
+        if drain_error is not None:
+          failed_errors.append(drain_error)
+        else:
+          drained_keys.append(key)
+          try:
+            cf = asyncio.run_coroutine_threadsafe(
+                _close_write_transport_helper(
+                    state.write_client, timeout=timeout
+                ),
+                bg_loop,
+            )
+            await asyncio.wait_for(asyncio.wrap_future(cf), timeout=timeout)
+          except Exception as e:
+            logger.warning(
+                "Could not close background write transport for %s: %s", key, e
+            )
+
+  with _BG_LOOP_STATES_LOCK:
+    for key in drained_keys:
+      _BG_LOOP_STATES.pop(key, None)
+      _BG_LOOP_STATE_FUTURES.pop(key, None)
+
+  if failed_errors:
+    if len(failed_errors) == 1:
+      raise failed_errors[0]
+    raise _ShutdownIncompleteError(
+        f"{len(failed_errors)} background loop drain(s) failed or timed out:"
+        f" {failed_errors}"
+    )

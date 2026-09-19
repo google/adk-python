@@ -14,6 +14,9 @@
 
 """A2A Client for integration tests."""
 
+from typing import Literal
+from typing import Optional
+
 from a2a.client.client_factory import ClientFactory as A2AClientFactory
 from a2a.extensions.common import HTTP_EXTENSION_HEADER
 from google.adk.a2a import _compat
@@ -24,12 +27,19 @@ import httpx
 from .server import agent_card
 
 
-def create_client(app, streaming: bool = False) -> RemoteA2aAgent:
+def create_client(
+    app,
+    streaming: bool = False,
+    mode: Optional[Literal["task"]] = None,
+) -> RemoteA2aAgent:
   """Creates a RemoteA2aAgent connected to the provided FastAPI app.
 
   Args:
     app: The FastAPI application (server) to connect to.
     streaming: Whether to enable streaming mode in the client.
+    mode: The agent's delegation mode. ``"task"`` makes the agent a task-mode
+      delegate of a coordinator, which scopes its view of the session to the
+      delegation that triggered it.
 
   Returns:
     A RemoteA2aAgent instance.
@@ -52,6 +62,7 @@ def create_client(app, streaming: bool = False) -> RemoteA2aAgent:
       agent_card=agent_card,
       a2a_client_factory=factory,
       use_legacy=False,
+      mode=mode,
   )
 
   return agent

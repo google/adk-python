@@ -72,15 +72,6 @@ def test_run_ids_extracts_all_run_ids_from_path():
   assert path_mixed.run_ids == {"1", "3"}
 
 
-def test_parent_returns_parent_path_or_none_for_root():
-  """parent returns a new _BranchPath excluding the leaf segment, or None."""
-  path = _BranchPath.from_string("parent.child.node")
-
-  assert path.parent == _BranchPath.from_string("parent.child")
-  assert path.parent.parent == _BranchPath.from_string("parent")
-  assert path.parent.parent.parent is None
-
-
 def test_is_descendant_of_verifies_path_hierarchy_safely():
   """is_descendant_of returns True if the path is a strict sub-path of ancestor."""
   # Given an ancestor and various comparison paths

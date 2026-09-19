@@ -95,7 +95,9 @@ implementation applies the event's `actions.state_delta` to the in-memory
 `Session` you hold and appends to `session.events`; each backend overrides it to
 write the event to storage as well. Partial events (`event.partial` is true) are
 returned untouched and never stored, which is how streaming chunks stay out of
-the history.
+the history. Appending to a session that storage does not know about raises
+`SessionNotFoundError` on every backend, so a deleted or never-created session
+fails loudly instead of dropping the event.
 
 ### State scoping
 
@@ -206,10 +208,6 @@ name, unless you pass `agent_engine_id` to the constructor.
 
 *   **`InMemorySessionService` is not for production**: nothing survives a
     restart, nothing is shared between workers, and it does not lock.
-*   **`append_event` fails differently per backend**: appending to a session
-    that storage does not know about raises `SessionNotFoundError` on
-    `DatabaseSessionService`, while `InMemorySessionService` logs a warning and
-    returns the event unstored.
 *   **`list_sessions` returns partial sessions**: the event history is dropped,
     and how much of `state` is populated depends on the backend. Load what you
     need with `get_session`.

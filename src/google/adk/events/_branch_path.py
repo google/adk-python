@@ -69,13 +69,6 @@ class _BranchPath:
         ids.add(parts[1])
     return ids
 
-  @property
-  def parent(self) -> _BranchPath | None:
-    """Returns the parent _BranchPath, or None if this is a root path."""
-    if len(self._segments) <= 1:
-      return None
-    return _BranchPath(self._segments[:-1])
-
   def is_descendant_of(self, ancestor: _BranchPath) -> bool:
     """Checks if this path is a descendant of the ancestor path.
 

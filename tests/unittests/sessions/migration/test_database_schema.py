@@ -15,11 +15,16 @@
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.migration import _schema_check_utils
 from google.adk.sessions.schemas import v0
+from google.adk.sessions.schemas import v1
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy import inspect
 from sqlalchemy import text
+from sqlalchemy.dialects import mysql
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.dialects import sqlite
 from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.schema import CreateIndex
 
 
 async def create_v0_db(db_path):
@@ -78,11 +83,19 @@ async def test_new_db_uses_latest_schema(tmp_path):
         lambda sync_conn: inspect(sync_conn).get_indexes('events')
     )
     assert any(
-        index['name'] == 'idx_events_app_user_session_ts'
+        index['name'] == 'idx_events_app_user_session_ts_id'
         and index['column_names']
-        == ['app_name', 'user_id', 'session_id', 'timestamp']
+        == ['app_name', 'user_id', 'session_id', 'timestamp', 'id']
         for index in event_indexes
     )
+    xinfo = await conn.run_sync(
+        lambda sync_conn: sync_conn.execute(
+            text("PRAGMA index_xinfo('idx_events_app_user_session_ts_id')")
+        ).fetchall()
+    )
+    col_desc = {row[2]: row[3] for row in xinfo if row[2]}
+    assert col_desc['timestamp'] == 1
+    assert col_desc['id'] == 1
   await engine.dispose()
 
 
@@ -193,7 +206,7 @@ async def test_prepare_tables_recreates_missing_latest_events_index(tmp_path):
 
   engine = create_async_engine(db_url)
   async with engine.begin() as conn:
-    await conn.execute(text('DROP INDEX idx_events_app_user_session_ts'))
+    await conn.execute(text('DROP INDEX idx_events_app_user_session_ts_id'))
   await engine.dispose()
 
   async with DatabaseSessionService(db_url) as session_service:
@@ -210,9 +223,9 @@ async def test_prepare_tables_recreates_missing_latest_events_index(tmp_path):
   await engine.dispose()
 
   assert any(
-      index['name'] == 'idx_events_app_user_session_ts'
+      index['name'] == 'idx_events_app_user_session_ts_id'
       and index['column_names']
-      == ['app_name', 'user_id', 'session_id', 'timestamp']
+      == ['app_name', 'user_id', 'session_id', 'timestamp', 'id']
       for index in event_indexes
   )
 
@@ -225,7 +238,7 @@ async def test_prepare_tables_recreates_missing_v0_events_index(tmp_path):
 
   engine = create_async_engine(db_url)
   async with engine.begin() as conn:
-    await conn.execute(text('DROP INDEX idx_events_app_user_session_ts'))
+    await conn.execute(text('DROP INDEX idx_events_app_user_session_ts_id'))
   await engine.dispose()
 
   async with DatabaseSessionService(db_url) as session_service:
@@ -245,11 +258,97 @@ async def test_prepare_tables_recreates_missing_v0_events_index(tmp_path):
   await engine.dispose()
 
   assert any(
-      index['name'] == 'idx_events_app_user_session_ts'
+      index['name'] == 'idx_events_app_user_session_ts_id'
       and index['column_names']
-      == ['app_name', 'user_id', 'session_id', 'timestamp']
+      == ['app_name', 'user_id', 'session_id', 'timestamp', 'id']
       for index in event_indexes
   )
+
+
+@pytest.mark.asyncio
+async def test_prepare_tables_adds_new_events_index_to_existing_db(tmp_path):
+  db_path = tmp_path / 'legacy_index.db'
+  db_url = f'sqlite+aiosqlite:///{db_path}'
+
+  # First create the db properly with DatabaseSessionService
+  async with DatabaseSessionService(db_url) as session_service:
+    await session_service.create_session(
+        app_name='my_app', user_id='test_user', session_id='s1'
+    )
+
+  # Simulate an existing database that had the old 4-column index
+  engine = create_async_engine(db_url)
+  async with engine.begin() as conn:
+    await conn.execute(text('DROP INDEX idx_events_app_user_session_ts_id'))
+    await conn.execute(
+        text(
+            'CREATE INDEX idx_events_app_user_session_ts ON events ('
+            'app_name, user_id, session_id, timestamp DESC)'
+        )
+    )
+  await engine.dispose()
+
+  # Connecting with DatabaseSessionService should create the new composite index
+  async with DatabaseSessionService(db_url) as session_service:
+    await session_service.create_session(
+        app_name='my_app', user_id='test_user', session_id='s2'
+    )
+
+  engine = create_async_engine(db_url)
+  async with engine.connect() as conn:
+    event_indexes = await conn.run_sync(
+        lambda sync_conn: inspect(sync_conn).get_indexes('events')
+    )
+  await engine.dispose()
+
+  index_names = {idx['name'] for idx in event_indexes}
+  assert 'idx_events_app_user_session_ts' not in index_names
+  assert 'idx_events_app_user_session_ts_id' in index_names
+  composite_idx = next(
+      idx
+      for idx in event_indexes
+      if idx['name'] == 'idx_events_app_user_session_ts_id'
+  )
+  assert composite_idx['column_names'] == [
+      'app_name',
+      'user_id',
+      'session_id',
+      'timestamp',
+      'id',
+  ]
+
+  # Verify column sort directions in SQLite: 1 indicates DESC, 0 indicates ASC
+  async with engine.connect() as conn:
+    xinfo = await conn.run_sync(
+        lambda sync_conn: sync_conn.execute(
+            text("PRAGMA index_xinfo('idx_events_app_user_session_ts_id')")
+        ).fetchall()
+    )
+  col_desc = {row[2]: row[3] for row in xinfo if row[2]}
+  assert col_desc['timestamp'] == 1
+  assert col_desc['id'] == 1
+
+
+@pytest.mark.parametrize('dialect_name', ['mysql', 'postgresql', 'sqlite'])
+def test_storage_event_composite_index_preserves_desc_across_dialects(
+    dialect_name,
+):
+  """Ensures composite index compiles both timestamp and id as DESC across dialects."""
+  dialects = {
+      'mysql': mysql.dialect(),
+      'postgresql': postgresql.dialect(),
+      'sqlite': sqlite.dialect(),
+  }
+  dialect = dialects[dialect_name]
+  for schema_module in (v0, v1):
+    idx = next(
+        i
+        for i in schema_module.StorageEvent.__table__.indexes
+        if i.name == 'idx_events_app_user_session_ts_id'
+    )
+    ddl = str(CreateIndex(idx).compile(dialect=dialect))
+    assert 'timestamp DESC' in ddl
+    assert 'id DESC' in ddl
 
 
 def _run_sqlite_ddl(db_path, statements):

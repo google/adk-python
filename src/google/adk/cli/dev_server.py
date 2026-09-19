@@ -460,6 +460,48 @@ class DevServer(ApiServer):
 
     return str(resolved_path)
 
+  def _get_test_file_path(self, *, app_name: str, test_name: str) -> str:
+    """Resolves a test file to a path inside the app's own tests directory.
+
+    Every endpoint that turns a caller-supplied test name into a path goes
+    through here, so that none of them can be steered elsewhere on disk.
+
+    Raises:
+      HTTPException: if the app name is invalid, or the test name is anything
+        other than a plain file name sitting directly in that directory.
+    """
+    tests_dir = Path(self._get_agent_dir(app_name)) / "tests"
+    invalid_test_name = HTTPException(
+        status_code=400,
+        detail=(
+            f"Invalid test name: {test_name!r}. A test name must be the name"
+            " of a file directly inside the app's tests directory, not a path."
+        ),
+    )
+
+    # A bare file name only. Backslash is rejected because it separates path
+    # components on Windows, where the route's single-segment match lets it
+    # through.
+    if not test_name or Path(test_name).name != test_name or "\\" in test_name:
+      raise invalid_test_name
+
+    if not test_name.endswith(".json"):
+      test_name += ".json"
+
+    # Resolve before testing containment, so a symlinked test file cannot
+    # point outside either. A name the filesystem cannot resolve at all is
+    # refused rather than allowed through unchecked.
+    try:
+      test_file_path = (tests_dir / test_name).resolve()
+      resolved_tests_dir = tests_dir.resolve()
+    except (OSError, ValueError) as exc:
+      raise invalid_test_name from exc
+
+    if test_file_path.parent != resolved_tests_dir:
+      raise invalid_test_name
+
+    return str(test_file_path)
+
   def _register_dev_endpoints(
       self,
       app: FastAPI,
@@ -909,14 +951,10 @@ class DevServer(ApiServer):
         app_name: str, test_name: Optional[str] = None
     ) -> dict[str, str]:
       """Rebuilds tests for the app."""
-      agent_dir = self._get_agent_dir(app_name)
-
       if test_name:
-        if not test_name.endswith(".json"):
-          test_name += ".json"
-        path = os.path.join(agent_dir, "tests", test_name)
+        path = self._get_test_file_path(app_name=app_name, test_name=test_name)
       else:
-        path = agent_dir
+        path = self._get_agent_dir(app_name)
 
       from .agent_test_runner import rebuild_tests
 
@@ -939,16 +977,10 @@ class DevServer(ApiServer):
         app_name: str, test_name: str, req: CreateTestRequest
     ) -> dict[str, str]:
       """Creates or updates a test file from session data."""
-      # Sanitize test_name to prevent directory traversal
-      test_name = os.path.basename(test_name)
-      agent_dir = self._get_agent_dir(app_name)
-      tests_dir = os.path.join(agent_dir, "tests")
-      os.makedirs(tests_dir, exist_ok=True)
-
-      if not test_name.endswith(".json"):
-        test_name += ".json"
-
-      test_file_path = os.path.join(tests_dir, test_name)
+      test_file_path = self._get_test_file_path(
+          app_name=app_name, test_name=test_name
+      )
+      os.makedirs(os.path.dirname(test_file_path), exist_ok=True)
 
       with open(test_file_path, "w", encoding="utf-8") as f:
         json.dump(
@@ -956,18 +988,14 @@ class DevServer(ApiServer):
         )
         f.write("\n")
 
-      return {"status": "success", "file": test_name}
+      return {"status": "success", "file": os.path.basename(test_file_path)}
 
     @app.delete("/dev/apps/{app_name}/tests/{test_name}")
     async def delete_test(app_name: str, test_name: str) -> dict[str, str]:
       """Deletes a specific test file."""
-      agent_dir = self._get_agent_dir(app_name)
-      tests_dir = os.path.join(agent_dir, "tests")
-
-      if not test_name.endswith(".json"):
-        test_name += ".json"
-
-      test_file_path = os.path.join(tests_dir, test_name)
+      test_file_path = self._get_test_file_path(
+          app_name=app_name, test_name=test_name
+      )
 
       if not os.path.exists(test_file_path):
         raise HTTPException(status_code=404, detail="Test file not found")
@@ -978,13 +1006,9 @@ class DevServer(ApiServer):
     @app.get("/dev/apps/{app_name}/tests/{test_name}")
     async def get_test_content(app_name: str, test_name: str) -> dict[str, Any]:
       """Fetches the content of a specific test file."""
-      agent_dir = self._get_agent_dir(app_name)
-      tests_dir = os.path.join(agent_dir, "tests")
-
-      if not test_name.endswith(".json"):
-        test_name += ".json"
-
-      test_file_path = os.path.join(tests_dir, test_name)
+      test_file_path = self._get_test_file_path(
+          app_name=app_name, test_name=test_name
+      )
 
       if not os.path.exists(test_file_path):
         raise HTTPException(status_code=404, detail="Test file not found")

@@ -15,6 +15,7 @@
 """Tests for Workflow error handling, graceful shutdown, and retry logic."""
 
 import asyncio
+import logging
 from typing import Any
 from typing import AsyncGenerator
 from unittest import mock
@@ -23,6 +24,7 @@ from google.adk import platform as adk_platform
 from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.apps.app import App
+from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
 from google.adk.plugins.base_plugin import BasePlugin
 # Added for the moved test
@@ -31,12 +33,15 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.workflow import BaseNode
 from google.adk.workflow import Edge
 from google.adk.workflow import START
+from google.adk.workflow._errors import NodeTimeoutError
 from google.adk.workflow._graph import Graph
 from google.adk.workflow._node import Node
 from google.adk.workflow._node import node
 from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow._retry_config import RetryConfig
 from google.adk.workflow._workflow import Workflow
+from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
+from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
 from google.genai import types
 from pydantic import ConfigDict
 from pydantic import Field
@@ -45,6 +50,8 @@ from typing_extensions import override
 
 from .. import testing_utils
 from .workflow_testing_utils import create_parent_invocation_context
+from .workflow_testing_utils import get_request_input_events
+from .workflow_testing_utils import RequestInputNode
 from .workflow_testing_utils import simplify_events_with_node
 from .workflow_testing_utils import TestingNode
 
@@ -1077,6 +1084,225 @@ async def test_workflow_returns_normally_on_node_failure():
 
 
 @pytest.mark.asyncio
+async def test_retry_config_on_nested_workflow_retries_failing_child():
+  """A sub-workflow's retry_config re-runs a child node that raises.
+
+  A Workflow reports a failing child by setting an error on its context
+  instead of raising, so this only works if the node runner treats a
+  reported failure the same as a raised one.
+  """
+  attempts = 0
+  downstream_input = None
+
+  @node()
+  def flaky_node(ctx: Context):
+    nonlocal attempts
+    attempts += 1
+    if attempts < 3:
+      raise CustomError('Node failed')
+    yield 'recovered'
+
+  @node()
+  def downstream_node(ctx: Context, node_input: Any):
+    nonlocal downstream_input
+    downstream_input = node_input
+    yield 'downstream'
+
+  inner_wf = Workflow(
+      name='inner_wf',
+      edges=[(START, flaky_node)],
+      retry_config=RetryConfig(max_attempts=3, initial_delay=0.0, jitter=0.0),
+  )
+  outer_wf = Workflow(
+      name='outer_wf',
+      edges=[(START, inner_wf, downstream_node)],
+  )
+
+  await _run_workflow(outer_wf)
+
+  assert attempts == 3
+  assert downstream_input == 'recovered'
+
+
+@pytest.mark.asyncio
+async def test_retry_config_on_nested_workflow_gives_up_after_max_attempts():
+  """A child that keeps failing still fails the workflow once retries run out.
+
+  The failure must keep propagating: it must not be replayed as a completed
+  node and fast-forwarded into a false success.
+  """
+  attempts = 0
+  downstream_ran = False
+
+  @node()
+  def failing_node(ctx: Context):
+    nonlocal attempts
+    attempts += 1
+    raise CustomError('Node failed')
+    yield 'output'
+
+  @node()
+  def downstream_node(ctx: Context):
+    nonlocal downstream_ran
+    downstream_ran = True
+    yield 'downstream'
+
+  inner_wf = Workflow(
+      name='inner_wf',
+      edges=[(START, failing_node)],
+      retry_config=RetryConfig(max_attempts=3, initial_delay=0.0, jitter=0.0),
+  )
+  outer_wf = Workflow(
+      name='outer_wf',
+      edges=[(START, inner_wf, downstream_node)],
+  )
+
+  events, _, _ = await _run_workflow(outer_wf)
+
+  assert attempts == 3
+  assert not downstream_ran
+  error_events = [
+      e
+      for e in events
+      if isinstance(e, Event) and e.error_code == 'CustomError'
+  ]
+  assert error_events
+
+
+@pytest.mark.asyncio
+async def test_retry_config_on_nested_workflow_replays_completed_children():
+  """A retried sub-workflow does not redo a child that already produced output."""
+  completed_attempts = 0
+  flaky_attempts = 0
+
+  @node()
+  def completed_node(ctx: Context):
+    nonlocal completed_attempts
+    completed_attempts += 1
+    yield 'done'
+
+  @node()
+  def flaky_node(ctx: Context, node_input: Any):
+    nonlocal flaky_attempts
+    flaky_attempts += 1
+    if flaky_attempts < 3:
+      raise CustomError('Node failed')
+    yield 'recovered'
+
+  inner_wf = Workflow(
+      name='inner_wf',
+      edges=[(START, completed_node, flaky_node)],
+      retry_config=RetryConfig(max_attempts=3, initial_delay=0.0, jitter=0.0),
+  )
+  outer_wf = Workflow(name='outer_wf', edges=[(START, inner_wf)])
+
+  await _run_workflow(outer_wf)
+
+  assert flaky_attempts == 3
+  assert completed_attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_config_on_outer_workflow_retries_nested_failure():
+  """A failure inside a sub-workflow is a failure of the outer workflow too."""
+  attempts = 0
+
+  @node()
+  def flaky_node(ctx: Context):
+    nonlocal attempts
+    attempts += 1
+    if attempts < 3:
+      raise CustomError('Node failed')
+    yield 'recovered'
+
+  inner_wf = Workflow(name='inner_wf', edges=[(START, flaky_node)])
+  outer_wf = Workflow(
+      name='outer_wf',
+      edges=[(START, inner_wf)],
+      retry_config=RetryConfig(max_attempts=3, initial_delay=0.0, jitter=0.0),
+  )
+
+  await _run_workflow(outer_wf)
+
+  assert attempts == 3
+
+
+@pytest.mark.asyncio
+async def test_retry_config_on_nested_workflow_honors_exceptions_filter():
+  """The exceptions filter matches the child's error, not the workflow."""
+  retryable_attempts = 0
+  non_retryable_attempts = 0
+
+  @node()
+  def retryable_node(ctx: Context):
+    nonlocal retryable_attempts
+    retryable_attempts += 1
+    raise CustomRetryableError('Node failed')
+    yield 'output'
+
+  @node()
+  def non_retryable_node(ctx: Context):
+    nonlocal non_retryable_attempts
+    non_retryable_attempts += 1
+    raise CustomNonRetryableError('Node failed')
+    yield 'output'
+
+  retry_config = RetryConfig(
+      max_attempts=3,
+      initial_delay=0.0,
+      jitter=0.0,
+      exceptions=[CustomRetryableError],
+  )
+
+  retryable_wf = Workflow(
+      name='retryable_wf',
+      edges=[(START, retryable_node)],
+      retry_config=retry_config,
+  )
+  with pytest.raises(CustomRetryableError):
+    await _run_workflow(Workflow(name='outer', edges=[(START, retryable_wf)]))
+
+  non_retryable_wf = Workflow(
+      name='non_retryable_wf',
+      edges=[(START, non_retryable_node)],
+      retry_config=retry_config,
+  )
+  with pytest.raises(CustomNonRetryableError):
+    await _run_workflow(
+        Workflow(name='outer2', edges=[(START, non_retryable_wf)])
+    )
+
+  assert retryable_attempts == 3
+  assert non_retryable_attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_config_on_nested_workflow_retries_its_own_timeout():
+  """A sub-workflow's retry_config also applies when it times out as a unit."""
+  attempts = 0
+
+  @node()
+  async def slow_node():
+    nonlocal attempts
+    attempts += 1
+    await asyncio.sleep(1.0)
+    return 'done'
+
+  inner_wf = Workflow(
+      name='inner_wf',
+      edges=[(START, slow_node)],
+      timeout=0.05,
+      retry_config=RetryConfig(max_attempts=3, initial_delay=0.0, jitter=0.0),
+  )
+  outer_wf = Workflow(name='outer_wf', edges=[(START, inner_wf)])
+
+  with pytest.raises(NodeTimeoutError):
+    await _run_workflow(outer_wf)
+
+  assert attempts == 3
+
+
+@pytest.mark.asyncio
 async def test_fail_fast_preserves_completed_siblings(
     request: pytest.FixtureRequest,
 ):
@@ -1282,3 +1508,213 @@ async def test_workflow_dispatches_after_run_callback_on_before_run_early_exit(
   assert ran['node'] is False
   assert ran['after_run'] is True
   assert ran['compaction'] is True
+
+
+# --- Resuming an invocation that failed ---
+
+
+def _resumable_runner(
+    wf: Workflow, request: pytest.FixtureRequest
+) -> testing_utils.InMemoryRunner:
+  app = App(
+      name=request.function.__name__,
+      root_agent=wf,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  return testing_utils.InMemoryRunner(app=app)
+
+
+@pytest.mark.asyncio
+async def test_failed_node_reruns_on_resume(request: pytest.FixtureRequest):
+  """A node that raised is rerun on resume, and feeds its real output down."""
+  upstream_runs = 0
+  flaky_runs = 0
+  downstream_inputs = []
+
+  @node()
+  async def upstream_node(ctx: Context):
+    nonlocal upstream_runs
+    upstream_runs += 1
+    return 'upstream output'
+
+  @node()
+  async def flaky_node(ctx: Context, node_input: Any):
+    nonlocal flaky_runs
+    flaky_runs += 1
+    if flaky_runs == 1:
+      raise CustomError('Node failed')
+    return 'flaky output'
+
+  @node()
+  async def downstream_node(ctx: Context, node_input: Any):
+    downstream_inputs.append(node_input)
+    return 'downstream output'
+
+  wf = Workflow(
+      name='test_resume_after_failure',
+      edges=[
+          (START, upstream_node),
+          (upstream_node, flaky_node),
+          (flaky_node, downstream_node),
+      ],
+  )
+  runner = _resumable_runner(wf, request)
+
+  with pytest.raises(CustomError, match='Node failed'):
+    await runner.run_async(testing_utils.get_user_content('start'))
+  invocation_id = runner.session.events[0].invocation_id
+
+  assert downstream_inputs == []
+
+  await runner.run_async(invocation_id=invocation_id)
+
+  assert flaky_runs == 2
+  # The downstream node sees the rerun's output, not the failure's None.
+  assert downstream_inputs == ['flaky output']
+  # The node that already succeeded is still fast-forwarded.
+  assert upstream_runs == 1
+
+
+@pytest.mark.asyncio
+async def test_completed_node_fast_forwarded_on_resume(
+    request: pytest.FixtureRequest,
+):
+  """A node that completed is replayed from history, output and all."""
+  completed_runs = 0
+  flaky_runs = 0
+  flaky_inputs = []
+
+  @node()
+  async def completed_node(ctx: Context):
+    nonlocal completed_runs
+    completed_runs += 1
+    return 'completed output'
+
+  @node()
+  async def flaky_node(ctx: Context, node_input: Any):
+    nonlocal flaky_runs
+    flaky_runs += 1
+    flaky_inputs.append(node_input)
+    if flaky_runs == 1:
+      raise CustomError('Node failed')
+    return 'flaky output'
+
+  wf = Workflow(
+      name='test_resume_fast_forward',
+      edges=[
+          (START, completed_node),
+          (completed_node, flaky_node),
+      ],
+  )
+  runner = _resumable_runner(wf, request)
+
+  with pytest.raises(CustomError, match='Node failed'):
+    await runner.run_async(testing_utils.get_user_content('start'))
+  invocation_id = runner.session.events[0].invocation_id
+
+  await runner.run_async(invocation_id=invocation_id)
+
+  assert completed_runs == 1
+  # The rerun is fed the fast-forwarded output rather than a fresh one.
+  assert flaky_inputs == ['completed output', 'completed output']
+
+
+@pytest.mark.asyncio
+async def test_retried_node_not_rerun_on_resume(
+    request: pytest.FixtureRequest,
+):
+  """A node that failed and then succeeded in the same turn is not rerun."""
+  tracker = {'iteration_count': 0}
+  flaky = _FlakyNode(
+      name='FlakyNode',
+      message='flaky output',
+      succeed_on_iteration=2,
+      tracker=tracker,
+      exception_to_raise=CustomRetryableError('Transient error'),
+      retry_config=RetryConfig(
+          initial_delay=0.0,
+          exceptions=['CustomRetryableError'],
+      ),
+  )
+  pause = RequestInputNode(name='PauseNode', message='approve?')
+
+  wf = Workflow(
+      name='test_resume_after_retry',
+      edges=[
+          (START, flaky),
+          (flaky, pause),
+      ],
+  )
+  runner = _resumable_runner(wf, request)
+
+  events = await runner.run_async(testing_utils.get_user_content('start'))
+  flaky_in_graph = next(n for n in wf.graph.nodes if n.name == 'FlakyNode')
+  # One failed attempt then one that produced output, both in this turn.
+  assert flaky_in_graph.tracker['iteration_count'] == 2
+
+  req_events = get_request_input_events(events)
+  interrupt_id = get_request_input_interrupt_ids(req_events[0])[0]
+  user_input = create_request_input_response(interrupt_id, {'ok': True})
+  await runner.run_async(
+      new_message=testing_utils.UserContent(user_input),
+      invocation_id=events[0].invocation_id,
+  )
+
+  assert flaky_in_graph.tracker['iteration_count'] == 2
+
+
+@pytest.mark.asyncio
+async def test_failed_node_in_nested_workflow_reruns_on_resume(
+    request: pytest.FixtureRequest,
+):
+  """A failure inside a nested workflow reruns that node, not its parent's."""
+  inner_flaky_runs = 0
+  inner_downstream_inputs = []
+
+  @node()
+  async def inner_flaky_node(ctx: Context):
+    nonlocal inner_flaky_runs
+    inner_flaky_runs += 1
+    if inner_flaky_runs == 1:
+      raise CustomError('Node failed')
+    return 'inner output'
+
+  @node()
+  async def inner_downstream_node(ctx: Context, node_input: Any):
+    inner_downstream_inputs.append(node_input)
+    return 'inner downstream output'
+
+  inner_wf = Workflow(
+      name='inner_workflow',
+      edges=[
+          (START, inner_flaky_node),
+          (inner_flaky_node, inner_downstream_node),
+      ],
+  )
+
+  outer_upstream_runs = 0
+
+  @node()
+  async def outer_upstream_node(ctx: Context):
+    nonlocal outer_upstream_runs
+    outer_upstream_runs += 1
+    return 'outer upstream output'
+
+  wf = Workflow(
+      name='outer_workflow',
+      edges=[
+          (START, outer_upstream_node),
+          (outer_upstream_node, inner_wf),
+      ],
+  )
+  runner = _resumable_runner(wf, request)
+
+  with pytest.raises(CustomError, match='Node failed'):
+    await runner.run_async(testing_utils.get_user_content('start'))
+  invocation_id = runner.session.events[0].invocation_id
+
+  await runner.run_async(invocation_id=invocation_id)
+
+  assert inner_flaky_runs == 2
+  assert inner_downstream_inputs == ['inner output']
+  assert outer_upstream_runs == 1

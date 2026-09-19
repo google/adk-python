@@ -211,5 +211,12 @@ class LLMRegistry:
           ' others.'
           '\nSee https://docs.litellm.ai/docs/providers for a full list.'
       )
+    else:
+      error_msg += (
+          '\n\nA bare model name resolves only for the providers ADK registers'
+          ' directly. Everything else is reached through litellm, under a'
+          ' "provider/model" name such as "openai/gpt-4o".'
+          '\nInstall it with: pip install google-adk[extensions]'
+      )
 
     raise ValueError(error_msg)

@@ -34,6 +34,7 @@ from urllib.parse import urlparse
 from urllib.request import url2pathname
 
 from google.adk.artifacts import file_artifact_service
+from google.adk.artifacts import gcs_artifact_service
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
 from google.adk.artifacts.base_artifact_service import ensure_part
 from google.adk.artifacts.file_artifact_service import FileArtifactService
@@ -41,6 +42,7 @@ from google.adk.artifacts.gcs_artifact_service import GcsArtifactService
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.errors.input_validation_error import InputValidationError
 from google.cloud.exceptions import NotFound
+from google.cloud.exceptions import PreconditionFailed
 from google.genai import types
 import pytest
 
@@ -75,25 +77,40 @@ class MockBlob:
     self.content_type: Optional[str] = None
     self.time_created = FIXED_DATETIME
     self.metadata: dict[str, Any] = {}
+    # GCS evaluates a generation precondition and applies the write as one
+    # server-side step; the lock gives the mock the same indivisibility.
+    self._lock = threading.Lock()
 
   def upload_from_string(
-      self, data: Union[str, bytes], content_type: Optional[str] = None
+      self,
+      data: Union[str, bytes],
+      content_type: Optional[str] = None,
+      if_generation_match: Optional[int] = None,
   ) -> None:
     """Mocks uploading data to the blob (from a string or bytes).
 
     Args:
         data: The data to upload (string or bytes).
         content_type:  The content type of the data (optional).
+        if_generation_match: Generation precondition. 0 means the upload must
+          create the object, so it fails if the blob already has content.
+
+    Raises:
+        PreconditionFailed: If the generation precondition is not met.
     """
     if isinstance(data, str):
-      self.content = data.encode("utf-8")
+      encoded = data.encode("utf-8")
     elif isinstance(data, bytes):
-      self.content = data
+      encoded = data
     else:
       raise TypeError("data must be str or bytes")
 
-    if content_type:
-      self.content_type = content_type
+    with self._lock:
+      if if_generation_match == 0 and self.content is not None:
+        raise PreconditionFailed(f"Object already exists: {self.name}")
+      self.content = encoded
+      if content_type:
+        self.content_type = content_type
 
   def download_as_bytes(self) -> bytes:
     """Mocks downloading the blob's content as bytes.
@@ -140,6 +157,7 @@ class MockBucket:
     """
     self.name = name
     self.blobs: dict[str, MockBlob] = {}
+    self._lock = threading.Lock()
 
   def blob(self, blob_name: str) -> MockBlob:
     """Mocks getting a Blob object (doesn't create it in storage).
@@ -150,9 +168,10 @@ class MockBucket:
     Returns:
         A MockBlob instance.
     """
-    if blob_name not in self.blobs:
-      self.blobs[blob_name] = MockBlob(blob_name)
-    return self.blobs[blob_name]
+    with self._lock:
+      if blob_name not in self.blobs:
+        self.blobs[blob_name] = MockBlob(blob_name)
+      return self.blobs[blob_name]
 
   def get_blob(self, blob_name: str) -> Optional[MockBlob]:
     """Mocks getting a blob from storage if it exists and has content."""
@@ -283,6 +302,111 @@ async def test_save_load_delete(service_type, artifact_service_factory):
       user_id=user_id,
       session_id=session_id,
       filename=filename,
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+    ],
+)
+@pytest.mark.parametrize("session_id", ["user", "user/x", "user\\x"])
+async def test_save_artifact_rejects_reserved_user_as_session_id(
+    service_type, session_id, artifact_service_factory
+):
+  """IN_MEMORY and GCS lay session-scoped and user-scoped artifacts out in
+  the same flat namespace, using the literal segment "user" to mark
+  user-scoped ones. A session actually named "user" (or starting with "user/")
+  must be rejected rather than silently colliding with that reserved segment."""
+  artifact_service = artifact_service_factory(service_type)
+
+  with pytest.raises(InputValidationError, match="reserved value 'user'"):
+    await artifact_service.save_artifact(
+        app_name="app0",
+        user_id="user0",
+        session_id=session_id,
+        filename="report.txt",
+        artifact=types.Part(text="hello"),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("session_id", ["user", "user/x", "user\\x"])
+async def test_file_allows_reserved_user_as_session_id(
+    session_id,
+    artifact_service_factory,
+):
+  """Unlike IN_MEMORY and GCS, FILE lays session-scoped artifacts out under
+  their own `sessions/<id>/` subtree, distinct from the user-scoped
+  `artifacts/` subtree, so a session literally named "user" cannot collide
+  with it and is not rejected."""
+  artifact_service = artifact_service_factory(ArtifactServiceType.FILE)
+
+  await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id=session_id,
+      filename="report.txt",
+      artifact=types.Part(text="hello"),
+  )
+  loaded = await artifact_service.load_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id=session_id,
+      filename="report.txt",
+  )
+  assert loaded == types.Part(text="hello")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+    ],
+)
+@pytest.mark.parametrize("session_id", ["user", "user/x", "user\\x"])
+async def test_read_and_delete_paths_allow_reserved_user_as_session_id(
+    service_type, session_id, artifact_service_factory
+):
+  """Reads and deletes must remain permissive for session IDs named "user" or
+  starting with "user/", so existing data already stored under that prefix in a
+  live bucket or memory store remains reachable and removable."""
+  artifact_service = artifact_service_factory(service_type)
+
+  assert (
+      await artifact_service.list_artifact_keys(
+          app_name="app0", user_id="user0", session_id=session_id
+      )
+      == []
+  )
+  assert (
+      await artifact_service.load_artifact(
+          app_name="app0",
+          user_id="user0",
+          session_id=session_id,
+          filename="report.txt",
+      )
+      is None
+  )
+  assert (
+      await artifact_service.list_versions(
+          app_name="app0",
+          user_id="user0",
+          session_id=session_id,
+          filename="report.txt",
+      )
+      == []
+  )
+  await artifact_service.delete_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id=session_id,
+      filename="report.txt",
   )
 
 
@@ -1220,6 +1344,50 @@ async def test_file_list_artifact_versions(tmp_path, artifact_service_factory):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "session_id,filename",
+    [
+        ("session", "report.txt"),
+        ("session", "user:report.txt"),
+        (None, "report.txt"),
+    ],
+)
+@pytest.mark.parametrize(
+    "artifact",
+    [
+        types.Part(text="report"),
+        types.Part.from_bytes(data=b"report", mime_type="text/plain"),
+    ],
+)
+async def test_file_artifact_versions_preserve_create_time(
+    tmp_path, session_id, filename, artifact
+):
+  """Metadata reads preserve each saved timestamp after reopening the service."""
+  service = FileArtifactService(root_dir=tmp_path)
+  scope = dict(
+      app_name="app", user_id="user", session_id=session_id, filename=filename
+  )
+  create_times = [0.0, FIXED_DATETIME.timestamp()]
+  with patch(
+      "google.adk.artifacts.base_artifact_service.platform_time.get_time"
+  ) as get_time:
+    for create_time in create_times:
+      get_time.return_value = create_time
+      await service.save_artifact(**scope, artifact=artifact)
+
+    service = FileArtifactService(root_dir=tmp_path)
+    for read_time in [create_times[-1] + 10, create_times[-1] + 20]:
+      get_time.return_value = read_time
+      versions = await service.list_artifact_versions(**scope)
+      first = await service.get_artifact_version(**scope, version=0)
+      latest = await service.get_artifact_version(**scope)
+
+      assert [version.create_time for version in versions] == create_times
+      assert first.create_time == create_times[0]
+      assert latest.create_time == create_times[-1]
+
+
+@pytest.mark.asyncio
 async def test_file_save_artifact_reserves_concurrent_versions(tmp_path):
   service = FileArtifactService(root_dir=tmp_path / "artifacts")
   original_list_versions = file_artifact_service._list_versions_on_disk
@@ -1418,6 +1586,37 @@ async def test_file_save_artifact_rejects_out_of_scope_paths(
     )
 
 
+@pytest.mark.asyncio
+async def test_file_rejects_user_id_that_collides_with_session_scope(
+    tmp_path,
+):
+  """A user_id embedding "/sessions/<id>" must not resolve into another
+  caller's session-scoped directory.
+  """
+  artifact_service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  await artifact_service.save_artifact(
+      app_name="app",
+      user_id="victim",
+      session_id="s1",
+      filename="notes.txt",
+      artifact=types.Part(text="victim data"),
+  )
+  with pytest.raises(InputValidationError):
+    await artifact_service.save_artifact(
+        app_name="app",
+        user_id="victim/sessions/s1",
+        filename="user:notes.txt",
+        artifact=types.Part(text="attacker data"),
+    )
+  loaded = await artifact_service.load_artifact(
+      app_name="app",
+      user_id="victim",
+      session_id="s1",
+      filename="notes.txt",
+  )
+  assert loaded.text == "victim data"
+
+
 INVALID_PATH_SEGMENT_CASES = (
     ("../escape", "must not contain traversal segments"),
     ("../../etc", "must not contain traversal segments"),
@@ -1435,6 +1634,11 @@ INVALID_PATH_SEGMENT_CASES = (
     (r"C:\absolute", "must not be drive-qualified"),
     ("C:/absolute", "must not be drive-qualified"),
     ("C:drive-relative", "must not be drive-qualified"),
+    ("victim/sessions/s1", "must not contain reserved path segments"),
+    ("victim/artifacts", "must not contain reserved path segments"),
+    ("victim/apps", "must not contain reserved path segments"),
+    ("victim/users", "must not contain reserved path segments"),
+    ("victim/versions", "must not contain reserved path segments"),
 )
 
 
@@ -1447,22 +1651,30 @@ INVALID_PATH_SEGMENT_CASES = (
         ArtifactServiceType.FILE,
     ],
 )
+@pytest.mark.parametrize(
+    "user_id",
+    [
+        "group/user123",
+        "mdbuser/username",
+    ],
+)
 async def test_save_and_load_namespaced_user_id_succeeds(
-    service_type, artifact_service_factory
+    service_type, user_id, artifact_service_factory
 ):
   """ArtifactService implementations permit namespaced user IDs."""
   service = artifact_service_factory(service_type)
   artifact = types.Part.from_bytes(data=b"data", mime_type="text/plain")
+  app_name = "projects/123/locations/us-central1/reasoningEngines/456"
   await service.save_artifact(
-      app_name="myapp",
-      user_id="group/user123",
+      app_name=app_name,
+      user_id=user_id,
       session_id="sess123",
       filename="safe.txt",
       artifact=artifact,
   )
   loaded = await service.load_artifact(
-      app_name="myapp",
-      user_id="group/user123",
+      app_name=app_name,
+      user_id=user_id,
       session_id="sess123",
       filename="safe.txt",
   )
@@ -2232,6 +2444,91 @@ async def test_gcs_save_artifact_metadata_namespacing_and_mime() -> None:
 
 
 @pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_save_artifact_reserves_concurrent_versions() -> None:
+  """GcsArtifactService gives two overlapping saves distinct versions."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  original_list_versions = service._list_versions
+  first_reads = threading.Barrier(2)
+  calls_lock = threading.Lock()
+  synchronized_calls = 0
+
+  def synchronize_initial_reads(**kwargs: Any) -> list[int]:
+    nonlocal synchronized_calls
+    versions = original_list_versions(**kwargs)
+    with calls_lock:
+      synchronized_calls += 1
+      should_wait = synchronized_calls <= 2
+    if should_wait:
+      first_reads.wait(timeout=5)
+    return versions
+
+  save_args = {
+      "app_name": "app",
+      "user_id": "user1",
+      "session_id": "sess1",
+      "filename": "report.txt",
+  }
+  with mock.patch.object(
+      service,
+      "_list_versions",
+      side_effect=synchronize_initial_reads,
+  ):
+    saved_versions = await asyncio.gather(
+        service.save_artifact(
+            **save_args,
+            artifact=types.Part(text="first"),
+        ),
+        service.save_artifact(
+            **save_args,
+            artifact=types.Part(text="second"),
+        ),
+    )
+
+  assert sorted(saved_versions) == [0, 1]
+  assert await service.list_versions(**save_args) == [0, 1]
+
+  loaded_texts: set[str] = set()
+  for version in saved_versions:
+    artifact = await service.load_artifact(**save_args, version=version)
+    assert artifact is not None
+    assert artifact.text is not None
+    loaded_texts.add(artifact.text)
+  assert loaded_texts == {"first", "second"}
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
+async def test_gcs_save_artifact_bounds_version_retries() -> None:
+  """GcsArtifactService stops retrying and raises under sustained contention."""
+  service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
+  save_args = {
+      "app_name": "app",
+      "user_id": "user1",
+      "session_id": "sess1",
+      "filename": "report.txt",
+  }
+  max_attempts = gcs_artifact_service._MAX_SAVE_VERSION_ATTEMPTS
+  # Every version the save can reach is already taken, so no attempt wins the
+  # precondition and only the cap can end the loop. The empty version list is
+  # what a save sees when concurrent saves keep claiming versions behind it.
+  for version in range(max_attempts + 5):
+    blob_name = service._get_blob_name(
+        "app", "user1", "report.txt", version, "sess1"
+    )
+    service.bucket.blob(blob_name).upload_from_string("taken")
+
+  with mock.patch.object(service, "_list_versions", return_value=[]):
+    with mock.patch.object(
+        service.bucket, "blob", wraps=service.bucket.blob
+    ) as blob_calls:
+      with pytest.raises(PreconditionFailed):
+        await service.save_artifact(
+            **save_args, artifact=types.Part(text="new")
+        )
+
+  assert blob_calls.call_count == max_attempts
+
+
+@pytest.mark.asyncio  # type: ignore[untyped-decorator]
 async def test_gcs_load_artifact_file_data_fallback_compatibility() -> None:
   """GcsArtifactService loads file_data with old file_uri metadata key for backward compatibility."""
   service = mock_gcs_artifact_service()  # type: ignore[no-untyped-call]
@@ -2806,12 +3103,15 @@ async def test_save_load_text_artifact(
 @pytest.mark.parametrize(
     "service_type",
     [
+        ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
     ],
 )
+@pytest.mark.parametrize("filename", ["empty.txt", "user:empty.txt"])
+@pytest.mark.parametrize("version", [None, 0])
 async def test_save_load_empty_text_artifact(
-    service_type, artifact_service_factory
+    service_type, artifact_service_factory, filename, version
 ):
   """Tests that empty text artifacts survive round-trip save/load."""
   artifact_service = artifact_service_factory(service_type)
@@ -2821,18 +3121,55 @@ async def test_save_load_empty_text_artifact(
       app_name="app0",
       user_id="user0",
       session_id="123",
-      filename="empty.txt",
+      filename=filename,
       artifact=artifact,
   )
   loaded = await artifact_service.load_artifact(
       app_name="app0",
       user_id="user0",
       session_id="123",
-      filename="empty.txt",
+      filename=filename,
+      version=version,
   )
   assert loaded is not None
   assert loaded.text == ""
   assert loaded.inline_data is None
+
+
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+@pytest.mark.parametrize("filename", ["empty.bin", "user:empty.bin"])
+@pytest.mark.parametrize("version", [None, 0])
+async def test_save_load_empty_bytes_artifact(
+    service_type, artifact_service_factory, filename, version
+):
+  """Tests that empty bytes artifacts survive round-trip save/load."""
+  artifact_service = artifact_service_factory(service_type)
+  artifact = types.Part.from_bytes(data=b"", mime_type="application/pdf")
+
+  await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="123",
+      filename=filename,
+      artifact=artifact,
+  )
+  loaded = await artifact_service.load_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="123",
+      filename=filename,
+      version=version,
+  )
+  assert loaded is not None
+  assert loaded.inline_data is not None
+  assert loaded.inline_data.data == b""
 
 
 def _write_tampered_metadata(

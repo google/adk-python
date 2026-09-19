@@ -50,6 +50,31 @@ async def test_compute_state_delta_reverts_state_to_rewind_point():
   assert "app:stay" not in delta
 
 
+async def test_compute_state_delta_for_rewind_ignores_temp_keys():
+  """compute_state_delta_for_rewind must exclude temp:-prefixed state keys."""
+  session = Session(
+      id="s1",
+      app_name="app",
+      user_id="u1",
+      state={"k1": "v2", "temp:scratch": "ephemeral", "app:global": 1},
+      events=[
+          Event(
+              invocation_id="inv1",
+              actions=EventActions(state_delta={"k1": "v1"}),
+          ),
+          Event(
+              invocation_id="inv2",
+              actions=EventActions(
+                  state_delta={"k1": "v2", "temp:scratch": "ephemeral"}
+              ),
+          ),
+      ],
+  )
+  delta = await _rewind_utils.compute_state_delta_for_rewind(session, 1)
+  assert delta == {"k1": "v1"}
+  assert "temp:scratch" not in delta
+
+
 async def test_compute_artifact_delta_returns_empty_when_no_artifact_service():
   """Without an artifact service, artifact delta computation returns empty dict."""
   session = Session(id="s1", app_name="app", user_id="u1", events=[])

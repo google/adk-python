@@ -255,10 +255,12 @@ class SpannerToolSettings(BaseModel):
   capabilities: list[Capabilities] = [
       Capabilities.DATA_READ,
   ]
-  """Allowed capabilities for Spanner tools.
+  """Allowed capabilities for the tools in `SpannerToolset`.
 
-  By default, the tool will allow only read operations. This behaviour may
-  change in future versions.
+  By default, only read operations are allowed. This behaviour may change in
+  future versions. `SpannerAdminToolset` does not consult this field;
+  constructing it exposes its instance and database creation tools whatever
+  is set here.
   """
 
   max_executed_query_result_rows: int = 50

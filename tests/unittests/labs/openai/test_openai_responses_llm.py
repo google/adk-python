@@ -437,6 +437,52 @@ def test_function_declaration_uses_responses_tool_shape():
   }
 
 
+def test_function_declaration_to_response_tool_parameters_json_schema_ignores_parameters_required():
+  declaration = types.FunctionDeclaration(
+      name='custom_tool',
+      description='Tool with both schemas',
+      parameters=types.Schema(
+          type=types.Type.OBJECT,
+          required=['legacy_param'],
+      ),
+      parameters_json_schema={
+          'type': 'object',
+          'properties': {
+              'query': {'type': 'string'},
+          },
+      },
+  )
+  tool = _function_declaration_to_response_tool(declaration)
+  params = tool['parameters']
+  assert 'required' not in params
+
+
+def test_function_declaration_to_response_tool_prefers_parameters_json_schema_over_parameters():
+  declaration = types.FunctionDeclaration(
+      name='custom_tool',
+      description='Tool with both schemas',
+      parameters=types.Schema(
+          type=types.Type.OBJECT,
+          properties={
+              'legacy_param': types.Schema(type=types.Type.STRING),
+          },
+          required=['legacy_param'],
+      ),
+      parameters_json_schema={
+          'type': 'object',
+          'properties': {
+              'query': {'type': 'string'},
+          },
+          'required': ['query'],
+      },
+  )
+  tool = _function_declaration_to_response_tool(declaration)
+  params = tool['parameters']
+  assert 'query' in params['properties']
+  assert 'legacy_param' not in params['properties']
+  assert params['required'] == ['query']
+
+
 def test_structured_output_uses_responses_text_format():
   """ADK response schemas become Responses text.format json_schema."""
 
@@ -1046,9 +1092,34 @@ async def test_streaming_generation_aggregates_function_call_without_completed_e
       async for item in llm.generate_content_async(llm_request, stream=True)
   ]
 
-  assert len(responses) == 1
-  assert responses[0].finish_reason == types.FinishReason.STOP
-  function_call = responses[0].content.parts[0].function_call
+  assert len(responses) == 4
+  partial_responses = responses[:-1]
+  assert all(response.partial is True for response in partial_responses)
+  assert [
+      response.content.parts[0].function_call.partial_args
+      for response in partial_responses
+  ] == [
+      None,
+      None,
+      [
+          types.PartialArg(
+              json_path='$.location', string_value='Paris', will_continue=False
+          )
+      ],
+  ]
+  assert [
+      response.content.parts[0].function_call.id
+      for response in partial_responses
+  ] == ['call_123', 'call_123', 'call_123']
+  assert all(
+      response.content.parts[0].function_call.will_continue
+      for response in partial_responses
+  )
+
+  final_response = responses[-1]
+  assert final_response.partial is False
+  assert final_response.finish_reason == types.FinishReason.STOP
+  function_call = final_response.content.parts[0].function_call
   assert function_call.id == 'call_123'
   assert function_call.name == 'get_weather'
   assert function_call.args == {'location': 'Paris'}
@@ -1088,7 +1159,22 @@ async def test_streaming_generation_uses_function_arguments_done_event():
       async for item in llm.generate_content_async(llm_request, stream=True)
   ]
 
-  function_call = responses[0].content.parts[0].function_call
+  assert len(responses) == 3
+  assert responses[0].partial is True
+  assert responses[0].content.parts[0].function_call.partial_args is None
+  assert responses[1].partial is True
+  assert (
+      responses[1].content.parts[0].function_call.partial_args[0].json_path
+      == '$.location'
+  )
+  assert (
+      responses[1].content.parts[0].function_call.partial_args[0].string_value
+      == 'Paris'
+  )
+
+  final_response = responses[-1]
+  assert final_response.partial is False
+  function_call = final_response.content.parts[0].function_call
   assert function_call.id == 'call_123'
   assert function_call.args == {'location': 'Paris'}
 
@@ -1137,6 +1223,61 @@ def test_azure_client_uses_openai_v1_base_url():
       api_key='key',
       base_url='https://example.openai.azure.com/openai/v1/',
   )
+
+
+@pytest.mark.asyncio
+async def test_azure_responses_inherits_partial_function_call_streaming():
+  """Azure Responses uses the shared partial function-call stream handling."""
+  stream = _FakeAsyncStream([
+      {
+          'type': 'response.output_item.added',
+          'output_index': 0,
+          'item': {
+              'type': 'function_call',
+              'call_id': 'call_azure',
+              'name': 'get_weather',
+              'arguments': '',
+          },
+      },
+      {
+          'type': 'response.function_call_arguments.delta',
+          'output_index': 0,
+          'delta': '{"city": "Seattle"}',
+      },
+  ])
+  client = _CaptureClient(stream)
+  llm = AzureOpenAIResponsesLlm(
+      model='deployment', azure_endpoint='https://example.openai.azure.com/'
+  )
+  llm.__dict__['_openai_client'] = client
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role='user', parts=[types.Part.from_text(text='Weather?')]
+          )
+      ]
+  )
+
+  responses = [
+      item
+      async for item in llm.generate_content_async(llm_request, stream=True)
+  ]
+
+  assert len(responses) == 3
+  assert responses[0].partial is True
+  assert responses[1].partial is True
+  assert (
+      responses[1].content.parts[0].function_call.partial_args[0].json_path
+      == '$.city'
+  )
+  assert (
+      responses[1].content.parts[0].function_call.partial_args[0].string_value
+      == 'Seattle'
+  )
+  assert responses[-1].partial is False
+  assert responses[-1].content.parts[0].function_call.args == {
+      'city': 'Seattle'
+  }
 
 
 def _user_request(**config_kwargs) -> LlmRequest:
@@ -1229,6 +1370,31 @@ def test_structured_output_schema_name_is_sanitized():
   )
 
   assert kwargs['text']['format']['name'] == 'My_Schema_'
+
+
+def test_structured_output_preserves_any_of_for_genai_schema():
+  llm = OpenAIResponsesLlm(model='gpt-5')
+  schema = types.Schema(
+      type=types.Type.OBJECT,
+      properties={
+          'choice': types.Schema(
+              any_of=[
+                  types.Schema(type=types.Type.STRING),
+                  types.Schema(type=types.Type.INTEGER),
+              ]
+          )
+      },
+  )
+  kwargs = llm._get_response_create_kwargs(
+      _user_request(response_schema=schema),
+      stream=False,
+  )
+  schema_dict = kwargs['text']['format']['schema']
+  assert 'any_of' not in schema_dict['properties']['choice']
+  assert schema_dict['properties']['choice']['anyOf'] == [
+      {'type': 'string'},
+      {'type': 'integer'},
+  ]
 
 
 def test_enforce_strict_openai_schema_handles_nested_refs():

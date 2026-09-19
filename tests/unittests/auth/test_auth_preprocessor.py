@@ -53,6 +53,7 @@ class TestAuthLlmRequestProcessor:
     from google.adk.agents.llm_agent import LlmAgent
 
     agent = Mock(spec=LlmAgent)
+    agent.name = 'test_agent'
     agent.canonical_tools = AsyncMock(return_value=[])
     return agent
 
@@ -452,6 +453,7 @@ class TestAuthLlmRequestProcessor:
 
     original_event = Mock(spec=Event)
     original_event.content = Mock()  # Non-None content
+    original_event.author = 'test_agent'
     original_event.get_function_calls.return_value = [
         original_function_call_1,
         original_function_call_2,
@@ -490,6 +492,82 @@ class TestAuthLlmRequestProcessor:
 
     # Verify the function response event was yielded
     assert result == [mock_function_response_event]
+
+  @pytest.mark.asyncio
+  @patch('google.adk.auth.auth_preprocessor.AuthHandler')
+  @patch('google.adk.auth.auth_tool.AuthConfig.model_validate')
+  @patch('google.adk.auth.auth_preprocessor.handle_function_calls_async')
+  async def test_does_not_resume_tool_call_authored_by_another_agent(
+      self,
+      mock_handle_function_calls,
+      mock_auth_config_validate,
+      mock_auth_handler_class,
+      processor,
+      mock_invocation_context,
+      mock_llm_request,
+      mock_auth_config,
+  ):
+    """Refuses to resume auth-gated tool calls authored by another agent."""
+    # Given a session where the original tool call was authored by another agent
+    auth_response_1 = Mock()
+    auth_response_1.name = REQUEST_EUC_FUNCTION_CALL_NAME
+    auth_response_1.id = 'auth_id_1'
+    auth_response_1.response = mock_auth_config
+
+    user_event_with_response = Mock(spec=Event)
+    user_event_with_response.author = 'user'
+    user_event_with_response.content = Mock()
+    user_event_with_response.get_function_responses.return_value = [
+        auth_response_1
+    ]
+    user_event_with_response.get_function_calls.return_value = []
+
+    system_function_call_1 = Mock()
+    system_function_call_1.id = 'auth_id_1'
+    system_function_call_1.name = REQUEST_EUC_FUNCTION_CALL_NAME
+    system_function_call_1.args = {
+        'function_call_id': 'tool_id_1',
+        'auth_config': mock_auth_config,
+    }
+
+    system_event = Mock(spec=Event)
+    system_event.content = Mock()
+    system_event.get_function_calls.return_value = [system_function_call_1]
+
+    original_function_call_1 = Mock()
+    original_function_call_1.id = 'tool_id_1'
+
+    # This event belongs to a DIFFERENT agent than the one running the
+    # current processor - the fix must refuse to resume it.
+    original_event = Mock(spec=Event)
+    original_event.content = Mock()
+    original_event.author = 'a_different_agent'
+    original_event.get_function_calls.return_value = [original_function_call_1]
+
+    mock_invocation_context.session.events = [
+        original_event,
+        system_event,
+        user_event_with_response,
+    ]
+
+    mock_auth_config_validate.return_value = mock_auth_config
+    mock_auth_handler = Mock(spec=AuthHandler)
+    mock_auth_handler.parse_and_store_auth_response = AsyncMock()
+    mock_auth_handler_class.return_value = mock_auth_handler
+
+    # When the processor is executed with the auth response
+    result = []
+    async for event in processor.run_async(
+        mock_invocation_context, mock_llm_request
+    ):
+      result.append(event)
+
+    # Then the auth response is stored (to record the user credential)
+    assert mock_auth_handler.parse_and_store_auth_response.call_count == 1
+
+    # But the tool call is not resumed because it belongs to a different agent
+    mock_handle_function_calls.assert_not_called()
+    assert result == []
 
   @pytest.mark.asyncio
   @patch('google.adk.auth.auth_preprocessor.AuthHandler')
@@ -694,6 +772,7 @@ class TestAuthLlmRequestProcessor:
 
     original_event = Mock(spec=Event)
     original_event.content = Mock()
+    original_event.author = 'test_agent'
     original_event.get_function_calls.return_value = [
         original_fc_1,
         original_fc_2,
@@ -815,6 +894,7 @@ class TestAuthLlmRequestProcessor:
 
     original_event = Mock(spec=Event)
     original_event.content = Mock()
+    original_event.author = 'test_agent'
     original_event.get_function_calls.return_value = [
         original_fc_1,
         original_fc_stale,

@@ -45,6 +45,11 @@ _logger = logging.getLogger("google_adk." + __name__)
 
 _AGENT_PROMPT_NAME = "agent_prompt"
 
+# Score assigned when an example is absent from the sampling result (e.g. its
+# inference failed). Assumes the [0, 1] scale used by LocalEvalSampler; 0.0
+# makes GEPA treat the example as a failure rather than aborting the run.
+_MISSING_EXAMPLE_SCORE = 0.0
+
 
 class GEPARootAgentPromptOptimizerConfig(BaseModel):
   """Contains configuration options required by the GEPARootAgentPromptOptimizer."""
@@ -153,7 +158,14 @@ def _create_agent_gepa_adapter_class() -> type[Any]:
       trajectories = []
 
       for example_id in batch:
-        score = result.scores[example_id]
+        score = result.scores.get(example_id)
+        if score is None:
+          _logger.warning(
+              "Example %s missing from sampling result; scoring it %s.",
+              example_id,
+              _MISSING_EXAMPLE_SCORE,
+          )
+          score = _MISSING_EXAMPLE_SCORE
         scores.append(score)
 
         eval_data = result.data.get(example_id, {}) if result.data else {}
