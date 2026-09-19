@@ -1524,6 +1524,69 @@ class TestRestApiTool:
         "empty_param": "",
     }
 
+  @pytest.mark.parametrize(
+      "schema_type, style, explode, value, expected",
+      [
+          # style=form, explode=true is the default for query parameters.
+          (
+              "object",
+              None,
+              None,
+              {"status": "open", "priority": "P1"},
+              {"status": "open", "priority": "P1"},
+          ),
+          (
+              "object",
+              "form",
+              False,
+              {"status": "open", "active": True},
+              {"match": "status,open,active,true"},
+          ),
+          (
+              "object",
+              "deepObject",
+              True,
+              {"status": "open", "priority": "P1"},
+              {"match[status]": "open", "match[priority]": "P1"},
+          ),
+          ("array", None, None, ["a", "b"], {"match": ["a", "b"]}),
+          ("array", "form", False, ["a", "b"], {"match": "a,b"}),
+          ("array", "spaceDelimited", False, ["a", "b"], {"match": "a b"}),
+          ("array", "pipeDelimited", False, ["a", "b"], {"match": "a|b"}),
+          ("string", "form", False, "plain", {"match": "plain"}),
+      ],
+  )
+  def test_prepare_request_params_query_style_and_explode(
+      self,
+      sample_endpoint,
+      schema_type,
+      style,
+      explode,
+      value,
+      expected,
+  ):
+    """httpx sends a dict query value as its Python repr, never per the spec."""
+    tool = RestApiTool(
+        name="test_tool",
+        description="test",
+        endpoint=sample_endpoint,
+        operation=Operation(operationId="test_op"),
+    )
+    params = [
+        ApiParameter(
+            original_name="match",
+            py_name="match",
+            param_location="query",
+            param_schema=OpenAPISchema(type=schema_type),
+            style=style,
+            explode=explode,
+        )
+    ]
+
+    request_params = tool._prepare_request_params(params, {"match": value})
+
+    assert request_params["params"] == expected
+
   def test_prepare_request_params_array(
       self, sample_endpoint, sample_auth_scheme, sample_auth_credential
   ):
