@@ -53,6 +53,10 @@ if TYPE_CHECKING:
 _LAZY_MAPPING = {
     'AuthToolArguments': ('..auth.auth_tool', 'AuthToolArguments'),
     'AgentTool': ('.agent_tool', 'AgentTool'),
+    'AgentDispatcherToolset': (
+        '.agent_dispatcher._agent_dispatcher_toolset',
+        'AgentDispatcherToolset',
+    ),
     'APIHubToolset': ('.apihub_tool.apihub_toolset', 'APIHubToolset'),
     'BaseTool': ('.base_tool', 'BaseTool'),
     'DiscoveryEngineSearchTool': (
