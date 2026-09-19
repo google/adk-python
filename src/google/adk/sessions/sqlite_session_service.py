@@ -352,7 +352,7 @@ class SqliteSessionService(BaseSessionService):
     sessions_list = []
     async with self._get_db_connection() as db:
       # Fetch sessions
-      if user_id:
+      if user_id is not None:
         session_rows = await db.execute_fetchall(
             "SELECT id, user_id, state, update_time FROM sessions WHERE"
             " app_name=? AND user_id=? ORDER BY update_time, user_id, id",
@@ -370,7 +370,7 @@ class SqliteSessionService(BaseSessionService):
 
       # Fetch user states
       user_states_map: dict[str, dict[str, Any]] = {}
-      if user_id:
+      if user_id is not None:
         user_state = await self._get_user_state(db, app_name, user_id)
         if user_state:
           user_states_map[user_id] = user_state
