@@ -817,6 +817,45 @@ class Context(ReadonlyContext):
         query=query,
     )
 
+  async def delete_session_memory(
+      self,
+      session_id: str | None = None,
+  ) -> None:
+    """Removes memory items for the current (or specified) session.
+
+    Args:
+      session_id: Optional session ID to delete. Defaults to the current
+        session ID.
+
+    Raises:
+      ValueError: If memory service is not available.
+    """
+    if self._invocation_context.memory_service is None:
+      raise ValueError(
+          'Cannot delete session memory: memory service is not available.'
+      )
+    target_session_id = session_id or self._invocation_context.session.id
+    await self._invocation_context.memory_service.delete_session_memory(
+        app_name=self._invocation_context.app_name,
+        user_id=self._invocation_context.user_id,
+        session_id=target_session_id,
+    )
+
+  async def delete_user_memory(self) -> None:
+    """Removes all memories for the current user.
+
+    Raises:
+      ValueError: If memory service is not available.
+    """
+    if self._invocation_context.memory_service is None:
+      raise ValueError(
+          'Cannot delete user memory: memory service is not available.'
+      )
+    await self._invocation_context.memory_service.delete_user_memory(
+        app_name=self._invocation_context.app_name,
+        user_id=self._invocation_context.user_id,
+    )
+
   # ============================================================================
   # UI Widget methods
   # ============================================================================
