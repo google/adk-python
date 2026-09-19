@@ -14,10 +14,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import decimal
+import inspect
 import os
 import textwrap
+import threading
 from typing import Optional
 from unittest import mock
 import uuid
@@ -635,6 +638,7 @@ async def test_execute_sql_declaration_protected_write(tool_settings):
         creating a permanent model (non-TEMP model) or deleting one.""")
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("write_mode",),
     [
@@ -643,7 +647,7 @@ async def test_execute_sql_declaration_protected_write(tool_settings):
         pytest.param(WriteMode.ALLOWED, id="allowed"),
     ],
 )
-def test_execute_sql_select_stmt(write_mode):
+async def test_execute_sql_select_stmt(write_mode):
   """Test execute_sql tool for SELECT query when writes are blocked."""
   project = "my_project"
   query = "SELECT 123 AS num"
@@ -670,12 +674,69 @@ def test_execute_sql_select_stmt(write_mode):
     bq_client.query_and_wait.return_value = query_result
 
     # Test the tool
-    result = query_tool.execute_sql(
+    result = await query_tool.execute_sql(
         project, query, credentials, tool_settings, tool_context
     )
     assert result == {"status": "SUCCESS", "rows": query_result}
 
 
+@pytest.mark.asyncio
+async def test_execute_sql_leaves_the_event_loop_free_while_querying():
+  """The BigQuery client is synchronous, so it has to run off the event loop.
+
+  The tool is awaited alongside a task that counts how many times the event
+  loop gets to run it. Calling the blocking client inline would starve that
+  task until the query returned.
+  """
+  query_started = threading.Event()
+  query_may_return = threading.Event()
+  ticks = 0
+  loop_ticked = False
+
+  async def count_ticks():
+    nonlocal ticks
+    while not query_started.is_set() or ticks < 3:
+      ticks += 1
+      await asyncio.sleep(0)
+    query_may_return.set()
+
+  def blocking_query_and_wait(*args, **kwargs):
+    nonlocal loop_ticked
+    query_started.set()
+    # Times out rather than hanging the suite if the loop never gets to tick.
+    # The result is asserted on outside the tool, because execute_sql turns
+    # every exception raised in here into an error dict.
+    loop_ticked = query_may_return.wait(timeout=10)
+    return [{"num": 123}]
+
+  credentials = mock.create_autospec(Credentials, instance=True)
+  tool_settings = BigQueryToolConfig(write_mode=WriteMode.BLOCKED)
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+
+  with mock.patch.object(bigquery, "Client", autospec=True) as Client:
+    bq_client = Client.return_value
+    query_job = mock.create_autospec(bigquery.QueryJob)
+    query_job.statement_type = "SELECT"
+    bq_client.query.return_value = query_job
+    bq_client.query_and_wait.side_effect = blocking_query_and_wait
+
+    result, _ = await asyncio.gather(
+        query_tool.execute_sql(
+            "my_project",
+            "SELECT 123 AS num",
+            credentials,
+            tool_settings,
+            tool_context,
+        ),
+        count_ticks(),
+    )
+
+  assert loop_ticked, "the event loop was blocked for the whole query"
+  assert ticks >= 3
+  assert result == {"status": "SUCCESS", "rows": [{"num": 123}]}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("query", "statement_type"),
     [
@@ -703,7 +764,7 @@ def test_execute_sql_select_stmt(write_mode):
         ),
     ],
 )
-def test_execute_sql_non_select_stmt_write_allowed(query, statement_type):
+async def test_execute_sql_non_select_stmt_write_allowed(query, statement_type):
   """Test execute_sql tool for non-SELECT query when writes are blocked."""
   project = "my_project"
   query_result = []
@@ -724,12 +785,13 @@ def test_execute_sql_non_select_stmt_write_allowed(query, statement_type):
     bq_client.query_and_wait.return_value = query_result
 
     # Test the tool
-    result = query_tool.execute_sql(
+    result = await query_tool.execute_sql(
         project, query, credentials, tool_settings, tool_context
     )
     assert result == {"status": "SUCCESS", "rows": query_result}
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("query", "statement_type"),
     [
@@ -757,7 +819,7 @@ def test_execute_sql_non_select_stmt_write_allowed(query, statement_type):
         ),
     ],
 )
-def test_execute_sql_non_select_stmt_write_blocked(query, statement_type):
+async def test_execute_sql_non_select_stmt_write_blocked(query, statement_type):
   """Test execute_sql tool for non-SELECT query when writes are blocked."""
   project = "my_project"
   query_result = []
@@ -778,7 +840,7 @@ def test_execute_sql_non_select_stmt_write_blocked(query, statement_type):
     bq_client.query_and_wait.return_value = query_result
 
     # Test the tool
-    result = query_tool.execute_sql(
+    result = await query_tool.execute_sql(
         project, query, credentials, tool_settings, tool_context
     )
     assert result == {
@@ -787,6 +849,7 @@ def test_execute_sql_non_select_stmt_write_blocked(query, statement_type):
     }
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("query", "statement_type"),
     [
@@ -814,7 +877,9 @@ def test_execute_sql_non_select_stmt_write_blocked(query, statement_type):
         ),
     ],
 )
-def test_execute_sql_non_select_stmt_write_protected(query, statement_type):
+async def test_execute_sql_non_select_stmt_write_protected(
+    query, statement_type
+):
   """Test execute_sql tool for non-SELECT query when writes are protected."""
   project = "my_project"
   query_result = []
@@ -840,12 +905,13 @@ def test_execute_sql_non_select_stmt_write_protected(query, statement_type):
     bq_client.query_and_wait.return_value = query_result
 
     # Test the tool
-    result = query_tool.execute_sql(
+    result = await query_tool.execute_sql(
         project, query, credentials, tool_settings, tool_context
     )
     assert result == {"status": "SUCCESS", "rows": query_result}
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("query", "statement_type"),
     [
@@ -873,7 +939,7 @@ def test_execute_sql_non_select_stmt_write_protected(query, statement_type):
         ),
     ],
 )
-def test_execute_sql_non_select_stmt_write_protected_persistent_target(
+async def test_execute_sql_non_select_stmt_write_protected_persistent_target(
     query, statement_type
 ):
   """Test execute_sql tool for non-SELECT query when writes are protected.
@@ -911,7 +977,7 @@ def test_execute_sql_non_select_stmt_write_protected_persistent_target(
     bq_client.query_and_wait.return_value = query_result
 
     # Test the tool
-    result = query_tool.execute_sql(
+    result = await query_tool.execute_sql(
         project, query, credentials, tool_settings, tool_context
     )
     assert result == {
@@ -1012,7 +1078,8 @@ def test_validate_subquery_exception_generic():
     assert "Subquery dry run validation failed" in result["error_details"]
 
 
-def test_execute_sql_write_protected_ignores_session_info_in_state():
+@pytest.mark.asyncio
+async def test_execute_sql_write_protected_ignores_session_info_in_state():
   """Test protected write mode ignores BigQuery session info found in state."""
   project = "my_project"
   query = "CREATE TABLE my_dataset.my_table AS SELECT 123 AS num"
@@ -1044,7 +1111,7 @@ def test_execute_sql_write_protected_ignores_session_info_in_state():
         else query_job
     )
 
-    result = query_tool.execute_sql(
+    result = await query_tool.execute_sql(
         project, query, credentials, tool_settings, tool_context
     )
 
@@ -1059,7 +1126,8 @@ def test_execute_sql_write_protected_ignores_session_info_in_state():
   }
 
 
-def test_execute_sql_write_protected_reuses_bq_session_of_same_session():
+@pytest.mark.asyncio
+async def test_execute_sql_write_protected_reuses_bq_session_of_same_session():
   """Test protected write mode reuses the BigQuery session of the session."""
   project = "my_project"
   query = "SELECT 123 AS num"
@@ -1086,10 +1154,10 @@ def test_execute_sql_write_protected_reuses_bq_session_of_same_session():
     )
     bq_client.query_and_wait.return_value = []
 
-    query_tool.execute_sql(
+    await query_tool.execute_sql(
         project, query, credentials, tool_settings, tool_context
     )
-    query_tool.execute_sql(
+    await query_tool.execute_sql(
         project, query, credentials, tool_settings, tool_context
     )
 
@@ -1102,7 +1170,8 @@ def test_execute_sql_write_protected_reuses_bq_session_of_same_session():
       )
 
 
-def test_execute_sql_dry_run_true():
+@pytest.mark.asyncio
+async def test_execute_sql_dry_run_true():
   """Test execute_sql tool with dry_run=True."""
   project = "my_project"
   query = "SELECT 123 AS num"
@@ -1121,7 +1190,7 @@ def test_execute_sql_dry_run_true():
     query_job.to_api_repr.return_value = api_repr
     bq_client.query.return_value = query_job
 
-    result = query_tool.execute_sql(
+    result = await query_tool.execute_sql(
         project, query, credentials, tool_settings, tool_context, dry_run=True
     )
     assert result == {"status": "SUCCESS", "dry_run_info": api_repr}
@@ -1131,6 +1200,7 @@ def test_execute_sql_dry_run_true():
     bq_client.query_and_wait.assert_not_called()
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("write_mode",),
     [
@@ -1143,7 +1213,7 @@ def test_execute_sql_dry_run_true():
 @mock.patch.object(bigquery.Client, "query_and_wait", autospec=True)
 @mock.patch.object(bigquery.Client, "query", autospec=True)
 @mock.patch.object(google.auth, "default", autospec=True)
-def test_execute_sql_no_default_auth(
+async def test_execute_sql_no_default_auth(
     mock_default_auth, mock_query, mock_query_and_wait, write_mode
 ):
   """Test execute_sql tool invocation does not involve calling default auth."""
@@ -1174,13 +1244,14 @@ def test_execute_sql_no_default_auth(
   mock_query_and_wait.return_value = query_result
 
   # Test the tool worked without invoking default auth
-  result = query_tool.execute_sql(
+  result = await query_tool.execute_sql(
       project, query, credentials, tool_settings, tool_context
   )
   assert result == {"status": "SUCCESS", "rows": query_result}
   mock_default_auth.assert_not_called()
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("query", "query_result", "tool_result_rows"),
     [
@@ -1294,7 +1365,7 @@ def test_execute_sql_no_default_auth(
 @mock.patch.dict(os.environ, {}, clear=True)
 @mock.patch.object(bigquery.Client, "query_and_wait", autospec=True)
 @mock.patch.object(bigquery.Client, "query", autospec=True)
-def test_execute_sql_result_dtype(
+async def test_execute_sql_result_dtype(
     mock_query, mock_query_and_wait, query, query_result, tool_result_rows
 ):
   """Test execute_sql tool invocation for various BigQuery data types.
@@ -1317,16 +1388,17 @@ def test_execute_sql_result_dtype(
   mock_query_and_wait.return_value = query_result
 
   # Test the tool worked without invoking default auth
-  result = query_tool.execute_sql(
+  result = await query_tool.execute_sql(
       project, query, credentials, tool_settings, tool_context
   )
   assert result == {"status": "SUCCESS", "rows": tool_result_rows}
 
 
+@pytest.mark.asyncio
 @mock.patch.dict(os.environ, {}, clear=True)
 @mock.patch.object(bigquery.Client, "query_and_wait", autospec=True)
 @mock.patch.object(bigquery.Client, "query", autospec=True)
-def test_execute_sql_result_dtype_circular_reference(
+async def test_execute_sql_result_dtype_circular_reference(
     mock_query, mock_query_and_wait
 ):
   """Test execute_sql converts circular values to strings."""
@@ -1340,7 +1412,7 @@ def test_execute_sql_result_dtype_circular_reference(
   circular_value.append(circular_value)
   mock_query_and_wait.return_value = [{"x": circular_value}]
 
-  result = query_tool.execute_sql(
+  result = await query_tool.execute_sql(
       "my_project", "SELECT 1", credentials, tool_settings, tool_context
   )
 
@@ -1350,8 +1422,9 @@ def test_execute_sql_result_dtype_circular_reference(
   }
 
 
+@pytest.mark.asyncio
 @mock.patch.object(bq_client_lib, "get_bigquery_client", autospec=True)
-def test_execute_sql_bq_client_creation(mock_get_bigquery_client):
+async def test_execute_sql_bq_client_creation(mock_get_bigquery_client):
   """Test BigQuery client creation params during execute_sql tool invocation."""
   project = "my_project_id"
   query = "SELECT 1"
@@ -1359,7 +1432,7 @@ def test_execute_sql_bq_client_creation(mock_get_bigquery_client):
   application_name = "my-agent"
   tool_settings = BigQueryToolConfig(application_name=application_name)
   tool_context = mock.create_autospec(ToolContext, instance=True)
-  query_tool.execute_sql(
+  await query_tool.execute_sql(
       project, query, credentials, tool_settings, tool_context
   )
   mock_get_bigquery_client.assert_called_once()
@@ -1372,7 +1445,8 @@ def test_execute_sql_bq_client_creation(mock_get_bigquery_client):
   ]
 
 
-def test_execute_sql_unexpected_project_id():
+@pytest.mark.asyncio
+async def test_execute_sql_unexpected_project_id():
   """Test execute_sql tool invocation with unexpected project id."""
   compute_project_id = "compute_project_id"
   tool_call_project_id = "project_id"
@@ -1381,7 +1455,7 @@ def test_execute_sql_unexpected_project_id():
   tool_settings = BigQueryToolConfig(compute_project_id=compute_project_id)
   tool_context = mock.create_autospec(ToolContext, instance=True)
 
-  result = query_tool.execute_sql(
+  result = await query_tool.execute_sql(
       tool_call_project_id, query, credentials, tool_settings, tool_context
   )
   assert result == {
@@ -2116,6 +2190,7 @@ def test_detect_anomalies_invalid_inputs(
   assert expected_error_substring in result["error_details"]
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("write_mode", "dry_run", "query_call_count", "query_and_wait_call_count"),
     [
@@ -2129,7 +2204,7 @@ def test_detect_anomalies_invalid_inputs(
         ),
     ],
 )
-def test_execute_sql_job_labels(
+async def test_execute_sql_job_labels(
     write_mode, dry_run, query_call_count, query_and_wait_call_count
 ):
   """Test execute_sql tool for job label."""
@@ -2150,7 +2225,7 @@ def test_execute_sql_job_labels(
     query_job.statement_type = statement_type
     bq_client.query.return_value = query_job
 
-    query_tool.execute_sql(
+    await query_tool.execute_sql(
         project,
         query,
         credentials,
@@ -2173,6 +2248,7 @@ def test_execute_sql_job_labels(
         }
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("write_mode", "dry_run", "query_call_count", "query_and_wait_call_count"),
     [
@@ -2186,7 +2262,7 @@ def test_execute_sql_job_labels(
         ),
     ],
 )
-def test_execute_sql_user_job_labels_augment_internal_labels(
+async def test_execute_sql_user_job_labels_augment_internal_labels(
     write_mode, dry_run, query_call_count, query_and_wait_call_count
 ):
   """Test execute_sql tool augments user job_labels with internal labels."""
@@ -2209,7 +2285,7 @@ def test_execute_sql_user_job_labels_augment_internal_labels(
     query_job.statement_type = statement_type
     bq_client.query.return_value = query_job
 
-    query_tool.execute_sql(
+    await query_tool.execute_sql(
         project,
         query,
         credentials,
@@ -2469,7 +2545,8 @@ def test_ml_tool_user_job_labels_augment_internal_labels(
         assert mock_kwargs["job_config"].labels == expected_labels
 
 
-def test_execute_sql_max_rows_config():
+@pytest.mark.asyncio
+async def test_execute_sql_max_rows_config():
   """Test execute_sql tool respects max_query_result_rows from config."""
   project = "my_project"
   query = "SELECT 123 AS num"
@@ -2486,7 +2563,7 @@ def test_execute_sql_max_rows_config():
     bq_client.query.return_value = query_job
     bq_client.query_and_wait.return_value = query_result[:10]
 
-    result = query_tool.execute_sql(
+    result = await query_tool.execute_sql(
         project, query, credentials, tool_config, tool_context
     )
 
@@ -2500,7 +2577,8 @@ def test_execute_sql_max_rows_config():
     assert result["result_is_likely_truncated"] is True
 
 
-def test_execute_sql_no_truncation():
+@pytest.mark.asyncio
+async def test_execute_sql_no_truncation():
   """Test execute_sql tool when results are not truncated."""
   project = "my_project"
   query = "SELECT 123 AS num"
@@ -2517,7 +2595,7 @@ def test_execute_sql_no_truncation():
     bq_client.query.return_value = query_job
     bq_client.query_and_wait.return_value = query_result
 
-    result = query_tool.execute_sql(
+    result = await query_tool.execute_sql(
         project, query, credentials, tool_config, tool_context
     )
 
@@ -2526,7 +2604,8 @@ def test_execute_sql_no_truncation():
     assert "result_is_likely_truncated" not in result
 
 
-def test_execute_sql_maximum_bytes_billed_config():
+@pytest.mark.asyncio
+async def test_execute_sql_maximum_bytes_billed_config():
   """Test execute_sql tool respects maximum_bytes_billed from config."""
   project = "my_project"
   query = "SELECT 123 AS num"
@@ -2541,7 +2620,7 @@ def test_execute_sql_maximum_bytes_billed_config():
     query_job.statement_type = statement_type
     bq_client.query.return_value = query_job
 
-    query_tool.execute_sql(
+    await query_tool.execute_sql(
         project, query, credentials, tool_config, tool_context
     )
 
@@ -2551,6 +2630,7 @@ def test_execute_sql_maximum_bytes_billed_config():
     assert call_args.kwargs["job_config"].maximum_bytes_billed == 11_000_000
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("tool_call",),
     [
@@ -2604,7 +2684,9 @@ def test_execute_sql_maximum_bytes_billed_config():
     ],
 )
 @mock.patch.object(query_tool, "_validate_subquery", autospec=True)
-def test_tool_call_doesnt_change_global_settings(mock_validate, tool_call):
+async def test_tool_call_doesnt_change_global_settings(
+    mock_validate, tool_call
+):
   """Test query tools don't change global settings."""
   mock_validate.return_value = None
   settings = BigQueryToolConfig(write_mode=WriteMode.ALLOWED)
@@ -2627,8 +2709,10 @@ def test_tool_call_doesnt_change_global_settings(mock_validate, tool_call):
     # Test settings write mode before
     assert settings.write_mode == WriteMode.ALLOWED
 
-    # Call the tool
+    # Call the tool. Only some of the query tools are coroutine functions.
     result = tool_call(settings, tool_context)
+    if inspect.isawaitable(result):
+      result = await result
 
     # Test successful executeion of the tool
     assert result == {"status": "SUCCESS", "rows": []}
@@ -2637,6 +2721,7 @@ def test_tool_call_doesnt_change_global_settings(mock_validate, tool_call):
     assert settings.write_mode == WriteMode.ALLOWED
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("tool_call",),
     [
@@ -2690,7 +2775,7 @@ def test_tool_call_doesnt_change_global_settings(mock_validate, tool_call):
     ],
 )
 @mock.patch.object(query_tool, "_validate_subquery", autospec=True)
-def test_tool_call_doesnt_mutate_job_labels(mock_validate, tool_call):
+async def test_tool_call_doesnt_mutate_job_labels(mock_validate, tool_call):
   """Test query tools don't mutate job_labels in global settings."""
   mock_validate.return_value = None
   original_labels = {"environment": "test", "team": "data"}
@@ -2718,8 +2803,10 @@ def test_tool_call_doesnt_mutate_job_labels(mock_validate, tool_call):
     assert settings.job_labels == original_labels
     assert "adk-bigquery-tool" not in settings.job_labels
 
-    # Call the tool
+    # Call the tool. Only some of the query tools are coroutine functions.
     result = tool_call(settings, tool_context)
+    if inspect.isawaitable(result):
+      result = await result
 
     # Test successful execution of the tool
     assert result == {"status": "SUCCESS", "rows": []}
