@@ -355,7 +355,7 @@ class TestRestApiTool:
   ):
     mock_response = MagicMock()
     mock_response.status_code = 500
-    mock_response.content = b"Internal Server Error"
+    mock_response.text = "Internal Server Error"
 
     # Create a proper HTTPStatusError with request and response
     mock_http_request = MagicMock(spec=httpx.Request)
@@ -389,6 +389,37 @@ class TestRestApiTool:
             " Status Code: 500, Internal Server Error"
         )
     }
+
+  @patch(
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
+  )
+  @pytest.mark.asyncio
+  async def test_call_http_failure_decodes_body_with_declared_charset(
+      self,
+      mock_request,
+      mock_tool_context,
+      sample_endpoint,
+      sample_operation,
+  ):
+    """A non-UTF-8 error body must reach the model, not abort the run."""
+    mock_request.return_value = httpx.Response(
+        status_code=404,
+        request=httpx.Request("GET", "https://example.com/test"),
+        content="Commande introuvable : échec".encode("latin-1"),
+        headers={"content-type": "text/plain; charset=iso-8859-1"},
+    )
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+    )
+
+    result = await tool.call(args={}, tool_context=mock_tool_context)
+
+    assert result["error"].endswith(
+        "Status Code: 404, Commande introuvable : échec"
+    )
 
   @patch(
       "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
