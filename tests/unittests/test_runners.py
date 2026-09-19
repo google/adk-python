@@ -4349,5 +4349,159 @@ def test_stamp_event_branch_context_does_not_overwrite_existing_scope():
   assert fr_event.isolation_scope == "task_123"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["async", "sse", "live"])
+@pytest.mark.parametrize("replace_event", [False, True])
+@pytest.mark.parametrize("final_partial", [False, True])
+async def test_runner_persists_callback_event_using_updated_partial(
+    mode, replace_event, final_partial
+):
+  """Callback mutation and replacement have identical persistence semantics."""
+  from google.adk.agents.run_config import StreamingMode
+  from google.adk.live import LiveRequestQueue
+
+  class PartialAgent(BaseAgent):
+
+    async def _run_async_impl(self, ctx):
+      yield Event(
+          author=self.name,
+          partial=not final_partial,
+          content=types.Content(
+              role="model", parts=[types.Part(text="source")]
+          ),
+      )
+
+    _run_live_impl = _run_async_impl
+
+  class TransformPlugin(BasePlugin):
+
+    async def on_event_callback(self, *, invocation_context, event):
+      if not event.content or event.content.parts[0].text != "source":
+        return None
+      output = event.model_copy(deep=True) if replace_event else event
+      output.partial = final_partial
+      output.content = types.Content(
+          role="model", parts=[types.Part(text="transformed")]
+      )
+      output.actions = EventActions(state_delta={"transformed": True})
+      return output if replace_event else None
+
+  service = InMemorySessionService()
+  runner = Runner(
+      app_name="app",
+      agent=PartialAgent(name="agent"),
+      session_service=service,
+      plugins=[TransformPlugin(name="transform")],
+  )
+  session = await service.create_session(app_name="app", user_id="user")
+  try:
+    if mode == "live":
+      events = [
+          event
+          async for event in runner.run_live(
+              user_id="user",
+              session_id=session.id,
+              live_request_queue=LiveRequestQueue(),
+          )
+      ]
+    else:
+      events = [
+          event
+          async for event in runner.run_async(
+              user_id="user",
+              session_id=session.id,
+              new_message=types.Content(
+                  role="user", parts=[types.Part(text="hello")]
+              ),
+              run_config=RunConfig(
+                  streaming_mode=(
+                      StreamingMode.SSE if mode == "sse" else StreamingMode.NONE
+                  )
+              ),
+          )
+      ]
+    stored = await service.get_session(
+        app_name="app", user_id="user", session_id=session.id
+    )
+  finally:
+    await runner.close()
+
+  transformed = next(
+      event
+      for event in events
+      if event.content and event.content.parts[0].text == "transformed"
+  )
+  assert transformed.partial is final_partial
+  persisted = [event for event in stored.events if event.id == transformed.id]
+  assert bool(persisted) is (not final_partial)
+  assert stored.state.get("transformed", False) is (not final_partial)
+  if persisted:
+    assert persisted[0].content == transformed.content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replace_event", [False, True])
+@pytest.mark.parametrize("final_media", [False, True])
+@pytest.mark.parametrize("early_exit", [False, True])
+async def test_run_live_filters_media_after_event_callback(
+    replace_event, final_media, early_exit
+):
+  """Live persistence filters the transformed content, not the source content."""
+  from google.adk.live import LiveRequestQueue
+
+  def content(media):
+    part = (
+        types.Part(inline_data=types.Blob(data=b"audio", mime_type="audio/pcm"))
+        if media
+        else types.Part(text="transcript")
+    )
+    return types.Content(role="model", parts=[part])
+
+  class MediaAgent(BaseAgent):
+
+    async def _run_live_impl(self, ctx):
+      yield Event(author=self.name, content=content(not final_media))
+
+  class TransformPlugin(BasePlugin):
+
+    async def before_run_callback(self, *, invocation_context):
+      return content(not final_media) if early_exit else None
+
+    async def on_event_callback(self, *, invocation_context, event):
+      output = event.model_copy(deep=True) if replace_event else event
+      output.content = content(final_media)
+      return output if replace_event else None
+
+  service = InMemorySessionService()
+  runner = Runner(
+      app_name="app",
+      agent=MediaAgent(name="agent"),
+      session_service=service,
+      plugins=[TransformPlugin(name="transform")],
+  )
+  session = await service.create_session(app_name="app", user_id="user")
+  try:
+    events = [
+        event
+        async for event in runner.run_live(
+            user_id="user",
+            session_id=session.id,
+            live_request_queue=LiveRequestQueue(),
+        )
+    ]
+    stored = await service.get_session(
+        app_name="app", user_id="user", session_id=session.id
+    )
+  finally:
+    await runner.close()
+
+  assert len(events) == 1
+  assert events[0].content == content(final_media)
+  assert bool(stored.events) is (not final_media)
+  if stored.events:
+    assert stored.events[0].id == events[0].id
+    assert stored.events[0].content == events[0].content
+
+
 if __name__ == "__main__":
   pytest.main([__file__])
