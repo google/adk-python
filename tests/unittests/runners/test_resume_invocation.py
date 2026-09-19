@@ -426,3 +426,182 @@ async def test_resumable_parallel_agent_escalation_short_circuits_persisted_run(
   assert not await runner.run_async(
       invocation_id=invocation_events[0].invocation_id
   )
+
+
+@pytest.mark.parametrize("resumable", [False, True])
+@pytest.mark.parametrize("auth_stage", ["tool", "toolset"])
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("session_storage", ["memory", "sqlite"])
+async def test_auth_response_resumes_restricted_sub_agent(
+    resumable, auth_stage, nested, session_storage, tmp_path
+):
+  """Authentication resumes its owner even when transfer to its parent is disabled.
+
+  Setup: transfer to a restricted child that requests an OIDC credential.
+  Act: return the credential using the emitted authentication call ID.
+  Assert: the protected tool succeeds once, without another auth request;
+    a subsequent ordinary user message still returns to the root agent.
+  """
+  from google.adk.auth.auth_credential import AuthCredential
+  from google.adk.auth.auth_credential import OAuth2Auth
+  from google.adk.auth.auth_schemes import OpenIdConnectWithConfig
+  from google.adk.auth.auth_tool import AuthConfig
+  from google.adk.runners import Runner
+  from google.adk.sessions.database_session_service import DatabaseSessionService
+  from google.adk.sessions.in_memory_session_service import InMemorySessionService
+  from google.adk.tools.base_toolset import BaseToolset
+  from google.adk.tools.function_tool import FunctionTool
+  from google.adk.tools.tool_context import ToolContext
+
+  auth_config = AuthConfig(
+      auth_scheme=OpenIdConnectWithConfig(
+          authorization_endpoint="https://issuer.example/authorize",
+          token_endpoint="https://issuer.example/token",
+          scopes=["openid"],
+      ),
+      raw_auth_credential=AuthCredential(
+          auth_type="oauth2",
+          oauth2=OAuth2Auth(client_id="client", client_secret="secret"),
+      ),
+      credential_key="test-credential",
+  )
+  successful_calls = []
+
+  def protected_tool(tool_context: ToolContext) -> dict:
+    if auth_stage == "tool":
+      credential = tool_context.get_auth_response(auth_config)
+    else:
+      credential = tool_context.get_invocation_context().credential_by_key.get(
+          auth_config.credential_key
+      )
+    if not credential or not credential.oauth2.access_token:
+      tool_context.request_credential(auth_config)
+      return {"status": "authorization_required"}
+    successful_calls.append(credential.oauth2.access_token)
+    return {"status": "ok"}
+
+  class AuthToolset(BaseToolset):
+
+    def get_auth_config(self):
+      return auth_config
+
+    async def get_tools(self, readonly_context=None):
+      return [FunctionTool(protected_tool)]
+
+    async def close(self):
+      pass
+
+  child = LlmAgent(
+      name="worker",
+      disallow_transfer_to_parent=True,
+      disallow_transfer_to_peers=True,
+      model=testing_utils.MockModel.create([
+          Part.from_function_call(name="protected_tool", args={}),
+          "child completed",
+      ]),
+      tools=[protected_tool] if auth_stage == "tool" else [AuthToolset()],
+  )
+  delegate = child
+  if nested:
+    delegate = LlmAgent(
+        name="middle",
+        disallow_transfer_to_parent=True,
+        model=testing_utils.MockModel.create([transfer_call_part(child.name)]),
+        sub_agents=[child],
+    )
+  root = LlmAgent(
+      name="root",
+      model=testing_utils.MockModel.create([
+          transfer_call_part(delegate.name),
+          "root handles next message",
+      ]),
+      sub_agents=[delegate],
+  )
+  app = App(
+      name="test_app",
+      root_agent=root,
+      resumability_config=ResumabilityConfig(is_resumable=resumable),
+  )
+  session_service = (
+      InMemorySessionService()
+      if session_storage == "memory"
+      else DatabaseSessionService(
+          db_url=f"sqlite+aiosqlite:///{tmp_path / 'sessions.sqlite'}"
+      )
+  )
+  runner = Runner(app=app, session_service=session_service)
+  session = await runner.session_service.create_session(
+      app_name=app.name, user_id="user"
+  )
+
+  async def collect(message):
+    return [
+        event
+        async for event in runner.run_async(
+            user_id=session.user_id,
+            session_id=session.id,
+            new_message=message,
+        )
+    ]
+
+  try:
+    initial = await collect(testing_utils.UserContent("run protected tool"))
+    auth_events = [
+        (event, call)
+        for event in initial
+        for call in event.get_function_calls()
+        if call.name == "adk_request_credential"
+    ]
+    assert len(auth_events) == 1
+    request_event, call = auth_events[0]
+    assert call.id in request_event.long_running_tool_ids
+    assert not successful_calls
+    config = AuthConfig.model_validate(call.args["authConfig"])
+    config.exchanged_auth_credential = AuthCredential(
+        auth_type="oauth2", oauth2=OAuth2Auth(access_token="test-token")
+    )
+    resumed = await collect(
+        testing_utils.UserContent(
+            Part(
+                function_response=FunctionResponse(
+                    id=call.id,
+                    name=call.name,
+                    response=config.model_dump(mode="json", by_alias=True),
+                )
+            )
+        )
+    )
+
+    assert successful_calls == ["test-token"]
+    assert not any(
+        call.name == "adk_request_credential"
+        for event in resumed
+        for call in event.get_function_calls()
+    )
+    assert any(
+        event.author == child.name
+        and event.content
+        and any(part.text == "child completed" for part in event.content.parts)
+        for event in resumed
+    )
+    # The resumed child keeps the original branch, including nested transfers.
+    assert all(
+        event.branch == request_event.branch
+        for event in resumed
+        if event.author == child.name and event.content
+    )
+    following = await collect(testing_utils.UserContent("a new request"))
+    assert any(
+        event.author == root.name
+        and event.content
+        and any(
+            part.text == "root handles next message"
+            for part in event.content.parts
+        )
+        for event in following
+    )
+    assert successful_calls == ["test-token"]
+  finally:
+    await runner.close()
+    if session_storage == "sqlite":
+      await session_service.close()

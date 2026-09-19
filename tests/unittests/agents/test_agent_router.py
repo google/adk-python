@@ -25,9 +25,11 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.genai import types
+import pytest
 
 
 class _MockLlmAgent(LlmAgent):
@@ -495,3 +497,164 @@ def test_restore_branch_from_history():
 
   _agent_router.restore_branch_from_history(ic, sub1, root=root)
   assert ic.branch == "root@1.sub_agent1@1"
+
+
+def _auth_request(
+    author="non_transferable", call_id="auth-1", invocation_id="inv1"
+):
+  return Event(
+      author=author,
+      invocation_id=invocation_id,
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id=call_id, name="adk_request_credential", args={}
+                  )
+              )
+          ],
+      ),
+      long_running_tool_ids={call_id},
+  )
+
+
+def _auth_response(call_id="auth-1", name="adk_request_credential"):
+  return types.Part(
+      function_response=types.FunctionResponse(
+          id=call_id, name=name, response={}
+      )
+  )
+
+
+@pytest.mark.parametrize("resumable", [False, True])
+@pytest.mark.parametrize("node_path", [None, "root_agent@1/non_transferable@2"])
+def test_incoming_auth_response_resumes_owner(resumable, node_path):
+  """An outstanding auth response reaches its restricted owner in either mode."""
+  root, _, _, child = _make_agent_tree()
+  request = _auth_request()
+  request.node_info.path = node_path
+  session = Session(id="s", app_name="app", user_id="u", events=[request])
+  message = types.Content(role="user", parts=[_auth_response()])
+
+  assert (
+      _agent_router.find_agent_to_run(
+          session,
+          root,
+          ResumabilityConfig(is_resumable=resumable),
+          new_message=message,
+      )
+      is child
+  )
+  # Routing must not append the incoming message before runner callbacks run.
+  assert session.events == [request]
+
+
+@pytest.mark.parametrize("resumable", [False, True])
+@pytest.mark.parametrize(
+    "case",
+    [
+        "text",
+        "missing_id",
+        "unknown_id",
+        "wrong_response_name",
+        "wrong_call_name",
+        "unknown_author",
+        "foreign_path",
+        "answered",
+        "rewound",
+    ],
+)
+def test_invalid_auth_response_does_not_select_restricted_agent(
+    case, resumable
+):
+  """Only a matching outstanding auth request can override transfer routing."""
+  root, _, _, _ = _make_agent_tree()
+  request = _auth_request()
+  message = types.Content(role="user", parts=[_auth_response()])
+  events = [request]
+  if case == "text":
+    message.parts = [types.Part(text="new question")]
+  elif case == "missing_id":
+    message.parts = [_auth_response(None)]
+  elif case == "unknown_id":
+    message.parts = [_auth_response("unknown")]
+  elif case == "wrong_response_name":
+    message.parts = [_auth_response(name="another_tool")]
+  elif case == "wrong_call_name":
+    request.content.parts[0].function_call.name = "another_tool"
+  elif case == "unknown_author":
+    request.author = "missing_agent"
+  elif case == "foreign_path":
+    request.node_info.path = "other_root@1/non_transferable@1"
+  elif case == "answered":
+    events.extend([
+        Event(author="user", content=message),
+        Event(
+            author=root.name,
+            content=types.Content(parts=[types.Part(text="done")]),
+        ),
+    ])
+  elif case == "rewound":
+    events.append(
+        Event(
+            author="user",
+            invocation_id="inv2",
+            actions=EventActions(rewind_before_invocation_id="inv1"),
+        )
+    )
+  session = Session(id="s", app_name="app", user_id="u", events=events)
+
+  assert (
+      _agent_router.find_agent_to_run(
+          session,
+          root,
+          ResumabilityConfig(is_resumable=resumable),
+          new_message=message,
+      )
+      is root
+  )
+
+
+@pytest.mark.parametrize("path_present", [False, True])
+def test_auth_response_disambiguates_same_named_agents(path_present):
+  """A persisted node path selects the correct branch when names are repeated."""
+  left_child = _MockLlmAgent("worker", disallow_transfer_to_parent=True)
+  right_child = _MockLlmAgent("worker", disallow_transfer_to_parent=True)
+  left = LlmAgent(name="left", sub_agents=[left_child])
+  right = LlmAgent(name="right", sub_agents=[right_child])
+  root = LlmAgent(name="root", sub_agents=[left, right])
+  request = _auth_request(author="worker")
+  if path_present:
+    request.node_info.path = "root@1/right@2/worker@3"
+  session = Session(id="s", app_name="app", user_id="u", events=[request])
+  message = types.Content(role="user", parts=[_auth_response()])
+
+  assert _agent_router.find_agent_to_run(
+      session, root, new_message=message
+  ) is (right_child if path_present else root)
+
+
+@pytest.mark.parametrize(
+    "second_request",
+    ["same_owner", "other_owner", "other_invocation", "unknown"],
+)
+def test_auth_response_batch_requires_one_owner_and_invocation(second_request):
+  """A response batch is routed only when all requests have one resume target."""
+  root, _, other, child = _make_agent_tree()
+  other.disallow_transfer_to_parent = True
+  first = _auth_request()
+  second = _auth_request(call_id="auth-2")
+  if second_request == "other_owner":
+    second.author = other.name
+  elif second_request == "other_invocation":
+    second.invocation_id = "inv2"
+  events = [first, second] if second_request != "unknown" else [first]
+  session = Session(id="s", app_name="app", user_id="u", events=events)
+  message = types.Content(
+      role="user", parts=[_auth_response(), _auth_response("auth-2")]
+  )
+
+  assert _agent_router.find_agent_to_run(
+      session, root, new_message=message
+  ) is (child if second_request == "same_owner" else root)

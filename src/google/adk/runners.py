@@ -1114,7 +1114,9 @@ class Runner:
           if has_task_subagent:
             agent_to_run = self.agent
           else:
-            agent_to_run = self._find_agent_to_run(session, self.agent)
+            agent_to_run = self._find_agent_to_run(
+                session, self.agent, new_message=new_message
+            )
         else:
           agent_to_run = self.agent
 
@@ -1702,7 +1704,11 @@ class Runner:
       await self._cleanup_root_task(queue_task, self.agent.name)
 
   def _find_agent_to_run(
-      self, session: Session, root_agent: BaseAgent
+      self,
+      session: Session,
+      root_agent: BaseAgent,
+      *,
+      new_message: Optional[types.Content] = None,
   ) -> BaseAgent:
     """Finds the agent to run to continue the session.
 
@@ -1719,6 +1725,7 @@ class Runner:
     Args:
         session: The session to find the agent for.
         root_agent: The root agent of the runner.
+        new_message: Incoming message not yet appended to the session.
 
     Returns:
       The agent to run. (the active agent that should reply to the latest user
@@ -1730,6 +1737,7 @@ class Runner:
         session=session,
         root_agent=root_agent,
         resumability_config=self.resumability_config,
+        new_message=new_message,
     )
 
   async def run_debug(

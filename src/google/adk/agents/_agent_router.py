@@ -28,8 +28,11 @@ from ..events.event import Event
 from ..flows.llm_flows.extensions._agent_transfer import _get_transfer_targets
 from ..flows.llm_flows.functions import _collect_function_call_ids
 from ..flows.llm_flows.functions import find_matching_function_call
+from ..flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 
 if TYPE_CHECKING:
+  from google.genai import types
+
   from ..agents.base_agent import BaseAgent
   from ..agents.invocation_context import InvocationContext
   from ..apps.app import ResumabilityConfig
@@ -82,11 +85,14 @@ def find_agent_to_run(
     session: Session,
     root_agent: BaseAgent,
     resumability_config: Optional[ResumabilityConfig] = None,
+    *,
+    new_message: Optional[types.Content] = None,
 ) -> BaseAgent:
   """Finds the agent to run to continue the session.
 
   A qualified agent must be either of:
 
+  - The owner of an outstanding authentication request answered by new_message.
   - The agent that returned a function call and the last user message is a
     function response to this function call.
   - The root agent.
@@ -99,6 +105,7 @@ def find_agent_to_run(
       session: The session to find the agent for.
       root_agent: The root agent of the runner.
       resumability_config: Optional resumability configuration.
+      new_message: Incoming message not yet appended to the session.
 
   Returns:
     The agent to run. (the active agent that should reply to the latest user
@@ -111,11 +118,19 @@ def find_agent_to_run(
   if isinstance(root_agent, Workflow):
     return root_agent
 
+  filtered_events = _apply_rewinds(session.events)
+  # The node runtime selects an agent before appending the incoming message.
+  # Resolve credential replies first, independently of resumability settings.
+  if new_message and (
+      auth_agent := _find_auth_response_agent(
+          filtered_events, root_agent, new_message
+      )
+  ):
+    return auth_agent
   # If the last event is a function response, should send this response to
   # the agent that returned the corresponding function call regardless the
   # type of the agent. e.g. a remote a2a agent may surface a credential
   # request as a special long-running function tool call.
-  filtered_events = _apply_rewinds(session.events)
   event = find_matching_function_call(filtered_events)
   is_resumable = resumability_config and resumability_config.is_resumable
   # Only route based on a past function response if resumability is enabled.
@@ -158,6 +173,72 @@ def find_agent_to_run(
       return agent
   # Falls back to root agent if no suitable agents are found in the session.
   return root_agent
+
+
+def _find_auth_response_agent(
+    events: list[Event], root_agent: BaseAgent, message: types.Content
+) -> Optional[BaseAgent]:
+  """Resolves an incoming auth response to its outstanding request's owner.
+
+  Transfer restrictions apply to new conversation turns, not to completing an
+  authentication request. Only use requests recorded in this session; node paths
+  disambiguate agents with the same name in different branches. A batch must
+  belong to one agent and invocation to select a single entry point.
+  """
+  responses = [
+      p.function_response for p in message.parts or [] if p.function_response
+  ]
+  if not responses or any(
+      not response.id or response.name != REQUEST_EUC_FUNCTION_CALL_NAME
+      for response in responses
+  ):
+    return None
+  pending_ids = {response.id for response in responses}
+  answered_ids = {
+      response.id
+      for event in events
+      for response in event.get_function_responses()
+  }
+  if pending_ids & answered_ids:
+    return None
+
+  owner = None
+  invocation_id = None
+  for event in reversed(events):
+    matching_ids = {
+        call.id
+        for call in event.get_function_calls()
+        if call.id in pending_ids
+        and call.name == REQUEST_EUC_FUNCTION_CALL_NAME
+    }
+    if not matching_ids:
+      continue
+    event_path = (
+        _NodePathBuilder.from_string(event.node_info.path).static_path
+        if event.node_info.path
+        else None
+    )
+    candidates = []
+    pending_agents = [(root_agent, root_agent.name)]
+    while pending_agents:
+      agent, path = pending_agents.pop()
+      if agent.name == event.author and (not event_path or path == event_path):
+        candidates.append(agent)
+      pending_agents.extend(
+          (child, f"{path}/{child.name}") for child in agent.sub_agents
+      )
+    if len(candidates) != 1:
+      return None
+    agent = candidates[0]
+    if owner is not None and (
+        owner is not agent or invocation_id != event.invocation_id
+    ):
+      return None
+    owner, invocation_id = agent, event.invocation_id
+    pending_ids.difference_update(matching_ids)
+    if not pending_ids:
+      return owner
+  return None
 
 
 def restore_branch_from_history(
