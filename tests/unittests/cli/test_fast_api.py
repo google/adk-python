@@ -554,6 +554,61 @@ def _create_test_client(
     return TestClient(app)
 
 
+def test_get_fast_api_app_creates_file_eval_storage_dir(
+    tmp_path,
+    monkeypatch,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """file:// eval_storage_uri creates that directory for local eval managers."""
+  monkeypatch.delenv("ADK_EVAL_STORAGE_URI", raising=False)
+  monkeypatch.delenv("ADK_EVAL_STORAGE_DIR", raising=False)
+  storage_dir = tmp_path / "adk_evals"
+
+  _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      eval_storage_uri=storage_dir.as_uri(),
+  )
+
+  assert storage_dir.is_dir()
+
+
+def test_get_fast_api_app_honors_eval_storage_dir_env(
+    tmp_path,
+    monkeypatch,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """ADK_EVAL_STORAGE_DIR is used when eval_storage_uri is omitted."""
+  monkeypatch.delenv("ADK_EVAL_STORAGE_URI", raising=False)
+  storage_dir = tmp_path / "from_env"
+  monkeypatch.setenv("ADK_EVAL_STORAGE_DIR", str(storage_dir))
+
+  _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+
+  assert storage_dir.is_dir()
+
+
 def test_agent_with_bigquery_analytics_plugin(
     tmp_path,
     mock_session_service,
