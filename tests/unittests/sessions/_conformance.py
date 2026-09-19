@@ -144,10 +144,6 @@ BACKENDS = [
         'redis',
         _make_redis,
         divergences={
-            'test_list_sessions_ordered_by_last_update_time': (
-                'Redis sorts sessions newest first, while the base class'
-                ' documents oldest first.'
-            ),
             'test_session_last_update_time_updates_on_event': (
                 'Redis stamps the session with the wall clock instead of the'
                 " appended event's timestamp."
