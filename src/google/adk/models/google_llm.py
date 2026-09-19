@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 import contextlib
 import copy
@@ -22,6 +23,7 @@ from functools import cached_property
 import logging
 import os
 import re
+import threading
 from typing import Any
 from typing import AsyncGenerator
 from typing import AsyncIterator
@@ -35,6 +37,7 @@ from urllib.parse import urlunparse
 from google.genai import types
 from google.genai.errors import ClientError
 from pydantic import Field
+from pydantic import PrivateAttr
 from typing_extensions import override
 
 from google import genai
@@ -62,6 +65,58 @@ _NEW_LINE = '\n'
 _EXCLUDED_PART_FIELD = {'inline_data': {'data'}}
 _GOOGLE_API_VERSION_SUFFIX_PATTERN = re.compile(r'/?(v[0-9][a-z0-9.-]*)/?')
 _API_VERSION_ENV_VARIABLE_NAME = 'GOOGLE_GENAI_API_VERSION'
+
+# Guards the per-event-loop client caches below. Loops from different OS
+# threads read and prune the same dict, so the pruning pass must not race a
+# concurrent insert.
+_CLIENT_CACHE_LOCK = threading.Lock()
+
+_ClientCache = dict[Optional[asyncio.AbstractEventLoop], 'Client']
+
+
+def _client_for_running_loop(
+    clients: _ClientCache, build: Callable[[], Client]
+) -> Client:
+  """Returns the client cached for the running event loop, building one if needed.
+
+  A ``google.genai.Client`` binds its async HTTP connection pool to the event
+  loop that first drives it. Deployments such as Vertex AI Agent Engine run
+  every request on a fresh OS thread with a fresh ``asyncio.run()`` loop while
+  reusing the same agent, so a client cached once per instance is reused on a
+  loop other than the one it is bound to and fails with ``RuntimeError: Event
+  loop is closed`` once the original loop is torn down. Caching per loop keeps
+  connection pooling within a loop and never hands a client to a foreign one.
+
+  Args:
+    clients: The per-instance cache, keyed by event loop. ``None`` keys the
+      client built when no loop was running.
+    build: Constructs a new client.
+
+  Returns:
+    The client for the running loop.
+  """
+  try:
+    loop: Optional[asyncio.AbstractEventLoop] = asyncio.get_running_loop()
+  except RuntimeError:
+    loop = None
+
+  with _CLIENT_CACHE_LOCK:
+    client = clients.get(loop)
+  if client is not None:
+    return client
+
+  # Build outside the lock: constructing a client may resolve credentials.
+  client = build()
+  with _CLIENT_CACHE_LOCK:
+    # A client whose loop is closed can never be driven again; drop it so the
+    # cache stays bounded by the number of live loops.
+    for cached_loop in [
+        cached
+        for cached in clients
+        if cached is not None and cached.is_closed()
+    ]:
+      del clients[cached_loop]
+    return clients.setdefault(loop, client)
 
 
 _RESOURCE_EXHAUSTED_POSSIBLE_FIX_MESSAGE = """
@@ -106,19 +161,23 @@ class Gemini(BaseLlm):
     directly (location, project, credentials, http_options, etc.),
     subclass ``Gemini`` and override the ``api_client`` property::
 
-        from functools import cached_property
         from google.adk.models import Gemini
         from google.genai import Client
 
         class GlobalGemini(Gemini):
-          @cached_property
+          @property
           def api_client(self) -> Client:
             return Client(enterprise=True, location="global")
 
         agent = Agent(model=GlobalGemini(model="gemini-3-pro-preview"))
 
-    Use ``@property`` instead of ``@cached_property`` if you hit asyncio
-    lock contention in multithreaded code.
+    Do not cache an overriding client with ``functools.cached_property``. A
+    ``google.genai.Client`` binds its async connection pool to the event loop
+    that first uses it, so one client shared across loops (for example one
+    thread and ``asyncio.run()`` per request on Vertex AI Agent Engine) fails
+    with ``RuntimeError: Event loop is closed``. ADK caches its own client per
+    event loop for this reason; a pre-built ``client`` passed in is used as-is
+    and its lifecycle stays with the caller.
   """
 
   model: str = 'gemini-2.5-flash'
@@ -195,6 +254,12 @@ class Gemini(BaseLlm):
   )
   ```
   """
+
+  _api_clients: _ClientCache = PrivateAttr(default_factory=dict)
+  """Clients built by ``api_client``, one per event loop."""
+
+  _live_api_clients: _ClientCache = PrivateAttr(default_factory=dict)
+  """Clients built by ``_live_api_client``, one per event loop."""
 
   @classmethod
   @override
@@ -415,16 +480,22 @@ class Gemini(BaseLlm):
         output_schema_and_tools=gemini_output_schema_and_tools(self.model),
     )
 
-  @cached_property
+  @property
   def api_client(self) -> Client:
     """Provides the api client.
+
+    The client is cached per event loop, so an agent reused across threads
+    that each run their own loop never drives a client bound to a loop that
+    has already closed. A pre-configured ``client`` is returned as-is.
 
     Returns:
       The api client.
     """
     if self.client:
       return self.client
+    return _client_for_running_loop(self._api_clients, self._build_api_client)
 
+  def _build_api_client(self) -> Client:
     from google.genai import Client
 
     base_url, api_version = self._base_url_and_api_version
@@ -492,11 +563,15 @@ class Gemini(BaseLlm):
       # use v1alpha for using API KEY from Google AI Studio
       return 'v1alpha'
 
-  @cached_property
+  @property
   def _live_api_client(self) -> Client:
     if self.client:
       return self.client
+    return _client_for_running_loop(
+        self._live_api_clients, self._build_live_api_client
+    )
 
+  def _build_live_api_client(self) -> Client:
     from google.genai import Client
 
     base_url, _ = self._base_url_and_api_version

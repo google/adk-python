@@ -279,16 +279,13 @@ class ApigeeLlm(Gemini):
           await self._adapt_computer_use_tool(llm_request)
     self._maybe_append_user_content(llm_request)
 
-  @cached_property
-  def api_client(self) -> Client:
-    """Provides the api client.
+  @override
+  def _build_api_client(self) -> Client:
+    """Builds the api client for the Apigee proxy.
 
-    Returns:
-      The api client.
+    ``Gemini.api_client`` caches the result per event loop and returns a
+    pre-configured ``client`` as-is, so only the construction differs here.
     """
-    if self.client:
-      return self.client
-
     from google.genai import Client
 
     http_options = types.HttpOptions(

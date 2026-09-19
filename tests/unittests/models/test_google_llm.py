@@ -12,11 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
+import gc
 import logging
 import sys
+import threading
+from typing import Callable
 from typing import Optional
 from unittest import mock
 from unittest.mock import AsyncMock
+import weakref
 
 from google.adk import version as adk_version
 from google.adk.agents.context_cache_config import ContextCacheConfig
@@ -34,6 +39,7 @@ from google.adk.utils._client_labels_utils import _AGENT_ENGINE_TELEMETRY_ENV_VA
 from google.adk.utils._client_labels_utils import _AGENT_ENGINE_TELEMETRY_TAG
 from google.adk.utils._google_client_headers import get_tracking_headers
 from google.adk.utils.variant_utils import GoogleLLMVariant
+from google.genai import Client
 from google.genai import types
 from google.genai.errors import ClientError
 from google.genai.types import Content
@@ -413,6 +419,104 @@ def test_base_url_api_version_overrides_field():
   assert client._api_client._http_options.api_version == "v1alpha"
 
 
+def _run_in_new_thread_loop(fn: Callable[[], object]) -> object:
+  """Runs ``fn`` the way Agent Engine serves a request: new thread, new loop."""
+  result: dict[str, object] = {}
+
+  async def _call():
+    result["value"] = fn()
+
+  thread = threading.Thread(target=lambda: asyncio.run(_call()))
+  thread.start()
+  thread.join()
+  return result["value"]
+
+
+async def test_api_client_is_reused_within_one_event_loop(gemini_llm):
+  """Repeated access on the same loop keeps one client and its connection pool."""
+  assert gemini_llm.api_client is gemini_llm.api_client
+
+
+def test_api_client_is_rebuilt_for_a_new_event_loop(gemini_llm):
+  """A client bound to a finished loop is not handed to the next loop.
+
+  Setup: one Gemini instance, as when an agent module is loaded once.
+  Act: fetch the client under two consecutive ``asyncio.run()`` loops.
+  Assert: the second loop gets a different client, so it never drives the
+    connection pool of the closed loop (issue #5538).
+  """
+
+  async def _get_client():
+    return gemini_llm.api_client
+
+  first = asyncio.run(_get_client())
+  second = asyncio.run(_get_client())
+
+  assert first is not second
+
+
+def test_api_client_is_rebuilt_per_thread_with_its_own_loop(gemini_llm):
+  """Threads that each run their own loop each get their own client."""
+  first = _run_in_new_thread_loop(lambda: gemini_llm.api_client)
+  second = _run_in_new_thread_loop(lambda: gemini_llm.api_client)
+
+  assert first is not second
+
+
+def test_api_client_of_closed_loop_is_released(gemini_llm):
+  """Clients for loops that have closed do not accumulate on the instance."""
+
+  async def _client_ref():
+    return weakref.ref(gemini_llm.api_client)
+
+  stale = asyncio.run(_client_ref())
+  # The next access happens on a fresh loop; the stale entry has no live loop.
+  asyncio.run(_client_ref())
+  gc.collect()
+
+  assert stale() is None
+
+
+async def test_injected_client_is_shared_across_event_loops():
+  """A caller-supplied client is used as-is; its lifecycle stays with the caller."""
+  injected = mock.MagicMock(spec=Client)
+  model = Gemini(model="gemini-2.5-flash", client=injected)
+
+  in_this_loop = model.api_client
+  in_other_thread_loop = _run_in_new_thread_loop(lambda: model.api_client)
+
+  assert in_this_loop is injected
+  assert in_other_thread_loop is injected
+
+
+async def test_live_api_client_is_reused_within_one_event_loop(gemini_llm):
+  """The live client follows the same per-loop reuse as the request client."""
+  assert gemini_llm._live_api_client is gemini_llm._live_api_client
+
+
+def test_live_api_client_is_rebuilt_for_a_new_event_loop(gemini_llm):
+  """The live client is rebuilt for a new loop instead of reusing a bound one."""
+
+  async def _get_client():
+    return gemini_llm._live_api_client
+
+  first = asyncio.run(_get_client())
+  second = asyncio.run(_get_client())
+
+  assert first is not second
+
+
+def test_live_and_request_clients_are_cached_independently(gemini_llm):
+  """The request client and the live client are distinct objects on one loop."""
+
+  async def _both():
+    return gemini_llm.api_client, gemini_llm._live_api_client
+
+  request_client, live_client = asyncio.run(_both())
+
+  assert request_client is not live_client
+
+
 def test_maybe_append_user_content(gemini_llm, llm_request):
   # Test with user content already present
   gemini_llm._maybe_append_user_content(llm_request)
@@ -432,7 +536,7 @@ def test_maybe_append_user_content(gemini_llm, llm_request):
 async def test_generate_content_async(
     gemini_llm, llm_request, generate_content_response
 ):
-  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+  with mock.patch.object(gemini_llm, "client") as mock_client:
     # Create a mock coroutine that returns the generate_content_response
     async def mock_coro():
       return generate_content_response
@@ -472,7 +576,7 @@ async def test_generate_content_async_multiple_candidates_logs_error(
       ),
   ]
 
-  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+  with mock.patch.object(gemini_llm, "client") as mock_client:
 
     async def mock_coro():
       return generate_content_response
@@ -503,7 +607,7 @@ async def test_generate_content_async_multiple_candidates_logs_error(
 async def test_generate_content_async_stream_multiple_candidates_logs_error(
     gemini_llm, llm_request, caplog
 ):
-  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+  with mock.patch.object(gemini_llm, "client") as mock_client:
     mock_responses = [
         types.GenerateContentResponse(
             candidates=[
@@ -549,7 +653,7 @@ async def test_generate_content_async_stream_multiple_candidates_logs_error(
 
 @pytest.mark.asyncio
 async def test_generate_content_async_stream(gemini_llm, llm_request):
-  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+  with mock.patch.object(gemini_llm, "client") as mock_client:
     mock_responses = [
         types.GenerateContentResponse(
             candidates=[
@@ -611,7 +715,7 @@ async def test_generate_content_async_stream(gemini_llm, llm_request):
 async def test_generate_content_async_stream_preserves_thinking_and_text_parts(
     gemini_llm, llm_request
 ):
-  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+  with mock.patch.object(gemini_llm, "client") as mock_client:
     response1 = types.GenerateContentResponse(
         candidates=[
             types.Candidate(
@@ -673,7 +777,7 @@ async def test_generate_content_async_stream_preserves_thinking_and_text_parts(
 async def test_generate_content_async_resource_exhausted_error(
     stream, gemini_llm, llm_request
 ):
-  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+  with mock.patch.object(gemini_llm, "client") as mock_client:
     err = ClientError(code=429, response_json={})
     err.code = 429
     if stream:
@@ -700,7 +804,7 @@ async def test_generate_content_async_resource_exhausted_error(
 async def test_generate_content_async_other_client_error(
     stream, gemini_llm, llm_request
 ):
-  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+  with mock.patch.object(gemini_llm, "client") as mock_client:
     err = ClientError(code=500, response_json={})
     err.code = 500
     if stream:
@@ -728,7 +832,7 @@ async def test_connect(gemini_llm, llm_request):
   mock_live_session = mock.AsyncMock()
 
   # Patch the live API client boundary so the real connect() body runs.
-  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+  with mock.patch.object(gemini_llm, "client") as mock_live_client:
 
     class MockLiveConnect:
 
@@ -764,7 +868,7 @@ async def test_generate_content_async_with_custom_headers(
     custom_headers[key] = "custom " + tracking_headers[key]
   llm_request.config.http_options = types.HttpOptions(headers=custom_headers)
 
-  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+  with mock.patch.object(gemini_llm, "client") as mock_client:
     # Create a mock coroutine that returns the generate_content_response
     async def mock_coro():
       return generate_content_response
@@ -803,7 +907,7 @@ async def test_generate_content_async_stream_with_custom_headers(
   custom_headers = {"custom-header": "custom-value"}
   llm_request.config.http_options = types.HttpOptions(headers=custom_headers)
 
-  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+  with mock.patch.object(gemini_llm, "client") as mock_client:
     mock_responses = [
         types.GenerateContentResponse(
             candidates=[
@@ -850,7 +954,7 @@ async def test_generate_content_async_patches_tracking_headers(
   # Set the request's config.http_options to None.
   llm_request.config.http_options = None
 
-  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+  with mock.patch.object(gemini_llm, "client") as mock_client:
     if stream:
       # Create a mock coroutine that returns the mock_responses.
       async def mock_coro():
@@ -908,7 +1012,7 @@ async def test_generate_content_async_patches_api_version(
       headers={"custom-header": "custom-value"}
   )
 
-  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+  with mock.patch.object(gemini_llm, "client") as mock_client:
     if stream:
 
       async def mock_coro():
@@ -949,7 +1053,7 @@ async def test_generate_content_async_patches_api_version_from_field(
       headers={"custom-header": "custom-value"}
   )
 
-  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+  with mock.patch.object(gemini_llm, "client") as mock_client:
 
     async def mock_coro():
       return generate_content_response
@@ -976,7 +1080,7 @@ async def test_generate_content_async_does_not_override_request_api_version(
   gemini_llm = Gemini(model="gemini-2.5-flash", api_version="v1")
   llm_request.config.http_options = types.HttpOptions(api_version="v2")
 
-  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+  with mock.patch.object(gemini_llm, "client") as mock_client:
 
     async def mock_coro():
       return generate_content_response
@@ -1004,7 +1108,7 @@ async def test_generate_content_async_env_var_does_not_override_custom_client_ap
   gemini_llm = Gemini(model="gemini-2.5-flash")
   llm_request.config.http_options = types.HttpOptions()
 
-  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+  with mock.patch.object(gemini_llm, "client") as mock_client:
 
     async def mock_coro():
       return generate_content_response
@@ -1128,7 +1232,7 @@ async def test_connect_with_custom_headers(gemini_llm, llm_request):
   mock_live_session = mock.AsyncMock()
 
   # Mock the _live_api_client to return a mock client
-  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+  with mock.patch.object(gemini_llm, "client") as mock_live_client:
     # Create a mock context manager
     class MockLiveConnect:
 
@@ -1170,7 +1274,7 @@ async def test_connect_without_custom_headers(gemini_llm, llm_request):
 
   mock_live_session = mock.AsyncMock()
 
-  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+  with mock.patch.object(gemini_llm, "client") as mock_live_client:
 
     class MockLiveConnect:
 
@@ -1214,7 +1318,7 @@ async def test_connect_forwards_thinking_config(gemini_llm, llm_request):
 
   mock_live_session = mock.AsyncMock()
 
-  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+  with mock.patch.object(gemini_llm, "client") as mock_live_client:
 
     class MockLiveConnect:
 
@@ -1253,7 +1357,7 @@ async def test_connect_forwards_safety_settings(gemini_llm, llm_request):
 
   mock_live_session = mock.AsyncMock()
 
-  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+  with mock.patch.object(gemini_llm, "client") as mock_live_client:
 
     class MockLiveConnect:
 
@@ -1296,7 +1400,7 @@ async def test_connect_keeps_existing_live_safety_settings(
 
   mock_live_session = mock.AsyncMock()
 
-  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+  with mock.patch.object(gemini_llm, "client") as mock_live_client:
 
     class MockLiveConnect:
 
@@ -1333,7 +1437,7 @@ async def test_connect_keeps_empty_live_safety_settings(
 
   mock_live_session = mock.AsyncMock()
 
-  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+  with mock.patch.object(gemini_llm, "client") as mock_live_client:
 
     class MockLiveConnect:
 
@@ -1361,7 +1465,7 @@ async def test_connect_safety_settings_remain_none_when_unset(
 
   mock_live_session = mock.AsyncMock()
 
-  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+  with mock.patch.object(gemini_llm, "client") as mock_live_client:
 
     class MockLiveConnect:
 
@@ -1510,7 +1614,7 @@ async def test_generate_content_async_stream_aggregated_content_regardless_of_fi
       ),
   )
 
-  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+  with mock.patch.object(gemini_llm, "client") as mock_client:
     # Test with different finish reasons
     test_cases = [
         types.FinishReason.MAX_TOKENS,
@@ -1583,7 +1687,7 @@ async def test_generate_content_async_stream_with_thought_and_text_error_handlin
       ),
   )
 
-  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+  with mock.patch.object(gemini_llm, "client") as mock_client:
     mock_responses = [
         types.GenerateContentResponse(
             candidates=[
@@ -1650,7 +1754,7 @@ async def test_generate_content_async_stream_error_info_none_for_stop_finish_rea
       ),
   )
 
-  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+  with mock.patch.object(gemini_llm, "client") as mock_client:
     mock_responses = [
         types.GenerateContentResponse(
             candidates=[
@@ -1713,7 +1817,7 @@ async def test_generate_content_async_stream_error_info_set_for_non_stop_finish_
       ),
   )
 
-  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+  with mock.patch.object(gemini_llm, "client") as mock_client:
     mock_responses = [
         types.GenerateContentResponse(
             candidates=[
@@ -1776,7 +1880,7 @@ async def test_generate_content_async_stream_no_aggregated_content_without_text(
       ),
   )
 
-  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+  with mock.patch.object(gemini_llm, "client") as mock_client:
     # Mock response with no text content
     mock_responses = [
         types.GenerateContentResponse(
@@ -1836,7 +1940,7 @@ async def test_generate_content_async_stream_mixed_text_function_call_text():
       ),
   )
 
-  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+  with mock.patch.object(gemini_llm, "client") as mock_client:
     # Create responses with pattern: text -> function_call -> text
     mock_responses = [
         # First text chunk
@@ -1937,7 +2041,7 @@ async def test_generate_content_async_stream_multiple_text_parts_in_single_respo
       ),
   )
 
-  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+  with mock.patch.object(gemini_llm, "client") as mock_client:
     # Create a response with multiple text parts
     mock_responses = [
         types.GenerateContentResponse(
@@ -1989,7 +2093,7 @@ async def test_generate_content_async_stream_complex_mixed_thought_text_function
       ),
   )
 
-  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+  with mock.patch.object(gemini_llm, "client") as mock_client:
     # Complex pattern: thought -> text -> function_call -> thought -> text
     mock_responses = [
         # Thought
@@ -2109,7 +2213,7 @@ async def test_generate_content_async_stream_two_separate_text_aggregations():
       ),
   )
 
-  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+  with mock.patch.object(gemini_llm, "client") as mock_client:
     # Create responses: multiple text chunks -> function_call -> multiple text chunks
     mock_responses = [
         # First text accumulation (multiple chunks)
@@ -2403,7 +2507,7 @@ async def test_generate_content_async_with_cache_metadata_integration(
       ),
   )
 
-  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+  with mock.patch.object(gemini_llm, "client") as mock_client:
     # Create a mock coroutine that returns the generate_content_response
     async def mock_coro():
       return generate_content_response
@@ -2757,7 +2861,7 @@ async def test_connect_uses_gemini_speech_config_when_request_is_none(
 
   mock_live_session = mock.AsyncMock()
 
-  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+  with mock.patch.object(gemini_llm, "client") as mock_live_client:
 
     class MockLiveConnect:
 
@@ -2805,7 +2909,7 @@ async def test_connect_uses_request_speech_config_when_gemini_is_none(
 
   mock_live_session = mock.AsyncMock()
 
-  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+  with mock.patch.object(gemini_llm, "client") as mock_live_client:
 
     class MockLiveConnect:
 
@@ -2859,7 +2963,7 @@ async def test_connect_request_gemini_config_overrides_speech_config(
 
   mock_live_session = mock.AsyncMock()
 
-  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+  with mock.patch.object(gemini_llm, "client") as mock_live_client:
 
     class MockLiveConnect:
 
@@ -2900,7 +3004,7 @@ async def test_connect_speech_config_remains_none_when_both_are_none(
 
   mock_live_session = mock.AsyncMock()
 
-  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+  with mock.patch.object(gemini_llm, "client") as mock_live_client:
 
     class MockLiveConnect:
 
@@ -2948,7 +3052,7 @@ async def test_generate_content_async_skips_request_log_build_above_debug(
         "google.adk.models.google_llm._build_request_log",
         return_value="log",
     ) as mock_build:
-      with mock.patch.object(gemini_llm, "api_client") as mock_client:
+      with mock.patch.object(gemini_llm, "client") as mock_client:
 
         async def mock_coro():
           return generate_content_response
@@ -2989,7 +3093,7 @@ async def test_generate_content_async_skips_response_log_build_above_debug(
         "google.adk.models.google_llm._build_response_log",
         return_value="log",
     ) as mock_build:
-      with mock.patch.object(gemini_llm, "api_client") as mock_client:
+      with mock.patch.object(gemini_llm, "client") as mock_client:
 
         async def mock_coro():
           return generate_content_response
@@ -3039,7 +3143,7 @@ async def test_generate_content_async_stream_skips_response_log_build_above_debu
         "google.adk.models.google_llm._build_response_log",
         return_value="log",
     ) as mock_build:
-      with mock.patch.object(gemini_llm, "api_client") as mock_client:
+      with mock.patch.object(gemini_llm, "client") as mock_client:
 
         async def mock_coro():
           return MockAsyncIterator(mock_responses)
@@ -3069,7 +3173,7 @@ async def test_generate_content_async_does_not_log_request_headers(
   )
 
   with caplog.at_level(logging.DEBUG, logger="google_adk"):
-    with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    with mock.patch.object(gemini_llm, "client") as mock_client:
 
       async def mock_coro():
         return generate_content_response
@@ -3113,7 +3217,7 @@ async def test_connect_does_not_log_request_headers(
   mock_live_session = mock.AsyncMock()
 
   with caplog.at_level(logging.DEBUG, logger="google_adk"):
-    with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+    with mock.patch.object(gemini_llm, "client") as mock_live_client:
 
       class MockLiveConnect:
 
@@ -3144,7 +3248,7 @@ async def test_generate_content_async_stream_secondary_candidate_chunk(
     gemini_llm, llm_request, caplog
 ):
   """Test a candidate streamed in its own chunk is detected and skipped."""
-  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+  with mock.patch.object(gemini_llm, "client") as mock_client:
     mock_responses = [
         types.GenerateContentResponse(
             candidates=[
@@ -3209,7 +3313,7 @@ async def test_generate_content_async_stream_secondary_candidate_chunk_is_skippe
     gemini_llm, llm_request
 ):
   """Test a chunk holding only secondary candidates yields no partial response."""
-  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+  with mock.patch.object(gemini_llm, "client") as mock_client:
     mock_responses = [
         types.GenerateContentResponse(
             candidates=[
@@ -3271,7 +3375,7 @@ async def test_generate_content_async_stream_secondary_candidate_chunk_preserves
     gemini_llm, llm_request
 ):
   """Test that usage metadata on a chunk holding only secondary candidates is preserved."""
-  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+  with mock.patch.object(gemini_llm, "client") as mock_client:
     mock_responses = [
         types.GenerateContentResponse(
             candidates=[
