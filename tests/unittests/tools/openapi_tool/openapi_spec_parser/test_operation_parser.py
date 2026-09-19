@@ -95,6 +95,33 @@ def test_process_operation_parameters(sample_operation):
   assert parser._params[1].param_location == 'header'
 
 
+def test_process_operation_parameters_keeps_style_and_explode():
+  operation = Operation(
+      operationId='listTickets',
+      parameters=[
+          Parameter(**{
+              'name': 'filter',
+              'in': 'query',
+              'style': 'deepObject',
+              'explode': True,
+              'schema': Schema(type='object'),
+          }),
+          Parameter(**{
+              'name': 'q',
+              'in': 'query',
+              'schema': Schema(type='string'),
+          }),
+      ],
+  )
+  parser = OperationParser(operation, should_parse=False)
+  parser._process_operation_parameters()
+  assert (parser._params[0].style, parser._params[0].explode) == (
+      'deepObject',
+      True,
+  )
+  assert (parser._params[1].style, parser._params[1].explode) == (None, None)
+
+
 def test_process_request_body(sample_operation):
   """Test _process_request_body method."""
   parser = OperationParser(sample_operation, should_parse=False)
