@@ -356,6 +356,7 @@ class TestRestApiTool:
     mock_response = MagicMock()
     mock_response.status_code = 500
     mock_response.content = b"Internal Server Error"
+    mock_response.text = "Internal Server Error"
 
     # Create a proper HTTPStatusError with request and response
     mock_http_request = MagicMock(spec=httpx.Request)
@@ -387,6 +388,53 @@ class TestRestApiTool:
             " and your inputs. Retry with adjustments if applicable. But"
             " make sure don't retry more than 3 times. Execution Error:"
             " Status Code: 500, Internal Server Error"
+        )
+    }
+
+  @patch(
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
+  )
+  @pytest.mark.asyncio
+  async def test_call_http_failure_non_utf8_body(
+      self,
+      mock_request,
+      mock_tool_context,
+      sample_endpoint,
+      sample_operation,
+      sample_auth_scheme,
+      sample_auth_credential,
+  ):
+    # A server that declares (and uses) a non-UTF-8 charset for its error
+    # body, e.g. a legacy ERP or IIS server responding in Latin-1.
+    mock_http_request = httpx.Request("GET", "https://example.com")
+    mock_response = httpx.Response(
+        404,
+        content="Commande introuvable : échec".encode("latin-1"),
+        headers={"content-type": "text/plain; charset=iso-8859-1"},
+        request=mock_http_request,
+    )
+    mock_request.return_value = mock_response
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_scheme=sample_auth_scheme,
+        auth_credential=sample_auth_credential,
+    )
+
+    # Call the method
+    result = await tool.call(args={}, tool_context=mock_tool_context)
+
+    # Check the result: the response is decoded with its declared charset
+    # instead of raising UnicodeDecodeError under a hardcoded utf-8 decode.
+    assert result == {
+        "error": (
+            "Tool test_tool execution failed. Analyze this execution error"
+            " and your inputs. Retry with adjustments if applicable. But"
+            " make sure don't retry more than 3 times. Execution Error:"
+            " Status Code: 404, Commande introuvable : échec"
         )
     }
 
