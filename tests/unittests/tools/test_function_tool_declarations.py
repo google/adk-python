@@ -23,6 +23,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 import dataclasses
 from enum import Enum
+import functools
 import os
 from typing import Any
 from typing import AsyncGenerator
@@ -787,6 +788,37 @@ class TestSpecialCases(parameterized.TestCase):
             "type": "integer",
         },
     )
+
+  def test_callable_object_docstring_on_call(self):
+    """Test callable object documented only on __call__."""
+
+    class OrderLookup:
+
+      def __call__(self, order_id: str) -> str:
+        """Looks up an order by its id."""
+        return order_id
+
+    decl = build_function_declaration_with_json_schema(OrderLookup())
+
+    self.assertEqual(decl.name, "OrderLookup")
+    self.assertEqual(decl.description, "Looks up an order by its id.")
+
+  def test_partial_uses_wrapped_name_and_docstring(self):
+    """Test functools.partial is declared as the function it wraps."""
+
+    def get_weather(api_key: str, city: str) -> str:
+      """Returns the current weather for a city."""
+      return city
+
+    decl = build_function_declaration_with_json_schema(
+        functools.partial(get_weather, "key")
+    )
+
+    self.assertEqual(decl.name, "get_weather")
+    self.assertEqual(
+        decl.description, "Returns the current weather for a city."
+    )
+    self.assertEqual(list(decl.parameters_json_schema["properties"]), ["city"])
 
 
 class TestComplexFunction(parameterized.TestCase):
