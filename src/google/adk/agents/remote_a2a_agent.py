@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from ..a2a.agent._remote_a2a_agent import A2A_METADATA_PREFIX as A2A_METADATA_PREFIX
 from ..a2a.agent._remote_a2a_agent import A2AClientError as A2AClientError
+from ..a2a.agent._remote_a2a_agent import ADK_A2A_ALLOW_INSECURE_HTTP as ADK_A2A_ALLOW_INSECURE_HTTP
 from ..a2a.agent._remote_a2a_agent import AGENT_CARD_WELL_KNOWN_PATH as AGENT_CARD_WELL_KNOWN_PATH
 from ..a2a.agent._remote_a2a_agent import AgentCardResolutionError as AgentCardResolutionError
 from ..a2a.agent._remote_a2a_agent import DEFAULT_TIMEOUT as DEFAULT_TIMEOUT
@@ -24,6 +25,7 @@ from ..a2a.agent._remote_a2a_agent import RemoteA2aAgent as RemoteA2aAgent
 
 __all__ = [
     "A2AClientError",
+    "ADK_A2A_ALLOW_INSECURE_HTTP",
     "AGENT_CARD_WELL_KNOWN_PATH",
     "AgentCardResolutionError",
     "RemoteA2aAgent",
