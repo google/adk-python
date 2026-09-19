@@ -336,16 +336,20 @@ class BaseAgent(BaseNode, abc.ABC):
       node_input: Any,
   ) -> AsyncGenerator[Any, None]:
     """Runs the agent as a node."""
-    async for event in self.run_async(
-        parent_context=ctx.get_invocation_context()
-    ):
-      # Preserve author by setting it in context for NodeRunner
-      if event.author:
-        ctx.event_author = event.author
+    # Aclosing, so that a consumer that stops early closes run_async here
+    # rather than leaving it to the asyncgen finalizer hook, which resumes it
+    # in a different contextvars context and breaks its OTel span teardown.
+    async with Aclosing(
+        self.run_async(parent_context=ctx.get_invocation_context())
+    ) as agen:
+      async for event in agen:
+        # Preserve author by setting it in context for NodeRunner
+        if event.author:
+          ctx.event_author = event.author
 
-      if not event.node_info.path and event.author == self.name:
-        event.node_info.path = ctx.node_path
-      yield event
+        if not event.node_info.path and event.author == self.name:
+          event.node_info.path = ctx.node_path
+        yield event
 
   @final
   async def run_live(
