@@ -45,7 +45,21 @@ concurrency:
 
 jobs:
   agent-triage-pull-request:
-    if: github.repository == 'google/adk-python'
+    # Automatic pull_request_target runs must stay scoped to same-repository
+    # PRs: this event grants the base-repo token and secrets (ADK_TRIAGE_AGENT,
+    # GOOGLE_API_KEY) to a job that runs for every PR that arrives, including
+    # ones opened from a fork by a first-time, unauthenticated contributor.
+    # Without this guard, anyone opening a PR against this public repo can
+    # force a privileged, secret-backed Gemini call on demand (see #6053,
+    # which added this exact guard; it was silently dropped when the
+    # pull_request_target trigger was reintroduced in f41bc79922 and never
+    # restored). workflow_dispatch (maintainer-triggered batch/manual mode)
+    # is unaffected.
+    if: >-
+      github.repository == 'google/adk-python' && (
+        github.event_name == 'workflow_dispatch' ||
+        github.event.pull_request.head.repo.full_name == github.repository
+      )
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
