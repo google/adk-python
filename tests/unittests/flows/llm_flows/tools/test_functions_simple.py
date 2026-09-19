@@ -2790,3 +2790,86 @@ async def test_generate_auth_event_mirrors_the_tool_response_role():
       auth_event.content.role == function_response_event.content.role == 'user'
   )
   assert auth_event.author == agent.name
+
+
+@pytest.mark.asyncio
+async def test_tool_with_behavior_non_blocking_runs_in_background_live():
+  """A tool with behavior=NON_BLOCKING runs in the background in live mode."""
+
+  async def fetch_data(key: str) -> dict[str, str]:
+    return {'data': key}
+
+  tool = FunctionTool(fetch_data)
+  tool.behavior = types.Behavior.NON_BLOCKING
+  agent = Agent(
+      name='test_agent',
+      model='gemini-3.5-flash-live-preview',
+      tools=[tool],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  function_call = types.FunctionCall(
+      name=tool.name, args={'key': 'test_val'}, id='fc_async_1'
+  )
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  result = await handle_function_calls_live(
+      invocation_context, event, {tool.name: tool}
+  )
+  assert result is None
+
+  contents = await _drain_live_function_responses(
+      invocation_context.live_request_queue, count=1
+  )
+  function_response = contents[0].parts[0].function_response
+  assert function_response.id == 'fc_async_1'
+  assert function_response.response == {'data': 'test_val'}
+
+
+@pytest.mark.asyncio
+async def test_tool_with_behavior_blocking_overrides_scheduling_runs_synchronously_live():
+  """A tool with response_scheduling overridden by behavior=BLOCKING runs blocking."""
+
+  async def fetch_data(key: str) -> dict[str, str]:
+    return {'data': key}
+
+  tool = FunctionTool(fetch_data)
+  tool.response_scheduling = types.FunctionResponseScheduling.WHEN_IDLE
+  tool.behavior = types.Behavior.BLOCKING
+  agent = Agent(
+      name='test_agent',
+      model='gemini-3.5-flash-live-preview',
+      tools=[tool],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=''
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  function_call = types.FunctionCall(
+      name=tool.name, args={'key': 'test_val'}, id='fc_sync_1'
+  )
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(parts=[types.Part(function_call=function_call)]),
+  )
+
+  result = await handle_function_calls_live(
+      invocation_context, event, {tool.name: tool}
+  )
+  # When blocking, handle_function_calls_live returns the event directly
+  assert result is not None
+  assert result.content.parts[0].function_response.id == 'fc_sync_1'
+  assert result.content.parts[0].function_response.response == {
+      'data': 'test_val'
+  }
+  # Background queue should remain empty
+  assert invocation_context.live_request_queue._queue.empty()

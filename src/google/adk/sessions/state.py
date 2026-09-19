@@ -14,11 +14,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+import functools
 from typing import Any
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
   from pydantic import BaseModel
+  from pydantic import TypeAdapter
 
 
 class StateSchemaError(TypeError):
@@ -26,6 +29,14 @@ class StateSchemaError(TypeError):
 
 
 _SCOPE_PREFIXES = ("app:", "user:", "temp:")
+
+
+@functools.lru_cache(maxsize=256)
+def _get_type_adapter(annotation: Any) -> TypeAdapter[Any]:
+  """Returns a cached Pydantic TypeAdapter for the given type annotation."""
+  from pydantic import TypeAdapter
+
+  return TypeAdapter(annotation)
 
 
 def _validate_state_entry(
@@ -49,11 +60,10 @@ def _validate_state_entry(
         f"'{schema.__name__}'. Declared fields: {sorted(fields.keys())}"
     )
 
-  from pydantic import TypeAdapter
   from pydantic import ValidationError as PydanticValidationError
 
   try:
-    TypeAdapter(fields[key].annotation).validate_python(value)
+    _get_type_adapter(fields[key].annotation).validate_python(value)
   except PydanticValidationError as e:
     raise StateSchemaError(
         f"Value for '{key}' does not match type "
@@ -103,6 +113,10 @@ class State:
   def __contains__(self, key: object) -> bool:
     """Whether the state dict contains the given key."""
     return key in self._value or key in self._delta
+
+  def __iter__(self) -> Iterator[str]:
+    """Iterates over the keys in the state dict."""
+    return iter(self.to_dict())
 
   def setdefault(self, key: str, default: Any = None) -> Any:
     """Gets the value of a key, or sets it to a default if the key doesn't exist."""

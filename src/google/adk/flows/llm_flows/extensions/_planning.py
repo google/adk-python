@@ -76,8 +76,6 @@ class _NlPlanningResponse(BaseLlmResponseProcessor):
   async def run_async(
       self, invocation_context: InvocationContext, llm_response: LlmResponse
   ) -> AsyncGenerator[Event, None]:
-    from ....planners.built_in_planner import BuiltInPlanner
-
     if (
         not llm_response
         or not llm_response.content
@@ -85,12 +83,8 @@ class _NlPlanningResponse(BaseLlmResponseProcessor):
     ):
       return
 
-    planner = _get_planner(invocation_context)
-    if (
-        not planner
-        or type(planner).process_planning_response
-        is BuiltInPlanner.process_planning_response
-    ):
+    planner = response_rewriting_planner(invocation_context)
+    if not planner:
       return
 
     # Postprocess the LLM response.
@@ -112,6 +106,22 @@ class _NlPlanningResponse(BaseLlmResponseProcessor):
 
 
 response_processor = _NlPlanningResponse()
+
+
+def response_rewriting_planner(
+    invocation_context: InvocationContext,
+) -> Optional[BasePlanner]:
+  """Returns the agent's planner if it rewrites the model response parts."""
+  from ....planners.built_in_planner import BuiltInPlanner
+
+  planner = _get_planner(invocation_context)
+  if (
+      not planner
+      or type(planner).process_planning_response
+      is BuiltInPlanner.process_planning_response
+  ):
+    return None
+  return planner
 
 
 def _get_planner(

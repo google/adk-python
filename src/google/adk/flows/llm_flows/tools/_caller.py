@@ -711,6 +711,51 @@ async def _prepare_single(
   )
 
 
+async def _apply_confirmation_gate(
+    tool: BaseTool,
+    function_args: dict[str, Any],
+    tool_context: ToolContext,
+) -> dict[str, str] | None:
+  """Answers a call whose tool is waiting on a human, instead of running it.
+
+  Args:
+    tool: The tool the call names.
+    function_args: The arguments the call carries.
+    tool_context: The context the call will run in.
+
+  Returns:
+    The response to answer the call with, or None if the call may proceed.
+  """
+  requires_confirmation = await tool.check_require_confirmation(
+      function_args, tool_context
+  )
+  # Holding a call back from the model is restrictive, and the hook is declared
+  # to answer with a bool, so anything other than True lets the call through.
+  if requires_confirmation is not True:
+    return None
+
+  confirmation = tool_context.tool_confirmation
+  if confirmation is None:
+    tool_context.request_confirmation(
+        hint=(
+            f'Please approve or reject the tool call {tool.name}() by'
+            ' responding with a FunctionResponse with an expected'
+            ' ToolConfirmation payload.'
+        ),
+    )
+    # The pause is not a tool result for the model to summarize; without this
+    # the flow re-invokes the model, which calls the tool again.
+    tool_context.actions.skip_summarization = True
+    return {
+        'error': (
+            'This tool call requires confirmation, please approve or reject.'
+        )
+    }
+  if not confirmation.confirmed:
+    return {'error': 'This tool call is rejected.'}
+  return None
+
+
 async def _execute_single_prepared_call(
     invocation_context: InvocationContext,
     prepared_call: _PreparedFunctionCall,
@@ -793,10 +838,17 @@ async def _execute_single_prepared_call(
       )
 
     # Step 3: No before-tool callback answered the call, so proceed calling
-    # the tool normally.
+    # the tool normally. A tool that requires confirmation is answered by the
+    # gate instead, so the gate holds for every tool rather than only the ones
+    # that check it themselves, and a gate that raises is handled like a tool
+    # that raises.
     if function_response is None:
       try:
-        function_response = await tool_runner()
+        function_response = await _apply_confirmation_gate(
+            tool, function_args, tool_context
+        )
+        if function_response is None:
+          function_response = await tool_runner()
       except Exception as tool_error:
         error_response = await _tool_error_handler.run_on_tool_error_callbacks(
             invocation_context=invocation_context,

@@ -2076,6 +2076,79 @@ class TestMCPToolGracefulErrorHandling:
     assert result == expected_tool_result(mcp_response)
     self.mock_session_manager._get_session_context.assert_not_called()
 
+  @pytest.mark.asyncio
+  async def test_run_async_impl_discards_a_session_the_server_dropped(self):
+    """The server reporting the session gone takes it out of the pool."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    self.mock_session.call_tool = AsyncMock(
+        side_effect=make_mcp_error(32600, "Session terminated")
+    )
+    self.mock_session_manager._get_session_context = Mock(return_value=None)
+
+    tool_context = ToolContext(invocation_context=Mock())
+    tool_context.function_call_id = "test-call-id"
+
+    with pytest.raises(McpError):
+      await tool._run_async_impl(
+          args={"param1": "x"}, tool_context=tool_context, credential=None
+      )
+
+    self.mock_session_manager._discard_session.assert_called_once_with(
+        None, session=self.mock_session
+    )
+
+  @pytest.mark.asyncio
+  async def test_run_async_impl_keeps_the_session_when_the_tool_itself_fails(
+      self,
+  ):
+    """A tool that fails on its own merits leaves the pooled session alone."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    self.mock_session.call_tool = AsyncMock(
+        side_effect=make_mcp_error(-32603, "invalid argument")
+    )
+    self.mock_session_manager._get_session_context = Mock(return_value=None)
+
+    tool_context = ToolContext(invocation_context=Mock())
+    tool_context.function_call_id = "test-call-id"
+
+    with pytest.raises(McpError):
+      await tool._run_async_impl(
+          args={"param1": "x"}, tool_context=tool_context, credential=None
+      )
+
+    self.mock_session_manager._discard_session.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_run_async_impl_keeps_the_session_on_a_timeout(self):
+    """A slow server is still holding the session, so it is not discarded."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    self.mock_session.call_tool = AsyncMock(
+        side_effect=TimeoutError("call timed out")
+    )
+    self.mock_session_manager._get_session_context = Mock(return_value=None)
+
+    tool_context = ToolContext(invocation_context=Mock())
+    tool_context.function_call_id = "test-call-id"
+
+    with pytest.raises(TimeoutError, match="call timed out"):
+      await tool._run_async_impl(
+          args={"param1": "x"}, tool_context=tool_context, credential=None
+      )
+
+    self.mock_session_manager._discard_session.assert_not_called()
+
 
 class TestResultDictKeys:
   """Pins the literal keys of the dict `run_async` hands back to the caller.

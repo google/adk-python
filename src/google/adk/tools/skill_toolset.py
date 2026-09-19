@@ -126,6 +126,18 @@ class SkillLifecycleMode(Enum):
   least recently loaded. Reloading one counts as a use.
   """
 
+  EPHEMERAL = "ephemeral"
+  """Released once the turn that loaded it ends.
+
+  Active for every model step of that turn, so the model can finish what it
+  loaded the skill for, and gone from the next turn on. Loading it again buys
+  another turn. Bounded by time, so the `max_active_skills` cap ignores it.
+
+  Not supported under `run_live`, which runs the whole bidi stream as one
+  invocation: with no turn boundary to expire on, an ephemeral skill there
+  behaves as PERSISTENT and stays active until the stream ends.
+  """
+
 
 @dataclasses.dataclass(frozen=True)
 class SkillLifecycleConfig:
@@ -137,7 +149,7 @@ class SkillLifecycleConfig:
     default_mode: Lifecycle for any skill not in `skill_overrides`. PERSISTENT
       is how skills behaved before this config existed.
     max_active_skills: How many BOUNDED skills may be active at once, per agent.
-      PERSISTENT skills never count against it.
+      PERSISTENT and EPHEMERAL skills never count against it.
     skill_overrides: Per-skill lifecycles. Names need not be registered locally,
       so a registry skill can be listed here too.
   """
@@ -155,6 +167,46 @@ class SkillLifecycleConfig:
           "`max_active_skills` must be at least 1, got"
           f" {self.max_active_skills}."
       )
+
+
+def _skill_lifecycle_state_key(agent_name: str) -> str:
+  """Returns the session state key holding an agent's lifecycle records.
+
+  Deliberately not under the `_adk_activated_skill_` prefix: consumers
+  elsewhere scan for that prefix and read every match as a list of names.
+  """
+  return f"_adk_skill_meta_{agent_name}"
+
+
+def _read_lifecycle_records(
+    state: Any, agent_name: str
+) -> dict[str, dict[str, Any]]:
+  """Returns a mutable copy of an agent's per-skill lifecycle records."""
+  records = state.get(_skill_lifecycle_state_key(agent_name))
+  if not isinstance(records, dict):
+    return {}
+  return {
+      name: dict(record)
+      for name, record in records.items()
+      if isinstance(record, dict)
+  }
+
+
+def _is_expired(record: dict[str, Any], invocation_id: str | None) -> bool:
+  """Whether a lifecycle record has outlived the turn that created it.
+
+  An invocation is a turn: every model step and tool call the user's message
+  sets off shares its id. So an ephemeral skill is expired as soon as some
+  other invocation asks. Except under `run_live`, where the whole stream is
+  one invocation and nothing ever expires.
+
+  A record with no id was activated without one, which only a hand-built
+  context does. Left active, since guessing would release a skill in use.
+  """
+  if record.get("lifecycle") != SkillLifecycleMode.EPHEMERAL.value:
+    return False
+  activated_in = record.get("activated_in")
+  return bool(activated_in) and activated_in != invocation_id
 
 
 class SkillDiscoveryMode(Enum):
@@ -555,7 +607,10 @@ class LoadSkillTool(BaseTool):
 
     # Record skill activation in agent state for tool resolution.
     evicted = self._toolset._record_activation(
-        tool_context.state, tool_context.agent_name, skill_name
+        tool_context.state,
+        tool_context.agent_name,
+        skill_name,
+        tool_context.invocation_id,
     )
 
     instructions = skill.instructions
@@ -573,6 +628,11 @@ class LoadSkillTool(BaseTool):
     if evicted:
       # Tell the model, rather than letting the declarations quietly vanish.
       result["unloaded_skills"] = evicted
+    if self._toolset._lifecycle_for(skill_name) is SkillLifecycleMode.EPHEMERAL:
+      result["lifecycle_notice"] = (
+          "This skill is released at the end of the current turn. Do what it"
+          " is needed for now; in a later turn, load it again."
+      )
     return result
 
   def _detect_error_in_response(self, response: Any) -> Optional[str]:
@@ -1644,6 +1704,12 @@ class SkillToolset(BaseToolset):
     self._lifecycle_config = dataclasses.replace(
         config, skill_overrides=dict(config.skill_overrides)
     )
+    # Nothing is ephemeral for most callers, and then the lifecycle records
+    # are never touched at all.
+    self._tracks_ephemeral_skills = config.enabled and (
+        SkillLifecycleMode.EPHEMERAL
+        in ({config.default_mode} | set(config.skill_overrides.values()))
+    )
 
     skills = skills or []
 
@@ -1754,8 +1820,10 @@ class SkillToolset(BaseToolset):
     if not readonly_context:
       return []
 
-    activated_skills = _read_activated_skills(
-        readonly_context.state, readonly_context.agent_name
+    activated_skills = self._active_skills(
+        readonly_context.state,
+        readonly_context.agent_name,
+        readonly_context.invocation_id,
     )
 
     if not activated_skills:
@@ -1873,8 +1941,9 @@ class SkillToolset(BaseToolset):
   def list_active_skills(self, ctx: ReadonlyContext) -> list[str]:
     """Returns the skills active for `ctx`'s agent, least recently loaded first.
 
-    That is activation order, except that reloading a BOUNDED skill moves it to
-    the end — the order the cap evicts in.
+    That is activation order, except that reloading a skill that is not
+    PERSISTENT moves it to the end — the order the cap evicts in. An EPHEMERAL
+    skill loaded in an earlier turn has been released and is not listed.
 
     Args:
       ctx: A context for the running agent. `ToolContext` is one.
@@ -1883,7 +1952,7 @@ class SkillToolset(BaseToolset):
       The active skill names. Activation is recorded by name, so a name here
       is not guaranteed to still resolve against the registry.
     """
-    return _read_activated_skills(ctx.state, ctx.agent_name)
+    return self._active_skills(ctx.state, ctx.agent_name, ctx.invocation_id)
 
   async def load_skill(self, ctx: ToolContext, skill_name: str) -> bool:
     """Activates a skill for `ctx`'s agent without going through the model.
@@ -1898,10 +1967,11 @@ class SkillToolset(BaseToolset):
         callback was handed.
       skill_name: The skill to activate.
 
-    The bounded cap applies here exactly as it does to the `load_skill` tool:
-    loading a BOUNDED skill can release other bounded ones, and reloading an
-    active one counts as a use. That is not reported back, so a caller who
-    needs to know should read `list_active_skills`.
+    The lifecycle applies here exactly as it does to the `load_skill` tool:
+    loading a BOUNDED skill can release other bounded ones, reloading an active
+    one counts as a use, and an EPHEMERAL skill gets the turn `ctx` is in. That
+    is not reported back, so a caller who needs to know should read
+    `list_active_skills`.
 
     Returns:
       True if the skill was activated, False if it already was. An already
@@ -1912,8 +1982,12 @@ class SkillToolset(BaseToolset):
       ValueError: If no such skill is available locally or in the registry.
       Exception: Whatever the registry raises if the lookup itself fails.
     """
-    if skill_name in _read_activated_skills(ctx.state, ctx.agent_name):
-      self._record_activation(ctx.state, ctx.agent_name, skill_name)
+    if skill_name in self._active_skills(
+        ctx.state, ctx.agent_name, ctx.invocation_id
+    ):
+      self._record_activation(
+          ctx.state, ctx.agent_name, skill_name, ctx.invocation_id
+      )
       return False
 
     skill = await self._get_or_fetch_skill(skill_name, ctx.invocation_id)
@@ -1922,8 +1996,12 @@ class SkillToolset(BaseToolset):
 
     # The fetch suspends, so re-read: a concurrent activation may have written
     # the list since.
-    was_active = skill_name in _read_activated_skills(ctx.state, ctx.agent_name)
-    self._record_activation(ctx.state, ctx.agent_name, skill_name)
+    was_active = skill_name in self._active_skills(
+        ctx.state, ctx.agent_name, ctx.invocation_id
+    )
+    self._record_activation(
+        ctx.state, ctx.agent_name, skill_name, ctx.invocation_id
+    )
     return not was_active
 
   def unload_skill(self, ctx: ToolContext, skill_name: str) -> bool:
@@ -1940,14 +2018,20 @@ class SkillToolset(BaseToolset):
       skill_name: The skill to deactivate.
 
     Returns:
-      True if the skill was deactivated, False if it was not active.
+      True if the skill was deactivated, False if it was not active. An
+      EPHEMERAL skill whose turn has passed was already released, so it reports
+      False, but what it left behind in state is cleaned up all the same.
     """
-    activated_skills = _read_activated_skills(ctx.state, ctx.agent_name)
-    if skill_name not in activated_skills:
+    stored_skills = _read_activated_skills(ctx.state, ctx.agent_name)
+    if skill_name not in stored_skills:
       return False
-    activated_skills.remove(skill_name)
-    _write_activated_skills(ctx.state, ctx.agent_name, activated_skills)
-    return True
+    was_active = skill_name in self._active_skills(
+        ctx.state, ctx.agent_name, ctx.invocation_id
+    )
+    stored_skills.remove(skill_name)
+    _write_activated_skills(ctx.state, ctx.agent_name, stored_skills)
+    self._forget_lifecycle_records(ctx.state, ctx.agent_name, stored_skills)
+    return was_active
 
   def _lifecycle_for(self, skill_name: str) -> SkillLifecycleMode:
     """Returns the lifecycle configured for a skill.
@@ -1960,39 +2044,130 @@ class SkillToolset(BaseToolset):
       return SkillLifecycleMode.PERSISTENT
     return config.skill_overrides.get(skill_name, config.default_mode)
 
-  def _record_activation(
-      self, state: Any, agent_name: str, skill_name: str
+  def _active_skills(
+      self, state: Any, agent_name: str, invocation_id: str | None
   ) -> list[str]:
-    """Marks a skill active for an agent and enforces the bounded cap.
+    """Returns the skills active for an agent this invocation.
+
+    Read-only, so `get_tools` can call it with a read-only context. Expired
+    skills are filtered out here and dropped from state by the next
+    activation.
+
+    Args:
+      state: Session state to read.
+      agent_name: The agent whose skills to report.
+      invocation_id: The invocation asking. An ephemeral skill loaded in
+        another one has expired.
+
+    Returns:
+      The active skill names, oldest activation first.
+    """
+    activated_skills = _read_activated_skills(state, agent_name)
+    if not activated_skills or not self._tracks_ephemeral_skills:
+      return activated_skills
+    records = _read_lifecycle_records(state, agent_name)
+    return [
+        name
+        for name in activated_skills
+        if not _is_expired(records.get(name, {}), invocation_id)
+    ]
+
+  def _record_activation(
+      self,
+      state: Any,
+      agent_name: str,
+      skill_name: str,
+      invocation_id: str | None,
+  ) -> list[str]:
+    """Marks a skill active for an agent and releases what that displaces.
 
     Args:
       state: The session state to record activation in.
       agent_name: The agent the skill is being activated for.
       skill_name: The skill being activated.
+      invocation_id: The invocation doing the activating, which is the turn an
+        ephemeral skill gets.
 
     Returns:
-      The skills evicted to make room, least recently loaded first. Empty
-      unless the cap was exceeded.
+      The skills released, oldest first: ephemeral leftovers from an earlier
+      turn, then whatever the cap evicted.
     """
-    activated_skills = _read_activated_skills(state, agent_name)
-    bounded = self._lifecycle_for(skill_name) is SkillLifecycleMode.BOUNDED
+    stored_skills = _read_activated_skills(state, agent_name)
+    activated_skills = self._active_skills(state, agent_name, invocation_id)
+    # Not the skill being loaded: it is getting a fresh turn, so reporting it
+    # as released in the same breath would contradict itself.
+    expired = [
+        name
+        for name in stored_skills
+        if name not in activated_skills and name != skill_name
+    ]
+    lifecycle = self._lifecycle_for(skill_name)
 
-    if skill_name in activated_skills:
-      if not bounded:
+    if skill_name not in activated_skills:
+      activated_skills.append(skill_name)
+    elif lifecycle is SkillLifecycleMode.PERSISTENT:
+      if not expired:
         return []
+    else:
       # Reloading is a use: move it to the end so the cap spares it.
       activated_skills.remove(skill_name)
-
-    activated_skills.append(skill_name)
+      activated_skills.append(skill_name)
     evicted = self._evict_over_cap(activated_skills)
     _write_activated_skills(state, agent_name, activated_skills)
-    return evicted
+    self._record_lifecycle(
+        state, agent_name, skill_name, lifecycle, invocation_id
+    )
+    self._forget_lifecycle_records(state, agent_name, activated_skills)
+    return expired + evicted
+
+  def _record_lifecycle(
+      self,
+      state: Any,
+      agent_name: str,
+      skill_name: str,
+      lifecycle: SkillLifecycleMode,
+      invocation_id: str | None,
+  ) -> None:
+    """Notes which turn an ephemeral skill was loaded in.
+
+    Nothing is written for the others: persistent skills need no bookkeeping,
+    and the cap reads the activation order it already has.
+    """
+    if lifecycle is not SkillLifecycleMode.EPHEMERAL:
+      return
+    records = _read_lifecycle_records(state, agent_name)
+    records[skill_name] = {
+        "lifecycle": lifecycle.value,
+        "activated_in": invocation_id,
+    }
+    state[_skill_lifecycle_state_key(agent_name)] = records
+
+  def _forget_lifecycle_records(
+      self, state: Any, agent_name: str, activated_skills: list[str]
+  ) -> None:
+    """Drops records for skills that are no longer active.
+
+    The only place they are pruned. A request cannot do it: the tool context
+    built there is thrown away with the request, so its state delta never
+    reaches an event. A tool call's delta is committed, so cleanup rides along
+    with the next activation.
+    """
+    state_key = _skill_lifecycle_state_key(agent_name)
+    records = _read_lifecycle_records(state, agent_name)
+    kept = {
+        name: record
+        for name, record in records.items()
+        if name in activated_skills
+    }
+    if len(kept) != len(records):
+      state[state_key] = kept
 
   def _evict_over_cap(self, activated_skills: list[str]) -> list[str]:
     """Drops the oldest bounded skills over the cap, editing the list in place.
 
     Only bounded skills count against `max_active_skills` and only they are
-    evicted, so a persistent skill can neither be dropped nor push one out.
+    evicted, so a persistent or ephemeral skill can neither be dropped nor push
+    one out.
     """
     bounded = [
         name

@@ -45,7 +45,6 @@ class ReplayManager:
   """Unifies rehydration, replay interception, and sequence barrier synchronization across static and dynamic nodes."""
 
   def __init__(self) -> None:
-    self._recovered_executions: dict[str, _ChildScanState] = {}
     self._sequence_barrier: ReplaySequenceBarrier | None = None
     self._parent_sequence_barriers: dict[str, ReplaySequenceBarrier] = {}
     self._events_by_parent: dict[str, list[Event]] = {}
@@ -53,11 +52,6 @@ class ReplayManager:
     self._fc_to_parent: dict[str, str] = {}
     self._indexed_event_count: int = 0
     self._indexed_last_event: Event | None = None
-
-  @property
-  def recovered_executions(self) -> dict[str, _ChildScanState]:
-    """Recovered child states from event scan."""
-    return self._recovered_executions
 
   @property
   def sequence_barrier(self) -> ReplaySequenceBarrier | None:
@@ -341,7 +335,6 @@ class ReplayManager:
         transitive_events, ctx, ctx.node_path, strict_direct_child=False
     )
 
-    self._recovered_executions = raw_results
     self._sequence_barrier = ReplaySequenceBarrier(sequence)
     self._parent_sequence_barriers[ctx.node_path] = self._sequence_barrier
     return raw_results, sequence

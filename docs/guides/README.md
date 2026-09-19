@@ -41,6 +41,7 @@ This directory contains specific developer guides for the ADK Python implementat
 * [AntigravityAgent](labs/antigravity/index.md) - Runs a Google Antigravity SDK agent as an ADK agent node.
 
 ### Live
+* [Live tools](live/tools/index.md) - Asynchronous background execution and response scheduling for Gemini Live agents.
 * [LiveRequestQueue](live/live_request_queue/index.md) - Streaming content, realtime audio, and stream control signals to live agents.
 
 ### Memory

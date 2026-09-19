@@ -17,9 +17,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
 from typing import AsyncGenerator
-from typing import TYPE_CHECKING
 
 from typing_extensions import override
 
@@ -30,18 +28,6 @@ from ....tools.set_model_response_tool import SetModelResponseTool
 from .._base_llm_processor import BaseLlmRequestProcessor
 from ..core._utils import as_llm_agent
 from ..core._utils import require_agent_name
-
-if TYPE_CHECKING:
-  from ....agents.llm_agent import LlmAgent
-
-
-def can_set_native_output_schema(agent: LlmAgent) -> bool:
-  """Returns whether output_schema can be set natively on LlmRequest."""
-  if not agent.output_schema or agent.mode == 'task':
-    return False
-  if not agent.tools:
-    return True
-  return bool(agent.canonical_model.capabilities.output_schema_and_tools)
 
 
 class _OutputSchemaRequestProcessor(BaseLlmRequestProcessor):
@@ -58,8 +44,9 @@ class _OutputSchemaRequestProcessor(BaseLlmRequestProcessor):
     # schema with tools
     if (
         not agent.output_schema
-        or agent.mode == 'task'
-        or can_set_native_output_schema(agent)
+        or not agent.tools
+        or agent.canonical_model.capabilities.output_schema_and_tools
+        or getattr(agent, 'mode', None) == 'task'
     ):
       return
 
@@ -82,17 +69,13 @@ class _OutputSchemaRequestProcessor(BaseLlmRequestProcessor):
 
 
 def create_final_model_response_event(
-    invocation_context: InvocationContext,
-    json_response: str,
-    *,
-    validated_response: Any = None,
+    invocation_context: InvocationContext, json_response: str
 ) -> Event:
   """Create a final model response event from set_model_response JSON.
 
   Args:
     invocation_context: The invocation context.
     json_response: The JSON response from set_model_response tool.
-    validated_response: Optional pre-validated structured response payload.
 
   Returns:
     A new Event that looks like a normal model response.
@@ -108,8 +91,6 @@ def create_final_model_response_event(
   final_event.content = types.Content(
       role='model', parts=[types.Part(text=json_response)]
   )
-  if validated_response is not None:
-    object.__setattr__(final_event, '_validated_output', validated_response)
   return final_event
 
 
