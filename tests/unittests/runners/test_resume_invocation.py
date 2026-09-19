@@ -431,8 +431,9 @@ async def test_resumable_parallel_agent_escalation_short_circuits_persisted_run(
 @pytest.mark.parametrize("resumable", [False, True])
 @pytest.mark.parametrize("auth_stage", ["tool", "toolset"])
 @pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("session_storage", ["memory", "sqlite"])
 async def test_auth_response_resumes_restricted_sub_agent(
-    resumable, auth_stage, nested
+    resumable, auth_stage, nested, session_storage, tmp_path
 ):
   """Authentication resumes its owner even when transfer to its parent is disabled.
 
@@ -446,6 +447,7 @@ async def test_auth_response_resumes_restricted_sub_agent(
   from google.adk.auth.auth_schemes import OpenIdConnectWithConfig
   from google.adk.auth.auth_tool import AuthConfig
   from google.adk.runners import Runner
+  from google.adk.sessions.database_session_service import DatabaseSessionService
   from google.adk.sessions.in_memory_session_service import InMemorySessionService
   from google.adk.tools.base_toolset import BaseToolset
   from google.adk.tools.function_tool import FunctionTool
@@ -520,7 +522,14 @@ async def test_auth_response_resumes_restricted_sub_agent(
       root_agent=root,
       resumability_config=ResumabilityConfig(is_resumable=resumable),
   )
-  runner = Runner(app=app, session_service=InMemorySessionService())
+  session_service = (
+      InMemorySessionService()
+      if session_storage == "memory"
+      else DatabaseSessionService(
+          db_url=f"sqlite+aiosqlite:///{tmp_path / 'sessions.sqlite'}"
+      )
+  )
+  runner = Runner(app=app, session_service=session_service)
   session = await runner.session_service.create_session(
       app_name=app.name, user_id="user"
   )
@@ -594,3 +603,5 @@ async def test_auth_response_resumes_restricted_sub_agent(
     assert successful_calls == ["test-token"]
   finally:
     await runner.close()
+    if session_storage == "sqlite":
+      await session_service.close()
