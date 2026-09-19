@@ -879,6 +879,8 @@ class ApiServer:
     self.trigger_auth_verifier = trigger_auth_verifier
     self.default_llm_model = default_llm_model
     self.default_app_name = os.getenv("ADK_DEFAULT_APP_NAME")
+    # Registry of active agent-run tasks keyed by session_id.
+    self.active_tasks: dict[str, asyncio.Task[Any]] = {}
 
   async def get_runner_async(self, app_name: str) -> Runner:
     """Returns the cached runner for the given app."""
@@ -1483,6 +1485,37 @@ class ApiServer:
           if not session.id.startswith(EVAL_SESSION_ID_PREFIX)
       ]
 
+    # Register the suffix action before the generic session-id route.
+    @app.post(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}:cancel",
+    )
+    async def cancel_session(
+        app_name: str, user_id: str, session_id: str
+    ) -> dict[str, Any]:
+      """Cancel an in-progress agent run for the given session.
+
+      Looks up the active asyncio.Task for *session_id* in the
+      server's task registry and cancels it.  The running agent will
+      receive a CancelledError on its next await point (e.g. an LLM
+      API call or tool invocation), allowing it to stop gracefully.
+
+      Returns 404 if no active run is found for the session.
+      """
+      task = self.active_tasks.get(session_id)
+      if task is None or task.done():
+        raise HTTPException(
+            status_code=404,
+            detail=f"No active run found for session '{session_id}'",
+        )
+      task.cancel()
+      logger.info(
+          "Cancelled agent run for session %s (app=%s, user=%s)",
+          session_id,
+          app_name,
+          user_id,
+      )
+      return {"status": "cancelled", "session_id": session_id}
+
     @app.post(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}",
         response_model_exclude_none=True,
@@ -1863,6 +1896,7 @@ class ApiServer:
           raise HTTPException(status_code=404, detail=str(e)) from e
 
       worker_task = asyncio.create_task(worker())
+      self.active_tasks[req.session_id] = worker_task
 
       async def monitor():
         try:
@@ -1893,6 +1927,7 @@ class ApiServer:
         raise
       finally:
         monitor_task.cancel()
+        self.active_tasks.pop(req.session_id, None)
 
     @app.post("/run_sse")
     async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
@@ -2009,9 +2044,41 @@ class ApiServer:
           )
           raise e
 
-      # Returns a streaming response with the proper media type for SSE
+      # Run the generator in one cancellable task, preserving its context
+      # and cleanup while bridging formatted SSE to the response consumer.
+      event_queue: asyncio.Queue[str | Exception | None] = asyncio.Queue()
+
+      async def produce_events() -> None:
+        try:
+          async with Aclosing(event_generator()) as events:
+            async for event in events:
+              await event_queue.put(event)
+        except asyncio.CancelledError:
+          pass
+        except Exception as e:
+          await event_queue.put(e)
+        finally:
+          await event_queue.put(None)
+
+      producer_task = asyncio.create_task(produce_events())
+      self.active_tasks[req.session_id] = producer_task
+
+      async def stream_events():
+        try:
+          while True:
+            item = await event_queue.get()
+            if item is None:
+              break
+            if isinstance(item, Exception):
+              raise item
+            yield item
+        finally:
+          if not producer_task.done():
+            producer_task.cancel()
+          self.active_tasks.pop(req.session_id, None)
+
       return StreamingResponse(
-          event_generator(),
+          stream_events(),
           media_type="text/event-stream",
       )
 
@@ -2121,13 +2188,15 @@ class ApiServer:
           asyncio.create_task(forward_events()),
           asyncio.create_task(process_messages()),
       ]
+      self.active_tasks[session_id] = tasks[0]
       done, pending = await asyncio.wait(
           tasks, return_when=asyncio.FIRST_EXCEPTION
       )
       try:
         # This will re-raise any exception from the completed tasks.
         for task in done:
-          task.result()
+          if not task.cancelled():
+            task.result()
       except WebSocketDisconnect:
         # Disconnection could happen when receive or send text via websocket
         logger.info("Client disconnected during live session.")
@@ -2143,3 +2212,4 @@ class ApiServer:
       finally:
         for task in pending:
           task.cancel()
+        self.active_tasks.pop(session_id, None)
