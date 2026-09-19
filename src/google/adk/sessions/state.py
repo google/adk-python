@@ -95,10 +95,40 @@ class State:
     self._delta = delta
     self._schema = schema
 
+  def _resolve_temp_fallback(self, key: str) -> tuple[bool, Any]:
+    """Resolves ephemeral temp:<key> value if present for a bare key lookup."""
+    if not isinstance(key, str) or key.startswith(self.TEMP_PREFIX):
+      return False, None
+    temp_key = f"{self.TEMP_PREFIX}{key}"
+    if temp_key in self._delta:
+      return True, self._delta[temp_key]
+    if temp_key in self._value:
+      return True, self._value[temp_key]
+    return False, None
+
   def __getitem__(self, key: str) -> Any:
     """Returns the value of the state dict for the given key."""
+    has_temp, temp_val = self._resolve_temp_fallback(key)
     if key in self._delta:
-      return self._delta[key]
+      val = self._delta[key]
+      if (
+          has_temp
+          and isinstance(val, str)
+          and val.startswith("[REDACTED_SECRET:")
+      ):
+        return temp_val
+      return val
+    if key in self._value:
+      val = self._value[key]
+      if (
+          has_temp
+          and isinstance(val, str)
+          and val.startswith("[REDACTED_SECRET:")
+      ):
+        return temp_val
+      return val
+    if has_temp:
+      return temp_val
     return self._value[key]
 
   def __setitem__(self, key: str, value: Any) -> None:
@@ -110,9 +140,20 @@ class State:
     self._value[key] = value
     self._delta[key] = value
 
+  def set_ephemeral_value(self, key: str, value: Any) -> None:
+    """Sets an in-memory value without adding it to the persistent delta."""
+    if self._schema is not None and isinstance(self._schema, type):
+      _validate_state_entry(self._schema, key, value)
+    self._value[key] = value
+
   def __contains__(self, key: object) -> bool:
     """Whether the state dict contains the given key."""
-    return key in self._value or key in self._delta
+    if key in self._value or key in self._delta:
+      return True
+    if isinstance(key, str):
+      has_temp, _ = self._resolve_temp_fallback(key)
+      return has_temp
+    return False
 
   def __iter__(self) -> Iterator[str]:
     """Iterates over the keys in the state dict."""
@@ -149,4 +190,14 @@ class State:
     result: dict[str, Any] = {}
     result.update(self._value)
     result.update(self._delta)
+    for k, v in list(result.items()):
+      if isinstance(k, str) and k.startswith(self.TEMP_PREFIX):
+        bare = k[len(self.TEMP_PREFIX) :]
+        if bare:
+          existing = result.get(bare)
+          if existing is None or (
+              isinstance(existing, str)
+              and existing.startswith("[REDACTED_SECRET:")
+          ):
+            result[bare] = v
     return result
