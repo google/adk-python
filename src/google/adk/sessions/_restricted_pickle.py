@@ -74,6 +74,15 @@ _STATIC_ALLOWED_GLOBALS: frozenset[tuple[str, str]] = frozenset({
     ("datetime", "time"),
     ("datetime", "timedelta"),
     ("datetime", "timezone"),
+    # CPython 3.11's `enum.py` pickles some Enum members via
+    # `pickle_by_enum_name`, whose `__reduce_ex__` returns
+    # `(getattr, (self.__class__, self._name_))` instead of the
+    # value-based reconstruction used on 3.10/3.12+. This is safe to allow
+    # unconditionally: `getattr`'s first argument is itself an enum class
+    # resolved through this same `find_class` allow-list check (via its own
+    # GLOBAL/STACK_GLOBAL opcode), so allowing the `getattr` callable here
+    # does not admit any class that wasn't already permitted.
+    ("builtins", "getattr"),
     ("decimal", "Decimal"),
     ("uuid", "UUID"),
     # Python 3.13 moved the concrete `pathlib` classes into a private
