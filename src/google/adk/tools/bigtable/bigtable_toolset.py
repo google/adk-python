@@ -54,6 +54,12 @@ class BigtableParameterizedViewTool(GoogleTool):
       pass it as `view_parameters={"user_id": user_id}`.
       This securely restricts query execution to the logged-in user's data
       without exposing the `user_id` parameter to the LLM.
+
+      Only names that resolve to an attribute of tool_context itself (such as
+      user_id) are honored. tool_context.state is not consulted: state is
+      writable by the caller, so a name that fell back to state could be
+      overridden to run the query in a different user's scope, defeating the
+      view's own row-level restriction.
   """
 
   def __init__(
@@ -71,8 +77,9 @@ class BigtableParameterizedViewTool(GoogleTool):
         credentials_config: The credentials configuration.
         tool_settings: The tool settings.
         view_parameter_names: A list of parameter names to resolve from
-          tool_context and pass into view_parameters. This is configured on the
-          toolset (BigtableToolset) and forwarded here.
+          tool_context's own attributes (not tool_context.state) and pass
+          into view_parameters. This is configured on the toolset
+          (BigtableToolset) and forwarded here.
     """
     super().__init__(
         func=func,
@@ -101,12 +108,14 @@ class BigtableParameterizedViewTool(GoogleTool):
     if "_view_parameters" in signature.parameters and self.view_parameter_names:
       view_params = {}
       for param_name in self.view_parameter_names:
-        # 1. Check if it's a strongly-typed top-level property (like 'user_id')
+        # Only resolve from strongly-typed, framework-set attributes of
+        # tool_context (like user_id). tool_context.state is deliberately not
+        # consulted here: it is writable by the caller, and a view parameter
+        # taken from there would let the caller pick which user's (or
+        # tenant's) rows the parameterized view returns, defeating the
+        # view's own row-level restriction.
         if (val := getattr(tool_context, param_name, None)) is not None:
           view_params[param_name] = val
-        # 2. Fallback to checking application-level session state
-        elif tool_context.state and param_name in tool_context.state:
-          view_params[param_name] = tool_context.state[param_name]
 
       args_to_call["_view_parameters"] = view_params
     return await super()._run_async_with_credential(
