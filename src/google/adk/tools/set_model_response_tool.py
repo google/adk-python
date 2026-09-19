@@ -39,6 +39,12 @@ from ._automatic_function_calling_util import build_function_declaration
 from .base_tool import BaseTool
 from .tool_context import ToolContext
 
+# Name the framework dispatches this tool under. Exposed as a module-level
+# constant (mirroring functions.py's REQUEST_*_FUNCTION_CALL_NAME) so other
+# modules -- e.g. the MCP reserved-name guard -- can refer to it without
+# hardcoding the literal.
+SET_MODEL_RESPONSE_FUNCTION_CALL_NAME = 'set_model_response'
+
 
 def _merge_json_schema_descriptions(
     target: dict[str, Any], source: dict[str, Any]
@@ -215,7 +221,7 @@ class SetModelResponseTool(BaseTool):
     self.func = set_model_response
 
     super().__init__(
-        name=self.func.__name__,
+        name=SET_MODEL_RESPONSE_FUNCTION_CALL_NAME,
         description=self.func.__doc__.strip() if self.func.__doc__ else '',
     )
 
