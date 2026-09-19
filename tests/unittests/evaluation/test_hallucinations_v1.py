@@ -362,6 +362,9 @@ Tool definitions:
   }
 }
 
+Grounding metadata:
+No grounding metadata was provided.
+
 tool_calls:
 [
   {
@@ -414,6 +417,9 @@ Tool definitions:
   }
 }
 
+Grounding metadata:
+No grounding metadata was provided.
+
 tool_calls:
 [
   {
@@ -457,6 +463,30 @@ tool_outputs:
 ]
     """
     assert context.strip() == expected_context.strip()
+
+  def test_create_context_for_step_includes_grounding_metadata(
+      self, hallucinations_metric, create_context_data
+  ):
+    """Sentences grounded only via grounding_metadata must reach the judge."""
+    app_details, events, invocation = create_context_data
+    grounding_event = InvocationEvent(
+        author="root",
+        content=None,
+        grounding_metadata=genai_types.GroundingMetadata(
+            web_search_queries=["recent AI news"]
+        ),
+    )
+    context = hallucinations_metric._create_context_for_step(
+        app_details, invocation, events + [grounding_event]
+    )
+    grounding_section = context.split("Grounding metadata:\n")[1].split(
+        "\n\ntool_calls:"
+    )[0]
+    parsed = json.loads(grounding_section)
+    assert parsed["grounding_metadata"][0]["author"] == "root"
+    assert parsed["grounding_metadata"][0]["grounding_metadata"][
+        "web_search_queries"
+    ] == ["recent AI news"]
 
 
 @pytest.fixture
@@ -623,7 +653,10 @@ Tool definitions:
     ],
     "agent2": []
   }
-}"""
+}
+
+Grounding metadata:
+No grounding metadata was provided."""
     expected_context5 = R"""Developer instructions:
 root:
 Root agent instructions.
@@ -661,6 +694,9 @@ Tool definitions:
     "agent2": []
   }
 }
+
+Grounding metadata:
+No grounding metadata was provided.
 
 Hi, I am root.
 
@@ -738,6 +774,9 @@ Tool definitions:
     "agent2": []
   }
 }
+
+Grounding metadata:
+No grounding metadata was provided.
 
 Hi, I am root.
 
@@ -871,6 +910,9 @@ Tool definitions:
     "agent2": []
   }
 }
+
+Grounding metadata:
+No grounding metadata was provided.
 
 Hi, I am root.
 
@@ -1080,6 +1122,9 @@ Tool definitions:
   }
 }
 
+Grounding metadata:
+No grounding metadata was provided.
+
 tool_calls:
 [
   {
@@ -1124,6 +1169,9 @@ Tool definitions:
     ]
   }
 }
+
+Grounding metadata:
+No grounding metadata was provided.
 
 tool_calls:
 [
@@ -1242,6 +1290,9 @@ Tool definitions:
     ]
   }
 }
+
+Grounding metadata:
+No grounding metadata was provided.
 
 tool_calls:
 [
