@@ -211,3 +211,15 @@ name, unless you pass `agent_engine_id` to the constructor.
 *   **`list_sessions` returns partial sessions**: the event history is dropped,
     and how much of `state` is populated depends on the backend. Load what you
     need with `get_session`.
+
+## Session ID Naming Constraints with VertexAiSessionService
+
+When using `VertexAiSessionService` (backed by Vertex AI Agent Engine), session IDs must adhere to backend naming restrictions:
+
+- **Allowed Characters**: Only lowercase letters, numbers, and hyphens (`[a-z0-9-]`).
+- **Boundary Requirements**: The ID must start and end with an alphanumeric character.
+- **Disallowed Characters**: Underscores (`_`) and uppercase letters are rejected by the remote Agent Engine service with an `InvalidArgument` error.
+
+### Evaluation Consideration
+
+When running evaluations via `LocalEvalService`, auto-generated evaluation session IDs may contain leading underscores (e.g., `___eval___session___<UUID>`). Because ADK's local regex check is broader than the remote Agent Engine API constraint, this error occurs at runtime when the remote service is called. Ensure eval session IDs or custom session identifiers comply with `^[a-z0-9][a-z0-9-]*[a-z0-9]$`.
