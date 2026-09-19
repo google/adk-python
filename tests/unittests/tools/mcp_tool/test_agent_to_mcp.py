@@ -15,13 +15,16 @@
 from __future__ import annotations
 
 import base64
+import gc
 from types import SimpleNamespace
 from typing import AsyncGenerator
+import weakref
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events.event import Event
 from google.adk.tools.mcp_tool._agent_to_mcp import _connection_key
+from google.adk.tools.mcp_tool._agent_to_mcp import _reap_orphaned_sessions
 from google.adk.tools.mcp_tool._agent_to_mcp import _run_agent
 from google.adk.tools.mcp_tool._agent_to_mcp import to_mcp_server
 from google.genai import types
@@ -76,11 +79,24 @@ class _FakeRunner:
     self._events = events
     self.create_session_calls = 0
     self.session_ids: list[str] = []
-    self.session_service = SimpleNamespace(create_session=self._create_session)
+    self.deleted_session_ids: list[str] = []
+    self.failing_deletes = 0
+    self.session_service = SimpleNamespace(
+        create_session=self._create_session,
+        delete_session=self._delete_session,
+    )
 
   async def _create_session(self, *, app_name: str, user_id: str):
     self.create_session_calls += 1
     return SimpleNamespace(id=f"session-{self.create_session_calls}")
+
+  async def _delete_session(
+      self, *, app_name: str, user_id: str, session_id: str
+  ):
+    if self.failing_deletes > 0:
+      self.failing_deletes -= 1
+      raise ConnectionError("session service unavailable")
+    self.deleted_session_ids.append(session_id)
 
   async def run_async(
       self, *, user_id: str, session_id: str, new_message: types.Content
@@ -269,6 +285,117 @@ async def test_run_agent_separates_connections_when_sessions_are_per_request():
 
   assert runner.create_session_calls == 2
   assert runner.session_ids == ["session-1", "session-2"]
+
+
+@pytest.mark.asyncio
+async def test_reap_deletes_only_sessions_no_longer_reachable():
+  runner = _FakeRunner([_text_event("ok")])
+  connection = _Connection()
+  sessions: dict[object, str] = {connection: "session-live"}
+  created = {"session-live", "session-dead"}
+
+  await _reap_orphaned_sessions(runner, sessions, created)
+
+  assert runner.deleted_session_ids == ["session-dead"]
+  assert created == {"session-live"}
+
+
+@pytest.mark.asyncio
+async def test_session_of_a_collected_connection_is_reaped():
+  """A conversation must not outlive its connection in the session service."""
+  runner = _FakeRunner([_text_event("ok")])
+  sessions: weakref.WeakKeyDictionary[object, str] = (
+      # pylint: disable-next=abstract-class-instantiated
+      weakref.WeakKeyDictionary()
+  )
+  created: set[str] = set()
+  ctx = _ConnCtx(_Connection())
+
+  await _run_agent(runner, "hi", ctx, sessions, created)
+  del ctx
+  gc.collect()
+  await _reap_orphaned_sessions(runner, sessions, created)
+
+  assert runner.deleted_session_ids == ["session-1"]
+  assert not created
+
+
+@pytest.mark.asyncio
+async def test_per_request_connections_do_not_accumulate_sessions():
+  """Stateless streamable HTTP builds a fresh connection per request; each
+  request's session must be reclaimed instead of leaking one per tool call."""
+  runner = _FakeRunner([_text_event("ok")])
+  sessions: weakref.WeakKeyDictionary[object, str] = (
+      # pylint: disable-next=abstract-class-instantiated
+      weakref.WeakKeyDictionary()
+  )
+  created: set[str] = set()
+
+  for request in ("a", "b", "c"):
+    await _reap_orphaned_sessions(runner, sessions, created)
+    ctx = _RequestScopedCtx(_Connection())
+    await _run_agent(runner, request, ctx, sessions, created)
+    del ctx
+    gc.collect()
+  await _reap_orphaned_sessions(runner, sessions, created)
+
+  assert runner.deleted_session_ids == ["session-1", "session-2", "session-3"]
+  assert not created
+
+
+@pytest.mark.asyncio
+async def test_reap_failure_does_not_raise_and_is_retried():
+  """A session service outage must not fail the live tool call, and the
+  orphaned session must be deleted once the service recovers."""
+  runner = _FakeRunner([_text_event("ok")])
+  runner.failing_deletes = 1
+  connection = _Connection()
+  sessions: dict[object, str] = {connection: "session-live"}
+  created = {"session-live", "session-dead"}
+
+  await _reap_orphaned_sessions(runner, sessions, created)
+
+  assert runner.deleted_session_ids == []
+  assert created == {"session-live", "session-dead"}
+
+  await _reap_orphaned_sessions(runner, sessions, created)
+
+  assert runner.deleted_session_ids == ["session-dead"]
+  assert created == {"session-live"}
+
+
+@pytest.mark.asyncio
+async def test_call_tool_reaps_conversation_of_closed_connection():
+  agent = _EchoAgent(name="assistant")
+  runner = _FakeRunner([_text_event("ok")])
+  server = to_mcp_server(agent, runner=runner)
+
+  async with connected_client_session(server) as client:
+    await client.call_tool("assistant", {"request": "first"})
+  gc.collect()
+  async with connected_client_session(server) as client:
+    await client.call_tool("assistant", {"request": "second"})
+
+  assert runner.session_ids == ["session-1", "session-2"]
+  assert runner.deleted_session_ids == ["session-1"]
+
+
+@pytest.mark.asyncio
+async def test_call_tool_retains_sessions_when_deletion_is_opted_out():
+  """delete_orphaned_sessions=False keeps finished conversations in the
+  session service, for persistent services whose records are read later."""
+  agent = _EchoAgent(name="assistant")
+  runner = _FakeRunner([_text_event("ok")])
+  server = to_mcp_server(agent, runner=runner, delete_orphaned_sessions=False)
+
+  async with connected_client_session(server) as client:
+    await client.call_tool("assistant", {"request": "first"})
+  gc.collect()
+  async with connected_client_session(server) as client:
+    await client.call_tool("assistant", {"request": "second"})
+
+  assert runner.session_ids == ["session-1", "session-2"]
+  assert runner.deleted_session_ids == []
 
 
 @pytest.mark.asyncio
