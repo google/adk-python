@@ -354,17 +354,51 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
     if not tools_to_resume_with_confirmation:
       return
 
-    # Step 4: Re-execute the confirmed tools.
+    # Step 4: Re-execute only confirmed tools. Denials are handled here at the
+    # framework boundary so custom BaseTool implementations cannot accidentally
+    # perform a side effect after the user declines confirmation.
     from .. import functions
 
-    if function_response_event := await functions.handle_function_call_list_async(
-        invocation_context,
-        list(tools_to_resume_with_args.values()),
-        tools_dict,
-        set(tools_to_resume_with_confirmation.keys()),
-        tools_to_resume_with_confirmation,
-    ):
-      yield function_response_event
+    denied_parts: list[types.Part] = []
+    confirmed_args: list[types.FunctionCall] = []
+    confirmed_ids: set[str] = set()
+    confirmed_tools: dict[str, ToolConfirmation] = {}
+    for function_call_id, function_call in tools_to_resume_with_args.items():
+      confirmation = tools_to_resume_with_confirmation[function_call_id]
+      if confirmation.confirmed:
+        confirmed_args.append(function_call)
+        confirmed_ids.add(function_call_id)
+        confirmed_tools[function_call_id] = confirmation
+      else:
+        denied_parts.append(
+            types.Part(
+                function_response=types.FunctionResponse(
+                    name=function_call.name,
+                    id=function_call_id,
+                    response={"error": "Tool execution not confirmed"},
+                )
+            )
+        )
+
+    if confirmed_args:
+      if function_response_event := await functions.handle_function_call_list_async(
+          invocation_context,
+          confirmed_args,
+          tools_dict,
+          confirmed_ids,
+          confirmed_tools,
+      ):
+        denied_parts.extend(function_response_event.content.parts)
+        yield function_response_event.model_copy(update={
+            "content": types.Content(parts=denied_parts)
+        })
+        return
+
+    if denied_parts:
+      yield Event(
+          author=invocation_context.agent.name if invocation_context.agent else "agent",
+          content=types.Content(parts=denied_parts),
+      )
     return
 
 
