@@ -67,8 +67,12 @@ def _get_function_fields(
   # Get type hints with forward reference resolution
   try:
     type_hints = get_type_hints(func)
-  except TypeError:
-    # Can happen with mock objects or complex annotations
+  except (TypeError, NameError, AttributeError):
+    # TypeError can happen with mock objects or complex annotations. NameError
+    # / AttributeError happen when an annotation is an unresolvable forward
+    # reference at runtime, e.g. a type imported only under `if TYPE_CHECKING:`
+    # (common for the context parameter, which is excluded from the schema
+    # anyway). Fall back to the raw per-parameter annotations below.
     type_hints = {}
 
   for name, param in sig.parameters.items():
@@ -236,7 +240,10 @@ def _build_response_json_schema(
     try:
       type_hints = get_type_hints(func)
       return_annotation = type_hints.get('return', return_annotation)
-    except TypeError:
+    except (TypeError, NameError, AttributeError):
+      # An unresolvable parameter annotation (e.g. a `TYPE_CHECKING`-only
+      # import) must not block resolving the return type; fall back to the
+      # raw return annotation, which pydantic resolves below.
       pass
 
   # Handle AsyncGenerator and Generator return types (streaming tools)
