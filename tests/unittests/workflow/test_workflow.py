@@ -179,6 +179,44 @@ def _output_by_node(events):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('output', [None, 'done'])
+async def test_terminal_node_state_flush_final_response(output):
+  """A terminal state flush is final only when it carries deferred output."""
+
+  class _StateFlushingNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      ctx.state['node_state'] = 'updated'
+      ctx.output = output
+      return
+      yield  # Keep this an async generator without emitting an event.
+
+  node = _StateFlushingNode(name='state_node')
+  wf = Workflow(name='wf', edges=[(START, node)])
+
+  events, session_service, session = await _run_workflow(wf)
+
+  # Inspect the entire public stream: no later workflow event replaces the
+  # terminal node's flush in a non-resumable workflow.
+  assert len(events) == 1
+  event = events[-1]
+  assert event.author == 'wf'
+  assert event.node_info.path == 'wf@1/state_node@1'
+  assert event.content is None
+  assert event.output == output
+  assert event.actions.state_delta == {'node_state': 'updated'}
+  assert event.is_final_response() is (output is not None)
+
+  persisted_session = await session_service.get_session(
+      app_name=session.app_name, user_id=session.user_id, session_id=session.id
+  )
+  assert persisted_session.state['node_state'] == 'updated'
+  assert persisted_session.events[-1].id == event.id
+
+
 # 1. test_run_async → sequential A→B
 @pytest.mark.asyncio
 async def test_sequential_two_nodes():
