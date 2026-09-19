@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import aclosing
 import logging
+from typing import Any
 from typing import AsyncGenerator
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -52,16 +53,20 @@ def new_invocation_context_for_live(
   run_config = run_config or RunConfig()
 
   # For live multi-agents system, we need model's text transcription as
-  # context for the transferred agent.
+  # context for the transferred agent. Only fill the defaults when the caller
+  # did not set the fields explicitly, so an explicit None stays disabled.
   if hasattr(runner.agent, "sub_agents") and runner.agent.sub_agents:
+    updates: dict[str, Any] = {}
     if (
         run_config.response_modalities
         and types.Modality.AUDIO in run_config.response_modalities
+        and "output_audio_transcription" not in run_config.model_fields_set
     ):
-      if not run_config.output_audio_transcription:
-        run_config.output_audio_transcription = types.AudioTranscriptionConfig()
-    if not run_config.input_audio_transcription:
-      run_config.input_audio_transcription = types.AudioTranscriptionConfig()
+      updates["output_audio_transcription"] = types.AudioTranscriptionConfig()
+    if "input_audio_transcription" not in run_config.model_fields_set:
+      updates["input_audio_transcription"] = types.AudioTranscriptionConfig()
+    if updates:
+      run_config = run_config.model_copy(update=updates)
   return runner._new_invocation_context(  # pylint: disable=protected-access
       session,
       live_request_queue=live_request_queue,
