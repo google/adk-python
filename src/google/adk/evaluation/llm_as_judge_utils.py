@@ -47,6 +47,13 @@ class Label(enum.Enum):
   NOT_FOUND = "label field not found"
 
 
+def get_text_parts(content: Optional[genai_types.Content]) -> list[str]:
+  """Returns the visible text parts of a `Content`, excluding thoughts."""
+  if not content or not content.parts:
+    return []
+  return [p.text for p in content.parts if p.text and not p.thought]
+
+
 def get_text_from_content(
     content: Optional[Union[genai_types.Content, Invocation]],
     *,
@@ -87,7 +94,7 @@ def get_text_from_content(
     return "\n".join(parts) if parts else None
 
   if content and content.parts:
-    return "\n".join([p.text for p in content.parts if p.text])
+    return "\n".join(get_text_parts(content))
 
   return None
 
