@@ -15,9 +15,7 @@
 from __future__ import annotations
 
 from abc import ABC
-import asyncio
 import contextlib
-import inspect
 import logging
 from typing import AsyncGenerator
 from typing import cast
@@ -34,10 +32,8 @@ from . import _live_llm_flow
 from . import functions
 from ...agents._streaming_mode import StreamingMode
 from ...agents.base_agent import BaseAgent
-from ...agents.callback_context import CallbackContext
 from ...agents.invocation_context import InvocationContext
 from ...agents.readonly_context import ReadonlyContext
-from ...auth.auth_tool import AuthConfig
 from ...events.event import Event
 from ...live._audio_cache_manager import AudioCacheManager
 from ...live.live_request_queue import LiveRequestQueue
@@ -46,8 +42,6 @@ from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
 from ...telemetry.tracing import trace_call_llm
 from ...telemetry.tracing import tracer
-from ...tools.base_toolset import BaseToolset
-from ...tools.tool_context import ToolContext
 from ...utils.context_utils import Aclosing
 from .core._finalizer import finalize_model_response_event
 from .core._finalizer import handle_after_model_callback
@@ -59,8 +53,10 @@ from .core._utils import as_llm_agent as _as_llm_agent
 from .core._utils import copy_http_options
 from .core._utils import require_agent as _require_agent
 from .core._utils import require_run_config as _require_run_config
+from .prompt import _dynamic_instructions
 from .prompt import _schema as _output_schema_processor
-from .tools._functions import build_auth_request_event
+from .tools import _agent_tools
+from .tools import _toolset_auth
 
 # Prefix used by toolset auth credential IDs
 TOOLSET_AUTH_CREDENTIAL_ID_PREFIX = '_adk_toolset_auth_'
@@ -70,6 +66,14 @@ _finalize_model_response_event = finalize_model_response_event
 _handle_before_model_callback = handle_before_model_callback
 _handle_after_model_callback = handle_after_model_callback
 _run_and_handle_error = run_and_handle_error
+_resolve_toolset_auth = _toolset_auth.resolve_toolset_auth
+_process_agent_tools = _agent_tools.process_agent_tools
+_mark_live_async_tools_non_blocking = (
+    _agent_tools.mark_live_async_tools_non_blocking
+)
+_finalize_dynamic_instructions = (
+    _dynamic_instructions.finalize_dynamic_instructions
+)
 
 
 _ReconnectMode = _live_llm_flow._ReconnectMode
@@ -77,7 +81,6 @@ _ReconnectSentinel = _live_llm_flow._ReconnectSentinel
 
 
 if TYPE_CHECKING:
-  from ...agents.llm_agent import LlmAgent
   from ...models.base_llm import BaseLlm
   from ._base_llm_processor import BaseLlmRequestProcessor
   from ._base_llm_processor import BaseLlmResponseProcessor
@@ -108,88 +111,6 @@ DEFAULT_ENABLE_CACHE_STATISTICS = False
 _require_live_request_queue = _live_llm_flow.require_live_request_queue
 
 
-async def _resolve_toolset_auth(
-    invocation_context: InvocationContext,
-    agent: LlmAgent,
-) -> AsyncGenerator[Event, None]:
-  """Resolves authentication for toolsets before tool listing.
-
-  For each toolset with auth configured via get_auth_config():
-  - If credential is available, populate auth_config.exchanged_auth_credential
-  - If credential is not available, yield auth request event and interrupt
-
-  Args:
-    invocation_context: The invocation context.
-    agent: The LLM agent.
-
-  Yields:
-    Auth request events if any toolset needs authentication.
-  """
-  if not agent.tools:
-    return
-
-  pending_auth_requests: dict[str, AuthConfig] = {}
-  callback_context = CallbackContext(invocation_context)
-
-  for tool_union in agent.tools:
-    if not isinstance(tool_union, BaseToolset):
-      continue
-
-    auth_config = tool_union.get_auth_config()
-    if not auth_config:
-      continue
-
-    auth_config_copy = auth_config.model_copy(deep=True)
-    from ...auth.credential_manager import CredentialManager
-
-    try:
-      credential = await CredentialManager(
-          auth_config_copy
-      ).get_auth_credential(callback_context)
-    except ValueError as e:
-      # Validation errors from CredentialManager should be logged but not
-      # block the flow - the toolset may still work without auth
-      logger.warning(
-          'Failed to get auth credential for toolset %s: %s',
-          type(tool_union).__name__,
-          e,
-      )
-      credential = None
-
-    if credential:
-      # Store in invocation context to avoid data leakage and race conditions
-      credential_key = auth_config.credential_key
-      if credential_key is None:
-        raise RuntimeError('Resolved toolset auth is missing a credential key.')
-      invocation_context.credential_by_key[credential_key] = credential
-    else:
-      # Need auth - will interrupt
-      toolset_id = (
-          f'{TOOLSET_AUTH_CREDENTIAL_ID_PREFIX}{type(tool_union).__name__}'
-      )
-      pending_auth_requests[toolset_id] = auth_config_copy
-
-  if not pending_auth_requests:
-    return
-
-  from ...auth.auth_handler import AuthHandler
-
-  auth_requests = {
-      credential_id: AuthHandler(auth_config).generate_auth_request()
-      for credential_id, auth_config in pending_auth_requests.items()
-  }
-
-  # Yield event with auth requests using the shared helper
-  yield build_auth_request_event(
-      invocation_context,
-      auth_requests,
-      author=agent.name,
-  )
-
-  # Interrupt invocation
-  invocation_context.end_invocation = True
-
-
 @contextlib.contextmanager
 def _use_otel_context(context: otel_context.Context) -> Iterator[None]:
   """Makes ``context`` the current OpenTelemetry context inside the block."""
@@ -200,132 +121,46 @@ def _use_otel_context(context: otel_context.Context) -> Iterator[None]:
     otel_context.detach(token)
 
 
-async def _process_agent_tools(
-    invocation_context: InvocationContext,
-    llm_request: LlmRequest,
-) -> None:
-  """Process the agent's tools and populate ``llm_request.tools_dict``.
-
-  Iterates over the agent's ``tools`` list, converts each tool union
-  (callable, BaseTool, or BaseToolset) into resolved ``BaseTool``
-  instances, and calls ``process_llm_request`` on each to register
-  tool declarations in the request.
-
-  Tool-union resolution is dispatched concurrently via ``asyncio.gather``
-  to overlap I/O-bound listings (e.g. MCP ``list_tools`` over the
-  network). The subsequent ``process_llm_request`` calls are kept
-  serial in the original ``agent.tools`` order: some tools read/write
-  ``llm_request`` state (e.g. ``GoogleSearchTool`` writes
-  ``llm_request.model``; ``ComputerUseToolset`` performs an idempotency
-  check on ``llm_request.config.tools``) and rely on observing the
-  post-state of earlier tools.
-
-  After this function returns, ``llm_request.tools_dict`` maps tool
-  names to ``BaseTool`` instances ready for function call dispatch.
-
-  Args:
-    invocation_context: The invocation context (``agent`` is read from
-      ``invocation_context.agent``).
-    llm_request: The LLM request to populate with tool declarations.
-  """
-  raw_agent = invocation_context.agent
-  if (
-      raw_agent is None
-      or not hasattr(raw_agent, 'tools')
-      or not raw_agent.tools
-  ):
-    invocation_context.canonical_tools_cache = []
-    return
-  agent = cast('LlmAgent', raw_agent)
-
-  from .extensions._agent_transfer import _get_transfer_targets
-
-  multiple_tools = len(agent.tools) > 1 or bool(_get_transfer_targets(agent))
-  model = agent.canonical_model
-
-  from ...agents.llm_agent import _convert_tool_union_to_tools
-
-  # Resolve tool_unions in parallel. ``asyncio.gather`` preserves
-  # input order in the returned list, so the serial commit phase below
-  # still observes ``agent.tools`` order. If any resolution raises,
-  # gather cancels the siblings and propagates -- same observable
-  # behavior as the previous serial loop, which would propagate the
-  # first exception and abandon the rest.
-  resolved_tools_per_union = await asyncio.gather(*(
-      _convert_tool_union_to_tools(
-          tool_union,
-          ReadonlyContext(invocation_context),
-          model,
-          multiple_tools,
-      )
-      for tool_union in agent.tools
-  ))
-
-  # Serial commit phase, in original ``agent.tools`` order. Mutations
-  # to ``llm_request`` and reads of its state (model, config.tools,
-  # tools_dict) preserve today's ordering semantics exactly.
-  for tool_union, tools in zip(agent.tools, resolved_tools_per_union):
-    tool_context = ToolContext(invocation_context)
-
-    # If it's a toolset, process it first
-    if isinstance(tool_union, BaseToolset):
-      await tool_union.process_llm_request(
-          tool_context=tool_context, llm_request=llm_request
-      )
-
-    # Then process all tools from this tool union
-    for tool in tools:
-      await tool.process_llm_request(
-          tool_context=tool_context, llm_request=llm_request
-      )
-
-  if invocation_context.live_request_queue is not None:
-    _mark_live_async_tools_non_blocking(llm_request)
-
-  # Reuse this exact, current-step resolution in after-model processing. Tool
-  # sets can change between model steps, so the cache is refreshed each time.
-  invocation_context.canonical_tools_cache = [
-      tool for tools in resolved_tools_per_union for tool in tools
-  ]
-
-
-def _mark_live_async_tools_non_blocking(llm_request: LlmRequest) -> None:
-  """Marks live streaming and response-scheduling tools as NON_BLOCKING.
-
-  These tools emit asynchronous FunctionResponses, which the Live API only
-  accepts for NON_BLOCKING declarations.
-  """
-  if not llm_request.config.tools:
-    return
-  for gemini_tool in llm_request.config.tools:
-    if not isinstance(gemini_tool, types.Tool):
-      continue
-    for declaration in gemini_tool.function_declarations or []:
-      declaration_name = declaration.name
-      if declaration_name is None:
-        continue
-      tool = llm_request.tools_dict.get(declaration_name)
-      if tool is None:
-        continue
-      is_streaming_tool = hasattr(tool, 'func') and inspect.isasyncgenfunction(
-          tool.func
-      )
-      if tool.response_scheduling is not None or is_streaming_tool:
-        declaration.behavior = types.Behavior.NON_BLOCKING
-
-
 class BaseLlmFlow(ABC):
   """A basic flow that calls the LLM in a loop until a final response is generated.
 
   This flow ends when it transfers to another agent.
+
+  A request is assembled by two lists that run back to back:
+  `request_processors` first, then `tool_request_processors`. Both are plain
+  lists that run in insertion order and can be manipulated directly.
   """
 
   def __init__(self) -> None:
     self.request_processors: list[BaseLlmRequestProcessor] = []
+
+    # Runs after `request_processors`, whatever a subclass has put in it.
+    # These resolve the agent's toolsets and tools, and a request is not
+    # complete until they have: `llm_request.tools_dict` is empty for
+    # everything in `request_processors` and populated from `agent_tools`
+    # onwards. A processor that needs the resolved tools therefore belongs in
+    # this list, not appended to the one above.
+    self.tool_request_processors: list[BaseLlmRequestProcessor] = [
+        _toolset_auth.request_processor,
+        _agent_tools.request_processor,
+        _dynamic_instructions.request_processor,
+    ]
+
     self.response_processors: list[BaseLlmResponseProcessor] = []
 
     # Initialize configuration and managers
     self.audio_cache_manager = AudioCacheManager()
+
+  def _request_processor_lists(
+      self,
+  ) -> tuple[list[BaseLlmRequestProcessor], ...]:
+    """Returns the request processor lists, in the order they run."""
+    return (self.request_processors, self.tool_request_processors)
+
+  def _iter_request_processors(self) -> Iterator[BaseLlmRequestProcessor]:
+    """Yields every request processor, in the order it runs."""
+    for processors in self._request_processor_lists():
+      yield from processors
 
   async def run_live(
       self,
@@ -532,30 +367,19 @@ class BaseLlmFlow(ABC):
           invocation_context.run_config.http_options
       )
 
-    # Runs processors.
-    for processor in self.request_processors:
+    # Runs request processors followed by tool-resolution request processors.
+    for processor in self._iter_request_processors():
       async with Aclosing(
           processor.run_async(invocation_context, llm_request)
       ) as agen:
         async for event in agen:
           yield event
 
-    # Resolve toolset authentication before tool listing.
-    # This ensures credentials are ready before get_tools() is called.
-    async with Aclosing(
-        self._resolve_toolset_auth(invocation_context, agent)
-    ) as agen:
-      async for event in agen:
-        yield event
-
-    if invocation_context.end_invocation:
-      return
-
-    # Run processors for tools.
-    await _process_agent_tools(invocation_context, llm_request)
-
-    # Finalize dynamic instructions from tools.
-    await _finalize_dynamic_instructions(invocation_context, llm_request)
+      # A processor (such as `request_confirmation` or `toolset_auth`) may set
+      # `end_invocation` when it emits an event that pauses the turn before the
+      # model is called; stop running remaining processors when that happens.
+      if invocation_context.end_invocation:
+        return
 
   async def _postprocess_async(
       self,
@@ -712,10 +536,10 @@ class BaseLlmFlow(ABC):
           function_response_event
       ):
         # Create and yield a final model response event
-        final_event = _output_schema_processor.create_final_model_response_event(
-            invocation_context,
-            json_response,
-            validated_response=function_response_event.actions.set_model_response,
+        final_event = (
+            _output_schema_processor.create_final_model_response_event(
+                invocation_context, json_response
+            )
         )
         yield final_event
 
@@ -900,17 +724,6 @@ class BaseLlmFlow(ABC):
         llm_request, llm_response, model_response_event
     )
 
-  async def _resolve_toolset_auth(
-      self,
-      invocation_context: InvocationContext,
-      agent: LlmAgent,
-  ) -> AsyncGenerator[Event, None]:
-    async with Aclosing(
-        _resolve_toolset_auth(invocation_context, agent)
-    ) as agen:
-      async for event in agen:
-        yield event
-
   async def _handle_before_model_callback(
       self,
       invocation_context: InvocationContext,
@@ -1032,40 +845,3 @@ class BaseLlmFlow(ABC):
     if hasattr(agent, 'canonical_model_async'):
       return await agent.canonical_model_async(ctx)
     return agent.canonical_model
-
-
-async def _finalize_dynamic_instructions(
-    invocation_context: InvocationContext,
-    llm_request: LlmRequest,
-) -> None:
-  """Finalizes and resolves dynamic instructions from LlmRequest."""
-  if not llm_request._dynamic_instructions:
-    return
-
-  combined_text = '\n\n'.join(llm_request._dynamic_instructions)
-
-  from ...features import FeatureName
-  from ...features import is_feature_enabled
-
-  # TODO: Deprecate system_instruction fallback and make user content routing standard.
-  if is_feature_enabled(FeatureName.DYNAMIC_INSTRUCTION_ROUTING):
-    from .contents import _add_instructions_to_user_content
-    from .instructions import _label_dynamic_instruction
-
-    # Same user-role carrier as the agent's instruction, so same label.
-    instruction_content = types.Content(
-        role='user',
-        parts=[
-            types.Part.from_text(text=_label_dynamic_instruction(combined_text))
-        ],
-    )
-    await _add_instructions_to_user_content(
-        invocation_context,
-        llm_request,
-        [instruction_content],
-    )
-  else:
-    llm_request.append_instructions([combined_text])
-
-  # Clear dynamic instructions to prevent double finalization.
-  llm_request._dynamic_instructions.clear()

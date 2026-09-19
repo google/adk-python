@@ -31,7 +31,6 @@ from ..agents.llm.task._finish_task_tool import is_finish_task_terminal_fr
 from ..events.event import Event
 from ..flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from ..utils._schema_utils import validate_schema
-from ..utils.content_utils import extract_text_from_content
 from ..utils.content_utils import to_user_content
 from ._errors import WorkflowConfigurationError
 from ._errors import WorkflowInvariantError
@@ -371,15 +370,14 @@ def process_llm_agent_output(
     return
 
   output = None
-  text = extract_text_from_content(event.content)
+  text = (
+      ''.join(p.text for p in event.content.parts if p.text and not p.thought)
+      if event.content.parts
+      else ''
+  )
   if agent.output_schema:
     if text.strip():
-      if (
-          validated_output := getattr(event, '_validated_output', None)
-      ) is not None:
-        output = validated_output
-      else:
-        output = validate_schema(agent.output_schema, text)
+      output = validate_schema(agent.output_schema, text)
     else:
       output = None
   else:

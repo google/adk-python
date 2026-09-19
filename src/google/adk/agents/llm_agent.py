@@ -56,7 +56,6 @@ from ..tools.tool_context import ToolContext
 from ..utils._callback_pipeline import _normalize_callbacks
 from ..utils._schema_utils import SchemaType
 from ..utils._schema_utils import validate_schema
-from ..utils.content_utils import extract_text_from_content
 from ..utils.context_utils import Aclosing
 from ..utils.instructions_utils import InstructionProvider as InstructionProvider
 from ..workflow._base_node import BaseNode
@@ -1108,20 +1107,18 @@ class LlmAgent(BaseAgent, abc.ABC):
       if not has_text_part:
         return
 
-      result: Any = extract_text_from_content(event.content)
+      result = ''.join(
+          part.text
+          for part in event.content.parts
+          if part.text and not part.thought
+      )
       if self.output_schema:
         # If the result from the final chunk is just whitespace or empty,
         # it means this is an empty final chunk of a stream.
         # Do not attempt to parse it as JSON.
         if not result.strip():
           return
-        if (
-            validated_output := getattr(event, '_validated_output', None)
-        ) is not None:
-          result = validated_output
-        else:
-          result = validate_schema(self.output_schema, result)
-          object.__setattr__(event, '_validated_output', result)
+        result = validate_schema(self.output_schema, result)
       event.actions.state_delta[self.output_key] = result
 
   def __maybe_accumulate_streaming_output(

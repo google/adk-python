@@ -294,6 +294,8 @@ def _reconstruct_node_states(
 
     # 1. Match user function responses
     if event.author == 'user' and event.content and event.content.parts:
+      if not interrupt_owner and not scan_states:
+        continue
       for part in event.content.parts:
         fr = part.function_response
         if fr and fr.id:

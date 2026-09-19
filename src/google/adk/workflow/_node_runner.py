@@ -29,6 +29,7 @@ from typing import Any
 from typing import TYPE_CHECKING
 
 from ..events._branch_path import _BranchPath
+from ..events._node_path_builder import _NodePathBuilder
 from ..telemetry import node_tracing
 from ._errors import DynamicNodeFailError
 
@@ -238,23 +239,38 @@ class NodeRunner:
     )
 
     if ic.session and ic.session.events:
-      from .utils._rehydration_utils import _reconstruct_node_states
+      node_path = ctx.node_path
+      node_path_builder = _NodePathBuilder.from_string(node_path)
+      has_prior_node_events = bool(self._prior_interrupt_ids)
+      if not has_prior_node_events:
+        for ev in ic.session.events:
+          if ic.invocation_id and ev.invocation_id != ic.invocation_id:
+            continue
+          if ev.node_info is not None and ev.node_info.path:
+            ev_path = _NodePathBuilder.from_string(ev.node_info.path)
+            if ev_path == node_path_builder or ev_path.is_descendant_of(
+                node_path_builder
+            ):
+              has_prior_node_events = True
+              break
+      if has_prior_node_events:
+        from .utils._rehydration_utils import _reconstruct_node_states
 
-      states = _reconstruct_node_states(
-          events=ic.session.events,
-          base_path=ctx.node_path,
-          invocation_id=ic.invocation_id,
-      )
-      if ctx.node_path in states:
-        rehydrated = dict(states[ctx.node_path].resolved_responses)
-        if ctx._resume_inputs:
-          rehydrated.update(ctx._resume_inputs)
-        ctx._resume_inputs = rehydrated
-        logger.debug(
-            "node %s rehydrated resume_inputs: %s",
-            ctx.node_path,
-            ctx._resume_inputs,
+        states = _reconstruct_node_states(
+            events=ic.session.events,
+            base_path=node_path,
+            invocation_id=ic.invocation_id,
         )
+        if node_path in states:
+          rehydrated = dict(states[node_path].resolved_responses)
+          if ctx._resume_inputs:
+            rehydrated.update(ctx._resume_inputs)
+          ctx._resume_inputs = rehydrated
+          logger.debug(
+              "node %s rehydrated resume_inputs: %s",
+              node_path,
+              ctx._resume_inputs,
+          )
 
     # override the inherited isolation_scope when explicitly set.
     if self._override_isolation_scope is not None:

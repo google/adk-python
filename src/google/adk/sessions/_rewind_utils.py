@@ -30,11 +30,18 @@ from ..events.event_actions import EventActions
 from ..platform import uuid as platform_uuid
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
+from ..sessions.state import State
 
 if TYPE_CHECKING:
   from ..artifacts.base_artifact_service import BaseArtifactService
 
 logger = logging.getLogger("google_adk." + __name__)
+
+_NON_SESSION_STATE_PREFIXES = (
+    State.APP_PREFIX,
+    State.USER_PREFIX,
+    State.TEMP_PREFIX,
+)
 
 
 async def compute_state_delta_for_rewind(
@@ -45,7 +52,7 @@ async def compute_state_delta_for_rewind(
   for i in range(rewind_event_index):
     if session.events[i].actions.state_delta:
       for k, v in session.events[i].actions.state_delta.items():
-        if k.startswith("app:") or k.startswith("user:"):
+        if k.startswith(_NON_SESSION_STATE_PREFIXES):
           continue
         if v is None:
           state_at_rewind_point.pop(k, None)
@@ -64,7 +71,7 @@ async def compute_state_delta_for_rewind(
   #    but not in state_at_rewind_point. These keys were added after the
   #    rewind point and need to be removed.
   for key in current_state:
-    if key.startswith("app:") or key.startswith("user:"):
+    if key.startswith(_NON_SESSION_STATE_PREFIXES):
       continue
     if key not in state_at_rewind_point:
       rewind_state_delta[key] = None

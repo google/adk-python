@@ -601,5 +601,4 @@ class FirestoreSessionService(BaseSessionService):  # type: ignore[misc]
       session._storage_update_marker = str(new_revision_count)
       session.last_update_time = event.timestamp
 
-    await super().append_event(session, event)
-    return event
+    return self._commit_event_to_session(session, event)

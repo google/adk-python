@@ -357,6 +357,40 @@ class TestInvocationContext:
     assert ctx.is_aborted is True
     assert ctx._abort_signal.is_set() is True
 
+  def test_abort_state_deepcopy_shares_instance(self):
+    """Deepcopying InvocationContext preserves shared _abort_state instance."""
+    ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_deep',
+        session=Mock(spec=Session, events=[]),
+    )
+    copied = ctx.model_copy(deep=True)
+    assert copied._abort_state is ctx._abort_state
+
+    copied.abort()
+    assert copied.is_aborted is True
+    assert ctx.is_aborted is True
+
+  async def test_model_copy_deep_with_running_async_generator(self):
+    """Calling model_copy(deep=True) inside a running event loop with active async generators does not raise."""
+    ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_deep_running_loop',
+        session=Mock(spec=Session, events=[]),
+    )
+
+    async def sample_generator():
+      yield 1
+
+    gen = sample_generator()
+    try:
+      copied = ctx.model_copy(deep=True)
+      assert copied._abort_state is ctx._abort_state
+    finally:
+      await gen.aclose()
+
   async def test_abort_signal_on_model_copy_wakes_when_parent_aborts_from_thread(
       self,
   ):

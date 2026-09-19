@@ -26,6 +26,7 @@ from unittest.mock import patch
 import urllib.parse
 
 from google.adk.dependencies import _httpx as httpx
+from google.adk.dependencies._mcp import McpError
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.platform import thread as platform_thread
@@ -35,6 +36,7 @@ from google.adk.tools.mcp_tool import mcp_session_manager as mcp_session_manager
 from google.adk.tools.mcp_tool.mcp_session_manager import _DebugHttpxClientFactory
 from google.adk.tools.mcp_tool.mcp_session_manager import _GoogleAuthAsyncByteStream
 from google.adk.tools.mcp_tool.mcp_session_manager import _http_debug_var
+from google.adk.tools.mcp_tool.mcp_session_manager import _is_session_terminated_error
 from google.adk.tools.mcp_tool.mcp_session_manager import _RefreshableAsyncCredentials
 from google.adk.tools.mcp_tool.mcp_session_manager import _sanitize_url
 from google.adk.tools.mcp_tool.mcp_session_manager import _SESSION_IDLE_TTL_SECONDS
@@ -50,6 +52,8 @@ from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from mcp import StdioServerParameters
 import pytest
+
+from ._sdk_compat import make_mcp_error
 
 try:
   from google.auth.aio.transport.sessions import AsyncAuthorizedSession
@@ -467,6 +471,92 @@ class TestMCPSessionManager:
 
     manager = MCPSessionManager(self.mock_stdio_connection_params)
     assert not manager._is_session_disconnected(SessionWithBareStreams())
+
+  @pytest.mark.asyncio
+  async def test_discard_session_drops_a_session_that_still_looks_healthy(self):
+    """The pooled session goes even though its streams report open."""
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+    session = MockClientSession()
+    exit_stack = MockAsyncExitStack()
+    manager._sessions["stdio_session"] = (
+        session,
+        exit_stack,
+        asyncio.get_running_loop(),
+    )
+    manager._session_last_used["stdio_session"] = time.monotonic()
+    assert not manager._is_session_disconnected(session)
+
+    manager._discard_session()
+    await asyncio.sleep(0)
+
+    assert "stdio_session" not in manager._sessions
+    assert "stdio_session" not in manager._session_last_used
+    exit_stack.aclose.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_discard_session_closes_the_transport_once_under_a_race(self):
+    """Two callers racing on one dead session close its stack a single time."""
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+    exit_stack = MockAsyncExitStack()
+    manager._sessions["stdio_session"] = (
+        MockClientSession(),
+        exit_stack,
+        asyncio.get_running_loop(),
+    )
+
+    manager._discard_session()
+    manager._discard_session()
+    await asyncio.sleep(0)
+
+    exit_stack.aclose.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_discard_session_drops_the_session_the_call_failed_on(self):
+    """Naming the failed session still discards it."""
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+    session = MockClientSession()
+    exit_stack = MockAsyncExitStack()
+    manager._sessions["stdio_session"] = (
+        session,
+        exit_stack,
+        asyncio.get_running_loop(),
+    )
+
+    manager._discard_session(session=session)
+    await asyncio.sleep(0)
+
+    assert "stdio_session" not in manager._sessions
+    exit_stack.aclose.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_discard_session_spares_the_replacement_under_the_same_key(
+      self,
+  ):
+    """Two callers fail on one session; the first caller's retry pools a
+    replacement under that key, and the second must not tear it down."""
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+    failed_session = MockClientSession()
+    replacement = MockClientSession()
+    exit_stack = MockAsyncExitStack()
+    manager._sessions["stdio_session"] = (
+        replacement,
+        exit_stack,
+        asyncio.get_running_loop(),
+    )
+
+    manager._discard_session(session=failed_session)
+    await asyncio.sleep(0)
+
+    assert manager._sessions["stdio_session"][0] is replacement
+    exit_stack.aclose.assert_not_called()
+
+  def test_discard_session_is_a_no_op_when_nothing_is_pooled(self):
+    """Discarding a session that was never created does nothing."""
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+
+    manager._discard_session()
+
+    assert not manager._sessions
 
   @pytest.mark.asyncio
   async def test_create_session_stdio_new(self):
@@ -2649,3 +2739,58 @@ class TestDebugHttpxClientFactoryOtelReporting:
 def test_sanitize_url(url, redact_query, expected):
   """Test that a URL is rendered for recording without its credentials."""
   assert _sanitize_url(httpx.URL(url), redact_query=redact_query) == expected
+
+
+class TestIsSessionTerminatedError:
+  """Tests for recognizing the server's session-terminated report."""
+
+  def _terminated(self) -> McpError:
+    return make_mcp_error(32600, "Session terminated")
+
+  def test_session_terminated_error_is_recognized(self):
+    assert _is_session_terminated_error(self._terminated())
+
+  def test_the_2x_sdk_spelling_is_recognized(self):
+    """2.x reports the same 404 as INVALID_REQUEST rather than as 32600."""
+    err = make_mcp_error(-32600, "Session terminated")
+    assert _is_session_terminated_error(err)
+
+  def test_an_ordinary_invalid_request_is_not_session_terminated(self):
+    """2.x also raises INVALID_REQUEST for a request it merely dislikes."""
+    err = make_mcp_error(-32600, "Unexpected content type: text/plain")
+    assert not _is_session_terminated_error(err)
+
+  def test_error_reported_through_a_cause_is_recognized(self):
+    wrapper = ConnectionError("Failed to get tools from MCP server")
+    wrapper.__cause__ = self._terminated()
+    assert _is_session_terminated_error(wrapper)
+
+  def test_the_previous_attempts_error_is_not_followed(self):
+    """The retry runs inside the first attempt's `except`, so attempt 2's own
+    failure carries attempt 1's report in `__context__`."""
+    try:
+      raise self._terminated()
+    except McpError:
+      try:
+        raise TimeoutError("call timed out")
+      except TimeoutError as retry_failure:
+        assert not _is_session_terminated_error(retry_failure)
+
+  def test_another_mcp_error_is_not_session_terminated(self):
+    """A tool that fails on its own merits leaves the session alone."""
+    err = make_mcp_error(-32603, "invalid arguments")
+    assert not _is_session_terminated_error(err)
+
+  def test_transport_and_timeout_failures_are_not_session_terminated(self):
+    """Only the server's own report counts; a dropped socket does not."""
+    assert not _is_session_terminated_error(ConnectionError("broken pipe"))
+    assert not _is_session_terminated_error(TimeoutError("timed out"))
+    assert not _is_session_terminated_error(asyncio.CancelledError())
+    assert not _is_session_terminated_error(None)
+
+  def test_a_cycle_in_the_cause_chain_terminates(self):
+    first = ValueError("first")
+    second = ValueError("second")
+    first.__cause__ = second
+    second.__cause__ = first
+    assert not _is_session_terminated_error(first)

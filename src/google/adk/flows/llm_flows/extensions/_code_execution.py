@@ -48,6 +48,7 @@ from ....utils.context_utils import Aclosing
 from .._base_llm_processor import BaseLlmRequestProcessor
 from .._base_llm_processor import BaseLlmResponseProcessor
 from ..core._utils import as_llm_agent
+from ._planning import response_rewriting_planner
 
 if TYPE_CHECKING:
   from ....models.llm_request import LlmRequest
@@ -397,12 +398,22 @@ async def _run_post_processor(
   # [Step 1] Extract code from the model predict response and truncate the
   # content to the part with the first code block.
   response_content = llm_response.content
+  # A rewriting planner marks its own code-bearing action text as a thought, so
+  # under one only a thought the model itself signed counts as reasoning.
+  response_content, thought_parts = _split_thoughts(
+      response_content,
+      signed_only=response_rewriting_planner(invocation_context) is not None,
+  )
   code_str = CodeExecutionUtils.extract_code_and_truncate_content(
       response_content, code_executor.code_block_delimiters
   )
   # Terminal state: no code to execute.
   if not code_str:
     return
+
+  # Not code to run, but the model expects its own signatures back.
+  if thought_parts:
+    response_content.parts = thought_parts + (response_content.parts or [])
 
   # [Step 2] Executes the code and emit 2 Events for code and execution result.
   yield Event(
@@ -438,6 +449,30 @@ async def _run_post_processor(
   # [Step 3] Skip processing the original model response
   # to continue code generation loop.
   llm_response.content = None
+
+
+def _split_thoughts(
+    content: types.Content,
+    *,
+    signed_only: bool = False,
+) -> tuple[types.Content, list[types.Part]]:
+  """Returns the content without the model's private reasoning, and those parts.
+
+  Args:
+    content: The model response content.
+    signed_only: Only count a thought the model signed. A planner marks its own
+      parts as a thought but cannot produce a thought signature.
+  """
+  kept: list[types.Part] = []
+  thoughts: list[types.Part] = []
+  for part in content.parts or []:
+    if part.thought and (part.thought_signature or not signed_only):
+      thoughts.append(part)
+    else:
+      kept.append(part)
+  if not thoughts:
+    return content, []
+  return content.model_copy(update={'parts': kept}), thoughts
 
 
 def _extract_and_replace_inline_files(

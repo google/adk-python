@@ -109,6 +109,45 @@ def test_is_non_blocking_tool() -> None:
   )
   assert _batch_tool_executor._is_non_blocking_tool(tool_with_scheduling)
 
+  tool_with_behavior_non_blocking = BaseTool(
+      name='t3',
+      description='desc',
+      behavior=types.Behavior.NON_BLOCKING,
+  )
+  assert _batch_tool_executor._is_non_blocking_tool(
+      tool_with_behavior_non_blocking
+  )
+
+  tool_with_behavior_blocking = BaseTool(
+      name='t4',
+      description='desc',
+      behavior=types.Behavior.BLOCKING,
+  )
+  assert not _batch_tool_executor._is_non_blocking_tool(
+      tool_with_behavior_blocking
+  )
+
+  # Explicit behavior overrides response_scheduling
+  tool_blocking_with_scheduling = BaseTool(
+      name='t5',
+      description='desc',
+      behavior=types.Behavior.BLOCKING,
+      response_scheduling=types.FunctionResponseScheduling.WHEN_IDLE,
+  )
+  assert not _batch_tool_executor._is_non_blocking_tool(
+      tool_blocking_with_scheduling
+  )
+
+  tool_non_blocking_with_scheduling = BaseTool(
+      name='t6',
+      description='desc',
+      behavior=types.Behavior.NON_BLOCKING,
+      response_scheduling=types.FunctionResponseScheduling.WHEN_IDLE,
+  )
+  assert _batch_tool_executor._is_non_blocking_tool(
+      tool_non_blocking_with_scheduling
+  )
+
 
 @pytest.mark.asyncio
 async def test_gather_or_cancel_success() -> None:

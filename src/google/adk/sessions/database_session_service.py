@@ -993,8 +993,7 @@ class DatabaseSessionService(BaseSessionService):
         session._storage_update_marker = storage_update_marker
 
     # Also update the in-memory session
-    await super().append_event(session=session, event=event)
-    return event
+    return self._commit_event_to_session(session, event)
 
   async def close(self) -> None:
     """Disposes the SQLAlchemy engine and closes pooled connections."""

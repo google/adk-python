@@ -168,12 +168,20 @@ async def _gather_or_cancel(tasks: list[asyncio.Task[_T]]) -> list[_T]:
     raise
 
 
-def _is_non_blocking_tool(tool: BaseTool | None) -> bool:
-  """Checks if a tool should be executed non-blockingly in live mode."""
+def _is_streaming_tool(tool: BaseTool | None) -> bool:
+  """Checks if a tool is a streaming tool."""
   if tool is None:
     return False
-  is_streaming = hasattr(tool, 'func') and inspect.isasyncgenfunction(tool.func)
-  return not is_streaming and tool.response_scheduling is not None
+  return hasattr(tool, 'func') and inspect.isasyncgenfunction(tool.func)
+
+
+def _is_non_blocking_tool(tool: BaseTool | None) -> bool:
+  """Checks if a tool is non-blocking in live mode."""
+  if tool is None:
+    return False
+  if tool.behavior is not None:
+    return tool.behavior is types.Behavior.NON_BLOCKING
+  return tool.response_scheduling is not None
 
 
 async def _launch_non_blocking_call_live(
@@ -376,7 +384,7 @@ async def handle_function_calls_live(
   blocking_calls: list[types.FunctionCall] = []
   for function_call in function_call_event.get_function_calls():
     tool = tools_dict.get(function_call.name) if function_call.name else None
-    if _is_non_blocking_tool(tool):
+    if not _is_streaming_tool(tool) and _is_non_blocking_tool(tool):
       assert tool is not None
       await _launch_non_blocking_call_live(
           invocation_context,

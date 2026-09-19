@@ -116,10 +116,6 @@ class DynamicNodeState:
     counters[node_name] = counters.get(node_name, 0) + 1
     return str(counters[node_name])
 
-  def get_run_counter(self, node_name: str, parent_path: str = '') -> int:
-    """Get the current run counter for a node name under parent_path."""
-    return self.run_counters.get(parent_path, {}).get(node_name, 0)
-
   def get_dynamic_tasks(self) -> list[asyncio.Task[Context]]:
     """Get all active dynamic node tasks."""
     return [

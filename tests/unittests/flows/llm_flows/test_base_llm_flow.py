@@ -454,6 +454,52 @@ async def test_process_agent_tools_marks_streaming_tool_non_blocking_for_live():
 
 
 @pytest.mark.asyncio
+async def test_process_agent_tools_marks_behavior_non_blocking_tool_for_live():
+  """Live tools with behavior=NON_BLOCKING are marked NON_BLOCKING."""
+  from google.adk.tools.function_tool import FunctionTool
+
+  tool = FunctionTool(func=_scheduled_tool)
+  tool.behavior = types.Behavior.NON_BLOCKING
+  agent = Agent(name='test_agent', tools=[tool])
+
+  llm_request = await _preprocess(agent, is_live=True)
+
+  declaration = llm_request.config.tools[0].function_declarations[0]
+  assert declaration.behavior is types.Behavior.NON_BLOCKING
+
+
+@pytest.mark.asyncio
+async def test_process_agent_tools_sets_behavior_blocking_tool_for_live():
+  """Live tools with behavior=BLOCKING are marked BLOCKING."""
+  from google.adk.tools.function_tool import FunctionTool
+
+  tool = FunctionTool(func=_scheduled_tool)
+  tool.behavior = types.Behavior.BLOCKING
+  agent = Agent(name='test_agent', tools=[tool])
+
+  llm_request = await _preprocess(agent, is_live=True)
+
+  declaration = llm_request.config.tools[0].function_declarations[0]
+  assert declaration.behavior is types.Behavior.BLOCKING
+
+
+@pytest.mark.asyncio
+async def test_process_agent_tools_behavior_blocking_overrides_scheduling_for_live():
+  """Explicit behavior=BLOCKING overrides response_scheduling in live mode."""
+  from google.adk.tools.function_tool import FunctionTool
+
+  tool = FunctionTool(func=_scheduled_tool)
+  tool.behavior = types.Behavior.BLOCKING
+  tool.response_scheduling = types.FunctionResponseScheduling.WHEN_IDLE
+  agent = Agent(name='test_agent', tools=[tool])
+
+  llm_request = await _preprocess(agent, is_live=True)
+
+  declaration = llm_request.config.tools[0].function_declarations[0]
+  assert declaration.behavior is types.Behavior.BLOCKING
+
+
+@pytest.mark.asyncio
 async def test_process_agent_tools_marks_scheduled_tool_non_blocking_for_live():
   """Live response-scheduling tools are marked NON_BLOCKING."""
   from google.adk.tools.function_tool import FunctionTool
