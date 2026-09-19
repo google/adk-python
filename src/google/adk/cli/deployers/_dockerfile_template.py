@@ -34,6 +34,10 @@ RUN pip install "google-adk[a2a]=={adk_version}"
 RUN python -c "import os, glob, google.adk.cli as cli; d = os.path.dirname(cli.__file__); [os.remove(f) for f in glob.glob(os.path.join(d, 'dev_server*'))]; [os.remove(f) for f in glob.glob(os.path.join(d, '__pycache__', 'dev_server*'))]" || true
 # Install ADK - End
 
+# Install Agent Deps - Start
+{install_agent_deps}
+# Install Agent Deps - End
+
 # Copy agent - Start
 
 # Set permission
@@ -41,11 +45,23 @@ COPY --chown=myuser:myuser "agents/{app_name}/" "/app/agents/{app_name}/"
 {extra_packages_copy}
 # Copy agent - End
 
-# Install Agent Deps - Start
-{install_agent_deps}
-# Install Agent Deps - End
-
 EXPOSE {port}
 
 CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_option} {otel_to_cloud_option} {allow_origins_option} {a2a_option} {trigger_sources_option} {trigger_oidc_audience_option} {trigger_oidc_service_accounts_option} {gemini_enterprise_option}{express_mode_option} "/app/agents"
 """
+
+
+def _agent_deps_install_layer(app_name: str, has_requirements: bool) -> str:
+  """Returns Dockerfile lines that install agent deps before copying source.
+
+  Copying requirements.txt on its own keeps the pip layer cached when only
+  agent source changes.
+  """
+  if not has_requirements:
+    return '# No requirements.txt found.'
+  dest = f'/app/agents/{app_name}/requirements.txt'
+  return (
+      f'COPY --chown=myuser:myuser "agents/{app_name}/requirements.txt"'
+      f' "{dest}"\n'
+      f'RUN pip install -r "{dest}"'
+  )
