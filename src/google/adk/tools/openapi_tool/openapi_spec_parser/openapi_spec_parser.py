@@ -20,6 +20,7 @@ from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Set
+from typing import Tuple
 
 from fastapi.openapi.models import Operation
 from pydantic import BaseModel
@@ -171,6 +172,47 @@ class OpenApiSpecParser:
 
     return sanitize_recursive(openapi_spec, in_schema=False)
 
+  def _merge_parameters(
+      self,
+      operation_parameters: List[Dict[str, Any]],
+      path_parameters: List[Dict[str, Any]],
+  ) -> List[Dict[str, Any]]:
+    """Merges an operation's parameters over the path-level ones.
+
+    Per the OpenAPI 3 Path Item Object, an operation-level parameter
+    overrides a path-level parameter that has the same `name` and `in`.
+    Declaring a shared parameter once at the path level and refining it on
+    an operation (a more specific description, pattern or enum) is common,
+    so both must not be collected: the duplicate would otherwise be renamed
+    to `<name>_0` and asked of the model as a second required argument.
+
+    Args:
+      operation_parameters: The parameters declared on the operation.
+      path_parameters: The parameters declared on the path item.
+
+    Returns:
+      The operation's parameters followed by the path-level parameters that
+      the operation does not override.
+    """
+    merged: List[Dict[str, Any]] = list(operation_parameters)
+
+    overridden: Set[Tuple[Any, Any]] = set()
+    for parameter in merged:
+      key = (parameter.get("name"), parameter.get("in"))
+      # Skip malformed parameters so they are never deduplicated away.
+      if key[0] is not None and key[1] is not None:
+        overridden.add(key)
+
+    for parameter in path_parameters:
+      key = (parameter.get("name"), parameter.get("in"))
+      if key in overridden:
+        continue
+      if key[0] is not None and key[1] is not None:
+        overridden.add(key)
+      merged.append(parameter)
+
+    return merged
+
   def _collect_operations(
       self, openapi_spec: Dict[str, Any]
   ) -> List[ParsedOperation]:
@@ -205,10 +247,12 @@ class OpenApiSpecParser:
         if operation_dict is None:
           continue
 
-        # Append path-level parameters
-        operation_dict["parameters"] = operation_dict.get(
-            "parameters", []
-        ) + path_item.get("parameters", [])
+        # Merge path-level parameters in, letting the operation's own
+        # parameters override the ones it re-declares.
+        operation_dict["parameters"] = self._merge_parameters(
+            operation_dict.get("parameters", []),
+            path_item.get("parameters", []),
+        )
 
         # If operation ID is missing, assign an operation id based on path
         # and method
