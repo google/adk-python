@@ -15,11 +15,9 @@
 from __future__ import annotations
 
 from abc import ABC
-import contextlib
 import logging
 from typing import AsyncGenerator
 from typing import cast
-from typing import Iterator
 from typing import Optional
 from typing import TYPE_CHECKING
 
@@ -42,6 +40,7 @@ from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
 from ...telemetry.tracing import trace_call_llm
 from ...telemetry.tracing import tracer
+from ...utils._runner_utils import _with_caller_context
 from ...utils.context_utils import Aclosing
 from .core._finalizer import finalize_model_response_event
 from .core._finalizer import handle_after_model_callback
@@ -109,16 +108,6 @@ DEFAULT_MAX_RECONNECT_ATTEMPTS = 5
 DEFAULT_ENABLE_CACHE_STATISTICS = False
 
 _require_live_request_queue = _live_llm_flow.require_live_request_queue
-
-
-@contextlib.contextmanager
-def _use_otel_context(context: otel_context.Context) -> Iterator[None]:
-  """Makes ``context`` the current OpenTelemetry context inside the block."""
-  token = otel_context.attach(context)
-  try:
-    yield
-  finally:
-    otel_context.detach(token)
 
 
 class BaseLlmFlow(ABC):
@@ -709,10 +698,11 @@ class BaseLlmFlow(ABC):
 
               yield llm_response
 
-    async with Aclosing(_call_llm_with_tracing()) as agen:
+    async with Aclosing(
+        _with_caller_context(_call_llm_with_tracing(), caller_context)
+    ) as agen:
       async for event in agen:
-        with _use_otel_context(caller_context):
-          yield event
+        yield event
 
   def _finalize_model_response_event(
       self,
