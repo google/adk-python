@@ -401,6 +401,7 @@ class Gemini(BaseLlm):
         api_client=self.api_client,
         llm_request=llm_request,
         stream=stream,
+        service_tier=llm_request.service_tier,
     ):
       yield llm_response
 

@@ -93,6 +93,14 @@ class InteractionsRequestProcessor(BaseLlmRequestProcessor):
   done by the content request processor after this processor runs.
   """
 
+  _last_tier_warning_invocation_id: Optional[str] = None
+  """Invocation that last logged the unusable-tier warning.
+
+  The processor runs once per model call, so warning unconditionally would
+  repeat on every turn of a run. Tracking the most recent invocation keeps it
+  to once per run without accumulating ids for the life of the process.
+  """
+
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
@@ -108,15 +116,20 @@ class InteractionsRequestProcessor(BaseLlmRequestProcessor):
     from ....models.google_llm import Gemini
 
     agent = as_llm_agent(invocation_context)
-    if not hasattr(agent, 'canonical_model'):
-      return
+    model = getattr(agent, 'canonical_model', None)
 
     # Only process if using Gemini with interactions API
-    model = agent.canonical_model
-    if not isinstance(model, Gemini):
+    if not isinstance(model, Gemini) or not model.use_interactions_api:
+      self._warn_if_service_tier_unusable(invocation_context)
       return
-    if not model.use_interactions_api:
-      return
+
+    run_config = invocation_context.run_config
+    if run_config and run_config.service_tier:
+      llm_request.service_tier = run_config.service_tier
+      logger.debug(
+          'Using service_tier from run_config: %s', run_config.service_tier
+      )
+
     # Extract previous interaction ID from session events
     previous_interaction_id = self._find_previous_interaction_id(
         invocation_context
@@ -130,6 +143,39 @@ class InteractionsRequestProcessor(BaseLlmRequestProcessor):
     # Don't yield any events - this is just a preprocessing step
     return
     yield  # Required for AsyncGenerator
+
+  def _warn_if_service_tier_unusable(
+      self, invocation_context: InvocationContext
+  ) -> None:
+    """Warn that this agent's model calls will ignore the run's service tier.
+
+    Only the interactions path carries a serving tier, so a tier set on the
+    run does nothing for an agent that does not use it. That is legitimate in
+    a multi-agent run where only some agents are on the interactions API,
+    which is why this warns rather than raising. It fires once per run: the
+    processor runs on every model call, so warning each time would repeat on
+    every turn.
+
+    Args:
+        invocation_context: Invocation context carrying the run config and the
+          agent whose model cannot apply the tier.
+    """
+    run_config = invocation_context.run_config
+    if not run_config or not run_config.service_tier:
+      return
+    if (
+        self._last_tier_warning_invocation_id
+        == invocation_context.invocation_id
+    ):
+      return
+    self._last_tier_warning_invocation_id = invocation_context.invocation_id
+    logger.warning(
+        'run_config.service_tier=%r has no effect for agent %s: its model does'
+        ' not use the interactions API, which is the only path with a serving'
+        ' tier. Set use_interactions_api=True on the model to apply the tier.',
+        run_config.service_tier,
+        require_agent_name(invocation_context),
+    )
 
   def _find_previous_interaction_id(
       self, invocation_context: InvocationContext

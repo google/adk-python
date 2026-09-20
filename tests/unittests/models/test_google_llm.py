@@ -3316,3 +3316,59 @@ async def test_generate_content_async_stream_secondary_candidate_chunk_preserves
 
     assert responses[-1].usage_metadata is not None
     assert responses[-1].usage_metadata.total_token_count == 15
+
+
+@pytest.mark.asyncio
+async def test_interactions_api_forwards_request_service_tier(llm_request):
+  """The tier the run asked for reaches the interactions transport."""
+  gemini = Gemini(model="gemini-2.5-flash", use_interactions_api=True)
+  llm_request.service_tier = "deferred"
+  captured = {}
+
+  async def fake_generate(**kwargs):
+    captured.update(kwargs)
+    yield LlmResponse(
+        content=Content(role="model", parts=[Part.from_text(text="ok")])
+    )
+
+  with (
+      mock.patch.object(gemini, "_preprocess_request", new=AsyncMock()),
+      mock.patch(
+          "google.adk.models.interactions_utils.generate_content_via_interactions",
+          new=fake_generate,
+      ),
+  ):
+    responses = [
+        response
+        async for response in gemini.generate_content_async(llm_request)
+    ]
+
+  assert responses[0].content.parts[0].text == "ok"
+  assert captured["service_tier"] == "deferred"
+
+
+@pytest.mark.asyncio
+async def test_interactions_api_forwards_no_tier_when_unset(llm_request):
+  """An untiered run forwards None rather than inventing a tier."""
+  gemini = Gemini(model="gemini-2.5-flash", use_interactions_api=True)
+  captured = {}
+
+  async def fake_generate(**kwargs):
+    captured.update(kwargs)
+    yield LlmResponse(
+        content=Content(role="model", parts=[Part.from_text(text="ok")])
+    )
+
+  with (
+      mock.patch.object(gemini, "_preprocess_request", new=AsyncMock()),
+      mock.patch(
+          "google.adk.models.interactions_utils.generate_content_via_interactions",
+          new=fake_generate,
+      ),
+  ):
+    _ = [
+        response
+        async for response in gemini.generate_content_async(llm_request)
+    ]
+
+  assert captured["service_tier"] is None

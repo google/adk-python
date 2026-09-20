@@ -397,31 +397,6 @@ class Runner:
       raise RuntimeError('Runner app resolution produced no app.')
     return app
 
-  @staticmethod
-  def _validate_runner_params(
-      app: Optional[App],
-      app_name: Optional[str],
-      agent: Optional[BaseAgent],
-      plugins: Optional[List[BasePlugin]],
-  ) -> tuple[
-      str,
-      BaseNode,
-      Optional[ContextCacheConfig],
-      Optional[ResumabilityConfig],
-      Optional[List[BasePlugin]],
-  ]:
-    """Deprecated: use _resolve_app instead."""
-    resolved = Runner._resolve_app(app, app_name, agent, None, plugins)
-    if resolved.root_agent is None:
-      raise ValueError('App root_agent must be provided.')
-    return (
-        app_name or resolved.name,
-        resolved.root_agent,
-        resolved.context_cache_config,
-        resolved.resumability_config,
-        plugins if app is None else resolved.plugins,
-    )
-
   def _infer_agent_origin(
       self, agent: BaseAgent
   ) -> tuple[Optional[str], Optional[Path]]:
@@ -1756,12 +1731,6 @@ class Runner:
         root_agent=root_agent,
         resumability_config=self.resumability_config,
     )
-
-  def _is_transferable_across_agent_tree(self, agent_to_run: BaseAgent) -> bool:
-    """Whether the agent to run can transfer to any other agent in the agent tree."""
-    from .agents import _agent_router
-
-    return _agent_router.is_transferable_across_agent_tree(agent_to_run)
 
   async def run_debug(
       self,

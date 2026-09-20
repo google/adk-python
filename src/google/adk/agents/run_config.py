@@ -28,6 +28,7 @@ from pydantic import Field
 from pydantic import field_validator
 from pydantic import model_validator
 
+from ..models._service_tier import ServiceTier
 from ..sessions.base_session_service import GetSessionConfig
 from ..telemetry.context import TelemetryConfig
 from ._streaming_mode import StreamingMode
@@ -88,6 +89,26 @@ class RunConfig(BaseModel):
 
   labels: Optional[dict[str, str]] = None
   """User labels for the current invocation (e.g. for billing/attribution)."""
+
+  service_tier: Optional[ServiceTier | str] = None
+  """Serving tier for the model calls of this run.
+
+  Reaches models that call the interactions API through `Gemini`, and nothing
+  else. A model on the generate_content path has no serving tier of its own
+  and ignores it. `ManagedAgent` ignores it too, despite being on the
+  interactions API: it calls `interactions.create` from its own execution
+  loop instead of going through a model, so it never reads this. Leave unset
+  to use the default tier.
+
+  A plain string is accepted alongside the enum, so a tier the backend adds
+  before ADK learns about it still works; unknown values are rejected by the
+  backend.
+
+  `ServiceTier.DEFERRED` queues each model call to run on off-peak capacity,
+  so it waits for room instead of being turned away when capacity is tight.
+  An agent that calls tools queues once per turn rather than once per run. It
+  cannot be combined with `StreamingMode.SSE`.
+  """
 
   response_modalities: Optional[list[types.Modality]] = None
   """The output modalities. If not set, it's default to AUDIO."""
