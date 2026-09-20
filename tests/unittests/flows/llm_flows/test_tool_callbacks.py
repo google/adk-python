@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextvars
 from typing import Any
 from unittest import mock
 
@@ -497,3 +498,86 @@ def test_before_tool_callback_lambda_with_arbitrary_param_names():
   runner.run('test')
   assert len(captured) == 1
   assert captured[0] == ('simple_function', {})
+
+
+_ambient_value: contextvars.ContextVar[str] = contextvars.ContextVar(
+    'ambient_value', default='unset'
+)
+
+
+def read_ambient_value() -> dict[str, object]:
+  return {'result': _ambient_value.get()}
+
+
+def test_before_tool_callback_contextvar_reaches_the_tool():
+  """A contextvar set in before_tool_callback is still set when the tool runs."""
+
+  def before_tool_callback(
+      tool: BaseTool, args: dict[str, Any], tool_context: ToolContext
+  ) -> None:
+    _ambient_value.set('set-by-callback')
+    return None
+
+  responses = [
+      types.Part.from_function_call(name='read_ambient_value', args={}),
+      'response1',
+  ]
+  agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(responses=responses),
+      before_tool_callback=before_tool_callback,
+      tools=[read_ambient_value],
+  )
+
+  events = testing_utils.InMemoryRunner(agent).run('test')
+
+  assert testing_utils.simplify_events(events)[1] == (
+      'root_agent',
+      Part.from_function_response(
+          name='read_ambient_value', response={'result': 'set-by-callback'}
+      ),
+  )
+  # The callback ran in a task of its own, so it must not have leaked its value
+  # into the caller.
+  assert _ambient_value.get() == 'unset'
+
+
+def test_before_tool_callback_contextvars_isolated_between_parallel_calls():
+  """Parallel calls each see their own callback's contextvar, not a sibling's."""
+  call_index = 0
+
+  def before_tool_callback(
+      tool: BaseTool, args: dict[str, Any], tool_context: ToolContext
+  ) -> None:
+    nonlocal call_index
+    call_index += 1
+    _ambient_value.set(f'call-{call_index}')
+    return None
+
+  responses = [
+      [
+          types.Part.from_function_call(name='read_ambient_value', args={}),
+          types.Part.from_function_call(name='read_ambient_value', args={}),
+      ],
+      'response1',
+  ]
+  agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create(responses=responses),
+      before_tool_callback=before_tool_callback,
+      tools=[read_ambient_value],
+  )
+
+  events = testing_utils.InMemoryRunner(agent).run('test')
+
+  assert testing_utils.simplify_events(events)[1] == (
+      'root_agent',
+      [
+          Part.from_function_response(
+              name='read_ambient_value', response={'result': 'call-1'}
+          ),
+          Part.from_function_response(
+              name='read_ambient_value', response={'result': 'call-2'}
+          ),
+      ],
+  )

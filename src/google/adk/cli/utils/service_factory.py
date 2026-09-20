@@ -43,6 +43,7 @@ _LOCAL_STORAGE_ERRNOS = frozenset({
 
 _CLOUD_RUN_SERVICE_ENV = "K_SERVICE"
 _KUBERNETES_HOST_ENV = "KUBERNETES_SERVICE_HOST"
+_AGENT_ENGINE_ID_ENV = "GOOGLE_CLOUD_AGENT_ENGINE_ID"
 
 
 def _redact_uri_for_log(uri: str) -> str:
@@ -88,6 +89,14 @@ def _is_cloud_run() -> bool:
 def _is_kubernetes() -> bool:
   """Returns True when running in Kubernetes (including GKE)."""
   return bool(os.environ.get(_KUBERNETES_HOST_ENV))
+
+
+def _get_agent_engine_uri() -> str | None:
+  """Returns the agentengine:// URI if GOOGLE_CLOUD_AGENT_ENGINE_ID is set."""
+  engine_id = os.environ.get(_AGENT_ENGINE_ID_ENV)
+  if engine_id:
+    return f"agentengine://{engine_id}"
+  return None
 
 
 def _is_dir_writable(path: Path) -> bool:
@@ -207,6 +216,38 @@ def create_session_service_from_options(
     )
     return DatabaseSessionService(db_url=session_service_uri, **fallback_kwargs)
 
+  # Auto-configure from Agent Platform environment if available.
+  agent_engine_uri = _get_agent_engine_uri()
+  if agent_engine_uri:
+    if is_env_enabled(_FORCE_LOCAL_STORAGE_ENV):
+      logger.warning(
+          "Auto-configuring session service from %s (%s). Ignoring %s "
+          "because an Agent Platform environment was detected.",
+          _AGENT_ENGINE_ID_ENV,
+          _redact_uri_for_log(agent_engine_uri),
+          _FORCE_LOCAL_STORAGE_ENV,
+      )
+    else:
+      logger.info(
+          "Auto-configuring session service from %s: %s",
+          _AGENT_ENGINE_ID_ENV,
+          _redact_uri_for_log(agent_engine_uri),
+      )
+    try:
+      service = registry.create_session_service(agent_engine_uri, **kwargs)
+    except ValueError as exc:
+      # Auto-configuration is best-effort: if the Agent Platform environment is
+      # incomplete (e.g. GOOGLE_CLOUD_PROJECT/GOOGLE_CLOUD_LOCATION not set),
+      # fall back to local/in-memory storage instead of crashing.
+      logger.warning(
+          "Failed to auto-configure Agent Platform Sessions service (%r); "
+          "falling back to local/in-memory session service.",
+          exc,
+      )
+      service = None
+    if service is not None:
+      return service
+
   effective_use_local_storage, auto_warning = _resolve_use_local_storage(
       base_path=base_path,
       requested=use_local_storage,
@@ -262,6 +303,32 @@ def create_memory_service_from_options(
           % _redact_uri_for_log(memory_service_uri)
       )
     return service
+
+  # Auto-configure from Agent Platform environment if available.
+  agent_engine_uri = _get_agent_engine_uri()
+  if agent_engine_uri:
+    logger.info(
+        "Auto-configuring memory service from %s: %s",
+        _AGENT_ENGINE_ID_ENV,
+        _redact_uri_for_log(agent_engine_uri),
+    )
+    try:
+      service = registry.create_memory_service(
+          agent_engine_uri,
+          agents_dir=str(base_path),
+      )
+    except ValueError as exc:
+      # Auto-configuration is best-effort: if the Agent Platform environment is
+      # incomplete (e.g. GOOGLE_CLOUD_PROJECT/GOOGLE_CLOUD_LOCATION not set),
+      # fall back to the in-memory memory service instead of crashing.
+      logger.warning(
+          "Failed to auto-configure Agent Platform Memory Bank service (%r); "
+          "falling back to in-memory memory service.",
+          exc,
+      )
+      service = None
+    if service is not None:
+      return service
 
   logger.info("Using in-memory memory service")
   from ...memory.in_memory_memory_service import InMemoryMemoryService

@@ -38,6 +38,7 @@ from ..utils._runner_utils import _with_caller_context
 from ._dynamic_node_scheduler import DynamicNodeScheduler
 from ._errors import DynamicNodeFailError
 from ._errors import NodeInterruptedError
+from ._errors import WorkflowInvariantError
 from ._workflow import _LoopState
 
 if TYPE_CHECKING:
@@ -61,7 +62,6 @@ async def run_node_async(
     session: Optional[Session] = None,
 ) -> AsyncGenerator[Event, None]:
   """Runs a BaseNode or Workflow in async mode."""
-  from ..runners import _apply_run_config_custom_metadata
   from ..runners import _find_active_task_scope
 
   caller_ctx = context.get_current()
@@ -85,6 +85,10 @@ async def run_node_async(
       resume_inputs = runner._extract_resume_inputs(new_message)  # pylint: disable=protected-access
       runner._validate_new_message(new_message, resume_inputs)  # pylint: disable=protected-access
 
+      # A message that joins a paused task borrows that task's invocation id so
+      # the task agent sees it, but it is still the user's next turn rather than
+      # a replay of the turn that opened the task.
+      continues_paused_task = False
       if not invocation_id and new_message:
         invocation_id = runner._resolve_invocation_id_from_fr(  # pylint: disable=protected-access
             session, new_message
@@ -94,6 +98,7 @@ async def run_node_async(
           if active_scope:
             _, inv_id = active_scope
             invocation_id = inv_id
+            continues_paused_task = True
       elif invocation_id and new_message:
         # A caller-supplied id is reconciled against the responses rather
         # than trusted: resuming under an id that does not own the call
@@ -119,11 +124,14 @@ async def run_node_async(
       ic._event_queue = asyncio.Queue()  # pylint: disable=protected-access
 
       # 2. Append user message to session and resolve node_input
+      # A message that joins a paused task only borrowed that invocation's id,
+      # so recovering its original content here would run the node on the
+      # previous turn instead of this one.
       existing_user_content = (
           runner._find_user_message_for_invocation(  # pylint: disable=protected-access
               ic.session.events, ic.invocation_id
           )
-          if (invocation_id or resume_inputs)
+          if (invocation_id or resume_inputs) and not continues_paused_task
           else None
       )
       if existing_user_content:
@@ -143,7 +151,12 @@ async def run_node_async(
       try:
         try:
           should_process_message = bool(
-              new_message and (resume_inputs or not existing_user_content)
+              new_message
+              and (
+                  resume_inputs
+                  or continues_paused_task
+                  or not existing_user_content
+              )
           )
           if should_process_message:
             modified_user_message = (
@@ -162,6 +175,15 @@ async def run_node_async(
             )
             if yield_user_message and user_event:
               yield user_event
+          elif state_delta:
+            # Resuming without a new message: there is no user message event to
+            # carry the delta, so append it as a content-less event instead of
+            # dropping it.
+            delta_event = await runner._append_state_delta_event(  # pylint: disable=protected-access
+                ic, state_delta
+            )
+            if yield_user_message and delta_event:
+              yield delta_event
 
           # Run before_run callbacks. A returned Content halts execution and ends
           # the run with that content (same contract as the non-workflow path).
@@ -174,15 +196,19 @@ async def run_node_async(
                 author="model",
                 content=early_exit_result,
             )
-            _apply_run_config_custom_metadata(early_exit_event, ic.run_config)
+            # Ensure the early-exit event also passes through on_event callbacks and metadata enrichment.
+            output_event = await runner._process_event_with_plugin_callbacks(  # pylint: disable=protected-access
+                invocation_context=ic,
+                event=early_exit_event,
+            )
             if runner._should_append_event(  # pylint: disable=protected-access
                 early_exit_event, is_live_call=False
             ):
               await runner.session_service.append_event(
                   session=ic.session,
-                  event=early_exit_event,
+                  event=output_event,
               )
-            yield early_exit_event
+            yield output_event
           else:
             # 3. Start root node in background
             root_ctx = Context(ic)
@@ -191,7 +217,7 @@ async def run_node_async(
             has_sub_agents = is_agent and bool(
                 getattr(runner.agent, "sub_agents", None)
             )
-            use_scheduler = is_agent and has_sub_agents
+            use_scheduler = not is_agent or has_sub_agents
 
             # The root chat coordinator's isolation_scope stays None: its own
             # events (FCs, text, synthesized FRs from completed task
@@ -223,8 +249,15 @@ async def run_node_async(
                 except DynamicNodeFailError as e:
                   raise e.error
               finally:
-                assert ic._event_queue is not None  # pylint: disable=protected-access
-                await ic._event_queue.put((done_sentinel, None))  # pylint: disable=protected-access
+                root_ctx._workflow_scheduler = None  # pylint: disable=protected-access
+                # Bound to a local because narrowing does not reach into this
+                # closure.
+                event_queue = ic._event_queue  # pylint: disable=protected-access
+                if event_queue is None:
+                  raise WorkflowInvariantError(
+                      "Root node finished without an initialized event queue."
+                  )
+                await event_queue.put((done_sentinel, None))
 
             task = asyncio.create_task(_drive_root_node())
 

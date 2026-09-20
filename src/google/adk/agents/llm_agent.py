@@ -42,6 +42,7 @@ from ..code_executors.base_code_executor import BaseCodeExecutor
 from ..events.event import Event
 from ..flows.llm_flows.auto_flow import AutoFlow
 from ..flows.llm_flows.base_llm_flow import BaseLlmFlow
+from ..flows.llm_flows.functions import find_matching_function_call
 from ..flows.llm_flows.single_flow import SingleFlow
 from ..models.base_llm import BaseLlm
 from ..models.llm_request import LlmRequest
@@ -57,13 +58,25 @@ from ..utils._schema_utils import SchemaType
 from ..utils._schema_utils import validate_schema
 from ..utils.context_utils import Aclosing
 from ..utils.instructions_utils import InstructionProvider as InstructionProvider
+from ..workflow._base_node import BaseNode
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
 from .base_agent_config import BaseAgentConfig as BaseAgentConfig
 from .callback_context import CallbackContext
 from .context import Context
 from .invocation_context import InvocationContext
-from .llm_agent_config import LlmAgentConfig as LlmAgentConfig
+
+with warnings.catch_warnings():
+  # LlmAgentConfig subclasses the deprecated BaseAgentConfig purely as an
+  # internal implementation detail, so this import alone should not warn
+  # applications that never touch the deprecated Agent Config APIs.
+  warnings.filterwarnings(
+      'ignore',
+      message=r'.*BaseAgentConfig is deprecated.*',
+      category=DeprecationWarning,
+  )
+  from .llm_agent_config import LlmAgentConfig as LlmAgentConfig
+
 from .readonly_context import ReadonlyContext
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -131,6 +144,21 @@ OnToolErrorCallback: TypeAlias = Union[
 ToolUnion: TypeAlias = Union[Callable, BaseTool, BaseToolset]  # type: ignore[type-arg]
 
 
+def _wrap_base_node_as_tool(node: BaseNode) -> BaseTool:
+  """Wraps a BaseNode into a NodeTool while rejecting direct BaseAgent usage."""
+  from ..tools._node_tool import NodeTool
+
+  if isinstance(node, BaseAgent):
+    raise ValueError(
+        f"Agent '{node.name}' cannot be used directly as a tool. Agents"
+        ' should be invoked as sub-agents.'
+    )
+  return NodeTool(
+      node=node,
+      description=node.description,
+  )
+
+
 async def _convert_tool_union_to_tools(
     tool_union: ToolUnion,
     ctx: Optional[ReadonlyContext],
@@ -156,10 +184,16 @@ async def _convert_tool_union_to_tools(
   # other tools.
   # TODO: Remove once the workaround is no longer needed.
   if multiple_tools and isinstance(tool_union, VertexAiSearchTool):
-    from ..tools.discovery_engine_search_tool import DiscoveryEngineSearchTool
-
     vais_tool = tool_union
     if vais_tool.bypass_multi_tools_limit:
+      try:
+        from ..tools.discovery_engine_search_tool import DiscoveryEngineSearchTool
+      except ImportError as e:
+        raise ImportError(
+            'VertexAiSearchTool with bypass_multi_tools_limit=True requires'
+            ' the google-cloud-discoveryengine package. Install it with'
+            ' `pip install google-adk[gcp]`.'
+        ) from e
       return [
           DiscoveryEngineSearchTool(
               data_store_id=vais_tool.data_store_id,
@@ -172,29 +206,7 @@ async def _convert_tool_union_to_tools(
   from ..workflow._base_node import BaseNode
 
   if isinstance(tool_union, BaseNode):
-    from ..tools._node_tool import NodeTool
-    from .base_agent import BaseAgent
-
-    if isinstance(tool_union, BaseAgent):
-      raise ValueError(
-          f"Agent '{tool_union.name}' cannot be wrapped as a NodeTool. Agents"
-          ' should be invoked as sub-agents.'
-      )
-
-    description = tool_union.description
-    if not description:
-      raise ValueError(
-          f"Workflow/Node '{tool_union.name}' must have a description to be"
-          ' wrapped as a tool.'
-      )
-
-    return [
-        NodeTool(
-            node=tool_union,
-            name=tool_union.name,
-            description=description,
-        )
-    ]
+    return [_wrap_base_node_as_tool(tool_union)]
 
   if isinstance(tool_union, BaseTool):
     return [tool_union]
@@ -485,7 +497,7 @@ class LlmAgent(BaseAgent, abc.ABC):
   """Callback or list of callbacks to be called before calling the LLM.
 
   When a list of callbacks is provided, the callbacks will be called in the
-  order they are listed until a callback does not return None.
+  order they are listed until a callback returns a truthy value.
 
   Args:
     callback_context: CallbackContext,
@@ -493,22 +505,23 @@ class LlmAgent(BaseAgent, abc.ABC):
     request.
 
   Returns:
-    The content to return to the user. When present, the model call will be
-    skipped and the provided content will be returned to user.
+    Optional[LlmResponse]: A response to use instead of calling the model.
+      A truthy response skips the model call. Return None to continue.
   """
   after_model_callback: Optional[AfterModelCallback] = None
   """Callback or list of callbacks to be called after calling the LLM.
 
   When a list of callbacks is provided, the callbacks will be called in the
-  order they are listed until a callback does not return None.
+  order they are listed until a callback returns a truthy value.
 
   Args:
     callback_context: CallbackContext,
     llm_response: LlmResponse, the actual model response.
 
   Returns:
-    The content to return to the user. When present, the actual model response
-    will be ignored and the provided content will be returned to user.
+    Optional[LlmResponse]: A response to use instead of the actual model
+      response. A truthy response replaces the model response. Return None
+      to keep the original response.
   """
   on_model_error_callback: Optional[OnModelErrorCallback] = None
   """Callback or list of callbacks to be called when a model call encounters an error.
@@ -522,8 +535,9 @@ class LlmAgent(BaseAgent, abc.ABC):
     error: The error from the model call.
 
   Returns:
-    The content to return to the user. When present, the error will be
-    ignored and the provided content will be returned to user.
+    Optional[LlmResponse]: A recovery response to use instead of propagating
+      the model error. Any non-None response stops the callback chain. Return
+      None to allow subsequent callbacks to handle the error.
   """
   before_tool_callback: Optional[BeforeToolCallback] = None
   """Callback or list of callbacks to be called before calling the tool.
@@ -537,8 +551,9 @@ class LlmAgent(BaseAgent, abc.ABC):
     tool_context: ToolContext,
 
   Returns:
-    The tool response. When present, the returned tool response will be used and
-    the framework will skip calling the actual tool.
+    Optional[dict[str, Any]]: A response to use instead of calling the tool.
+      Any non-None response, including an empty dict, stops the callback chain
+      and skips the tool call. Return None to continue.
   """
   after_tool_callback: Optional[AfterToolCallback] = None
   """Callback or list of callbacks to be called after calling the tool.
@@ -553,7 +568,10 @@ class LlmAgent(BaseAgent, abc.ABC):
     tool_response: The response from the tool.
 
   Returns:
-    When present, the returned dict will be used as tool result.
+    Optional[dict[str, Any]]: A response to use instead of the tool result.
+      Any non-None response, including an empty dict, stops the callback chain
+      and replaces the tool result. Return None to keep the current result
+      and allow subsequent callbacks to run.
   """
   on_tool_error_callback: Optional[OnToolErrorCallback] = None
   """Callback or list of callbacks to be called when a tool call encounters an error.
@@ -568,7 +586,10 @@ class LlmAgent(BaseAgent, abc.ABC):
     error: The error from the tool call.
 
   Returns:
-    When present, the returned dict will be used as tool result.
+    Optional[dict[str, Any]]: A recovery response to use instead of propagating
+      the tool error. Any non-None response, including an empty dict, stops the
+      callback chain. Return None to allow subsequent callbacks to handle the
+      error.
   """
   # Callbacks - End
 
@@ -710,6 +731,41 @@ class LlmAgent(BaseAgent, abc.ABC):
         ancestor_agent = ancestor_agent.parent_agent
       return self._resolve_default_live_model()
 
+  async def canonical_model_async(self, ctx: ReadonlyContext) -> BaseLlm:
+    """The resolved self.model field as BaseLlm, for one invocation.
+
+    The async counterpart of :attr:`canonical_model`, and what the flow calls
+    to pick the model for a turn. Resolution may depend on the invocation and
+    may await.
+
+    This method is only for use by Agent Development Kit.
+
+    Args:
+      ctx: The invocation the model is being resolved for.
+
+    Returns:
+      The model to call.
+    """
+    del ctx  # No resolution yet depends on the invocation.
+    return self.canonical_model
+
+  async def canonical_live_model_async(self, ctx: ReadonlyContext) -> BaseLlm:
+    """The resolved self.model field as BaseLlm for live mode.
+
+    The async counterpart of :attr:`canonical_live_model`; see
+    :meth:`canonical_model_async`.
+
+    This method is only for use by Agent Development Kit.
+
+    Args:
+      ctx: The invocation the model is being resolved for.
+
+    Returns:
+      The model to open a live connection with.
+    """
+    del ctx  # No resolution yet depends on the invocation.
+    return self.canonical_live_model
+
   @classmethod
   def set_default_model(cls, model: Union[str, BaseLlm]) -> None:
     """Overrides the default model used when an agent has no model set."""
@@ -818,7 +874,7 @@ class LlmAgent(BaseAgent, abc.ABC):
     # We may need to wrap some built-in tools if there are other tools
     # because the built-in tools cannot be used together with other tools.
     # TODO: Remove once the workaround is no longer needed.
-    from ..flows.llm_flows.agent_transfer import _get_transfer_targets
+    from ..flows.llm_flows.extensions._agent_transfer import _get_transfer_targets
 
     multiple_tools = len(self.tools) > 1 or bool(_get_transfer_targets(self))
     model = self.canonical_model
@@ -929,7 +985,9 @@ class LlmAgent(BaseAgent, abc.ABC):
 
     # Last event is from user or another agent.
     if last_event.author == 'user':
-      function_call_event = ctx._find_matching_function_call(last_event)
+      function_call_event = find_matching_function_call(
+          ctx._get_events(current_invocation=True), last_event
+      )
       if not function_call_event:
         raise ValueError(
             'No agent to transfer to for resuming agent from function response'
@@ -949,7 +1007,15 @@ class LlmAgent(BaseAgent, abc.ABC):
     return None
 
   def __get_agent_to_run(self, agent_name: str) -> BaseAgent:
-    """Find the agent to run under the root agent by name."""
+    """Find the agent this agent transferred to, by name."""
+    from ..flows.llm_flows.extensions._agent_transfer import _get_transfer_targets
+
+    # Prefer this agent's own declared targets, so that resuming a transfer
+    # cannot run a same-named agent from an unrelated branch of the tree.
+    for target in _get_transfer_targets(self):
+      if target.name == agent_name:
+        return target
+
     agent_to_run = self.root_agent.find_agent(agent_name)
     if not agent_to_run:
       available = self._get_available_agent_names()
@@ -1190,33 +1256,13 @@ class LlmAgent(BaseAgent, abc.ABC):
   @classmethod
   def _pre_validate_tools(cls, data: Any) -> Any:
     if isinstance(data, dict) and 'tools' in data and data['tools']:
-      from google.adk.agents.base_agent import BaseAgent
-      from google.adk.tools._node_tool import NodeTool
       from google.adk.workflow._base_node import BaseNode
 
-      new_tools = []
-      for t in data['tools']:
-        if isinstance(t, BaseAgent):
-          raise ValueError(
-              f"Agent '{t.name}' cannot be wrapped as a NodeTool. Agents should"
-              ' be invoked as sub-agents.'
-          )
-        elif isinstance(t, BaseNode):
-          description = t.description
-          if not description:
-            raise ValueError(
-                f"Workflow/Node '{t.name}' must have a description to be"
-                ' wrapped as a tool.'
-            )
-          new_tools.append(NodeTool(node=t, description=description))
-        else:
-          new_tools.append(t)
-      data['tools'] = new_tools
+      data['tools'] = [
+          _wrap_base_node_as_tool(t) if isinstance(t, BaseNode) else t
+          for t in data['tools']
+      ]
     return data
-
-  @model_validator(mode='after')
-  def __model_validator_after(self) -> LlmAgent:
-    return self
 
   @field_validator('generate_content_config', mode='after')
   @classmethod

@@ -801,7 +801,7 @@ async def test_run_impl_bridges_node_input_to_user_content():
   agent = _CapturingManagedAgent(name='m', agent_id='a', mode='single_turn')
 
   # Build a minimal node Context (mirrors
-  # tests/unittests/workflow/test_agent_node.py).
+  # tests/unittests/workflow/test_workflow_agent_as_node.py).
   session = Session(app_name='test', user_id='user', id='session')
   ic = InvocationContext(
       invocation_id='inv',

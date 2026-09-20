@@ -25,6 +25,8 @@ from unittest.mock import Mock
 from unittest.mock import patch
 import urllib.parse
 
+from google.adk.dependencies import _httpx as httpx
+from google.adk.dependencies._mcp import McpError
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.platform import thread as platform_thread
@@ -34,6 +36,7 @@ from google.adk.tools.mcp_tool import mcp_session_manager as mcp_session_manager
 from google.adk.tools.mcp_tool.mcp_session_manager import _DebugHttpxClientFactory
 from google.adk.tools.mcp_tool.mcp_session_manager import _GoogleAuthAsyncByteStream
 from google.adk.tools.mcp_tool.mcp_session_manager import _http_debug_var
+from google.adk.tools.mcp_tool.mcp_session_manager import _is_session_terminated_error
 from google.adk.tools.mcp_tool.mcp_session_manager import _RefreshableAsyncCredentials
 from google.adk.tools.mcp_tool.mcp_session_manager import _sanitize_url
 from google.adk.tools.mcp_tool.mcp_session_manager import _SESSION_IDLE_TTL_SECONDS
@@ -47,9 +50,10 @@ from google.adk.tools.mcp_tool.mcp_session_manager import retry_on_errors
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
-import httpx
 from mcp import StdioServerParameters
 import pytest
+
+from ._sdk_compat import make_mcp_error
 
 try:
   from google.auth.aio.transport.sessions import AsyncAuthorizedSession
@@ -91,7 +95,8 @@ class MockSessionContext:
     """Initialize MockSessionContext.
 
     Args:
-        session: The mock session to return from __aenter__ and session property.
+        session: The mock session to return from __aenter__ and session
+          property.
     """
     self._session = session
     self._aenter_mock = AsyncMock(return_value=session)
@@ -293,6 +298,7 @@ class TestMCPSessionManager:
       "google.adk.tools.mcp_tool.mcp_session_manager._HAS_HTTPX_INSTRUMENTOR",
       True,
   )
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.IS_MCP_SDK_V2", False)
   def test_default_httpx_factory_instruments_client_when_available(
       self, mock_base_factory, mock_instrumentor
   ):
@@ -304,6 +310,34 @@ class TestMCPSessionManager:
 
     assert result is client
     mock_instrumentor.instrument_client.assert_called_once_with(client)
+
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_session_manager.HTTPXClientInstrumentor",
+      create=True,
+  )
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_session_manager._create_mcp_http_client"
+  )
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_session_manager._HAS_HTTPX_INSTRUMENTOR",
+      True,
+  )
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.IS_MCP_SDK_V2", True)
+  def test_default_httpx_factory_skips_instrumentation_on_mcp_2x(
+      self, mock_base_factory, mock_instrumentor
+  ):
+    """The OTel instrumentor is httpx 1.x only and must not see an httpx2 client.
+
+    It wraps one without complaint and then fails at request time, so the
+    breakage surfaces far from here. Instrumenting is skipped instead.
+    """
+    client = Mock()
+    mock_base_factory.return_value = client
+
+    result = create_mcp_http_client()
+
+    assert result is client
+    mock_instrumentor.instrument_client.assert_not_called()
 
   @patch(
       "google.adk.tools.mcp_tool.mcp_session_manager._create_mcp_http_client"
@@ -437,6 +471,92 @@ class TestMCPSessionManager:
 
     manager = MCPSessionManager(self.mock_stdio_connection_params)
     assert not manager._is_session_disconnected(SessionWithBareStreams())
+
+  @pytest.mark.asyncio
+  async def test_discard_session_drops_a_session_that_still_looks_healthy(self):
+    """The pooled session goes even though its streams report open."""
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+    session = MockClientSession()
+    exit_stack = MockAsyncExitStack()
+    manager._sessions["stdio_session"] = (
+        session,
+        exit_stack,
+        asyncio.get_running_loop(),
+    )
+    manager._session_last_used["stdio_session"] = time.monotonic()
+    assert not manager._is_session_disconnected(session)
+
+    manager._discard_session()
+    await asyncio.sleep(0)
+
+    assert "stdio_session" not in manager._sessions
+    assert "stdio_session" not in manager._session_last_used
+    exit_stack.aclose.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_discard_session_closes_the_transport_once_under_a_race(self):
+    """Two callers racing on one dead session close its stack a single time."""
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+    exit_stack = MockAsyncExitStack()
+    manager._sessions["stdio_session"] = (
+        MockClientSession(),
+        exit_stack,
+        asyncio.get_running_loop(),
+    )
+
+    manager._discard_session()
+    manager._discard_session()
+    await asyncio.sleep(0)
+
+    exit_stack.aclose.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_discard_session_drops_the_session_the_call_failed_on(self):
+    """Naming the failed session still discards it."""
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+    session = MockClientSession()
+    exit_stack = MockAsyncExitStack()
+    manager._sessions["stdio_session"] = (
+        session,
+        exit_stack,
+        asyncio.get_running_loop(),
+    )
+
+    manager._discard_session(session=session)
+    await asyncio.sleep(0)
+
+    assert "stdio_session" not in manager._sessions
+    exit_stack.aclose.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_discard_session_spares_the_replacement_under_the_same_key(
+      self,
+  ):
+    """Two callers fail on one session; the first caller's retry pools a
+    replacement under that key, and the second must not tear it down."""
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+    failed_session = MockClientSession()
+    replacement = MockClientSession()
+    exit_stack = MockAsyncExitStack()
+    manager._sessions["stdio_session"] = (
+        replacement,
+        exit_stack,
+        asyncio.get_running_loop(),
+    )
+
+    manager._discard_session(session=failed_session)
+    await asyncio.sleep(0)
+
+    assert manager._sessions["stdio_session"][0] is replacement
+    exit_stack.aclose.assert_not_called()
+
+  def test_discard_session_is_a_no_op_when_nothing_is_pooled(self):
+    """Discarding a session that was never created does nothing."""
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+
+    manager._discard_session()
+
+    assert not manager._sessions
 
   @pytest.mark.asyncio
   async def test_create_session_stdio_new(self):
@@ -1463,6 +1583,70 @@ class TestMCPSessionManager:
         transport = await manager._get_mtls_transport()
         assert transport is None
 
+  @pytest.mark.asyncio
+  @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
+  async def test_mtls_probe_runs_once_across_session_creations(self):
+    """A server that offers no mTLS is probed once, not once per session."""
+    manager = MCPSessionManager(
+        StreamableHTTPConnectionParams(url="http://example.com/mcp")
+    )
+
+    with patch.dict(
+        "os.environ", {"GOOGLE_API_USE_CLIENT_CERTIFICATE": "true"}
+    ):
+      with patch(
+          "google.auth.default", side_effect=Exception("no credentials")
+      ) as mock_auth_default:
+        with patch.object(manager, "_create_client", return_value=Mock()):
+          with patch(
+              "google.adk.tools.mcp_tool.mcp_session_manager.SessionContext"
+          ) as mock_session_context_class:
+            for index in range(3):
+              mock_session_context_class.return_value = MockSessionContext(
+                  session=MockClientSession()
+              )
+              await manager.create_session(
+                  headers={"Authorization": f"Bearer {index}"}
+              )
+
+    assert len(manager._sessions) == 3
+    assert mock_auth_default.call_count == 1
+
+  @pytest.mark.asyncio
+  @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
+  async def test_mtls_probe_retried_after_the_retry_interval(self):
+    """Credentials that appear after a failed probe are still picked up."""
+    manager = MCPSessionManager(
+        SseConnectionParams(url="https://example.com/mcp")
+    )
+
+    mock_session = AsyncMock()
+    mock_session.is_mtls = True
+    mock_session.configure_mtls_channel = AsyncMock()
+
+    with patch.dict(
+        "os.environ", {"GOOGLE_API_USE_CLIENT_CERTIFICATE": "true"}
+    ):
+      with patch.object(
+          mcp_session_manager_module, "_MTLS_PROBE_RETRY_INTERVAL_SECONDS", 0.0
+      ):
+        with patch(
+            "google.auth.default",
+            side_effect=[Exception("no credentials"), (Mock(), None)],
+        ):
+          with patch(
+              "google.adk.tools.mcp_tool.mcp_session_manager.AsyncAuthorizedSession",
+              return_value=mock_session,
+          ):
+            with patch(
+                "google.adk.tools.mcp_tool.mcp_session_manager._GoogleAuthAsyncTransport"
+            ) as mock_transport_class:
+              assert await manager._get_mtls_transport() is None
+              assert (
+                  await manager._get_mtls_transport()
+                  is mock_transport_class.return_value
+              )
+
   @patch("google.adk.tools.mcp_tool.mcp_session_manager.sse_client")
   def test_create_client_with_mtls_transport_sse(self, mock_sse_client):
     """Test that _create_client uses mtls_transport to create factory for SSE."""
@@ -1985,6 +2169,25 @@ class TestRefreshableAsyncCredentials:
     assert urllib.parse.urlparse(url).hostname in warnings[0].getMessage()
 
   @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
+  @pytest.mark.asyncio
+  async def test_before_request_skips_token_for_plaintext_google_host(self):
+    mock_creds = Mock()
+    mock_creds.expired = True
+    mock_creds.token = "new_token"
+    mock_creds.refresh = Mock()
+
+    url = "http://example.googleapis.com/mcp"
+    credentials = _RefreshableAsyncCredentials(
+        mock_creds, target_host=urllib.parse.urlparse(url).netloc
+    )
+    headers = {}
+
+    await credentials.before_request(None, "GET", url, headers)
+
+    mock_creds.refresh.assert_not_called()
+    assert headers == {}
+
+  @pytest.mark.skipif(not AIO_SUPPORTED, reason="google.auth.aio not supported")
   @pytest.mark.parametrize(
       "existing_header_key",
       ["Authorization", "authorization", "AUTHORIZATION", "authORIZATION"],
@@ -2060,9 +2263,13 @@ class TestCheckableMcpHttpClientFactory:
     keyword, and `sse_client` receives that wrapper typed with the SDK's
     protocol. Both hold only while the two signatures agree.
     """
-    sdk_protocol = pytest.importorskip(
-        "mcp.shared._httpx_utils"
-    ).McpHttpClientFactory
+    # Imported outright rather than `importorskip`ed: skipping would retire
+    # this comparison on whichever major moved the module, which is the major
+    # it exists to check. If the path moves, resolve it in `_sdk_compat` the
+    # way `sdk_progress_fn_t` resolves `ProgressFnT`.
+    from mcp.shared._httpx_utils import McpHttpClientFactory  # pylint: disable=g-import-not-at-top
+
+    sdk_protocol = McpHttpClientFactory
 
     ours = inspect.signature(CheckableMcpHttpClientFactory.__call__)
     theirs = inspect.signature(sdk_protocol.__call__)
@@ -2532,3 +2739,58 @@ class TestDebugHttpxClientFactoryOtelReporting:
 def test_sanitize_url(url, redact_query, expected):
   """Test that a URL is rendered for recording without its credentials."""
   assert _sanitize_url(httpx.URL(url), redact_query=redact_query) == expected
+
+
+class TestIsSessionTerminatedError:
+  """Tests for recognizing the server's session-terminated report."""
+
+  def _terminated(self) -> McpError:
+    return make_mcp_error(32600, "Session terminated")
+
+  def test_session_terminated_error_is_recognized(self):
+    assert _is_session_terminated_error(self._terminated())
+
+  def test_the_2x_sdk_spelling_is_recognized(self):
+    """2.x reports the same 404 as INVALID_REQUEST rather than as 32600."""
+    err = make_mcp_error(-32600, "Session terminated")
+    assert _is_session_terminated_error(err)
+
+  def test_an_ordinary_invalid_request_is_not_session_terminated(self):
+    """2.x also raises INVALID_REQUEST for a request it merely dislikes."""
+    err = make_mcp_error(-32600, "Unexpected content type: text/plain")
+    assert not _is_session_terminated_error(err)
+
+  def test_error_reported_through_a_cause_is_recognized(self):
+    wrapper = ConnectionError("Failed to get tools from MCP server")
+    wrapper.__cause__ = self._terminated()
+    assert _is_session_terminated_error(wrapper)
+
+  def test_the_previous_attempts_error_is_not_followed(self):
+    """The retry runs inside the first attempt's `except`, so attempt 2's own
+    failure carries attempt 1's report in `__context__`."""
+    try:
+      raise self._terminated()
+    except McpError:
+      try:
+        raise TimeoutError("call timed out")
+      except TimeoutError as retry_failure:
+        assert not _is_session_terminated_error(retry_failure)
+
+  def test_another_mcp_error_is_not_session_terminated(self):
+    """A tool that fails on its own merits leaves the session alone."""
+    err = make_mcp_error(-32603, "invalid arguments")
+    assert not _is_session_terminated_error(err)
+
+  def test_transport_and_timeout_failures_are_not_session_terminated(self):
+    """Only the server's own report counts; a dropped socket does not."""
+    assert not _is_session_terminated_error(ConnectionError("broken pipe"))
+    assert not _is_session_terminated_error(TimeoutError("timed out"))
+    assert not _is_session_terminated_error(asyncio.CancelledError())
+    assert not _is_session_terminated_error(None)
+
+  def test_a_cycle_in_the_cause_chain_terminates(self):
+    first = ValueError("first")
+    second = ValueError("second")
+    first.__cause__ = second
+    second.__cause__ = first
+    assert not _is_session_terminated_error(first)

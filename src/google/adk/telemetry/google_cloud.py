@@ -333,9 +333,13 @@ class GCPBatchLogRecordProcessor(BatchLogRecordProcessor):
     if record.event_name:
       _ = attributes.setdefault(_EVENT_NAME, record.event_name)
       # Cloud Logging derives the log name from `event_name` in preference to
-      # `gcp.log_name`, which would scatter records over one log per event
-      # type. The name survives as the `event.name` label set above.
-      record.event_name = None
+      # `gcp.log_name`. On Agent Engine that would scatter records over one log
+      # per event type instead of the single log the stdout pipeline produced;
+      # the name survives as the `event.name` label set above. Everywhere else
+      # the event-named log is what CloudLoggingExporter produced, and sinks
+      # (BigQuery tables among them) are named after it, so it has to stay.
+      if os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_ID"):
+        record.event_name = None
     attributes.setdefault(_GCP_LOG_NAME, self._default_log_name)
     emitted.resource = (log_record.resource or Resource.get_empty()).merge(
         self._log_resource

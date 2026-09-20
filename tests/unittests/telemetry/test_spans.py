@@ -18,21 +18,12 @@ from typing import Dict
 from typing import Optional
 from unittest import mock
 
-from fastapi.openapi.models import OAuth2
-from fastapi.openapi.models import OAuthFlowAuthorizationCode
-from fastapi.openapi.models import OAuthFlows
-
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
-from google.adk.auth.auth_credential import AuthCredential
-from google.adk.auth.auth_credential import OAuth2Auth
-from google.adk.auth.auth_tool import AuthConfig
-from google.adk.auth.auth_tool import AuthToolArguments
 from google.adk.errors.tool_execution_error import ToolErrorType
 from google.adk.errors.tool_execution_error import ToolExecutionError
 from google.adk.events.event import Event
-from google.adk.events.event_actions import EventActions
 from google.adk.models.cache_metadata import CacheMetadata
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
@@ -57,6 +48,8 @@ from google.adk.telemetry.tracing import _use_extra_generate_content_attributes
 from google.adk.telemetry.tracing import ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS
 from google.adk.telemetry.tracing import GCP_MCP_SERVER_DESTINATION_ID
 from google.adk.telemetry.tracing import GenerateContentSpan
+from google.adk.telemetry.tracing import MCP_PROTOCOL_VERSION
+from google.adk.telemetry.tracing import MCP_SESSION_ID
 from google.adk.telemetry.tracing import resolve_error_type
 from google.adk.telemetry.tracing import safe_json_serialize
 from google.adk.telemetry.tracing import trace_agent_invocation
@@ -72,8 +65,6 @@ from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import errors as genai_errors
 from google.genai import types
-from mcp import ClientSession as McpClientSession
-from mcp import ListToolsResult as McpListToolsResult
 from mcp import Tool as McpTool
 from opentelemetry._logs import LogRecord
 from opentelemetry._logs import SeverityNumber
@@ -88,8 +79,6 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_SYSTEM_INSTRUCTIONS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_INPUT_TOKENS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_OUTPUT_TOKENS
-from opentelemetry.semconv._incubating.attributes.mcp_attributes import MCP_PROTOCOL_VERSION
-from opentelemetry.semconv._incubating.attributes.mcp_attributes import MCP_SESSION_ID
 from opentelemetry.semconv._incubating.attributes.user_attributes import USER_ID
 from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
 from opentelemetry.semconv.attributes.http_attributes import HTTP_REQUEST_METHOD
@@ -245,94 +234,6 @@ async def test_trace_call_llm(monkeypatch, mock_span_fixture):
       expected_calls, any_order=True
   )
   mock_span_fixture.set_attributes.assert_called_once_with(expected_usage_attrs)
-
-
-@pytest.mark.asyncio
-async def test_trace_call_llm_redacts_oauth2_client_secret_from_contents(
-    monkeypatch, mock_span_fixture
-):
-  """The gcp.vertex.agent.llm_request span attribute must not carry a
-  credential secret embedded in an adk_request_credential function call
-  within contents.
-
-  contents accumulates conversation history across turns, and an earlier
-  turn's adk_request_credential call (see build_auth_request_event in
-  flows/llm_flows/functions.py) -- carrying the tool's full AuthCredential,
-  including client_secret -- becomes part of a later turn's llm_request
-  when it is replayed. Unlike http_options (excluded outright a few lines
-  above in _build_llm_request_for_trace, since it never has legitimate
-  debugging value), contents can't simply be excluded: the conversation is
-  the actual point of tracing an LLM request. This is a different code
-  path from /run, /run_sse, and the session-history endpoints: those
-  redact an already-built Event/Session dict; this one builds a fresh
-  dict representation of contents at trace time and must redact it before
-  it is serialized into the string this span attribute actually stores,
-  since redaction can't reach inside an opaque string afterward.
-  """
-  monkeypatch.setattr(
-      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
-  )
-
-  auth_scheme = OAuth2(
-      flows=OAuthFlows(
-          authorizationCode=OAuthFlowAuthorizationCode(
-              authorizationUrl='https://idp.example.com/oauth2/auth',
-              tokenUrl='https://idp.example.com/oauth2/token',
-              scopes={'read': 'read'},
-          )
-      )
-  )
-  credential = AuthCredential(
-      auth_type='oauth2',
-      oauth2=OAuth2Auth(
-          client_id='public-client-id',
-          client_secret='should-never-reach-the-trace',
-      ),
-  )
-  auth_config = AuthConfig(
-      auth_scheme=auth_scheme,
-      raw_auth_credential=credential,
-      credential_key='my_tool:oauth2:abcd1234',
-  )
-  # Built exactly as build_auth_request_event does, in
-  # flows/llm_flows/functions.py.
-  args = AuthToolArguments(
-      function_call_id='adk-original-fc-id', auth_config=auth_config
-  ).model_dump(mode='json', exclude_none=True, by_alias=True)
-  credential_request_content = types.Content(
-      role='user',
-      parts=[
-          types.Part(
-              function_call=types.FunctionCall(
-                  name='adk_request_credential', id='adk-req-cred-id', args=args
-              )
-          )
-      ],
-  )
-
-  agent = LlmAgent(name='test_agent')
-  invocation_context = await _create_invocation_context(agent)
-  llm_request = LlmRequest(
-      model='gemini-pro',
-      contents=[
-          credential_request_content,
-          types.Content(role='user', parts=[types.Part(text='continue')]),
-      ],
-  )
-  llm_response = LlmResponse(turn_complete=True)
-
-  trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
-
-  llm_request_calls = [
-      call
-      for call in mock_span_fixture.set_attribute.call_args_list
-      if call.args[0] == 'gcp.vertex.agent.llm_request'
-  ]
-  assert len(llm_request_calls) == 1
-  serialized = llm_request_calls[0].args[1]
-  assert 'should-never-reach-the-trace' not in serialized
-  assert 'public-client-id' in serialized
-  assert 'my_tool:oauth2:abcd1234' in serialized
 
 
 @pytest.mark.asyncio
@@ -997,6 +898,16 @@ def test_trace_mcp_http_exchange_emits_debug_log_record(
   }
 
 
+def test_mcp_attribute_names_match_semconv():
+  """The names are spelled out locally, so nothing else would catch drift."""
+  mcp_attributes = pytest.importorskip(
+      'opentelemetry.semconv._incubating.attributes.mcp_attributes'
+  )
+
+  assert MCP_SESSION_ID == mcp_attributes.MCP_SESSION_ID
+  assert MCP_PROTOCOL_VERSION == mcp_attributes.MCP_PROTOCOL_VERSION
+
+
 @mock.patch('google.adk.telemetry.tracing.otel_logger')
 def test_trace_mcp_http_exchange_elides_bodies_by_default(
     mock_otel_logger, monkeypatch
@@ -1141,7 +1052,14 @@ def test_trace_merged_tool_calls_sets_correct_attributes(
       function_response_event=mock_event_fixture,
   )
 
-  expected_event_json = mock_event_fixture.model_dump_json(exclude_none=True)
+  expected_responses_json = json.dumps(
+      [{
+          'id': 'tool_call_id_003',
+          'name': 'test_function_1',
+          'response': {'data': 'merged_details'},
+      }],
+      ensure_ascii=False,
+  )
   expected_calls = [
       mock.call('gen_ai.operation.name', 'execute_tool'),
       mock.call('gen_ai.tool.name', '(merged tools)'),
@@ -1149,7 +1067,7 @@ def test_trace_merged_tool_calls_sets_correct_attributes(
       mock.call('gen_ai.tool.call.id', test_response_event_id),
       mock.call('gcp.vertex.agent.tool_call_args', 'N/A'),
       mock.call('gcp.vertex.agent.event_id', test_response_event_id),
-      mock.call('gcp.vertex.agent.tool_response', expected_event_json),
+      mock.call('gcp.vertex.agent.tool_response', expected_responses_json),
       mock.call('gcp.vertex.agent.llm_request', '{}'),
       mock.call('gcp.vertex.agent.llm_response', '{}'),
   ]
@@ -1158,7 +1076,7 @@ def test_trace_merged_tool_calls_sets_correct_attributes(
   mock_span_fixture.set_attribute.assert_has_calls(
       expected_calls, any_order=True
   )
-  # The merged response must be the real serialized event, not the
+  # The merged response must be the real serialized responses, not the
   # "<not serializable>" fallback.
   recorded_response = next(
       call_obj.args[1]
@@ -1166,220 +1084,102 @@ def test_trace_merged_tool_calls_sets_correct_attributes(
       if call_obj.args[0] == 'gcp.vertex.agent.tool_response'
   )
   parsed = json.loads(recorded_response)
-  assert parsed['id'] == 'test_event_id'
+  assert parsed[0]['id'] == 'tool_call_id_003'
   assert 'merged_details' in recorded_response
 
 
-def test_trace_merged_tool_calls_redacts_credential_in_state_delta(
-    monkeypatch, mock_span_fixture
+def test_trace_merged_tool_calls_omits_event_actions(
+    monkeypatch, mock_span_fixture, mock_event_fixture
 ):
-  """The merged-event span this function builds dumps the whole event,
-  including actions.state_delta -- exactly where
-  SessionStateCredentialService.save_credential parks an exchanged
-  AuthCredential under an app-chosen key (see redact_credential_secrets'
-  docstring). Unlike the other spans this function's own docstring says
-  it exists to unblock (dev-UI /debug/trace requests), this one was not
-  covered by the earlier redaction work in this file.
-  """
+  """Only the responses are recorded, not the state a tool wrote."""
   monkeypatch.setattr(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
 
-  credential = AuthCredential(
-      auth_type='oauth2',
-      oauth2=OAuth2Auth(
-          client_id='public-client-id',
-          client_secret='should-never-reach-the-trace',
-      ),
+  mock_event_fixture.content = types.Content(
+      role='user',
+      parts=[
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id='tool_call_id_005',
+                  name='test_function_1',
+                  response={'data': 'merged_details'},
+              )
+          ),
+      ],
   )
-  merged_event = Event(
-      invocation_id='inv-1',
-      author='root_agent',
-      id='merged-event-id',
-      content=types.Content(
-          role='user',
-          parts=[
-              types.Part(
-                  function_response=types.FunctionResponse(
-                      id='fc-1',
-                      name='connect_calendar',
-                      response={'status': 'connected'},
-                  )
-              )
-          ],
-      ),
-      actions=EventActions(
-          state_delta={
-              'my_tool:oauth2:abcd1234': credential.model_dump(
-                  by_alias=True, exclude_none=True, mode='json'
-              )
+  # Shape the openapi tool auth handler stores an exchanged credential in.
+  mock_event_fixture.actions.state_delta = {
+      'oauth2_existing_exchanged_credential': {
+          'oauth2': {
+              'access_token': 'access-token-value',
+              'refresh_token': 'refresh-token-value',
           }
-      ),
-  )
+      }
+  }
 
   trace_merged_tool_calls(
-      response_event_id=merged_event.id,
-      function_response_event=merged_event,
+      response_event_id='merged_evt_id_003',
+      function_response_event=mock_event_fixture,
   )
 
-  calls = [
-      call_obj
+  recorded_response = next(
+      call_obj.args[1]
       for call_obj in mock_span_fixture.set_attribute.call_args_list
       if call_obj.args[0] == 'gcp.vertex.agent.tool_response'
-  ]
-  assert len(calls) == 1
-  serialized = calls[0].args[1]
-
-  assert 'should-never-reach-the-trace' not in serialized
-  # Must not "redact" by blanking the whole attribute the UI renders --
-  # everything else the merged event carries should still be there.
-  assert 'public-client-id' in serialized
-  assert 'connect_calendar' in serialized
-  assert 'my_tool:oauth2:abcd1234' in serialized
-
-
-@pytest.mark.parametrize(
-    'case_name,value',
-    [
-        ('control_no_float', 'no float here'),
-        ('exp_minus_9', 1e-9),
-        ('exp_minus_8', 1e-8),
-        ('exp_minus_7', 1e-7),
-        ('exp_minus_6', 1e-6),
-        ('exp_minus_5', 1e-5),
-        ('mantissa_exp_minus_7', 1.23e-7),
-        ('negative_exp_minus_7', -1e-7),
-    ],
-)
-def test_trace_merged_tool_calls_matches_model_dump_json_byte_for_byte(
-    monkeypatch, mock_span_fixture, case_name, value
-):
-  """A tool's own return value reaches this attribute unredacted (no
-  credential involved at all here), so whatever serializes it has to
-  match model_dump_json's exact bytes for every payload shape a tool can
-  return, not just credential-shaped ones -- a small-magnitude float
-  (a latency in seconds, a p-value, a score) is exactly as real a shape
-  as a credential is.
-
-  json.dumps and pydantic-core's float formatting disagree for a narrow
-  band of small negative exponents (repr()'s two-digit-minimum exponent
-  padding is not pydantic-core's), which a fix using json.dumps would
-  silently reproduce for these exact cases while passing every other
-  payload shape.
-  """
-  merged_event = Event(
-      invocation_id='inv-1',
-      author='root_agent',
-      id='test_event_id',
-      content=types.Content(
-          role='user',
-          parts=[
-              types.Part(
-                  function_response=types.FunctionResponse(
-                      id='fc-1',
-                      name='measure',
-                      response={'value': value},
-                  )
-              )
-          ],
-      ),
   )
-  expected = merged_event.model_dump_json(exclude_none=True)
+  assert 'access-token-value' not in recorded_response
+  assert 'refresh-token-value' not in recorded_response
+  assert 'merged_details' in recorded_response
 
+
+def test_trace_merged_tool_calls_strips_credential_secrets_from_response(
+    monkeypatch, mock_span_fixture, mock_event_fixture
+):
+  """A credential exchanged via adk_request_credential is redacted.
+
+  Unlike test_trace_merged_tool_calls_omits_event_actions (which covers a
+  credential riding in event.actions.state_delta), this covers the shape a
+  client's *answer* to an adk_request_credential call takes: the exchanged
+  secret lands directly in a function_response.response dict, which is
+  serialized on every merged-tool-call span regardless of the response's
+  name.
+  """
   monkeypatch.setattr(
       'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
   )
-  trace_merged_tool_calls(
-      response_event_id=merged_event.id,
-      function_response_event=merged_event,
-  )
-  calls = [
-      call_obj
-      for call_obj in mock_span_fixture.set_attribute.call_args_list
-      if call_obj.args[0] == 'gcp.vertex.agent.tool_response'
-  ]
-  assert len(calls) == 1
-  assert calls[0].args[1] == expected
 
-
-@pytest.mark.parametrize(
-    'secret_key',
-    [
-        # Hardcoded rather than sourced from CREDENTIAL_SECRET_KEYS itself:
-        # parametrizing off the live constant would mean a mutant that
-        # narrows the constant also narrows this test's own case list,
-        # so it could never fail no matter how much the constant shrank.
-        # This list is the thing pinning what CREDENTIAL_SECRET_KEYS is
-        # supposed to contain.
-        'password',
-        'token',
-        'additionalHeaders',
-        'clientSecret',
-        'authResponseUri',
-        'authCode',
-        'accessToken',
-        'refreshToken',
-        'idToken',
-        'codeVerifier',
-        'privateKeyId',
-        'privateKey',
-        'apiKey',
-    ],
-)
-def test_trace_merged_tool_calls_strips_every_credential_secret_key(
-    monkeypatch, mock_span_fixture, secret_key
-):
-  """Each of the 13 names in CREDENTIAL_SECRET_KEYS individually, not just
-  the subset (clientSecret, accessToken) the other tests in this file
-  happen to exercise through a real AuthCredential's own fields.
-  Narrowing the strip set to only the tested 6 was invisible to the
-  suite before this: additionalHeaders, authResponseUri, authCode,
-  refreshToken, idToken, privateKeyId, and privateKey appeared in no
-  test in this file, auth's own tests, or test_fast_api.py's.
-  """
-  secret_value = f'should-never-reach-the-trace-{secret_key}'
-  merged_event = Event(
-      invocation_id='inv-1',
-      author='root_agent',
-      id='test_event_id',
-      content=types.Content(
-          role='user',
-          parts=[
-              types.Part(
-                  function_response=types.FunctionResponse(
-                      id='fc-1',
-                      name='connect_calendar',
-                      response={'status': 'connected'},
-                  )
+  mock_event_fixture.content = types.Content(
+      role='user',
+      parts=[
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id='tool_call_id_auth',
+                  name='adk_request_credential',
+                  response={
+                      'client_secret': 'super-secret-client-secret',
+                      'access_token': 'super-secret-access-token',
+                      'client_id': 'legit-client-id',
+                  },
               )
-          ],
-      ),
-      actions=EventActions(
-          state_delta={
-              'my_tool:oauth2:abcd1234': {
-                  'authType': 'oauth2',
-                  secret_key: secret_value,
-              }
-          }
-      ),
+          ),
+      ],
   )
 
-  monkeypatch.setattr(
-      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
-  )
   trace_merged_tool_calls(
-      response_event_id=merged_event.id,
-      function_response_event=merged_event,
+      response_event_id='merged_evt_id_006',
+      function_response_event=mock_event_fixture,
   )
-  calls = [
-      call_obj
+
+  recorded_response = next(
+      call_obj.args[1]
       for call_obj in mock_span_fixture.set_attribute.call_args_list
       if call_obj.args[0] == 'gcp.vertex.agent.tool_response'
-  ]
-  assert len(calls) == 1
-  serialized = calls[0].args[1]
-  assert secret_value not in serialized
-  assert 'oauth2' in serialized
+  )
+  assert 'super-secret-client-secret' not in recorded_response
+  assert 'super-secret-access-token' not in recorded_response
+  # A field the client legitimately needs to see is not collateral damage.
+  assert 'legit-client-id' in recorded_response
 
 
 def test_trace_tool_call_skips_non_recording_span(

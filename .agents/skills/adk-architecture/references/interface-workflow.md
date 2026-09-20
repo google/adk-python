@@ -141,6 +141,13 @@ When `ctx.run_node()` is called, the scheduler checks three cases:
    - All resolved → re-execute with `resume_inputs` from the
      resolved function responses.
 
+4. **Agent Transfer** — if the child node is an agent that requests an
+   agent handoff (`child_ctx.actions.transfer_to_agent`), the scheduler
+   drives the sequential transfer loop. It resolves the target agent and
+   parent context, delegates single-step execution to the target context's
+   owning scheduler, and preserves output delegation (`use_as_output`)
+   when execution returns to the invoking context.
+
 State reconstruction is **lazy**: the scheduler scans session events
 only on the first `ctx.run_node()` call for a given path, not
 upfront. This avoids scanning for dynamic nodes that won't be

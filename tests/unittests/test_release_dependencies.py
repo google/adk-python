@@ -514,3 +514,24 @@ def test_injection_config_validation_raises_pydantic_validation_error() -> None:
   with pytest.raises(ValidationError):
     # Both required fields missing — pydantic must reject the construction.
     InjectedError()  # type: ignore[call-arg]
+
+
+def test_packages_distributions_not_mocked_to_empty() -> None:
+  """packages_distributions must return installed packages, not an empty mock."""
+  distributions = importlib.metadata.packages_distributions()
+  assert 'pytest' in distributions, (
+      'packages_distributions() returned an empty mapping because it was'
+      ' mocked globally in conftest.py.'
+  )
+
+
+def test_vizier_service_not_prepopulated_with_mock_in_sys_modules() -> None:
+  """sys.modules must not be prepopulated with MagicMock for vizier services."""
+  import sys
+  from unittest.mock import MagicMock
+
+  module = sys.modules.get('google.cloud.aiplatform_v1.services.vizier_service')
+  assert module is None or not isinstance(module, MagicMock), (
+      'google.cloud.aiplatform_v1.services.vizier_service was prepopulated with'
+      ' a MagicMock in conftest.py.'
+  )

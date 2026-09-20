@@ -32,9 +32,11 @@ from contextlib import ExitStack
 import logging
 import os
 import re
+from typing import Any
 from typing import Final
 from typing import TYPE_CHECKING
 
+from google.adk.auth.auth_credential import CREDENTIAL_SECRET_KEYS
 from google.genai import types
 from google.genai.models import Models
 from opentelemetry import _logs
@@ -54,8 +56,6 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_NAME
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_TYPE
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GenAiSystemValues
-from opentelemetry.semconv._incubating.attributes.mcp_attributes import MCP_PROTOCOL_VERSION
-from opentelemetry.semconv._incubating.attributes.mcp_attributes import MCP_SESSION_ID
 from opentelemetry.semconv._incubating.attributes.user_attributes import USER_ID
 from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
 from opentelemetry.semconv.attributes.http_attributes import HTTP_REQUEST_METHOD
@@ -68,11 +68,9 @@ from opentelemetry.trace import Span
 from opentelemetry.trace import Status
 from opentelemetry.trace import StatusCode
 from opentelemetry.util.types import AttributeValue
-from pydantic_core import to_json
 from typing_extensions import deprecated
 
 from .. import version
-from ..auth.auth_credential import redact_credential_secrets
 from ..utils.env_utils import is_enterprise_mode_enabled
 from ..utils.model_name_utils import extract_model_name
 from ..utils.model_name_utils import is_gemini_model
@@ -80,10 +78,12 @@ from ._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_CONTENTS_COUNT
 from ._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_FINGERPRINT
 from ._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_HIT
 from ._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_INVOCATIONS_USED
+from ._decorators import experimental_telemetry
 from ._experimental_semconv import maybe_log_completion_details
 from ._experimental_semconv import set_operation_details_attributes_from_request
 from ._experimental_semconv import set_operation_details_attributes_from_response
 from ._experimental_semconv import set_operation_details_common_attributes
+from ._finish_reason import is_reported_finish_reason
 from ._serialization import safe_json_serialize
 from ._stable_semconv import choice_body
 from ._stable_semconv import GEN_AI_CHOICE_EVENT
@@ -96,6 +96,12 @@ from ._stable_semconv import user_message_body
 from ._token_usage import TokenUsage
 from .context import _TRUTHY_ENV_VALUES
 from .context import TelemetryConfig
+
+# Use the import symbols once the minimum OpenTelemetry SDK version is updated to 1.40.0
+# from opentelemetry.semconv._incubating.attributes.mcp_attributes import MCP_PROTOCOL_VERSION
+# from opentelemetry.semconv._incubating.attributes.mcp_attributes import MCP_SESSION_ID
+MCP_PROTOCOL_VERSION: Final[str] = "mcp.protocol.version"
+MCP_SESSION_ID: Final[str] = "mcp.session.id"
 
 # By default some ADK spans include attributes with potential PII data.
 # This env, when set to false, allows to disable populating those attributes.
@@ -347,11 +353,12 @@ def _should_report_mcp_http_exchanges() -> bool:
   """Whether MCP HTTP exchanges are reported to OTel. Off unless asked for.
 
   The record is experimental (`adk.experimental.*`), so it rides on the
-  experimental telemetry opt-in. Resolved from the env rather than from
-  `RunConfig.telemetry`, because the httpx response hook that reports an
-  exchange has no invocation context to read a per-request override from.
+  experimental telemetry opt-in for the `mcp` feature. Resolved from the env
+  rather than from `RunConfig.telemetry`, because the httpx response hook that
+  reports an exchange has no invocation context to read a per-request override
+  from.
   """
-  return TelemetryConfig().should_emit_experimental_telemetry
+  return TelemetryConfig()._experimental_feature_enabled("mcp")
 
 
 def _should_capture_mcp_http_bodies() -> bool:
@@ -498,6 +505,26 @@ def _trace_mcp_http_exchange(
   )
 
 
+def _redact_credential_secrets(value: Any) -> Any:
+  """Recursively strips CREDENTIAL_SECRET_KEYS entries from a dict/list tree.
+
+  A tool's response to an adk_request_credential call carries the exchanged
+  credential wherever the caller chose to put it -- observed directly under
+  a top-level key, and equally plausibly nested (for example under a
+  "credential" sub-object), so this walks the whole structure rather than
+  checking only the top level.
+  """
+  if isinstance(value, Mapping):
+    return {
+        key: _redact_credential_secrets(val)
+        for key, val in value.items()
+        if key not in CREDENTIAL_SECRET_KEYS
+    }
+  if isinstance(value, list):
+    return [_redact_credential_secrets(item) for item in value]
+  return value
+
+
 def trace_merged_tool_calls(
     response_event_id: str,
     function_response_event: Event,
@@ -532,37 +559,23 @@ def trace_merged_tool_calls(
   span.set_attribute("gcp.vertex.agent.tool_call_args", "N/A")
   span.set_attribute("gcp.vertex.agent.event_id", response_event_id)
   if telemetry_config.should_add_content_to_legacy_spans:
+    # Only the responses: actions carry session state, credentials included.
+    content = function_response_event.content
+    parts = (content.parts or []) if content else []
     try:
-      # Unlike the other spans this function's docstring says it exists
-      # to unblock (dev-UI /debug/trace requests), this one dumps the
-      # whole merged event -- and an event's actions.state_delta is
-      # exactly where SessionStateCredentialService.save_credential parks
-      # an exchanged AuthCredential under an app-chosen key (see
-      # _is_credential_shaped's docstring). model_dump_json would emit
-      # that credential dict unredacted; redacting the dict before
-      # serializing it to a string is required, same as elsewhere in
-      # this file, since redaction can't reach inside an already-built
-      # string. pydantic_core.to_json is the exact serializer
-      # model_dump_json calls internally, so redacting the dict first and
-      # serializing with it keeps this attribute's bytes identical to the
-      # old model_dump_json call's for every payload shape -- json.dumps
-      # does not: it and pydantic-core's float formatting disagree for a
-      # narrow band of small-magnitude exponents (1e-9 vs 1e-09), a real
-      # value shape a tool's own return data can carry (a latency, a
-      # p-value, a small score), not just a hypothetical one.
-      function_response_event_json = to_json(
-          redact_credential_secrets(
-              function_response_event.model_dump(
-                  exclude_none=True, mode="json"
-              )
+      tool_response_json = safe_json_serialize([
+          _redact_credential_secrets(
+              part.function_response.model_dump(exclude_none=True, mode="json")
           )
-      ).decode()
+          for part in parts
+          if part.function_response is not None
+      ])
     except Exception:  # pylint: disable=broad-exception-caught
-      function_response_event_json = "<not serializable>"
+      tool_response_json = "<not serializable>"
 
     span.set_attribute(
         "gcp.vertex.agent.tool_response",
-        function_response_event_json,
+        tool_response_json,
     )
   else:
     span.set_attribute("gcp.vertex.agent.tool_response", "{}")
@@ -582,20 +595,18 @@ def _set_usage_metadata_attributes(
   """Records usage metadata attributes on the given span."""
   if usage_metadata is None:
     return
-  span.set_attributes(TokenUsage(usage_metadata).to_attributes())
+  span.set_attributes(
+      TokenUsage.from_usage_metadata(usage_metadata).to_attributes()
+  )
 
 
+@experimental_telemetry(gate="context_cache")
 def _set_context_cache_attributes(
     span: Span,
     cache_metadata: CacheMetadata | None,
-    telemetry_config: TelemetryConfig,
 ) -> None:
   """Records context cache state on the given span."""
   if cache_metadata is None:
-    return
-  # The fingerprint is a content hash, so these attributes stay behind the
-  # experimental opt-in rather than landing on every span by default.
-  if not telemetry_config.should_emit_experimental_telemetry:
     return
   attributes: dict[str, AttributeValue] = {
       ADK_EXPERIMENTAL_CONTEXT_CACHE_HIT: cache_metadata.cache_name is not None,
@@ -700,17 +711,10 @@ def trace_call_llm(
 
   _set_usage_metadata_attributes(span, llm_response.usage_metadata)
   _set_context_cache_attributes(
-      span, getattr(llm_response, "cache_metadata", None), telemetry_config
+      telemetry_config, span, getattr(llm_response, "cache_metadata", None)
   )
-  if llm_response.finish_reason:
-    try:
-      finish_reason_str = llm_response.finish_reason.value.lower()
-    except AttributeError:
-      finish_reason_str = str(llm_response.finish_reason).lower()
-    span.set_attribute(
-        "gen_ai.response.finish_reasons",
-        [finish_reason_str],
-    )
+  if is_reported_finish_reason(finish_reason := llm_response.finish_reason):
+    span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, [finish_reason.lower()])
 
 
 def _without_thought_signature(part: types.Part) -> types.Part:
@@ -901,24 +905,11 @@ def _build_llm_request_for_trace(llm_request: LlmRequest) -> dict[str, object]:
         for part in content.parts
         if not part.inline_data
     ]
-    # Unlike http_options above, contents can't simply be excluded: the
-    # conversation is the actual point of tracing an LLM request. But the
-    # conversation can carry an adk_request_credential function call's full
-    # AuthCredential (see build_auth_request_event in
-    # flows/llm_flows/functions.py) or one parked in state and later
-    # replayed into a turn, so it needs the same redaction /run, /run_sse,
-    # and the session-history endpoints already apply -- otherwise this
-    # span attribute becomes an unredacted copy of the same secret,
-    # readable from the dev-UI debug/trace endpoints. Applied here, before
-    # the dict is serialized to the string this attribute actually stores
-    # (see safe_json_serialize above): once it's a string, it's opaque to
-    # this walker, which only descends real dicts and lists.
-    content_dict = redact_credential_secrets(
+    result["contents"].append(
         types.Content(role=content.role, parts=parts).model_dump(
             exclude_none=True, mode="json"
         )
     )
-    result["contents"].append(content_dict)
   return result
 
 
@@ -928,9 +919,16 @@ def _telemetry_config_from_invocation_context(
   """Returns ``invocation_context.run_config.telemetry`` if reachable, else ``None``."""
   if invocation_context is None:
     return TelemetryConfig()
-  if (run_config := invocation_context.run_config) is None:
+  try:
+    if (run_config := invocation_context.run_config) is None:
+      return TelemetryConfig()
+    return run_config.telemetry or TelemetryConfig()
+  except AttributeError:
+    logger.warning(
+        "Failed to access run_config from invocation_context: type is %s",
+        type(invocation_context).__name__,
+    )
     return TelemetryConfig()
-  return run_config.telemetry or TelemetryConfig()
 
 
 @deprecated("Replaced by use_inference_span to support experimental semconv.")
@@ -1125,7 +1123,7 @@ def _use_native_generate_content_span_stable_semconv(
   telemetry_config = telemetry_config or TelemetryConfig()
   system_name = _resolve_gen_ai_system_name(llm_request.model)
   with tracer.start_as_current_span(
-      f"generate_content {llm_request.model or ''}"
+      f"generate_content {llm_request.model or ''}".strip()
   ) as span:
     span.set_attribute(GEN_AI_SYSTEM, system_name)
     _set_common_generate_content_attributes(
@@ -1179,7 +1177,7 @@ def _use_native_generate_content_span(
     return
 
   with tracer.start_as_current_span(
-      f"generate_content {llm_request.model or ''}"
+      f"generate_content {llm_request.model or ''}".strip()
   ) as span:
     _set_common_generate_content_attributes(
         span, llm_request, common_attributes
@@ -1219,10 +1217,12 @@ def trace_generate_content_result(span: Span | None, llm_response: LlmResponse):
   if span is None:
     return
 
+  # This deprecated path has no notion of an inference ending, so it keeps
+  # skipping partials rather than reporting one choice per chunk.
   if llm_response.partial:
     return
 
-  if finish_reason := llm_response.finish_reason:
+  if is_reported_finish_reason(finish_reason := llm_response.finish_reason):
     span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, [finish_reason.lower()])
   _set_usage_metadata_attributes(span, llm_response.usage_metadata)
 
@@ -1233,6 +1233,7 @@ def trace_generate_content_result(span: Span | None, llm_response: LlmResponse):
           attributes={
               GEN_AI_SYSTEM: _inference_system_name(None, llm_response)
           },
+          context=trace.set_span_in_context(span),
       )
   )
 
@@ -1254,16 +1255,17 @@ def trace_inference_result(
   if span is None:
     return
 
-  if llm_response.partial:
-    return
-
-  if finish_reason := llm_response.finish_reason:
+  # No `partial` check: a streamed chunk differs from a whole answer only by
+  # the finish reason it does not carry. The caller stops recording once one
+  # arrives, so the response an aggregator assembles from the chunks it already
+  # reported does not reach here.
+  if is_reported_finish_reason(finish_reason := llm_response.finish_reason):
     span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, [finish_reason.lower()])
   _set_usage_metadata_attributes(span, llm_response.usage_metadata)
   # Callers outside adk pass their own response objects here, which are only
   # required to carry the fields this function already read.
   _set_context_cache_attributes(
-      span, getattr(llm_response, "cache_metadata", None), telemetry_config
+      telemetry_config, span, getattr(llm_response, "cache_metadata", None)
   )
 
   if telemetry_config.should_use_experimental_genai_semconv and isinstance(
@@ -1287,6 +1289,7 @@ def trace_inference_result(
                     invocation_context, llm_response
                 )
             },
+            context=trace.set_span_in_context(span),
         )
     )
 

@@ -873,6 +873,87 @@ class TestA2AToEventConverters:
       with pytest.raises(RuntimeError, match="Failed to convert task message"):
         convert_a2a_task_to_event(mock_task, "test-author")
 
+  @pytest.mark.parametrize(
+      "terminal_state",
+      [
+          _compat.TS_COMPLETED,
+          _compat.TS_FAILED,
+          _compat.TS_CANCELED,
+      ],
+  )
+  def test_convert_a2a_task_to_event_terminal_state_sets_skip_summarization(
+      self, terminal_state
+  ):
+    """Test that terminal A2A task states set skip_summarization to True."""
+    a2a_part = _compat.make_text_part("task artifact text")
+    task = Task(
+        id="task-1",
+        status=_compat.make_task_status(
+            terminal_state, timestamp="2024-01-01T00:00:00Z"
+        ),
+        context_id="context-1",
+        artifacts=[
+            _compat.make_artifact(
+                artifact_id="art-1",
+                artifact_type="message",
+                parts=[a2a_part],
+            )
+        ],
+    )
+
+    mock_genai_part = genai_types.Part(text="task artifact text")
+    mock_part_converter = Mock(return_value=[mock_genai_part])
+
+    event = convert_a2a_task_to_event(
+        task,
+        author="test-author",
+        invocation_context=self.mock_invocation_context,
+        part_converter=mock_part_converter,
+    )
+
+    assert event is not None
+    assert event.actions.skip_summarization is True
+
+  @pytest.mark.parametrize(
+      "non_terminal_state",
+      [
+          _compat.TS_SUBMITTED,
+          _compat.TS_WORKING,
+      ],
+  )
+  def test_convert_a2a_task_to_event_non_terminal_state_does_not_set_skip_summarization(
+      self, non_terminal_state
+  ):
+    """Test that non-terminal A2A task states do not set skip_summarization."""
+    a2a_part = _compat.make_text_part("task artifact text")
+    task = Task(
+        id="task-1",
+        status=_compat.make_task_status(
+            non_terminal_state, timestamp="2024-01-01T00:00:00Z"
+        ),
+        context_id="context-1",
+        artifacts=[
+            _compat.make_artifact(
+                artifact_id="art-1",
+                artifact_type="message",
+                parts=[a2a_part],
+            )
+        ],
+    )
+
+    mock_genai_part = genai_types.Part(text="task artifact text")
+    mock_part_converter = Mock(return_value=[mock_genai_part])
+
+    event = convert_a2a_task_to_event(
+        task,
+        author="test-author",
+        invocation_context=self.mock_invocation_context,
+        part_converter=mock_part_converter,
+    )
+
+    assert event is not None
+    assert event.actions.skip_summarization is not True
+
   def test_convert_a2a_message_to_event_success(self):
     """Test successful conversion of A2A message to event."""
 

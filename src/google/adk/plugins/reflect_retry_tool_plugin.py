@@ -221,7 +221,11 @@ class ReflectAndRetryToolPlugin(BasePlugin):
       tool_context: ToolContext,
       error: Any,
   ) -> Optional[dict[str, Any]]:
-    """Central, thread-safe logic for processing tool errors.
+    """Central logic for processing tool errors.
+
+    Failure counts are updated under an asyncio lock, which serializes
+    coroutines on a single event loop but provides no mutual exclusion
+    between threads.
 
     Args:
       tool: The tool that was called.

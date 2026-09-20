@@ -40,7 +40,7 @@ from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 import pytest
 
-from .functional._scenarios import install_telemetry
+from .functional.scenarios.telemetry_setup import install_telemetry
 
 _SESSION_ID = 'some_session'
 

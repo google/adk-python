@@ -29,6 +29,8 @@ from google.adk.errors.already_exists_error import AlreadyExistsError
 from google.adk.errors.session_not_found_error import SessionNotFoundError
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
+from google.adk.features import FeatureName
+from google.adk.features import override_feature_enabled
 from google.adk.sessions import database_session_service
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.database_session_service import DatabaseSessionService
@@ -36,6 +38,7 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.schemas.shared import DynamicJSON
 from google.adk.sessions.schemas.v0 import DynamicPickleType
 from google.adk.sessions.schemas.v1 import StorageSession
+from google.adk.sessions.session import Session
 from google.adk.sessions.sqlite_session_service import SqliteSessionService
 from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
 from google.adk.tools.tool_confirmation import ToolConfirmation
@@ -141,16 +144,16 @@ def test_dynamic_json_column_statement_is_cacheable():
 
 
 @pytest.mark.parametrize(
-    'dialect_name', ['sqlite', 'postgresql', 'mysql', 'mariadb']
+    'dialect_name', ['sqlite', 'postgresql', 'mysql', 'mariadb', 'mssql']
 )
 def test_database_session_service_uses_naive_datetime_for_dialect(dialect_name):
   """Verifies dialects that store DATETIME WITHOUT TIME ZONE are treated as naive.
 
-  SQLite, PostgreSQL, MySQL, and MariaDB all store DATETIME/TIMESTAMP WITHOUT
-  TIME ZONE, so create_session must strip tzinfo before storing. Otherwise the
-  marker produced by create_session (with +00:00) mismatches the marker read
-  back from storage (without +00:00), triggering a false stale-writer error on
-  the first append_event after create_session.
+  SQLite, PostgreSQL, MySQL, MariaDB, and MSSQL all store DATETIME/TIMESTAMP
+  WITHOUT TIME ZONE, so create_session must strip tzinfo before storing.
+  Otherwise the marker produced by create_session (with +00:00) mismatches the
+  marker read back from storage (without +00:00), triggering a false stale-writer
+  error on the first append_event after create_session.
 
   This exercises the production decision (_uses_naive_datetime) directly rather
   than re-implementing the strip logic, so it actually guards create_session.
@@ -1545,7 +1548,12 @@ async def test_session_last_update_time_updates_on_event(session_service):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'service_type', [SessionServiceType.DATABASE, SessionServiceType.SQLITE]
+    'service_type',
+    [
+        SessionServiceType.IN_MEMORY,
+        SessionServiceType.DATABASE,
+        SessionServiceType.SQLITE,
+    ],
 )
 async def test_append_event_to_deleted_session_raises_session_not_found(
     service_type, tmp_path
@@ -1567,6 +1575,17 @@ async def test_append_event_to_deleted_session_raises_session_not_found(
   finally:
     if isinstance(session_service, DatabaseSessionService):
       await session_service.close()
+
+
+@pytest.mark.asyncio
+async def test_append_event_to_unknown_session_raises_session_not_found(
+    session_service,
+):
+  session = Session(app_name='my_app', user_id='user', id='never_created')
+
+  event = Event(invocation_id='inv1', author='user')
+  with pytest.raises(SessionNotFoundError):
+    await session_service.append_event(session, event)
 
 
 @pytest.mark.asyncio
@@ -2772,6 +2791,105 @@ async def test_get_user_state_reflects_latest_write(session_service):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('light_copy', [False, True])
+async def test_get_user_state_copies_to_session_state_depth(light_copy):
+  """get_user_state copies as deeply as a session's own state is copied.
+
+  Light copy exists to skip the recursive copy, so under it nested values stay
+  shared with the service; without it they are deep-copied.
+  """
+  override_feature_enabled(
+      FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY, light_copy
+  )
+  try:
+    service = InMemorySessionService()
+    await service.create_session(
+        app_name='my_app',
+        user_id='u1',
+        session_id='s1',
+        state={'user:profile': {'name': 'Alice'}, 'sk1': {'n': 1}},
+    )
+
+    user_state = await service.get_user_state(app_name='my_app', user_id='u1')
+    user_state['profile']['name'] = 'Mallory'
+    user_state['added'] = 1
+
+    session = await service.get_session(
+        app_name='my_app', user_id='u1', session_id='s1'
+    )
+    stored = service.sessions['my_app']['u1']['s1']
+    session_state_is_shared = session.state['sk1'] is stored.state['sk1']
+
+    assert (
+        user_state['profile'] is service.user_state['my_app']['u1']['profile']
+    ) == session_state_is_shared
+    assert (
+        service.user_state['my_app']['u1']['profile'] == {'name': 'Mallory'}
+    ) == session_state_is_shared
+    # A later session of the same user reads the same user state.
+    later = await service.create_session(
+        app_name='my_app', user_id='u1', session_id='s2'
+    )
+    assert (later.state['user:profile'] == {'name': 'Mallory'}) == (
+        session_state_is_shared
+    )
+    assert 'added' not in service.user_state['my_app']['u1']
+  finally:
+    override_feature_enabled(
+        FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY, False
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('light_copy', [False, True])
+@pytest.mark.parametrize('session_source', ['create', 'get', 'list'])
+async def test_returned_session_scoped_state_uses_configured_copy_depth(
+    light_copy, session_source
+):
+  """Returned sessions copy nested scoped state to the configured depth."""
+  override_feature_enabled(
+      FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY, light_copy
+  )
+  try:
+    service = InMemorySessionService()
+    created = await service.create_session(
+        app_name='my_app',
+        user_id='u1',
+        session_id='s1',
+        state={
+            'app:config': {'theme': 'light'},
+            'user:profile': {'name': 'Alice'},
+        },
+    )
+
+    if session_source == 'create':
+      returned = created
+    elif session_source == 'get':
+      returned = await service.get_session(
+          app_name='my_app', user_id='u1', session_id='s1'
+      )
+    else:
+      returned = (
+          await service.list_sessions(app_name='my_app', user_id='u1')
+      ).sessions[0]
+
+    returned.state['app:config']['theme'] = 'dark'
+    returned.state['user:profile']['name'] = 'Mallory'
+    later = await service.create_session(
+        app_name='my_app', user_id='u1', session_id='s2'
+    )
+
+    expected_theme = 'dark' if light_copy else 'light'
+    expected_name = 'Mallory' if light_copy else 'Alice'
+    assert later.state['app:config']['theme'] == expected_theme
+    assert later.state['user:profile']['name'] == expected_name
+  finally:
+    override_feature_enabled(
+        FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY, False
+    )
+
+
+@pytest.mark.asyncio
 async def test_vertex_ai_session_service_raises_not_implemented_for_get_user_state():
   """Verifies VertexAiSessionService raises NotImplementedError."""
   service = VertexAiSessionService(project='proj', location='us-central1')
@@ -2980,10 +3098,13 @@ async def test_database_session_service_sqlite_file_timestamp_read_after_reopen(
   raw_epoch_float = time.time()
   conn = sqlite3.connect(str(db_path))
   try:
-    conn.execute(
+    cursor = conn.execute(
         'UPDATE events SET timestamp = ? WHERE session_id = ?',
         (raw_epoch_float, session.id),
     )
+    # Without a row here the reopen below never sees a float, and the test
+    # would pass without exercising the REAL-affinity path at all.
+    assert cursor.rowcount == 1
     conn.commit()
   finally:
     conn.close()
@@ -3000,9 +3121,11 @@ async def test_database_session_service_sqlite_file_timestamp_read_after_reopen(
 
   assert retrieved_session is not None
   assert len(retrieved_session.events) == 1
-  assert retrieved_session.events[0].timestamp == pytest.approx(
-      raw_epoch_float, abs=1.0
-  )
+  # The returned timestamp is deserialized from the event_data blob rather than
+  # from the DATETIME column overwritten above, so it still holds the value the
+  # event was created with. Comparing it to the wall clock read for the raw
+  # write instead only holds while both reads land in the same second.
+  assert retrieved_session.events[0].timestamp == event.timestamp
 
 
 @pytest.fixture
@@ -3295,3 +3418,46 @@ async def test_append_different_events_not_deduplicated(session_service):
       len(retrieved.events) == 2
   ), f'Expected 2 distinct events, got {len(retrieved.events)}'
   assert [e.author for e in retrieved.events] == ['user', 'agent']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'service_type',
+    [
+        SessionServiceType.IN_MEMORY,
+        SessionServiceType.SQLITE,
+        SessionServiceType.DATABASE,
+    ],
+)
+async def test_append_event_applies_and_trims_temp_state_once(
+    service_type: SessionServiceType, tmp_path
+):
+  """Persistent session services must not invoke _apply_temp_state/_trim_temp_delta_state twice."""
+  session_service = get_session_service(service_type, tmp_path)
+  session = await session_service.create_session(
+      app_name='test_app', user_id='user_1', session_id='session_1'
+  )
+  event = Event(
+      invocation_id='inv_1',
+      author='agent',
+      actions=EventActions(
+          state_delta={'temp:scratch': 'ephemeral', 'persisted': 'val'}
+      ),
+  )
+  with (
+      mock.patch.object(
+          session_service,
+          '_apply_temp_state',
+          wraps=session_service._apply_temp_state,
+      ) as spy_apply,
+      mock.patch.object(
+          session_service,
+          '_trim_temp_delta_state',
+          wraps=session_service._trim_temp_delta_state,
+      ) as spy_trim,
+  ):
+    await session_service.append_event(session=session, event=event)
+    assert spy_apply.call_count == 1
+    assert spy_trim.call_count == 1
+  assert session.state.get('temp:scratch') == 'ephemeral'
+  assert session.state.get('persisted') == 'val'

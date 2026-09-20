@@ -18,17 +18,21 @@ from __future__ import annotations
 import logging
 from typing import Any
 from typing import cast
+from typing import Iterable
 from typing import TypeVar
 
 from pydantic import BaseModel
 from pydantic_core import to_jsonable_python
 
+from ..events.event import Event
 from ..events.event_actions import _make_json_serializable
 from .state import State
 
 logger = logging.getLogger("google_adk." + __name__)
 
 M = TypeVar("M", bound=BaseModel)
+
+_reported_lossy_storage: set[str] = set()
 
 
 def decode_model(data: object | None, model_cls: type[M]) -> M | None:
@@ -82,6 +86,46 @@ def make_json_safe_state(state: dict[str, Any]) -> dict[str, Any]:
         exc_info=True,
     )
     return cast(dict[str, Any], _make_json_serializable(state))
+
+
+def event_fields_not_stored(stored_fields: Iterable[str]) -> list[str]:
+  """Returns the event fields lost by a backend that keeps only `stored_fields`.
+
+  A backend that writes an event as a fixed set of named fields has nowhere to
+  put a field added to `Event` afterwards. Callers pass what their layout
+  keeps, which is frozen, and the loss is derived from `Event`, so it stays
+  accurate as `Event` grows rather than going stale.
+
+  Args:
+    stored_fields: Names of the event fields the backend's layout can hold.
+  """
+  return sorted(set(Event.model_fields) - set(stored_fields))
+
+
+def warn_event_fields_not_stored(
+    stored_fields: Iterable[str], *, cause: str, remedy: str
+) -> None:
+  """Reports, once per cause, the event fields a backend cannot store.
+
+  Nothing downstream can tell a field the backend dropped from one that was
+  never set, so an agent reading one back misbehaves with no error anywhere.
+
+  Args:
+    stored_fields: Names of the event fields the backend's layout can hold.
+    cause: Why the backend is storing an event this way, as a sentence opener.
+    remedy: What the reader can do to stop losing the fields.
+  """
+  dropped = event_fields_not_stored(stored_fields)
+  if not dropped or cause in _reported_lossy_storage:
+    return
+  _reported_lossy_storage.add(cause)
+  logger.warning(
+      "%s. %d event fields are dropped on write and read back as unset: %s. %s",
+      cause,
+      len(dropped),
+      ", ".join(dropped),
+      remedy,
+  )
 
 
 def extract_json_safe_state_delta(

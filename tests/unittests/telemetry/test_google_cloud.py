@@ -679,9 +679,15 @@ def test_logs_exporter_preserves_event_name_as_label(
       "event.name": "gen_ai.client.inference.operation.details",
       "gcp.log_name": "adk-otel",
   }
-  # Cloud Logging names the log after `event_name` ahead of `gcp.log_name`,
-  # which would scatter one log per event type.
-  assert not record.log_record.event_name
+  # Cloud Logging names the log after `event_name` ahead of `gcp.log_name`, as
+  # CloudLoggingExporter did. Dropping it renames the log, and with it every
+  # sink named after the log id: a BigQuery sink stops filling
+  # `gen_ai_client_inference_operation_details` and starts an `adk_otel` table
+  # nothing reads. `gcp.log_name` stays as the fallback for unnamed records.
+  assert (
+      record.log_record.event_name
+      == "gen_ai.client.inference.operation.details"
+  )
   processor.shutdown()
 
 
@@ -771,6 +777,29 @@ def test_logs_processor_republishes_service_version_as_a_label(
   )
 
   assert record.log_record.attributes["service.version"] == "42"
+  processor.shutdown()
+
+
+def test_logs_processor_drops_the_event_name_on_agent_engine(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """On Agent Engine every record shares the one log the stdout pipeline had."""
+  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "1234567890")
+  processor = _agent_engine_logs_processor(monkeypatch)
+
+  record = _emit(
+      processor, event_name="gen_ai.client.inference.operation.details"
+  )
+
+  assert not record.log_record.event_name
+  assert (
+      record.log_record.attributes["event.name"]
+      == "gen_ai.client.inference.operation.details"
+  )
+  assert (
+      record.log_record.attributes["gcp.log_name"]
+      == "aiplatform.googleapis.com/reasoning_engine_stdout"
+  )
   processor.shutdown()
 
 
