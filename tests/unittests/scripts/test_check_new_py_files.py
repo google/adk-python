@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import ntpath
 import os
 import pathlib
 import subprocess
@@ -463,7 +464,15 @@ def test_get_vcs_added_files_git_head_diff(
   assert added == {'src/google/adk/agents/_committed.py'}
 
 
-def test_get_vcs_added_files_jj(monkeypatch: pytest.MonkeyPatch) -> None:
+def _patch_windows_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+  monkeypatch.setattr(check_new_py_files.os, 'path', ntpath)
+  monkeypatch.setattr(check_new_py_files.os, 'sep', '\\')
+
+
+@pytest.mark.parametrize('windows', [False, True])
+def test_get_vcs_added_files_jj(
+    monkeypatch: pytest.MonkeyPatch, windows: bool
+) -> None:
   def fake_which(cmd: str) -> str | None:
     return '/usr/bin/' + cmd if cmd == 'jj' else None
 
@@ -476,12 +485,17 @@ def test_get_vcs_added_files_jj(monkeypatch: pytest.MonkeyPatch) -> None:
 
   monkeypatch.setattr(check_new_py_files.shutil, 'which', fake_which)
   monkeypatch.setattr(check_new_py_files, '_run_cmd', fake_run_cmd)
+  if windows:
+    _patch_windows_paths(monkeypatch)
 
   added = check_new_py_files.get_vcs_added_files('.')
   assert added == {'/workspace/src/google/adk/agents/_jj_agent.py'}
 
 
-def test_get_vcs_added_files_hg(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize('windows', [False, True])
+def test_get_vcs_added_files_hg(
+    monkeypatch: pytest.MonkeyPatch, windows: bool
+) -> None:
   def fake_which(cmd: str) -> str | None:
     return '/usr/bin/' + cmd if cmd == 'hg' else None
 
@@ -494,6 +508,8 @@ def test_get_vcs_added_files_hg(monkeypatch: pytest.MonkeyPatch) -> None:
 
   monkeypatch.setattr(check_new_py_files.shutil, 'which', fake_which)
   monkeypatch.setattr(check_new_py_files, '_run_cmd', fake_run_cmd)
+  if windows:
+    _patch_windows_paths(monkeypatch)
 
   added = check_new_py_files.get_vcs_added_files('.')
   assert added == {'/workspace/src/google/adk/agents/_hg_agent.py'}

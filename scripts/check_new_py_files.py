@@ -213,7 +213,7 @@ def get_vcs_added_files(root: str = '.') -> set[str] | None:
             p = parts[1].strip()
             if jj_root and not os.path.isabs(p):
               p = os.path.join(jj_root, p)
-            added.add(p)
+            added.add(p.replace(os.sep, '/'))
       return added
 
   # 3. hg
@@ -222,9 +222,11 @@ def get_vcs_added_files(root: str = '.') -> set[str] | None:
     if code == 0:
       _, out = _run_cmd(['hg', 'status', '--added', '--no-status'], cwd=root)
       return {
-          os.path.join(hg_root, f.strip())
-          if (hg_root and not os.path.isabs(f.strip()))
-          else f.strip()
+          (
+              os.path.join(hg_root, f.strip())
+              if (hg_root and not os.path.isabs(f.strip()))
+              else f.strip()
+          ).replace(os.sep, '/')
           for f in out.splitlines()
           if f.strip()
       }
