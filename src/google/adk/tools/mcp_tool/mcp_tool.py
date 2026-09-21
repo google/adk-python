@@ -54,6 +54,7 @@ from ...utils.context_utils import find_context_parameter
 # part of the ADK public API; consumers flip the env var, not the symbol.
 from .._gemini_schema_util import _to_gemini_schema
 from ..base_authenticated_tool import BaseAuthenticatedTool
+from ..set_model_response_tool import SET_MODEL_RESPONSE_FUNCTION_NAME
 from ..tool_context import ToolContext
 from ..transfer_to_agent_tool import transfer_to_agent
 from .mcp_session_manager import _http_debug_var
@@ -71,6 +72,7 @@ _RESERVED_TOOL_NAMES = frozenset({
     REQUEST_EUC_FUNCTION_CALL_NAME,
     REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
     REQUEST_INPUT_FUNCTION_CALL_NAME,
+    SET_MODEL_RESPONSE_FUNCTION_NAME,
     transfer_to_agent.__name__,
 })
 
