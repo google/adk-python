@@ -40,9 +40,13 @@ from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.cli.utils.agent_loader import AgentLoader
+from google.adk.code_executors.built_in_code_executor import BuiltInCodeExecutor
+from google.adk.code_executors.unsafe_local_code_executor import UnsafeLocalCodeExecutor
 from google.adk.errors.session_not_found_error import SessionNotFoundError
 from google.adk.events.event import Event
 from google.adk.events.event import EventActions
+from google.adk.flows.llm_flows.extensions._code_execution import request_processor as code_execution_request_processor
+from google.adk.models.llm_request import LlmRequest
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import BaseSessionService
@@ -59,6 +63,71 @@ from tests.unittests import testing_utils
 TEST_APP_ID = "test_app"
 TEST_USER_ID = "test_user"
 TEST_SESSION_ID = "test_session"
+
+
+@pytest.mark.parametrize(
+    "same_session", [False, True], ids=["cross-session", "same-session"]
+)
+@pytest.mark.parametrize(
+    "executor_type",
+    [None, UnsafeLocalCodeExecutor, BuiltInCodeExecutor],
+    ids=["no-executor", "custom-executor", "explicit-builtin"],
+)
+async def test_cfc_code_execution_is_scoped_to_invocation(
+    same_session, executor_type
+):
+  """Reusing a runner preserves each invocation's code-execution capability.
+
+  Setup: one agent and runner, with an optional configured code executor.
+  Act: enable CFC, then disable it in the same or an independent session.
+  Assert: only CFC or an explicitly configured built-in executor enables the
+    model's code-execution tool, and the agent's executor stays unchanged.
+  """
+  code_executor = executor_type() if executor_type else None
+  agent = LlmAgent(
+      name="test_agent",
+      model="gemini-2.0-flash",
+      code_executor=code_executor,
+  )
+  runner = runners.InMemoryRunner(agent=agent, app_name=TEST_APP_ID)
+  first_session = await runner.session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID
+  )
+  second_session = (
+      first_session
+      if same_session
+      else await runner.session_service.create_session(
+          app_name=TEST_APP_ID, user_id=TEST_USER_ID
+      )
+  )
+
+  requests = []
+  executors_after_run = []
+  async with runner:
+    for session, support_cfc in [
+        (first_session, True),
+        (second_session, False),
+    ]:
+      invocation_context = runner._new_invocation_context(
+          session,
+          run_config=RunConfig(support_cfc=support_cfc),
+      )
+      llm_request = LlmRequest(model=agent.model)
+      async for _ in code_execution_request_processor.run_async(
+          invocation_context, llm_request
+      ):
+        pass
+      requests.append(llm_request)
+      executors_after_run.append(agent.code_executor)
+
+  assert len(requests) == 2
+  assert [
+      any(
+          tool.code_execution is not None for tool in request.config.tools or []
+      )
+      for request in requests
+  ] == [True, isinstance(code_executor, BuiltInCodeExecutor)]
+  assert all(executor is code_executor for executor in executors_after_run)
 
 
 class MockAgent(BaseAgent):
