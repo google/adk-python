@@ -1346,6 +1346,52 @@ async def test_file_metadata_camelcase(tmp_path, artifact_service_factory):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+async def test_artifact_version_metadata_holds_only_caller_keys(
+    service_type, artifact_service_factory
+):
+  """A version reports the metadata the caller saved and nothing else.
+
+  A text artifact makes GCS write its own adkIsText marker next to the
+  caller's keys, so it must not come back as custom_metadata.
+  """
+  artifact_service = artifact_service_factory(service_type)
+  custom_metadata = {"origin": "unit-test"}
+  await artifact_service.save_artifact(
+      app_name="myapp",
+      user_id="user123",
+      session_id="sess789",
+      filename="note.txt",
+      artifact=types.Part(text="hello"),
+      custom_metadata=custom_metadata,
+  )
+
+  fetched = await artifact_service.get_artifact_version(
+      app_name="myapp",
+      user_id="user123",
+      session_id="sess789",
+      filename="note.txt",
+  )
+  assert fetched is not None
+  assert fetched.custom_metadata == custom_metadata
+
+  versions = await artifact_service.list_artifact_versions(
+      app_name="myapp",
+      user_id="user123",
+      session_id="sess789",
+      filename="note.txt",
+  )
+  assert [v.custom_metadata for v in versions] == [custom_metadata]
+
+
+@pytest.mark.asyncio
 async def test_file_list_artifact_versions(tmp_path, artifact_service_factory):
   """FileArtifactService exposes canonical URIs and metadata for each version."""
   artifact_service = artifact_service_factory(ArtifactServiceType.FILE)
