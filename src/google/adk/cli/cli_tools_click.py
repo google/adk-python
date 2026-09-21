@@ -2047,6 +2047,15 @@ def fast_api_common_options():
         ),
         default=None,
     )
+    @click.option(
+        "--max_llm_calls",
+        type=int,
+        help=(
+            "Optional. Maximum number of LLM calls allowed for each agent"
+            " run. Values less than or equal to zero disable the limit."
+        ),
+        default=None,
+    )
     # Parsed into list[str] by the wrapper below (server commands need a list).
     @click.option(
         "--trigger_sources",
@@ -2166,6 +2175,7 @@ def cli_web(
     trigger_sources: list[str] | None = None,
     trigger_oidc_audience: str | None = None,
     trigger_oidc_service_accounts: list[str] | None = None,
+    max_llm_calls: int | None = None,
 ):
   """Starts a FastAPI server with Web UI for agents.
 
@@ -2238,6 +2248,7 @@ def cli_web(
       trigger_oidc_audience=trigger_oidc_audience,
       trigger_oidc_service_accounts=trigger_oidc_service_accounts,
       default_llm_model=default_llm_model,
+      max_llm_calls=max_llm_calls,
   )
   config = uvicorn.Config(
       app,
@@ -2321,6 +2332,7 @@ def cli_api_server(
     express_mode: bool = False,
     trigger_oidc_audience: str | None = None,
     trigger_oidc_service_accounts: list[str] | None = None,
+    max_llm_calls: int | None = None,
 ):
   """Starts a FastAPI server for agents.
 
@@ -2383,6 +2395,7 @@ def cli_api_server(
           trigger_oidc_service_accounts=trigger_oidc_service_accounts,
           gemini_enterprise_app_name=gemini_enterprise_app_name,
           express_mode=express_mode,
+          max_llm_calls=max_llm_calls,
           lifespan=_lifespan,
       ),
       host=host,
