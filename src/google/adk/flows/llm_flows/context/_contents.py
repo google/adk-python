@@ -80,6 +80,8 @@ def _id_pairing_model_types() -> tuple[type[BaseLlm], ...]:
 class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
   """Builds the contents for the LLM request."""
 
+  name = 'contents'
+
   @override
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest

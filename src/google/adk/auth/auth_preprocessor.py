@@ -222,6 +222,8 @@ async def _store_auth_and_collect_resume_targets(
 class _AuthLlmRequestProcessor(BaseLlmRequestProcessor):
   """Handles auth information to build the LLM request."""
 
+  name = "auth"
+
   @override
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest

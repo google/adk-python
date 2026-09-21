@@ -125,6 +125,8 @@ async def resolve_toolset_auth(
 class _ToolsetAuthLlmRequestProcessor(BaseLlmRequestProcessor):
   """Resolves toolset auth so credentials are ready before tools are listed."""
 
+  name = 'toolset_auth'
+
   @override
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
