@@ -158,6 +158,8 @@ class _AgentToolsLlmRequestProcessor(BaseLlmRequestProcessor):
   ``tools_dict``; every processor before it sees an empty one.
   """
 
+  name = 'agent_tools'
+
   @override
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest

@@ -4524,6 +4524,38 @@ def test_in_memory_exporter_clear_drops_spans_but_keeps_session_index():
   assert session_trace_dict == {"session-a": [505]}
 
 
+def test_setup_telemetry_guards_add_span_processor_on_non_sdk_provider(
+    monkeypatch,
+):
+  """A non-SDK TracerProvider lacking add_span_processor does not raise."""
+  from unittest.mock import MagicMock
+
+  from google.adk.cli.api_server import _setup_telemetry
+  from opentelemetry import trace
+
+  non_sdk_provider = MagicMock(spec=trace.TracerProvider)
+  del non_sdk_provider.add_span_processor
+  monkeypatch.setattr(trace, "get_tracer_provider", lambda: non_sdk_provider)
+
+  exporter = MagicMock()
+  _setup_telemetry(otel_to_cloud=False, internal_exporters=[exporter])
+
+
+def test_setup_telemetry_adds_span_processors_when_supported(monkeypatch):
+  """A TracerProvider with add_span_processor registers the internal exporters."""
+  from unittest.mock import MagicMock
+
+  from google.adk.cli.api_server import _setup_telemetry
+  from opentelemetry import trace
+
+  provider = MagicMock()
+  monkeypatch.setattr(trace, "get_tracer_provider", lambda: provider)
+
+  exporter = MagicMock()
+  _setup_telemetry(otel_to_cloud=False, internal_exporters=[exporter])
+  provider.add_span_processor.assert_called_once_with(exporter)
+
+
 #################################################
 # Request-body plumbing tests
 #################################################
