@@ -61,6 +61,7 @@ from . import _prompt_cache
 from ..utils import streaming_utils
 from ..utils._google_client_headers import merge_tracking_headers
 from ..utils._schema_utils import lowercase_schema_types
+from ..utils.model_name_utils import is_gemini_model
 from ._capabilities import LlmCapabilities
 from .base_llm import BaseLlm
 from .interactions_utils import extract_system_instruction
@@ -410,6 +411,9 @@ def _get_provider_from_model(model: str) -> str:
   return ""
 
 
+# Providers that natively support response schemas (e.g. Azure OpenAI, OpenAI).
+_NATIVE_SCHEMA_PROVIDERS = frozenset({"azure", "openai"})
+
 # Providers that can route to Anthropic. bedrock and vertex_ai are multi-model
 # platforms, so _is_anthropic_route also checks the model name for them.
 _ANTHROPIC_PROVIDERS = frozenset({"anthropic", "bedrock", "vertex_ai"})
@@ -426,11 +430,19 @@ def _is_anthropic_route(provider: str, model: str) -> bool:
   bedrock and vertex_ai also host non-Anthropic models (Llama, Gemini), so for
   those platforms the model name must identify a Claude model too. Formatting
   thinking blocks for a non-Claude model triggers API validation (400) errors.
+  Unprefixed model strings (e.g. when passed with custom_llm_provider) are
+  synthesized with the provider prefix.
   """
   if not _is_anthropic_provider(provider):
     return False
   if provider.lower() in ("bedrock", "vertex_ai"):
-    return _is_anthropic_model(model)
+    model_part = model or ""
+    if model_part.lower().startswith(_PROXY_PROVIDER + "/"):
+      model_part = model_part[len(_PROXY_PROVIDER) + 1 :]
+    prefixed_model = (
+        model_part if "/" in model_part else f"{provider.lower()}/{model_part}"
+    )
+    return _is_anthropic_model(prefixed_model)
   return True
 
 
@@ -3175,7 +3187,8 @@ class LiteLlm(BaseLlm):
 
   This wrapper can be used with any of the models supported by litellm. The
   environment variable(s) needed for authenticating with the model endpoint must
-  be set prior to instantiating this class.
+  be set prior to instantiating this class. Users with custom routing requirements
+  can subclass LiteLlm and override capabilities.
 
   Example usage:
   ```
@@ -3199,6 +3212,9 @@ class LiteLlm(BaseLlm):
   """The LLM client to use for the model."""
 
   _additional_args: Dict[str, Any] = PrivateAttr(default_factory=dict)
+  _cached_capabilities: tuple[tuple[str, Any], LlmCapabilities] | None = (
+      PrivateAttr(default=None)
+  )
 
   def __init__(self, model: str, **kwargs: Any) -> None:
     """Initializes the LiteLlm class.
@@ -3225,10 +3241,97 @@ class LiteLlm(BaseLlm):
   @property
   @override
   def capabilities(self) -> LlmCapabilities:
-    # LiteLLM reconciles tools + response_format per provider: providers with
-    # native support get both passed through, and the rest are converted to a
-    # json tool call with tool_choice enforcement.
-    return LlmCapabilities(output_schema_and_tools=True)
+    cache_key = (self.model, self._additional_args.get("custom_llm_provider"))
+    if (
+        self._cached_capabilities is not None
+        and self._cached_capabilities[0] == cache_key
+    ):
+      return self._cached_capabilities[1]
+
+    resolved = self._resolve_capabilities()
+    self._cached_capabilities = (cache_key, resolved)
+    return resolved
+
+  def _resolve_capabilities(self) -> LlmCapabilities:
+    if not self.model:
+      return LlmCapabilities(output_schema_and_tools=False)
+
+    _ensure_litellm_imported()
+    stripped_model = _strip_proxy_prefix(self.model)
+    custom_llm_provider = self._additional_args.get("custom_llm_provider")
+    provider = custom_llm_provider
+    if not provider:
+      try:
+        provider_info = litellm.get_llm_provider(
+            stripped_model, custom_llm_provider=custom_llm_provider
+        )
+        if isinstance(provider_info, (tuple, list)) and len(provider_info) > 1:
+          provider = provider_info[1]
+        elif isinstance(provider_info, str):
+          provider = provider_info
+        else:
+          logger.debug(
+              "Unexpected get_llm_provider return for %s: %r",
+              stripped_model,
+              provider_info,
+          )
+          provider = _get_provider_from_model(self.model)
+      except Exception as e:
+        logger.debug(
+            "Failed to resolve LLM provider for %s via litellm: %s",
+            stripped_model,
+            e,
+        )
+        provider = _get_provider_from_model(self.model)
+
+    if is_gemini_model(self.model) and (
+        not provider or provider.lower() != "vertex_ai"
+    ):
+      return LlmCapabilities(output_schema_and_tools=False)
+
+    is_native_provider = (
+        bool(provider) and provider.lower() in _NATIVE_SCHEMA_PROVIDERS
+    )
+    if not is_native_provider and (
+        (provider and _is_anthropic_route(provider, self.model))
+        or ("claude" in stripped_model.lower())
+    ):
+      return LlmCapabilities(output_schema_and_tools=False)
+
+    try:
+      if bool(
+          litellm.supports_response_schema(
+              model=stripped_model, custom_llm_provider=provider
+          )
+      ):
+        return LlmCapabilities(output_schema_and_tools=True)
+    except Exception as e:
+      logger.debug(
+          "supports_response_schema failed for %s (provider=%s): %s",
+          stripped_model,
+          provider,
+          e,
+      )
+
+    if is_native_provider:
+      # Custom Azure/OpenAI deployments (e.g. azure/my-deployment) are absent
+      # from litellm's static model pricing map and raise exceptions from
+      # get_model_info, but should still be treated as supporting schema and
+      # tools under native providers.
+      try:
+        litellm.get_model_info(
+            model=stripped_model, custom_llm_provider=provider
+        )
+      except Exception as e:
+        logger.debug(
+            "get_model_info failed for native provider %s, model %s: %s",
+            provider,
+            stripped_model,
+            e,
+        )
+        return LlmCapabilities(output_schema_and_tools=True)
+
+    return LlmCapabilities(output_schema_and_tools=False)
 
   async def generate_content_async(
       self, llm_request: LlmRequest, stream: bool = False

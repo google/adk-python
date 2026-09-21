@@ -1110,6 +1110,7 @@ async def test_execute_script_shell_success(mock_skill1):
   assert "encoding='utf-8'" in code_input.code
   assert "errors='replace'" in code_input.code
   assert "__shell_result__" in code_input.code
+  assert "print('\\n' + _json.dumps(" in code_input.code
 
 
 @pytest.mark.asyncio
@@ -2059,6 +2060,89 @@ async def test_shell_json_envelope_parsed(mock_skill1):
   assert result["status"] == "success"
   assert result["stdout"] == "hello from shell\n"
   assert result["stderr"] == ""
+
+
+@pytest.mark.asyncio
+async def test_shell_json_envelope_parsed_with_garbage(mock_skill1):
+  """Shell JSON envelope is correctly unpacked even with garbage in stdout."""
+
+  envelope = json.dumps({
+      "__shell_result__": True,
+      "stdout": "hello from shell\n",
+      "stderr": "",
+      "returncode": 0,
+  })
+  earlier_decoy = json.dumps({
+      "__shell_result__": True,
+      "stdout": "stale earlier output\n",
+      "stderr": "",
+      "returncode": 0,
+  })
+  stdout_with_garbage = (
+      "Python warning: some library loaded\n"
+      + earlier_decoy
+      + '\n{"level": "warning", "msg": "not the envelope"}\n'
+      + envelope
+      + '\n{"level": "warning", "msg": "trailing decoy"}\n'
+      + "Some other trailing garbage"
+  )
+  executor = _make_mock_executor(stdout=stdout_with_garbage)
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "setup.sh"},
+      tool_context=ctx,
+  )
+  assert result["status"] == "success"
+  assert result["stdout"] == "hello from shell\n"
+  assert result["stderr"] == ""
+
+
+@pytest.mark.asyncio
+async def test_shell_json_envelope_nonzero_returncode_with_garbage(mock_skill1):
+  """Non-zero returncode in shell envelope with stdout garbage sets stderr."""
+
+  envelope = json.dumps({
+      "__shell_result__": True,
+      "stdout": "partial output\n",
+      "stderr": "",
+      "returncode": 2,
+  })
+  stdout_with_garbage = (
+      "Python warning: some library loaded\n"
+      + '{"level": "warning", "msg": "not the envelope"}\n'
+      + envelope
+      + '\n{"level": "warning", "msg": "trailing decoy"}\n'
+      + "Some other trailing garbage"
+  )
+  executor = _make_mock_executor(stdout=stdout_with_garbage)
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "setup.sh"},
+      tool_context=ctx,
+  )
+  assert result["status"] == "error"
+  assert result["stdout"] == "partial output\n"
+  assert "Exit code 2" in result["stderr"]
+
+
+@pytest.mark.asyncio
+async def test_shell_json_envelope_missing_logs_warning(mock_skill1, caplog):
+  """A warning is logged when a shell script emits stdout but no envelope."""
+  executor = _make_mock_executor(stdout="some non-json output\n")
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  with caplog.at_level(logging.WARNING):
+    await tool.run_async(
+        args={"skill_name": "skill1", "file_path": "setup.sh"},
+        tool_context=ctx,
+    )
+  assert "No shell execution envelope found in stdout" in caplog.text
+  assert "from skill 'skill1'" in caplog.text
 
 
 @pytest.mark.asyncio

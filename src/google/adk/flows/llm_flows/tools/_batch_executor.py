@@ -191,6 +191,7 @@ async def _launch_non_blocking_call_live(
     tools_dict: dict[str, BaseTool],
     agent: LlmAgent,
     active_tools_lock: asyncio.Lock,
+    live_session_id: str | None = None,
 ) -> None:
   """Runs a non-blocking live tool's prepare and execute in the background."""
   task_key = f'{tool.name}_{function_call.id}'
@@ -204,7 +205,11 @@ async def _launch_non_blocking_call_live(
           invocation_context, prepared_call, agent, active_tools_lock
       )
       if function_response_event:
-        if invocation_context.session_service and invocation_context.session:
+        if live_session_id is not None:
+          function_response_event.live_session_id = live_session_id
+        if invocation_context._event_queue is not None:
+          await invocation_context._enqueue_event(function_response_event)
+        elif invocation_context.session_service and invocation_context.session:
           await invocation_context.session_service.append_event(
               session=invocation_context.session,
               event=function_response_event,
@@ -387,12 +392,13 @@ async def handle_function_calls_live(
     if not _is_streaming_tool(tool) and _is_non_blocking_tool(tool):
       assert tool is not None
       await _launch_non_blocking_call_live(
-          invocation_context,
-          function_call,
-          tool,
-          tools_dict,
-          agent,
-          active_tools_lock,
+          invocation_context=invocation_context,
+          function_call=function_call,
+          tool=tool,
+          tools_dict=tools_dict,
+          agent=agent,
+          active_tools_lock=active_tools_lock,
+          live_session_id=function_call_event.live_session_id,
       )
     else:
       blocking_calls.append(function_call)
