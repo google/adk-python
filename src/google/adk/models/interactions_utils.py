@@ -72,7 +72,6 @@ from google.genai.interactions import InteractionStatusUpdate
 from google.genai.interactions import MCPServerParam
 from google.genai.interactions import ModelOutputStep
 from google.genai.interactions import ModelOutputStepParam
-from google.genai.interactions import ServiceTier
 from google.genai.interactions import Step
 from google.genai.interactions import StepDelta
 from google.genai.interactions import StepDeltaData
@@ -102,18 +101,13 @@ if TYPE_CHECKING:
   from ..tools._remote_mcp_server import RemoteMcpServer
 
 from ..utils._google_client_headers import merge_tracking_headers
+from ._service_tier import ServiceTier
 from .llm_request import LlmRequest
 from .llm_response import LlmResponse
 
 logger = logging.getLogger('google_adk.' + __name__)
 
 _NEW_LINE = '\n'
-
-# Tier that queues the request to run on off-peak capacity, so the model call
-# waits for room instead of being turned away when capacity is tight. Spelled
-# out because ServiceTier is a Literal union rather than an enum, so there is
-# no member to reference; the annotation is what rejects a typo.
-_DEFERRED_SERVICE_TIER: ServiceTier = 'deferred'
 
 # Sampling knobs the interactions API applies, but that the installed
 # google-genai release does not declare on its request model. That model
@@ -1696,7 +1690,7 @@ async def generate_content_via_interactions(
     llm_request: LlmRequest,
     stream: bool,
     *,
-    service_tier: ServiceTier | None = None,
+    service_tier: ServiceTier | str | None = None,
 ) -> AsyncGenerator[LlmResponse, None]:
   """Generate content using the interactions API.
 
@@ -1720,7 +1714,7 @@ async def generate_content_via_interactions(
   Raises:
     ValueError: If ``deferred`` is combined with streaming.
   """
-  if service_tier == _DEFERRED_SERVICE_TIER and stream:
+  if service_tier == ServiceTier.DEFERRED and stream:
     raise ValueError(
         "service_tier='deferred' cannot be used with streaming. A deferred"
         ' request is queued to run on off-peak capacity and returns an'
@@ -1779,7 +1773,7 @@ async def generate_content_via_interactions(
 
   if service_tier:
     create_kwargs['service_tier'] = service_tier
-    if service_tier == _DEFERRED_SERVICE_TIER:
+    if service_tier == ServiceTier.DEFERRED:
       # The API rejects deferred without this. 'store' is deliberately left
       # unset: it already defaults on for a background call, and sending
       # store=False is rejected outright.

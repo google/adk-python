@@ -237,19 +237,6 @@ def test_find_agent_to_run_forwards_to_agent_router():
   assert result == sub_agent
 
 
-def test_is_transferable_across_agent_tree_forwards_to_agent_router():
-  """Runner._is_transferable_across_agent_tree forwards to _agent_router."""
-  root_agent = MockLlmAgent("root_agent")
-  sub_agent = MockLlmAgent("sub_agent", parent_agent=root_agent)
-  runner = Runner(
-      app_name="test_app",
-      agent=root_agent,
-      session_service=InMemorySessionService(),
-  )
-
-  assert runner._is_transferable_across_agent_tree(sub_agent) is True
-
-
 def test_find_agent_to_run_ignores_rewound_sub_agent_event():
   """After a rewind, events from the rewound invocation are ignored."""
   # pylint: disable=protected-access
@@ -1733,7 +1720,7 @@ class TestRunnerCacheConfig:
     assert invocation_context.context_cache_config.cache_intervals == 20
 
   def test_runner_validate_params_return_order(self):
-    """Test that _validate_runner_params returns values in correct order."""
+    """Test that _resolve_app resolves App fields accurately."""
     cache_config = ContextCacheConfig(cache_intervals=25)
 
     app = App(
@@ -1743,42 +1730,26 @@ class TestRunnerCacheConfig:
         resumability_config=ResumabilityConfig(is_resumable=True),
     )
 
-    runner = Runner(
-        app=app,
-        session_service=self.session_service,
-        artifact_service=self.artifact_service,
-    )
+    resolved = Runner._resolve_app(app, None, None, None, None)
 
-    # Test the validation method directly
-    app_name, agent, context_cache_config, resumability_config, plugins = (
-        runner._validate_runner_params(app, None, None, None)
-    )
-
-    assert app_name == "order_test_app"
-    assert agent == self.root_agent
-    assert context_cache_config == cache_config
-    assert context_cache_config.cache_intervals == 25
-    assert resumability_config == app.resumability_config
-    assert plugins == []
+    assert resolved.name == "order_test_app"
+    assert resolved.root_agent == self.root_agent
+    assert resolved.context_cache_config == cache_config
+    assert resolved.context_cache_config.cache_intervals == 25
+    assert resolved.resumability_config == app.resumability_config
+    assert resolved.plugins == []
 
   def test_runner_validate_params_without_app(self):
-    """Test _validate_runner_params without App returns None for cache config."""
-    runner = Runner(
-        app_name="test_app",
-        agent=self.root_agent,
-        session_service=self.session_service,
-        artifact_service=self.artifact_service,
+    """Test _resolve_app without App returns None for cache config."""
+    resolved = Runner._resolve_app(
+        None, "test_app", self.root_agent, None, None
     )
 
-    app_name, agent, context_cache_config, resumability_config, plugins = (
-        runner._validate_runner_params(None, "test_app", self.root_agent, None)
-    )
-
-    assert app_name == "test_app"
-    assert agent == self.root_agent
-    assert context_cache_config is None
-    assert resumability_config is None
-    assert plugins is None
+    assert resolved.name == "test_app"
+    assert resolved.root_agent == self.root_agent
+    assert resolved.context_cache_config is None
+    assert resolved.resumability_config is None
+    assert resolved.plugins == []
 
   def test_runner_app_name_and_agent_extracted_correctly(self):
     """Test that app_name and agent are correctly extracted from App."""

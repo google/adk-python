@@ -170,12 +170,20 @@ async def _gather_or_cancel(tasks: list[asyncio.Task[_T]]) -> list[_T]:
     raise
 
 
-def _is_non_blocking_tool(tool: BaseTool | None) -> bool:
-  """Checks if a tool should be executed non-blockingly in live mode."""
+def _is_streaming_tool(tool: BaseTool | None) -> bool:
+  """Checks if a tool is a streaming tool."""
   if tool is None:
     return False
-  is_streaming = hasattr(tool, 'func') and inspect.isasyncgenfunction(tool.func)
-  return not is_streaming and tool.response_scheduling is not None
+  return hasattr(tool, 'func') and inspect.isasyncgenfunction(tool.func)
+
+
+def _is_non_blocking_tool(tool: BaseTool | None) -> bool:
+  """Checks if a tool is non-blocking in live mode."""
+  if tool is None:
+    return False
+  if tool.behavior is not None:
+    return tool.behavior is types.Behavior.NON_BLOCKING
+  return tool.response_scheduling is not None
 
 
 async def _launch_non_blocking_call_live(
@@ -185,6 +193,7 @@ async def _launch_non_blocking_call_live(
     tools_dict: dict[str, BaseTool],
     agent: LlmAgent,
     active_tools_lock: asyncio.Lock,
+    live_session_id: str | None = None,
 ) -> None:
   """Runs a non-blocking live tool's prepare and execute in the background."""
   task_key = f'{tool.name}_{function_call.id}'
@@ -198,7 +207,11 @@ async def _launch_non_blocking_call_live(
           invocation_context, prepared_call, agent, active_tools_lock
       )
       if function_response_event:
-        if invocation_context.session_service and invocation_context.session:
+        if live_session_id is not None:
+          function_response_event.live_session_id = live_session_id
+        if invocation_context._event_queue is not None:
+          await invocation_context._enqueue_event(function_response_event)
+        elif invocation_context.session_service and invocation_context.session:
           await invocation_context.session_service.append_event(
               session=invocation_context.session,
               event=function_response_event,
@@ -378,15 +391,16 @@ async def handle_function_calls_live(
   blocking_calls: list[types.FunctionCall] = []
   for function_call in function_call_event.get_function_calls():
     tool = tools_dict.get(function_call.name) if function_call.name else None
-    if _is_non_blocking_tool(tool):
+    if not _is_streaming_tool(tool) and _is_non_blocking_tool(tool):
       assert tool is not None
       await _launch_non_blocking_call_live(
-          invocation_context,
-          function_call,
-          tool,
-          tools_dict,
-          agent,
-          active_tools_lock,
+          invocation_context=invocation_context,
+          function_call=function_call,
+          tool=tool,
+          tools_dict=tools_dict,
+          agent=agent,
+          active_tools_lock=active_tools_lock,
+          live_session_id=function_call_event.live_session_id,
       )
     else:
       blocking_calls.append(function_call)

@@ -983,13 +983,13 @@ async def test_dynamic_node_scheduler_auto_generates_sequential_run_id():
   await scheduler(ctx, node, 'task1', node_name='worker')
   assert ctx._run_node_standalone.call_count == 1
   assert ctx._run_node_standalone.call_args_list[0].kwargs.get('run_id') == '1'
-  assert state.get_run_counter('worker', parent_path=ctx.node_path) == 1
+  assert state.run_counters[ctx.node_path]['worker'] == 1
 
   # Second execution without run_id -> assigns '2'
   await scheduler(ctx, node, 'task2', node_name='worker')
   assert ctx._run_node_standalone.call_count == 2
   assert ctx._run_node_standalone.call_args_list[1].kwargs.get('run_id') == '2'
-  assert state.get_run_counter('worker', parent_path=ctx.node_path) == 2
+  assert state.run_counters[ctx.node_path]['worker'] == 2
 
 
 @pytest.mark.asyncio
@@ -1053,16 +1053,14 @@ async def test_dynamic_node_state_maintains_independent_run_counters():
   assert state.next_run_id('agent_b') == '1'
   assert state.next_run_id('agent_a') == '3'
   assert state.next_run_id('agent_b') == '2'
-  assert state.get_run_counter('agent_a') == 3
-  assert state.get_run_counter('agent_b') == 2
   assert state.run_counters[''] == {'agent_a': 3, 'agent_b': 2}
 
   # Scoped parents (e.g. parallel branches)
   assert state.next_run_id('child', parent_path='branch_1') == '1'
   assert state.next_run_id('child', parent_path='branch_1') == '2'
   assert state.next_run_id('child', parent_path='branch_2') == '1'
-  assert state.get_run_counter('child', parent_path='branch_1') == 2
-  assert state.get_run_counter('child', parent_path='branch_2') == 1
+  assert state.run_counters['branch_1'] == {'child': 2}
+  assert state.run_counters['branch_2'] == {'child': 1}
 
 
 @pytest.mark.asyncio
@@ -1154,8 +1152,7 @@ async def test_dynamic_node_scheduler_handles_agent_transfer_loop():
   assert ctx._run_node_standalone.call_args_list[0].kwargs.get('run_id') == '1'
   # Second hop
   assert ctx._run_node_standalone.call_args_list[1].kwargs.get('run_id') == '1'
-  assert state.get_run_counter('agent_a', parent_path=ctx.node_path) == 1
-  assert state.get_run_counter('agent_b', parent_path=ctx.node_path) == 1
+  assert state.run_counters[ctx.node_path] == {'agent_a': 1, 'agent_b': 1}
 
 
 @pytest.mark.asyncio

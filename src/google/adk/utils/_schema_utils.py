@@ -34,6 +34,7 @@ from typing import Union
 from google.genai import types
 from pydantic import BaseModel
 from pydantic import TypeAdapter
+from typing_extensions import Annotated
 
 from . import _json_utils
 
@@ -61,11 +62,13 @@ def is_basemodel_schema(schema: SchemaType) -> bool:
   Returns:
     True if schema is a BaseModel class, False otherwise.
   """
+  if get_origin(schema) is Annotated:
+    schema = get_args(schema)[0]
   return isinstance(schema, type) and issubclass(schema, BaseModel)
 
 
 def is_list_of_basemodel(schema: SchemaType) -> bool:
-  """Check if the schema is a list of BaseModel type.
+  """Check if a schema represents a list of BaseModel objects.
 
   Args:
     schema: The schema to check.
@@ -73,6 +76,9 @@ def is_list_of_basemodel(schema: SchemaType) -> bool:
   Returns:
     True if schema is list[SomeBaseModel], False otherwise.
   """
+  if get_origin(schema) is Annotated:
+    schema = get_args(schema)[0]
+
   origin = get_origin(schema)
   if origin is not list:
     return False
@@ -82,6 +88,8 @@ def is_list_of_basemodel(schema: SchemaType) -> bool:
     return False
 
   inner_type = args[0]
+  if get_origin(inner_type) is Annotated:
+    inner_type = get_args(inner_type)[0]
   return isinstance(inner_type, type) and issubclass(inner_type, BaseModel)
 
 
@@ -97,8 +105,14 @@ def get_list_inner_type(schema: SchemaType) -> Optional[type[BaseModel]]:
   if not is_list_of_basemodel(schema):
     return None
 
+  if get_origin(schema) is Annotated:
+    schema = get_args(schema)[0]
+
   args = get_args(schema)
-  return args[0]
+  inner_type = args[0]
+  if get_origin(inner_type) is Annotated:
+    inner_type = get_args(inner_type)[0]
+  return inner_type
 
 
 def schema_to_json_schema(schema: SchemaType) -> dict[str, Any]:
@@ -349,11 +363,22 @@ def preprocess_args(
   for param_name, param in signature.parameters.items():
     if param_name in args:
       target_type = type_hints.get(param_name, param.annotation)
+      if get_origin(target_type) is Annotated:
+        # On the resolved path, get_type_hints strips Annotated. This branch only
+        # fires on the fallback (e.g. unresolvable forward refs / NameError) where
+        # target_type comes from param.annotation. Strip Annotated to get the raw type.
+        target_type = get_args(target_type)[0]
       if target_type != inspect.Parameter.empty:
         origin = get_origin(target_type)
         if origin is Union or origin is UnionType:
           union_args = get_args(target_type)
-          non_none_types = [arg for arg in union_args if arg is not type(None)]
+          # Find the non-None type in Optional[T] (which is Union[T, None]).
+          # Handle Optional[Annotated[...]]
+          non_none_types = [
+              get_args(arg)[0] if get_origin(arg) is Annotated else arg
+              for arg in union_args
+              if arg is not type(None)
+          ]
           if len(non_none_types) == 1:
             target_type = non_none_types[0]
             origin = get_origin(target_type)

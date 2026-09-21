@@ -4586,3 +4586,289 @@ async def test_cap_spans_both_activation_paths(lifecycle_context):
 
   assert lifecycle_context.state[_ACTIVE_KEY] == ["b", "c"]
   assert result["unloaded_skills"] == ["a"]
+
+
+# Ephemeral skills
+
+_META_KEY = "_adk_skill_meta_test_agent"
+
+_EPHEMERAL = skill_toolset.SkillLifecycleMode.EPHEMERAL
+
+
+def _ephemeral_toolset(names, **kwargs):
+  """A toolset whose skills all last a single turn."""
+  return skill_toolset.SkillToolset(
+      [_lifecycle_skill(n) for n in names],
+      lifecycle_config=skill_toolset.SkillLifecycleConfig(
+          default_mode=_EPHEMERAL
+      ),
+      **kwargs,
+  )
+
+
+@pytest.mark.asyncio
+async def test_ephemeral_skill_stays_active_for_the_rest_of_its_turn(
+    lifecycle_context,
+):
+  """A turn is many model steps; the skill has to survive all of them."""
+  toolset = _ephemeral_toolset(["a"])
+  await _load(skill_toolset.LoadSkillTool(toolset), lifecycle_context, "a")
+
+  assert toolset._active_skills(
+      lifecycle_context.state, "test_agent", "test_invocation"
+  ) == ["a"]
+
+
+@pytest.mark.asyncio
+async def test_ephemeral_skill_is_gone_in_the_next_turn(lifecycle_context):
+  """Another invocation is another turn, which is what releases it."""
+  toolset = _ephemeral_toolset(["a"])
+  await _load(skill_toolset.LoadSkillTool(toolset), lifecycle_context, "a")
+
+  assert not toolset._active_skills(
+      lifecycle_context.state, "test_agent", "next_invocation"
+  )
+
+
+@pytest.mark.asyncio
+async def test_persistent_skill_ignores_the_turn(lifecycle_context):
+  """The default lifecycle has no notion of turns at all."""
+  toolset = skill_toolset.SkillToolset([_lifecycle_skill("a")])
+  await _load(skill_toolset.LoadSkillTool(toolset), lifecycle_context, "a")
+
+  assert toolset._active_skills(
+      lifecycle_context.state, "test_agent", "next_invocation"
+  ) == ["a"]
+
+
+@pytest.mark.asyncio
+async def test_expired_ephemeral_skill_releases_its_tools(lifecycle_context):
+  """What the model sees is the tool list, so that is what has to shrink."""
+  extra_tool = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+  extra_tool.name = "tool_a"
+  toolset = skill_toolset.SkillToolset(
+      [_lifecycle_skill("a", additional_tools=["tool_a"])],
+      additional_tools=[extra_tool],
+      lifecycle_config=skill_toolset.SkillLifecycleConfig(
+          default_mode=_EPHEMERAL
+      ),
+  )
+  await _load(skill_toolset.LoadSkillTool(toolset), lifecycle_context, "a")
+  assert "tool_a" in {
+      t.name for t in await toolset.get_tools(lifecycle_context)
+  }
+
+  lifecycle_context.invocation_id = "next_invocation"
+
+  assert "tool_a" not in {
+      t.name for t in await toolset.get_tools(lifecycle_context)
+  }
+
+
+@pytest.mark.asyncio
+async def test_expiry_is_written_back_on_the_next_activation(
+    lifecycle_context,
+):
+  """A request cannot persist a release, so the next tool call cleans up."""
+  toolset = _ephemeral_toolset(["a", "b"])
+  tool = skill_toolset.LoadSkillTool(toolset)
+  await _load(tool, lifecycle_context, "a")
+
+  lifecycle_context.invocation_id = "next_invocation"
+  result = await _load(tool, lifecycle_context, "b")
+
+  assert result["unloaded_skills"] == ["a"]
+  assert lifecycle_context.state[_ACTIVE_KEY] == ["b"]
+  assert set(lifecycle_context.state[_META_KEY]) == {"b"}
+
+
+@pytest.mark.asyncio
+async def test_reloading_an_ephemeral_skill_gives_it_the_new_turn(
+    lifecycle_context,
+):
+  """Loading it again is a fresh activation, not a no-op on a stale record."""
+  toolset = _ephemeral_toolset(["a"])
+  tool = skill_toolset.LoadSkillTool(toolset)
+  await _load(tool, lifecycle_context, "a")
+
+  lifecycle_context.invocation_id = "next_invocation"
+  result = await _load(tool, lifecycle_context, "a")
+
+  assert toolset._active_skills(
+      lifecycle_context.state, "test_agent", "next_invocation"
+  ) == ["a"]
+  # The reload is what renews it, so it must not also be reported released.
+  assert "unloaded_skills" not in result
+
+
+@pytest.mark.asyncio
+async def test_reload_reports_only_the_other_skills_it_released(
+    lifecycle_context,
+):
+  """A skill renewed alongside an expired one is not itself in the list."""
+  toolset = _ephemeral_toolset(["a", "b"])
+  tool = skill_toolset.LoadSkillTool(toolset)
+  await _load(tool, lifecycle_context, "a")
+  await _load(tool, lifecycle_context, "b")
+
+  lifecycle_context.invocation_id = "next_invocation"
+  result = await _load(tool, lifecycle_context, "a")
+
+  assert result["unloaded_skills"] == ["b"]
+
+
+@pytest.mark.asyncio
+async def test_unloading_an_expired_ephemeral_skill_reports_nothing_released(
+    lifecycle_context,
+):
+  """The turn already released it, so the caller is told it was not active."""
+  toolset = _ephemeral_toolset(["a"])
+  await _load(skill_toolset.LoadSkillTool(toolset), lifecycle_context, "a")
+
+  lifecycle_context.invocation_id = "next_invocation"
+
+  assert toolset.unload_skill(lifecycle_context, "a") is False
+  # Reported inactive, but still swept out of state.
+  assert lifecycle_context.state[_ACTIVE_KEY] == []
+  assert lifecycle_context.state[_META_KEY] == {}
+
+
+@pytest.mark.asyncio
+async def test_unloading_an_ephemeral_skill_in_its_own_turn_releases_it(
+    lifecycle_context,
+):
+  """Still within the turn it was loaded in, so this is a real release."""
+  toolset = _ephemeral_toolset(["a"])
+  await _load(skill_toolset.LoadSkillTool(toolset), lifecycle_context, "a")
+
+  assert toolset.unload_skill(lifecycle_context, "a") is True
+  assert lifecycle_context.state[_ACTIVE_KEY] == []
+
+
+@pytest.mark.asyncio
+async def test_ephemeral_skill_tells_the_model_it_is_temporary(
+    lifecycle_context,
+):
+  """The tools vanish next turn, so the model is warned while it can act."""
+  toolset = _ephemeral_toolset(["a"])
+
+  result = await _load(
+      skill_toolset.LoadSkillTool(toolset), lifecycle_context, "a"
+  )
+
+  assert "released at the end of the current turn" in result["lifecycle_notice"]
+
+
+@pytest.mark.asyncio
+async def test_persistent_load_says_nothing_about_lifecycle(lifecycle_context):
+  """Nothing is going to happen to it, so there is nothing to announce."""
+  toolset = skill_toolset.SkillToolset([_lifecycle_skill("a")])
+
+  result = await _load(
+      skill_toolset.LoadSkillTool(toolset), lifecycle_context, "a"
+  )
+
+  assert "lifecycle_notice" not in result
+
+
+@pytest.mark.asyncio
+async def test_ephemeral_skills_do_not_count_against_the_cap(
+    lifecycle_context,
+):
+  """They are bounded by time already; the cap is for the bounded ones."""
+  toolset = skill_toolset.SkillToolset(
+      [_lifecycle_skill(n) for n in ("a", "b", "c")],
+      lifecycle_config=skill_toolset.SkillLifecycleConfig(
+          default_mode=_EPHEMERAL,
+          max_active_skills=1,
+          skill_overrides={"c": skill_toolset.SkillLifecycleMode.BOUNDED},
+      ),
+  )
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  for name in ("a", "b", "c"):
+    await _load(tool, lifecycle_context, name)
+
+  assert lifecycle_context.state[_ACTIVE_KEY] == ["a", "b", "c"]
+
+
+@pytest.mark.asyncio
+async def test_only_ephemeral_skills_get_a_lifecycle_record(lifecycle_context):
+  """Persistent and bounded skills need no bookkeeping, so none is written."""
+  toolset = skill_toolset.SkillToolset(
+      [_lifecycle_skill(n) for n in ("a", "b")],
+      lifecycle_config=skill_toolset.SkillLifecycleConfig(
+          default_mode=skill_toolset.SkillLifecycleMode.BOUNDED,
+          skill_overrides={"b": _EPHEMERAL},
+      ),
+  )
+  tool = skill_toolset.LoadSkillTool(toolset)
+
+  await _load(tool, lifecycle_context, "a")
+  await _load(tool, lifecycle_context, "b")
+
+  assert set(lifecycle_context.state[_META_KEY]) == {"b"}
+
+
+@pytest.mark.asyncio
+async def test_records_live_outside_the_activated_skill_prefix(
+    lifecycle_context,
+):
+  """Consumers elsewhere read every `_adk_activated_skill_` key as a name list.
+
+  A sibling key under that prefix would be handed to them as one.
+  """
+  toolset = _ephemeral_toolset(["a"])
+
+  await _load(skill_toolset.LoadSkillTool(toolset), lifecycle_context, "a")
+
+  written = set(lifecycle_context.state) - {_ACTIVE_KEY}
+  assert written == {_META_KEY}
+  assert not any(k.startswith("_adk_activated_skill_") for k in written)
+  assert isinstance(lifecycle_context.state[_ACTIVE_KEY], list)
+
+
+@pytest.mark.asyncio
+async def test_a_record_without_an_invocation_id_stays_active(
+    lifecycle_context,
+):
+  """Activated without an id; releasing on a guess would be worse."""
+  toolset = _ephemeral_toolset(["a"])
+  lifecycle_context.state.update({
+      _ACTIVE_KEY: ["a"],
+      _META_KEY: {"a": {"lifecycle": "ephemeral"}},
+  })
+
+  assert toolset._active_skills(
+      lifecycle_context.state, "test_agent", "another_invocation"
+  ) == ["a"]
+
+
+@pytest.mark.asyncio
+async def test_records_are_ignored_when_no_skill_is_ephemeral(
+    lifecycle_context,
+):
+  """A toolset that configures no ephemeral skill never reads the records."""
+  toolset = skill_toolset.SkillToolset([_lifecycle_skill("a")])
+  lifecycle_context.state.update({
+      _ACTIVE_KEY: ["a"],
+      _META_KEY: {"a": {"lifecycle": "ephemeral", "activated_in": "old"}},
+  })
+
+  assert toolset._active_skills(
+      lifecycle_context.state, "test_agent", "another_invocation"
+  ) == ["a"]
+
+
+def test_clone_keeps_tracking_ephemeral_skills(mock_skill1):
+  """A clone with the same config has to sweep the same way."""
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1],
+      lifecycle_config=skill_toolset.SkillLifecycleConfig(
+          skill_overrides={"a": _EPHEMERAL}
+      ),
+  )
+
+  assert toolset.clone_with_updated_skills(
+      [mock_skill1]
+  )._tracks_ephemeral_skills

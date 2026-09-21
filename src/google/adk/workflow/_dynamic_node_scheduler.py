@@ -116,10 +116,6 @@ class DynamicNodeState:
     counters[node_name] = counters.get(node_name, 0) + 1
     return str(counters[node_name])
 
-  def get_run_counter(self, node_name: str, parent_path: str = '') -> int:
-    """Get the current run counter for a node name under parent_path."""
-    return self.run_counters.get(parent_path, {}).get(node_name, 0)
-
   def get_dynamic_tasks(self) -> list[asyncio.Task[Context]]:
     """Get all active dynamic node tasks."""
     return [
@@ -334,6 +330,11 @@ class DynamicNodeScheduler:
         else _NodePathBuilder([])
     )
     node_path = str(base_path_builder.append(target_node_name, run_id))
+    if (
+        override_isolation_scope is None
+        and getattr(node, 'mode', None) == 'task'
+    ):
+      override_isolation_scope = node_path
 
     # Rehydration chronological sequence barrier setup for the parent path
     if self._enable_replay and curr_parent_path:

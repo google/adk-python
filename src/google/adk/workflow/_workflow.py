@@ -613,7 +613,14 @@ class Workflow(BaseNode):
           recovered=recovered,
       )
 
-      if not result.should_run:
+      # Use _run_node_internal so the scheduler follows the recovered transfer.
+      strands_pending_transfer = (
+          not result.should_run
+          and result.transfer_to_agent is not None
+          and bool(recovered.interrupt_ids)
+      )
+
+      if not result.should_run and not strands_pending_transfer:
         ancestor_path = ctx.node_path if is_terminal else None
 
         if ancestor_path:

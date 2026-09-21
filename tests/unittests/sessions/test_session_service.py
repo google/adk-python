@@ -3418,3 +3418,46 @@ async def test_append_different_events_not_deduplicated(session_service):
       len(retrieved.events) == 2
   ), f'Expected 2 distinct events, got {len(retrieved.events)}'
   assert [e.author for e in retrieved.events] == ['user', 'agent']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'service_type',
+    [
+        SessionServiceType.IN_MEMORY,
+        SessionServiceType.SQLITE,
+        SessionServiceType.DATABASE,
+    ],
+)
+async def test_append_event_applies_and_trims_temp_state_once(
+    service_type: SessionServiceType, tmp_path
+):
+  """Persistent session services must not invoke _apply_temp_state/_trim_temp_delta_state twice."""
+  session_service = get_session_service(service_type, tmp_path)
+  session = await session_service.create_session(
+      app_name='test_app', user_id='user_1', session_id='session_1'
+  )
+  event = Event(
+      invocation_id='inv_1',
+      author='agent',
+      actions=EventActions(
+          state_delta={'temp:scratch': 'ephemeral', 'persisted': 'val'}
+      ),
+  )
+  with (
+      mock.patch.object(
+          session_service,
+          '_apply_temp_state',
+          wraps=session_service._apply_temp_state,
+      ) as spy_apply,
+      mock.patch.object(
+          session_service,
+          '_trim_temp_delta_state',
+          wraps=session_service._trim_temp_delta_state,
+      ) as spy_trim,
+  ):
+    await session_service.append_event(session=session, event=event)
+    assert spy_apply.call_count == 1
+    assert spy_trim.call_count == 1
+  assert session.state.get('temp:scratch') == 'ephemeral'
+  assert session.state.get('persisted') == 'val'

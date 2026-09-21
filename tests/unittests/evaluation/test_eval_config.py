@@ -178,6 +178,18 @@ def test_eval_metric_criterion_survives_json_round_trip():
   assert criterion.judge_model_options.judge_model == "my-judge"
 
 
+@pytest.mark.parametrize("num_samples", [0, -1])
+def test_judge_model_options_rejects_non_positive_num_samples(num_samples):
+  """num_samples <= 0 must be rejected, matching parallelism_limit's own ge=1.
+
+  A non-positive judge sample count is never a legitimate value -- it causes
+  LlmAsJudge.evaluate_invocations to silently drop the invocation from the
+  aggregated result with no error and no NOT_EVALUATED marker.
+  """
+  with pytest.raises(ValidationError, match="greater than or equal to 1"):
+    JudgeModelOptions(num_samples=num_samples)
+
+
 def test_eval_config_dump_preserves_concrete_criterion_fields():
   """Criteria values keep their subclass fields, and plain thresholds survive."""
   eval_config = EvalConfig(

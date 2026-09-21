@@ -22,7 +22,9 @@ import asyncio
 import base64
 import binascii
 from contextlib import asynccontextmanager
+import contextvars
 import importlib
+import inspect
 import json
 import logging
 import os
@@ -372,6 +374,37 @@ async def _send_forbidden(send: Any, reason: str) -> None:
   })
 
 
+def _accepts_kwargs(func: Callable[..., Any], kwargs: dict[str, Any]) -> bool:
+  """Returns True if func accepts all keys in kwargs as keyword arguments."""
+  try:
+    sig = inspect.signature(func)
+  except (ValueError, TypeError):
+    return False
+
+  # Check if there is a **kwargs parameter
+  if any(
+      param.kind == inspect.Parameter.VAR_KEYWORD
+      for param in sig.parameters.values()
+  ):
+    return True
+
+  # Otherwise, check if all keys in kwargs are accepted as explicit parameters
+  for key in kwargs:
+    param = sig.parameters.get(key)
+    if param is None or param.kind in (
+        inspect.Parameter.POSITIONAL_ONLY,
+        inspect.Parameter.VAR_POSITIONAL,
+    ):
+      return False
+
+  return True
+
+
+_current_session_options: contextvars.ContextVar[Optional[dict[str, Any]]] = (
+    contextvars.ContextVar("current_session_options", default=None)
+)
+
+
 class _OriginCheckMiddleware:
   """ASGI middleware that blocks cross-origin requests."""
 
@@ -549,6 +582,12 @@ class CreateSessionRequest(common.BaseModel):
       default=None,
       description="A list of events to initialize the session with.",
   )
+  options: Optional[dict[str, Any]] = Field(
+      default=None,
+      description=(
+          "Optional configuration options forwarded to the session service."
+      ),
+  )
 
 
 # Function calls ADK generates itself to drive human-in-the-loop flows.
@@ -660,11 +699,17 @@ def _setup_telemetry(
     _setup_telemetry_from_env(internal_exporters=internal_exporters)
   else:
     # Old logic - to be removed when above leaves experimental.
-    tracer_provider = TracerProvider()
+    tracer_provider = trace.get_tracer_provider()
+    is_proxy = isinstance(tracer_provider, trace.ProxyTracerProvider)
+    if is_proxy:
+      tracer_provider = TracerProvider()
     if internal_exporters is not None:
-      for exporter in internal_exporters:
-        tracer_provider.add_span_processor(exporter)
-    trace.set_tracer_provider(tracer_provider=tracer_provider)
+      add_proc = getattr(tracer_provider, "add_span_processor", None)
+      if callable(add_proc):
+        for exporter in internal_exporters:
+          add_proc(exporter)
+    if is_proxy:
+      trace.set_tracer_provider(tracer_provider=tracer_provider)
 
 
 def _otel_env_vars_enabled() -> bool:
@@ -1103,12 +1148,38 @@ class ApiServer:
       session_id: Optional[str] = None,
       state: Optional[dict[str, Any]] = None,
   ) -> Session:
+    session_options = _current_session_options.get() or {}
+    conflicting_keys = session_options.keys() & {
+        "app_name",
+        "user_id",
+        "state",
+        "session_id",
+    }
+    if conflicting_keys:
+      raise HTTPException(
+          status_code=400,
+          detail=(
+              "Session options cannot contain keys already bound by the"
+              f" endpoint: {', '.join(sorted(conflicting_keys))}"
+          ),
+      )
+    if session_options and not _accepts_kwargs(
+        self.session_service.create_session, session_options
+    ):
+      raise HTTPException(
+          status_code=400,
+          detail=(
+              "Session options are not supported by the configured session"
+              " service."
+          ),
+      )
     try:
       session = await self.session_service.create_session(
           app_name=app_name,
           user_id=user_id,
           state=state,
           session_id=session_id,
+          **session_options,
       )
       logger.info("New session created: %s", session.id)
       return session
@@ -1116,6 +1187,8 @@ class ApiServer:
       raise HTTPException(
           status_code=409, detail=f"Session already exists: {session_id}"
       ) from e
+    except (ValueError, TypeError) as e:
+      raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
       logger.error(
           "Internal server error during session creation: %s", e, exc_info=True
@@ -1519,12 +1592,16 @@ class ApiServer:
       if req.events:
         _validate_session_initialization_events(req.events)
 
-      session = await self._create_session(
-          app_name=app_name,
-          user_id=user_id,
-          state=req.state,
-          session_id=req.session_id,
-      )
+      token = _current_session_options.set(req.options)
+      try:
+        session = await self._create_session(
+            app_name=app_name,
+            user_id=user_id,
+            state=req.state,
+            session_id=req.session_id,
+        )
+      finally:
+        _current_session_options.reset(token)
 
       if req.events:
         for event in req.events:
