@@ -38,6 +38,8 @@ if typing.TYPE_CHECKING:
 class _AgentTransferLlmRequestProcessor(BaseLlmRequestProcessor):
   """Agent transfer request processor."""
 
+  name = 'agent_transfer'
+
   @override
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest

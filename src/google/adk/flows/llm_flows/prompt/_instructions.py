@@ -162,6 +162,8 @@ async def _build_instructions(
 class _InstructionsLlmRequestProcessor(BaseLlmRequestProcessor):
   """Handles instructions and global instructions for LLM flow."""
 
+  name = 'instructions'
+
   @override
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest

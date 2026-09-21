@@ -33,6 +33,8 @@ if TYPE_CHECKING:
 class CompactionRequestProcessor(BaseLlmRequestProcessor):
   """Compacts session events before contents are prepared for model calls."""
 
+  name = 'compaction'
+
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:

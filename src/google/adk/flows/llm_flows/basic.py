@@ -208,6 +208,8 @@ def _build_basic_request(
 
 class _BasicLlmRequestProcessor(BaseLlmRequestProcessor):
 
+  name = 'basic'
+
   @override
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest

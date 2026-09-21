@@ -41,6 +41,8 @@ if TYPE_CHECKING:
 class _NlPlanningRequestProcessor(BaseLlmRequestProcessor):
   """Processor for NL planning."""
 
+  name = 'nl_planning'
+
   @override
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
@@ -71,6 +73,8 @@ request_processor = _NlPlanningRequestProcessor()
 
 class _NlPlanningResponse(BaseLlmResponseProcessor):
   """Response processor for NL planning."""
+
+  name = 'nl_planning'
 
   @override
   async def run_async(
