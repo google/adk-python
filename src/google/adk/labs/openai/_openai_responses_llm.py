@@ -554,6 +554,16 @@ def _usage_metadata(
 def _map_finish_reason(
     response: Response | Mapping[str, Any],
 ) -> types.FinishReason | None:
+  """Maps a Responses API status to an ADK FinishReason.
+
+  Unlike the Chat Completions surface, the Responses API reports a *status*
+  rather than a finish-reason string. ``OTHER`` is reserved for recognized
+  abnormal terminations (``failed``/``cancelled``, or an ``incomplete`` response
+  whose reason we do not map to a specific code). A non-terminal or unrecognized
+  status returns ``None`` so streaming can keep accumulating; it is not an
+  unrecognized *reason* and so is deliberately not
+  ``FINISH_REASON_UNSPECIFIED``.
+  """
   status = _get_value(response, 'status')
   if status == 'completed':
     return types.FinishReason.STOP

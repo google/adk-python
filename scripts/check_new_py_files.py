@@ -25,6 +25,11 @@ ADK conventions enforced for newly-added Python files:
    NO_UNIT_GUIDE / SKIP_UNIT_GUIDE in the commit message or environment).
    See .agents/skills/adk-unit-guide/SKILL.md.
 
+Either rule can be switched off on its own, with --no-prefix-check and
+--no-unit-guide. The two are gated by separate CI jobs for that reason: the
+unit guide rule is waivable per change and the prefix rule is not, so whatever
+waives one must not quietly disable the other.
+
 Modes for finding added files:
 - Baseline Diff Mode (CI):
     python scripts/check_new_py_files.py --baseline-dir /path/to/origin-main
@@ -32,14 +37,16 @@ Modes for finding added files:
     python scripts/check_new_py_files.py
 - Explicit File List:
     python scripts/check_new_py_files.py file1.py file2.py
+- File List From A File (CI, where the list can outgrow a command line):
+    python scripts/check_new_py_files.py --added-files-from added.txt
 
 Exit codes: 0 = ok, 1 = violation(s) found, 2 = usage/setup error,
-3 = indeterminate (no baseline and no VCS, so no file set could be resolved).
+3 = indeterminate (the set of added files could not be resolved at all).
 
 Exit code 3 exists so that "could not determine the added files" cannot be
 read as "no violations". A caller that runs this opportunistically, such as
 the pre-commit hook, can report it as skipped; a caller that relies on it to
-gate a change passes --baseline-dir and never sees it.
+gate a change passes --baseline-dir or --added-files-from and never sees it.
 """
 
 from __future__ import annotations
@@ -51,6 +58,7 @@ import re
 import shutil
 import subprocess
 import sys
+import traceback
 
 _PACKAGE_RELPATH = os.path.join('src', 'google', 'adk')
 _DOCS_GUIDES_RELPATH = os.path.join('docs', 'guides')
@@ -64,6 +72,33 @@ _EXIT_OK = 0
 _EXIT_VIOLATIONS = 1
 _EXIT_SETUP_ERROR = 2
 _EXIT_INDETERMINATE = 3
+
+# The newest revision this checkout shares with the server, as a Mercurial
+# revset: everything after it is the change under construction. Revisions the
+# server already has are in the public phase and local work is draft, so this
+# is the base the change sits on; with no local commits it evaluates to '.'.
+_SYNCED_BASE = 'last(public() & ::.)'
+
+# The local commits themselves, as a Mercurial revset: the ones after
+# `_SYNCED_BASE`, i.e. the work the change is made of. Used to read the commit
+# messages over the same range the added-file scan covers.
+_LOCAL_COMMITS = 'draft() & ::.'
+
+# The commit range a git checkout's HEAD covers when nothing is staged. On a
+# pull request this is the base branch to the merge commit, i.e. the pull
+# request's own commits, which is both the file set to check and the place a
+# NO_UNIT_GUIDE waiver would be written.
+_GIT_HEAD_RANGE = 'HEAD~1..HEAD'
+
+# The unit guide waiver, as it appears in a commit message: its own line, in
+# `KEY=<reason>` form, flush left and with no space before the `=`. Matching
+# the bare word anywhere in the text instead would waive the rule for any
+# change whose message merely discusses it -- the change that introduced this
+# check waived itself that way. The shape is deliberately no looser than the
+# one a tag parser accepts: waiving locally on a line that the surrounding
+# tooling would not read as a tag is how an author ends up believing they are
+# covered when they are not.
+_NO_UNIT_GUIDE_TAG = re.compile(r'^(?:NO|SKIP)_UNIT_GUIDE=', re.MULTILINE)
 
 _PREFIX_VIOLATION_LINE = (
     "Error: New Python file '{path}' must have a '_' prefix.\n"
@@ -192,10 +227,24 @@ def get_vcs_added_files(root: str = '.') -> set[str] | None:
       )
       if staged:
         return {f for f in staged.splitlines() if f.strip()}
-      _, head_diff = _run_cmd(
-          ['git', 'diff', 'HEAD~1..HEAD', '--name-only', '--diff-filter=A'],
+      range_code, head_diff = _run_cmd(
+          ['git', 'diff', _GIT_HEAD_RANGE, '--name-only', '--diff-filter=A'],
           cwd=root,
       )
+      if range_code != 0:
+        # HEAD~1 is unreachable, as in a depth-1 clone. The range resolved to
+        # nothing rather than to an empty diff, so the added files are unknown
+        # and saying "none" here would be a clean bill of health nobody earned.
+        # Say why here: the caller only learns that nothing could be resolved,
+        # and "no version control is active" would be the wrong diagnosis when
+        # git is active and it is the range that failed.
+        print(
+            f'git is active but {_GIT_HEAD_RANGE} does not resolve, so what'
+            ' this change adds cannot be read from it. A shallow clone does'
+            ' this; fetch enough history for HEAD to have a parent.',
+            file=sys.stderr,
+        )
+        return None
       if head_diff:
         return {f for f in head_diff.splitlines() if f.strip()}
       return set()
@@ -220,7 +269,20 @@ def get_vcs_added_files(root: str = '.') -> set[str] | None:
   if shutil.which('hg'):
     code, hg_root = _run_cmd(['hg', 'root'], cwd=root)
     if code == 0:
-      _, out = _run_cmd(['hg', 'status', '--added', '--no-status'], cwd=root)
+      # A bare `hg status --added` reports only files added and not yet
+      # committed, so it goes empty the moment the change is committed or
+      # amended -- which is the usual state of a checkout by the time anyone
+      # runs this. Diff against the last synced revision instead, so the file
+      # set is the change's own content whether or not it is committed.
+      # `_SYNCED_BASE` degrades to '.' in a checkout with no local commits,
+      # where it reports the same thing a bare status does.
+      code, out = _run_cmd(
+          ['hg', 'status', '--added', '--no-status', '--rev', _SYNCED_BASE],
+          cwd=root,
+      )
+      if code != 0:
+        # A repository whose phases do not distinguish local work this way.
+        _, out = _run_cmd(['hg', 'status', '--added', '--no-status'], cwd=root)
       return {
           os.path.join(hg_root, f.strip())
           if (hg_root and not os.path.isabs(f.strip()))
@@ -263,6 +325,15 @@ def get_commit_message(root: str = '.') -> str:
     code, _ = _run_cmd(['git', 'rev-parse', '--is-inside-work-tree'], cwd=root)
     if code == 0:
       _, msg = _run_cmd(['git', 'log', '-1', '--pretty=%B'], cwd=root)
+      # On a pull request, HEAD is a merge commit whose own message is
+      # generated by CI and can hold no waiver. The commits being merged are
+      # the ones the contributor wrote, so read the same range the added-file
+      # scan falls back to. Empty when HEAD~1 is unreachable.
+      _, range_msg = _run_cmd(
+          ['git', 'log', _GIT_HEAD_RANGE, '--pretty=%B'], cwd=root
+      )
+      if range_msg:
+        msg = f'{msg}\n{range_msg}'
       _, git_dir = _run_cmd(['git', 'rev-parse', '--git-dir'], cwd=root)
       if git_dir:
         editmsg_path = (
@@ -291,9 +362,19 @@ def get_commit_message(root: str = '.') -> str:
   if shutil.which('hg'):
     code, _ = _run_cmd(['hg', 'root'], cwd=root)
     if code == 0:
-      _, out = _run_cmd(
-          ['hg', 'log', '-r', '.', '--template', '{desc}'], cwd=root
+      # Every local commit, not just the tip. The added-file scan above spans
+      # the whole range back to the last synced revision, so reading only the
+      # tip's message would let one commit on top bury a waiver written in the
+      # commit that actually adds the file -- and would let an unrelated tip
+      # message waive the whole range.
+      code, out = _run_cmd(
+          ['hg', 'log', '-r', _LOCAL_COMMITS, '--template', '{desc}\n'],
+          cwd=root,
       )
+      if code != 0:
+        _, out = _run_cmd(
+            ['hg', 'log', '-r', '.', '--template', '{desc}'], cwd=root
+        )
       return out
 
   # 4. g4
@@ -329,9 +410,7 @@ def has_no_unit_guide_tag(commit_msg: str) -> bool:
   """Checks if NO_UNIT_GUIDE / SKIP_UNIT_GUIDE is present in env or commit message."""
   if os.environ.get('NO_UNIT_GUIDE') or os.environ.get('SKIP_UNIT_GUIDE'):
     return True
-  return bool(
-      re.search(r'NO_UNIT_GUIDE|SKIP_UNIT_GUIDE', commit_msg, re.IGNORECASE)
-  )
+  return bool(_NO_UNIT_GUIDE_TAG.search(commit_msg))
 
 
 def _depot_path_to_abs(depot_path: str, adk_real_root: str) -> str:
@@ -405,12 +484,22 @@ def _normalize_and_filter_files(
 
     # Check whether the file belongs to the package in either internal or
     # external layout.
-    if abs_file.startswith(adk_real_root + os.sep):
-      rel_to_adk = os.path.relpath(abs_file, adk_real_root).replace(os.sep, '/')
-    elif abs_file.startswith(package_real_dir + os.sep):
+    #
+    # The checkout's own src/google/adk comes first, and must: internally it
+    # sits *inside* the package it points into, so both prefixes match a file
+    # under it and matching the outer one first mislabels the file. A path
+    # there resolves out to the package only through a subpackage symlink, so
+    # a file in a subpackage the checkout has no symlink for -- a subpackage
+    # the change is adding -- stays put and relativizes against the package
+    # root as `<checkout>/src/google/adk/<...>`. That starts with an excluded
+    # directory name, so the file was dropped and a change adding a new
+    # subpackage passed both rules without being examined.
+    if abs_file.startswith(package_real_dir + os.sep):
       rel_to_adk = os.path.relpath(abs_file, package_real_dir).replace(
           os.sep, '/'
       )
+    elif abs_file.startswith(adk_real_root + os.sep):
+      rel_to_adk = os.path.relpath(abs_file, adk_real_root).replace(os.sep, '/')
     else:
       continue
 
@@ -436,15 +525,20 @@ def check_files(
     repo_root: str,
     commit_msg: str = '',
     skip_unit_guide: bool = False,
+    skip_prefix: bool = False,
+    ignore_waiver: bool = False,
 ) -> tuple[list[str], list[str]]:
   """Validates newly added Python files against ADK conventions.
 
   Args:
-    files_to_check: List of files to check, each as a tuple of
-      (display_path, rel_to_adk_root, filename).
+    files_to_check: List of files to check, each as a tuple of (display_path,
+      rel_to_adk_root, filename).
     repo_root: The root directory of the repository.
     commit_msg: The commit message of the change being checked.
     skip_unit_guide: Whether to skip unit guide checks.
+    skip_prefix: Whether to skip the private-by-default prefix check.
+    ignore_waiver: Whether to disregard a NO_UNIT_GUIDE tag in `commit_msg` or
+      in the environment, for a caller that applies the waiver itself.
 
   Returns:
     A tuple of (prefix_violations, guide_violations).
@@ -455,11 +549,13 @@ def check_files(
   docs_guides_dir = os.path.join(
       os.path.abspath(repo_root), _DOCS_GUIDES_RELPATH
   )
-  skip_guide = skip_unit_guide or has_no_unit_guide_tag(commit_msg)
+  skip_guide = skip_unit_guide or (
+      not ignore_waiver and has_no_unit_guide_tag(commit_msg)
+  )
 
   for display_path, rel_to_adk, filename in files_to_check:
     # 1. Private '_' prefix check
-    if not filename.startswith('_'):
+    if not skip_prefix and not filename.startswith('_'):
       prefix_violations.append(display_path)
 
     # 2. Unit guide check
@@ -524,6 +620,14 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
       help='New source tree to check (default: current directory).',
   )
   parser.add_argument(
+      '--added-files-from',
+      help=(
+          'File holding the added paths to check, one per line. Blank lines'
+          ' and #-comments are ignored. Use instead of positional arguments'
+          ' when the list may outgrow a command line.'
+      ),
+  )
+  parser.add_argument(
       '--no-unit-guide',
       '--skip-unit-guide',
       action='store_true',
@@ -531,11 +635,38 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
       help='Skip unit guide requirement checks.',
   )
   parser.add_argument(
+      '--no-waiver',
+      action='store_true',
+      dest='no_waiver',
+      help=(
+          'Ignore NO_UNIT_GUIDE / SKIP_UNIT_GUIDE from the commit message and'
+          ' the environment. For a caller that applies the waiver itself and'
+          ' must not have a stray tag in the surroundings suppress the rule.'
+      ),
+  )
+  parser.add_argument(
+      '--no-prefix-check',
+      '--skip-prefix-check',
+      action='store_true',
+      dest='no_prefix_check',
+      help="Skip the private-by-default '_' prefix check.",
+  )
+  parser.add_argument(
       'files',
       nargs='*',
       help='Explicit list of files to check (optional).',
   )
   return parser.parse_args(argv)
+
+
+def read_added_files_list(path: str) -> set[str]:
+  """Reads newline-delimited paths from `path`, ignoring blanks and comments."""
+  with open(path, 'r', encoding='utf-8') as f:
+    return {
+        line.strip()
+        for line in f
+        if line.strip() and not line.lstrip().startswith('#')
+    }
 
 
 def main(argv: list[str]) -> int:
@@ -553,7 +684,16 @@ def main(argv: list[str]) -> int:
   # exported tree that has none. NO_UNIT_GUIDE comes from the environment
   # there instead -- see _GUIDE_VIOLATION_LINE.
   commit_msg = get_commit_message(repo_root)
-  if args.files:
+  if args.added_files_from:
+    if not os.path.isfile(args.added_files_from):
+      print(
+          f'Error: --added-files-from names no file: {args.added_files_from}',
+          file=sys.stderr,
+      )
+      return _EXIT_SETUP_ERROR
+    raw_added_files = read_added_files_list(args.added_files_from)
+    raw_added_files.update(args.files)
+  elif args.files:
     raw_added_files = set(args.files)
   elif args.baseline_dir:
     if not _has_package_dir(args.baseline_dir):
@@ -568,22 +708,44 @@ def main(argv: list[str]) -> int:
     vcs_added = get_vcs_added_files(repo_root)
     if vcs_added is None:
       print(
-          'Could not determine the added files: no --baseline-dir was given'
-          ' and no VCS (git/jj/hg/g4/p4) is active in'
-          f' {os.path.abspath(repo_root)}.\n'
+          'Could not determine the added files: no --baseline-dir or'
+          ' --added-files-from was given, and no version control in'
+          f' {os.path.abspath(repo_root)} could report them -- either none of'
+          ' git/jj/hg/g4/p4 is active there, or the one that is could not'
+          ' resolve what this change added (see above).\n'
           'This is not a clean bill of health -- nothing was checked. Pass'
-          ' --baseline-dir to check against a baseline tree.',
+          ' --baseline-dir or --added-files-from to say what to check.',
           file=sys.stderr,
       )
       return _EXIT_INDETERMINATE
     raw_added_files = vcs_added
 
   filtered_files = _normalize_and_filter_files(raw_added_files, repo_root)
+
+  # A caller that names the files itself has already decided they are library
+  # sources, so filtering every one of them away means the two disagree about
+  # where the package is, not that there is nothing to check. Reporting that as
+  # success is the failure this whole check exists to prevent, so say so
+  # instead. The other modes legitimately filter everything away -- a change
+  # that adds only tests, for one -- and are left alone.
+  if args.added_files_from and raw_added_files and not filtered_files:
+    print(
+        'Error: none of the'
+        f' {len(raw_added_files)} path(s) in {args.added_files_from} were'
+        ' recognized as library sources under'
+        f' {_PACKAGE_RELPATH}, so nothing was checked. This is a bug in how'
+        ' the caller and this script locate the package, not a clean result.',
+        file=sys.stderr,
+    )
+    return _EXIT_SETUP_ERROR
+
   prefix_errors, guide_errors = check_files(
       filtered_files,
       repo_root=repo_root,
       commit_msg=commit_msg,
       skip_unit_guide=args.no_unit_guide,
+      skip_prefix=args.no_prefix_check,
+      ignore_waiver=args.no_waiver,
   )
 
   for err in prefix_errors:
@@ -594,5 +756,32 @@ def main(argv: list[str]) -> int:
   return _EXIT_VIOLATIONS if (prefix_errors or guide_errors) else _EXIT_OK
 
 
+def run(argv: list[str]) -> int:
+  """Runs main(), turning any crash into a setup error rather than a violation.
+
+  An unhandled exception would exit 1, which is this script's code for "the
+  rules were checked and the change breaks one" -- so a caller would report a
+  violation, and offer whatever remedy it offers, for a check that never ran.
+  Every other way of failing to check already reports itself as a setup error;
+  a crash has to do the same.
+
+  Args:
+    argv: The argument list, without the program name.
+
+  Returns:
+    main()'s exit code, or the setup-error code if it raised.
+  """
+  try:
+    return main(argv)
+  except Exception:  # pylint: disable=broad-except
+    traceback.print_exc()
+    print(
+        'Error: this check crashed, so the conventions were never verified.'
+        ' That is a failure of the check itself, not of the change.',
+        file=sys.stderr,
+    )
+    return _EXIT_SETUP_ERROR
+
+
 if __name__ == '__main__':
-  sys.exit(main(sys.argv[1:]))
+  sys.exit(run(sys.argv[1:]))
