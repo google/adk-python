@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import functools
 from typing import Any
 from typing import Dict
 from typing import Optional
@@ -23,6 +24,7 @@ from google.adk.tools.function_tool import FunctionTool
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
 import pydantic
+import pytest
 
 
 def test_string_annotation_none_return_vertex():
@@ -205,6 +207,33 @@ def test_string_annotation_no_params_vertex():
 class ItemModel(pydantic.BaseModel):
   name: str
   quantity: int
+
+
+@pytest.mark.parametrize('wrapper', ['function', 'partial', 'callable'])
+def test_wrapped_tool_resolves_model_annotations(wrapper):
+  """Wrapped tools advertise the same resolved input and output model types."""
+
+  def lookup(prefix: str, item: ItemModel) -> ItemModel:
+    return item
+
+  class Lookup:
+
+    def __call__(self, item: ItemModel) -> ItemModel:
+      return item
+
+  functions = {
+      'function': lookup,
+      'partial': functools.partial(lookup, 'catalog'),
+      'callable': Lookup(),
+  }
+  declaration = _automatic_function_calling_util.build_function_declaration(
+      functions[wrapper], variant=GoogleLLMVariant.VERTEX_AI
+  )
+
+  schema = declaration.parameters_json_schema
+  assert schema['properties']['item']['$ref'] == '#/$defs/ItemModel'
+  assert schema['$defs']['ItemModel'] == ItemModel.model_json_schema()
+  assert declaration.response_json_schema == ItemModel.model_json_schema()
 
 
 def test_preprocess_args_with_list_of_pydantic_models_and_annotations():
