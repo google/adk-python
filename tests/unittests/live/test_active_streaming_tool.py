@@ -55,6 +55,8 @@ async def test_active_streaming_tool_with_task_and_stream():
 
   assert tool.task is task
   assert tool.stream is queue
+  assert tool._active_tasks() == {task}
+  assert tool._active_streams() == [queue]
   await task
 
 
@@ -62,3 +64,58 @@ def test_active_streaming_tool_extra_fields_forbidden():
   """Verifies that extra attributes are rejected by pydantic configuration."""
   with pytest.raises(ValidationError):
     ActiveStreamingTool(unexpected_arg="not_allowed")
+
+
+@pytest.mark.asyncio
+async def test_active_streaming_tool_tracks_concurrent_calls():
+  """Tracks independent streams and releases each completed call."""
+  release = asyncio.Event()
+
+  async def _wait():
+    await release.wait()
+
+  first_task = asyncio.create_task(_wait())
+  second_task = asyncio.create_task(_wait())
+  first_stream = LiveRequestQueue()
+  second_stream = LiveRequestQueue()
+  tool = ActiveStreamingTool()
+  tool._track_task(first_task, first_stream)
+  tool._track_task(second_task, second_stream)
+
+  assert tool._active_tasks() == {first_task, second_task}
+  assert tool._active_streams() == [first_stream, second_stream]
+
+  second_task.cancel()
+  await asyncio.gather(second_task, return_exceptions=True)
+  await asyncio.sleep(0)
+  assert tool._active_tasks() == {first_task}
+  assert tool.task is first_task
+  assert tool.stream is first_stream
+
+  release.set()
+  await first_task
+  await asyncio.sleep(0)
+  assert tool._active_tasks() == set()
+  assert tool._active_streams() == []
+  assert tool.task is None
+  assert tool.stream is None
+
+
+@pytest.mark.asyncio
+async def test_discard_snapshot_preserves_later_call():
+  """Discarding a stop snapshot does not remove a later registration."""
+  first_task = asyncio.create_task(asyncio.sleep(60))
+  second_task = asyncio.create_task(asyncio.sleep(60))
+  tool = ActiveStreamingTool()
+  tool._track_task(first_task)
+  snapshot = tool._active_tasks()
+  tool._track_task(second_task)
+
+  try:
+    tool._discard_tasks(snapshot)
+    assert tool._active_tasks() == {second_task}
+    assert tool.task is second_task
+  finally:
+    first_task.cancel()
+    second_task.cancel()
+    await asyncio.gather(first_task, second_task, return_exceptions=True)
