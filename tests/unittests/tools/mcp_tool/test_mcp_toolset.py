@@ -409,6 +409,7 @@ class TestMcpToolset:
         MockMCPTool("adk_request_credential"),
         MockMCPTool("adk_request_confirmation"),
         MockMCPTool("adk_request_input"),
+        MockMCPTool("set_model_response"),
     ]
     self.mock_session.list_tools = AsyncMock(
         return_value=MockListToolsResult(mock_tools)
