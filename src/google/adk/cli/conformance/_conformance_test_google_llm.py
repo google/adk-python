@@ -239,6 +239,13 @@ class _ConformanceTestGemini(Gemini):
   ) -> None:
     super().__init__(**kwargs)
     recordings = config.get('_adk_replay_recordings')
+    if recordings is None:
+      raise ReplayVerificationError(
+          'Replay recordings were not loaded. The ADK web server must be'
+          ' started with the replay plugin, e.g. `adk web'
+          ' --extra_plugins=google.adk.cli.plugins.replay_plugin.ReplayPlugin`,'
+          ' for `adk conformance test` to work.'
+      )
     self._user_message_index = config.get('user_message_index')
     self._agent_name = config.get('agent_name')
     self._replay_index = config.get('current_replay_index')

@@ -533,6 +533,25 @@ def _validate_app_name(app_name: str) -> None:
     )
 
 
+def _validate_dockerfile_env_value(name: str, value: Optional[str]) -> None:
+  """Validates a value before it is written into a Dockerfile ENV instruction.
+
+  Args:
+    name: The environment variable name, used in the error message. The value
+      itself is never echoed, because it can come from the agent folder's `.env`
+      file.
+    value: The value to write.
+
+  Raises:
+    click.ClickException: If the value spans more than one line.
+  """
+  if value is not None and ('\n' in value or '\r' in value):
+    raise click.ClickException(
+        f'Invalid value for {name}. The value is written into the generated'
+        ' Dockerfile and must not span multiple lines.'
+    )
+
+
 def _validate_agent_import(
     agent_src_path: str,
     adk_app_object: str,
@@ -1347,6 +1366,14 @@ def to_agent_engine(
           stacklevel=2,
       )
 
+    # Validated before the instance is created, so a failure cannot leak one.
+    enterprise_val = env_vars.get('GOOGLE_GENAI_USE_ENTERPRISE', '1')
+    _validate_dockerfile_env_value(
+        'GOOGLE_GENAI_USE_ENTERPRISE', enterprise_val
+    )
+    _validate_dockerfile_env_value('GOOGLE_CLOUD_PROJECT', project)
+    _validate_dockerfile_env_value('GOOGLE_CLOUD_LOCATION', region)
+
     def create_dockerfile_for_agent_engine(resource_name: str) -> None:
       requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
       install_agent_deps = (
@@ -1388,7 +1415,6 @@ def to_agent_engine(
             f' {adk_version} was requested',
             fg='yellow',
         )
-      enterprise_val = env_vars.get('GOOGLE_GENAI_USE_ENTERPRISE', '1')
       gcp_env_lines = [f'ENV GOOGLE_GENAI_USE_ENTERPRISE={enterprise_val}']
       if project:
         gcp_env_lines.append(f'ENV GOOGLE_CLOUD_PROJECT={project}')

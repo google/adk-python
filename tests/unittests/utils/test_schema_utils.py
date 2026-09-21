@@ -18,6 +18,7 @@ import functools
 import inspect
 import signal
 import time
+from typing import Annotated
 from typing import Optional
 
 from google.adk.utils._callable_utils import get_type_hints_cached
@@ -32,6 +33,7 @@ from google.adk.utils._schema_utils import validate_node_data
 from google.adk.utils._schema_utils import validate_schema
 from google.genai import types
 from pydantic import BaseModel
+from pydantic import Field
 from pydantic import ValidationError
 import pytest
 
@@ -76,6 +78,12 @@ class TestIsBasemodelSchema:
     """Test that plain int returns False."""
     assert not is_basemodel_schema(int)
 
+  def test_annotated_basemodel_returns_true(self):
+    """Test that Annotated[BaseModel, ...] returns True."""
+    assert is_basemodel_schema(
+        Annotated[SampleModel, Field(description="A sample")]
+    )
+
 
 class TestIsListOfBasemodel:
   """Tests for is_list_of_basemodel function."""
@@ -104,6 +112,17 @@ class TestIsListOfBasemodel:
     """Test that plain list (no type arg) returns False."""
     assert not is_list_of_basemodel(list)
 
+  def test_is_list_of_basemodel_with_annotated(self):
+    """Test is_list_of_basemodel unwraps Annotated inside list."""
+    assert is_list_of_basemodel(
+        list[Annotated[SampleModel, Field(description="A sample")]]
+    )
+
+  def test_is_list_of_basemodel_with_annotated_list(self):
+    """Test is_list_of_basemodel unwraps outer Annotated on list[Model]."""
+    schema = Annotated[list[SampleModel], Field(description="A list of models")]
+    assert is_list_of_basemodel(schema)
+
 
 class TestGetListInnerType:
   """Tests for get_list_inner_type function."""
@@ -111,6 +130,20 @@ class TestGetListInnerType:
   def test_list_of_basemodel_returns_inner_type(self):
     """Test that list[BaseModel] returns the inner type."""
     assert get_list_inner_type(list[SampleModel]) is SampleModel
+
+  def test_get_list_inner_type_with_annotated(self):
+    """Test get_list_inner_type unwraps Annotated inside list."""
+    assert (
+        get_list_inner_type(
+            list[Annotated[SampleModel, Field(description="A sample")]]
+        )
+        is SampleModel
+    )
+
+  def test_get_list_inner_type_with_annotated_list(self):
+    """Test get_list_inner_type unwraps outer Annotated on list[Model]."""
+    schema = Annotated[list[SampleModel], Field(description="A list of models")]
+    assert get_list_inner_type(schema) is SampleModel
 
   def test_basemodel_class_returns_none(self):
     """Test that a plain BaseModel class returns None."""
@@ -153,6 +186,22 @@ class TestValidateSchema:
         {"name": "item1", "value": 1},
         {"name": "item2", "value": 2},
     ]
+
+  def test_validate_schema_with_annotated_list_of_basemodel(self):
+    """Test validate_schema with list[Annotated[Model, ...]]."""
+    json_text = '[{"name": "test", "value": 42}]'
+    result = validate_schema(
+        list[Annotated[SampleModel, Field(description="A sample")]], json_text
+    )
+    assert result == [{"name": "test", "value": 42}]
+
+  def test_validate_schema_with_annotated_basemodel(self):
+    """Test validate_schema with Annotated[SampleModel, ...] validates and parses."""
+    json_text = '{"name": "test", "value": "42"}'
+    result = validate_schema(
+        Annotated[SampleModel, Field(description="A sample")], json_text
+    )
+    assert result == {"name": "test", "value": 42}
 
   def test_list_of_str_schema(self):
     """Test validation with a list[str] schema."""

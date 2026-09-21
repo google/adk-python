@@ -1021,14 +1021,14 @@ _materialize_and_run()
           timeout={timeout!r},
           cwd=td,
         )
-        print(_json.dumps({{
+        print('\\n' + _json.dumps({{
             '__shell_result__': True,
             'stdout': _r.stdout,
             'stderr': _r.stderr,
             'returncode': _r.returncode,
         }}))
       except subprocess.TimeoutExpired as _e:
-        print(_json.dumps({{
+        print('\\n' + _json.dumps({{
             '__shell_result__': True,
             'stdout': _e.stdout or '',
             'stderr': 'Timed out after {timeout}s',
@@ -1108,21 +1108,44 @@ _materialize_and_run()
         # status says nothing about it. Both streams come back serialized as
         # JSON through stdout; that envelope carries the script's status.
         if stdout:
+          parsed = None
           try:
             parsed = json.loads(stdout)
-            if isinstance(parsed, dict) and parsed.get("__shell_result__"):
-              stdout = parsed.get("stdout", "")
-              stderr = parsed.get("stderr", "")
-              rc = parsed.get("returncode", 0)
-              if rc != 0 and not parsed.get("timeout", False):
-                exit_code_message = f"Exit code {rc}"
-                stderr = (
-                    f"{stderr.rstrip()}\n{exit_code_message}"
-                    if stderr
-                    else exit_code_message
-                )
           except (json.JSONDecodeError, ValueError):
-            pass
+            # Fallback: try parsing line by line to find the shell result
+            # envelope. This handles cases where other processes or Python
+            # startup scripts printed warnings to stdout.
+            for line in reversed(stdout.splitlines()):
+              line = line.strip()
+              if line.startswith("{") and line.endswith("}"):
+                try:
+                  candidate = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                  continue
+                if isinstance(candidate, dict) and candidate.get(
+                    "__shell_result__"
+                ):
+                  parsed = candidate
+                  break
+
+          if isinstance(parsed, dict) and parsed.get("__shell_result__"):
+            stdout = parsed.get("stdout", "")
+            stderr = parsed.get("stderr", "")
+            rc = parsed.get("returncode", 0)
+            if rc != 0 and not parsed.get("timeout", False):
+              exit_code_message = f"Exit code {rc}"
+              stderr = (
+                  f"{stderr.rstrip()}\n{exit_code_message}"
+                  if stderr
+                  else exit_code_message
+              )
+          else:
+            logger.warning(
+                "No shell execution envelope found in stdout for '%s' from"
+                " skill '%s'.",
+                file_path,
+                skill.name,
+            )
       else:
         # A Python script runs in the wrapper process itself, so the process
         # the executor ran exited with the script's own status. Executors that
