@@ -5064,5 +5064,73 @@ def test_create_eval_set_legacy_route_creates_eval_set(
   )
 
 
+def test_agent_run_sse_deferred_with_streaming_returns_422(
+    test_app, create_test_session
+):
+  """Deferred plus SSE is rejected up front, not mid-stream.
+
+  A deferred create returns an interaction id rather than a result, so it
+  cannot stream. The run config is built before the response starts so the
+  caller gets a status code instead of a 200 that breaks partway through.
+
+  Args:
+    test_app: The FastAPI test client.
+    create_test_session: Fixture creating the session the request targets.
+  """
+  payload = {
+      "app_name": create_test_session["app_name"],
+      "user_id": create_test_session["user_id"],
+      "session_id": create_test_session["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello agent"}]},
+      "streaming": True,
+      "service_tier": "deferred",
+  }
+
+  response = test_app.post("/run_sse", json=payload)
+
+  assert response.status_code == 422
+  assert "cannot be used with StreamingMode.SSE" in response.json()["detail"]
+
+
+def test_agent_run_sse_deferred_without_streaming_is_allowed(
+    test_app, create_test_session, monkeypatch
+):
+  """Deferred is fine on /run_sse as long as the run is not streaming."""
+  info = create_test_session
+
+  async def run_async_stub(
+      self,  # pylint: disable=unused-argument
+      *,
+      user_id: str,
+      session_id: str,
+      invocation_id: Optional[str] = None,
+      new_message: Optional[types.Content] = None,
+      state_delta: Optional[dict[str, Any]] = None,
+      run_config: Optional[RunConfig] = None,
+  ):
+    del user_id, session_id, invocation_id, new_message, state_delta
+    assert run_config.service_tier == "deferred"
+    yield Event(
+        author="dummy agent",
+        invocation_id="invocation_id",
+        content=types.Content(role="model", parts=[types.Part(text="hi")]),
+    )
+
+  monkeypatch.setattr(Runner, "run_async", run_async_stub)
+
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello agent"}]},
+      "streaming": False,
+      "service_tier": "deferred",
+  }
+
+  response = test_app.post("/run_sse", json=payload)
+
+  assert response.status_code == 200
+
+
 if __name__ == "__main__":
   pytest.main(["-xvs", __file__])

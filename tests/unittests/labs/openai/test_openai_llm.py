@@ -17,7 +17,9 @@ import os
 from unittest import mock
 
 from google.adk.labs.openai._openai_llm import _function_declaration_to_openai_tool
+from google.adk.labs.openai._openai_llm import _map_finish_reason
 from google.adk.labs.openai._openai_llm import _part_to_openai_content
+from google.adk.labs.openai._openai_llm import _response_to_llm_response
 from google.adk.labs.openai._openai_llm import OpenAILlm
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
@@ -616,3 +618,162 @@ async def test_generate_content_async_streaming_tool_call():
   assert responses[3].content.parts[0].function_call.args == {
       "location": "Paris"
   }
+
+
+def _text_completion(content="Hi", finish_reason="stop"):
+  """Builds a minimal mock ChatCompletion with a single text choice."""
+  response = mock.MagicMock()
+  choice = mock.MagicMock()
+  message = mock.MagicMock()
+  message.content = content
+  message.tool_calls = None
+  choice.message = message
+  choice.finish_reason = finish_reason
+  response.choices = [choice]
+  response.usage.prompt_tokens = 10
+  response.usage.completion_tokens = 5
+  response.usage.total_tokens = 15
+  response.usage.prompt_tokens_details = None
+  return response
+
+
+@pytest.mark.asyncio
+async def test_response_maps_finish_reason():
+  """OpenAI finish_reason maps onto LlmResponse.finish_reason."""
+  with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
+    openai_llm = OpenAILlm(model="gpt-4o")
+    llm_request = LlmRequest(
+        model="gpt-4o",
+        contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+    )
+
+    async def mock_create(*args, **kwargs):
+      return _text_completion(finish_reason="length")
+
+    with mock.patch(
+        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+    ) as mock_client_class:
+      mock_client = mock.MagicMock()
+      mock_client_class.return_value = mock_client
+      mock_client.chat.completions.create = mock_create
+
+      responses = [
+          resp async for resp in openai_llm.generate_content_async(llm_request)
+      ]
+
+  assert responses[0].finish_reason == types.FinishReason.MAX_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_response_without_usage_does_not_crash():
+  """A response missing usage yields no usage metadata instead of raising."""
+  response = _text_completion()
+  response.usage = None
+
+  with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
+    openai_llm = OpenAILlm(model="gpt-4o")
+    llm_request = LlmRequest(
+        model="gpt-4o",
+        contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+    )
+
+    async def mock_create(*args, **kwargs):
+      return response
+
+    with mock.patch(
+        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+    ) as mock_client_class:
+      mock_client = mock.MagicMock()
+      mock_client_class.return_value = mock_client
+      mock_client.chat.completions.create = mock_create
+
+      responses = [
+          resp async for resp in openai_llm.generate_content_async(llm_request)
+      ]
+
+  assert responses[0].usage_metadata is None
+  assert responses[0].content.parts[0].text == "Hi"
+
+
+def test_response_with_no_choices_returns_error():
+  """A response with no choices maps to an OTHER error, not an IndexError."""
+  response = mock.MagicMock()
+  response.choices = []
+  response.usage = None
+
+  llm_response = _response_to_llm_response(response)
+
+  assert llm_response.finish_reason == types.FinishReason.OTHER
+  assert llm_response.error_code == types.FinishReason.OTHER
+
+
+def test_response_no_content_non_stop_finish_returns_error():
+  """No content plus an abnormal finish reason surfaces as an error."""
+  response = _text_completion(content="", finish_reason="content_filter")
+
+  llm_response = _response_to_llm_response(response)
+
+  assert llm_response.content is None
+  assert llm_response.finish_reason == types.FinishReason.SAFETY
+  assert llm_response.error_code == types.FinishReason.SAFETY
+  assert llm_response.error_message
+
+
+def test_response_with_content_non_stop_finish_is_not_error():
+  """A truncated-but-usable response (content + non-STOP) stays a success."""
+  response = _text_completion(content="partial", finish_reason="length")
+
+  llm_response = _response_to_llm_response(response)
+
+  assert llm_response.content is not None
+  assert llm_response.finish_reason == types.FinishReason.MAX_TOKENS
+  assert llm_response.error_code is None
+
+
+def test_response_no_content_stop_finish_is_not_promoted_here():
+  """Empty content with a normal STOP finish stays a plain empty response.
+
+  The parser leaves content=None, finish_reason=STOP and error_code=None; it is
+  base_llm_flow (not this wrapper) that promotes a non-streaming empty STOP
+  response to a MODEL_RETURNED_NO_CONTENT error downstream.
+  """
+  response = _text_completion(content="", finish_reason="stop")
+
+  llm_response = _response_to_llm_response(response)
+
+  assert llm_response.content is None
+  assert llm_response.finish_reason == types.FinishReason.STOP
+  assert llm_response.error_code is None
+
+
+def test_response_no_content_no_finish_reason_yields_empty_response():
+  """A response with neither content nor a finish reason stays non-error."""
+  response = _text_completion(content="", finish_reason=None)
+
+  llm_response = _response_to_llm_response(response)
+
+  assert llm_response.content is None
+  assert llm_response.finish_reason is None
+  assert llm_response.error_code is None
+
+
+def test_map_finish_reason_recognized_values():
+  """Recognized OpenAI finish reasons map to specific ADK codes."""
+  assert _map_finish_reason("stop") == types.FinishReason.STOP
+  assert _map_finish_reason("tool_calls") == types.FinishReason.STOP
+  assert _map_finish_reason("function_call") == types.FinishReason.STOP
+  assert _map_finish_reason("length") == types.FinishReason.MAX_TOKENS
+  assert _map_finish_reason("content_filter") == types.FinishReason.SAFETY
+  assert _map_finish_reason(None) is None
+
+
+def test_map_finish_reason_unknown_is_unspecified():
+  """An unrecognized finish reason maps to UNSPECIFIED, not OTHER.
+
+  Matches the convention in models/anthropic_llm.py and models/apigee_llm.py;
+  OTHER is reserved for recognized abnormal terminations (e.g. no choices).
+  """
+  assert (
+      _map_finish_reason("some_new_reason")
+      == types.FinishReason.FINISH_REASON_UNSPECIFIED
+  )

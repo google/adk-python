@@ -2930,37 +2930,6 @@ async def test_resume_short_circuit_skips_partial_function_call():
   assert not any(e.actions and e.actions.transfer_to_agent for e in events)
 
 
-class _CfcFlowForTesting(BaseLlmFlow):
-  """BaseLlmFlow subclass that stubs run_live so the CFC branch can be driven."""
-
-  async def run_live(self, invocation_context):
-    yield Event(
-        author='root_agent',
-        content=types.Content(
-            role='model', parts=[types.Part.from_text(text='live_hello')]
-        ),
-        turn_complete=True,
-    )
-
-
-async def _drive_one_llm_call(flow, invocation_context):
-  """Runs `_call_llm_async` once, draining whatever it yields."""
-  model_response_event = Event(
-      id=Event.new_id(),
-      invocation_id=invocation_context.invocation_id,
-      author='root_agent',
-  )
-  async with Aclosing(
-      flow._call_llm_async(
-          invocation_context,
-          LlmRequest(model='mock'),
-          model_response_event,
-      )
-  ) as agen:
-    async for _ in agen:
-      pass
-
-
 @pytest.mark.asyncio
 async def test_preprocess_final_response_skips_llm_call():
   """A final response from preprocessing must finish the current step."""
@@ -3056,31 +3025,6 @@ async def test_preprocess_non_function_response_does_not_skip_llm_call():
 
 
 @pytest.mark.asyncio
-async def test_cfc_llm_calls_are_counted_against_max_llm_calls():
-  """support_cfc must not exempt a run from the max_llm_calls spend cap."""
-  agent = Agent(
-      name='root_agent', model=testing_utils.MockModel.create(responses=[])
-  )
-  flow = _CfcFlowForTesting()
-  invocation_context = await testing_utils.create_invocation_context(
-      agent=agent,
-      user_content='test',
-      run_config=RunConfig(
-          support_cfc=True,
-          streaming_mode=StreamingMode.SSE,
-          max_llm_calls=2,
-      ),
-  )
-
-  await _drive_one_llm_call(flow, invocation_context)
-  await _drive_one_llm_call(flow, invocation_context)
-  assert invocation_context._invocation_cost_manager._number_of_llm_calls == 2
-
-  with pytest.raises(LlmCallsLimitExceededError):
-    await _drive_one_llm_call(flow, invocation_context)
-
-
-@pytest.mark.asyncio
 async def test_cfc_run_async_does_not_duplicate_function_calls():
   """support_cfc=True in run_async must invoke tool functions exactly once."""
   call_count = 0
@@ -3140,28 +3084,6 @@ async def test_cfc_run_async_does_not_duplicate_function_calls():
   events = [e async for e in flow.run_async(invocation_context)]
   assert call_count == 1
   assert len(events) == 3
-
-
-@pytest.mark.asyncio
-async def test_llm_calls_are_counted_against_max_llm_calls():
-  """The cap still applies on the ordinary (non-CFC) path."""
-  agent = Agent(
-      name='root_agent',
-      model=testing_utils.MockModel.create(responses=['a', 'b', 'c']),
-  )
-  flow = BaseLlmFlowForTesting()
-  invocation_context = await testing_utils.create_invocation_context(
-      agent=agent,
-      user_content='test',
-      run_config=RunConfig(max_llm_calls=2),
-  )
-
-  await _drive_one_llm_call(flow, invocation_context)
-  await _drive_one_llm_call(flow, invocation_context)
-  assert invocation_context._invocation_cost_manager._number_of_llm_calls == 2
-
-  with pytest.raises(LlmCallsLimitExceededError):
-    await _drive_one_llm_call(flow, invocation_context)
 
 
 @pytest.mark.asyncio
@@ -3465,40 +3387,63 @@ async def test_eof_connection_ends_the_run_instead_of_spinning():
   assert receive_calls == 1
 
 
-class _SyncOnlyAgent(BaseAgent):
-  """An agent supplying the LlmAgent model surface without subclassing it.
-
-  `core._utils.as_llm_agent` documents that flows drive agents shaped
-  like this, so resolving a model must not require the async accessors.
-  """
-
-  @property
-  def canonical_model(self) -> BaseLlm:
-    return LLMRegistry.new_llm('gemini-2.5-flash')
-
-  @property
-  def canonical_live_model(self) -> BaseLlm:
-    return LLMRegistry.new_llm('gemini-2.5-flash')
-
-
 @pytest.mark.asyncio
-async def test_get_llm_reads_an_agent_that_has_only_the_sync_properties():
-  agent = _SyncOnlyAgent(name='sync_only')
+async def test_base_llm_flow_delegates_to_core_model_call():
+  """Tests that BaseLlmFlow delegates model call and resolution helpers to core._model_call."""
+  from google.adk.flows.llm_flows.core import _model_call
+
+  flow = BaseLlmFlowForTesting()
+  agent = Agent(name='test_agent', tools=[])
   invocation_context = await testing_utils.create_invocation_context(
       agent=agent
   )
-
-  llm = await BaseLlmFlow()._get_llm(invocation_context)
-
-  assert llm.model == 'gemini-2.5-flash'
-
-
-@pytest.mark.asyncio
-async def test_get_llm_rejects_an_agent_with_no_model_at_all():
-  agent = BaseAgent(name='no_model')
-  invocation_context = await testing_utils.create_invocation_context(
-      agent=agent
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
   )
+  llm_request = LlmRequest()
+  sentinel_response = LlmResponse(
+      content=types.Content(parts=[types.Part.from_text(text='sentinel')])
+  )
+  sentinel_llm = LLMRegistry.new_llm('gemini-2.5-flash')
 
-  with pytest.raises(TypeError, match='canonical_model'):
-    await BaseLlmFlow()._get_llm(invocation_context)
+  with mock.patch(
+      'google.adk.flows.llm_flows.base_llm_flow.resolve_llm',
+      new_callable=AsyncMock,
+      return_value=sentinel_llm,
+  ) as mock_resolve:
+    result = await flow._get_llm(invocation_context)
+    assert result is sentinel_llm
+    mock_resolve.assert_awaited_once_with(invocation_context)
+
+  async def mock_call_gen(*args, **kwargs):
+    del args, kwargs
+    yield sentinel_response
+
+  with mock.patch(
+      'google.adk.flows.llm_flows.base_llm_flow.call_llm_async',
+      side_effect=mock_call_gen,
+  ) as mock_call:
+    results = [
+        resp
+        async for resp in flow._call_llm_async(
+            invocation_context, llm_request, event
+        )
+    ]
+    assert results == [sentinel_response]
+    mock_call.assert_called_once_with(
+        flow, invocation_context, llm_request, event
+    )
+
+  empty_stop_response = LlmResponse(
+      finish_reason=types.FinishReason.STOP,
+      partial=False,
+  )
+  with mock.patch(
+      'google.adk.flows.llm_flows.base_llm_flow.apply_empty_response_policy'
+  ) as mock_apply:
+    async for _ in flow._postprocess_async(
+        invocation_context, llm_request, empty_stop_response, event
+    ):
+      pass
+    mock_apply.assert_called_once_with(invocation_context, empty_stop_response)

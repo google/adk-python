@@ -2209,9 +2209,11 @@ def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict[str, Any]:
   # camelCase alias, so an un-renamed union is silently dropped and the
   # argument reaches the model as a bare `{"type": "object"}`. `by_alias=True`
   # renames all nine; the recursion below also lowercases nested types.
-  any_of = schema_dict.pop("any_of", None)
+  any_of = schema_dict.get("anyOf")
   if any_of is None:
-    any_of = schema_dict.get("anyOf")
+    any_of = schema_dict.pop("any_of", None)
+  else:
+    schema_dict.pop("any_of", None)
   if any_of is not None:
     schema_dict["anyOf"] = [
         _schema_to_dict(item)
@@ -2229,9 +2231,46 @@ def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict[str, Any]:
         new_props[key] = value
     schema_dict["properties"] = new_props
 
-  additional_properties = schema_dict.pop("additional_properties", None)
+  # Reconcile pydantic field names (`ref`, `defs`, `additional_properties`) with
+  # standard JSON Schema keywords (`$ref`, `$defs`, `additionalProperties`),
+  # letting the standard JSON Schema keyword take precedence on collision.
+  # `_schema_to_dict` also serves the `parameters` path, so this recursion
+  # applies there too.
+  ref = schema_dict.get("$ref")
+  if ref is None:
+    ref = schema_dict.pop("ref", None)
+  else:
+    schema_dict.pop("ref", None)
+  if ref is not None:
+    if isinstance(ref, str):
+      if ref.startswith("#/defs/"):
+        ref = f"#/$defs/{ref[len('#/defs/'):]}"
+      elif ref == "#/defs":
+        ref = "#/$defs"
+    schema_dict["$ref"] = ref
+
+  defs = schema_dict.pop("defs", None)
+  if defs is not None:
+    if "$defs" not in schema_dict or schema_dict["$defs"] is None:
+      schema_dict["$defs"] = defs
+    elif isinstance(schema_dict["$defs"], dict) and isinstance(defs, dict):
+      schema_dict["$defs"] = {**defs, **schema_dict["$defs"]}
+
+  for defs_key in ("$defs", "definitions"):
+    if defs_key in schema_dict and isinstance(schema_dict[defs_key], dict):
+      new_defs = {}
+      for key, value in schema_dict[defs_key].items():
+        if isinstance(value, (types.Schema, dict)):
+          new_defs[key] = _schema_to_dict(value)
+        else:
+          new_defs[key] = value
+      schema_dict[defs_key] = new_defs
+
+  additional_properties = schema_dict.get("additionalProperties")
   if additional_properties is None:
-    additional_properties = schema_dict.get("additionalProperties")
+    additional_properties = schema_dict.pop("additional_properties", None)
+  else:
+    schema_dict.pop("additional_properties", None)
   if additional_properties is not None:
     schema_dict["additionalProperties"] = (
         _schema_to_dict(additional_properties)
@@ -2240,6 +2279,87 @@ def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict[str, Any]:
     )
 
   return schema_dict
+
+
+# Maximum character length for tool description in OpenAI / Azure function
+# calling schemas (OpenAI enforces a 1024-character ceiling on description).
+_MAX_TOOL_DESCRIPTION_LENGTH = 1024
+
+_SCHEMA_TYPE_TO_LABEL = {
+    "object": "a JSON object",
+    "array": "a JSON array",
+    "string": "a string",
+    "number": "a number",
+    "integer": "an integer",
+    "boolean": "a boolean",
+    "null": "a null value",
+}
+
+
+def _append_response_schema_to_description(
+    description: str,
+    function_declaration: types.FunctionDeclaration,
+) -> str:
+  """Appends a rendering of the function's output schema to its description.
+
+  OpenAI-compatible chat completions tool definitions have no standard field
+  for declaring the schema of a tool's result, so the schema is rendered into
+  the tool description, which is forwarded to the model. The description is
+  returned unchanged when the function declaration has no output schema, when
+  the schema carries no structure beyond its type, or when appending the schema
+  would exceed the maximum description length (1024 characters).
+
+  Args:
+    description: The original tool description.
+    function_declaration: The function declaration to read the output schema
+      from. `response_json_schema` takes precedence over `response`.
+
+  Returns:
+    The description, with the rendered output schema appended when one exists
+    and fits within length limits.
+  """
+  response_schema: Optional[dict[str, Any]] = None
+  if function_declaration.response_json_schema:
+    if isinstance(function_declaration.response_json_schema, types.Schema):
+      response_schema = _schema_to_dict(
+          function_declaration.response_json_schema
+      )
+    else:
+      response_schema = dict(function_declaration.response_json_schema)
+  elif function_declaration.response:
+    response_schema = _schema_to_dict(function_declaration.response)
+
+  if not response_schema or set(response_schema) <= {"type"}:
+    return description
+
+  schema_type = response_schema.get("type")
+  if isinstance(schema_type, str):
+    schema_type_lower = schema_type.lower()
+    if schema_type_lower in _SCHEMA_TYPE_TO_LABEL:
+      type_label = _SCHEMA_TYPE_TO_LABEL[schema_type_lower]
+    else:
+      article = (
+          "an" if schema_type_lower and schema_type_lower[0] in "aeiou" else "a"
+      )
+      type_label = f"{article} {schema_type}"
+  else:
+    type_label = "a value"
+
+  rendered_schema = json.dumps(
+      response_schema, sort_keys=True, separators=(",", ":")
+  )
+  suffix = f"Returns {type_label} conforming to this schema: {rendered_schema}"
+  candidate = f"{description}\n{suffix}" if description else suffix
+  if len(candidate) > _MAX_TOOL_DESCRIPTION_LENGTH:
+    logger.debug(
+        "Omitting output schema for tool %s: rendered description length %d"
+        " exceeds limit %d",
+        function_declaration.name,
+        len(candidate),
+        _MAX_TOOL_DESCRIPTION_LENGTH,
+    )
+    return description
+  return candidate
 
 
 def _function_declaration_to_tool_param(
@@ -2275,7 +2395,9 @@ def _function_declaration_to_tool_param(
       "type": "function",
       "function": {
           "name": function_declaration.name,
-          "description": function_declaration.description or "",
+          "description": _append_response_schema_to_description(
+              function_declaration.description or "", function_declaration
+          ),
           "parameters": parameters,
       },
   }
@@ -2957,7 +3079,9 @@ def _build_function_declaration_log(
         for k, v in func_decl.parameters.properties.items()
     })
   return_str = "None"
-  if func_decl.response:
+  if func_decl.response_json_schema:
+    return_str = str(func_decl.response_json_schema)
+  elif func_decl.response:
     return_str = str(func_decl.response.model_dump(exclude_none=True))
   return f"{func_decl.name}: {param_str} -> {return_str}"
 

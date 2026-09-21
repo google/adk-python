@@ -28,10 +28,11 @@ from google.genai import types
 
 try:
   from openai import AsyncOpenAI
+  from openai.types import CompletionUsage
   from openai.types.chat import ChatCompletion
   from openai.types.chat import ChatCompletionChunk  # noqa: F401
   from openai.types.chat import ChatCompletionContentPartImageParam
-  from openai.types.chat import ChatCompletionMessage  # noqa: F401
+  from openai.types.chat import ChatCompletionMessage
   from openai.types.chat import ChatCompletionMessageParam
   from openai.types.chat import ChatCompletionToolParam
 except ImportError as e:
@@ -43,6 +44,7 @@ except ImportError as e:
 from pydantic import BaseModel
 from typing_extensions import override
 
+from . import _openai_common
 from ...models.base_llm import BaseLlm
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
@@ -65,6 +67,11 @@ def _to_openai_role(
   if role == "tool":
     return "tool"
   return "user"
+
+
+# The finish-reason mapper lives in _openai_common; alias it under the private
+# name this module and its tests use.
+_map_finish_reason = _openai_common.map_finish_reason
 
 
 def _part_to_openai_content(
@@ -222,50 +229,88 @@ def _function_declaration_to_openai_tool(
   }
 
 
-def _extract_cached_token_count(usage: Any) -> int | None:
+def _extract_cached_token_count(usage: CompletionUsage) -> int | None:
   """Returns OpenAI prompt_tokens_details.cached_tokens, if present."""
   details = getattr(usage, "prompt_tokens_details", None)
   cached = getattr(details, "cached_tokens", None)
   return cached if isinstance(cached, int) else None
 
 
+def _usage_metadata(
+    usage: CompletionUsage | None,
+) -> types.GenerateContentResponseUsageMetadata | None:
+  """Builds ADK usage metadata, tolerating endpoints that omit usage."""
+  if usage is None:
+    return None
+  return types.GenerateContentResponseUsageMetadata(
+      prompt_token_count=usage.prompt_tokens,
+      candidates_token_count=usage.completion_tokens,
+      total_token_count=usage.total_tokens,
+      cached_content_token_count=_extract_cached_token_count(usage),
+  )
+
+
+def _tool_call_parts(message: ChatCompletionMessage) -> list[types.Part]:
+  """Converts OpenAI tool calls on a message to ADK function-call parts."""
+  parts: list[types.Part] = []
+  for tool_call in message.tool_calls or []:
+    args = {}
+    if tool_call.function.arguments:
+      try:
+        args = json.loads(tool_call.function.arguments)
+      except json.JSONDecodeError:
+        logger.warning("Failed to parse tool call arguments as JSON.")
+    part = types.Part.from_function_call(
+        name=tool_call.function.name, args=args
+    )
+    part.function_call.id = tool_call.id
+    parts.append(part)
+  return parts
+
+
 def _response_to_llm_response(response: ChatCompletion) -> LlmResponse:
   """Parses an OpenAI response into an LlmResponse."""
+  usage = getattr(response, "usage", None)
+  if not response.choices:
+    # OpenAI-compatible backends occasionally return no choices (e.g. when a
+    # request is filtered). Surface it as an error rather than raising.
+    return LlmResponse(
+        error_code=types.FinishReason.OTHER,
+        error_message="OpenAI response contained no choices.",
+        finish_reason=types.FinishReason.OTHER,
+        usage_metadata=_usage_metadata(usage),
+    )
+
   choice = response.choices[0]
   message = choice.message
 
   parts = []
   if message.content:
     parts.append(types.Part.from_text(text=message.content))
+  parts.extend(_tool_call_parts(message))
 
-  if message.tool_calls:
-    for tool_call in message.tool_calls:
-      args = {}
-      if tool_call.function.arguments:
-        try:
-          args = json.loads(tool_call.function.arguments)
-        except json.JSONDecodeError:
-          logger.warning("Failed to parse tool call arguments as JSON.")
+  raw_finish_reason = getattr(choice, "finish_reason", None)
+  finish_reason = _map_finish_reason(raw_finish_reason)
 
-      part = types.Part.from_function_call(
-          name=tool_call.function.name, args=args
-      )
-      part.function_call.id = tool_call.id
-      parts.append(part)
+  if not parts and finish_reason not in (None, types.FinishReason.STOP):
+    # No usable content and the model stopped for an abnormal reason (e.g.
+    # content filtering or hitting the token limit before emitting anything).
+    # Mirror LlmResponse.create and surface it as an error. A truncated-but-
+    # usable response (content present with a non-STOP reason) stays a success.
+    return LlmResponse(
+        error_code=finish_reason,
+        error_message=(
+            f"OpenAI response finished with reason {raw_finish_reason!r} and"
+            " no content."
+        ),
+        finish_reason=finish_reason,
+        usage_metadata=_usage_metadata(usage),
+    )
 
   return LlmResponse(
-      content=types.Content(
-          role="model",
-          parts=parts,
-      ),
-      usage_metadata=types.GenerateContentResponseUsageMetadata(
-          prompt_token_count=response.usage.prompt_tokens,
-          candidates_token_count=response.usage.completion_tokens,
-          total_token_count=response.usage.total_tokens,
-          cached_content_token_count=_extract_cached_token_count(
-              response.usage
-          ),
-      ),
+      content=types.Content(role="model", parts=parts) if parts else None,
+      usage_metadata=_usage_metadata(usage),
+      finish_reason=finish_reason,
   )
 
 
