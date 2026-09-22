@@ -1,210 +1,136 @@
 # CrewaiTool
 
-`CrewaiTool` wraps a CrewAI tool so an ADK agent can call it. It is a
-`FunctionTool` subclass that calls the CrewAI tool's `run` method, builds the
-Gemini function declaration from the tool's `args_schema`, and handles the
-`**kwargs` signature most CrewAI tools have.
-
-There is no account or service to set up, but there is one hard prerequisite:
-CrewAI support requires Python 3.11. On any other version the `extensions`
-extra installs without CrewAI, and the import then fails.
+CrewaiTool wraps tools from the CrewAI ecosystem for use within the ADK framework.
+The wrapper ensures that tool signatures and parameter handling match the
+requirements of large language models.
 
 ## Introduction
 
-`CrewaiTool` is the adapter that lets an existing CrewAI tool keep working in
-ADK. Put a wrapped tool in an agent's `tools` list and it behaves like any
-other ADK tool: it appears in the model's function declarations, it is invoked
-with the arguments the model chose, and its return value goes back as a
-function response.
+Many developers have existing toolsets built for CrewAI. The `CrewaiTool` class
+allows these tools to be used directly in ADK agents without rewriting the
+logic. The class handles the translation between the CrewAI `BaseTool` structure
+and the ADK tool interface, including automatic schema generation from Pydantic
+models.
 
-It is a migration path rather than a permanent home. A tool you own is usually
-better rewritten as a plain Python function and passed straight to `tools=`,
-which is what `FunctionTool` does with no adapter in the way.
-
-[`LangchainTool`](../../langchain/langchain_tool/index.md) is the same idea for
-LangChain, and the two adapters are close enough that only four things separate
-them:
-
-| | `CrewaiTool` | `LangchainTool` |
-| :--- | :--- | :--- |
-| `name` argument | Required | Optional |
-| Declaration source | Always `tool.args_schema` | `args_schema` when present, otherwise signature introspection |
-| Non-framework objects | Rejected: must be a `crewai.tools.BaseTool` | Accepted if it has `run` or `_run` |
-| `return_direct` | Not translated | Sets `skip_summarization` |
+The wrapper specifically addresses differences in how CrewAI and ADK manage tool
+execution. It automatically cleans tool names to meet model requirements and
+manages the `**kwargs` pattern commonly found in CrewAI tools, ensuring that
+internal framework parameters do not interfere with tool logic.
 
 ## Get started
 
-Three steps get a wrapped CrewAI tool into an agent.
+The following example demonstrates how to wrap a custom CrewAI tool and attach
+it to an ADK agent.
 
-1.  Check that you are on Python 3.11, the only version the `extensions` extra
-    brings CrewAI in on.
+```python
+from typing import Optional
+from crewai.tools import BaseTool
+from pydantic import BaseModel, Field
+from google.adk import Agent
+from google.adk.integrations.crewai import CrewaiTool
 
-2.  Install the extra:
+class SearchInput(BaseModel):
+    query: str = Field(..., description="The search query string")
+    limit: Optional[int] = Field(None, description="Result limit")
 
-    ```bash
-    pip install "google-adk[extensions]"
-    ```
+class CustomSearchTool(BaseTool):
+    name: str = "custom_search"
+    description: str = "Search for information with optional limits."
+    args_schema: type[BaseModel] = SearchInput
 
-3.  Wrap the CrewAI tool and put it in an agent's `tools` list. **`name` is
-    required.** The constructor has no default for it, so if you omit it you
-    get a `TypeError` rather than a fallback to the CrewAI name.
+    def _run(self, query: str, **kwargs) -> str:
+        limit = kwargs.get("limit", 5)
+        return f"Searching for {query} with limit {limit}"
 
-    ```python
-    from google.adk.agents import Agent
-    from google.adk.integrations.crewai import CrewaiTool
-    from crewai_tools import SerperDevTool
+# Instantiate the CrewAI tool
+crewai_search_tool = CustomSearchTool()
 
-    search_tool = CrewaiTool(
-        SerperDevTool(),
-        name="web_search",
-        description="Searches the public web and returns a text summary.",
-    )
+# Wrap it for ADK
+adk_search_tool = CrewaiTool(
+    crewai_search_tool,
+    name="search_with_filters",
+    description="Search for information with an optional result limit"
+)
 
-    root_agent = Agent(
-        name="researcher",
-        description="Answers questions using web search.",
-        instruction="Search before answering. Cite what the search returned.",
-        tools=[search_tool],
-    )
-    ```
-
-The tool is the first positional argument; `name` and `description` are
-keyword-only.
-
-If you pass `name=""` explicitly, the CrewAI tool's own name is used instead,
-lowercased and with spaces turned into underscores, because CrewAI permits
-spaces in a tool name and Gemini does not. Relying on that is a bad idea, since
-CrewAI names are usually written for a human and land in the prompt unchanged.
-Write your own.
+# Use the wrapped tool in an agent
+search_agent = Agent(
+    name="search_agent",
+    description="An agent that can search using CrewAI tools",
+    tools=[adk_search_tool],
+)
+```
 
 ## How it works
 
-Three things decide how a wrapped tool looks to the model: where its name and
-description come from, how its function declaration is built, and which
-arguments reach the CrewAI tool underneath.
+The `CrewaiTool` class inherits from `FunctionTool` and wraps the `run` method
+of a CrewAI `BaseTool`. During initialization, the wrapper inspects the
+provided tool and prepares it for the ADK environment.
 
-### Name and description
+The wrapper performs automatic name normalization. Because many models do not
+support spaces in tool names, the class replaces spaces with underscores and
+converts the name to lowercase. If the original tool name is "Serper Dev Tool",
+the wrapper defaults the name to `serper_dev_tool`.
 
-Each resolves in two steps: the explicit argument if it is non-empty, then the
-CrewAI tool's own attribute.
+When the agent invokes the tool, the wrapper handles parameter filtering.
+CrewAI tools frequently use a `**kwargs` pattern to accept flexible inputs.
+The `CrewaiTool.run_async` method identifies these functions and ensures that
+all relevant arguments from the model are passed through, while stripping
+away framework-internal arguments like `self` that would cause execution
+errors.
 
-### The declaration, and the `required` list that is not there
-
-The Gemini declaration is built from the CrewAI tool's `args_schema`. There is
-no signature-introspection fallback, which makes `args_schema` effectively
-mandatory: if your CrewAI tool has none, wrapping it raises instead of
-degrading to an untyped declaration.
-
-The declaration that comes out carries the schema's `properties` and **not its
-`required` list**. Every parameter looks optional to the model, even the ones
-your Pydantic schema marked required. The check still happens, at call time
-instead, and a missing mandatory argument returns an error dictionary to the
-model rather than raising:
-
-```text
-{'error': "Invoking `web_search()` failed as the following mandatory input
-parameters are not present: query\nYou could retry calling this tool, but it is
-IMPORTANT for you to provide all the mandatory parameters."}
-```
-
-The practical effect is one extra round trip when the model guesses wrong.
-Descriptions on your Pydantic fields are the thing that prevents it, so write
-them.
-
-### `**kwargs`
-
-Most CrewAI tools are written as `def _run(self, query: str, **kwargs)`, taking
-arbitrary filters through the catch-all. ADK's normal argument filtering would
-drop everything the signature does not name, so `CrewaiTool` forwards those
-arguments instead.
-
-The rule is decided by whether the callable has a `**kwargs` parameter:
-
-*   **With `**kwargs`:** every argument the model supplied is forwarded, minus
-    `self` and minus the tool-context parameter. So `category`, `date_range` and
-    `limit` all arrive in `kwargs` even though nothing declares them.
-*   **Without `**kwargs`:** the usual filtering applies, and anything the
-    signature does not name is dropped.
-
-In both cases, if the callable declares a `tool_context` parameter, ADK injects
-the real `ToolContext` over anything the model may have put there.
+The wrapper also uses the CrewAI tool's `args_schema` to build the function
+declaration. This ensures that the model receives the correct JSON schema
+defined by the tool's Pydantic model, including field descriptions and
+optional constraints.
 
 ## Configuration options
 
+The following options are used when defining a `CrewaiTool` through a
+configuration file or the `from_config` method.
+
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `tool` | `crewai.tools.BaseTool` | required | The CrewAI tool. Positional. |
-| `name` | `str` | required | The name the model sees. Keyword-only. `''` falls back to the CrewAI name. |
-| `description` | `str` | `''` | The description the model sees. Keyword-only. Empty falls back to the CrewAI description. |
+| `tool` | `str` | | The fully qualified path of the CrewAI tool instance. |
+| `name` | `str` | `''` | The name to assign to the tool. |
+| `description` | `str` | `''` | The description of the tool for the model. |
 
-`description` is where the accuracy is. A `crewai-tools` community tool's
-description is usually written for a Python reader browsing the catalog, and
-it goes straight into the prompt. Rewriting it is the cheapest improvement
-available on a wrapped tool.
+The `tool` option requires a string representing the fully qualified name of
+the tool instance, which the framework resolves at runtime. If the `name` or
+`description` options are left as empty strings, the wrapper attempts to
+extract these values from the underlying CrewAI tool instance.
 
 ## Advanced applications
 
-Two questions come up once the first wrapped tool works: how to declare one
-outside Python, and when to rewrite a tool instead of wrapping it.
+The wrapper supports context injection for tools that need access to the
+current execution state. If a CrewAI tool defines a parameter named
+`tool_context` or uses the `Context` type annotation, the wrapper
+automatically injects the ADK `ToolContext` during invocation.
 
-### Declare the tool in YAML
+```python
+from google.adk.tools.tool_context import ToolContext
 
-`CrewaiTool` supports ADK's config-driven agent loading through
-`CrewaiToolConfig`, so a wrapped tool can be named in an agent YAML file rather
-than constructed in Python:
-
-```yaml
-tools:
-  - name: google.adk.integrations.crewai.CrewaiTool
-    args:
-      tool: my_package.tools.search_tool
-      name: web_search
-      description: Searches the public web and returns a text summary.
+def tool_with_context(tool_context: ToolContext, query: str, **kwargs):
+    # The wrapper identifies the tool_context parameter and provides it
+    session_id = tool_context.invocation_context.session.id
+    return f"Searching for {query} in session {session_id}"
 ```
 
-`tool` is the fully qualified path to a CrewAI tool **instance**, not a class; it
-is resolved by import at load time. `name` and `description` both default to the
-empty string here, so the YAML form is the one place `name` is genuinely
-optional: leave it out and the CrewAI tool's own name is used.
-
-### Decide what to migrate rather than wrap
-
-Wrapping is the right answer for a tool you did not write and do not want to own.
-For a tool that is your own Python function underneath, the adapter is overhead:
-pass the function to `tools=` and ADK builds a `FunctionTool` from its signature
-and docstring. You also get things this adapter cannot give you cleanly, notably
-a real `tool_context: ToolContext` parameter for reading session state, saving
-artifacts, or requesting confirmation.
+This injection happens regardless of whether the tool uses explicit parameters
+or `**kwargs`. The wrapper removes any existing `tool_context` keys from the
+raw argument dictionary to prevent duplicates and then re-inserts the
+authorized context object.
 
 ## Limitations
 
-*   **CrewAI support is Python 3.11 only.** The `extensions` extra brings
-    CrewAI in on Python 3.11 and on no other version. Elsewhere the extra
-    still installs successfully, and the failure only shows up at import.
-*   **The import fails as soon as CrewAI is absent.**
-    `from google.adk.integrations.crewai import CrewaiTool` raises
-    `ImportError: Crewai Tools require pip install 'google-adk[extensions]'.`
-    at import time rather than when you construct a tool. There is no lazy
-    path.
-*   **`args_schema` is effectively required.** No signature fallback exists, so
-    a CrewAI tool without one cannot produce a declaration.
-*   **The model is never told which arguments are mandatory.** The declaration
-    carries no `required` list, so the check happens at call time instead.
-*   **Nothing but the callable and the schema carries across.** CrewAI's
-    `cache_function`, its result-as-answer behavior, its own error handling and
-    its telemetry are not translated. `LangchainTool` at least maps
-    `return_direct`; there is no equivalent here.
-*   **`google.adk.tools.crewai_tool` is a deprecated shim.** Importing from it
-    emits `DeprecationWarning: google.adk.tools.crewai_tool is moved to
-    google.adk.integrations.crewai`. Use the new path.
+The `CrewaiTool` requires the optional extensions package. You must install
+the framework using `pip install 'google-adk[extensions]'` to use this
+integration.
+
+The wrapper enforces name compatibility by default. If a CrewAI tool has a name
+that is already model-compliant, the wrapper uses it as-is, but any spaces are
+always replaced with underscores to prevent model invocation failures.
 
 ## Related samples
 
-*   [CrewAI tool with \*\*kwargs](../../../../../contributing/samples/integrations/crewai_tool_kwargs/agent.py)
-    is a `BaseTool` whose `_run` takes `**kwargs`, so you can watch the
-    arbitrary filters arrive intact.
-
-## Related guides
-
-*   [LangchainTool](../../langchain/langchain_tool/index.md) is the same
-    adapter for LangChain, with the differences tabled above.
+- [crewai_tool_kwargs](../../../../../contributing/samples/integrations/crewai_tool_kwargs/agent.py) - Demonstrates handling arbitrary parameters through **kwargs.
+- [crewai_tool_kwargs](../../../../../contributing/samples/integrations/crewai_tool_kwargs/main.py) - A runnable script testing the CrewAI tool integration.

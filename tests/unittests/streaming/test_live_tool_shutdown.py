@@ -655,3 +655,121 @@ async def test_handoff_stops_streaming_tools_before_the_transfer_delay():
   assert (
       'late_stream' not in forwarded
   ), "the handing-off agent's streaming tool yielded during the transfer delay"
+
+
+@pytest.mark.asyncio
+async def test_stop_streaming_propagates_outer_cancelled_error():
+  """Cancelling the caller while stop_streaming awaits a stubborn task propagates CancelledError."""
+  from google.adk.flows.llm_flows import functions
+
+  def stop_streaming(function_name: str) -> None:
+    del function_name
+
+  agent = Agent(
+      name='root_agent',
+      model='gemini-2.0-flash',
+      tools=[stop_streaming],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  stubborn_cancelled = asyncio.Event()
+  release_stubborn = asyncio.Event()
+
+  async def _stubborn_task() -> None:
+    try:
+      await asyncio.sleep(10)
+    except asyncio.CancelledError:
+      stubborn_cancelled.set()
+      while not release_stubborn.is_set():
+        try:
+          await release_stubborn.wait()
+        except asyncio.CancelledError:
+          pass
+      raise
+
+  target_task = asyncio.create_task(_stubborn_task())
+  invocation_context.active_streaming_tools = {
+      'monitor': ActiveStreamingTool(task=target_task)
+  }
+
+  stop_event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part.from_function_call(
+                  name='stop_streaming', args={'function_name': 'monitor'}
+              )
+          ],
+      ),
+  )
+  tools_dict = {'stop_streaming': FunctionTool(func=stop_streaming)}
+
+  caller_task = asyncio.create_task(
+      functions.handle_function_calls_live(
+          invocation_context, stop_event, tools_dict
+      )
+  )
+  await stubborn_cancelled.wait()
+  caller_task.cancel()
+
+  try:
+    with pytest.raises(asyncio.CancelledError):
+      await caller_task
+  finally:
+    release_stubborn.set()
+    try:
+      await target_task
+    except asyncio.CancelledError:
+      pass
+
+
+@pytest.mark.asyncio
+async def test_stop_streaming_reraises_target_task_exception():
+  """If the streaming tool task raised an exception on cancel, stop_streaming re-raises it."""
+  from google.adk.flows.llm_flows import functions
+
+  def stop_streaming(function_name: str) -> None:
+    del function_name
+
+  agent = Agent(
+      name='root_agent',
+      model='gemini-2.0-flash',
+      tools=[stop_streaming],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  async def _failing_task() -> None:
+    try:
+      await asyncio.sleep(10)
+    except asyncio.CancelledError:
+      raise RuntimeError('streaming tool crashed on cancel')
+
+  target_task = asyncio.create_task(_failing_task())
+  invocation_context.active_streaming_tools = {
+      'monitor': ActiveStreamingTool(task=target_task)
+  }
+
+  stop_event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part.from_function_call(
+                  name='stop_streaming', args={'function_name': 'monitor'}
+              )
+          ],
+      ),
+  )
+  tools_dict = {'stop_streaming': FunctionTool(func=stop_streaming)}
+
+  with pytest.raises(RuntimeError, match='streaming tool crashed on cancel'):
+    await functions.handle_function_calls_live(
+        invocation_context, stop_event, tools_dict
+    )
