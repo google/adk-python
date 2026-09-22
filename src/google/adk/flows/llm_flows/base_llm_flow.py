@@ -32,6 +32,15 @@ from ...agents.base_agent import BaseAgent
 from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...live._audio_cache_manager import AudioCacheManager
+from ...live._flow_utils import _ReconnectMode as _ReconnectMode
+from ...live._flow_utils import _ReconnectSentinel as _ReconnectSentinel
+from ...live._flow_utils import _TOOL_SHUTDOWN_TIMEOUT_SECONDS as _TOOL_SHUTDOWN_TIMEOUT_SECONDS
+from ...live._flow_utils import DEFAULT_ENABLE_CACHE_STATISTICS as DEFAULT_ENABLE_CACHE_STATISTICS
+from ...live._flow_utils import DEFAULT_MAX_RECONNECT_ATTEMPTS as DEFAULT_MAX_RECONNECT_ATTEMPTS
+from ...live._flow_utils import DEFAULT_TASK_COMPLETION_DELAY as DEFAULT_TASK_COMPLETION_DELAY
+from ...live._flow_utils import DEFAULT_TRANSFER_AGENT_DELAY as DEFAULT_TRANSFER_AGENT_DELAY
+from ...live._flow_utils import handle_control_event_flush as _handle_control_event_flush_impl
+from ...live._flow_utils import stop_background_tool_tasks as _stop_background_tool_tasks_impl
 from ...models.base_llm_connection import BaseLlmConnection
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
@@ -75,10 +84,6 @@ _finalize_dynamic_instructions = (
 )
 
 
-_ReconnectMode = _live_llm_flow._ReconnectMode
-_ReconnectSentinel = _live_llm_flow._ReconnectSentinel
-
-
 if TYPE_CHECKING:
   from ...models.base_llm import BaseLlm
   from ._base_llm_processor import BaseLlmRequestProcessor
@@ -89,22 +94,6 @@ logger = logging.getLogger('google_adk.' + __name__)
 _ADK_AGENT_NAME_LABEL_KEY = ADK_AGENT_NAME_LABEL_KEY
 _NO_CONTENT_ERROR_CODE = NO_CONTENT_ERROR_CODE
 _NO_CONTENT_ERROR_MESSAGE = NO_CONTENT_ERROR_MESSAGE
-
-# Timing configuration
-DEFAULT_TRANSFER_AGENT_DELAY = 1.0
-DEFAULT_TASK_COMPLETION_DELAY = 1.0
-
-# How long a live run waits for a background tool task to honor cancellation
-# before giving up on it. Matches the budget `stop_streaming` already gives a
-# streaming tool it cancels.
-_TOOL_SHUTDOWN_TIMEOUT_SECONDS = 1.0
-
-DEFAULT_MAX_RECONNECT_ATTEMPTS = 5
-
-# Statistics configuration
-DEFAULT_ENABLE_CACHE_STATISTICS = False
-
-_require_live_request_queue = _live_llm_flow.require_live_request_queue
 
 
 class BaseLlmFlow(ABC):
@@ -321,7 +310,7 @@ class BaseLlmFlow(ABC):
     ``_TOOL_SHUTDOWN_TIMEOUT_SECONDS`` is logged and left behind rather than
     stalling the handoff or the caller's teardown on it.
     """
-    await _live_llm_flow.stop_background_tool_tasks(self, invocation_context)
+    await _stop_background_tool_tasks_impl(self, invocation_context)
 
   async def _screen_live_user_content(
       self,
@@ -702,7 +691,7 @@ class BaseLlmFlow(ABC):
     Returns:
       A list of Event objects created from the flushed caches.
     """
-    return await _live_llm_flow.handle_control_event_flush(
+    return await _handle_control_event_flush_impl(
         self, invocation_context, llm_response
     )
 

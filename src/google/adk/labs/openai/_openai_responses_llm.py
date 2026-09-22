@@ -18,12 +18,12 @@ from __future__ import annotations
 
 import base64
 from collections.abc import AsyncGenerator
+from collections.abc import Awaitable
 from collections.abc import Callable
 from collections.abc import Mapping
 import copy
 import enum
 from functools import cached_property
-import inspect
 import json
 import logging
 import os
@@ -66,6 +66,7 @@ except ImportError as e:
       '`pip install openai` to use the OpenAI Responses API labs models.'
   ) from e
 
+from . import _openai_common
 from ...models.base_llm import BaseLlm
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
@@ -1105,13 +1106,19 @@ class _StreamAccumulator:
 class OpenAIResponsesLlm(BaseLlm):
   """ADK model implementation backed by the OpenAI Responses API.
 
-  For configuration beyond ``api_key`` (organization, base_url, timeout,
-  retries, custom headers, ...), pass a pre-configured ``AsyncOpenAI`` instance
-  as ``client``.
+  Set ``api_key`` and ``base_url`` to reach the default OpenAI host or an
+  OpenAI-compatible backend. ``api_key`` may be a string or a zero-arg callable
+  (sync or async) that returns one; ``AsyncOpenAI`` re-invokes it per request so
+  an expiring credential is refreshed. For anything the client supports beyond
+  these (organization, timeout, retries, custom headers, ...), pass a
+  pre-configured ``AsyncOpenAI`` instance as ``client``.
   """
 
   model: str = 'gpt-5'
-  api_key: str | Callable[[], str] | None = None
+  api_key: str | Callable[[], str] | Callable[[], Awaitable[str]] | None = (
+      Field(default=None, exclude=True, repr=False)
+  )
+  base_url: str | None = None
   client: AsyncOpenAI | None = None
   store: bool | None = None
   include: list[str] | None = None
@@ -1132,8 +1139,9 @@ class OpenAIResponsesLlm(BaseLlm):
       self, llm_request: LlmRequest, stream: bool = False
   ) -> AsyncGenerator[LlmResponse, None]:
     kwargs = self._get_response_create_kwargs(llm_request, stream=stream)
+    client = self._openai_client
     if not stream:
-      response = await self._openai_client.responses.create(**kwargs)
+      response = await client.responses.create(**kwargs)
       yield _response_to_llm_response(
           response,
           include_response_metadata=self.include_response_metadata,
@@ -1143,7 +1151,7 @@ class OpenAIResponsesLlm(BaseLlm):
     accumulator = _StreamAccumulator(
         include_response_metadata=self.include_response_metadata
     )
-    response_stream = await self._openai_client.responses.create(**kwargs)
+    response_stream = await client.responses.create(**kwargs)
     async for event in response_stream:
       for response in accumulator.process_event(event):
         yield response
@@ -1231,22 +1239,19 @@ class OpenAIResponsesLlm(BaseLlm):
     kwargs['truncation'] = self.truncation
     kwargs['service_tier'] = self.service_tier
 
-  def _resolve_api_key(self) -> str | None:
-    if callable(self.api_key):
-      value = self.api_key()
-      if inspect.isawaitable(value):
-        raise TypeError(
-            'Async api_key providers are not supported; provide a sync'
-            ' callable that returns a string, or a string.'
-        )
-      return value
-    return self.api_key
-
   @cached_property
   def _openai_client(self) -> AsyncOpenAI:
     if self.client is not None:
       return self.client
-    return AsyncOpenAI(api_key=self._resolve_api_key())
+    kwargs: dict[str, Any] = {}
+    api_key = _openai_common.build_api_key(self.api_key)
+    if api_key is not None:
+      kwargs['api_key'] = api_key
+    if self.base_url is not None:
+      kwargs['base_url'] = self.base_url
+    # ``AsyncOpenAI`` awaits a callable api_key on every request, so an
+    # expiring credential is refreshed without rebuilding the client.
+    return AsyncOpenAI(**kwargs)
 
 
 class AzureOpenAIResponsesLlm(OpenAIResponsesLlm):
@@ -1254,19 +1259,26 @@ class AzureOpenAIResponsesLlm(OpenAIResponsesLlm):
 
   Azure's Responses API is exposed through an OpenAI-compatible
   `/openai/v1/responses` endpoint. The `model` field should be the Azure model
-  deployment name.
+  deployment name. Set `azure_endpoint` to the Azure resource endpoint; it is
+  turned into the `/openai/v1/` base URL. If `azure_endpoint` is unset, the
+  inherited `base_url` is used verbatim as a fallback so it is not silently
+  ignored.
   """
 
   azure_endpoint: str | None = None
-
-  def _resolve_api_key(self) -> str | None:
-    return super()._resolve_api_key() or os.environ.get('AZURE_OPENAI_API_KEY')
 
   @cached_property
   def _openai_client(self) -> AsyncOpenAI:
     if self.client is not None:
       return self.client
-    kwargs: dict[str, Any] = {'api_key': self._resolve_api_key()}
+    kwargs: dict[str, Any] = {}
+    api_key = _openai_common.build_api_key(
+        self.api_key or os.environ.get('AZURE_OPENAI_API_KEY')
+    )
+    if api_key is not None:
+      kwargs['api_key'] = api_key
     if self.azure_endpoint:
       kwargs['base_url'] = self.azure_endpoint.rstrip('/') + '/openai/v1/'
+    elif self.base_url is not None:
+      kwargs['base_url'] = self.base_url
     return AsyncOpenAI(**kwargs)
