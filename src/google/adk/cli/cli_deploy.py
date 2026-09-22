@@ -533,13 +533,22 @@ def _validate_app_name(app_name: str) -> None:
     )
 
 
-def _validate_dockerfile_env_value(name: str, value: Optional[str]) -> None:
-  """Validates a value before it is written into a Dockerfile ENV instruction.
+def _validate_no_newlines(name: str, value: Optional[str]) -> None:
+  """Validates a value before it is written into a generated Dockerfile or
+  Kubernetes manifest.
+
+  Both formats are line-based: a Dockerfile's ENV instruction and a
+  Kubernetes manifest's YAML both derive meaning from where one line ends
+  and the next begins, so a newline embedded in an otherwise-single-value
+  field lets it terminate that line early and contribute new,
+  attacker-controlled lines of its own -- an extra Dockerfile
+  instruction, or extra YAML structure (a sibling container, altered
+  security context, etc.) applied to the same resource.
 
   Args:
-    name: The environment variable name, used in the error message. The value
-      itself is never echoed, because it can come from the agent folder's `.env`
-      file.
+    name: The environment variable or field name, used in the error
+      message. The value itself is never echoed, because it can come from
+      the agent folder's `.env` file.
     value: The value to write.
 
   Raises:
@@ -547,8 +556,9 @@ def _validate_dockerfile_env_value(name: str, value: Optional[str]) -> None:
   """
   if value is not None and ('\n' in value or '\r' in value):
     raise click.ClickException(
-        f'Invalid value for {name}. The value is written into the generated'
-        ' Dockerfile and must not span multiple lines.'
+        f'Invalid value for {name}. The value is written into a generated'
+        ' Dockerfile or Kubernetes manifest and must not span multiple'
+        ' lines.'
     )
 
 
@@ -1368,11 +1378,9 @@ def to_agent_engine(
 
     # Validated before the instance is created, so a failure cannot leak one.
     enterprise_val = env_vars.get('GOOGLE_GENAI_USE_ENTERPRISE', '1')
-    _validate_dockerfile_env_value(
-        'GOOGLE_GENAI_USE_ENTERPRISE', enterprise_val
-    )
-    _validate_dockerfile_env_value('GOOGLE_CLOUD_PROJECT', project)
-    _validate_dockerfile_env_value('GOOGLE_CLOUD_LOCATION', region)
+    _validate_no_newlines('GOOGLE_GENAI_USE_ENTERPRISE', enterprise_val)
+    _validate_no_newlines('GOOGLE_CLOUD_PROJECT', project)
+    _validate_no_newlines('GOOGLE_CLOUD_LOCATION', region)
 
     def create_dockerfile_for_agent_engine(resource_name: str) -> None:
       requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
@@ -1566,6 +1574,10 @@ def to_gke(
   click.echo('--------------------------------------------------')
   # Resolve project early to show the user which one is being used
   project = _resolve_project(project)
+  # Validated before display, so a malformed value is never echoed or
+  # written into the generated Kubernetes manifest.
+  _validate_no_newlines('project', project)
+  _validate_no_newlines('region', region)
   click.echo(f'  Project:         {project}')
   click.echo(f'  Region:          {region}')
   click.echo(f'  Cluster:         {cluster_name}')
