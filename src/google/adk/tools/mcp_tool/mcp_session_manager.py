@@ -82,6 +82,7 @@ except (ImportError, AttributeError):
 from ...features import FeatureName
 from ...features import is_feature_enabled
 from ...telemetry import tracing
+from ...utils._google_client_headers import merge_tracking_headers
 from .session_context import SessionContext
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -106,6 +107,12 @@ _SESSION_USE_PIN_WARN_SECONDS = 4 * _SESSION_IDLE_TTL_SECONDS
 # A failed mTLS probe is not retried for this long. Not cached for the life of
 # the manager, so credentials granted while the process runs are picked up.
 _MTLS_PROBE_RETRY_INTERVAL_SECONDS = 300.0
+
+# The headers `merge_tracking_headers` writes, spelled the way it spells them.
+# HTTP header names are case-insensitive and a caller may have used any casing,
+# but a dict is not: leaving their spelling alongside ours would put the header
+# on the wire twice, so theirs is folded onto ours before merging.
+_TRACKING_HEADER_NAMES = frozenset(('user-agent', 'x-goog-api-client'))
 
 
 def create_mcp_http_client(
@@ -961,11 +968,15 @@ class MCPSessionManager:
   ) -> Optional[Dict[str, str]]:
     """Merges base connection headers with additional headers.
 
+    The ADK client tokens are added on top, so that an MCP server sees the
+    traffic as coming from ADK rather than from bare httpx.
+
     Args:
         additional_headers: Optional headers to merge with connection headers.
 
     Returns:
-        Merged headers dictionary, or None if no headers are provided.
+        Merged headers dictionary, or None for stdio connections, which do not
+        support headers.
     """
     if isinstance(self._connection_params, StdioConnectionParams) or isinstance(
         self._connection_params, StdioServerParameters
@@ -983,7 +994,10 @@ class MCPSessionManager:
     if additional_headers:
       base_headers.update(additional_headers)
 
-    return base_headers
+    return merge_tracking_headers({
+        key.lower() if key.lower() in _TRACKING_HEADER_NAMES else key: value
+        for key, value in base_headers.items()
+    })
 
   def _is_session_disconnected(self, session: ClientSession) -> bool:
     """Checks if a session is disconnected or closed.

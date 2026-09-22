@@ -2986,6 +2986,7 @@ def cli_deploy_agent_engine(
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
+    click.get_current_context().exit(1)
 
 
 @deploy.command("gke")
@@ -3197,3 +3198,4 @@ def cli_deploy_gke(
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
+    click.get_current_context().exit(1)
