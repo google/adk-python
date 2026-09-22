@@ -343,7 +343,7 @@ def trace_tool_call(
   if telemetry_config.should_add_content_to_legacy_spans:
     span.set_attribute(
         "gcp.vertex.agent.tool_response",
-        safe_json_serialize(tool_response),
+        safe_json_serialize(_redact_credential_secrets(tool_response)),
     )
   else:
     span.set_attribute("gcp.vertex.agent.tool_response", "{}")
