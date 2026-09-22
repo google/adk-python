@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
+from collections.abc import Callable
 import copy
 from functools import cached_property
 import json
@@ -42,6 +44,7 @@ except ImportError as e:
   ) from e
 
 from pydantic import BaseModel
+from pydantic import Field
 from typing_extensions import override
 
 from . import _openai_common
@@ -317,20 +320,35 @@ def _response_to_llm_response(response: ChatCompletion) -> LlmResponse:
 class OpenAILlm(BaseLlm):
   """Integration with OpenAI models.
 
-  For configuration beyond the defaults (api_key, base_url, organization,
-  timeout, retries, custom headers, ...), pass a pre-configured ``AsyncOpenAI``
-  instance as ``client``. Pointing its ``base_url`` at an OpenAI-compatible
-  host is how this model reaches a non-OpenAI backend.
+  Set ``api_key`` and ``base_url`` to reach the default OpenAI host or any
+  OpenAI-compatible backend (for example xAI Grok on Vertex AI, whose
+  ``base_url`` is the ``endpoints/openapi`` surface and whose ``api_key`` is a
+  Google Cloud access token). ``api_key`` may be a string or a zero-arg callable
+  (sync or async) that returns one, so a rotating credential can be plugged in.
+  For anything the client supports beyond these (organization, timeout, retries,
+  custom headers, ...), pass a pre-configured ``AsyncOpenAI`` instance as
+  ``client``.
 
   Attributes:
       model: The name of the OpenAI model.
       max_tokens: The maximum number of tokens to generate.
+      api_key: The API key, either as a string or as a zero-argument callable
+        returning a string (or an awaitable of one). ``AsyncOpenAI`` re-invokes
+        a callable on every request, so it can supply a credential that expires
+        and must be refreshed (e.g. a Vertex AI OAuth bearer token, which lives
+        ~1h). Ignored when ``client`` is set.
+      base_url: Base URL of the OpenAI-compatible host. Ignored when ``client``
+        is set.
       client: A pre-configured OpenAI client. When unset, a default client is
-        constructed, which reads its configuration from the environment.
+        constructed from ``api_key``/``base_url`` and the environment.
   """
 
   model: str = "gpt-4o"
   max_tokens: int = 4096
+  api_key: str | Callable[[], str] | Callable[[], Awaitable[str]] | None = (
+      Field(default=None, exclude=True, repr=False)
+  )
+  base_url: str | None = None
   client: AsyncOpenAI | None = None
 
   @classmethod
@@ -524,4 +542,12 @@ class OpenAILlm(BaseLlm):
   def _openai_client(self) -> AsyncOpenAI:
     if self.client is not None:
       return self.client
-    return AsyncOpenAI()
+    kwargs: dict[str, Any] = {}
+    api_key = _openai_common.build_api_key(self.api_key)
+    if api_key is not None:
+      kwargs["api_key"] = api_key
+    if self.base_url is not None:
+      kwargs["base_url"] = self.base_url
+    # ``AsyncOpenAI`` awaits a callable api_key on every request, so an
+    # expiring credential is refreshed without rebuilding the client.
+    return AsyncOpenAI(**kwargs)

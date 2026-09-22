@@ -1938,7 +1938,7 @@ async def test_run_live_transfer_is_independent_of_response_order(
   with (
       mock.patch('google.adk.models.google_llm.Gemini.connect') as mock_connect,
       mock.patch(
-          'google.adk.flows.llm_flows.base_llm_flow.DEFAULT_TRANSFER_AGENT_DELAY',
+          'google.adk.flows.llm_flows._live_llm_flow.DEFAULT_TRANSFER_AGENT_DELAY',
           0,
       ),
   ):
@@ -2032,7 +2032,7 @@ async def test_run_live_task_completion_is_independent_of_response_order(
   with (
       mock.patch('google.adk.models.google_llm.Gemini.connect') as mock_connect,
       mock.patch(
-          'google.adk.flows.llm_flows.base_llm_flow.DEFAULT_TASK_COMPLETION_DELAY',
+          'google.adk.flows.llm_flows._live_llm_flow.DEFAULT_TASK_COMPLETION_DELAY',
           0,
       ),
   ):

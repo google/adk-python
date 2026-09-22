@@ -796,6 +796,64 @@ async def test_generate_content_async_calls_responses_create():
 
 
 @pytest.mark.asyncio
+async def test_callable_api_key_wrapped_as_async_provider():
+  """A callable api_key becomes the async provider AsyncOpenAI refreshes.
+
+  A Vertex OAuth bearer token expires ~1h, so ``AsyncOpenAI`` awaits its api_key
+  provider on every request rather than freezing the key at construction. A sync
+  callable is adapted into that async provider; the callable is not consumed at
+  construction time and is re-invoked on each await.
+  """
+  calls = {'n': 0}
+
+  def key_provider() -> str:
+    calls['n'] += 1
+    return f'token-{calls["n"]}'
+
+  with mock.patch(
+      'google.adk.labs.openai._openai_responses_llm.AsyncOpenAI'
+  ) as client_cls:
+    _ = OpenAIResponsesLlm(model='gpt-5', api_key=key_provider)._openai_client
+
+  client_cls.assert_called_once()
+  provider = client_cls.call_args.kwargs['api_key']
+  # Not resolved eagerly at construction...
+  assert calls['n'] == 0
+  # ...and re-invoked (awaited) on each request, yielding a fresh token.
+  assert await provider() == 'token-1'
+  assert await provider() == 'token-2'
+  assert calls['n'] == 2
+
+
+@pytest.mark.asyncio
+async def test_base_url_is_passed_to_client():
+  """base_url is forwarded to the default AsyncOpenAI client."""
+  with mock.patch(
+      'google.adk.labs.openai._openai_responses_llm.AsyncOpenAI'
+  ) as client_cls:
+    _ = OpenAIResponsesLlm(
+        model='gpt-5', api_key='secret', base_url='https://host.example/v1'
+    )._openai_client
+  client_cls.assert_called_once_with(
+      api_key='secret', base_url='https://host.example/v1'
+  )
+
+
+@pytest.mark.asyncio
+async def test_azure_falls_back_to_base_url_without_azure_endpoint():
+  """AzureOpenAIResponsesLlm uses base_url when azure_endpoint is unset."""
+  with mock.patch(
+      'google.adk.labs.openai._openai_responses_llm.AsyncOpenAI'
+  ) as client_cls:
+    _ = AzureOpenAIResponsesLlm(
+        model='gpt-5', api_key='secret', base_url='https://host.example/v1'
+    )._openai_client
+  client_cls.assert_called_once_with(
+      api_key='secret', base_url='https://host.example/v1'
+  )
+
+
+@pytest.mark.asyncio
 async def test_generate_content_async_can_skip_response_metadata():
   """Response metadata can be omitted from LlmResponse.custom_metadata."""
   response = {
@@ -1308,37 +1366,49 @@ def test_default_client_built_with_resolved_api_key():
   client_cls.assert_called_once_with(api_key='secret')
 
 
-def test_api_key_callable_is_resolved():
-  """A sync api_key callable is invoked to produce the key."""
+@pytest.mark.asyncio
+async def test_api_key_callable_wrapped():
+  """A sync api_key callable is wrapped in an async provider, not resolved."""
   with mock.patch(
       'google.adk.labs.openai._openai_responses_llm.AsyncOpenAI'
   ) as client_cls:
-    llm = OpenAIResponsesLlm(model='gpt-5', api_key=lambda: 'dynamic')
-    _ = llm._openai_client
+    _ = OpenAIResponsesLlm(
+        model='gpt-5', api_key=lambda: 'dynamic'
+    )._openai_client
 
-  client_cls.assert_called_once_with(api_key='dynamic')
+  provider = client_cls.call_args.kwargs['api_key']
+  assert await provider() == 'dynamic'
 
 
-@pytest.mark.filterwarnings('ignore:coroutine .* was never awaited')
-def test_async_api_key_callable_raises():
-  """An async api_key provider fails fast instead of leaking a coroutine."""
+@pytest.mark.asyncio
+async def test_async_api_key_callable_supported():
+  """An async api_key provider is passed through for AsyncOpenAI to await."""
 
   async def _key() -> str:
     return 'k'
 
-  llm = OpenAIResponsesLlm(model='gpt-5', api_key=_key)
-  with pytest.raises(TypeError, match='Async api_key'):
-    llm._resolve_api_key()
+  with mock.patch(
+      'google.adk.labs.openai._openai_responses_llm.AsyncOpenAI'
+  ) as client_cls:
+    _ = OpenAIResponsesLlm(model='gpt-5', api_key=_key)._openai_client
+
+  provider = client_cls.call_args.kwargs['api_key']
+  assert await provider() == 'k'
 
 
 def test_azure_api_key_env_fallback(monkeypatch):
   """Azure falls back to AZURE_OPENAI_API_KEY when no key is provided."""
   monkeypatch.setenv('AZURE_OPENAI_API_KEY', 'env-key')
-  llm = AzureOpenAIResponsesLlm(
-      model='deployment',
-      azure_endpoint='https://example.openai.azure.com/',
-  )
-  assert llm._resolve_api_key() == 'env-key'
+  with mock.patch(
+      'google.adk.labs.openai._openai_responses_llm.AsyncOpenAI'
+  ) as client_cls:
+    _ = AzureOpenAIResponsesLlm(
+        model='deployment',
+        azure_endpoint='https://example.openai.azure.com/',
+    )._openai_client
+
+  # A string env key passes through build_api_key unchanged.
+  assert client_cls.call_args.kwargs['api_key'] == 'env-key'
 
 
 def test_extra_request_args_override_and_merge_extra_body():

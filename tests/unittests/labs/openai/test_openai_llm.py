@@ -638,6 +638,82 @@ def _text_completion(content="Hi", finish_reason="stop"):
 
 
 @pytest.mark.asyncio
+async def test_api_key_string_is_passed_to_client():
+  """A string api_key is forwarded to the default AsyncOpenAI client."""
+  with mock.patch(
+      "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+  ) as client_cls:
+    _ = OpenAILlm(model="gpt-4o", api_key="secret")._openai_client
+  client_cls.assert_called_once_with(api_key="secret")
+
+
+@pytest.mark.asyncio
+async def test_base_url_is_passed_to_client():
+  """base_url is forwarded to the default AsyncOpenAI client."""
+  with mock.patch(
+      "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+  ) as client_cls:
+    _ = OpenAILlm(
+        model="gpt-4o", api_key="secret", base_url="https://host.example/v1"
+    )._openai_client
+  client_cls.assert_called_once_with(
+      api_key="secret", base_url="https://host.example/v1"
+  )
+
+
+@pytest.mark.asyncio
+async def test_callable_api_key_wrapped_as_async_provider():
+  """A callable api_key becomes the async provider AsyncOpenAI refreshes.
+
+  A Vertex OAuth bearer token expires ~1h, so ``AsyncOpenAI`` awaits its api_key
+  provider on every request rather than freezing the key at construction. A sync
+  callable is adapted into that async provider; the callable is not consumed at
+  construction time and is re-invoked on each await.
+  """
+  calls = {"n": 0}
+
+  def key_provider() -> str:
+    calls["n"] += 1
+    return f"token-{calls['n']}"
+
+  with mock.patch(
+      "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+  ) as client_cls:
+    _ = OpenAILlm(
+        model="xai/grok-4.6",
+        api_key=key_provider,
+        base_url="https://host.example/v1",
+    )._openai_client
+
+  client_cls.assert_called_once()
+  ctor_kwargs = client_cls.call_args.kwargs
+  assert ctor_kwargs["base_url"] == "https://host.example/v1"
+  provider = ctor_kwargs["api_key"]
+  # Not resolved eagerly at construction...
+  assert calls["n"] == 0
+  # ...and re-invoked (awaited) on each request, yielding a fresh token.
+  assert await provider() == "token-1"
+  assert await provider() == "token-2"
+  assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_async_api_key_callable_supported():
+  """An async api_key provider is passed through for AsyncOpenAI to await."""
+
+  async def _key() -> str:
+    return "k"
+
+  with mock.patch(
+      "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+  ) as client_cls:
+    _ = OpenAILlm(model="gpt-4o", api_key=_key)._openai_client
+
+  provider = client_cls.call_args.kwargs["api_key"]
+  assert await provider() == "k"
+
+
+@pytest.mark.asyncio
 async def test_response_maps_finish_reason():
   """OpenAI finish_reason maps onto LlmResponse.finish_reason."""
   with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
