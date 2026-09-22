@@ -735,6 +735,50 @@ def test_parse_spec_operation_parameter_overrides_path_level_parameter(
   assert operation.parameters[0].description == "Account id, e.g. ACC-123"
 
 
+def test_parse_spec_path_parameter_is_required_even_when_override_omits_it(
+    openapi_spec_generator,
+):
+  """An override that leaves out `required` must not make a path param optional."""
+  openapi_spec = {
+      "openapi": "3.1.0",
+      "info": {"title": "Accounts API", "version": "1.0.0"},
+      "paths": {
+          "/accounts/{accountId}": {
+              "parameters": [{
+                  "name": "accountId",
+                  "in": "path",
+                  "required": True,
+                  "schema": {"type": "string"},
+              }],
+              "get": {
+                  "operationId": "getAccount",
+                  "parameters": [
+                      {
+                          "name": "accountId",
+                          "in": "path",
+                          "schema": {"type": "string"},
+                      },
+                      # Non-path parameters keep the operation's own flag.
+                      {
+                          "name": "expand",
+                          "in": "query",
+                          "schema": {"type": "string"},
+                      },
+                  ],
+                  "responses": {"200": {"description": "ok"}},
+              },
+          }
+      },
+  }
+
+  operation = openapi_spec_generator.parse(openapi_spec)[0]
+
+  assert {p.original_name: p.required for p in operation.parameters} == {
+      "accountId": True,
+      "expand": False,
+  }
+
+
 def test_parse_spec_with_invalid_type_any(openapi_spec_generator):
   """Test that schemas with type='Any' are sanitized for Pydantic 2.11+.
 

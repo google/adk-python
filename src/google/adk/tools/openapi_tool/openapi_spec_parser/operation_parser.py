@@ -25,6 +25,7 @@ from typing import Optional
 from fastapi.encoders import jsonable_encoder
 from fastapi.openapi.models import Operation
 from fastapi.openapi.models import Parameter
+from fastapi.openapi.models import ParameterInType
 from fastapi.openapi.models import Reference
 from fastapi.openapi.models import RequestBody
 from fastapi.openapi.models import Response
@@ -139,8 +140,11 @@ class OperationParser:
       )
       if not schema.description:
         schema.description = description
-      # param.required can be None
-      required = param.required if param.required is not None else False
+      # OpenAPI requires `required: true` on every path parameter, and the URL
+      # cannot be built without one, so treat it as required even when the
+      # spec (e.g. an operation-level override) leaves the flag out.
+      # param.required can be None.
+      required = param.in_ == ParameterInType.path or bool(param.required)
 
       self._params.append(
           ApiParameter(
