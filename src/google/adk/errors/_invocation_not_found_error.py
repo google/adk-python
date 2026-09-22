@@ -12,10 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from ._invocation_not_found_error import InvocationNotFoundError
-from ._stale_session_error import StaleSessionError
+from __future__ import annotations
 
-__all__ = [
-    "InvocationNotFoundError",
-    "StaleSessionError",
-]
+from .not_found_error import NotFoundError
+
+
+class InvocationNotFoundError(NotFoundError, ValueError):
+  """Raised when an invocation id cannot be found in the session's events.
+
+  Also inherits from ValueError for backward compatibility with callers that
+  catch the ValueError previously raised by rewind.
+  """
+
+  def __init__(self, message: str = "Invocation ID not found.") -> None:
+    super().__init__(message)

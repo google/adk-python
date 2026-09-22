@@ -31,8 +31,10 @@ from typing import TYPE_CHECKING
 from pydantic import Field
 
 from ..events._branch_path import _BranchPath
+from ..events._node_path_builder import _NodePathBuilder
 from ._base_node import BaseNode
 from ._base_node import START
+from ._dynamic_node_scheduler import DynamicNodeRun
 from ._dynamic_node_scheduler import DynamicNodeScheduler
 from ._dynamic_node_scheduler import DynamicNodeState
 from ._errors import WorkflowConfigurationError
@@ -44,8 +46,6 @@ from ._node_status import NodeStatus
 from ._trigger import Trigger
 from .utils._rehydration_utils import _ChildScanState
 from .utils._replay_interceptor import check_interception
-from .utils._replay_interceptor import create_mock_context
-from .utils._replay_sequence_barrier import ReplaySequenceBarrier
 
 if TYPE_CHECKING:
   from ..agents.context import Context
@@ -87,9 +87,6 @@ class _LoopState(DynamicNodeState):
 
   recovered_executions: dict[str, _ChildScanState] = field(default_factory=dict)
   """Raw node states reconstructed from session events, keyed by node_name@run_id."""
-
-  sequence_barrier: ReplaySequenceBarrier | None = None
-  """Chronological sequence barrier to ensure deterministic replay ordering."""
 
   error_shut_down: bool = False
   """Flag indicating that the workflow is shutting down due to an error."""
@@ -236,7 +233,6 @@ class Workflow(BaseNode):
     loop_state = _LoopState()
     replay_mgr = loop_state.replay_manager
     loop_state.recovered_executions, _ = replay_mgr.scan_workflow_events(ctx)
-    loop_state.sequence_barrier = replay_mgr.sequence_barrier
 
     if ctx.resume_inputs and not loop_state.recovered_executions:
       logger.warning(
@@ -282,13 +278,10 @@ class Workflow(BaseNode):
     """Schedule and execute nodes until no more work."""
     logger.debug("node %s execute loop start.", ctx.node_path)
 
+    barrier = loop_state.replay_manager.sequence_barrier
     recovered_sequence_indices = {
         node_path: i
-        for i, node_path in enumerate(
-            loop_state.sequence_barrier.sequence
-            if loop_state.sequence_barrier
-            else []
-        )
+        for i, node_path in enumerate(barrier.sequence if barrier else [])
     }
 
     while True:
@@ -340,10 +333,6 @@ class Workflow(BaseNode):
 
         node = self._get_static_node_by_name(name)
         child_ctx: Context = task.result()
-        if loop_state.sequence_barrier:
-          loop_state.sequence_barrier.check_and_advance(
-              f"{name}@{child_ctx.run_id}"
-          )
 
         if child_ctx.error:
           node_state = loop_state.nodes[name]
@@ -601,58 +590,32 @@ class Workflow(BaseNode):
       )
     node_state.run_id = run_id
 
-    # Intercept execution based on historical session events.
     key = f"{node_name}@{run_id}"
-    recovered_scope: str | None = None
-    if key in loop_state.recovered_executions:
-      recovered = loop_state.recovered_executions[key]
-      recovered_scope = recovered.isolation_scope
-
-      result = check_interception(
-          node=node,
-          recovered=recovered,
-      )
-
-      # Use _run_node_internal so the scheduler follows the recovered transfer.
-      strands_pending_transfer = (
-          not result.should_run
-          and result.transfer_to_agent is not None
+    recovered = loop_state.recovered_executions.get(key)
+    recovered_scope = recovered.isolation_scope if recovered else None
+    if recovered is not None:
+      result = check_interception(node=node, recovered=recovered)
+      unresolved = recovered.interrupt_ids - recovered.resolved_ids
+      has_resolved_transfer_interrupt = (
+          result.transfer_to_agent is not None
           and bool(recovered.interrupt_ids)
+          and not unresolved
       )
-
-      if not result.should_run and not strands_pending_transfer:
-        ancestor_path = ctx.node_path if is_terminal else None
-
-        if ancestor_path:
-          ancestors = [ancestor_path] + list(ctx._output_for_ancestors or [])
-        else:
-          ancestors = list(ctx._output_for_ancestors or [])
-
-        mock_ctx = create_mock_context(
-            parent_ctx=ctx,
-            node=node,
-            run_id=run_id,
-            result=result,
-            ancestors=ancestors,
-            branch=recovered.branch,
-        )
-        # Mark this as a replayed no-op run so completion handling does not
-        # emit a fresh checkpoint for a node that only fast-forwarded history.
+      if not result.should_run and not has_resolved_transfer_interrupt:
         loop_state.replayed_nodes.add(node_name)
+      base_path = (
+          _NodePathBuilder.from_string(ctx.node_path)
+          if ctx.node_path
+          else _NodePathBuilder([])
+      )
+      node_path = str(base_path.append(node_name, run_id))
+      if node_path not in loop_state.runs:
+        loop_state.runs[node_path] = DynamicNodeRun(
+            state=NodeState(run_id=run_id),
+            recovered_state=recovered,
+            is_static=True,
+        )
 
-        async def return_ctx() -> Context:
-          if loop_state.sequence_barrier:
-            await loop_state.sequence_barrier.wait(key)
-          return mock_ctx
-
-        loop_state.pending_tasks[node_name] = asyncio.create_task(return_ctx())
-        return False
-
-      node_state.resume_inputs = result.resume_inputs or {}
-
-    resume_inputs = (
-        dict(node_state.resume_inputs) if node_state.resume_inputs else None
-    )
     loop_state.pending_tasks[node_name] = asyncio.create_task(
         ctx._run_node_internal(
             node,
@@ -663,13 +626,12 @@ class Workflow(BaseNode):
                 node, ctx, run_id, recovered_isolation_scope=recovered_scope
             ),
             return_ctx=True,
-            resume_inputs=resume_inputs,
             run_id=run_id,
             use_as_output=is_terminal,
             skip_run_id_validation=True,
         )
     )
-    return True
+    return node_name not in loop_state.replayed_nodes
 
   # --- Resumability checkpoints ---
 

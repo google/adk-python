@@ -72,6 +72,7 @@ def _to_openai_role(
   return "user"
 
 
+_tool_choice = _openai_common.tool_choice
 # The finish-reason mapper lives in _openai_common; alias it under the private
 # name this module and its tests use.
 _map_finish_reason = _openai_common.map_finish_reason
@@ -371,17 +372,22 @@ class OpenAILlm(BaseLlm):
       messages.extend(_content_to_openai_messages(content))
 
     tools = []
-    if (
-        llm_request.config
-        and llm_request.config.tools
-        and llm_request.config.tools[0].function_declarations
-    ):
-      tools = [
-          _function_declaration_to_openai_tool(tool)
-          for tool in llm_request.config.tools[0].function_declarations
-      ]
+    if llm_request.config and llm_request.config.tools:
+      for tool in llm_request.config.tools:
+        if not tool.function_declarations:
+          logger.warning(
+              "Skipping a tool with no function declarations; only function"
+              " tools are supported on the Chat Completions API."
+          )
+          continue
+        for function_declaration in tool.function_declarations:
+          tools.append(
+              _function_declaration_to_openai_tool(function_declaration)
+          )
 
-    tool_choice = "auto" if tools else None
+    tool_choice = None
+    if tools:
+      tool_choice = _tool_choice(llm_request.config) or "auto"
 
     response_format = None
     if llm_request.config and llm_request.config.response_schema:
