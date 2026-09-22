@@ -46,6 +46,7 @@ from google.adk.events.event_actions import EventActions
 from google.adk.plugins.bigquery_agent_analytics_plugin import BigQueryAgentAnalyticsPlugin
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.session import Session
 from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.api_core.exceptions import GoogleAPICallError
 from google.api_core.exceptions import InvalidArgument
@@ -1618,6 +1619,252 @@ def test_create_session_rejects_runtime_action_events(
 
   assert response.status_code == 400
   assert "event actions" in response.json()["detail"]
+
+
+class _OptionsRecordingSessionService(InMemorySessionService):
+  """In-memory session service that accepts and records arbitrary kwargs."""
+
+  def __init__(self):
+    super().__init__()
+    self.recorded_kwargs: dict[str, Any] = {}
+
+  async def create_session(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      state: Optional[dict[str, Any]] = None,
+      session_id: Optional[str] = None,
+      **kwargs: Any,
+  ) -> Session:
+    self.recorded_kwargs = dict(kwargs)
+    return await super().create_session(
+        app_name=app_name,
+        user_id=user_id,
+        state=state,
+        session_id=session_id,
+    )
+
+
+class _ExplicitOptionsSessionService(InMemorySessionService):
+  """In-memory session service that explicitly accepts custom parameters."""
+
+  def __init__(self):
+    super().__init__()
+    self.recorded_kwargs: dict[str, Any] = {}
+
+  async def create_session(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      state: Optional[dict[str, Any]] = None,
+      session_id: Optional[str] = None,
+      custom_option: Optional[str] = None,
+  ) -> Session:
+    self.recorded_kwargs = {"custom_option": custom_option}
+    return await super().create_session(
+        app_name=app_name,
+        user_id=user_id,
+        state=state,
+        session_id=session_id,
+    )
+
+
+class _ValidatingOptionsSessionService(InMemorySessionService):
+  """In-memory session service that validates options and raises ValueError."""
+
+  async def create_session(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      state: Optional[dict[str, Any]] = None,
+      session_id: Optional[str] = None,
+      **kwargs: Any,
+  ) -> Session:
+    if kwargs.get("ttl") is not None and kwargs.get("expire_time") is not None:
+      raise ValueError(
+          "Cannot specify both 'ttl' and 'expire_time' simultaneously."
+      )
+    return await super().create_session(
+        app_name=app_name,
+        user_id=user_id,
+        state=state,
+        session_id=session_id,
+    )
+
+
+@pytest.fixture
+def explicit_options_session_service():
+  """Create a session service with explicit custom parameters."""
+  return _ExplicitOptionsSessionService()
+
+
+@pytest.fixture
+def explicit_options_test_app(
+    explicit_options_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Create a TestClient backed by an explicit options session service."""
+  return _create_test_client(
+      explicit_options_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+
+
+@pytest.fixture
+def options_session_service():
+  """Create a session service whose create_session accepts kwargs."""
+  return _OptionsRecordingSessionService()
+
+
+@pytest.fixture
+def options_test_app(
+    options_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Create a TestClient backed by a kwargs-capable session service."""
+  return _create_test_client(
+      options_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+
+
+@pytest.fixture
+def validating_options_session_service():
+  """Create a session service that validates kwargs."""
+  return _ValidatingOptionsSessionService()
+
+
+@pytest.fixture
+def validating_options_test_app(
+    validating_options_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Create a TestClient backed by a validating session service."""
+  return _create_test_client(
+      validating_options_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+
+
+def test_create_session_forwards_options(
+    options_test_app, options_session_service, test_session_info
+):
+  """Test that options dict is forwarded to a supporting session service."""
+  url = f"/apps/{test_session_info['app_name']}/users/{test_session_info['user_id']}/sessions"
+  response = options_test_app.post(
+      url,
+      json={
+          "options": {
+              "ttl": "7200s",
+              "expire_time": "2026-08-01T00:00:00Z",
+              "custom_param": "foo",
+          }
+      },
+  )
+
+  assert response.status_code == 200
+  assert options_session_service.recorded_kwargs == {
+      "ttl": "7200s",
+      "expire_time": "2026-08-01T00:00:00Z",
+      "custom_param": "foo",
+  }
+
+
+def test_create_session_explicit_options_forwards_kwargs(
+    explicit_options_test_app,
+    explicit_options_session_service,
+    test_session_info,
+):
+  """Test that options are forwarded to service with explicit parameter."""
+  url = f"/apps/{test_session_info['app_name']}/users/{test_session_info['user_id']}/sessions"
+  response = explicit_options_test_app.post(
+      url, json={"options": {"custom_option": "bar"}}
+  )
+
+  assert response.status_code == 200
+  assert (
+      explicit_options_session_service.recorded_kwargs.get("custom_option")
+      == "bar"
+  )
+
+
+def test_create_session_options_with_unsupported_service(
+    test_app, test_session_info
+):
+  """Test 400 when options are requested but the service cannot honor them."""
+  url = f"/apps/{test_session_info['app_name']}/users/{test_session_info['user_id']}/sessions"
+  response = test_app.post(url, json={"options": {"ttl": "7200s"}})
+
+  assert response.status_code == 400
+  assert "not supported" in response.json()["detail"]
+
+
+def test_create_session_options_validation_error_returns_400(
+    validating_options_test_app, test_session_info
+):
+  """Test 400 when session service raises ValueError on invalid options."""
+  url = f"/apps/{test_session_info['app_name']}/users/{test_session_info['user_id']}/sessions"
+  response = validating_options_test_app.post(
+      url,
+      json={
+          "options": {
+              "ttl": "7200s",
+              "expire_time": "2026-08-01T00:00:00Z",
+          }
+      },
+  )
+
+  assert response.status_code == 400
+  assert (
+      "Cannot specify both 'ttl' and 'expire_time'" in response.json()["detail"]
+  )
+
+
+def test_create_session_options_conflicting_key_returns_400(
+    test_app, test_session_info
+):
+  """Test 400 when options contains a key already bound by the endpoint."""
+  url = f"/apps/{test_session_info['app_name']}/users/{test_session_info['user_id']}/sessions"
+  response = test_app.post(url, json={"options": {"app_name": "other_app"}})
+
+  assert response.status_code == 400
+
+
+def test_accepts_kwargs_rejects_var_positional_parameter():
+  """_accepts_kwargs should return False for variadic positional parameters."""
+  from google.adk.cli.api_server import _accepts_kwargs
+
+  def func(*args: Any) -> None:
+    pass
+
+  assert not _accepts_kwargs(func, {"args": "value"})
 
 
 def test_get_session(test_app, create_test_session):
@@ -4524,6 +4771,38 @@ def test_in_memory_exporter_clear_drops_spans_but_keeps_session_index():
   assert session_trace_dict == {"session-a": [505]}
 
 
+def test_setup_telemetry_guards_add_span_processor_on_non_sdk_provider(
+    monkeypatch,
+):
+  """A non-SDK TracerProvider lacking add_span_processor does not raise."""
+  from unittest.mock import MagicMock
+
+  from google.adk.cli.api_server import _setup_telemetry
+  from opentelemetry import trace
+
+  non_sdk_provider = MagicMock(spec=trace.TracerProvider)
+  del non_sdk_provider.add_span_processor
+  monkeypatch.setattr(trace, "get_tracer_provider", lambda: non_sdk_provider)
+
+  exporter = MagicMock()
+  _setup_telemetry(otel_to_cloud=False, internal_exporters=[exporter])
+
+
+def test_setup_telemetry_adds_span_processors_when_supported(monkeypatch):
+  """A TracerProvider with add_span_processor registers the internal exporters."""
+  from unittest.mock import MagicMock
+
+  from google.adk.cli.api_server import _setup_telemetry
+  from opentelemetry import trace
+
+  provider = MagicMock()
+  monkeypatch.setattr(trace, "get_tracer_provider", lambda: provider)
+
+  exporter = MagicMock()
+  _setup_telemetry(otel_to_cloud=False, internal_exporters=[exporter])
+  provider.add_span_processor.assert_called_once_with(exporter)
+
+
 #################################################
 # Request-body plumbing tests
 #################################################
@@ -4783,6 +5062,74 @@ def test_create_eval_set_legacy_route_creates_eval_set(
       mock_eval_sets_manager.get_eval_set("test_app", "legacy_eval_set")
       is not None
   )
+
+
+def test_agent_run_sse_deferred_with_streaming_returns_422(
+    test_app, create_test_session
+):
+  """Deferred plus SSE is rejected up front, not mid-stream.
+
+  A deferred create returns an interaction id rather than a result, so it
+  cannot stream. The run config is built before the response starts so the
+  caller gets a status code instead of a 200 that breaks partway through.
+
+  Args:
+    test_app: The FastAPI test client.
+    create_test_session: Fixture creating the session the request targets.
+  """
+  payload = {
+      "app_name": create_test_session["app_name"],
+      "user_id": create_test_session["user_id"],
+      "session_id": create_test_session["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello agent"}]},
+      "streaming": True,
+      "service_tier": "deferred",
+  }
+
+  response = test_app.post("/run_sse", json=payload)
+
+  assert response.status_code == 422
+  assert "cannot be used with StreamingMode.SSE" in response.json()["detail"]
+
+
+def test_agent_run_sse_deferred_without_streaming_is_allowed(
+    test_app, create_test_session, monkeypatch
+):
+  """Deferred is fine on /run_sse as long as the run is not streaming."""
+  info = create_test_session
+
+  async def run_async_stub(
+      self,  # pylint: disable=unused-argument
+      *,
+      user_id: str,
+      session_id: str,
+      invocation_id: Optional[str] = None,
+      new_message: Optional[types.Content] = None,
+      state_delta: Optional[dict[str, Any]] = None,
+      run_config: Optional[RunConfig] = None,
+  ):
+    del user_id, session_id, invocation_id, new_message, state_delta
+    assert run_config.service_tier == "deferred"
+    yield Event(
+        author="dummy agent",
+        invocation_id="invocation_id",
+        content=types.Content(role="model", parts=[types.Part(text="hi")]),
+    )
+
+  monkeypatch.setattr(Runner, "run_async", run_async_stub)
+
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello agent"}]},
+      "streaming": False,
+      "service_tier": "deferred",
+  }
+
+  response = test_app.post("/run_sse", json=payload)
+
+  assert response.status_code == 200
 
 
 if __name__ == "__main__":

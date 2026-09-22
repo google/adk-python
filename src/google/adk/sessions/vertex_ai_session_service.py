@@ -541,8 +541,7 @@ class VertexAiSessionService(BaseSessionService):
         await _do_append(config)
 
     if not event.partial:
-      self._update_session_state(session, event)
-      session.events.append(event)
+      self._commit_event_to_session(session, event)
     return event
 
   def _get_reasoning_engine_id(self, app_name: str) -> str:

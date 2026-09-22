@@ -64,6 +64,7 @@ from ...dependencies._mcp import ClientSession
 from ...dependencies._mcp import create_mcp_http_client as _create_mcp_http_client
 from ...dependencies._mcp import ElicitationFnT
 from ...dependencies._mcp import IS_MCP_SDK_V2
+from ...dependencies._mcp import McpError
 from ...dependencies._mcp import SamplingCapability
 from ...dependencies._mcp import SamplingFnT
 from ...dependencies._mcp import sse_client
@@ -231,6 +232,52 @@ def _has_cancelled_error_context(exc: BaseException) -> bool:
       queue.append(current.__cause__)
     if current.__context__ is not None:
       queue.append(current.__context__)
+  return False
+
+
+# The Streamable HTTP spec has a server answer any request carrying a session
+# id it no longer holds with HTTP 404, and the SDK turns that answer into a
+# JSON-RPC error rather than surfacing the status code. It is the one signal
+# that separates "the server forgot this session" from an ordinary tool
+# failure, and it arrives while the transport underneath is still healthy.
+# The 1.x SDK spells the code 32600, the 2.x SDK INVALID_REQUEST (-32600).
+_SESSION_TERMINATED_ERROR_CODE = 32600
+_INVALID_REQUEST_ERROR_CODE = -32600
+# 2.x raises INVALID_REQUEST for ordinary bad requests too, so that spelling
+# counts only alongside the message the SDK pairs with the 404.
+_SESSION_TERMINATED_MESSAGE = 'Session terminated'
+
+
+def _reports_session_terminated(exc: McpError) -> bool:
+  """Whether this MCP error is the server's own session-terminated report."""
+  if exc.error.code == _SESSION_TERMINATED_ERROR_CODE:
+    return True
+  return (
+      exc.error.code == _INVALID_REQUEST_ERROR_CODE
+      and exc.error.message == _SESSION_TERMINATED_MESSAGE
+  )
+
+
+def _is_session_terminated_error(exc: BaseException | None) -> bool:
+  """Whether exc is the server reporting it no longer holds our session.
+
+  Only ``__cause__`` is followed. ``retry_on_errors`` re-runs the call from
+  inside its own ``except``, so on the second attempt every exception carries
+  the first attempt's in ``__context__``, and walking that would read a fresh
+  session as dead because the session before it was.
+
+  Args:
+      exc: The exception raised by a call made on a pooled session.
+
+  Returns:
+      True if the server reported the session terminated, False otherwise.
+  """
+  seen: set[int] = set()
+  while exc is not None and id(exc) not in seen:
+    seen.add(id(exc))
+    if isinstance(exc, McpError) and _reports_session_terminated(exc):
+      return True
+    exc = exc.__cause__
   return False
 
 
@@ -953,6 +1000,9 @@ class MCPSessionManager:
     runs under `_MCP_GRACEFUL_ERROR_HANDLING`, which is on by default. The
     kill switch drops it and leaves this probe on its own.
 
+    Neither probe sees a session the server itself has dropped while the
+    transport stays up; `_discard_session` handles that case.
+
     Args:
         session: The ClientSession to check.
 
@@ -1019,6 +1069,52 @@ class MCPSessionManager:
     # Start the idle clock now, at the end of the call.
     if session_key in self._sessions:
       self._session_last_used[session_key] = time.monotonic()
+
+  def _discard_session(
+      self,
+      headers: Optional[Dict[str, str]] = None,
+      *,
+      session: Optional[ClientSession] = None,
+  ) -> None:
+    """Drops the pooled session for these headers and closes its transport.
+
+    Called when the server has reported that it no longer holds the session,
+    which the pool cannot otherwise detect: the HTTP connection underneath
+    stays healthy, so every disconnection probe reads the dead session as
+    live and hands it back. Dropping the entry is what makes the next call
+    build a fresh session.
+
+    The transport is torn down even with calls still in flight, unlike the
+    idle sweep, which defers to them. A call in flight on the session that
+    failed is addressed to one the server has already forgotten and cannot be
+    completed by leaving the transport open.
+
+    Args:
+        headers: The headers the caller passed to ``create_session``.
+        session: The session the call actually failed on. The key alone is not
+          enough to identify it: another caller failing on the same session
+          discards it first and the retry pools a replacement under that same
+          key, and the replacement is live and in use by someone else. Omitted
+          means discard whatever is pooled.
+    """
+    session_key = self._generate_session_key(self._merge_headers(headers))
+    entry = self._sessions.get(session_key)
+    if entry is None or (session is not None and entry[0] is not session):
+      return
+    # One atomic pop, so that two callers racing on the same dead session
+    # cannot both take the entry and close the same exit stack twice.
+    if self._sessions.pop(session_key, None) is None:
+      return
+    logger.info(
+        'Discarding MCP session the server no longer holds: %s', session_key
+    )
+    _, exit_stack, stored_loop = entry
+    self._forget_session(session_key)
+    task = asyncio.ensure_future(
+        self._close_exit_stack(session_key, exit_stack, stored_loop)
+    )
+    self._eviction_tasks.add(task)
+    task.add_done_callback(self._eviction_tasks.discard)
 
   async def _cleanup_session(
       self,

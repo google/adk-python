@@ -22,7 +22,6 @@ from google.adk.apps.app import EventsCompactionConfig
 from google.adk.apps.llm_event_summarizer import LlmEventSummarizer
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.context import _compaction as compaction
-from google.adk.flows.llm_flows.context import _contents as contents
 from google.adk.flows.llm_flows.single_flow import SingleFlow
 from google.adk.models.llm_request import LlmRequest
 from google.adk.sessions.base_session_service import BaseSessionService
@@ -57,8 +56,12 @@ def _create_event(
 def test_single_flow_includes_compaction_before_contents():
   flow = SingleFlow()
 
-  compaction_index = flow.request_processors.index(compaction.request_processor)
-  contents_index = flow.request_processors.index(contents.request_processor)
+  compaction_index = flow.request_processors.index(
+      flow.get_request_processor('compaction')
+  )
+  contents_index = flow.request_processors.index(
+      flow.get_request_processor('contents')
+  )
 
   assert compaction_index < contents_index
 

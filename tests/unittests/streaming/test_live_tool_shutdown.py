@@ -36,6 +36,7 @@ from google.adk.agents.run_config import RunConfig
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows import base_llm_flow
 from google.adk.flows.llm_flows.single_flow import SingleFlow
+from google.adk.live import _flow_utils
 from google.adk.live import LiveRequestQueue
 from google.adk.live._active_streaming_tool import ActiveStreamingTool
 from google.adk.models.llm_response import LlmResponse
@@ -135,7 +136,7 @@ async def test_teardown_empties_both_registries(
   Tools that stop on request retire themselves, so this uses two that refuse
   to: what is left behind is exactly what teardown has to sweep up.
   """
-  monkeypatch.setattr(base_llm_flow, '_TOOL_SHUTDOWN_TIMEOUT_SECONDS', 0.05)
+  monkeypatch.setattr(_flow_utils, '_TOOL_SHUTDOWN_TIMEOUT_SECONDS', 0.05)
 
   def refuses_to_stop() -> Any:
     """Ignores the first cancellation; honors the second, so this test ends."""

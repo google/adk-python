@@ -27,6 +27,7 @@ from pydantic import PrivateAttr
 from ..agents.context_cache_config import ContextCacheConfig
 from ..tools.base_tool import BaseTool
 from ..utils._schema_utils import SchemaType
+from ._service_tier import ServiceTier
 from .cache_metadata import CacheMetadata
 
 
@@ -99,6 +100,13 @@ class LlmRequest(BaseModel):
   When using the interactions API, this ID is used to chain interactions
   together, allowing the API to maintain conversation state without sending
   the full history.
+  """
+
+  service_tier: Optional[ServiceTier | str] = None
+  """Serving tier for this request, copied from `RunConfig.service_tier`.
+
+  Set only for models on the interactions API, which is the only path with a
+  serving tier. `None` means the run asked for no tier, so the default applies.
   """
 
   _dynamic_instructions: list[str] = PrivateAttr(default_factory=list)

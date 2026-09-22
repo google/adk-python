@@ -12,19 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Backward compatibility module for content compaction helpers.
-
-Content compaction helpers have moved to
-``google.adk.flows.llm_flows.context._compaction``. This module re-exports
-all symbols for backward compatibility.
-"""
-
 from __future__ import annotations
 
-from .context._compaction import _process_compaction_events as _process_compaction_events
-from .context._compaction import _recover_compacted_function_calls as _recover_compacted_function_calls
+from .not_found_error import NotFoundError
 
-__all__ = [
-    '_process_compaction_events',
-    '_recover_compacted_function_calls',
-]
+
+class InvocationNotFoundError(NotFoundError, ValueError):
+  """Raised when an invocation id cannot be found in the session's events.
+
+  Also inherits from ValueError for backward compatibility with callers that
+  catch the ValueError previously raised by rewind.
+  """
+
+  def __init__(self, message: str = "Invocation ID not found.") -> None:
+    super().__init__(message)

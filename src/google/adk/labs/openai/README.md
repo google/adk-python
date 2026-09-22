@@ -25,8 +25,25 @@ Requires the `openai` Python package and `OPENAI_API_KEY` environment variable.
 
 ## OpenAI-Compatible Endpoints
 
-To reach a host that speaks the OpenAI API, or to configure anything else the
-client supports, build an `AsyncOpenAI` yourself and pass it as `client`. Each
+To reach a host that speaks the OpenAI API, set `base_url` and `api_key`
+directly. `api_key` may be a string or a zero-argument callable (sync or async)
+that returns one; the client re-invokes a callable on every request, so a
+credential that expires (e.g. a Vertex AI OAuth token) is refreshed for you:
+
+```python
+from google.adk.labs.openai import OpenAILlm
+
+openai_model = OpenAILlm(
+    model="my-model",
+    base_url="https://my-host.example/v1",
+    api_key="...",  # or a callable returning a (possibly refreshed) key
+)
+```
+
+`OpenAIResponsesLlm` takes the same `base_url` and `api_key` fields.
+
+For anything else the client supports (organization, timeout, retries, custom
+headers, ...), build an `AsyncOpenAI` yourself and pass it as `client`. Each
 model instance keeps its own client, so one process can talk to several hosts:
 
 ```python

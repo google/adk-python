@@ -50,8 +50,8 @@ from .errors._stale_session_error import StaleSessionError
 from .errors.session_not_found_error import SessionNotFoundError
 from .events.event import Event
 from .events.event_actions import EventActions
-from .flows.llm_flows import contents
-from .flows.llm_flows.functions import find_matching_function_call as _find_matching_function_call
+from .flows.llm_flows.context import _contents as contents
+from .flows.llm_flows.tools._functions import find_matching_function_call as _find_matching_function_call
 from .live import _runner_utils as _live_runner_utils
 from .live.live_request_queue import LiveRequestQueue
 from .memory.base_memory_service import BaseMemoryService
@@ -396,31 +396,6 @@ class Runner:
     if app is None:
       raise RuntimeError('Runner app resolution produced no app.')
     return app
-
-  @staticmethod
-  def _validate_runner_params(
-      app: Optional[App],
-      app_name: Optional[str],
-      agent: Optional[BaseAgent],
-      plugins: Optional[List[BasePlugin]],
-  ) -> tuple[
-      str,
-      BaseNode,
-      Optional[ContextCacheConfig],
-      Optional[ResumabilityConfig],
-      Optional[List[BasePlugin]],
-  ]:
-    """Deprecated: use _resolve_app instead."""
-    resolved = Runner._resolve_app(app, app_name, agent, None, plugins)
-    if resolved.root_agent is None:
-      raise ValueError('App root_agent must be provided.')
-    return (
-        app_name or resolved.name,
-        resolved.root_agent,
-        resolved.context_cache_config,
-        resolved.resumability_config,
-        plugins if app is None else resolved.plugins,
-    )
 
   def _infer_agent_origin(
       self, agent: BaseAgent
@@ -1309,7 +1284,12 @@ class Runner:
       rewind_before_invocation_id: str,
       run_config: Optional[RunConfig] = None,
   ) -> None:
-    """Rewinds the session to before the specified invocation."""
+    """Rewinds the session to before the specified invocation.
+
+    Raises:
+      InvocationNotFoundError: If rewind_before_invocation_id does not match
+        any event in the session.
+    """
     run_config = run_config or RunConfig()
     session = await self._get_or_create_session(
         user_id=user_id,
@@ -1756,12 +1736,6 @@ class Runner:
         root_agent=root_agent,
         resumability_config=self.resumability_config,
     )
-
-  def _is_transferable_across_agent_tree(self, agent_to_run: BaseAgent) -> bool:
-    """Whether the agent to run can transfer to any other agent in the agent tree."""
-    from .agents import _agent_router
-
-    return _agent_router.is_transferable_across_agent_tree(agent_to_run)
 
   async def run_debug(
       self,

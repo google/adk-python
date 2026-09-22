@@ -79,16 +79,39 @@ class _FakeInteractions:
       events: list[object] | None = None,
       *,
       interaction: Interaction | None = None,
+      poll_results: list[Interaction] | None = None,
   ):
     self._events = events or []
     self._interaction = interaction
+    self._poll_results = list(poll_results or [])
     self.create_calls: list[dict[str, object]] = []
+    self.get_calls: list[dict[str, object]] = []
 
   async def create(self, **kwargs):
     self.create_calls.append(kwargs)
     if kwargs.get('stream'):
       return _MockAsyncIterator(self._events)
     return self._interaction
+
+  async def get(self, interaction_id, **kwargs):
+    """Return the next configured poll result.
+
+    ``_wait_for_interaction`` re-reads a pending interaction until it reports a
+    final status, so tests supply one Interaction per expected poll.
+
+    Args:
+      interaction_id: The id being re-read, recorded for assertions.
+      **kwargs: Remaining get() kwargs, also recorded for assertions.
+
+    Returns:
+      The next Interaction from the configured poll results.
+    """
+    self.get_calls.append({'id': interaction_id, **kwargs})
+    result = self._poll_results.pop(0)
+    # An entry may be an exception, standing in for a failed read.
+    if isinstance(result, Exception):
+      raise result
+    return result
 
 
 class _FakeAio:
@@ -99,8 +122,11 @@ class _FakeAio:
       events: list[object] | None = None,
       *,
       interaction: Interaction | None = None,
+      poll_results: list[Interaction] | None = None,
   ):
-    self.interactions = _FakeInteractions(events, interaction=interaction)
+    self.interactions = _FakeInteractions(
+        events, interaction=interaction, poll_results=poll_results
+    )
 
 
 class _FakeApiClient:
@@ -116,12 +142,19 @@ class _FakeApiClient:
       events: list[object] | None = None,
       *,
       interaction: Interaction | None = None,
+      poll_results: list[Interaction] | None = None,
   ):
-    self.aio = _FakeAio(events, interaction=interaction)
+    self.aio = _FakeAio(
+        events, interaction=interaction, poll_results=poll_results
+    )
 
   @property
   def create_calls(self) -> list[dict[str, object]]:
     return self.aio.interactions.create_calls
+
+  @property
+  def get_calls(self) -> list[dict[str, object]]:
+    return self.aio.interactions.get_calls
 
 
 def _build_llm_request() -> LlmRequest:
@@ -3444,3 +3477,322 @@ class TestBuildInteractionsEventLog:
         interactions_utils.build_interactions_event_log(event)
         == 'Interactions SSE Event: step.start []'
     )
+
+
+def _interaction_with_status(
+    status: str, *, interaction_id: str = 'interaction_pending', text: str = ''
+) -> Interaction:
+  """Build an Interaction carrying ``status`` and optional output text."""
+  now = datetime.now(timezone.utc).isoformat()
+  steps = None
+  if text:
+    steps = [
+        ModelOutputStep(
+            type='model_output',
+            content=[TextContent(type='text', text=text)],
+        )
+    ]
+  return Interaction(
+      id=interaction_id,
+      status=status,
+      created=now,
+      updated=now,
+      steps=steps,
+  )
+
+
+@pytest.fixture(name='recorded_sleeps')
+def _recorded_sleeps(monkeypatch) -> list[float]:
+  """Replace the inter-poll sleep with a recorder.
+
+  The backoff runs to 30s per poll, so tests must never sleep for real. The
+  returned list receives each requested delay in order.
+  """
+  delays: list[float] = []
+
+  async def _fake_sleep(delay):
+    delays.append(delay)
+
+  monkeypatch.setattr(interactions_utils.asyncio, 'sleep', _fake_sleep)
+  return delays
+
+
+class TestWaitForInteraction:
+  """Tests for polling a pending interaction to a final status.
+
+  ``interactions.create`` returns once the work is accepted, not once it is
+  done, so a deferred request comes back pending with no output.
+  ``_wait_for_interaction`` re-reads it until the API reports a final status.
+  """
+
+  async def test_polls_until_final_status(self, recorded_sleeps):
+    """Keeps re-reading while pending and returns the first final read."""
+    # Arrange: two more pending reads, then the answer.
+    del recorded_sleeps
+    api_client = _FakeApiClient(
+        poll_results=[
+            _interaction_with_status('queued'),
+            _interaction_with_status('in_progress'),
+            _interaction_with_status('completed', text='Sunny in Tokyo.'),
+        ]
+    )
+
+    # Act.
+    result = await interactions_utils._wait_for_interaction(
+        api_client, _interaction_with_status('queued')
+    )
+
+    # Assert.
+    assert result.status == 'completed'
+    assert len(api_client.get_calls) == 3
+
+  @pytest.mark.parametrize('status', ['queued', 'in_progress'])
+  async def test_treats_both_pending_statuses_as_pending(
+      self, status, recorded_sleeps
+  ):
+    """Both pending statuses are polled.
+
+    Agent Engine has been observed returning each of these for a deferred
+    create, so treating only ``queued`` as pending would drop the answer.
+    """
+    # Arrange.
+    del recorded_sleeps
+    api_client = _FakeApiClient(
+        poll_results=[_interaction_with_status('completed', text='Done.')]
+    )
+
+    # Act.
+    result = await interactions_utils._wait_for_interaction(
+        api_client, _interaction_with_status(status)
+    )
+
+    # Assert.
+    assert len(api_client.get_calls) == 1
+    assert result.status == 'completed'
+
+  @pytest.mark.parametrize(
+      'status',
+      ['completed', 'failed', 'cancelled', 'incomplete', 'budget_exceeded'],
+  )
+  async def test_does_not_poll_when_already_final(self, status):
+    """Every final status short-circuits the wait."""
+    # Arrange.
+    api_client = _FakeApiClient()
+
+    # Act.
+    result = await interactions_utils._wait_for_interaction(
+        api_client, _interaction_with_status(status)
+    )
+
+    # Assert.
+    assert result.status == status
+    assert not api_client.get_calls
+
+  async def test_does_not_poll_on_requires_action(self):
+    """``requires_action`` is not pending.
+
+    The model has finished and is waiting on tool results that only the caller
+    can supply, so polling would never make progress.
+    """
+    # Arrange.
+    api_client = _FakeApiClient()
+
+    # Act.
+    result = await interactions_utils._wait_for_interaction(
+        api_client, _interaction_with_status('requires_action')
+    )
+
+    # Assert.
+    assert result.status == 'requires_action'
+    assert not api_client.get_calls
+
+  async def test_backs_off_between_polls(self, recorded_sleeps):
+    """Delays double from 5s up to a 30s ceiling."""
+    # Arrange.
+    api_client = _FakeApiClient(
+        poll_results=[_interaction_with_status('queued')] * 5
+        + [_interaction_with_status('completed', text='Done.')]
+    )
+
+    # Act.
+    await interactions_utils._wait_for_interaction(
+        api_client, _interaction_with_status('queued')
+    )
+
+    # Assert.
+    assert recorded_sleeps == [5.0, 10.0, 20.0, 30.0, 30.0, 30.0]
+
+  async def test_cancellation_propagates(self, monkeypatch):
+    """The sleep between polls is a cancellation point.
+
+    There is no client-side deadline, so cancelling the surrounding task is how
+    a caller stops waiting.
+
+    Args:
+      monkeypatch: Used to swap in a sleep that blocks until cancelled, rather
+        than the recorded_sleeps fixture's immediate one.
+    """
+
+    # Arrange: a sleep that blocks until cancelled. This patches the stdlib
+    # asyncio module itself, so the test must not call asyncio.sleep while it
+    # is in place; Event.wait() is used to hand off control instead.
+    entered = asyncio.Event()
+
+    async def _blocking_sleep(delay):
+      del delay
+      entered.set()
+      await asyncio.Event().wait()
+
+    monkeypatch.setattr(interactions_utils.asyncio, 'sleep', _blocking_sleep)
+    api_client = _FakeApiClient(
+        poll_results=[_interaction_with_status('queued')]
+    )
+    task = asyncio.create_task(
+        interactions_utils._wait_for_interaction(
+            api_client, _interaction_with_status('queued')
+        )
+    )
+    await entered.wait()
+
+    # Act.
+    task.cancel()
+
+    # Assert: cancelled during the sleep, before any poll was issued.
+    with pytest.raises(asyncio.CancelledError):
+      await task
+    assert not api_client.get_calls
+
+  async def test_absorbs_a_transient_read_failure(self, recorded_sleeps):
+    """A failed poll must not forfeit work the server already accepted.
+
+    Args:
+      recorded_sleeps: Fixture replacing the inter-poll sleep.
+    """
+    del recorded_sleeps
+    api_client = _FakeApiClient(
+        poll_results=[
+            ConnectionError('blip'),
+            _interaction_with_status('queued'),
+            ConnectionError('another blip'),
+            _interaction_with_status('completed', text='Sunny in Tokyo.'),
+        ]
+    )
+
+    result = await interactions_utils._wait_for_interaction(
+        api_client, _interaction_with_status('queued')
+    )
+
+    assert result.status == 'completed'
+    assert len(api_client.get_calls) == 4
+
+  async def test_gives_up_after_repeated_read_failures(self, recorded_sleeps):
+    """An endpoint that is genuinely down still surfaces.
+
+    Args:
+      recorded_sleeps: Fixture replacing the inter-poll sleep.
+    """
+    del recorded_sleeps
+    api_client = _FakeApiClient(poll_results=[ConnectionError('down')] * 10)
+
+    with pytest.raises(ConnectionError):
+      await interactions_utils._wait_for_interaction(
+          api_client, _interaction_with_status('queued')
+      )
+
+    assert (
+        len(api_client.get_calls)
+        == interactions_utils._POLL_MAX_CONSECUTIVE_ERRORS
+    )
+
+  async def test_error_streak_resets_on_a_good_read(self, recorded_sleeps):
+    """Blips spread across a long wait are tolerated, not accumulated.
+
+    Args:
+      recorded_sleeps: Fixture replacing the inter-poll sleep.
+    """
+    del recorded_sleeps
+    # More total failures than the cap, but never that many in a row.
+    poll_results = []
+    for _ in range(3):
+      poll_results += [ConnectionError('blip')] * 4
+      poll_results.append(_interaction_with_status('queued'))
+    poll_results.append(_interaction_with_status('completed', text='Done.'))
+    api_client = _FakeApiClient(poll_results=poll_results)
+
+    result = await interactions_utils._wait_for_interaction(
+        api_client, _interaction_with_status('queued')
+    )
+
+    assert result.status == 'completed'
+
+  async def test_forwards_extra_headers_to_each_poll(self, recorded_sleeps):
+    """Per-request headers ride along on the polls, not just the create."""
+    # Arrange.
+    del recorded_sleeps
+    api_client = _FakeApiClient(
+        poll_results=[
+            _interaction_with_status('queued'),
+            _interaction_with_status('completed', text='Done.'),
+        ]
+    )
+
+    # Act.
+    await interactions_utils._wait_for_interaction(
+        api_client,
+        _interaction_with_status('queued'),
+        extra_headers={'x-test': '1'},
+    )
+
+    # Assert.
+    assert len(api_client.get_calls) == 2
+    for call in api_client.get_calls:
+      assert call['extra_headers'] == {'x-test': '1'}
+      assert not call['stream']
+
+
+class TestCreateInteractionsWaitsForPending:
+  """``_create_interactions`` hides the wait from its callers."""
+
+  async def test_waits_out_a_pending_create(self, recorded_sleeps):
+    """A create that returns pending is polled before anything is yielded."""
+    # Arrange: create returns queued with no output; the answer arrives later.
+    del recorded_sleeps
+    api_client = _FakeApiClient(
+        interaction=_interaction_with_status('queued'),
+        poll_results=[
+            _interaction_with_status('completed', text='Sunny in Tokyo.')
+        ],
+    )
+
+    # Act.
+    responses = await _drain(
+        interactions_utils._create_interactions(
+            api_client,
+            create_kwargs={'model': 'gemini-2.5-flash'},
+            stream=False,
+        )
+    )
+
+    # Assert: still one response per turn, and it holds the finished result.
+    assert len(api_client.get_calls) == 1
+    assert len(responses) == 1
+    assert responses[0].content.parts[0].text == 'Sunny in Tokyo.'
+
+  async def test_does_not_poll_a_final_create(self):
+    """An ordinary create that is already done is not polled at all."""
+    # Arrange.
+    api_client = _FakeApiClient(interaction=_build_non_streaming_interaction())
+
+    # Act.
+    responses = await _drain(
+        interactions_utils._create_interactions(
+            api_client,
+            create_kwargs={'model': 'gemini-2.5-flash'},
+            stream=False,
+        )
+    )
+
+    # Assert.
+    assert not api_client.get_calls
+    assert len(responses) == 1
+    assert responses[0].content.parts[0].text == 'Sunny in Tokyo.'
