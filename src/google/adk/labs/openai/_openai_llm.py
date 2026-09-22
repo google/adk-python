@@ -72,6 +72,7 @@ def _to_openai_role(
   return "user"
 
 
+_serialize_system_instruction = _openai_common.serialize_system_instruction
 _tool_choice = _openai_common.tool_choice
 # The finish-reason mapper lives in _openai_common; alias it under the private
 # name this module and its tests use.
@@ -361,12 +362,13 @@ class OpenAILlm(BaseLlm):
   async def generate_content_async(
       self, llm_request: LlmRequest, stream: bool = False
   ) -> AsyncGenerator[LlmResponse, None]:
-    messages = []
+    messages: list[Any] = []
     if llm_request.config and llm_request.config.system_instruction:
-      messages.append({
-          "role": "system",
-          "content": llm_request.config.system_instruction,
-      })
+      system_text = _serialize_system_instruction(
+          llm_request.config.system_instruction
+      )
+      if system_text:
+        messages.append({"role": "system", "content": system_text})
 
     for content in llm_request.contents or []:
       messages.extend(_content_to_openai_messages(content))
@@ -422,7 +424,7 @@ class OpenAILlm(BaseLlm):
     ):
       response_format = {"type": "json_object"}
 
-    kwargs = {
+    kwargs: dict[str, Any] = {
         "model": self.model,
         "messages": messages,
         "tools": tools if tools else None,
@@ -454,15 +456,24 @@ class OpenAILlm(BaseLlm):
   ) -> AsyncGenerator[LlmResponse, None]:
     """Handles streaming responses from OpenAI models."""
     kwargs["stream"] = True
+    # Ask for the trailing usage-only chunk. Backends that ignore this simply
+    # never send it, so the metadata stays absent rather than the call failing.
+    kwargs["stream_options"] = {"include_usage": True}
     raw_stream = await self._openai_client.chat.completions.create(**kwargs)
 
     text_accumulated = ""
     tool_calls_accumulated: dict[int, dict[str, Any]] = {}
+    usage: CompletionUsage | None = None
+    finish_reason: str | None = None
 
     async for chunk in raw_stream:
+      if getattr(chunk, "usage", None):
+        usage = chunk.usage
       if not chunk.choices:
         continue
       choice = chunk.choices[0]
+      if getattr(choice, "finish_reason", None):
+        finish_reason = choice.finish_reason
       delta = choice.delta
 
       if delta.content:
@@ -539,9 +550,37 @@ class OpenAILlm(BaseLlm):
       part.function_call.id = acc["id"]
       parts.append(part)
 
+    mapped_finish_reason = _map_finish_reason(finish_reason)
+
+    if not parts and mapped_finish_reason not in (
+        None,
+        types.FinishReason.STOP,
+    ):
+      # Nothing was streamed and the model stopped for an abnormal reason (e.g.
+      # content filtering, or hitting the token limit before emitting anything).
+      # Mirror the non-streaming path and surface it as an error rather than a
+      # silent empty final chunk.
+      yield LlmResponse(
+          error_code=mapped_finish_reason,
+          error_message=(
+              "OpenAI streaming response finished with reason"
+              f" {finish_reason!r} and no content."
+          ),
+          finish_reason=mapped_finish_reason,
+          usage_metadata=_usage_metadata(usage),
+      )
+      return
+
+    # Final chunk. Unlike the non-streaming path (which returns content=None for
+    # an empty body), the streaming path always emits a non-partial closing
+    # response so the trailing usage-only chunk still delivers usage_metadata to
+    # the caller; a None content here would be dropped downstream and the token
+    # usage lost. An empty parts list is therefore expected and intentional.
     yield LlmResponse(
         content=types.Content(role="model", parts=parts),
         partial=False,
+        usage_metadata=_usage_metadata(usage),
+        finish_reason=mapped_finish_reason,
     )
 
   @cached_property
