@@ -26,16 +26,82 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable
 from collections.abc import Callable
+from collections.abc import Mapping
 import inspect
+import logging
 from typing import cast
 
 from google.genai import types
+from pydantic import ValidationError
+
+logger = logging.getLogger("google_adk." + __name__)
 
 __all__ = [
     "build_api_key",
     "map_finish_reason",
+    "serialize_system_instruction",
     "tool_choice",
 ]
+
+
+def serialize_system_instruction(
+    system_instruction: types.ContentUnion | types.ContentUnionDict | None,
+) -> str | None:
+  """Serializes an ADK system instruction to plain text.
+
+  ``config.system_instruction`` is usually a ``str``, but the field type allows
+  a ``Part``, ``Content``, a mapping, or a list of these. Flatten any of them to
+  the text OpenAI expects for a system message / instructions field.
+
+  Returns:
+    The flattened instruction text, or ``None`` when there is nothing usable to
+    send. Each ``None`` case omits the system message: an empty/falsy
+    instruction; a ``Part``/``Content``/list carrying no text (e.g. only inline
+    data or a ``File``); a mapping that neither ``Content`` nor ``Part`` can
+    parse; or an unsupported type. The mapping-parse-failure and
+    unsupported-type cases are logged at ``warning`` so a dropped instruction
+    can be diagnosed.
+  """
+  if not system_instruction:
+    return None
+  if isinstance(system_instruction, str):
+    return system_instruction
+  if isinstance(system_instruction, types.Part):
+    return system_instruction.text or None
+  if isinstance(system_instruction, types.Content):
+    text = "".join(part.text or "" for part in system_instruction.parts or [])
+    return text or None
+  if isinstance(system_instruction, Mapping):
+    # A mapping may be Part-shaped ({"text": ...}) or Content-shaped
+    # ({"role": ..., "parts": [...]}). Dispatch on the recognized model rather
+    # than assuming Part, which raises a ValidationError on a Content-shaped
+    # dict. ``model_validate`` (not ``**`` unpacking) keeps mypy happy. A
+    # mapping pydantic cannot accept is dropped instead of crashing: an
+    # unrecognized shape raises ValidationError, and a non-string key raises
+    # TypeError (pydantic expands mapping keys the way ``**`` does), so both
+    # are caught.
+    model = types.Content if "parts" in system_instruction else types.Part
+    try:
+      return serialize_system_instruction(
+          model.model_validate(dict(system_instruction))
+      )
+    except (ValidationError, TypeError):
+      logger.warning(
+          "Could not parse system instruction mapping as %s.", model.__name__
+      )
+      return None
+  if isinstance(system_instruction, list):
+    texts: list[str] = []
+    for item in system_instruction:
+      serialized = serialize_system_instruction(item)
+      if serialized:
+        texts.append(serialized)
+    return "\n".join(texts) or None
+  logger.warning(
+      "Ignoring system instruction of unsupported type %s; no text to send.",
+      type(system_instruction).__name__,
+  )
+  return None
 
 
 def tool_choice(

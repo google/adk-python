@@ -28,6 +28,7 @@ from google.adk.labs.openai._openai_responses_llm import _content_to_response_in
 from google.adk.labs.openai._openai_responses_llm import _function_declaration_to_response_tool
 from google.adk.labs.openai._openai_responses_llm import _loads_json_object
 from google.adk.labs.openai._openai_responses_llm import _response_to_llm_response
+from google.adk.labs.openai._openai_responses_llm import _serialize_system_instruction
 from google.adk.labs.openai._openai_responses_llm import _tool_choice
 from google.adk.labs.openai._openai_responses_llm import AzureOpenAIResponsesLlm
 from google.adk.labs.openai._openai_responses_llm import OpenAIResponsesLlm
@@ -1743,3 +1744,26 @@ async def test_streaming_output_item_done_uses_done_item_text():
   ]
 
   assert responses[-1].content.parts[0].text == 'Done text'
+
+
+def test_serialize_system_instruction_part_shaped_mapping():
+  """A Part-shaped mapping serializes to its text."""
+  assert _serialize_system_instruction({'text': 'Be concise.'}) == 'Be concise.'
+
+
+def test_serialize_system_instruction_content_shaped_mapping():
+  """A Content-shaped mapping is serialized instead of raising ValidationError.
+
+  Previously the Mapping branch did types.Part(**mapping), which raised an
+  uncaught pydantic ValidationError on a {'role': ..., 'parts': [...]} dict.
+  """
+  mapping = {
+      'role': 'system',
+      'parts': [{'text': 'Be '}, {'text': 'concise.'}],
+  }
+  assert _serialize_system_instruction(mapping) == 'Be concise.'
+
+
+def test_serialize_system_instruction_unparseable_mapping_returns_none():
+  """A mapping that fits neither Part nor Content is dropped, not raised."""
+  assert _serialize_system_instruction({'not_a_field': 123}) is None

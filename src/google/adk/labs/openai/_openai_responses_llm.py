@@ -180,36 +180,10 @@ def _loads_json_object(value: str | None) -> dict[str, Any]:
   return {}
 
 
-def _part_text(part: types.Part) -> str:
-  """Returns a Part's text as a string ('' when unset)."""
-  return str(part.text or '')
-
-
-def _serialize_system_instruction(
-    system_instruction: types.ContentUnion | None,
-) -> str | None:
-  """Serializes ADK system instructions to Responses API instructions."""
-  if not system_instruction:
-    return None
-  if isinstance(system_instruction, str):
-    return system_instruction
-  if isinstance(system_instruction, types.Part):
-    return _part_text(system_instruction)
-  if isinstance(system_instruction, types.Content):
-    return ''.join(_part_text(part) for part in system_instruction.parts or [])
-  if isinstance(system_instruction, Mapping):
-    return _part_text(types.Part(**system_instruction))
-  if isinstance(system_instruction, list):
-    texts: list[str] = []
-    for item in system_instruction:
-      if isinstance(item, str):
-        texts.append(item)
-      elif isinstance(item, types.Part):
-        texts.append(_part_text(item))
-      elif isinstance(item, Mapping):
-        texts.append(_part_text(types.Part(**item)))
-    return ''.join(texts)
-  return None
+# System-instruction serialization is shared with the Chat Completions model;
+# alias it under the private name this module and its tests have historically
+# used.
+_serialize_system_instruction = _openai_common.serialize_system_instruction
 
 
 def _schema_to_dict(schema: object) -> dict[str, Any]:
