@@ -1222,6 +1222,46 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(result_contents[0].parts[0].text, 'Summary safe prefix')
     self.assertEqual(result_contents[1].parts[0].text, 'e3')
 
+  async def test_sliding_window_orphaned_call_after_prior_compaction_does_not_block_forever(
+      self,
+  ):
+    """An orphaned call opening a post-compaction window must not stall future compactions."""
+    app = App(
+        name='test',
+        root_agent=Mock(spec=BaseAgent),
+        events_compaction_config=EventsCompactionConfig(
+            summarizer=self.mock_compactor,
+            compaction_interval=2,
+            overlap_size=0,
+        ),
+    )
+    events = [
+        self._create_compacted_event(1.0, 2.0, 'Summary 1-2'),
+        # inv3's call is orphaned: no matching response anywhere in the
+        # session, e.g. the process handling it died mid-call.
+        self._create_function_call_event(3.0, 'inv3', 'orphan-call-1'),
+        self._create_event(4.0, 'inv4', 'e4'),
+    ]
+    session = Session(app_name='test', user_id='u1', id='s1', events=events)
+    self.mock_compactor.maybe_summarize_events.side_effect = (
+        lambda *, events: self._create_compacted_event(
+            events[0].timestamp,
+            events[-1].timestamp,
+            'Summary inv3-inv4',
+        )
+    )
+
+    await self._run_sliding_window(app, session, self.mock_session_service)
+
+    # Without the fix, the orphaned call opens the window and never closes,
+    # so no compaction event is appended at all.
+    self.mock_session_service.append_event.assert_called_once()
+    appended_event = self.mock_session_service.append_event.call_args[1][
+        'event'
+    ]
+    self.assertEqual(appended_event.actions.compaction.start_timestamp, 3.0)
+    self.assertEqual(appended_event.actions.compaction.end_timestamp, 4.0)
+
   async def test_token_threshold_excludes_pending_function_call_events(self):
     """Token-threshold compaction stays contiguous before pending calls."""
     app = App(

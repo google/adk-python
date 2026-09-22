@@ -295,7 +295,9 @@ def _events_to_compact_for_token_threshold(
         event_retention_size=event_retention_size,
     )
     events_to_compact = candidate_events[:split_index]
-  events_to_compact = _longest_self_contained_prefix(events_to_compact)
+  events_to_compact = _longest_self_contained_prefix(
+      events_to_compact, all_events=events
+  )
   if not events_to_compact:
     return []
 
@@ -336,7 +338,44 @@ def _event_function_response_ids(event: Event) -> set[str]:
   return function_response_ids
 
 
-def _longest_self_contained_prefix(events: list[Event]) -> list[Event]:
+def _provably_dead_call_ids(
+    events: list[Event],
+    *,
+    all_events: list[Event],
+    newest_invocation_id: str | None,
+) -> set[str]:
+  """Returns function-call ids opened in `events` that can never be answered.
+
+  A call id qualifies once: it was opened by a plain function call (not one
+  marked long-running, nor one with a pending tool-confirmation/auth
+  request -- those are expected to stay open); no function response with the
+  same id exists anywhere in the session, not just the compaction window, so
+  a response that lives past the window boundary still protects its call;
+  and the call was not opened by the newest invocation in the session, which
+  may still be in flight.
+  """
+  protected_ids: set[str] = set()
+  answered_ids: set[str] = set()
+  for event in all_events:
+    protected_ids |= event.long_running_tool_ids or set()
+    if event.actions:
+      protected_ids |= set(event.actions.requested_tool_confirmations)
+      protected_ids |= set(event.actions.requested_auth_configs)
+    answered_ids |= _event_function_response_ids(event)
+
+  dead_ids: set[str] = set()
+  for event in events:
+    if event.invocation_id == newest_invocation_id:
+      continue
+    for call_id in _event_function_call_ids(event):
+      if call_id not in protected_ids and call_id not in answered_ids:
+        dead_ids.add(call_id)
+  return dead_ids
+
+
+def _longest_self_contained_prefix(
+    events: list[Event], *, all_events: list[Event]
+) -> list[Event]:
   """Returns the longest prefix of `events` that is safe to compact.
 
   Performs a single left-to-right pass tracking "open" obligations keyed by call
@@ -345,19 +384,43 @@ def _longest_self_contained_prefix(events: list[Event]) -> list[Event]:
   opens within each event so a response only closes an obligation opened by an
   earlier event. The prefix is safe to summarize only at points where no
   obligation is open, so the longest prefix ending at such a balanced point is
-  returned (empty if the window never reaches a balanced point).
+  returned.
+
+  If that strict pass never reaches a balanced point (e.g. the window opens
+  with a function call whose response will never arrive, because the process
+  handling it died), a second pass retries while ignoring call ids that
+  `_provably_dead_call_ids` proves can never be fulfilled, so healthy events
+  after a dead call can still be compacted. Without this, a single orphaned
+  call permanently blocks every future compaction, since it becomes the
+  first candidate event of every subsequent window once it is not covered by
+  the previous one.
   """
-  open_ids: set[str] = set()
-  safe_length = 0
-  for index, event in enumerate(events):
-    open_ids -= _event_function_response_ids(event)
-    open_ids |= _event_function_call_ids(event)
-    if event.actions:
-      open_ids |= set(event.actions.requested_tool_confirmations)
-      open_ids |= set(event.actions.requested_auth_configs)
-    if not open_ids:
-      safe_length = index + 1
-  return events[:safe_length]
+
+  def _pass(dead_ids: set[str]) -> int:
+    open_ids: set[str] = set()
+    safe_length = 0
+    for index, event in enumerate(events):
+      open_ids -= _event_function_response_ids(event)
+      open_ids |= _event_function_call_ids(event) - dead_ids
+      if event.actions:
+        open_ids |= set(event.actions.requested_tool_confirmations)
+        open_ids |= set(event.actions.requested_auth_configs)
+      if not open_ids:
+        safe_length = index + 1
+    return safe_length
+
+  safe_length = _pass(set())
+  if safe_length:
+    return events[:safe_length]
+
+  newest_invocation_id = all_events[-1].invocation_id if all_events else None
+  dead_ids = _provably_dead_call_ids(
+      events, all_events=all_events, newest_invocation_id=newest_invocation_id
+  )
+  if not dead_ids:
+    return events[:safe_length]
+
+  return events[: _pass(dead_ids)]
 
 
 def _safe_token_compaction_split_index(
@@ -600,7 +663,9 @@ async def _run_compaction_for_sliding_window(
       events_to_compact = [
           e for e in events_to_compact if not e.actions.compaction
       ]
-      events_to_compact = _longest_self_contained_prefix(events_to_compact)
+      events_to_compact = _longest_self_contained_prefix(
+          events_to_compact, all_events=events
+      )
 
   if not events_to_compact:
     return
