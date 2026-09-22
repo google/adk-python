@@ -1469,6 +1469,62 @@ class TestRestApiTool:
     assert request_params["json"] == {"param1": "value1", "param2": 123}
     assert request_params["params"] == {"testQueryParam": "query_value"}
 
+  def test_prepare_request_params_explodes_object_query_parameter(
+      self, sample_endpoint, sample_auth_credential, sample_auth_scheme
+  ):
+    mock_operation = Operation(
+        operationId="test_op",
+        parameters=[
+            OpenAPIParameter(**{
+                "name": "filters",
+                "in": "query",
+                "schema": OpenAPISchema(
+                    type="object",
+                    properties={
+                        "category": OpenAPISchema(type="string"),
+                        "page": OpenAPISchema(type="integer"),
+                        "featured": OpenAPISchema(type="boolean"),
+                        "cursor": OpenAPISchema(type="string", nullable=True),
+                    },
+                ),
+            })
+        ],
+    )
+    tool = RestApiTool(
+        name="test_tool",
+        description="test",
+        endpoint=sample_endpoint,
+        operation=mock_operation,
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+    params = [
+        ApiParameter(
+            original_name="filters",
+            py_name="filters",
+            param_location="query",
+            param_schema=OpenAPISchema(type="object"),
+        )
+    ]
+
+    request_params = tool._prepare_request_params(
+        params,
+        {
+            "filters": {
+                "category": "books",
+                "page": 2,
+                "featured": False,
+                "cursor": None,
+            }
+        },
+    )
+
+    assert request_params["params"] == {
+        "category": "books",
+        "page": 2,
+        "featured": False,
+    }
+
   def test_prepare_request_params_preserves_falsy_query_params(
       self, sample_endpoint, sample_auth_credential, sample_auth_scheme
   ):

@@ -30,6 +30,7 @@ from urllib.parse import urlparse
 from urllib.parse import urlunparse
 
 from fastapi.openapi.models import Operation
+from fastapi.openapi.models import Parameter as OpenAPIParameter
 from fastapi.openapi.models import Schema
 from google.genai.types import FunctionDeclaration
 import httpx
@@ -391,6 +392,12 @@ class RestApiTool(BaseTool):
       header_params.update(self.auth_credential.http.additional_headers)
 
     params_map: Dict[str, ApiParameter] = {p.py_name: p for p in parameters}
+    operation_query_params = {
+        parameter.name: parameter
+        for parameter in self.operation.parameters or []
+        if isinstance(parameter, OpenAPIParameter)
+        and parameter.in_.value == "query"
+    }
 
     # Fill in path, query, header and cookie parameters to the request
     for param_k, v in kwargs.items():
@@ -415,7 +422,17 @@ class RestApiTool(BaseTool):
         path_params[original_k] = quote(str(v), safe="")
       elif param_location == "query":
         if v is not None:
-          query_params[original_k] = v
+          operation_param = operation_query_params.get(original_k)
+          style = operation_param.style or "form" if operation_param else None
+          explode = (
+              operation_param.explode
+              if operation_param and operation_param.explode is not None
+              else style == "form"
+          )
+          if isinstance(v, dict) and style == "form" and explode:
+            query_params.update(v)
+          else:
+            query_params[original_k] = v
       elif param_location == "header":
         header_params[original_k] = v
       elif param_location == "cookie":
