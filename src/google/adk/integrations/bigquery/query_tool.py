@@ -211,6 +211,9 @@ def _execute_sql(
     if settings and settings.application_name:
       bq_job_labels["adk-bigquery-application-name"] = settings.application_name
 
+    # Statement type from a dry run, when the write mode needs one anyway
+    statement_type: Optional[str] = None
+
     if not settings or settings.write_mode == WriteMode.BLOCKED:
       dry_run_query_job = bq_client.query(
           query,
@@ -219,7 +222,8 @@ def _execute_sql(
               dry_run=True, labels=bq_job_labels
           ),
       )
-      if dry_run_query_job.statement_type != "SELECT":
+      statement_type = dry_run_query_job.statement_type
+      if statement_type != "SELECT":
         return {
             "status": "ERROR",
             "error_details": "Read-only mode only supports SELECT statements.",
@@ -273,8 +277,9 @@ def _execute_sql(
               labels=bq_job_labels,
           ),
       )
+      statement_type = dry_run_query_job.statement_type
       if (
-          dry_run_query_job.statement_type != "SELECT"
+          statement_type != "SELECT"
           and dry_run_query_job.destination
           and dry_run_query_job.destination.dataset_id != bq_session_dataset_id
       ):
@@ -306,6 +311,23 @@ def _execute_sql(
     )
     if settings.maximum_bytes_billed:
       job_config.maximum_bytes_billed = settings.maximum_bytes_billed
+    if settings.kms_key_name:
+      if statement_type is None:
+        statement_type = bq_client.query(
+            query,
+            project=project_id,
+            job_config=bigquery.QueryJobConfig(
+                dry_run=True,
+                connection_properties=bq_connection_properties,
+                labels=bq_job_labels,
+            ),
+        ).statement_type
+      # BigQuery rejects a job-level key for DDL, DML and scripts, so only the
+      # results of a SELECT are encrypted with it.
+      if statement_type == "SELECT":
+        job_config.destination_encryption_configuration = (
+            bigquery.EncryptionConfiguration(kms_key_name=settings.kms_key_name)
+        )
     row_iterator = bq_client.query_and_wait(
         query,
         job_config=job_config,
