@@ -161,7 +161,7 @@ def _estimate_prompt_token_count(
   """
   # Deferred import: contents depends on agents.invocation_context which
   # imports from apps, so a top-level import would create a circular dependency.
-  from ..flows.llm_flows import contents as _contents
+  from ..flows.llm_flows.context import _contents
 
   effective_contents = _contents._get_contents(
       current_branch=current_branch,

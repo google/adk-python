@@ -50,8 +50,8 @@ from .errors._stale_session_error import StaleSessionError
 from .errors.session_not_found_error import SessionNotFoundError
 from .events.event import Event
 from .events.event_actions import EventActions
-from .flows.llm_flows import contents
-from .flows.llm_flows.functions import find_matching_function_call as _find_matching_function_call
+from .flows.llm_flows.context import _contents as contents
+from .flows.llm_flows.tools._functions import find_matching_function_call as _find_matching_function_call
 from .live import _runner_utils as _live_runner_utils
 from .live.live_request_queue import LiveRequestQueue
 from .memory.base_memory_service import BaseMemoryService

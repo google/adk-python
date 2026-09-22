@@ -60,9 +60,9 @@ from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_preprocessor import TOOLSET_AUTH_CREDENTIAL_ID_PREFIX
 from google.adk.events.event import Event
-from google.adk.flows.llm_flows._fencing import QUOTED_CONTENT_BEGIN
-from google.adk.flows.llm_flows._fencing import QUOTED_CONTENT_END
-from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from google.adk.flows.llm_flows.context._fencing import QUOTED_CONTENT_BEGIN
+from google.adk.flows.llm_flows.context._fencing import QUOTED_CONTENT_END
+from google.adk.flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from google.adk.sessions.session import Session
 from google.genai import types as genai_types
 import httpx

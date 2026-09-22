@@ -48,7 +48,6 @@ _GCS_DISPLAY_NAME_METADATA_KEY = "adkDisplayName"
 _GCS_IS_TEXT_METADATA_KEY = "adkIsText"
 _GCS_FILE_URI_METADATA_KEY = "adkFileUri"
 _GCS_FILE_MIME_TYPE_METADATA_KEY = "adkFileMimeType"
-_MAX_ARTIFACT_REFERENCE_DEPTH = 5
 _MAX_SAVE_VERSION_ATTEMPTS = 10
 
 
@@ -356,6 +355,8 @@ class GcsArtifactService(BaseArtifactService):
       session_id: Optional[str],
       filename: str,
       version: Optional[int] = None,
+      *,
+      max_depth: int = artifact_util._MAX_ARTIFACT_REFERENCE_DEPTH,
   ) -> Optional[types.Part]:
     if version is None:
       versions = self._list_versions(
@@ -384,16 +385,12 @@ class GcsArtifactService(BaseArtifactService):
 
     if file_uri:
       if file_uri.startswith("artifact://"):
-        parsed_uri = artifact_util.parse_artifact_uri(file_uri)
-        if not parsed_uri:
-          raise InputValidationError(
-              f"Invalid artifact reference URI: {file_uri}"
-          )
-        artifact_util.validate_artifact_reference_scope(
+        parsed_uri = artifact_util.resolve_artifact_reference(
+            file_uri=file_uri,
             app_name=app_name,
             user_id=user_id,
             session_id=session_id,
-            parsed_uri=parsed_uri,
+            remaining_depth=max_depth,
         )
         return self._load_artifact(
             app_name=parsed_uri.app_name,
@@ -401,6 +398,7 @@ class GcsArtifactService(BaseArtifactService):
             session_id=parsed_uri.session_id,
             filename=parsed_uri.filename,
             version=parsed_uri.version,
+            max_depth=max_depth - 1,
         )
       mime_type = None
       if blob.metadata:
@@ -639,7 +637,7 @@ class GcsArtifactService(BaseArtifactService):
       filename: str,
       version: Optional[int] = None,
       *,
-      max_depth: int = _MAX_ARTIFACT_REFERENCE_DEPTH,
+      max_depth: int = artifact_util._MAX_ARTIFACT_REFERENCE_DEPTH,
   ) -> Optional[str]:
     """Generates an authenticated browser URL for an artifact."""
     if version is None:
@@ -668,21 +666,12 @@ class GcsArtifactService(BaseArtifactService):
 
     if file_uri:
       if file_uri.startswith("artifact://"):
-        if max_depth <= 0:
-          raise InputValidationError(
-              "Exceeded maximum recursion depth resolving artifact reference:"
-              f" {file_uri}"
-          )
-        parsed_uri = artifact_util.parse_artifact_uri(file_uri)
-        if not parsed_uri:
-          raise InputValidationError(
-              f"Invalid artifact reference URI: {file_uri}"
-          )
-        artifact_util.validate_artifact_reference_scope(
+        parsed_uri = artifact_util.resolve_artifact_reference(
+            file_uri=file_uri,
             app_name=app_name,
             user_id=user_id,
             session_id=session_id,
-            parsed_uri=parsed_uri,
+            remaining_depth=max_depth,
         )
         return self._get_authenticated_url_sync(
             app_name=parsed_uri.app_name,
@@ -746,7 +735,7 @@ class GcsArtifactService(BaseArtifactService):
       signing_version: Optional[Literal["v2", "v4"]] = None,
       extra_signing_options: Optional[dict[str, Any]] = None,
       *,
-      max_depth: int = _MAX_ARTIFACT_REFERENCE_DEPTH,
+      max_depth: int = artifact_util._MAX_ARTIFACT_REFERENCE_DEPTH,
   ) -> Optional[str]:
     """Generates a time-limited signed URL for an artifact."""
     if version is None:
@@ -775,21 +764,12 @@ class GcsArtifactService(BaseArtifactService):
 
     if file_uri:
       if file_uri.startswith("artifact://"):
-        if max_depth <= 0:
-          raise InputValidationError(
-              "Exceeded maximum recursion depth resolving artifact reference:"
-              f" {file_uri}"
-          )
-        parsed_uri = artifact_util.parse_artifact_uri(file_uri)
-        if not parsed_uri:
-          raise InputValidationError(
-              f"Invalid artifact reference URI: {file_uri}"
-          )
-        artifact_util.validate_artifact_reference_scope(
+        parsed_uri = artifact_util.resolve_artifact_reference(
+            file_uri=file_uri,
             app_name=app_name,
             user_id=user_id,
             session_id=session_id,
-            parsed_uri=parsed_uri,
+            remaining_depth=max_depth,
         )
         return self._get_signed_url_sync(
             app_name=parsed_uri.app_name,
