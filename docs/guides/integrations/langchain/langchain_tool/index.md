@@ -1,223 +1,231 @@
 # LangchainTool
 
-`LangchainTool` wraps a LangChain tool so an ADK agent can call it. It is a
-`FunctionTool` subclass that pulls the underlying callable out of the LangChain
-object, builds a Gemini function declaration from LangChain's schema, and
-honors the one LangChain behavior ADK has an equivalent for, `return_direct`.
-
-The only setup requirement is a `pip install`, with no account and no service
-to configure. You do have to install `langchain-core` yourself, because ADK has
-no `[langchain]` extra and does not depend on LangChain at runtime.
+LangchainTool is an adapter that wraps Langchain tools for use within the ADK
+framework. It converts Langchain tool schemas into a format compatible with
+Google generative AI function calling.
 
 ## Introduction
 
-`LangchainTool` is the adapter that lets an existing LangChain tool keep
-working in ADK. Put a wrapped tool in an agent's `tools` list and it behaves
-like any other ADK tool: it appears in the model's function declarations, it is
-invoked with the arguments the model chose, and its return value goes back as a
-function response.
+The Langchain ecosystem provides a wide variety of pre-built tools for tasks
+ranging from web searching to database interaction. The LangchainTool class
+allows developers to integrate these existing tools into ADK agents without
+rewriting the underlying logic or schema definitions.
 
-It is a migration path, not a permanent home. The wrapper carries LangChain's
-schema conventions into ADK, and the two do not line up perfectly, so the
-places they disagree turn up as the limitations listed below. A tool you own is
-usually better rewritten as a plain Python function and passed straight to
-`tools=`, which is what `FunctionTool` does with no adapter in the way.
+This adapter manages the translation between Langchain conventions and the ADK
+tool interface. It handles both synchronous and asynchronous tools, extracts
+parameter schemas from Langchain StructuredTool instances, and respects
+Langchain-specific behaviors like direct result returning.
 
 ## Get started
 
-Wrap the LangChain tool and put it in the agent:
+The following example demonstrates how to wrap a Langchain YouTube search tool
+and provide it to an ADK agent.
 
 ```python
-from google.adk.agents import Agent
+from google.adk.agents.llm_agent import Agent
 from google.adk.integrations.langchain import LangchainTool
-from langchain_core.tools import tool
-from langchain_core.tools.structured import StructuredTool
-from pydantic import BaseModel
+from langchain_community.tools.youtube.search import YouTubeSearchTool
 
+# Instantiate the standard Langchain tool
+langchain_yt_tool = YouTubeSearchTool()
 
-async def add(x: int, y: int) -> int:
-  """Adds two numbers."""
-  return x + y
-
-
-@tool
-def minus(x: int, y: int) -> int:
-  """Subtracts two numbers."""
-  return x - y
-
-
-class AddSchema(BaseModel):
-  x: int
-  y: int
-
-
-add_tool = StructuredTool.from_function(
-    add, name="add", description="Adds two numbers", args_schema=AddSchema
+# Wrap the tool for use in ADK
+adk_yt_tool = LangchainTool(
+    tool=langchain_yt_tool,
 )
 
-root_agent = Agent(
-    name="calculator",
-    description="Answers arithmetic questions.",
-    instruction="Use the tools to compute answers rather than doing it yourself.",
-    tools=[LangchainTool(tool=add_tool), LangchainTool(tool=minus)],
-)
-```
-
-Both forms work: a `StructuredTool` built explicitly, and anything LangChain's
-`@tool` decorator produced, which is also a `StructuredTool`. An async
-LangChain function is wrapped exactly the same way.
-
-Override the name and description when LangChain's are unhelpful, which they
-often are for community tools whose name is a class name:
-
-```python
-LangchainTool(
-    tool=DuckDuckGoSearchRun(),
-    name="web_search",
-    description="Searches the public web and returns a text summary.",
+# Pass the wrapped tool to an agent
+youtube_search_agent = Agent(
+    name="youtube_search_agent",
+    instruction="Search for singer names and video counts provided by the user.",
+    tools=[adk_yt_tool],
 )
 ```
 
 ## How it works
 
-Two parts of the adapter show up in behavior: how the function declaration is
-built, and what happens to a tool marked `return_direct`.
+LangchainTool inherits from FunctionTool and acts as a bridge between the two
+frameworks. When initialized, the adapter inspects the provided Langchain tool
+to identify its execution method, which is typically named run or _run. The
+adapter also extracts the tool name and description to build the function
+declaration that the generative model sees.
 
-### Build the declaration
-
-If your tool is a `langchain_core.tools.BaseTool` **with an `args_schema`**,
-the declaration is built from that schema, so the Pydantic model you gave
-LangChain is what the model sees.
-
-If it is anything else, including a `BaseTool` with no `args_schema`, the
-declaration comes from the callable's signature and type hints instead.
-
-The difference shows up in the generated declaration, and in an unexpected
-place: the two paths populate *different fields*. With an `args_schema` the
-parameters land in `FunctionDeclaration.parameters` as a typed `Schema`. Without
-one, they land in `parameters_json_schema` as raw JSON Schema and `parameters`
-is `None`, so code that inspects a declaration has to check both. The fallback
-schema is also titled `_runParams` rather than after your tool. The
-declaration's `name` is corrected to the tool name in both cases.
-
-Either path reports a failure as
-`ValueError: Failed to build function declaration for Langchain tool: ...`.
-
-### `return_direct`
-
-LangChain's `return_direct=True` means "give the user this tool's output, do not
-send it back to the model". ADK's equivalent is
-`tool_context.actions.skip_summarization`, and `LangchainTool` sets it after a
-successful call on a tool whose `return_direct` is true.
-
-There is one carve-out: when the result is a dict containing an `error` key,
-summarization is *not* skipped. That is the shape `FunctionTool` returns
-when the model omitted a mandatory argument, and the tool never actually ran, so
-the error has to reach the model for it to retry. Concretely, calling a
-`return_direct` tool without its required argument returns
-
-```text
-{'error': "Invoking `shout()` failed as the following mandatory input
-parameters are not present: text ..."}
-```
-
-with `skip_summarization` left unset, while a successful call sets it to `True`.
+During execution, the adapter maps the arguments provided by the model to the
+expected inputs of the Langchain tool. If the wrapped tool has the
+return_direct attribute set to True, the adapter automatically updates the tool
+context to skip the summarization phase. This behavior ensures that the raw
+output of the tool is returned to the user or the calling agent immediately,
+matching Langchain's intended execution flow.
 
 ## Configuration options
 
+The following options are available when configuring a LangchainTool through the
+LangchainToolConfig class or a configuration file.
+
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `tool` | `LangchainBaseTool \| object` | required | The LangChain tool, or any object with `run` or `_run`. |
-| `name` | `str \| None` | `None` | Overrides the tool's name in the function declaration. |
-| `description` | `str \| None` | `None` | Overrides the description the model sees. |
+| `tool` | `str` | | The fully qualified path of the Langchain tool instance. |
+| `name` | `str` | `''` | The name of the tool. |
+| `description` | `str` | `''` | The description of the tool. |
 
-Left as `None`, each falls back to the LangChain tool's own value, and then to
-whatever the wrapped function itself supplies.
-
-`name` and `description` are the two that earn their place. A LangChain
-community tool's own name is frequently the class name and its description is
-frequently a docstring aimed at a Python reader, and both go straight into the
-prompt. Rewriting them is the cheapest accuracy improvement available on a
-wrapped tool.
+The tool option requires a string representing the fully qualified name of the
+tool object so the ADK can resolve and instantiate it. The name and description
+options allow developers to override the metadata defined within the Langchain
+tool itself. Overriding these values is useful when the original tool
+description does not provide enough context for the generative model to use the
+tool effectively.
 
 ## Advanced applications
 
-Two questions come up once the first wrapped tool works: how to declare one
-outside Python, and when to rewrite a tool instead of wrapping it.
+Developers can wrap Langchain StructuredTool instances to provide complex
+parameter schemas to the model. LangchainTool automatically detects the
+args_schema of a StructuredTool and uses it to build a detailed function
+declaration.
 
-### Declare the tool in YAML
+```python
+from google.adk.integrations.langchain import LangchainTool
+from langchain_core.tools.structured import StructuredTool
+from pydantic import BaseModel
 
-`LangchainTool` supports ADK's config-driven agent loading through
-`LangchainToolConfig`, so a wrapped tool can be named in an agent YAML file
-rather than constructed in Python:
+class AddSchema(BaseModel):
+    x: int
+    y: int
 
-```yaml
-tools:
-  - name: google.adk.integrations.langchain.LangchainTool
-    args:
-      tool: my_package.tools.search_tool
-      name: web_search
-      description: Searches the public web and returns a text summary.
+def sync_add(x: int, y: int) -> int:
+    return x + y
+
+# Create a Langchain StructuredTool with a Pydantic schema
+langchain_add_tool = StructuredTool.from_function(
+    func=sync_add,
+    name="add_numbers",
+    description="Adds two integers together",
+    args_schema=AddSchema,
+)
+
+# The adapter will preserve the x and y parameter definitions for the model
+adk_add_tool = LangchainTool(tool=langchain_add_tool)
 ```
 
-`tool` is the fully qualified path to a LangChain tool **instance**, not a
-class; it is resolved by import at load time.
-
-**Always set `name` and `description` in YAML.** They are not optional in
-practice, whatever the config schema suggests. `LangchainToolConfig` defaults
-both to the empty string, and the constructor only falls back to LangChain's own
-values when the argument is `None`. An empty string is not `None`, so it wins:
-omit `name` from the YAML above and you get a tool whose name and description
-are both `""`, even though the LangChain tool underneath is called
-`search_tool`. Nothing rejects it either: the agent accepts the tool and the
-model is shown a function with no name.
-
-### Decide what to migrate rather than wrap
-
-Wrapping is the right answer for a tool you did not write and do not want to
-own, such as a community search tool or a vendor integration. For a tool that
-is your own Python function underneath, the adapter is pure overhead: pass the
-function to
-`tools=` and ADK builds a `FunctionTool` from its signature and docstring. You
-also get things the adapter cannot give you, notably a `tool_context: ToolContext`
-parameter for reading session state, saving artifacts, or requesting
-confirmation.
+The adapter also handles error states specifically for direct-return tools. If a
+tool is configured with return_direct=True but encounters an execution error,
+the adapter will not skip summarization. This allows the generative model to
+observe the error message and potentially attempt a corrected tool call.
 
 ## Limitations
 
-*   **`langchain_core` is a hard import.** The module imports it at module
-    scope, so `from google.adk.integrations.langchain import LangchainTool`
-    fails with `ModuleNotFoundError` when LangChain is not installed. There is
-    no optional-dependency guard and no install hint.
-*   **Untyped parameters produce an untyped declaration.** A LangChain tool
-    whose function has no type hints and no `args_schema` yields a declaration
-    whose properties have names and nothing else, leaving the model to guess
-    whether an argument is a string or a number. Give the function type hints,
-    or give the tool an `args_schema`.
-*   **Only `return_direct` carries across.** LangChain's other tool-level
-    behavior is not translated, including its callback manager, its error
-    handling and its retry configuration. Only the callable and the schema come
-    over.
-*   **No `ToolContext` for the wrapped function.** The LangChain function is
-    called with the model's arguments, so it cannot read session state or save
-    an artifact. Anything needing context has to be an ADK tool.
-*   **There is no `[langchain]` extra.** LangChain is not a runtime dependency
-    of ADK; `langchain-community` appears only in the `test` extra. Installing
-    `langchain-core` for production use is on you, and so is pinning it.
-*   **Wrapping a non-LangChain object works, and is undefined.** The duck-typed
-    fallback accepts any object with `run` or `_run`. That is handy, and it
-    means a typo that hands over the wrong object may construct successfully and
-    fail at call time instead.
+The wrapped object must be a valid Langchain tool or an object that implements
+the run or _run method. If the adapter cannot find a callable execution method
+on the provided tool, it raises a ValueError during initialization.
 
 ## Related samples
 
-*   [Structured tool agent](../../../../../contributing/samples/integrations/langchain_structured_tool_agent/agent.py)
-    pairs an explicit `StructuredTool` carrying an `args_schema` with a
-    `@tool`-decorated function.
-*   [YouTube search agent](../../../../../contributing/samples/integrations/langchain_youtube_search_agent/agent.py)
-    wraps a `langchain_community` tool as-is.
+- [a2a_auth](../../../../../contributing/samples/a2a/a2a_auth/agent.py) - Demonstrates using Langchain tools within a remote agent architecture.
+- [langchain_structured_tool_agent](../../../../../contributing/samples/integrations/langchain_structured_tool_agent/agent.py) - Shows how to use Langchain StructuredTool with ADK agents.
+- [langchain_youtube_search_agent](../../../../../contributing/samples/integrations/langchain_youtube_search_agent/agent.py) - A practical example of wrapping the Langchain YouTube search utility.
+```
 
-## Related guides
+In []:
+```python
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import confusion_matrix, accuracy_score, classification_report
+from sklearn.preprocessing import StandardScaler
+from sklearn.datasets import load_breast_cancer
 
-*   [CrewaiTool](../../crewai/crewai_tool/index.md) is the same adapter for
-    CrewAI, with the differences tabled above.
+```
+
+In []:
+```python
+# Load the breast cancer dataset
+data = load_breast_cancer()
+X = pd.DataFrame(data.data, columns=data.feature_names)
+y = pd.Series(data.target)
+
+# Display the first few rows of the dataset
+print(X.head())
+
+```
+
+Out []:
+```output
+<output truncated>
+```
+
+In []:
+```python
+# Split the data into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Standardize the features
+scaler = StandardScaler()
+X_train = scaler.fit_transform(X_train)
+X_test = scaler.transform(X_test)
+
+```
+
+In []:
+```python
+# Initialize and train the logistic regression model
+model = LogisticRegression()
+model.fit(X_train, y_train)
+
+```
+
+Out []:
+```output
+<pre>LogisticRegression()</pre><b>In a Jupyter environment, please rerun this cell to show the HTML representation or trust the notebook. <br/>On GitHub, the HTML representation is unable to render, please try loading this page with nbviewer.org.</b><input/><label>LogisticRegression</label><pre>LogisticRegression()</pre>
+```
+
+In []:
+```python
+# Make predictions on the test set
+y_pred = model.predict(X_test)
+
+# Evaluate the model
+accuracy = accuracy_score(y_test, y_pred)
+conf_matrix = confusion_matrix(y_test, y_pred)
+class_report = classification_report(y_test, y_pred)
+
+print(f"Accuracy: {accuracy:.4f}")
+print("Confusion Matrix:")
+print(conf_matrix)
+print("Classification Report:")
+print(class_report)
+
+```
+
+Out []:
+```output
+Accuracy: 0.9737
+Confusion Matrix:
+[[41  2]
+ [ 1 70]]
+Classification Report:
+              precision    recall  f1-score   support
+           0       0.98      0.95      0.96        43
+           1       0.97      0.99      0.98        71
+    accuracy                           0.97       114
+   macro avg       0.97      0.97      0.97       114
+weighted avg       0.97      0.97      0.97       114
+```
+
+In []:
+```python
+# Plot the confusion matrix
+plt.figure(figsize=(8, 6))
+sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues', xticklabels=data.target_names, yticklabels=data.target_names)
+plt.xlabel('Predicted')
+plt.ylabel('Actual')
+plt.title('Confusion Matrix')
+plt.show()
+
+```
+
+Out []:
+```output
+
+```

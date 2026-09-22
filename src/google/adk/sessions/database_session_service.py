@@ -32,20 +32,18 @@ from google.adk.platform import time as platform_time
 from google.adk.platform import uuid as platform_uuid
 
 try:
-  from sqlalchemy import Column
   from sqlalchemy import delete
   from sqlalchemy import event
-  from sqlalchemy import Index
   from sqlalchemy import inspect
   from sqlalchemy import MetaData
   from sqlalchemy import select
-  from sqlalchemy import String
-  from sqlalchemy import Table
   from sqlalchemy.engine import Connection
   from sqlalchemy.engine import make_url
   from sqlalchemy.exc import ArgumentError
   from sqlalchemy.exc import IntegrityError
   from sqlalchemy.exc import InvalidRequestError
+  from sqlalchemy.exc import OperationalError
+  from sqlalchemy.exc import ProgrammingError
   from sqlalchemy.ext.asyncio import async_sessionmaker
   from sqlalchemy.ext.asyncio import AsyncEngine
   from sqlalchemy.ext.asyncio import AsyncSession as DatabaseSessionFactory
@@ -237,29 +235,34 @@ def _set_sqlite_pragma(
   cursor.close()
 
 
-_SUPERSEDED_INDEX_NAMES = frozenset({"idx_events_app_user_session_ts"})
-
-
 def _ensure_schema_indexes_exist(
     connection: Connection, metadata: MetaData
 ) -> None:
-  """Ensures indexes declared in metadata exist for existing tables."""
+  """Ensures indexes declared in metadata exist for existing tables.
+
+  Note:
+    Superseded indexes (such as ``idx_events_app_user_session_ts``) are
+    intentionally not dropped at runtime. Dropping an index requires an
+    ``ACCESS EXCLUSIVE`` table lock in PostgreSQL, can race across multiple
+    service instances starting concurrently, and breaks zero-downtime rolling
+    updates. Operators of large existing deployments may pre-create new indexes
+    (e.g. via ``CREATE INDEX CONCURRENTLY``) and drop obsolete indexes
+    out-of-band during a maintenance window.
+  """
   logger.debug("Ensuring schema indexes exist for metadata tables.")
   for table in metadata.sorted_tables:
     for index in sorted(table.indexes, key=lambda item: item.name or ""):
-      index.create(bind=connection, checkfirst=True)
-
-  # Drop obsolete indexes that have been superseded by composite indexes.
-  inspector = inspect(connection)
-  if inspector.has_table("events"):
-    existing_indexes = {idx["name"] for idx in inspector.get_indexes("events")}
-    for superseded in _SUPERSEDED_INDEX_NAMES:
-      if superseded in existing_indexes:
-        logger.info(
-            "Dropping superseded index %s from events table.", superseded
-        )
-        isolated_table = Table("events", MetaData(), Column("id", String))
-        Index(superseded, isolated_table.c.id).drop(bind=connection)
+      try:
+        with connection.begin_nested():
+          index.create(bind=connection, checkfirst=True)
+      except (OperationalError, ProgrammingError):
+        # Another container instance may have created the index concurrently
+        # between the `checkfirst` inspection and the DDL execution.
+        existing_indexes = {
+            idx["name"] for idx in inspect(connection).get_indexes(table.name)
+        }
+        if index.name not in existing_indexes:
+          raise
 
 
 def _setup_database_schema(connection: Connection, metadata: MetaData) -> None:
@@ -523,6 +526,13 @@ class DatabaseSessionService(BaseSessionService):
     table-creation cost upfront (e.g. during application startup) instead of
     on the first database operation.  It is safe to call more than once and
     is recommended for latency-sensitive applications.
+
+    For existing deployments with large ``events`` tables, operators are
+    encouraged to pre-create new schema indexes out-of-band (for example,
+    ``CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_events_app_user_session_ts_id
+    ON events (app_name, user_id, session_id, timestamp DESC, id DESC)``)
+    before rolling out a new version so that index verification during
+    ``prepare_tables()`` is a fast no-op.
     """
     # Early return if tables are already created
     if self._tables_created:
