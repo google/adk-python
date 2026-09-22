@@ -19,6 +19,7 @@ from __future__ import annotations
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import BaseModelWithConfig
+from google.adk.auth.auth_credential import CREDENTIAL_SECRET_KEYS
 from google.adk.auth.auth_credential import HttpAuth
 from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.auth.auth_credential import OAuth2Auth
@@ -197,3 +198,37 @@ def test_validation_error_does_not_echo_secret_value():
   assert 'sk-live-secret-api-key-12345' not in message
   # The field and the reason are still reported.
   assert 'api_key' in message
+
+
+def test_credential_secret_keys_matches_repr_false_fields():
+  """CREDENTIAL_SECRET_KEYS cannot silently drift from repr=False fields.
+
+  Anything holding a live secret on these models is already marked
+  Field(repr=False); CREDENTIAL_SECRET_KEYS is meant to track exactly that
+  set (by field name and by its to_camel wire alias), for redaction outside
+  logging/repr -- for example in telemetry spans, where the models
+  themselves are already unrolled into a plain dict by the time a
+  consumer sees them. This pins that derivation so adding a new secret
+  field without updating the redaction set fails loudly here instead of
+  leaking silently downstream.
+  """
+  models = (
+      AuthCredential,
+      OAuth2Auth,
+      HttpAuth,
+      HttpCredentials,
+      ServiceAccountCredential,
+  )
+  repr_false_field_names = set()
+  for model in models:
+    for field_name, field_info in model.model_fields.items():
+      if field_info.repr is False:
+        repr_false_field_names.add(field_name)
+
+  expected_keys = set(repr_false_field_names)
+  expected_keys.update(
+      pydantic.alias_generators.to_camel(name)
+      for name in repr_false_field_names
+  )
+
+  assert CREDENTIAL_SECRET_KEYS == expected_keys

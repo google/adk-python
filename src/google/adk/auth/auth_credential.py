@@ -319,3 +319,40 @@ class AuthCredential(BaseModelWithConfig):
   http: HttpAuth | None = None
   service_account: ServiceAccount | None = None
   oauth2: OAuth2Auth | None = None
+
+
+# Every field across the credential models above marked `Field(repr=False)`
+# because it can hold a live secret, plus its `to_camel` wire alias (the
+# model_config on these classes generates aliases that way). Wire
+# representations built from a dict rather than a live pydantic model --
+# the shape a client's response to an adk_request_credential call takes by
+# the time it reaches something like telemetry tracing -- may carry either
+# form depending on how the caller serialized it, so both are included.
+#
+# Derived programmatically, rather than hand-maintained, so this cannot
+# silently drift from the fields it is meant to track: a repr=False field
+# added to auth_credential.py's models is automatically covered here. See
+# test_credential_secret_keys_matches_repr_false_fields in
+# test_auth_credential.py for the consistency check.
+def _credential_secret_keys() -> frozenset[str]:
+  field_names = (
+      'password',
+      'token',
+      'additional_headers',
+      'client_secret',
+      'auth_response_uri',
+      'auth_code',
+      'access_token',
+      'refresh_token',
+      'id_token',
+      'code_verifier',
+      'private_key_id',
+      'private_key',
+      'api_key',
+  )
+  keys = set(field_names)
+  keys.update(alias_generators.to_camel(name) for name in field_names)
+  return frozenset(keys)
+
+
+CREDENTIAL_SECRET_KEYS: frozenset[str] = _credential_secret_keys()

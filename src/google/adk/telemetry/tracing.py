@@ -32,9 +32,11 @@ from contextlib import ExitStack
 import logging
 import os
 import re
+from typing import Any
 from typing import Final
 from typing import TYPE_CHECKING
 
+from google.adk.auth.auth_credential import CREDENTIAL_SECRET_KEYS
 from google.genai import types
 from google.genai.models import Models
 from opentelemetry import _logs
@@ -341,7 +343,7 @@ def trace_tool_call(
   if telemetry_config.should_add_content_to_legacy_spans:
     span.set_attribute(
         "gcp.vertex.agent.tool_response",
-        safe_json_serialize(tool_response),
+        safe_json_serialize(_redact_credential_secrets(tool_response)),
     )
   else:
     span.set_attribute("gcp.vertex.agent.tool_response", "{}")
@@ -503,6 +505,26 @@ def _trace_mcp_http_exchange(
   )
 
 
+def _redact_credential_secrets(value: Any) -> Any:
+  """Recursively strips CREDENTIAL_SECRET_KEYS entries from a dict/list tree.
+
+  A tool's response to an adk_request_credential call carries the exchanged
+  credential wherever the caller chose to put it -- observed directly under
+  a top-level key, and equally plausibly nested (for example under a
+  "credential" sub-object), so this walks the whole structure rather than
+  checking only the top level.
+  """
+  if isinstance(value, Mapping):
+    return {
+        key: _redact_credential_secrets(val)
+        for key, val in value.items()
+        if key not in CREDENTIAL_SECRET_KEYS
+    }
+  if isinstance(value, list):
+    return [_redact_credential_secrets(item) for item in value]
+  return value
+
+
 def trace_merged_tool_calls(
     response_event_id: str,
     function_response_event: Event,
@@ -542,7 +564,9 @@ def trace_merged_tool_calls(
     parts = (content.parts or []) if content else []
     try:
       tool_response_json = safe_json_serialize([
-          part.function_response.model_dump(exclude_none=True, mode="json")
+          _redact_credential_secrets(
+              part.function_response.model_dump(exclude_none=True, mode="json")
+          )
           for part in parts
           if part.function_response is not None
       ])

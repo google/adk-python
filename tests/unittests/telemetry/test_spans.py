@@ -846,6 +846,59 @@ def test_trace_tool_call_with_dict_response(
   )
 
 
+def test_trace_tool_call_strips_credential_secrets_from_response(
+    monkeypatch, mock_span_fixture, mock_tool_fixture, mock_event_fixture
+):
+  """A credential in a tool's own response is redacted on the per-tool span.
+
+  trace_merged_tool_calls redacts the same shape of leak on the merged
+  span (test_trace_merged_tool_calls_strips_credential_secrets_from_response).
+  This is the analogous case for trace_tool_call's own, separate
+  gcp.vertex.agent.tool_response attribute: a tool whose own response
+  dict happens to carry an exchanged credential -- the same shape a
+  client's answer to an adk_request_credential call takes -- must not
+  have that credential land here either, since this attribute is set
+  unconditionally for every real tool call whenever content capture is
+  enabled (the default).
+  """
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  mock_event_fixture.content = types.Content(
+      role='user',
+      parts=[
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id='tool_call_id_007',
+                  name='test_function_1',
+                  response={
+                      'client_secret': 'super-secret-client-secret',
+                      'access_token': 'super-secret-access-token',
+                      'client_id': 'legit-client-id',
+                  },
+              )
+          ),
+      ],
+  )
+
+  trace_tool_call(
+      tool=mock_tool_fixture,
+      args={},
+      function_response_event=mock_event_fixture,
+  )
+
+  recorded_response = next(
+      call_obj.args[1]
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
+      if call_obj.args[0] == 'gcp.vertex.agent.tool_response'
+  )
+  assert 'super-secret-client-secret' not in recorded_response
+  assert 'super-secret-access-token' not in recorded_response
+  # A field the client legitimately needs to see is not collateral damage.
+  assert 'legit-client-id' in recorded_response
+
+
 def _trace_mcp_exchange(**overrides):
   """Reports a plausible MCP exchange, with `overrides` applied."""
   _trace_mcp_http_exchange(**{
@@ -1131,6 +1184,55 @@ def test_trace_merged_tool_calls_omits_event_actions(
   assert 'access-token-value' not in recorded_response
   assert 'refresh-token-value' not in recorded_response
   assert 'merged_details' in recorded_response
+
+
+def test_trace_merged_tool_calls_strips_credential_secrets_from_response(
+    monkeypatch, mock_span_fixture, mock_event_fixture
+):
+  """A credential exchanged via adk_request_credential is redacted.
+
+  Unlike test_trace_merged_tool_calls_omits_event_actions (which covers a
+  credential riding in event.actions.state_delta), this covers the shape a
+  client's *answer* to an adk_request_credential call takes: the exchanged
+  secret lands directly in a function_response.response dict, which is
+  serialized on every merged-tool-call span regardless of the response's
+  name.
+  """
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  mock_event_fixture.content = types.Content(
+      role='user',
+      parts=[
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id='tool_call_id_auth',
+                  name='adk_request_credential',
+                  response={
+                      'client_secret': 'super-secret-client-secret',
+                      'access_token': 'super-secret-access-token',
+                      'client_id': 'legit-client-id',
+                  },
+              )
+          ),
+      ],
+  )
+
+  trace_merged_tool_calls(
+      response_event_id='merged_evt_id_006',
+      function_response_event=mock_event_fixture,
+  )
+
+  recorded_response = next(
+      call_obj.args[1]
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
+      if call_obj.args[0] == 'gcp.vertex.agent.tool_response'
+  )
+  assert 'super-secret-client-secret' not in recorded_response
+  assert 'super-secret-access-token' not in recorded_response
+  # A field the client legitimately needs to see is not collateral damage.
+  assert 'legit-client-id' in recorded_response
 
 
 def test_trace_tool_call_skips_non_recording_span(
