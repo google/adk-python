@@ -1506,6 +1506,110 @@ def test_tool_choice_maps_function_calling_mode(mode, expected):
   assert _tool_choice(config) == expected
 
 
+def test_tool_choice_is_omitted_without_tools():
+  """tool_choice is not sent when there are no tools to choose from."""
+  llm = OpenAIResponsesLlm(model='gpt-5', api_key='k')
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(role='user', parts=[types.Part.from_text(text='Hi')])
+      ],
+      config=types.GenerateContentConfig(
+          tool_config=types.ToolConfig(
+              function_calling_config=types.FunctionCallingConfig(
+                  mode=types.FunctionCallingConfigMode.ANY
+              )
+          )
+      ),
+  )
+
+  kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
+
+  assert 'tool_choice' not in kwargs
+  assert 'tools' not in kwargs
+
+
+def test_tool_choice_applied_when_tools_from_extra_request_args():
+  """tool_choice is resolved even when tools arrive via extra_request_args."""
+  llm = OpenAIResponsesLlm(
+      model='gpt-5',
+      api_key='k',
+      extra_request_args={
+          'tools': [{'type': 'function', 'name': 'a', 'parameters': {}}]
+      },
+  )
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(role='user', parts=[types.Part.from_text(text='Hi')])
+      ],
+      config=types.GenerateContentConfig(
+          tool_config=types.ToolConfig(
+              function_calling_config=types.FunctionCallingConfig(
+                  mode=types.FunctionCallingConfigMode.ANY
+              )
+          )
+      ),
+  )
+
+  kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
+
+  assert kwargs['tools']
+  assert kwargs['tool_choice'] == 'required'
+
+
+def test_tool_choice_applied_when_tools_from_config():
+  """tool_choice is resolved when tools come from config.tools + tool_config."""
+  llm = OpenAIResponsesLlm(model='gpt-5', api_key='k')
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(role='user', parts=[types.Part.from_text(text='Hi')])
+      ],
+      config=types.GenerateContentConfig(
+          tools=[
+              types.Tool(
+                  function_declarations=[
+                      types.FunctionDeclaration(name='a', description='A')
+                  ]
+              )
+          ],
+          tool_config=types.ToolConfig(
+              function_calling_config=types.FunctionCallingConfig(
+                  mode=types.FunctionCallingConfigMode.ANY
+              )
+          ),
+      ),
+  )
+
+  kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
+
+  assert kwargs['tools']
+  assert kwargs['tool_choice'] == 'required'
+
+
+def test_tool_without_function_declarations_is_skipped_with_warning(caplog):
+  """A tool with no function declarations is skipped and logged, not sent."""
+  llm = OpenAIResponsesLlm(model='gpt-5', api_key='k')
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(role='user', parts=[types.Part.from_text(text='Hi')])
+      ],
+      config=types.GenerateContentConfig(
+          tools=[
+              types.Tool(function_declarations=None),
+              types.Tool(
+                  function_declarations=[
+                      types.FunctionDeclaration(name='a', description='A')
+                  ]
+              ),
+          ]
+      ),
+  )
+
+  kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
+
+  assert len(kwargs['tools']) == 1
+  assert 'no function declarations' in caplog.text
+
+
 def test_response_parsing_incomplete_max_tokens_sets_error():
   """An incomplete max-tokens response maps to MAX_TOKENS with an error."""
   response = {

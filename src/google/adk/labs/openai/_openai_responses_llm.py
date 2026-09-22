@@ -512,17 +512,9 @@ def _function_declaration_to_response_tool(
   )
 
 
-def _tool_choice(config: types.GenerateContentConfig) -> str | None:
-  if not config.tool_config or not config.tool_config.function_calling_config:
-    return None
-  mode = config.tool_config.function_calling_config.mode
-  if mode == types.FunctionCallingConfigMode.ANY:
-    return 'required'
-  if mode == types.FunctionCallingConfigMode.NONE:
-    return 'none'
-  if mode == types.FunctionCallingConfigMode.AUTO:
-    return 'auto'
-  return None
+# Function-calling-mode -> tool_choice mapping is shared with the Chat
+# Completions model.
+_tool_choice = _openai_common.tool_choice
 
 
 def _usage_metadata(
@@ -1185,6 +1177,16 @@ class OpenAIResponsesLlm(BaseLlm):
         **extra_args.pop('extra_body', {}),
     }
     kwargs.update(extra_args)
+    # tool_choice is resolved here, after extra_request_args are merged, rather
+    # than in _apply_config: tools may come from config.tools or from
+    # extra_request_args, so resolving off the final kwargs['tools'] applies it
+    # whenever tools are present from either source. It is derived from
+    # config.tool_config; the API rejects a tool_choice with no tools to choose
+    # from.
+    if kwargs.get('tools') and 'tool_choice' not in kwargs:
+      tool_choice = _tool_choice(config)
+      if tool_choice:
+        kwargs['tool_choice'] = tool_choice
     if extra_body:
       kwargs['extra_body'] = extra_body
     return {key: value for key, value in kwargs.items() if value is not None}
@@ -1220,15 +1222,21 @@ class OpenAIResponsesLlm(BaseLlm):
       kwargs['reasoning'] = reasoning
     tools: list[ToolParam] = []
     for tool in config.tools or []:
-      for function_declaration in tool.function_declarations or []:
+      if not tool.function_declarations:
+        logger.warning(
+            'Skipping a tool with no function declarations; only function'
+            ' tools are supported on the Responses API.'
+        )
+        continue
+      for function_declaration in tool.function_declarations:
         tools.append(
             _function_declaration_to_response_tool(function_declaration)
         )
     if tools:
       kwargs['tools'] = tools
-    tool_choice = _tool_choice(config)
-    if tool_choice:
-      kwargs['tool_choice'] = tool_choice
+    # tool_choice is resolved after extra_request_args are merged (see
+    # _get_response_create_kwargs), so it tracks the final tools payload from
+    # either config.tools or extra_request_args rather than being set here.
 
   def _apply_model_options(self, kwargs: dict[str, Any]) -> None:
     kwargs['store'] = self.store

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+from unittest import mock
 
 from google.adk.errors.already_exists_error import AlreadyExistsError
 from google.adk.events.event import Event
@@ -201,6 +202,39 @@ async def test_list_sessions(session_service):
   resp_all = await session_service.list_sessions(app_name="app1")
   session_ids_all = {s.id for s in resp_all.sessions}
   assert session_ids_all == {"s1", "s2", "s3"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "user_id, expected",
+    [
+        ("u1", [("u1", "s1"), ("u1", "s2")]),
+        (None, [("u2", "s0"), ("u1", "s1"), ("u1", "s2"), ("u2", "s1")]),
+    ],
+)
+async def test_list_sessions_ordered_by_activity_with_stable_ties(
+    session_service, user_id, expected
+):
+  """Sessions are oldest first, with ties ordered by user and session id."""
+  with mock.patch(
+      "google.adk.integrations.redis._redis_session_service.time"
+  ) as clock:
+    for owner, session_id, timestamp in (
+        ("u2", "s1", 20.0),
+        ("u1", "s2", 20.0),
+        ("u1", "s1", 20.0),
+        ("u2", "s0", 10.0),
+    ):
+      clock.time.return_value = timestamp
+      await session_service.create_session(
+          app_name="app1", user_id=owner, session_id=session_id
+      )
+
+  response = await session_service.list_sessions(
+      app_name="app1", user_id=user_id
+  )
+
+  assert [(s.user_id, s.id) for s in response.sessions] == expected
 
 
 @pytest.mark.asyncio

@@ -34,7 +34,45 @@ from google.genai import types
 __all__ = [
     "build_api_key",
     "map_finish_reason",
+    "tool_choice",
 ]
+
+
+def tool_choice(
+    config: types.GenerateContentConfig | None,
+) -> str | None:
+  """Maps an ADK function-calling mode to an OpenAI ``tool_choice`` value.
+
+  Mapping:
+
+  * ``ANY`` -> ``"required"`` (the model must call a tool)
+  * ``NONE`` -> ``"none"`` (the model must not call a tool)
+  * ``AUTO`` -> ``"auto"`` (the model decides)
+  * ``VALIDATED``, ``MODE_UNSPECIFIED``, or no config -> ``None`` (no explicit
+    choice; each caller decides the fallback -- the Chat Completions wrapper
+    sends ``"auto"`` when tools are present, the Responses wrapper omits
+    ``tool_choice`` and leaves the provider default)
+
+  ``allowed_function_names`` is not applied: OpenAI's ``tool_choice`` can force a
+  single named function or "any tool", but cannot express a subset allow-list of
+  several functions, so ``ANY`` maps to ``"required"`` and the model may pick any
+  declared tool. Restricting the callable set to a named subset is not
+  supported.
+  """
+  if (
+      not config
+      or not config.tool_config
+      or not config.tool_config.function_calling_config
+  ):
+    return None
+  mode = config.tool_config.function_calling_config.mode
+  if mode == types.FunctionCallingConfigMode.ANY:
+    return "required"
+  if mode == types.FunctionCallingConfigMode.NONE:
+    return "none"
+  if mode == types.FunctionCallingConfigMode.AUTO:
+    return "auto"
+  return None
 
 
 def map_finish_reason(

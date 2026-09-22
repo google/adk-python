@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+import logging
 import os
 from unittest import mock
 
@@ -833,6 +834,108 @@ def test_response_no_content_no_finish_reason_yields_empty_response():
   assert llm_response.error_code is None
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode, expected",
+    [
+        (types.FunctionCallingConfigMode.ANY, "required"),
+        (types.FunctionCallingConfigMode.NONE, "none"),
+        (types.FunctionCallingConfigMode.AUTO, "auto"),
+    ],
+)
+async def test_tool_choice_follows_function_calling_mode(mode, expected):
+  """function_calling_config.mode drives tool_choice for every mode."""
+  with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
+    openai_llm = OpenAILlm(model="gpt-4o")
+    llm_request = LlmRequest(
+        model="gpt-4o",
+        contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+        config=types.GenerateContentConfig(
+            tools=[
+                types.Tool(
+                    function_declarations=[
+                        types.FunctionDeclaration(
+                            name="get_weather",
+                            description="Get weather",
+                            parameters=types.Schema(
+                                type=types.Type.OBJECT,
+                                properties={
+                                    "location": types.Schema(
+                                        type=types.Type.STRING
+                                    )
+                                },
+                            ),
+                        )
+                    ]
+                )
+            ],
+            tool_config=types.ToolConfig(
+                function_calling_config=types.FunctionCallingConfig(mode=mode)
+            ),
+        ),
+    )
+
+    create_kwargs = await _capture_create_kwargs(openai_llm, llm_request)
+
+  assert create_kwargs["tool_choice"] == expected
+
+
+@pytest.mark.asyncio
+async def test_multiple_tool_entries_are_all_declared():
+  """Function declarations across multiple Tool entries are all sent."""
+  with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
+    openai_llm = OpenAILlm(model="gpt-4o")
+    tool_a = types.Tool(
+        function_declarations=[
+            types.FunctionDeclaration(name="a", description="A")
+        ]
+    )
+    tool_b = types.Tool(
+        function_declarations=[
+            types.FunctionDeclaration(name="b", description="B")
+        ]
+    )
+    llm_request = LlmRequest(
+        model="gpt-4o",
+        contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+        config=types.GenerateContentConfig(tools=[tool_a, tool_b]),
+    )
+
+    create_kwargs = await _capture_create_kwargs(openai_llm, llm_request)
+
+  names = [tool["function"]["name"] for tool in create_kwargs["tools"]]
+  assert names == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_tool_without_function_declarations_is_skipped_with_warning(
+    caplog,
+):
+  """A tool with no function declarations is skipped and logged, not sent."""
+  with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
+    openai_llm = OpenAILlm(model="gpt-4o")
+    llm_request = LlmRequest(
+        model="gpt-4o",
+        contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+        config=types.GenerateContentConfig(
+            tools=[
+                types.Tool(function_declarations=None),
+                types.Tool(
+                    function_declarations=[
+                        types.FunctionDeclaration(name="a", description="A")
+                    ]
+                ),
+            ]
+        ),
+    )
+
+    with caplog.at_level(logging.WARNING):
+      create_kwargs = await _capture_create_kwargs(openai_llm, llm_request)
+
+  assert len(create_kwargs["tools"]) == 1
+  assert "no function declarations" in caplog.text
+
+
 def test_map_finish_reason_recognized_values():
   """Recognized OpenAI finish reasons map to specific ADK codes."""
   assert _map_finish_reason("stop") == types.FinishReason.STOP
@@ -853,3 +956,103 @@ def test_map_finish_reason_unknown_is_unspecified():
       _map_finish_reason("some_new_reason")
       == types.FinishReason.FINISH_REASON_UNSPECIFIED
   )
+
+
+async def _capture_create_kwargs(openai_llm, llm_request):
+  """Runs one non-streaming request and returns the create() kwargs sent."""
+  create_kwargs = {}
+
+  async def mock_create(*args, **kwargs):
+    nonlocal create_kwargs
+    create_kwargs = kwargs
+    return _text_completion()
+
+  with mock.patch(
+      "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+  ) as mock_client_class:
+    mock_client = mock.MagicMock()
+    mock_client_class.return_value = mock_client
+    mock_client.chat.completions.create = mock_create
+
+    _ = [resp async for resp in openai_llm.generate_content_async(llm_request)]
+
+  return create_kwargs
+
+
+@pytest.mark.asyncio
+async def test_response_schema_dict_becomes_json_schema_format():
+  """A dict response_schema is sent as a strict json_schema response_format."""
+  with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
+    openai_llm = OpenAILlm(model="gpt-4o")
+    llm_request = LlmRequest(
+        model="gpt-4o",
+        contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+        config=types.GenerateContentConfig(
+            response_schema={
+                "title": "Person",
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+            },
+        ),
+    )
+
+    create_kwargs = await _capture_create_kwargs(openai_llm, llm_request)
+
+  response_format = create_kwargs["response_format"]
+  assert response_format["type"] == "json_schema"
+  assert response_format["json_schema"]["name"] == "Person"
+  assert response_format["json_schema"]["strict"] is True
+  assert "name" in response_format["json_schema"]["schema"]["properties"]
+
+
+@pytest.mark.asyncio
+async def test_response_mime_type_json_becomes_json_object_format():
+  """response_mime_type application/json maps to a json_object format."""
+  with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
+    openai_llm = OpenAILlm(model="gpt-4o")
+    llm_request = LlmRequest(
+        model="gpt-4o",
+        contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+        ),
+    )
+
+    create_kwargs = await _capture_create_kwargs(openai_llm, llm_request)
+
+  assert create_kwargs["response_format"] == {"type": "json_object"}
+
+
+@pytest.mark.asyncio
+async def test_model_function_call_becomes_assistant_tool_calls():
+  """A model-turn function_call part serializes to assistant tool_calls."""
+  with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
+    openai_llm = OpenAILlm(model="gpt-4o")
+    llm_request = LlmRequest(
+        model="gpt-4o",
+        contents=[
+            Content(role="user", parts=[Part.from_text(text="Weather?")]),
+            Content(
+                role="model",
+                parts=[
+                    Part.from_function_call(
+                        name="get_weather", args={"location": "NYC"}
+                    )
+                ],
+            ),
+        ],
+    )
+
+    create_kwargs = await _capture_create_kwargs(openai_llm, llm_request)
+
+  assistant_msgs = [
+      m for m in create_kwargs["messages"] if m.get("role") == "assistant"
+  ]
+  assert len(assistant_msgs) == 1
+  tool_calls = assistant_msgs[0]["tool_calls"]
+  assert len(tool_calls) == 1
+  assert tool_calls[0]["type"] == "function"
+  assert tool_calls[0]["function"]["name"] == "get_weather"
+  assert json.loads(tool_calls[0]["function"]["arguments"]) == {
+      "location": "NYC"
+  }
