@@ -23,6 +23,7 @@ from pathlib import Path
 import shutil
 import sys
 from typing import Any
+from typing import Iterator
 from typing import Literal
 from typing import Mapping
 
@@ -73,6 +74,103 @@ def __getattr__(name: str):
   return attr
 
 
+# Agent config fields whose value names Python code that the agent loader
+# imports and calls.
+_CODE_REFERENCE_KEYS = frozenset({
+    "after_agent_callbacks",
+    "after_model_callbacks",
+    "after_tool_callbacks",
+    "agent_class",
+    "before_agent_callbacks",
+    "before_model_callbacks",
+    "before_tool_callbacks",
+    "code",
+    "input_schema",
+    "model_code",
+    "output_schema",
+    "tools",
+})
+
+# The namespaces the agent loader searches when a reference has no dots.
+_ADK_BUILT_IN_NAMESPACES = ("google.adk.agents.", "google.adk.tools.")
+
+
+def _iter_code_references(value: Any) -> Iterator[str]:
+  """Yields the names a code-reference field carries, whatever its shape."""
+  if isinstance(value, str):
+    yield value
+  elif isinstance(value, list):
+    for item in value:
+      yield from _iter_code_references(item)
+  elif isinstance(value, dict):
+    name = value.get("name")
+    if isinstance(name, str):
+      yield name
+
+
+def _is_adk_built_in(reference: str) -> bool:
+  """Whether a qualified name reaches what an undotted name would reach.
+
+  One segment after the namespace is a name that namespace exports. A deeper
+  path walks into a submodule and can reach code an undotted reference cannot,
+  so it does not count as a built-in.
+
+  Args:
+    reference: A dotted Python name.
+
+  Returns:
+    Whether the reference names an ADK built-in.
+  """
+  for namespace in _ADK_BUILT_IN_NAMESPACES:
+    if reference.startswith(namespace):
+      return "." not in reference[len(namespace) :]
+  return False
+
+
+def _app_name_shadows_module(app_name: str) -> bool:
+  """Whether the app name collides with a module that can be imported."""
+  # "google" is a namespace package rather than a standard library module, so
+  # it has to be named explicitly.
+  return (
+      app_name in sys.builtin_module_names
+      or app_name in sys.stdlib_module_names
+      or app_name == "google"
+  )
+
+
+def _check_code_reference(
+    reference: str, *, app_name: str, filename: str, field_name: str
+) -> None:
+  """Checks that a code reference stays inside the app being edited.
+
+  Args:
+    reference: The name found in the uploaded document.
+    app_name: The app the document belongs to.
+    filename: The uploaded path, used in the error message.
+    field_name: The config field the reference came from.
+
+  Raises:
+    ValueError: If the reference can reach code outside the app.
+  """
+  if "." not in reference:
+    # The loader resolves an undotted name against ADK's own built-ins.
+    return
+  if _is_adk_built_in(reference):
+    return
+  if not reference.startswith(f"{app_name}."):
+    raise ValueError(
+        f"Blocked code reference {reference!r} in {filename!r}. The"
+        f" '{field_name}' field may only reference code under"
+        f" '{app_name}' or an ADK built-in."
+    )
+  if _app_name_shadows_module(app_name):
+    raise ValueError(
+        f"Blocked code reference {reference!r} in {filename!r}. The app name"
+        f" {app_name!r} shadows an importable Python module, so a reference to"
+        " the app cannot be told apart from one that leaves it."
+    )
+
+
 def get_fast_api_app(
     *,
     agents_dir: str,
@@ -88,6 +186,7 @@ def get_fast_api_app(
     a2a: bool = False,
     task_store_uri: str | None = None,
     host: str = "127.0.0.1",
+    bind_host: str | None = None,
     port: int = 8000,
     url_prefix: str | None = None,
     trace_to_cloud: bool = False,
@@ -132,7 +231,11 @@ def get_fast_api_app(
     a2a: Whether to enable Agent-to-Agent (A2A) protocol support.
     task_store_uri: URI for the A2A task store. Uses in-memory task store if
       None. Only used when ``a2a=True``.
-    host: Host address for the server (defaults to 127.0.0.1).
+    host: Host address for the server (defaults to 127.0.0.1). Unused by the
+      returned app; pass ``bind_host`` to guard it.
+    bind_host: The address the caller will bind the returned app to. A loopback
+      value turns on DNS-rebinding protection, which rejects requests addressed
+      to any other host. Leave it None to serve the app yourself without that.
     port: Port number for the server (defaults to 8000).
     url_prefix: Optional prefix for all URL routes.
     trace_to_cloud: Whether to export traces to Google Cloud Trace.
@@ -152,11 +255,11 @@ def get_fast_api_app(
     The configured FastAPI application instance.
   """
 
-  # Enable denylist enforcement for config loads if web UI is enabled.
+  # Enable YAML key denylist enforcement for config loads if web UI is enabled.
   if web:
     from ..agents import config_agent_utils
 
-    config_agent_utils._set_enforce_denylist(True)
+    config_agent_utils._set_enforce_yaml_key_denylist(True)
 
   # Set up eval managers.
   if eval_storage_uri:
@@ -172,6 +275,9 @@ def get_fast_api_app(
   # initialize Agent Loader if not passed as argument
   if agent_loader is None:
     agent_loader = AgentLoader(agents_dir)
+  # Special internal agents back the dev UI only, so they stay unloadable
+  # unless the UI is being served.
+  agent_loader._allow_special_agents = web
 
   # Load services.py from agents_dir for custom service registration.
   load_services_module(agents_dir)
@@ -223,6 +329,9 @@ def get_fast_api_app(
       auto_create_session=auto_create_session,
       trigger_sources=trigger_sources,
   )
+  # The loader flag stops the import; this one turns the rejection into a 403
+  # rather than an uncaught error, and also covers a custom agent_loader.
+  adk_web_server._allow_special_agents = web
 
   # Callbacks & other optional args for when constructing the FastAPI instance
   extra_fast_api_args = {}
@@ -307,6 +416,7 @@ def get_fast_api_app(
       lifespan=lifespan,
       allow_origins=allow_origins,
       otel_to_cloud=otel_to_cloud,
+      bind_host=bind_host,
       **extra_fast_api_args,
   )
 
@@ -344,8 +454,10 @@ def get_fast_api_app(
     # Block any upload that contains an `args` key anywhere in the document.
     _BLOCKED_YAML_KEYS = frozenset({"args"})
 
-    def _check_yaml_for_blocked_keys(content: bytes, filename: str) -> None:
-      """Raise if the YAML document contains any blocked keys."""
+    def _check_uploaded_yaml(
+        content: bytes, *, filename: str, app_name: str
+    ) -> None:
+      """Raise if the YAML would let the loader run code outside the app."""
       import yaml
 
       try:
@@ -362,6 +474,14 @@ def get_fast_api_app(
                   f"The '{key}' field is not allowed in builder uploads "
                   "because it can execute arbitrary code."
               )
+            if key in _CODE_REFERENCE_KEYS:
+              for reference in _iter_code_references(value):
+                _check_code_reference(
+                    reference,
+                    app_name=app_name,
+                    filename=filename,
+                    field_name=key,
+                )
             _walk(value)
         elif isinstance(node, list):
           for item in node:
@@ -527,7 +647,11 @@ def get_fast_api_app(
 
         # Phase 2: validate every file *before* writing anything to disk.
         for rel_path, content in uploads:
-          _check_yaml_for_blocked_keys(content, f"{app_name}/{rel_path}")
+          _check_uploaded_yaml(
+              content,
+              filename=f"{app_name}/{rel_path}",
+              app_name=app_name,
+          )
 
         # Phase 3: write validated files to disk.
         if tmp:

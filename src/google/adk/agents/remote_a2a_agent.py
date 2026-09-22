@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import dataclasses
+import ipaddress
 import json
 import logging
 from pathlib import Path
@@ -76,6 +77,9 @@ from ..events.event import Event
 from ..flows.llm_flows.contents import _is_other_agent_reply
 from ..flows.llm_flows.contents import _present_other_agent_message
 from ..flows.llm_flows.functions import find_matching_function_call
+from ..flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ..flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from ..flows.llm_flows.functions import REQUEST_INPUT_FUNCTION_CALL_NAME
 from .base_agent import BaseAgent
 
 __all__ = [
@@ -90,7 +94,197 @@ __all__ = [
 A2A_METADATA_PREFIX = "a2a:"
 DEFAULT_TIMEOUT = 600.0
 
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
 logger = logging.getLogger("google_adk." + __name__)
+
+
+def _agent_card_rpc_urls(card: AgentCard) -> list[str]:
+  """Returns every URL on a card that a client may send RPC traffic to.
+
+  The client factory negotiates the endpoint across the card's whole interface
+  list, so the endpoint it picks is not necessarily the card's top-level
+  ``url``. Callers that need to constrain the destination must consider all of
+  them: the top-level ``url`` followed by every
+  ``additional_interfaces[i].url``, in card order.
+  """
+  candidates = [card.url]
+  candidates.extend(iface.url for iface in card.additional_interfaces or [])
+  urls: list[str] = []
+  for url in candidates:
+    if url and url not in urls:
+      urls.append(url)
+  return urls
+
+
+def _is_loopback_host(hostname: Optional[str]) -> bool:
+  """Returns whether a hostname names the local machine.
+
+  Covers ``localhost`` and the reserved ``*.localhost`` names as well as any
+  literal loopback address, so the local-development pattern the A2A helpers
+  emit -- a plain-http card served from ``localhost`` -- keeps working.
+  """
+  if not hostname:
+    return False
+  host = hostname.strip("[]").lower()
+  if host == "localhost" or host.endswith(".localhost"):
+    return True
+  try:
+    return ipaddress.ip_address(host).is_loopback
+  except ValueError:
+    return False
+
+
+def _url_origin(url: str) -> tuple[str, str, Optional[int]]:
+  """Returns the ``(scheme, host, port)`` origin triple for a URL.
+
+  Raises:
+    ValueError: If the URL carries a malformed port.
+  """
+  parsed = urlparse(url)
+  scheme = parsed.scheme.lower()
+  return (
+      scheme,
+      (parsed.hostname or "").lower(),
+      (parsed.port or _DEFAULT_PORTS.get(scheme)),
+  )
+
+
+# Function call names whose pause is resolved locally (ADK request-* tools or a
+# workflow HITL node); their response is flattened to text before forwarding.
+_HUMAN_INPUT_FUNCTION_CALL_NAMES = frozenset({
+    MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT,
+    REQUEST_INPUT_FUNCTION_CALL_NAME,
+    REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+    REQUEST_EUC_FUNCTION_CALL_NAME,
+})
+
+# The mock call name is deliberately absent: it stands in for both
+# input-required and auth-required remote tasks, so it legitimately carries
+# ordinary user text. A credential arriving under it is caught by payload
+# shape instead.
+_CREDENTIAL_FUNCTION_CALL_NAMES = frozenset({
+    REQUEST_EUC_FUNCTION_CALL_NAME,
+})
+
+_RESULT_KEY = "result"
+
+# Top-level keys of a serialized AuthConfig, the shape an adk_request_credential
+# response carries (see auth.auth_preprocessor); snake_case and camelCase forms.
+_CREDENTIAL_PAYLOAD_KEYS = frozenset({
+    "auth_scheme",
+    "authScheme",
+    "exchanged_auth_credential",
+    "exchangedAuthCredential",
+    "raw_auth_credential",
+    "rawAuthCredential",
+})
+
+
+def _payload_is_auth_config(payload: Any) -> bool:
+  """Whether a payload looks like a serialized AuthConfig (fail closed)."""
+  candidate = payload
+  if isinstance(payload, dict) and len(payload) == 1 and _RESULT_KEY in payload:
+    candidate = payload[_RESULT_KEY]
+  return isinstance(candidate, dict) and any(
+      key in candidate for key in _CREDENTIAL_PAYLOAD_KEYS
+  )
+
+
+def _is_credential_function_response(
+    function_response: genai_types.FunctionResponse,
+    matched_call_names: Optional[set[str]] = None,
+) -> bool:
+  """Whether a function_response carries credential material (fail closed)."""
+  if matched_call_names and not matched_call_names.isdisjoint(
+      _CREDENTIAL_FUNCTION_CALL_NAMES
+  ):
+    return True
+  if function_response.name in _CREDENTIAL_FUNCTION_CALL_NAMES:
+    return True
+  return _payload_is_auth_config(function_response.response)
+
+
+def _render_user_function_response(
+    response: Optional[dict[str, Any]],
+) -> Optional[str]:
+  """Renders a human-input response payload as text, or None if empty."""
+  # ADK's mock path wraps the answer as {"result": <text>}; workflow producers
+  # send the resolved parameters directly (e.g. {"company_name": "Okta"}).
+  if not response:
+    return None
+  if (
+      isinstance(response, dict)
+      and len(response) == 1
+      and _RESULT_KEY in response
+  ):
+    value = response[_RESULT_KEY]
+    return None if value is None else str(value)
+  return json.dumps(response, default=str)
+
+
+def _sanitize_user_function_response_event(
+    event: Event,
+    trusted_call_names_by_id: dict[Optional[str], set[str]],
+    id_less_call_is_ambiguous: bool,
+) -> Event:
+  """Returns a copy of ``event`` with its parts sanitized for forwarding."""
+  if event.content is None:
+    return event
+  new_event: Event = event.model_copy(deep=True)
+  # ``event.content`` is non-None (checked above) and ``model_copy`` preserves
+  # it; bind a local so the checker keeps it narrowed after ``.parts`` is set.
+  new_content = new_event.content
+  assert new_content is not None
+  parts = new_content.parts or []
+
+  def _is_human_input(fr: genai_types.FunctionResponse) -> bool:
+    names = trusted_call_names_by_id.get(fr.id)
+    if not names or names.isdisjoint(_HUMAN_INPUT_FUNCTION_CALL_NAMES):
+      return False
+    # An id-less response with an unknown name can't be classified by id when a
+    # call the rewrite must not flatten shares the id-less bucket.
+    if (
+        id_less_call_is_ambiguous
+        and fr.id is None
+        and fr.name not in _HUMAN_INPUT_FUNCTION_CALL_NAMES
+    ):
+      return False
+    return True
+
+  def _is_credential(fr: genai_types.FunctionResponse) -> bool:
+    return _is_credential_function_response(
+        fr, trusted_call_names_by_id.get(fr.id)
+    )
+
+  # If any function_response is kept as data, the message must stay a resume: no
+  # text (including a flattened answer) can ride alongside it.
+  preserve_as_resume = any(
+      p.function_response is not None
+      and not _is_credential(p.function_response)
+      and not _is_human_input(p.function_response)
+      for p in parts
+  )
+
+  new_parts: list[genai_types.Part] = []
+  for part in parts:
+    fr = part.function_response
+    if fr is None:
+      if preserve_as_resume and part.text is not None:
+        continue
+      new_parts.append(part)
+      continue
+    if _is_credential(fr):
+      continue
+    if not _is_human_input(fr) or preserve_as_resume:
+      new_parts.append(part)
+      continue
+    text_value = _render_user_function_response(fr.response)
+    if text_value is not None:
+      new_parts.append(genai_types.Part(text=text_value))
+
+  new_content.parts = new_parts
+  return new_event
 
 
 @a2a_experimental
@@ -326,6 +520,54 @@ class RemoteA2aAgent(BaseAgent):
           f"Invalid RPC URL in agent card: {agent_card.url}, error: {e}"
       ) from e
 
+    self._validate_card_rpc_targets(agent_card)
+
+  def _validate_card_rpc_targets(self, agent_card: AgentCard) -> None:
+    """Constrains where a card fetched over the network may aim RPC traffic.
+
+    Every URL the card offers is checked, not only the one this ADK version
+    would select, because the client factory negotiates the endpoint across
+    the card's whole interface list. Each must be https and share the origin
+    the card was fetched from; plain http stays allowed on a loopback host,
+    the local-development shape the A2A helpers emit.
+
+    A card passed in directly or read from a local file did not come off the
+    network here, so its target is left to the caller.
+    """
+    source = self._agent_card_source
+    if not source or not source.startswith(("http://", "https://")):
+      return
+
+    try:
+      source_origin = _url_origin(source)
+    except ValueError as e:
+      raise AgentCardResolutionError(
+          f"Invalid agent card source URL: {source}, error: {e}"
+      ) from e
+
+    for card_url in _agent_card_rpc_urls(agent_card):
+      parsed_card = urlparse(card_url)
+      if parsed_card.scheme.lower() != "https" and not _is_loopback_host(
+          parsed_card.hostname
+      ):
+        raise AgentCardResolutionError(
+            "Agent card RPC URL must use https, or http on a loopback host:"
+            f" {card_url}"
+        )
+
+      try:
+        card_origin = _url_origin(card_url)
+      except ValueError as e:
+        raise AgentCardResolutionError(
+            f"Invalid RPC URL in agent card: {card_url}, error: {e}"
+        ) from e
+
+      if card_origin != source_origin:
+        raise AgentCardResolutionError(
+            "Agent card RPC URL must have the same origin as the location the"
+            f" card was fetched from ({source}): {card_url}"
+        )
+
   async def _ensure_resolved(self) -> None:
     """Ensures agent card is resolved, RPC URL is determined, and A2A client is initialized."""
     if self._is_resolved and self._a2a_client:
@@ -379,40 +621,30 @@ class RemoteA2aAgent(BaseAgent):
       return None
 
     event = ctx.session.events[-1]
-    # If the user function_response replies to a function_call for non-ADK
-    # input-required events (fc.name = MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT),
-    # the function_response part is replaced with text extracted from the
-    # function response.
-    # The implementation is based on the assumption that the user function_response
-    # event will contain a function_response with the name
-    # MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT and the response will
-    # contain a "result" field with the user input as a string text.
-    mock_function_call = [
-        fc
-        for fc in function_call_event.get_function_calls()
-        if fc.name == MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
-    ]
-    if mock_function_call:
-      new_parts = []
-      for function_response in event.get_function_responses():
-        if (
-            function_response.name == MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
-            and function_response.response
-            and "result" in function_response.response
-        ):
-          text_value = function_response.response.get("result")
-          new_parts.append(
-              genai_types.Part(
-                  text=str(text_value),
-              )
-          )
-      new_event = event.model_copy(deep=True)
-      new_event.content.parts = new_parts
-      event = new_event
+
+    # Map every pending call to its id by the trusted function CALL name so
+    # credential matching does not depend on the human-input set.
+    trusted_call_names_by_id: dict[Optional[str], set[str]] = {}
+    id_less_call_is_ambiguous = False
+    for fc in function_call_event.get_function_calls():
+      if fc.name is None:
+        continue
+      trusted_call_names_by_id.setdefault(fc.id, set()).add(fc.name)
+      if fc.id is None and fc.name not in _HUMAN_INPUT_FUNCTION_CALL_NAMES:
+        id_less_call_is_ambiguous = True
+
+    event = _sanitize_user_function_response_event(
+        event, trusted_call_names_by_id, id_less_call_is_ambiguous
+    )
 
     a2a_message = convert_event_to_a2a_message(
         event, ctx, Role.user, self._genai_part_converter
     )
+    # All parts dropped (e.g. a credential-only resume): the caller rebuilds
+    # from history (also dropping credentials); None avoids a task_id crash.
+    if a2a_message is None:
+      return None
+
     if function_call_event.custom_metadata:
       metadata = function_call_event.custom_metadata
       a2a_message.task_id = metadata.get(A2A_METADATA_PREFIX + "task_id")
@@ -421,7 +653,7 @@ class RemoteA2aAgent(BaseAgent):
     return a2a_message
 
   def _is_remote_response(self, event: Event) -> bool:
-    return (
+    return bool(
         event.author == self.name
         and event.custom_metadata
         and event.custom_metadata.get(A2A_METADATA_PREFIX + "response", False)
@@ -468,6 +700,15 @@ class RemoteA2aAgent(BaseAgent):
         continue
 
       for part in event.content.parts:
+        if part.function_response is not None and (
+            _is_credential_function_response(part.function_response)
+        ):
+          # Never forward credential material (an AuthConfig envelope with
+          # access tokens / client secrets) to the remote peer, even when
+          # reconstructing the request from raw session history. This closes the
+          # path where a dropped credential resume falls back to here and the
+          # untouched function_response would otherwise be re-serialized.
+          continue
         converted_parts = self._genai_part_converter(part)
         if not isinstance(converted_parts, list):
           converted_parts = [converted_parts] if converted_parts else []

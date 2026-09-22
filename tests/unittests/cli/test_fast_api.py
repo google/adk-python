@@ -45,6 +45,7 @@ from google.adk.plugins.bigquery_agent_analytics_plugin import BigQueryAgentAnal
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
+from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.genai import types
 from pydantic import BaseModel
 import pytest
@@ -55,6 +56,14 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger("google_adk." + __name__)
+
+# An app told it binds 127.0.0.1 rejects requests addressed to any other host,
+# so its client cannot use TestClient's default "http://testserver".
+_LOOPBACK_BASE_URL = "http://127.0.0.1:8000"
+
+# What a browser addresses when a hosted dev environment forwards its port to a
+# loopback bind.
+_PROXY_ORIGIN = "https://8000-my-workstation.example.dev"
 
 
 # Here we create a dummy agent module that get_fast_api_app expects
@@ -644,6 +653,333 @@ bigquery_agent_analytics:
     assert getattr(runner.app, "_is_visual_builder_app", False) is True
 
 
+def _create_adk_web_server(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Helper to build an AdkWebServer backed by the mock service fixtures."""
+  from google.adk.cli.adk_web_server import AdkWebServer
+
+  return AdkWebServer(
+      agent_loader=mock_agent_loader,
+      session_service=mock_session_service,
+      memory_service=mock_memory_service,
+      artifact_service=mock_artifact_service,
+      credential_service=MagicMock(),
+      eval_sets_manager=mock_eval_sets_manager,
+      eval_set_results_manager=mock_eval_set_results_manager,
+      agents_dir=str(tmp_path),
+  )
+
+
+def test_get_runner_async_rejects_internal_special_agent_name(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  adk_web_server = _create_adk_web_server(
+      tmp_path,
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+
+  from fastapi import HTTPException
+
+  with pytest.raises(HTTPException) as exc_info:
+    asyncio.run(
+        adk_web_server.get_runner_async("__adk_agent_builder_assistant")
+    )
+
+  assert exc_info.value.status_code == 403
+  assert (
+      "Access to internal special agents is disabled in API server mode"
+      in exc_info.value.detail
+  )
+
+
+def test_get_runner_async_rejects_special_agent_already_in_the_cache(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """A cached runner must not let a refused name bypass the 403."""
+  adk_web_server = _create_adk_web_server(
+      tmp_path,
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+  adk_web_server.runner_dict["__adk_agent_builder_assistant"] = MagicMock()
+
+  from fastapi import HTTPException
+
+  with pytest.raises(HTTPException) as exc_info:
+    asyncio.run(
+        adk_web_server.get_runner_async("__adk_agent_builder_assistant")
+    )
+
+  assert exc_info.value.status_code == 403
+
+
+def test_get_runner_async_accepts_internal_special_agent_name_when_enabled(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  adk_web_server = _create_adk_web_server(
+      tmp_path,
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+  adk_web_server._allow_special_agents = True
+
+  runner = asyncio.run(
+      adk_web_server.get_runner_async("__adk_agent_builder_assistant")
+  )
+
+  assert runner.app.name == "__adk_agent_builder_assistant"
+
+
+def test_app_info_rejects_internal_special_agent_name_without_web(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      agents_dir=str(tmp_path),
+      web=False,
+  )
+
+  response = client.get("/apps/__adk_agent_builder_assistant/app-info")
+
+  assert response.status_code == 403
+  assert (
+      "Access to internal special agents is disabled in API server mode"
+      in response.json()["detail"]
+  )
+
+
+def test_app_info_allows_internal_special_agent_name_with_web(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  special_agent = LlmAgent(name="agent_builder_assistant")
+  mock_agent_loader.load_agent = lambda app_name: special_agent
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      agents_dir=str(tmp_path),
+      web=True,
+  )
+
+  response = client.get("/apps/__adk_agent_builder_assistant/app-info")
+
+  assert response.status_code == 200
+  assert response.json()["rootAgentName"] == "agent_builder_assistant"
+
+
+def test_agent_loader_allows_special_agents_only_when_web_is_enabled(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  def build(web: bool) -> None:
+    _create_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+        agents_dir=str(tmp_path),
+        web=web,
+    )
+
+  build(web=False)
+  assert mock_agent_loader._allow_special_agents is False
+
+  build(web=True)
+  assert mock_agent_loader._allow_special_agents is True
+
+
+_SPECIAL_APP_NAME = "__adk_agent_builder_assistant"
+
+
+class _FlagIgnoringLoader:
+  """A caller-supplied loader that does not honour _allow_special_agents."""
+
+  def __init__(self):
+    self.requested = []
+
+  def load_agent(self, app_name):
+    self.requested.append(app_name)
+    return DummyAgent(name="agent_builder_assistant")
+
+  def list_agents(self):
+    return []
+
+
+def _create_api_server_client(loader, **overrides):
+  """Builds a TestClient over an AdkWebServer left in API server mode."""
+  from google.adk.cli.adk_web_server import AdkWebServer
+
+  kwargs = dict(
+      agent_loader=loader,
+      session_service=InMemorySessionService(),
+      memory_service=MagicMock(),
+      artifact_service=MagicMock(),
+      credential_service=MagicMock(),
+      eval_sets_manager=InMemoryEvalSetsManager(),
+      eval_set_results_manager=MagicMock(),
+      agents_dir=".",
+  )
+  kwargs.update(overrides)
+  adk_web_server = AdkWebServer(**kwargs)
+  fast_api_app = adk_web_server.get_fast_api_app(
+      setup_observer=lambda _observer, _server: None,
+      tear_down_observer=lambda _observer, _server: None,
+  )
+  return TestClient(fast_api_app)
+
+
+def test_dev_graph_rejects_internal_special_agent_name():
+  loader = _FlagIgnoringLoader()
+  client = _create_api_server_client(loader)
+
+  response = client.get(f"/dev/{_SPECIAL_APP_NAME}/graph")
+
+  assert response.status_code == 403
+  assert loader.requested == []
+
+
+def test_run_eval_rejects_internal_special_agent_name():
+  loader = _FlagIgnoringLoader()
+  eval_sets_manager = InMemoryEvalSetsManager()
+  eval_sets_manager.create_eval_set(_SPECIAL_APP_NAME, "eval_set_id")
+  client = _create_api_server_client(
+      loader, eval_sets_manager=eval_sets_manager
+  )
+
+  response = client.post(
+      f"/apps/{_SPECIAL_APP_NAME}/eval-sets/eval_set_id/run",
+      json={"evalMetrics": []},
+  )
+
+  assert response.status_code == 403
+  assert loader.requested == []
+
+
+def test_add_session_to_eval_set_rejects_internal_special_agent_name():
+  loader = _FlagIgnoringLoader()
+  session_service = InMemorySessionService()
+  asyncio.run(
+      session_service.create_session(
+          app_name=_SPECIAL_APP_NAME, user_id="user", session_id="session_id"
+      )
+  )
+  eval_sets_manager = InMemoryEvalSetsManager()
+  eval_sets_manager.create_eval_set(_SPECIAL_APP_NAME, "eval_set_id")
+  client = _create_api_server_client(
+      loader,
+      session_service=session_service,
+      eval_sets_manager=eval_sets_manager,
+  )
+
+  response = client.post(
+      f"/apps/{_SPECIAL_APP_NAME}/eval_sets/eval_set_id/add_session",
+      json={"evalId": "eval_id", "sessionId": "session_id", "userId": "user"},
+  )
+
+  assert response.status_code == 403
+  assert loader.requested == []
+
+
+def test_event_graph_rejects_internal_special_agent_name():
+  loader = _FlagIgnoringLoader()
+  session_service = AsyncMock()
+  session = Session(
+      id="session_id",
+      app_name=_SPECIAL_APP_NAME,
+      user_id="user",
+      state={},
+      events=[Event(author="dummy_agent")],
+  )
+  session_service.get_session.return_value = session
+  client = _create_api_server_client(loader, session_service=session_service)
+
+  response = client.get(
+      f"/apps/{_SPECIAL_APP_NAME}/users/user/sessions/session_id/events/"
+      f"{session.events[0].id}/graph"
+  )
+
+  assert response.status_code == 403
+  assert loader.requested == []
+
+
+def test_dev_graph_rejects_special_agent_before_the_loader_raises(tmp_path):
+  """The default loader's PermissionError must never reach the client."""
+  from google.adk.cli.utils.agent_loader import AgentLoader
+
+  client = _create_api_server_client(
+      AgentLoader(str(tmp_path)), agents_dir=str(tmp_path)
+  )
+
+  response = client.get(f"/dev/{_SPECIAL_APP_NAME}/graph")
+
+  assert response.status_code == 403
+
+
 @pytest.fixture
 def test_app(
     mock_session_service,
@@ -723,9 +1059,10 @@ def builder_test_client(
         allow_origins=None,
         a2a=False,
         host="127.0.0.1",
+        bind_host="127.0.0.1",
         port=8000,
     )
-    return TestClient(app)
+    return TestClient(app, base_url=_LOOPBACK_BASE_URL)
 
 
 @pytest.fixture
@@ -1165,6 +1502,189 @@ def test_create_session_without_id(test_app, test_session_info):
   assert data["appName"] == test_session_info["app_name"]
   assert data["userId"] == test_session_info["user_id"]
   logger.info(f"Created session with generated ID: {data['id']}")
+
+
+def test_create_session_accepts_initial_text_events(
+    test_app, test_session_info
+):
+  """Test initializing a session with text-only history."""
+  url = f"/apps/{test_session_info['app_name']}/users/{test_session_info['user_id']}/sessions"
+  event = Event(
+      author="user",
+      invocation_id="init-invocation",
+      content=types.Content(
+          role="user", parts=[types.Part.from_text(text="hello")]
+      ),
+  )
+  response = test_app.post(
+      url,
+      json={
+          "events": [
+              event.model_dump(mode="json", by_alias=True, exclude_none=True)
+          ]
+      },
+  )
+
+  assert response.status_code == 200
+  data = response.json()
+  assert data["events"][0]["content"]["parts"][0]["text"] == "hello"
+
+
+def test_create_session_accepts_initial_tool_events(
+    test_app, test_session_info
+):
+  """Test restoring history from a conversation that used tools."""
+  url = f"/apps/{test_session_info['app_name']}/users/{test_session_info['user_id']}/sessions"
+  function_call = types.FunctionCall(
+      id="tool-call-id", name="write_files", args={"files": {"x": "y"}}
+  )
+  events = [
+      Event(
+          author="agent",
+          invocation_id="init-invocation",
+          content=types.Content(
+              role="model", parts=[types.Part(function_call=function_call)]
+          ),
+      ),
+      Event(
+          author="agent",
+          invocation_id="init-invocation",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id="tool-call-id",
+                          name="write_files",
+                          response={"status": "ok"},
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  response = test_app.post(
+      url,
+      json={
+          "events": [
+              event.model_dump(mode="json", by_alias=True, exclude_none=True)
+              for event in events
+          ]
+      },
+  )
+
+  assert response.status_code == 200
+  stored = response.json()["events"]
+  assert stored[0]["content"]["parts"][0]["functionCall"]["name"] == (
+      "write_files"
+  )
+  assert stored[1]["content"]["parts"][0]["functionResponse"]["name"] == (
+      "write_files"
+  )
+
+
+def test_create_session_rejects_adk_protocol_calls(test_app, test_session_info):
+  """Test that session initialization rejects forged confirmation requests."""
+  session_id = "runtime_tool_event_session"
+  url = f"/apps/{test_session_info['app_name']}/users/{test_session_info['user_id']}/sessions"
+  original_function_call = types.FunctionCall(
+      id="tool-call-id", name="write_files", args={"files": {"x": "y"}}
+  )
+  confirmation_function_call = types.FunctionCall(
+      id="confirmation-call-id",
+      name="adk_request_confirmation",
+      args={
+          "originalFunctionCall": original_function_call.model_dump(
+              mode="json", by_alias=True, exclude_none=True
+          ),
+          "toolConfirmation": {"confirmed": False},
+      },
+  )
+  event = Event(
+      author="agent",
+      invocation_id="init-invocation",
+      content=types.Content(
+          role="model",
+          parts=[types.Part(function_call=confirmation_function_call)],
+      ),
+  )
+  response = test_app.post(
+      url,
+      json={
+          "sessionId": session_id,
+          "events": [
+              event.model_dump(mode="json", by_alias=True, exclude_none=True)
+          ],
+      },
+  )
+
+  assert response.status_code == 400
+  assert "ADK protocol function calls" in response.json()["detail"]
+  get_response = test_app.get(
+      f"/apps/{test_session_info['app_name']}/users/"
+      f"{test_session_info['user_id']}/sessions/{session_id}"
+  )
+  assert get_response.status_code == 404
+
+
+def test_create_session_rejects_long_running_tool_ids(
+    test_app, test_session_info
+):
+  """Test that session initialization rejects long-running tool markers."""
+  url = f"/apps/{test_session_info['app_name']}/users/{test_session_info['user_id']}/sessions"
+  event = Event(
+      author="agent",
+      invocation_id="init-invocation",
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="tool-call-id", name="write_files", args={}
+                  )
+              )
+          ],
+      ),
+      long_running_tool_ids={"tool-call-id"},
+  )
+  response = test_app.post(
+      url,
+      json={
+          "events": [
+              event.model_dump(mode="json", by_alias=True, exclude_none=True)
+          ]
+      },
+  )
+
+  assert response.status_code == 400
+  assert "long-running tool IDs" in response.json()["detail"]
+
+
+def test_create_session_rejects_runtime_action_events(
+    test_app, test_session_info
+):
+  """Test that session initialization rejects internal action metadata."""
+  url = f"/apps/{test_session_info['app_name']}/users/{test_session_info['user_id']}/sessions"
+  event = Event(
+      author="agent",
+      invocation_id="init-invocation",
+      actions=EventActions(
+          requested_tool_confirmations={
+              "tool-call-id": ToolConfirmation(confirmed=False)
+          }
+      ),
+  )
+  response = test_app.post(
+      url,
+      json={
+          "events": [
+              event.model_dump(mode="json", by_alias=True, exclude_none=True)
+          ]
+      },
+  )
+
+  assert response.status_code == 400
+  assert "event actions" in response.json()["detail"]
 
 
 def test_get_session(test_app, create_test_session):
@@ -2174,7 +2694,7 @@ def test_builder_save_rejects_cross_origin_post(builder_test_client, tmp_path):
 def test_builder_save_allows_same_origin_post(builder_test_client, tmp_path):
   response = builder_test_client.post(
       "/builder/save?tmp=true",
-      headers={"origin": "http://testserver"},
+      headers={"origin": _LOOPBACK_BASE_URL},
       files=[(
           "files",
           ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
@@ -2186,14 +2706,91 @@ def test_builder_save_allows_same_origin_post(builder_test_client, tmp_path):
   assert (tmp_path / "app" / "tmp" / "app" / "root_agent.yaml").is_file()
 
 
-def test_builder_get_allows_cross_origin_get(builder_test_client):
+def test_builder_get_rejects_cross_origin_get(builder_test_client):
+  """Reads expose agent config and session data, so they are guarded too."""
   response = builder_test_client.get(
       "/builder/app/missing?tmp=true",
       headers={"origin": "https://evil.com"},
   )
 
+  assert response.status_code == 403
+  assert response.text == "Forbidden: origin not allowed"
+
+
+def test_builder_get_allows_same_origin_get(builder_test_client):
+  """The dev UI reads its own agent config from the same origin."""
+  response = builder_test_client.get(
+      "/builder/app/missing?tmp=true",
+      headers={"origin": _LOOPBACK_BASE_URL},
+  )
+
   assert response.status_code == 200
-  assert response.text == ""
+  assert not response.text
+
+
+def test_builder_get_allows_request_without_origin(builder_test_client):
+  """Browsers omit Origin on same-origin reads, and CLI clients never send it."""
+  response = builder_test_client.get("/builder/app/missing?tmp=true")
+
+  assert response.status_code == 200
+  assert not response.text
+
+
+def test_proxied_host_named_in_allow_origins_is_served(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """A hosted dev environment forwards the browser's own hostname in Host.
+
+  The server still binds loopback there, so the page it serves is reachable
+  only by naming that hostname in allow_origins.
+  """
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      allow_origins=[_PROXY_ORIGIN],
+      bind_host="127.0.0.1",
+  )
+
+  assert client.get(f"{_PROXY_ORIGIN}/health").status_code == 200
+  # The index page is behind the same middleware, so it would 403 too, and the
+  # dev UI would not load at all.
+  index = client.get(f"{_PROXY_ORIGIN}/", follow_redirects=False)
+  assert index.status_code == 307
+
+
+def test_proxied_host_absent_from_allow_origins_is_rejected(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Nothing distinguishes an unnamed proxy hostname from a rebound one."""
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      allow_origins=None,
+      bind_host="127.0.0.1",
+  )
+
+  response = client.get(f"{_PROXY_ORIGIN}/health")
+
+  assert response.status_code == 403
+  assert response.text == "Forbidden: host not allowed"
 
 
 def test_builder_cancel_deletes_tmp_idempotent(builder_test_client, tmp_path):
@@ -2351,6 +2948,127 @@ tools:
   )
   assert response.status_code == 400
   assert "args" in response.json()["detail"]
+
+
+def _save_builder_yaml(client, content, *, app_name="app"):
+  """POST YAML to the builder save endpoint for the given app."""
+  return client.post(
+      "/builder/save?tmp=true",
+      files=[(
+          "files",
+          (f"{app_name}/root_agent.yaml", content, "application/x-yaml"),
+      )],
+  )
+
+
+def test_builder_save_rejects_external_tool_reference(
+    builder_test_client, tmp_path
+):
+  """A tool naming code outside the app is rejected."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\ntools:\n  - name: os.system\n",
+  )
+  assert response.status_code == 400
+  assert "os.system" in response.json()["detail"]
+  assert not (tmp_path / "app" / "tmp" / "app" / "root_agent.yaml").exists()
+
+
+def test_builder_save_allows_project_tool_reference(builder_test_client):
+  """A tool under the app being edited is allowed."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\ntools:\n  - name: app.tools.search\n",
+  )
+  assert response.status_code == 200
+
+
+def test_builder_save_allows_built_in_tool_short_name(builder_test_client):
+  """An undotted tool name still resolves against ADK's own built-ins."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\ntools:\n  - name: google_search\n",
+  )
+  assert response.status_code == 200
+
+
+def test_builder_save_allows_built_in_agent_class(builder_test_client):
+  """A qualified ADK agent class is allowed."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"agent_class: google.adk.agents.LlmAgent\nname: my_agent\n",
+  )
+  assert response.status_code == 200
+
+
+def test_builder_save_rejects_adk_submodule_reference(builder_test_client):
+  """An ADK path reaching past the exported built-ins is rejected."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\ntools:\n"
+      b"  - name: google.adk.tools.bash_tool.BashTool\n",
+  )
+  assert response.status_code == 400
+  assert "BashTool" in response.json()["detail"]
+
+
+def test_builder_save_rejects_external_callback_reference(builder_test_client):
+  """A callback naming code outside the app is rejected."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\nbefore_agent_callbacks:\n  - name: os.system\n",
+  )
+  assert response.status_code == 400
+  assert "before_agent_callbacks" in response.json()["detail"]
+
+
+def test_builder_save_rejects_external_sub_agent_code(builder_test_client):
+  """A sub-agent naming code outside the app is rejected."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\nsub_agents:\n  - code: other_package.agent\n",
+  )
+  assert response.status_code == 400
+  assert "other_package.agent" in response.json()["detail"]
+
+
+def test_builder_save_rejects_external_schema_reference(builder_test_client):
+  """A schema given as a bare string is validated like any other reference."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\ninput_schema: os.path\n",
+  )
+  assert response.status_code == 400
+  assert "input_schema" in response.json()["detail"]
+
+
+def test_builder_save_rejects_reference_when_app_name_shadows_module(
+    builder_test_client,
+):
+  """An app named after a real module cannot vouch for its own references."""
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\ntools:\n  - name: os.system\n",
+      app_name="os",
+  )
+  assert response.status_code == 400
+  assert "shadows" in response.json()["detail"]
+
+
+def test_builder_save_covers_every_code_config_field(builder_test_client):
+  """Every config field holding a CodeConfig is checked on upload."""
+  code_config_fields = set()
+  for agent in (BaseAgent, LlmAgent):
+    for name, field in agent.config_type.model_fields.items():
+      if "CodeConfig" in str(field.annotation):
+        code_config_fields.add(name)
+  assert code_config_fields, "expected agent configs to declare CodeConfig"
+
+  for field_name in sorted(code_config_fields):
+    content = f"name: my_agent\n{field_name}:\n  name: os.system\n"
+    response = _save_builder_yaml(builder_test_client, content.encode())
+    assert response.status_code == 400, field_name
+    assert field_name in response.json()["detail"]
 
 
 def test_builder_get_rejects_non_yaml_file_paths(builder_test_client, tmp_path):

@@ -803,6 +803,123 @@ async def test_trace_send_data_disabling_request_response_content(
 
 
 @pytest.mark.asyncio
+async def test_trace_call_llm_summarizes_response_inline_data(
+    monkeypatch, mock_span_fixture
+):
+  """Inline binary data in the response is described, not copied to the span."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest(
+      model='gemini-pro', config=types.GenerateContentConfig()
+  )
+  llm_response = LlmResponse(
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(text='hi'),
+              types.Part.from_bytes(data=b'test_data', mime_type='audio/pcm'),
+          ],
+      )
+  )
+
+  trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
+
+  llm_response_json = next(
+      call_obj.args[1]
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
+      if call_obj.args[0] == 'gcp.vertex.agent.llm_response'
+  )
+
+  # b'test_data' base64-encodes to 'dGVzdF9kYXRh'.
+  assert 'dGVzdF9kYXRh' not in llm_response_json
+  assert 'hi' in llm_response_json
+  assert '<inline_data: audio/pcm, 9 bytes>' in llm_response_json
+
+
+@pytest.mark.asyncio
+async def test_trace_send_data_summarizes_inline_data(
+    monkeypatch, mock_span_fixture
+):
+  """Inline binary data is described on the span, never copied onto it."""
+  monkeypatch.setenv(ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS, 'true')
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(agent)
+
+  trace_send_data(
+      invocation_context=invocation_context,
+      event_id='test_event_id',
+      data=[
+          types.Content(
+              role='user',
+              parts=[
+                  types.Part(text='hi'),
+                  types.Part.from_bytes(
+                      data=b'test_data', mime_type='audio/pcm'
+                  ),
+              ],
+          )
+      ],
+  )
+
+  data_json = next(
+      call_obj.args[1]
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
+      if call_obj.args[0] == 'gcp.vertex.agent.data'
+  )
+
+  # b'test_data' base64-encodes to 'dGVzdF9kYXRh'.
+  assert 'dGVzdF9kYXRh' not in data_json
+  assert 'hi' in data_json
+  assert '<inline_data: audio/pcm, 9 bytes>' in data_json
+
+
+@pytest.mark.asyncio
+async def test_trace_send_data_summarizes_blob_without_mime_type(
+    monkeypatch, mock_span_fixture
+):
+  """A blob is described even when its mime type and bytes are unset.
+
+  The parts-less content in the same call pins that summarizing tolerates
+  ``Content.parts`` being unset.
+  """
+  monkeypatch.setenv(ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS, 'true')
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(agent)
+
+  trace_send_data(
+      invocation_context=invocation_context,
+      event_id='test_event_id',
+      data=[
+          types.Content(role='user'),
+          types.Content(
+              role='user', parts=[types.Part(inline_data=types.Blob())]
+          ),
+      ],
+  )
+
+  data_json = next(
+      call_obj.args[1]
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
+      if call_obj.args[0] == 'gcp.vertex.agent.data'
+  )
+
+  assert '<inline_data: unknown, 0 bytes>' in data_json
+  assert 'inlineData' not in data_json
+
+
+@pytest.mark.asyncio
 @mock.patch('google.adk.telemetry.tracing.otel_logger')
 @mock.patch('google.adk.telemetry.tracing.tracer')
 @mock.patch(
@@ -1385,6 +1502,68 @@ def test_trace_tool_call_with_standard_error(
       mock.call('error.type', 'ValueError')
       in mock_span_fixture.set_attribute.call_args_list
   )
+
+
+def test_build_llm_request_for_trace_excludes_live_http_clients():
+  """Tracing must not crash when config.http_options holds live SDK clients.
+
+  HttpOptions.{httpx_client, httpx_async_client, aiohttp_client} are live
+  transport objects that pydantic cannot serialize; they must be excluded so
+  the trace serialization does not raise PydanticSerializationError.
+  """
+  from google.adk.telemetry.tracing import _build_llm_request_for_trace
+  import httpx
+
+  llm_request = LlmRequest(
+      model='gemini-2.0-flash',
+      config=types.GenerateContentConfig(
+          temperature=0.1,
+          http_options=types.HttpOptions(
+              httpx_async_client=httpx.AsyncClient()
+          ),
+      ),
+  )
+
+  result = _build_llm_request_for_trace(llm_request)
+
+  # Must be JSON-serializable (raised PydanticSerializationError before the fix).
+  json.dumps(result)
+  assert 'httpx_async_client' not in result['config'].get('http_options', {})
+  assert result['config']['temperature'] == 0.1
+
+
+def test_build_llm_request_for_trace_excludes_http_option_credentials():
+  """Credential-bearing http_options fields must never reach a span attribute.
+
+  `http_options` is a documented place for callers to put custom headers
+  (including `Authorization`), and the agent's generate config is copied onto
+  `llm_request.config`. Serializing it verbatim would export the caller's
+  credentials to the tracing backend on every model call.
+  """
+  from google.adk.telemetry.tracing import _build_llm_request_for_trace
+
+  llm_request = LlmRequest(
+      model='gemini-2.0-flash',
+      config=types.GenerateContentConfig(
+          temperature=0.1,
+          http_options=types.HttpOptions(
+              base_url='https://example.test',
+              headers={'Authorization': 'Bearer sentinel-secret-token'},
+              extra_body={'api_key': 'sentinel-secret-token'},
+              client_args={'auth': 'sentinel-secret-token'},
+              async_client_args={'auth': 'sentinel-secret-token'},
+          ),
+      ),
+  )
+
+  result = _build_llm_request_for_trace(llm_request)
+
+  assert 'sentinel-secret-token' not in json.dumps(result)
+  http_options = result['config'].get('http_options', {})
+  for field in ('headers', 'extra_body', 'client_args', 'async_client_args'):
+    assert field not in http_options
+  # Non-sensitive http_options fields are still traced.
+  assert http_options['base_url'] == 'https://example.test'
 
 
 def test_safe_json_serialize_circular_dict_returns_not_serializable():

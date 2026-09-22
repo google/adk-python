@@ -33,6 +33,7 @@ from ._eval_sets_manager_utils import delete_eval_case_from_eval_set
 from ._eval_sets_manager_utils import get_eval_case_from_eval_set
 from ._eval_sets_manager_utils import get_eval_set_from_app_and_id
 from ._eval_sets_manager_utils import update_eval_case_in_eval_set
+from ._path_validation import validate_path_segment
 from .eval_case import EvalCase
 from .eval_case import IntermediateData
 from .eval_case import Invocation
@@ -247,6 +248,7 @@ class LocalEvalSetsManager(EvalSetsManager):
     Raises:
       NotFoundError: If the eval directory for the app is not found.
     """
+    validate_path_segment(app_name, "app_name")
     eval_set_file_path = os.path.join(self._agents_dir, app_name)
     eval_sets = []
     try:
@@ -310,6 +312,8 @@ class LocalEvalSetsManager(EvalSetsManager):
     self._save_eval_set(app_name, eval_set_id, updated_eval_set)
 
   def _get_eval_set_file_path(self, app_name: str, eval_set_id: str) -> str:
+    validate_path_segment(app_name, "app_name")
+    validate_path_segment(eval_set_id, "eval_set_id")
     return os.path.join(
         self._agents_dir,
         app_name,

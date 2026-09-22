@@ -42,33 +42,43 @@ def resolve_file_path(
     working_directory: Working directory to use as base (defaults to cwd)
 
   Returns:
-    Resolved absolute Path object
+    Resolved absolute Path object, guaranteed to be within the root directory.
+
+  Raises:
+    ValueError: If ``file_path`` resolves outside the root directory, e.g. via
+      ``..`` traversal or an absolute path pointing outside the root.
   """
   normalized_path = sanitize_generated_file_path(file_path)
   file_path_obj = Path(normalized_path)
-
-  # If already absolute, use as-is
-  if file_path_obj.is_absolute():
-    return file_path_obj
 
   # Get root directory from session state, default to "./"
   root_directory = "./"
   if session_state and "root_directory" in session_state:
     root_directory = session_state["root_directory"]
 
-  # Use the same resolution logic as the main function
   root_path_obj = Path(root_directory)
-
   if root_path_obj.is_absolute():
     resolved_root = root_path_obj
+  elif working_directory:
+    resolved_root = Path(working_directory) / root_directory
   else:
-    if working_directory:
-      resolved_root = Path(working_directory) / root_directory
-    else:
-      resolved_root = Path(os.getcwd()) / root_directory
+    resolved_root = Path(os.getcwd()) / root_directory
+  resolved_root = resolved_root.resolve()
 
-  # Resolve file path relative to root directory
-  return resolved_root / file_path_obj
+  if file_path_obj.is_absolute():
+    candidate = file_path_obj.resolve()
+  else:
+    candidate = (resolved_root / file_path_obj).resolve()
+
+  # Keep the resolved path within the root to block path-traversal escapes.
+  try:
+    candidate.relative_to(resolved_root)
+  except ValueError as exc:
+    raise ValueError(
+        f"File path {file_path!r} resolves outside the root directory"
+        f" {resolved_root}."
+    ) from exc
+  return candidate
 
 
 def resolve_file_paths(

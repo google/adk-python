@@ -295,6 +295,9 @@ class GkeCodeExecutor(BaseCodeExecutor):
     # Use tolerations to request a gVisor node.
     pod_spec = k8s.client.V1PodSpec(
         restart_policy="Never",
+        # The pod runs model-generated code, so it must not receive a
+        # credential for the cluster it is running in.
+        automount_service_account_token=False,
         containers=[container],
         volumes=[
             k8s.client.V1Volume(

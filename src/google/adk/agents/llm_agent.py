@@ -891,6 +891,14 @@ class LlmAgent(BaseAgent):
       raise ValueError(
           'Response schema must be set via LlmAgent.output_schema.'
       )
+    if (
+        generate_content_config.http_options
+        and generate_content_config.http_options.base_url
+    ):
+      raise ValueError(
+          'Base URL is a transport setting and must be set on the model or'
+          ' its client, not via LlmAgent.generate_content_config.'
+      )
     return generate_content_config
 
   @override
@@ -933,6 +941,9 @@ class LlmAgent(BaseAgent):
         obj = getattr(module, tool_config.name)
       else:
         # User-defined tools
+        from .config_agent_utils import _validate_module_reference
+
+        _validate_module_reference(tool_config.name)
         module_path, obj_name = tool_config.name.rsplit('.', 1)
         module = importlib.import_module(module_path)
         obj = getattr(module, obj_name)

@@ -37,6 +37,15 @@ DEFAULT_IMAGE_TAG = 'adk-code-executor:latest'
 class ContainerCodeExecutor(BaseCodeExecutor):
   """A code executor that uses a custom container to execute code.
 
+  Security note: this executor runs model-generated code, which may be
+  influenced by untrusted input (e.g. via prompt injection). By default the
+  container is started with networking disabled and all Linux capabilities
+  dropped so that the executed code cannot reach the network (including the
+  cloud metadata endpoint at ``169.254.169.254``) or escalate privileges. For
+  stronger, kernel-level isolation of untrusted code prefer
+  ``GkeCodeExecutor`` (gVisor) or a managed executor
+  (``VertexAiCodeExecutor`` / ``AgentEngineSandboxCodeExecutor``).
+
   Attributes:
     base_url: Optional. The base url of the user hosted Docker client.
     image: The tag of the predefined image or custom image to run on the
@@ -44,6 +53,9 @@ class ContainerCodeExecutor(BaseCodeExecutor):
     docker_path: The path to the directory containing the Dockerfile. If set,
       build the image from the dockerfile path instead of using the predefined
       image. Either docker_path or image must be set.
+    network_enabled: Whether to start the container with networking enabled.
+      Defaults to False. Set to True only if the executed code must make network
+      requests and you trust it.
   """
 
   base_url: Optional[str] = None
@@ -62,6 +74,17 @@ class ContainerCodeExecutor(BaseCodeExecutor):
   The path to the directory containing the Dockerfile.
   If set, build the image from the dockerfile path instead of using the
   predefined image. Either docker_path or image must be set.
+  """
+
+  network_enabled: bool = False
+  """
+  Whether to start the code execution container with networking enabled.
+
+  Defaults to False so that untrusted, model-generated code cannot reach the
+  network -- in particular the cloud metadata endpoint at 169.254.169.254
+  (which can yield the host's service-account credentials), internal services,
+  or arbitrary exfiltration destinations. Set to True only if the executed
+  code must make network requests and you trust it.
   """
 
   # Overrides the BaseCodeExecutor attribute: this executor cannot be stateful.
@@ -183,6 +206,13 @@ class ContainerCodeExecutor(BaseCodeExecutor):
         image=self.image,
         detach=True,
         tty=True,
+        # Harden the sandbox for untrusted, model-generated code: no network
+        # (blocks metadata/SSRF/exfil), drop all Linux capabilities, and
+        # forbid privilege escalation. Networking can be re-enabled via
+        # `network_enabled=True` when the executed code is trusted.
+        network_disabled=not self.network_enabled,
+        cap_drop=['ALL'],
+        security_opt=['no-new-privileges'],
     )
     logger.info('Container %s started.', self._container.id)
 

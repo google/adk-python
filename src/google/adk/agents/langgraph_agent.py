@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import AsyncGenerator
 from typing import Union
 
@@ -29,6 +30,33 @@ from typing_extensions import override
 from ..events.event import Event
 from .base_agent import BaseAgent
 from .invocation_context import InvocationContext
+
+
+def _get_thread_id(app_name: str, user_id: str, session_id: str) -> str:
+  """Derives the LangGraph checkpointer thread id for a session.
+
+  Session ids are caller-chosen and are only unique within an
+  (app_name, user_id) pair, so all three components have to take part in the
+  thread id. Each component is length-prefixed before hashing so that a
+  component containing the separator cannot stand in for a different triple.
+  The composite is hashed rather than used verbatim so that the thread id is a
+  fixed-length token no checkpointer backend has to escape, and so the user id
+  is not written into checkpointer storage; the cost is that a stored row can
+  only be tied back to a session by recomputing the digest.
+
+  Args:
+    app_name: the app the session belongs to
+    user_id: the user the session belongs to
+    session_id: the session id
+
+  Returns:
+    a deterministic thread id for the session
+  """
+  key = '|'.join(
+      f'{len(component)}:{component}'
+      for component in (app_name, user_id, session_id)
+  )
+  return hashlib.sha256(key.encode('utf-8')).hexdigest()
 
 
 def _get_last_human_messages(events: list[Event]) -> list[HumanMessage]:
@@ -50,7 +78,14 @@ def _get_last_human_messages(events: list[Event]) -> list[HumanMessage]:
 
 
 class LangGraphAgent(BaseAgent):
-  """Currently a concept implementation, supports single and multi-turn."""
+  """Currently a concept implementation, supports single and multi-turn.
+
+  The checkpointer thread id is derived from the session's app name, user id
+  and id together, because session ids are only unique within an
+  (app name, user id) pair. Checkpoints written by earlier releases, which
+  keyed the thread on the session id alone, are not reused: with a persistent
+  checkpointer the first turn after upgrading resumes from empty graph state.
+  """
 
   model_config = ConfigDict(
       arbitrary_types_allowed=True,
@@ -68,7 +103,13 @@ class LangGraphAgent(BaseAgent):
   ) -> AsyncGenerator[Event, None]:
 
     # Needed for langgraph checkpointer (for subsequent invocations; multi-turn)
-    config: RunnableConfig = {'configurable': {'thread_id': ctx.session.id}}
+    config: RunnableConfig = {
+        'configurable': {
+            'thread_id': _get_thread_id(
+                ctx.session.app_name, ctx.session.user_id, ctx.session.id
+            )
+        }
+    }
 
     # Add instruction as SystemMessage if graph state is empty
     current_graph_state = self.graph.get_state(config)

@@ -1031,8 +1031,9 @@ async def test_execute_script_extensionless_unsupported(mock_skill1):
 # ── Integration tests using real UnsafeLocalCodeExecutor ──
 
 
-def _make_skill_with_script(skill_name, script_name, script):
+def _make_skill_with_script(skill_name, script_name, script, references=None):
   """Creates a minimal mock Skill with a single script."""
+  references = references or {}
   skill = mock.create_autospec(models.Skill, instance=True)
   skill.name = skill_name
   skill.description = f"Test skill {skill_name}"
@@ -1058,9 +1059,9 @@ def _make_skill_with_script(skill_name, script_name, script):
     return None
 
   skill.resources.get_script.side_effect = get_script
-  skill.resources.get_reference.return_value = None
+  skill.resources.get_reference.side_effect = references.get
   skill.resources.get_asset.return_value = None
-  skill.resources.list_references.return_value = []
+  skill.resources.list_references.return_value = list(references)
   skill.resources.list_assets.return_value = []
   skill.resources.list_scripts.return_value = [script_name]
   return skill
@@ -1324,6 +1325,64 @@ async def test_integration_shell_nonzero_exit():
   assert "status" in result, f"Result missing status: {result}"
   assert result["status"] == "error"
   assert "42" in result["stderr"]
+
+
+# ── Integration: skill resource paths stay inside the extraction dir ──
+
+
+@pytest.mark.asyncio
+async def test_integration_traversing_resource_name_is_refused(
+    tmp_path, monkeypatch
+):
+  """Real executor: a resource name that escapes the temp dir is refused."""
+  monkeypatch.setenv("TMPDIR", str(tmp_path))
+  script = models.Script(src="print('ran')")
+  skill = _make_skill_with_script(
+      "test_skill",
+      "hello.py",
+      script,
+      references={"../../pwned": "owned"},
+  )
+  toolset = _make_real_executor_toolset([skill])
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={
+          "skill_name": "test_skill",
+          "file_path": "hello.py",
+      },
+      tool_context=ctx,
+  )
+  assert "status" in result, f"Result missing status: {result}"
+  assert result["status"] == "error"
+  assert "PermissionError" in result["stderr"]
+  assert result["stdout"] == ""
+  assert not (tmp_path / "pwned").exists()
+
+
+@pytest.mark.asyncio
+async def test_integration_nested_resource_still_materializes():
+  """Real executor: a nested resource path is still extracted."""
+  script = models.Script(src="print(open('references/subdir/notes.md').read())")
+  skill = _make_skill_with_script(
+      "test_skill",
+      "hello.py",
+      script,
+      references={"subdir/notes.md": "nested content"},
+  )
+  toolset = _make_real_executor_toolset([skill])
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={
+          "skill_name": "test_skill",
+          "file_path": "hello.py",
+      },
+      tool_context=ctx,
+  )
+  assert "status" in result, f"Result missing status: {result}"
+  assert result["status"] == "success"
+  assert "nested content" in result["stdout"]
 
 
 # ── Finding 1: system instruction references correct tool name ──

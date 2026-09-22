@@ -185,7 +185,6 @@ def get_llm_backed_user_simulator_prompt(
   """Formats the prompt for the llm-backed user simulator"""
   from jinja2 import DictLoader
   from jinja2 import pass_context
-  from jinja2 import Template
   from jinja2.sandbox import SandboxedEnvironment
 
   templates = {
@@ -200,7 +199,7 @@ def get_llm_backed_user_simulator_prompt(
   def _render_string_filter(context, template_string):
     if not template_string:
       return ""
-    return Template(template_string).render(context)
+    return template_env.from_string(template_string).render(context.get_all())
 
   template_env.filters["render_string_filter"] = _render_string_filter
 

@@ -915,6 +915,9 @@ class Runner:
     if not new_message.parts:
       raise ValueError('No parts in the new_message.')
 
+    if any(p.function_call for p in new_message.parts):
+      raise ValueError('User message cannot contain function calls.')
+
     if self.artifact_service and save_input_blobs_as_artifacts:
       # Issue deprecation warning
       warnings.warn(

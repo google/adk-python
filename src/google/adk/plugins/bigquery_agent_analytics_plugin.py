@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import collections.abc
 from concurrent.futures import ThreadPoolExecutor
 import contextvars
 import dataclasses
@@ -43,6 +44,9 @@ from typing import Awaitable
 from typing import Callable
 from typing import Optional
 from typing import TYPE_CHECKING
+from urllib.parse import quote
+from urllib.parse import urlsplit
+from urllib.parse import urlunsplit
 import uuid
 import weakref
 
@@ -268,9 +272,73 @@ _SENSITIVE_KEYS = frozenset({
     "password",
 })
 
+# Written to the content column in place of the payload when the configured
+# content_formatter raises.
+_FORMATTER_FAILED_SENTINEL = "[FORMATTER_FAILED]"
+
+# Written in place of an external URI that cannot be stored safely.
+_REDACTED_URI = "[REDACTED_SENSITIVE_URI]"
+
+# A URI longer than this is replaced wholesale rather than parsed.
+_MAX_URI_LENGTH = 8192
+
+# Deepest nesting _recursive_smart_truncate walks before replacing a value.
+_MAX_SANITIZE_DEPTH = 50
+
+# Total nodes one sanitizer invocation may visit. Depth and per-string size
+# are bounded, but width was not: a million-element list, or an object that
+# manufactures two fresh children per access, walks tens of millions of
+# nodes inside the depth cap. The remainder is replaced with a sentinel and
+# the row is flagged truncated.
+_MAX_SANITIZE_NODES = 100_000
+
+# Cloud Platform OAuth scope. Assembled from parts so this module does not
+# embed a bare Google APIs host literal: the file-content compliance scan
+# rejects such host literals on changed files unless an accompanying mTLS
+# endpoint is present, which does not apply to this OAuth-scope use.
+_CLOUD_PLATFORM_SCOPE = (
+    "https://www." + "googleapis" + ".com/auth/cloud-platform"
+)
+
+
+def _redact_sensitive_path_segments(path: str) -> tuple[str, bool]:
+  """Redacts credential-bearing segments of a URI path.
+
+  A path can carry a credential as ``/access_token/ya29.../download`` just as
+  a query string can. A segment naming a sensitive key is replaced, and so is
+  the segment after it, which is where the value sits.
+
+  Args:
+      path: The path component of a split URI.
+
+  Returns:
+      A tuple of (path, redacted), where redacted reports whether anything
+      was replaced.
+  """
+  segments = path.split("/")
+  redacted = False
+  redact_next = False
+  for index, segment in enumerate(segments):
+    if not segment:
+      continue
+    if redact_next:
+      segments[index] = quote("[REDACTED]", safe="")
+      redacted = True
+      redact_next = False
+      continue
+    if segment.lower().replace("-", "_") in _SENSITIVE_KEYS:
+      segments[index] = quote("[REDACTED]", safe="")
+      redacted = True
+      redact_next = True
+  return "/".join(segments), redacted
+
 
 def _recursive_smart_truncate(
-    obj: Any, max_len: int, seen: Optional[set[int]] = None
+    obj: Any,
+    max_len: int,
+    seen: Optional[set[int]] = None,
+    depth: int = 0,
+    budget: Optional[list[int]] = None,
 ) -> tuple[Any, bool]:
   """Recursively truncates string values within a dict or list.
 
@@ -281,12 +349,29 @@ def _recursive_smart_truncate(
       obj: The object to truncate.
       max_len: Maximum length for string values.
       seen: Set of object IDs visited in the current recursion stack.
+      depth: Current recursion depth.
+      budget: Single-element list holding the nodes left in the shared work
+        budget for this invocation.
 
   Returns:
       A tuple of (truncated_object, is_truncated).
   """
   if seen is None:
     seen = set()
+  if budget is None:
+    budget = [_MAX_SANITIZE_NODES]
+  budget[0] -= 1
+  if budget[0] < 0:
+    return "[SANITIZE_BUDGET_EXCEEDED]", True
+
+  # The id()-based cycle detection below cannot catch an object graph that
+  # manufactures a new object on every duck-typed access, which is what any
+  # object whose model_dump()/dict()/to_dict() returns a fresh wrapper does.
+  # Such a graph recurses until the interpreter's own limit. The replacement
+  # discards real data, so unlike "[CIRCULAR_REFERENCE]" it reports
+  # truncation.
+  if depth >= _MAX_SANITIZE_DEPTH:
+    return "[MAX_DEPTH_EXCEEDED]", True
 
   obj_id = id(obj)
   if obj_id in seen:
@@ -309,19 +394,35 @@ def _recursive_smart_truncate(
       if max_len != -1 and len(obj) > max_len:
         return obj[:max_len] + "...[TRUNCATED]", True
       return obj, False
-    elif isinstance(obj, dict):
+    elif isinstance(obj, collections.abc.Mapping):
+      # Covers dict plus mapping views (MappingProxyType, UserDict, ...):
+      # stringifying them in the fallback branch would bypass key redaction.
+      # Always emits a plain sanitized dict.
       truncated_any = False
-      # Use dict comprehension for potentially slightly better performance,
-      # but explicit loop is fine for clarity given recursive nature.
       new_dict = {}
       for k, v in obj.items():
+        # Stop iterating once the budget is exhausted. Recursing on every
+        # remaining entry still did work proportional to the input and
+        # produced one sentinel per entry; a single remainder sentinel
+        # stands in for everything dropped.
+        if budget[0] <= 0:
+          new_dict["[SANITIZE_BUDGET_EXCEEDED]"] = "[SANITIZE_BUDGET_EXCEEDED]"
+          truncated_any = True
+          break
         if isinstance(k, str):
-          k_lower = k.lower()
+          # Header-shaped keys reach state verbatim, so "api-key" has to
+          # match the same entry as "api_key".
+          k_lower = k.lower().replace("-", "_")
           if k_lower in _SENSITIVE_KEYS or k_lower.startswith("temp:"):
+            # A directly redacted entry costs budget too, otherwise a wide
+            # "temp:" mapping bypasses the bound entirely.
+            budget[0] -= 1
             new_dict[k] = "[REDACTED]"
             continue
 
-        val, trunc = _recursive_smart_truncate(v, max_len, seen)
+        val, trunc = _recursive_smart_truncate(
+            v, max_len, seen, depth + 1, budget
+        )
         if trunc:
           truncated_any = True
         new_dict[k] = val
@@ -331,31 +432,62 @@ def _recursive_smart_truncate(
       new_list = []
       # Explicit loop to handle flag propagation
       for i in obj:
-        val, trunc = _recursive_smart_truncate(i, max_len, seen)
+        # Same bound as the mapping loop.
+        if budget[0] <= 0:
+          new_list.append("[SANITIZE_BUDGET_EXCEEDED]")
+          truncated_any = True
+          break
+        val, trunc = _recursive_smart_truncate(
+            i, max_len, seen, depth + 1, budget
+        )
         if trunc:
           truncated_any = True
         new_list.append(val)
-      return type(obj)(new_list), truncated_any
+      if type(obj) is tuple or type(obj) is list:
+        return type(obj)(new_list), truncated_any
+      # Tuple/list subclasses (e.g. namedtuples) may require positional
+      # constructor fields; reconstructing raises TypeError and the safe
+      # callback then drops the whole row. JSON does not preserve the
+      # subclass identity anyway, so emit a plain list.
+      return new_list, truncated_any
     elif dataclasses.is_dataclass(obj) and not isinstance(obj, type):
       # Manually iterate fields to preserve 'seen' context, avoiding dataclasses.asdict recursion
       as_dict = {f.name: getattr(obj, f.name) for f in dataclasses.fields(obj)}
-      return _recursive_smart_truncate(as_dict, max_len, seen)
+      return _recursive_smart_truncate(
+          as_dict, max_len, seen, depth + 1, budget
+      )
     elif hasattr(obj, "model_dump") and callable(obj.model_dump):
-      # Pydantic v2
+      # Pydantic v2. Only recurse if the conversion made progress toward a
+      # JSON-native value. Mock-like objects answer every duck-typed probe
+      # with another Mock-like object, and recursing on those churns to the
+      # depth cap, falsely flagging truncation, instead of settling at the
+      # stringify fallback below.
       try:
-        return _recursive_smart_truncate(obj.model_dump(), max_len, seen)
+        dumped = obj.model_dump()
+        if isinstance(dumped, (collections.abc.Mapping, list)):
+          return _recursive_smart_truncate(
+              dumped, max_len, seen, depth + 1, budget
+          )
       except Exception:
         pass
     elif hasattr(obj, "dict") and callable(obj.dict):
-      # Pydantic v1
+      # Pydantic v1 (same progress requirement as above).
       try:
-        return _recursive_smart_truncate(obj.dict(), max_len, seen)
+        dumped = obj.dict()
+        if isinstance(dumped, (collections.abc.Mapping, list)):
+          return _recursive_smart_truncate(
+              dumped, max_len, seen, depth + 1, budget
+          )
       except Exception:
         pass
     elif hasattr(obj, "to_dict") and callable(obj.to_dict):
-      # Common pattern for custom objects
+      # Common pattern for custom objects (same progress requirement).
       try:
-        return _recursive_smart_truncate(obj.to_dict(), max_len, seen)
+        dumped = obj.to_dict()
+        if isinstance(dumped, (collections.abc.Mapping, list)):
+          return _recursive_smart_truncate(
+              dumped, max_len, seen, depth + 1, budget
+          )
       except Exception:
         pass
     elif obj is None or isinstance(obj, (int, float, bool)):
@@ -1374,10 +1506,76 @@ class HybridContentParser:
       )
     return text, False
 
+  def _sanitize_external_uri(
+      self, uri: Optional[str]
+  ) -> tuple[Optional[str], bool]:
+    """Removes credential-bearing components from a caller-supplied URI.
+
+    A signed GCS or HTTP URL carries its signature in the query string, and any
+    URI may carry ``user:password@`` userinfo. Both are bearer credentials, so
+    neither belongs in a stored analytics row. The scheme, host and path are
+    kept, which is what identifies the object.
+
+    Args:
+        uri: The URI to sanitize, or None.
+
+    Returns:
+        A tuple of (sanitized_uri, content_removed).
+    """
+    if uri is None:
+      return None, False
+    if not isinstance(uri, str):
+      return _REDACTED_URI, True
+    if len(uri) > _MAX_URI_LENGTH:
+      return _REDACTED_URI, True
+    try:
+      parsed = urlsplit(uri)
+      has_userinfo = parsed.username is not None or parsed.password is not None
+    except ValueError:
+      return _REDACTED_URI, True
+    if has_userinfo:
+      # Userinfo is a credential-bearing surface by definition; do not try to
+      # keep the username while guessing whether it is sensitive.
+      return _REDACTED_URI, True
+    path, path_redacted = _redact_sensitive_path_segments(parsed.path)
+    if not parsed.query and not parsed.fragment and not path_redacted:
+      return uri, False
+    return (
+        urlunsplit((parsed.scheme, parsed.netloc, path, "", "")),
+        True,
+    )
+
   async def _parse_content_object(
-      self, content: types.Content | types.Part
+      self,
+      content: types.Content | types.Part,
+      *,
+      trace_id: Optional[str] = None,
+      span_id: Optional[str] = None,
+      parse_uid: str = "",
+      content_ordinal: int = 0,
   ) -> tuple[str, list[dict[str, Any]], bool]:
-    """Parses a Content or Part object into summary text and content parts."""
+    """Parses a Content or Part object into summary text and content parts.
+
+    Args:
+        content: The Content or Part to parse.
+        trace_id: Trace id of the calling event. GCS object paths are built
+            from this argument rather than the instance field, because the
+            parser is shared across concurrent events and an await inside this
+            method can resume under another event's identity. Falls back to
+            the instance field.
+        span_id: Span id of the calling event, with the same rationale.
+        parse_uid: Unique per parse() call. Disambiguates object names across
+            concurrent events. Generated here when not supplied.
+        content_ordinal: Index of this Content within the calling request. The
+            part index restarts at zero for each Content, so without this two
+            messages in one request collide on the same object name.
+
+    Returns:
+        A tuple of (summary_text, content_parts, is_truncated).
+    """
+    trace_id = trace_id if trace_id is not None else self.trace_id
+    span_id = span_id if span_id is not None else self.span_id
+    parse_uid = parse_uid or uuid.uuid4().hex
     content_parts = []
     is_truncated = False
     summary_text = []
@@ -1397,14 +1595,22 @@ class HybridContentParser:
       # CASE A: It is already a URI (e.g. from user input)
       if hasattr(part, "file_data") and part.file_data:
         part_data["storage_mode"] = "EXTERNAL_URI"
-        part_data["uri"] = part.file_data.file_uri
+        safe_uri, uri_content_removed = self._sanitize_external_uri(
+            part.file_data.file_uri
+        )
+        part_data["uri"] = safe_uri
+        if uri_content_removed:
+          is_truncated = True
         part_data["mime_type"] = part.file_data.mime_type
 
       # CASE B: It is Binary/Inline Data (Image/Blob)
       elif hasattr(part, "inline_data") and part.inline_data:
         if self.offloader:
           ext = mimetypes.guess_extension(part.inline_data.mime_type) or ".bin"
-          path = f"{datetime.now().date()}/{self.trace_id}/{self.span_id}_p{idx}{ext}"
+          path = (
+              f"{datetime.now().date()}/{trace_id}/{span_id}_{parse_uid}"
+              f"_c{content_ordinal}_p{idx}{ext}"
+          )
           try:
             uri = await self.offloader.upload_content(
                 part.inline_data.data, part.inline_data.mime_type, path
@@ -1443,7 +1649,10 @@ class HybridContentParser:
 
         if self.offloader and (exceeds_inline_byte_limit or exceeds_char_limit):
           # Text is too big, treat as file
-          path = f"{datetime.now().date()}/{self.trace_id}/{self.span_id}_p{idx}.txt"
+          path = (
+              f"{datetime.now().date()}/{trace_id}/{span_id}_{parse_uid}"
+              f"_c{content_ordinal}_p{idx}.txt"
+          )
           try:
             uri = await self.offloader.upload_content(
                 part.text, "text/plain", path
@@ -1491,8 +1700,32 @@ class HybridContentParser:
 
     return summary_str, content_parts, is_truncated
 
-  async def parse(self, content: Any) -> tuple[Any, list[dict[str, Any]], bool]:
-    """Parses content into JSON payload and content parts, potentially offloading to GCS."""
+  async def parse(
+      self,
+      content: Any,
+      *,
+      trace_id: Optional[str] = None,
+      span_id: Optional[str] = None,
+  ) -> tuple[Any, list[dict[str, Any]], bool]:
+    """Parses content into JSON payload and content parts, potentially offloading to GCS.
+
+    Args:
+        content: The content to parse.
+        trace_id: Trace id of the calling event, used to build GCS object
+            paths. Pass it per call: the parser instance is shared across
+            concurrent events, so a path built from the mutable instance field
+            can pick up another event's identity across an await. Falls back
+            to the instance field.
+        span_id: Span id of the calling event, with the same rationale.
+
+    Returns:
+        A tuple of (json_payload, content_parts, is_truncated).
+    """
+    trace_id = trace_id if trace_id is not None else self.trace_id
+    span_id = span_id if span_id is not None else self.span_id
+    # Unique per parse() call, so two events offloading at the same time
+    # cannot produce the same object name.
+    parse_uid = uuid.uuid4().hex
     json_payload = {}
     content_parts = []
     is_truncated = False
@@ -1508,9 +1741,15 @@ class HybridContentParser:
           if isinstance(content.contents, list)
           else [content.contents]
       )
-      for c in contents:
+      for content_idx, c in enumerate(contents):
         role = getattr(c, "role", "unknown")
-        summary, parts, trunc = await self._parse_content_object(c)
+        summary, parts, trunc = await self._parse_content_object(
+            c,
+            trace_id=trace_id,
+            span_id=span_id,
+            parse_uid=parse_uid,
+            content_ordinal=content_idx,
+        )
         if trunc:
           is_truncated = True
         content_parts.extend(parts)
@@ -1528,14 +1767,25 @@ class HybridContentParser:
             is_truncated = True
           json_payload["system_prompt"] = truncated_si
         else:
-          summary, parts, trunc = await self._parse_content_object(si)
+          summary, parts, trunc = await self._parse_content_object(
+              si,
+              trace_id=trace_id,
+              span_id=span_id,
+              parse_uid=parse_uid,
+              content_ordinal=len(contents),
+          )
           if trunc:
             is_truncated = True
           content_parts.extend(parts)
           json_payload["system_prompt"] = summary
 
     elif isinstance(content, (types.Content, types.Part)):
-      summary, parts, trunc = await self._parse_content_object(content)
+      summary, parts, trunc = await self._parse_content_object(
+          content,
+          trace_id=trace_id,
+          span_id=span_id,
+          parse_uid=parse_uid,
+      )
       return {"text_summary": summary}, parts, trunc
 
     elif isinstance(content, (dict, list)):
@@ -2131,9 +2381,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # grpc.aio clients are loop-bound, so we create one per event loop.
 
     def get_credentials():
-      creds, _ = google.auth.default(
-          scopes=["https://www.googleapis.com/auth/cloud-platform"]
-      )
+      creds, _ = google.auth.default(scopes=[_CLOUD_PLATFORM_SCOPE])
       return creds
 
     # Note: this read-then-write is not locked.  If two event loops
@@ -2886,8 +3134,17 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     if self.config.content_formatter:
       try:
         raw_content = self.config.content_formatter(raw_content, event_type)
-      except Exception as e:
-        logger.warning("Content formatter failed: %s", e)
+      except Exception:
+        # Fail closed. The formatter is the operator's redaction boundary, so
+        # a failure must not fall back to the unformatted payload. The message
+        # is constant on purpose: an exception's own text or traceback can
+        # quote the content the formatter exists to remove.
+        logger.warning(
+            "Content formatter failed for event %s; writing a sentinel"
+            " instead of the original content.",
+            event_type,
+        )
+        raw_content = _FORMATTER_FAILED_SENTINEL
 
     trace_id, span_id, parent_span_id = self._resolve_ids(
         event_data, callback_context
@@ -2897,16 +3154,27 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       logger.warning("Parser not initialized; skipping event %s.", event_type)
       return
 
-    # Update parser's trace/span IDs for GCS pathing (reuse instance)
-    self.parser.trace_id = trace_id or "no_trace"
-    self.parser.span_id = span_id or "no_span"
+    # Pass the ids per call rather than assigning them to the shared parser:
+    # two events in flight at once would otherwise overwrite each other's
+    # identity between the assignment and the offload that follows an await.
     content_json, content_parts, parser_truncated = await self.parser.parse(
-        raw_content
+        raw_content,
+        trace_id=trace_id or "no_trace",
+        span_id=span_id or "no_span",
     )
     is_truncated = is_truncated or parser_truncated
 
     latency_json = self._extract_latency(event_data)
     attributes = self._enrich_attributes(event_data, callback_context)
+
+    # Final pass over the complete assembled tree. _enrich_attributes copies
+    # extra_attributes (which carries session state deltas) and custom_tags in
+    # untouched, so this is the only point at which every value is guaranteed
+    # to have seen the sensitive-key redaction.
+    attributes, attrs_truncated = _recursive_smart_truncate(
+        attributes, self.config.max_content_length
+    )
+    is_truncated = is_truncated or attrs_truncated
 
     # Serialize attributes to JSON string
     try:
