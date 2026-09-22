@@ -215,10 +215,11 @@ you want each end user's own identity.
 | `location` | `str \| None` | `None` | BigQuery location for data and compute. |
 | `application_name` | `str \| None` | `None` | Identifies your agent in user agents and job labels. |
 | `job_labels` | `dict[str, str] \| None` | `None` | Labels added to every job the tools run. |
+| `kms_key_name` | `str \| None` | `None` | Cloud KMS key that encrypts query results (CMEK). |
 
 If you misspell an option, you get a Pydantic validation error at construction
 rather than a silently ignored field, because the model forbids unknown fields.
-Three of the fields validate their values and raise rather than coercing:
+Four of the fields validate their values and raise rather than coercing:
 
 *   `maximum_bytes_billed` below `10485760` raises. BigQuery's on-demand pricing
     has a 10 MB floor per query and per referenced table, so a smaller ceiling
@@ -229,6 +230,9 @@ Three of the fields validate their values and raise rather than coercing:
     any key beginning with `adk-bigquery-`, which is reserved. ADK adds
     `adk-bigquery-tool` to every job itself, and `adk-bigquery-application-name`
     when you set `application_name`.
+*   `kms_key_name` raises unless it is a key resource name,
+    `projects/{project}/locations/{location}/keyRings/{key_ring}/cryptoKeys/{key}`.
+    A key version is not accepted.
 
 **`max_query_result_rows`** is passed to BigQuery as `max_results`, so it caps
 what comes back rather than what the query scans. Raising it raises the number
@@ -344,6 +348,17 @@ tool_config = BigQueryToolConfig(
     with the BigQuery job so you can attribute usage and cost. The source says
     explicitly that neither should be used for security-sensitive decisions, so
     do not build an access rule that reads them back.
+*   **`kms_key_name` covers SELECT results only.** It is for projects where an
+    organization policy such as `constraints/gcp.restrictNonCmekServices`
+    requires customer-managed keys. BigQuery rejects a job-level key for DDL,
+    DML and multi-statement scripts, so those run without it, including the
+    temporary models `analyze_contribution` and `detect_anomalies` create. Under
+    such a policy they need a project default key. A permanent table can take
+    `OPTIONS(kms_key_name=...)` in its CREATE statement instead, but a temporary
+    table cannot, so `PROTECTED` mode relies on the project default key for its
+    temporary tables. The key must be in the data's location, and the project's
+    BigQuery service agent needs the Cloud KMS CryptoKey Encrypter/Decrypter
+    role on it. Under `ALLOWED`, setting it adds a dry run to each query.
 *   **The credentials configuration is provisional.** Its base class documents
     itself as not for production use and possibly deprecated later.
 *   **`ask_data_insights` needs extra setup.** Without the Conversational
