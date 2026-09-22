@@ -26,6 +26,8 @@ from . import _instructions_utils as instructions_utils
 from ....agents.readonly_context import ReadonlyContext
 from ....events.event import Event
 from .._base_llm_processor import BaseLlmRequestProcessor
+from ..context._fencing import _INSTRUCTION_BEGIN as _INSTRUCTION_BEGIN
+from ..context._fencing import _INSTRUCTION_END as _INSTRUCTION_END
 from ..context._fencing import QUOTED_CONTENT_ELIDED
 from ..core._utils import as_llm_agent
 
@@ -33,13 +35,6 @@ if TYPE_CHECKING:
   from ....agents.invocation_context import InvocationContext
   from ....agents.llm_agent import LlmAgent
   from ....models.llm_request import LlmRequest
-
-
-# With a static instruction present, the dynamic one has to ride in `contents`
-# to keep the static prefix byte-stable for context caching, and
-# `types.Content` has no system role -- so it arrives looking like user speech.
-_INSTRUCTION_BEGIN = '<<<BEGIN_SYSTEM_INSTRUCTION>>>'
-_INSTRUCTION_END = '<<<END_SYSTEM_INSTRUCTION>>>'
 
 _INSTRUCTION_PREAMBLE = (
     f'The text between {_INSTRUCTION_BEGIN} and {_INSTRUCTION_END} below is'
@@ -161,6 +156,8 @@ async def _build_instructions(
 
 class _InstructionsLlmRequestProcessor(BaseLlmRequestProcessor):
   """Handles instructions and global instructions for LLM flow."""
+
+  name = 'instructions'
 
   @override
   async def run_async(

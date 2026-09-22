@@ -33,6 +33,7 @@ from unittest.mock import patch
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
+from google.adk.artifacts import artifact_util
 from google.adk.artifacts import file_artifact_service
 from google.adk.artifacts import gcs_artifact_service
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
@@ -454,6 +455,79 @@ async def test_in_memory_loads_nested_artifact_reference(
       )
       == target_artifact
   )
+
+
+def _artifact_reference_part(
+    *, app_name: str, user_id: str, session_id: str, filename: str
+) -> types.Part:
+  """Builds a part referencing version 0 of a session-scoped artifact."""
+  return types.Part(
+      file_data=types.FileData(
+          file_uri=(
+              f"artifact://apps/{app_name}/users/{user_id}/sessions/"
+              f"{session_id}/artifacts/{filename}/versions/0"
+          ),
+          mime_type="text/plain",
+      )
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
+)
+async def test_load_artifact_rejects_self_referential_artifact_reference(
+    service_type,
+    artifact_service_factory,
+):
+  """A reference pointing at itself is rejected instead of recursing forever."""
+  artifact_service = artifact_service_factory(service_type)
+  scope = {"app_name": "app0", "user_id": "user0", "session_id": "123"}
+
+  await artifact_service.save_artifact(
+      **scope,
+      filename="loop",
+      artifact=_artifact_reference_part(**scope, filename="loop"),
+  )
+
+  with pytest.raises(InputValidationError, match="maximum recursion depth"):
+    await artifact_service.load_artifact(**scope, filename="loop")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
+)
+async def test_load_artifact_rejects_too_long_artifact_reference_chain(
+    service_type,
+    artifact_service_factory,
+):
+  """A reference chain longer than the allowed depth is rejected."""
+  artifact_service = artifact_service_factory(service_type)
+  scope = {"app_name": "app0", "user_id": "user0", "session_id": "123"}
+  chain_length = artifact_util._MAX_ARTIFACT_REFERENCE_DEPTH + 1
+
+  await artifact_service.save_artifact(
+      **scope,
+      filename="link0",
+      artifact=types.Part.from_text(text="target"),
+  )
+  for index in range(1, chain_length + 1):
+    await artifact_service.save_artifact(
+        **scope,
+        filename=f"link{index}",
+        artifact=_artifact_reference_part(**scope, filename=f"link{index - 1}"),
+    )
+
+  # The last hop that stays within the limit still resolves.
+  assert await artifact_service.load_artifact(
+      **scope, filename=f"link{artifact_util._MAX_ARTIFACT_REFERENCE_DEPTH}"
+  ) == types.Part.from_text(text="target")
+
+  with pytest.raises(InputValidationError, match="maximum recursion depth"):
+    await artifact_service.load_artifact(
+        **scope, filename=f"link{chain_length}"
+    )
 
 
 @pytest.mark.asyncio

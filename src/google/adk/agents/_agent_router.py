@@ -26,9 +26,9 @@ from ..events._node_path_builder import _NodePathBuilder
 from ..events._rewind_events import _apply_rewinds
 from ..events.event import Event
 from ..flows.llm_flows.extensions._agent_transfer import _get_transfer_targets
-from ..flows.llm_flows.functions import _collect_function_call_ids
-from ..flows.llm_flows.functions import find_matching_function_call
-from ..flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from ..flows.llm_flows.tools._functions import _collect_function_call_ids
+from ..flows.llm_flows.tools._functions import find_matching_function_call
+from ..flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
 
 if TYPE_CHECKING:
   from google.genai import types

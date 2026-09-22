@@ -27,6 +27,9 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.events.event import Event
 from google.adk.events.event import NodeInfo
 from google.adk.events.event_actions import EventActions
+from google.adk.runners import Runner
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.workflow import START
 from google.adk.workflow._base_node import BaseNode
 from google.adk.workflow._dynamic_node_scheduler import DynamicNodeRun
 from google.adk.workflow._dynamic_node_scheduler import DynamicNodeScheduler
@@ -37,6 +40,8 @@ from google.adk.workflow._node_state import NodeStatus
 from google.adk.workflow._workflow import _LoopState
 from google.adk.workflow._workflow import Workflow
 from google.adk.workflow.utils._rehydration_utils import _ChildScanState
+from google.adk.workflow.utils._workflow_graph_utils import build_node
+from google.genai import types
 from pydantic import BaseModel
 from pydantic import ValidationError
 import pytest
@@ -535,43 +540,109 @@ async def test_waiting_unresolved_propagates_interrupts():
   assert 'fc-1' in tracker._state.interrupt_ids
 
 
-@pytest.mark.asyncio
-async def test_calling_waiting_node_without_rerun_raises_value_error():
-  """Calling a dynamic node that is waiting for output with rerun_on_resume=False raises ValueError."""
+class _WaitForOutputNoRerunNode(BaseNode):
+  """Node with wait_for_output=True and rerun_on_resume=False."""
 
-  # Given a dynamic node waiting for output with rerun_on_resume=False
-  class _WaitingNode(BaseNode):
-    wait_for_output: bool = True
+  wait_for_output: bool = True
+  rerun_on_resume: bool = False
+
+  async def _run_impl(self, *, ctx, node_input):
+    yield Event(
+        content=types.Content(
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(
+                        name='confirm', args={}, id='fc-wait-1'
+                    )
+                )
+            ]
+        ),
+        long_running_tool_ids={'fc-wait-1'},
+    )
+
+
+async def _run_interrupt_then_resume(
+    wf: BaseNode,
+) -> tuple[list[Event], list[Event]]:
+  """Drive `wf` through an interrupting turn and a resuming turn."""
+  session_service = InMemorySessionService()
+  runner = Runner(app_name='t', node=wf, session_service=session_service)
+  session = await session_service.create_session(app_name='t', user_id='u')
+
+  turn_1 = [
+      event
+      async for event in runner.run_async(
+          user_id='u',
+          session_id=session.id,
+          new_message=types.Content(
+              parts=[types.Part(text='start')], role='user'
+          ),
+      )
+  ]
+
+  resume = types.Content(
+      parts=[
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id='fc-wait-1', name='confirm', response={'approved': True}
+              )
+          )
+      ],
+      role='user',
+  )
+  turn_2 = [
+      event
+      async for event in runner.run_async(
+          user_id='u', session_id=session.id, new_message=resume
+      )
+  ]
+  return turn_1, turn_2
+
+
+@pytest.mark.asyncio
+async def test_resolved_interrupt_without_rerun_resumes_static_path():
+  """Resolved interrupts resume without rerun_on_resume on static path."""
+
+  class _Downstream(BaseNode):
+    """Records whatever the upstream node handed it."""
 
     async def _run_impl(self, *, ctx, node_input):
-      yield 'should not reach here'
+      yield Event(output={'received': node_input})
 
-  ctx, _ = _make_parent_ctx()
-  ls = _LoopState()
-  from google.adk.workflow.utils._rehydration_utils import _ChildScanState
-
-  ls.runs['wf/parent/child@r-1'] = DynamicNodeRun(
-      state=NodeState(run_id='r-1'),
-      recovered_state=_ChildScanState(
-          run_id='r-1',
-          interrupt_ids={'pause_req'},
-          resolved_ids={'pause_req'},
-      ),
+  waiter = _WaitForOutputNoRerunNode(name='waiter')
+  turn_1, turn_2 = await _run_interrupt_then_resume(
+      Workflow(
+          name='wf',
+          edges=[(START, waiter), (waiter, _Downstream(name='down'))],
+      )
   )
-  scheduler = DynamicNodeScheduler(state=ls)
+  assert any(event.long_running_tool_ids for event in turn_1)
+  assert [e.output for e in turn_2 if e.output is not None] == [
+      {'received': {'approved': True}}
+  ]
 
-  # When it is called again
-  # Then it raises ValueError
-  with pytest.raises(
-      ValueError, match='is waiting for output but was called again'
-  ):
-    await scheduler(
-        ctx,
-        _WaitingNode(name='child'),
-        'input',
-        node_name='child',
-        run_id='r-1',
-    )
+
+@pytest.mark.asyncio
+async def test_resolved_interrupt_without_rerun_resumes_dynamic_path():
+  """Resolved interrupts resume without rerun_on_resume on dynamic path."""
+
+  dynamic_waiter = _WaitForOutputNoRerunNode(name='waiter')
+
+  async def driver(ctx, node_input):
+    return {'received': await ctx.run_node(dynamic_waiter, node_input='go')}
+
+  turn_1, turn_2 = await _run_interrupt_then_resume(
+      Workflow(
+          name='wf',
+          edges=[
+              (START, build_node(driver, name='driver', rerun_on_resume=True))
+          ],
+      )
+  )
+  assert any(event.long_running_tool_ids for event in turn_1)
+  assert [e.output for e in turn_2 if e.output is not None] == [
+      {'received': {'approved': True}}
+  ]
 
 
 def test_get_dynamic_tasks_excludes_done_tasks():

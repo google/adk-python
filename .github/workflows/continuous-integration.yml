@@ -53,6 +53,12 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
+          # The new-file hook resolves what a change added by diffing
+          # HEAD~1..HEAD, and reads a NO_UNIT_GUIDE waiver from the same
+          # range. At the default depth of 1 there is no HEAD~1, so the hook
+          # can see neither, and reports that it could not determine the file
+          # set rather than checking anything.
+          fetch-depth: 0
 
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
@@ -61,6 +67,16 @@ jobs:
 
       - name: Run pre-commit checks
         uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
+        env:
+          # Skip the new-file hook on pushes to main. Those are Copybara
+          # exports of changes that were already gated internally, and the
+          # export keeps only the public part of the description -- so a change
+          # legitimately waived with NO_UNIT_GUIDE arrives here carrying no
+          # waiver at all, and the hook would fail main for a rule that was
+          # already satisfied. Pull requests keep the hook: there the waiver
+          # travels in the contributor's own commit message, which is inside
+          # the range the hook reads.
+          SKIP: ${{ github.event_name == 'push' && 'check-new-py-prefix' || '' }}
 
   # 2. Static type analysis (Mypy Check with Matrix)
   # Compares new changes against the target base branch dynamically to support v1.
