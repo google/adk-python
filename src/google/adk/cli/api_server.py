@@ -80,9 +80,9 @@ from ..errors.input_validation_error import InputValidationError
 from ..errors.session_not_found_error import SessionNotFoundError
 from ..events.event import Event
 from ..events.event_actions import EventActions
-from ..flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
-from ..flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
-from ..flows.llm_flows.functions import REQUEST_INPUT_FUNCTION_CALL_NAME
+from ..flows.llm_flows.tools._functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ..flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from ..flows.llm_flows.tools._functions import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ..live.live_request_queue import LiveRequest
 from ..live.live_request_queue import LiveRequestQueue
 from ..memory.base_memory_service import BaseMemoryService

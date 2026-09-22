@@ -21,9 +21,9 @@ from typing import Any
 from typing import AsyncGenerator
 from typing import TYPE_CHECKING
 
-from ...flows.llm_flows._fencing import OTHER_AGENT_CONTEXT_PREAMBLE
-from ...flows.llm_flows._fencing import QUOTED_CONTENT_BEGIN
-from ...flows.llm_flows._fencing import QUOTED_CONTENT_END
+from ...flows.llm_flows.context._fencing import OTHER_AGENT_CONTEXT_PREAMBLE
+from ...flows.llm_flows.context._fencing import QUOTED_CONTENT_BEGIN
+from ...flows.llm_flows.context._fencing import QUOTED_CONTENT_END
 from ...models.google_llm import Gemini
 
 if TYPE_CHECKING:
