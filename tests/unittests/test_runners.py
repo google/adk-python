@@ -78,17 +78,27 @@ async def test_cfc_code_execution_is_scoped_to_invocation(
 ):
   """Reusing a runner preserves each invocation's code-execution capability.
 
-  Setup: one agent and runner, with an optional configured code executor.
+  Setup: one agent and runner with tools, an instruction, and an optional executor.
   Act: enable CFC, then disable it in the same or an independent session.
   Assert: only CFC or an explicitly configured built-in executor enables the
-    model's code-execution tool, and the agent's executor stays unchanged.
+    model's code-execution tool, and the shared agent's configuration is unchanged.
   """
+
+  def get_weather(city: str) -> str:
+    """Returns the weather for a city."""
+    return f"Sunny in {city}"
+
   code_executor = executor_type() if executor_type else None
   agent = LlmAgent(
       name="test_agent",
       model="gemini-2.0-flash",
+      tools=[get_weather],
+      instruction="Use the weather tool to answer weather questions.",
       code_executor=code_executor,
   )
+  # Copy the list contents so an in-place append cannot change the snapshot.
+  initial_tools = tuple(agent.tools)
+  initial_instruction = agent.instruction
   runner = runners.InMemoryRunner(agent=agent, app_name=TEST_APP_ID)
   first_session = await runner.session_service.create_session(
       app_name=TEST_APP_ID, user_id=TEST_USER_ID
@@ -102,7 +112,7 @@ async def test_cfc_code_execution_is_scoped_to_invocation(
   )
 
   requests = []
-  executors_after_run = []
+  snapshots = []
   async with runner:
     for session, support_cfc in [
         (first_session, True),
@@ -118,16 +128,86 @@ async def test_cfc_code_execution_is_scoped_to_invocation(
       ):
         pass
       requests.append(llm_request)
-      executors_after_run.append(agent.code_executor)
+      snapshots.append(
+          (tuple(agent.tools), agent.instruction, agent.code_executor)
+      )
 
-  assert len(requests) == 2
+  for tools, instruction, executor in snapshots:
+    assert tools == initial_tools
+    assert instruction == initial_instruction
+    assert executor is code_executor
+
   assert [
       any(
           tool.code_execution is not None for tool in request.config.tools or []
       )
       for request in requests
   ] == [True, isinstance(code_executor, BuiltInCodeExecutor)]
-  assert all(executor is code_executor for executor in executors_after_run)
+
+
+@pytest.mark.parametrize(
+    "same_session", [False, True], ids=["cross-session", "same-session"]
+)
+async def test_run_async_preserves_shared_agent_configuration(same_session):
+  """Complete invocations preserve the shared agent's configured capabilities.
+
+  Setup: a shared runner with a tool, an instruction, and a local code executor.
+  Act: run two ordinary invocations in the same or independent sessions.
+  Assert: both responses arrive without changing the shared configuration.
+  """
+
+  def get_weather(city: str) -> str:
+    """Returns the weather for a city."""
+    return f"Sunny in {city}"
+
+  model = testing_utils.MockModel.create(["First response", "Second response"])
+  code_executor = UnsafeLocalCodeExecutor()
+  agent = LlmAgent(
+      name="test_agent",
+      model=model,
+      tools=[get_weather],
+      instruction="Use the weather tool to answer weather questions.",
+      code_executor=code_executor,
+  )
+  initial_tools = tuple(agent.tools)
+  initial_instruction = agent.instruction
+  runner = runners.InMemoryRunner(agent=agent, app_name=TEST_APP_ID)
+  first_session = await runner.session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID
+  )
+  second_session = (
+      first_session
+      if same_session
+      else await runner.session_service.create_session(
+          app_name=TEST_APP_ID, user_id=TEST_USER_ID
+      )
+  )
+
+  responses = []
+  snapshots = []
+  async with runner:
+    for session in (first_session, second_session):
+      async for event in runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=session.id,
+          new_message=types.Content(
+              role="user", parts=[types.Part(text="Hello")]
+          ),
+          run_config=RunConfig(support_cfc=False),
+      ):
+        if event.is_final_response() and event.content:
+          responses.extend(
+              part.text for part in event.content.parts if part.text
+          )
+      snapshots.append(
+          (tuple(agent.tools), agent.instruction, agent.code_executor)
+      )
+
+  assert responses == ["First response", "Second response"]
+  for tools, instruction, executor in snapshots:
+    assert tools == initial_tools
+    assert instruction == initial_instruction
+    assert executor is code_executor
 
 
 class MockAgent(BaseAgent):
