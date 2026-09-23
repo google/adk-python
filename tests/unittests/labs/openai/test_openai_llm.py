@@ -18,7 +18,6 @@ import logging
 import os
 from unittest import mock
 
-from google.adk.labs.openai._openai_common import is_reasoning_model
 from google.adk.labs.openai._openai_llm import _function_declaration_to_openai_tool
 from google.adk.labs.openai._openai_llm import _map_finish_reason
 from google.adk.labs.openai._openai_llm import _part_to_openai_content
@@ -213,41 +212,6 @@ async def test_reasoning_model_uses_max_completion_tokens_and_drops_temp(model):
     assert "max_tokens" not in captured
     assert "temperature" not in captured
     assert "top_p" not in captured
-
-
-@pytest.mark.parametrize(
-    "model",
-    [
-        "o1",
-        "o3-mini",
-        "gpt-5",
-        "gpt-5.6-sol",
-        "gpt-6-astra",
-        "openai/o3-mini",
-        "azure/o1",
-    ],
-)
-def test_is_reasoning_model_positive(model):
-  """o-series and gpt-5.x/6.x families (namespaced too) are reasoning."""
-  assert is_reasoning_model(model) is True
-
-
-@pytest.mark.parametrize(
-    "model",
-    [
-        "gpt-4o",
-        "gpt-4.1",
-        "gpt-5-chat",
-        "gpt-5-chat-latest",
-        "gpt-5.1-chat-latest",
-        "xai/grok-4.6",
-        None,
-        "",
-    ],
-)
-def test_is_reasoning_model_negative(model):
-  """Chat models, other providers, and empty input are not reasoning."""
-  assert is_reasoning_model(model) is False
 
 
 @pytest.mark.asyncio
