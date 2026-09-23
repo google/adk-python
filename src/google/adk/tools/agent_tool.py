@@ -317,6 +317,7 @@ class AgentTool(BaseTool):
     last_content = None
     last_error_message = None
     last_grounding_metadata = None
+    paused_tool_ids = None
     async with Aclosing(
         runner.run_async(
             user_id=session.user_id,
@@ -334,10 +335,26 @@ class AgentTool(BaseTool):
         if event.content:
           last_content = event.content
           last_grounding_metadata = event.grounding_metadata
+        # The nested run's own session is discarded once this call returns, so
+        # a pending confirmation/input request (adk_request_confirmation,
+        # adk_request_input, or a remote agent surfacing input_required) has
+        # nowhere left to be resumed. Surface that as an explicit error
+        # instead of silently returning "" and letting the caller's model
+        # believe the wrapped agent finished.
+        paused_tool_ids = event.long_running_tool_ids or paused_tool_ids
 
     # Clean up runner resources (especially MCP sessions)
     # to avoid "Attempted to exit cancel scope in a different task" errors
     await runner.close()
+
+    if paused_tool_ids:
+      return (
+          f'Error: agent {self.agent.name!r} paused for human input or'
+          ' confirmation'
+          f' (pending call ids: {sorted(paused_tool_ids)}), which AgentTool'
+          ' cannot resume. Wrap it as a single_turn sub-agent instead if it'
+          ' needs to pause mid-call.'
+      )
 
     if last_content is None or last_content.parts is None:
       return last_error_message or ''

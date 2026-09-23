@@ -1338,6 +1338,36 @@ async def test_run_async_preserves_error_when_only_thought_parts():
   assert result == 'A2A request failed: 503'
 
 
+@mark.asyncio
+async def test_run_async_reports_error_when_wrapped_agent_pauses():
+  """A HITL pause (adk_request_confirmation) must not look like a success.
+
+  The nested run's session is thrown away once AgentTool.run_async returns,
+  so a pending long_running_tool_ids call can never be resumed. The caller
+  must see an explicit error instead of {"result": ""}, which would make its
+  model believe the pending action already completed.
+  """
+  result = await _run_agent_tool_with_events([
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name='adk_request_confirmation', args={}
+                      )
+                  )
+              ],
+          ),
+          long_running_tool_ids={'adk-123'},
+      ),
+  ])
+  assert result != ''
+  assert 'adk-123' in result
+  assert 'inner_agent' in result
+
+
 class TestAgentToolWithCompositeAgents:
   """Tests for AgentTool wrapping composite agents (SequentialAgent, etc.)."""
 
