@@ -1840,6 +1840,33 @@ class RemoteA2aAgent(BaseAgent):
               invocation_id=ctx.invocation_id,
               branch=ctx.branch,
           )
+        elif (
+            last_task
+            and last_task.status
+            and last_task.status.state
+            in (_compat.TS_FAILED, _compat.TS_CANCELED)
+            and not saw_final_answer_event
+        ):
+          # The task ended in failure/cancellation (self.mode == "task" already
+          # handled this above and returned; this covers the default mode,
+          # which has no equivalent interception). Whatever partial answer text
+          # streamed before the failure is not a real answer: surface the
+          # failure instead of silently persisting it as one.
+          is_cancel = last_task.status.state == _compat.TS_CANCELED
+          logger.warning(
+              "Remote task reported %s state. Yielding error event instead of"
+              " the buffered partial answer text.",
+              "canceled" if is_cancel else "failure",
+          )
+          error_text = "Task canceled" if is_cancel else "Unknown error"
+          if not is_cancel and event:
+            error_text = _text_from_content(event.content) or "Unknown error"
+          yield Event(
+              author=self.name,
+              error_message=f"Remote A2A task failed: {error_text}",
+              invocation_id=ctx.invocation_id,
+              branch=ctx.branch,
+          )
         elif buffered_answer_text and not saw_final_answer_event:
           # The task reached a terminal state but every answer-bearing event
           # was partial, so nothing above yielded a final response for ADK to
