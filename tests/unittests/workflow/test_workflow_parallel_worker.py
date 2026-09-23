@@ -30,6 +30,7 @@ from google.adk.workflow._workflow import Workflow
 from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
 from google.adk.workflow.utils._workflow_hitl_utils import has_request_input_function_call
 from google.genai import types
+from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 import pytest
@@ -1240,3 +1241,184 @@ async def test_parallel_worker_gives_up_on_item_that_ignores_cancellation(
 
   release.set()
   await asyncio.sleep(0)
+
+
+def _outputs_for(events: list[Event], path: str) -> list[Any]:
+  return [
+      e.output
+      for e in events
+      if e.node_info and e.node_info.path == path and e.output is not None
+  ]
+
+
+@pytest.mark.asyncio
+async def test_parallel_worker_directly_after_start_json_array_untyped(
+    request: pytest.FixtureRequest,
+) -> None:
+  """ParallelWorker placed directly after START unwraps a JSON array Content."""
+
+  @node(parallel_worker=True)
+  def review_case(node_input):
+    return {
+        'order_id': node_input['order_id'],
+        'decision': 'APPROVE' if node_input['amount'] < 100 else 'REVIEW',
+    }
+
+  def collect_decisions(node_input: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        'approved': [
+            d['order_id'] for d in node_input if d['decision'] == 'APPROVE'
+        ],
+        'needs_review': [
+            d['order_id'] for d in node_input if d['decision'] == 'REVIEW'
+        ],
+    }
+
+  agent = Workflow(
+      name='batch_review',
+      edges=[(START, review_case, collect_decisions)],
+  )
+  app = App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  payload = (
+      '[{"order_id": "ORD-1", "amount": 420}, '
+      '{"order_id": "ORD-2", "amount": 85}]'
+  )
+  events = await runner.run_async(testing_utils.get_user_content(payload))
+  assert _outputs_for(events, 'batch_review@1/collect_decisions@1') == [
+      {'approved': ['ORD-2'], 'needs_review': ['ORD-1']}
+  ]
+
+
+@pytest.mark.asyncio
+async def test_parallel_worker_directly_after_start_json_array_typed_model(
+    request: pytest.FixtureRequest,
+) -> None:
+  """ParallelWorker after START coerces each JSON item to inner BaseModel."""
+
+  class _OrderCase(BaseModel):
+    order_id: str
+    amount: int
+
+  @node(parallel_worker=True)
+  def review_case(node_input: _OrderCase) -> str:
+    return f'{node_input.order_id}:{node_input.amount}'
+
+  agent = Workflow(name='typed_batch', edges=[(START, review_case)])
+  app = App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  payload = (
+      '[{"order_id": "ORD-1", "amount": 420}, '
+      '{"order_id": "ORD-2", "amount": 85}]'
+  )
+  events = await runner.run_async(testing_utils.get_user_content(payload))
+  assert _outputs_for(events, 'typed_batch@1/review_case@1') == [
+      ['ORD-1:420', 'ORD-2:85']
+  ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('raw_text', 'expected'),
+    [
+        ('{"order_id": "ORD-1"}', {'order_id': 'ORD-1'}),
+        ('plain_text_item', 'plain_text_item'),
+    ],
+)
+async def test_parallel_worker_directly_after_start_non_list_payload(
+    request: pytest.FixtureRequest,
+    raw_text: str,
+    expected: Any,
+) -> None:
+  """ParallelWorker after START unwraps single JSON objects and plain text."""
+
+  @node(parallel_worker=True)
+  def echo_worker(node_input):
+    return {'received': node_input}
+
+  agent = Workflow(name='single_or_text', edges=[(START, echo_worker)])
+  app = App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(testing_utils.get_user_content(raw_text))
+  assert _outputs_for(events, 'single_or_text@1/echo_worker@1') == [
+      [{'received': expected}]
+  ]
+
+
+@pytest.mark.asyncio
+async def test_parallel_worker_str_annotated_worker_receives_raw_json_text(
+    request: pytest.FixtureRequest,
+) -> None:
+  """ParallelWorker wrapping a str-annotated node passes raw JSON text."""
+
+  @node(parallel_worker=True)
+  def string_worker(node_input: str) -> dict[str, str]:
+    return {'received_type': type(node_input).__name__, 'val': node_input}
+
+  agent = Workflow(name='str_worker_wf', edges=[(START, string_worker)])
+  app = App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(
+      testing_utils.get_user_content('{"order_id": "ORD-1"}')
+  )
+  assert _outputs_for(events, 'str_worker_wf@1/string_worker@1') == [
+      [{'received_type': 'str', 'val': '{"order_id": "ORD-1"}'}]
+  ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('optional', [False, True])
+async def test_parallel_worker_content_annotated_worker_preserves_content(
+    request: pytest.FixtureRequest,
+    optional: bool,
+) -> None:
+  """ParallelWorker preserves Content when inner node expects Content."""
+  if optional:
+
+    @node(parallel_worker=True)
+    def content_worker(node_input: types.Content | None) -> str:
+      assert node_input is not None
+      return node_input.parts[0].text or ''
+
+  else:
+
+    @node(parallel_worker=True)
+    def content_worker(node_input: types.Content) -> str:
+      return node_input.parts[0].text or ''
+
+  agent = Workflow(name='content_worker_wf', edges=[(START, content_worker)])
+  app = App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(
+      testing_utils.get_user_content('[{"order_id": "ORD-1"}]')
+  )
+  assert _outputs_for(events, 'content_worker_wf@1/content_worker@1') == [
+      ['[{"order_id": "ORD-1"}]']
+  ]
+
+
+@pytest.mark.asyncio
+async def test_parallel_worker_multimodal_content_preserved_untouched(
+    request: pytest.FixtureRequest,
+) -> None:
+  """ParallelWorker with multimodal non-text parts leaves Content untouched."""
+
+  @node(parallel_worker=True)
+  def raw_worker(node_input):
+    return {'is_content': isinstance(node_input, types.Content)}
+
+  agent = Workflow(name='multimodal_wf', edges=[(START, raw_worker)])
+  app = App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  blob = types.Blob(mime_type='image/png', data=b'123')
+  content = types.Content(role='user', parts=[types.Part(inline_data=blob)])
+  events = await runner.run_async(content)
+  assert _outputs_for(events, 'multimodal_wf@1/raw_worker@1') == [
+      [{'is_content': True}]
+  ]

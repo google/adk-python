@@ -18,15 +18,19 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
+import json
 import logging
 from typing import Any
 
+from google.genai import types
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import PrivateAttr
 from typing_extensions import override
 
 from ..agents.context import Context
+from ..utils._schema_utils import annotation_accepts_content
+from ..utils._schema_utils import annotation_expects_str
 from ._base_node import BaseNode
 from ._errors import WorkflowConfigurationError
 from ._graph import NodeLike
@@ -38,6 +42,37 @@ logger = logging.getLogger('google_adk.' + __name__)
 # How long to wait for cancelled items to actually stop before giving up on
 # them, so an item that swallows cancellation cannot hang this node forever.
 _CANCELLED_ITEM_DRAIN_TIMEOUT_SECONDS = 5.0
+
+
+def _get_node_input_annotation(node: BaseNode) -> Any:
+  """Returns the input type annotation for the wrapped node, if any."""
+  schema = getattr(node, 'input_schema', None)
+  if schema not in (None, Any, object) and not isinstance(schema, dict):
+    return schema
+  type_hints = getattr(node, '_type_hints', None)
+  return type_hints.get('node_input') if isinstance(type_hints, dict) else None
+
+
+def _unwrap_content_input(
+    node_input: types.Content, inner_node: BaseNode
+) -> Any:
+  """Unwraps text/JSON payload from types.Content for parallel fan-out."""
+  if not node_input.parts or any(p.text is None for p in node_input.parts):
+    return node_input
+  hint = _get_node_input_annotation(inner_node)
+  if hint not in (None, Any, object) and annotation_accepts_content(hint):
+    return node_input
+
+  text_str = ''.join(p.text for p in node_input.parts if p.text is not None)
+  try:
+    parsed = json.loads(text_str)
+    if isinstance(parsed, list):
+      return parsed
+    if annotation_expects_str(hint):
+      return text_str
+    return parsed
+  except json.JSONDecodeError:
+    return text_str
 
 
 class _ParallelWorker(BaseNode):
@@ -87,6 +122,9 @@ class _ParallelWorker(BaseNode):
       ctx: Context,
       node_input: Any,
   ) -> AsyncGenerator[Any, None]:
+    if isinstance(node_input, types.Content):
+      node_input = _unwrap_content_input(node_input, self._node)
+
     if not isinstance(node_input, list):
       # Wrap the single input in a list to allow processing.
       # This handles cases where the input is a single item.
