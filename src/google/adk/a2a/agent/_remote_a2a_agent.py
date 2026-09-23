@@ -50,6 +50,7 @@ except ImportError:
 
 from ...agents.base_agent import BaseAgent
 from ...agents.invocation_context import InvocationContext
+from ...agents.llm.task._finish_task_tool import FINISH_TASK_DEFAULT_WRAPPER_KEY
 from ...agents.llm.task._finish_task_tool import FINISH_TASK_ERROR_RESULT
 from ...agents.llm.task._finish_task_tool import FINISH_TASK_SUCCESS_RESULT
 from ...agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
@@ -482,10 +483,34 @@ def _create_task_failure_events(
   finish_event = _create_finish_task_event(
       ctx=ctx,
       agent_name=agent_name,
+      # A task-mode node only leaves WAITING once it yields a non-None
+      # output, so an error finish_task event needs one just as much as a
+      # successful one does.
+      output={"error": error_message},
       error_message=error_message,
       is_error=True,
   )
   return error_event, finish_event
+
+
+def _completed_task_output(
+    task: Any,
+    agent_name: str,
+    ctx: InvocationContext,
+    part_converter: A2APartToGenAIPartConverter,
+    output_schema: Any,
+) -> Any:
+  """Builds the ``finish_task`` output for a task that reached COMPLETED
+  without the remote ever calling ``finish_task`` (e.g. a plain A2A peer
+  that only replies with a text artifact or message).
+  """
+  text = _text_from_content(
+      convert_a2a_task_to_event(task, agent_name, ctx, part_converter).content
+  )
+  if text is None:
+    return {}
+  wrapper_key = get_output_wrapper_key(output_schema)
+  return text if wrapper_key else {FINISH_TASK_DEFAULT_WRAPPER_KEY: text}
 
 
 def _add_mock_function_call(event: Event, state: TaskState) -> None:
@@ -643,15 +668,16 @@ class RemoteA2aAgent(BaseAgent):
   Only ``task`` is supported: the agent runs as a task sub-agent of a parent
   ``LlmAgent`` that owns the conversation across multiple turns, then hands
   control back to the parent when the remote A2A task reaches a terminal
-  completed state. Note: this requires the remote agent to invoke the
-  ``finish_task`` tool to signal completion (natively supported by ADK
-  task-mode agents, or must be manually implemented on custom A2A servers
-  by returning a FunctionResponse named ``finish_task`` with a response
-  containing a ``result`` key matching ``"Task completed."`` for success, or
-  ``"Task failed."`` for failure). Additionally, the client's ``output_schema``
-  must be set to mirror the remote agent's output schema to ensure correct
-  output unwrapping. ``None`` (default) leaves the agent as a plain
-  ``transfer_to_agent`` target.
+  state. An ADK task-mode peer signals completion by invoking the
+  ``finish_task`` tool (also supported on a custom A2A server that returns a
+  FunctionResponse named ``finish_task`` with a response containing a
+  ``result`` key matching ``"Task completed."`` for success, or ``"Task
+  failed."`` for failure); the client's ``output_schema`` should then be set
+  to mirror the remote agent's output schema for correct output unwrapping.
+  A plain A2A peer that never calls ``finish_task`` also closes the
+  delegation once its task reaches ``TASK_STATE_COMPLETED``, using the
+  task's final artifact or message text as the output. ``None`` (default)
+  leaves the agent as a plain ``transfer_to_agent`` target.
   """
 
   def __init__(
@@ -1709,95 +1735,131 @@ class RemoteA2aAgent(BaseAgent):
               event = await self._handle_a2a_response_v2(a2a_response, ctx)
             else:
               event = await self._handle_a2a_response(a2a_response, ctx)
-            if not event:
-              continue
 
-            event = await execute_after_request_interceptors(
-                self._config.request_interceptors, ctx, a2a_response, event
+            # A bare terminal TaskStatusUpdateEvent -- no status message, e.g.
+            # what TaskUpdater.complete()/failed() sends -- converts to no
+            # event above and would otherwise be silently dropped by the
+            # `continue` below, along with the terminal-state handling
+            # further down. Track it here so it still closes the delegation.
+            terminal_state = (
+                task.status.state
+                if self.mode == "task" and task and task.status
+                else None
             )
-            if not event:
+            if terminal_state not in (
+                _compat.TS_COMPLETED,
+                _compat.TS_FAILED,
+                _compat.TS_CANCELED,
+            ):
+              terminal_state = None
+
+            if not event and terminal_state is None:
               continue
 
-            # Add metadata about the request and response
-            event.custom_metadata = event.custom_metadata or {}
-            if a2a_request:
-              event.custom_metadata[A2A_METADATA_PREFIX + "request"] = (
-                  _compat.a2a_to_dict(a2a_request)
+            if event:
+              event = await execute_after_request_interceptors(
+                  self._config.request_interceptors, ctx, a2a_response, event
               )
-            # If the response is a ClientEvent, record the task state; otherwise,
-            # record the message object.
-            if isinstance(a2a_response, tuple):
-              event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (
-                  _compat.a2a_to_dict(a2a_response[0])
-              )
-            else:
-              event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (
-                  _compat.a2a_to_dict(a2a_response)
-              )
+              if not event and terminal_state is None:
+                continue
 
-            if self.mode == "task" and is_finish_task_terminal_fr(event):
-              args = _find_finish_task_args_from_history(
-                  ctx.session, ctx.isolation_scope, completed_fr_event=event
-              )
-              if args is not None:
-                wrapper_key = get_output_wrapper_key(self.output_schema)
-                if wrapper_key and wrapper_key in args:
-                  event.output = args[wrapper_key]
-                else:
-                  event.output = args
-              else:
-                # A custom A2A server may signal completion with the response
-                # alone and never send the matching call, so there is nothing
-                # to read an output from. The task still finished: leaving the
-                # output unset would read as "still running" and strand the
-                # delegation, so the parent never gets its turn back.
-                event.output = {}
-                logger.warning(
-                    "Could not find finish_task arguments for isolation scope"
-                    " '%s'. Completing the task with an empty output.",
-                    ctx.isolation_scope,
+            if event:
+              # Add metadata about the request and response
+              event.custom_metadata = event.custom_metadata or {}
+              if a2a_request:
+                event.custom_metadata[A2A_METADATA_PREFIX + "request"] = (
+                    _compat.a2a_to_dict(a2a_request)
                 )
-              # Yield the semantic output event so the parent runner can capture
-              # the final task output and record the tool response in history.
+              # If the response is a ClientEvent, record the task state; otherwise,
+              # record the message object.
+              if isinstance(a2a_response, tuple):
+                event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (
+                    _compat.a2a_to_dict(a2a_response[0])
+                )
+              else:
+                event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (
+                    _compat.a2a_to_dict(a2a_response)
+                )
+
+              if self.mode == "task" and is_finish_task_terminal_fr(event):
+                args = _find_finish_task_args_from_history(
+                    ctx.session, ctx.isolation_scope, completed_fr_event=event
+                )
+                if args is not None:
+                  wrapper_key = get_output_wrapper_key(self.output_schema)
+                  if wrapper_key and wrapper_key in args:
+                    event.output = args[wrapper_key]
+                  else:
+                    event.output = args
+                else:
+                  # A custom A2A server may signal completion with the response
+                  # alone and never send the matching call, so there is nothing
+                  # to read an output from. The task still finished: leaving the
+                  # output unset would read as "still running" and strand the
+                  # delegation, so the parent never gets its turn back.
+                  event.output = {}
+                  logger.warning(
+                      "Could not find finish_task arguments for isolation scope"
+                      " '%s'. Completing the task with an empty output.",
+                      ctx.isolation_scope,
+                  )
+                # Yield the semantic output event so the parent runner can capture
+                # the final task output and record the tool response in history.
+                yield event
+                # Mark the agent as finished so parent coordinator regains control.
+                # Returning early terminates the stream reader, ignoring any legacy
+                # duplicate FRs sent by the server at the end of the run.
+                should_release_task_control = True
+                return
+
               yield event
-              # Mark the agent as finished so parent coordinator regains control.
-              # Returning early terminates the stream reader, ignoring any legacy
-              # duplicate FRs sent by the server at the end of the run.
+
+            if terminal_state == _compat.TS_COMPLETED:
+              # The remote never called `finish_task` (e.g. a plain A2A
+              # agent), but the task itself reached a terminal completed
+              # state. Close the delegation the same way `finish_task` would,
+              # using the task's own final text as the output -- leaving
+              # `output` unset would strand the delegation in WAITING.
+              yield _create_finish_task_event(
+                  ctx=ctx,
+                  agent_name=self.name,
+                  output=_completed_task_output(
+                      task,
+                      self.name,
+                      ctx,
+                      self._a2a_part_converter,
+                      self.output_schema,
+                  ),
+              )
               should_release_task_control = True
               return
 
-            yield event
-
-            if self.mode == "task" and task:
-              if task.status and task.status.state in (
-                  _compat.TS_FAILED,
-                  _compat.TS_CANCELED,
-              ):
-                is_cancel = task.status.state == _compat.TS_CANCELED
-                logger.warning(
-                    "Remote task reported %s state. Yielding error event and "
-                    "releasing control.",
-                    "canceled" if is_cancel else "failure",
+            if terminal_state in (_compat.TS_FAILED, _compat.TS_CANCELED):
+              is_cancel = terminal_state == _compat.TS_CANCELED
+              logger.warning(
+                  "Remote task reported %s state. Yielding error event and "
+                  "releasing control.",
+                  "canceled" if is_cancel else "failure",
+              )
+              error_text = "Unknown error"
+              if is_cancel:
+                error_text = "Task canceled"
+              elif event:
+                error_text = (
+                    _text_from_content(event.content) or "Unknown error"
                 )
-                error_text = "Unknown error"
-                if is_cancel:
-                  error_text = "Task canceled"
-                elif event:
-                  error_text = (
-                      _text_from_content(event.content) or "Unknown error"
-                  )
 
-                error_event, failure_event = _create_task_failure_events(
-                    error_text=error_text,
-                    ctx=ctx,
-                    agent_name=self.name,
-                    task_id=task.id,
-                    a2a_request=a2a_request,
-                )
-                yield error_event
-                yield failure_event
-                should_release_task_control = True
-                return
+              error_event, failure_event = _create_task_failure_events(
+                  error_text=error_text,
+                  ctx=ctx,
+                  agent_name=self.name,
+                  task_id=task.id,
+                  a2a_request=a2a_request,
+              )
+              yield error_event
+              yield failure_event
+              should_release_task_control = True
+              return
 
         if (
             last_task
@@ -1865,6 +1927,7 @@ class RemoteA2aAgent(BaseAgent):
           yield _create_finish_task_event(
               ctx=ctx,
               agent_name=self.name,
+              output={"error": task_error_message},
               error_message=task_error_message,
               is_error=True,
           )

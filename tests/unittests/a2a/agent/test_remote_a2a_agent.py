@@ -6011,7 +6011,12 @@ class TestRemoteA2aAgentTaskModeFailurePropagation:
           assert events[2].content.parts[0].function_response.response == {
               "result": FINISH_TASK_ERROR_RESULT
           }
-          assert events[2].output is None
+          # A task-mode node only leaves WAITING once it yields a non-None
+          # output, so the error finish_task event needs one too, or the
+          # coordinator never gets its turn back.
+          assert events[2].output == {
+              "error": "Remote A2A task failed: Task canceled"
+          }
           assert (
               events[2].error_message == "Remote A2A task failed: Task canceled"
           )
@@ -6020,6 +6025,91 @@ class TestRemoteA2aAgentTaskModeFailurePropagation:
           mock_context.set_agent_state.assert_called_once_with(
               agent.name, end_of_agent=True
           )
+
+
+class TestRemoteA2aAgentCompletesWithoutFinishTask:
+  """Regression test for #7248.
+
+  A task-mode delegation to a plain (non-ADK) A2A peer that ends in
+  TASK_STATE_COMPLETED without ever calling `finish_task` must still close:
+  the coordinator needs a function response so its model runs again.
+  """
+
+  @pytest.mark.asyncio
+  async def test_closes_delegation_on_bare_task_completion(self):
+    agent_card = create_test_agent_card()
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=agent_card,
+        mode="task",
+    )
+
+    mock_context = Mock(spec=InvocationContext)
+    mock_context.session = Mock(spec=Session)
+    mock_context.session.events = [_make_dummy_task_trigger_event()]
+    mock_context.session.state = {}
+    mock_context.agent_states = {}
+    mock_context.end_of_agents = {}
+    mock_context.isolation_scope = "task-1"
+    mock_context.invocation_id = "invocation-123"
+    mock_context.branch = "main"
+
+    def set_agent_state_side_effect(agent_name, **kwargs):
+      if kwargs.get("end_of_agent"):
+        mock_context.end_of_agents[agent_name] = True
+      else:
+        mock_context.end_of_agents.pop(agent_name, None)
+
+    mock_context.set_agent_state.side_effect = set_agent_state_side_effect
+
+    # A plain A2A peer that answers with an artifact and completes the task,
+    # never calling ADK's `finish_task`.
+    completed_task = _compat.make_task(
+        id="task-1",
+        status=_compat.make_task_status(_compat.TS_COMPLETED),
+        context_id="context-123",
+        artifacts=[
+            _compat.make_artifact(
+                artifact_id="artifact-1",
+                parts=[_compat.make_text_part("17 * 23 = 391")],
+            )
+        ],
+    )
+
+    mock_a2a_client = Mock()
+    mock_send_message = AsyncMock()
+    mock_send_message.__aiter__.return_value = [
+        _make_stream_task(completed_task)
+    ]
+    mock_a2a_client.send_message.return_value = mock_send_message
+    agent._a2a_client = mock_a2a_client
+
+    with patch.object(
+        agent, "_ensure_resolved", AsyncMock(return_value=mock_a2a_client)
+    ):
+      with patch.object(
+          agent, "_construct_message_parts_from_session"
+      ) as mock_construct:
+        mock_construct.return_value = (
+            [_compat.make_text_part("what is 17*23?")],
+            "context-123",
+        )
+
+        events = [event async for event in agent._run_async_impl(mock_context)]
+
+    # The peer's answer is delivered as a normal content event ...
+    assert events[0].content.parts[0].text == "17 * 23 = 391"
+
+    # ... and the delegation still closes even though the peer never called
+    # `finish_task`, with the peer's text as the task output.
+    finish_event = events[1]
+    fr = finish_event.content.parts[0].function_response
+    assert fr.name == FINISH_TASK_TOOL_NAME
+    assert fr.response == {"result": FINISH_TASK_SUCCESS_RESULT}
+    assert finish_event.output == {"result": "17 * 23 = 391"}
+
+    assert events[2].actions.end_of_agent is True
+    assert mock_context.end_of_agents[agent.name] is True
 
 
 class TestRemoteA2aAgentStreamTruncation:
