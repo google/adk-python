@@ -1563,7 +1563,9 @@ async def test_forecast_leaves_the_event_loop_free_while_querying():
         ({"horizon": "invalid"}, "horizon must be an integer"),
     ],
 )
-async def test_forecast_invalid_inputs(param_overrides, expected_error_substring):
+async def test_forecast_invalid_inputs(
+    param_overrides, expected_error_substring
+):
   mock_credentials = mock.MagicMock(spec=Credentials)
   mock_settings = BigQueryToolConfig()
   mock_tool_context = mock.create_autospec(ToolContext, instance=True)
@@ -2404,7 +2406,9 @@ def test_execute_sql_user_job_labels_augment_internal_labels(
 )
 @pytest.mark.asyncio
 @mock.patch.object(query_tool, "_validate_subquery", autospec=True)
-async def test_ml_tool_job_labels(mock_validate, tool_call, expected_tool_label):
+async def test_ml_tool_job_labels(
+    mock_validate, tool_call, expected_tool_label
+):
   """Test ML tools for job label."""
   mock_validate.return_value = None
 
@@ -2733,7 +2737,9 @@ def test_execute_sql_maximum_bytes_billed_config():
 )
 @pytest.mark.asyncio
 @mock.patch.object(query_tool, "_validate_subquery", autospec=True)
-async def test_tool_call_doesnt_change_global_settings(mock_validate, tool_call):
+async def test_tool_call_doesnt_change_global_settings(
+    mock_validate, tool_call
+):
   """Test query tools don't change global settings."""
   mock_validate.return_value = None
   settings = BigQueryToolConfig(write_mode=WriteMode.ALLOWED)
