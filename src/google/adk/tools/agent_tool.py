@@ -317,6 +317,8 @@ class AgentTool(BaseTool):
     last_content = None
     last_error_message = None
     last_grounding_metadata = None
+    last_output = None
+    last_skip_summarization_response = None
     async with Aclosing(
         runner.run_async(
             user_id=session.user_id,
@@ -331,6 +333,16 @@ class AgentTool(BaseTool):
           tool_context.state.update(event.actions.state_delta)
         if event.error_message:
           last_error_message = event.error_message
+        if event.output is not None:
+          last_output = event.output
+        if (
+            event.actions.skip_summarization
+            and event.content
+            and event.content.parts
+        ):
+          for part in event.content.parts:
+            if part.function_response is not None:
+              last_skip_summarization_response = part.function_response.response
         if event.content:
           last_content = event.content
           last_grounding_metadata = event.grounding_metadata
@@ -340,11 +352,23 @@ class AgentTool(BaseTool):
     await runner.close()
 
     if last_content is None or last_content.parts is None:
+      if last_output is not None:
+        return last_output
+      if last_skip_summarization_response is not None:
+        return last_skip_summarization_response
       return last_error_message or ''
     parts_text = (_part_to_text(p) for p in last_content.parts if not p.thought)
     merged_text = '\n'.join(t for t in parts_text if t)
-    if not merged_text and last_error_message:
-      return last_error_message
+    if not merged_text:
+      # The final event carried no text (e.g. a `skip_summarization` tool
+      # response), but the run still produced a real result elsewhere in the
+      # event stream.
+      if last_output is not None:
+        return last_output
+      if last_skip_summarization_response is not None:
+        return last_skip_summarization_response
+      if last_error_message:
+        return last_error_message
     output_schema = _get_output_schema(self.agent)
     if output_schema:
       tool_result = validate_schema(output_schema, merged_text)
