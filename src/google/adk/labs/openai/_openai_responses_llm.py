@@ -1141,6 +1141,21 @@ class OpenAIResponsesLlm(BaseLlm):
       kwargs['previous_response_id'] = llm_request.previous_interaction_id
 
     self._apply_config(config, kwargs)
+    # Reasoning models (o-series, gpt-5.x, gpt-6.x) reject a non-default
+    # ``temperature`` / ``top_p`` on the Responses API too. Drop them for the
+    # effective model rather than letting the backend 400.
+    #
+    # NOTE: detection is by model-id shape. ``AzureOpenAIResponsesLlm`` sends a
+    # deployment name here (``kwargs['model']``), which is operator-chosen and
+    # need not resemble the underlying OpenAI id -- so a reasoning deployment
+    # named e.g. ``o3-mini`` (or ``azure/o1``) is detected, but an arbitrary
+    # name is not. When a custom-named Azure deployment is a reasoning model,
+    # name the deployment after its base model (or omit ``temperature`` /
+    # ``top_p`` upstream) so the backend does not 400.
+    model = kwargs.get('model')
+    # Reasoning models reject a non-default temperature/top_p; strip either from
+    # the request (with a warning) when it would 400.
+    _openai_common.strip_unsupported_sampling_params(kwargs, model)
     self._apply_model_options(kwargs)
     # extra_request_args overrides computed top-level kwargs, but extra_body is
     # merged so a user-supplied extra_body does not silently drop computed keys

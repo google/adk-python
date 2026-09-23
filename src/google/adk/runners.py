@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import aclosing
+import contextvars
 import inspect
 import logging
 from pathlib import Path
@@ -978,7 +979,10 @@ class Runner:
       finally:
         event_queue.put(None)
 
-    thread = create_thread(target=_asyncio_thread_main)
+    # A new thread starts with empty contextvars. Run it in a copy of the
+    # caller's so the invocation joins the caller's OpenTelemetry trace instead
+    # of starting a disconnected one.
+    thread = create_thread(contextvars.copy_context().run, _asyncio_thread_main)
     thread.start()
 
     exhausted = False

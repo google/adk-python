@@ -18,6 +18,7 @@ import logging
 import os
 from unittest import mock
 
+from google.adk.labs.openai._openai_common import is_reasoning_model
 from google.adk.labs.openai._openai_llm import _function_declaration_to_openai_tool
 from google.adk.labs.openai._openai_llm import _map_finish_reason
 from google.adk.labs.openai._openai_llm import _part_to_openai_content
@@ -164,6 +165,130 @@ async def test_generate_content_async():
       assert isinstance(responses[0], LlmResponse)
       assert responses[0].content.parts[0].text == "Hello there!"
       assert responses[0].usage_metadata.total_token_count == 15
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["gpt-5.6-sol", "gpt-6-astra", "o3-mini"])
+async def test_reasoning_model_uses_max_completion_tokens_and_drops_temp(model):
+  """Reasoning models send max_completion_tokens and drop temperature/top_p."""
+  with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
+    openai_llm = OpenAILlm(model=model, max_tokens=256)
+    llm_request = LlmRequest(
+        model=model,
+        contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+        config=types.GenerateContentConfig(temperature=0.2, top_p=0.9),
+    )
+
+    mock_response = mock.MagicMock()
+    mock_choice = mock.MagicMock()
+    mock_choice.message.content = "hi"
+    mock_choice.message.tool_calls = None
+    mock_choice.finish_reason = "stop"
+    mock_response.choices = [mock_choice]
+    mock_response.usage.prompt_tokens = 1
+    mock_response.usage.completion_tokens = 1
+    mock_response.usage.total_tokens = 2
+
+    captured = {}
+
+    async def mock_create(*args, **kwargs):
+      captured.update(kwargs)
+      return mock_response
+
+    with mock.patch(
+        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+    ) as mock_client_class:
+      mock_client = mock.MagicMock()
+      mock_client_class.return_value = mock_client
+      mock_client.chat.completions.create = mock_create
+
+      _ = [
+          resp
+          async for resp in openai_llm.generate_content_async(
+              llm_request, stream=False
+          )
+      ]
+
+    assert captured["max_completion_tokens"] == 256
+    assert "max_tokens" not in captured
+    assert "temperature" not in captured
+    assert "top_p" not in captured
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "o1",
+        "o3-mini",
+        "gpt-5",
+        "gpt-5.6-sol",
+        "gpt-6-astra",
+        "openai/o3-mini",
+        "azure/o1",
+    ],
+)
+def test_is_reasoning_model_positive(model):
+  """o-series and gpt-5.x/6.x families (namespaced too) are reasoning."""
+  assert is_reasoning_model(model) is True
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gpt-4o",
+        "gpt-4.1",
+        "gpt-5-chat",
+        "gpt-5-chat-latest",
+        "gpt-5.1-chat-latest",
+        "xai/grok-4.6",
+        None,
+        "",
+    ],
+)
+def test_is_reasoning_model_negative(model):
+  """Chat models, other providers, and empty input are not reasoning."""
+  assert is_reasoning_model(model) is False
+
+
+@pytest.mark.asyncio
+async def test_reasoning_model_drops_sampling_params_with_warning(caplog):
+  """A reasoning model drops temperature/top_p and logs a warning for each."""
+  with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
+    openai_llm = OpenAILlm(model="o3-mini")
+    llm_request = LlmRequest(
+        model="o3-mini",
+        contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+        config=types.GenerateContentConfig(temperature=0.5, top_p=0.9),
+    )
+
+    with caplog.at_level(logging.WARNING):
+      create_kwargs = await _capture_create_kwargs(openai_llm, llm_request)
+
+  assert "temperature" not in create_kwargs
+  assert "top_p" not in create_kwargs
+  assert "Ignoring temperature" in caplog.text
+  assert "Ignoring top_p" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_reasoning_model_keeps_default_temperature_without_warning(
+    caplog,
+):
+  """A reasoning model accepts the default temperature/top_p (1); keep it."""
+  with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
+    openai_llm = OpenAILlm(model="o3-mini")
+    llm_request = LlmRequest(
+        model="o3-mini",
+        contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+        config=types.GenerateContentConfig(temperature=1, top_p=1),
+    )
+
+    with caplog.at_level(logging.WARNING):
+      create_kwargs = await _capture_create_kwargs(openai_llm, llm_request)
+
+  assert create_kwargs["temperature"] == 1
+  assert create_kwargs["top_p"] == 1
+  assert "Ignoring" not in caplog.text
 
 
 @pytest.mark.asyncio

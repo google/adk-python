@@ -33,6 +33,7 @@ from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
+from google.adk.cli import api_server as api_server_module
 from google.adk.cli import fast_api as fast_api_module
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.errors.input_validation_error import InputValidationError
@@ -4899,6 +4900,76 @@ def test_dev_only_endpoints_absent_when_web_disabled(
   # The production endpoints are still there.
   assert client.get("/health").status_code == 200
   assert client.get("/list-apps").status_code == 200
+
+
+def _installed_internal_exporters(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    *,
+    web: bool,
+) -> list[str]:
+  """Names of the span exporters the server registers on the tracer provider."""
+  with patch.object(
+      api_server_module, "_setup_telemetry", autospec=True
+  ) as mock_setup_telemetry:
+    _create_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+        web=web,
+    )
+  processors = mock_setup_telemetry.call_args.kwargs["internal_exporters"]
+  return [type(processor.span_exporter).__name__ for processor in processors]
+
+
+def test_span_buffers_not_filled_when_web_disabled(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Nothing reads the in-memory spans on web=False, so nothing writes them."""
+  assert (
+      _installed_internal_exporters(
+          mock_session_service,
+          mock_artifact_service,
+          mock_memory_service,
+          mock_agent_loader,
+          mock_eval_sets_manager,
+          mock_eval_set_results_manager,
+          web=False,
+      )
+      == []
+  )
+
+
+def test_span_buffers_filled_when_web_enabled(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """The dev server's trace views need the spans, so both exporters run."""
+  assert _installed_internal_exporters(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      web=True,
+  ) == ["ApiServerSpanExporter", "InMemoryExporter"]
 
 
 def test_app_info_rejects_special_agent_only_in_api_server_mode(
