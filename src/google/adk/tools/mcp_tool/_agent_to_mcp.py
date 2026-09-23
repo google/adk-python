@@ -16,7 +16,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import contextvars
 import logging
 from typing import Any
 from typing import MutableMapping
@@ -157,6 +159,53 @@ async def _reap_orphaned_sessions(
       )
 
 
+def _log_reap_failure(task: asyncio.Task[None]) -> None:
+  """Logs an unexpected error from a background reap.
+
+  Retrieving the exception here also keeps asyncio from reporting it later as
+  "Task exception was never retrieved".
+
+  Args:
+    task: The finished reap task.
+  """
+  if task.cancelled():
+    return
+  exc = task.exception()
+  if exc is not None:
+    logger.warning(
+        "Background reap of orphaned MCP agent sessions failed.",
+        exc_info=exc,
+    )
+
+
+def _start_background_reap(
+    runner: Runner,
+    sessions: MutableMapping[object, str],
+    created: set[str],
+) -> asyncio.Task[None]:
+  """Starts `_reap_orphaned_sessions` as a task with failure logging.
+
+  Callers run this inside an empty ``contextvars.Context``. Both the task and
+  its done callback capture the current context, and a copy of the calling
+  tool request's context would keep that request, and through it the MCP
+  connection, alive for as long as the task exists (MCP SDK 1.x stores the
+  request in a ContextVar). A stuck reap would then pin a connection whose
+  session it should delete. Running in an empty context also works on Python
+  3.10, which lacks ``create_task(context=...)``.
+
+  Args:
+    runner: The Runner whose session service owns the sessions.
+    sessions: Per-connection map from MCP connection to ADK session id.
+    created: Ids of every session entered into ``sessions``.
+
+  Returns:
+    The started reap task.
+  """
+  task = asyncio.create_task(_reap_orphaned_sessions(runner, sessions, created))
+  task.add_done_callback(_log_reap_failure)
+  return task
+
+
 async def _run_agent(
     runner: Runner,
     request: str,
@@ -287,11 +336,30 @@ def to_mcp_server(
       set() if delete_orphaned_sessions else None
   )
 
+  # The in-flight reap, if any. Held here so the task is not garbage-collected
+  # mid-run, and so at most one reap runs at a time.
+  reap_task: Optional[asyncio.Task[None]] = None
+
   async def call_agent(
       request: str, ctx: Context[ServerSession, Any]
   ) -> list[mcp_types.ContentBlock]:
-    if created_session_ids is not None:
-      await _reap_orphaned_sessions(agent_runner, sessions, created_session_ids)
+    nonlocal reap_task
+    # A task from another event loop may never finish from this loop's point
+    # of view (e.g. that loop stopped without cancelling it), so it must not
+    # block reaping here.
+    if created_session_ids is not None and (
+        reap_task is None
+        or reap_task.done()
+        or reap_task.get_loop() is not asyncio.get_running_loop()
+    ):
+      # Reap in the background so a slow session service (e.g. a database)
+      # never adds delete latency to the live call.
+      reap_task = contextvars.Context().run(
+          _start_background_reap,
+          agent_runner,
+          sessions,
+          created_session_ids,
+      )
     return await _run_agent(
         agent_runner, request, ctx, sessions, created_session_ids
     )

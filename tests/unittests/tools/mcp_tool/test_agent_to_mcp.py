@@ -14,8 +14,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import contextvars
 import gc
+import logging
 from types import SimpleNamespace
 from typing import AsyncGenerator
 import weakref
@@ -32,6 +35,8 @@ import pytest
 
 from ._in_memory_session import connected_client_session
 from ._sdk_compat import field
+
+_CALLER_VAR: contextvars.ContextVar[str] = contextvars.ContextVar("_CALLER_VAR")
 
 
 class _EchoAgent(BaseAgent):
@@ -378,6 +383,150 @@ async def test_call_tool_reaps_conversation_of_closed_connection():
 
   assert runner.session_ids == ["session-1", "session-2"]
   assert runner.deleted_session_ids == ["session-1"]
+
+
+@pytest.mark.asyncio
+async def test_call_tool_does_not_wait_on_slow_session_deletes():
+  """Reaping runs in the background, so a slow session service (e.g. a
+  database) never adds delete latency to the live tool call."""
+  agent = _EchoAgent(name="assistant")
+  runner = _FakeRunner([_text_event("ok")])
+  release = asyncio.Event()
+  record_delete = runner.session_service.delete_session
+
+  async def blocked_delete(**kwargs):
+    await release.wait()
+    await record_delete(**kwargs)
+
+  runner.session_service.delete_session = blocked_delete
+  server = to_mcp_server(agent, runner=runner)
+
+  async with connected_client_session(server) as client:
+    await client.call_tool("assistant", {"request": "first"})
+  gc.collect()
+  async with connected_client_session(server) as client:
+    # Completes while the delete of session-1 is still blocked.
+    await asyncio.wait_for(
+        client.call_tool("assistant", {"request": "second"}), timeout=5
+    )
+    assert runner.deleted_session_ids == []
+
+    release.set()
+    for _ in range(100):
+      if runner.deleted_session_ids:
+        break
+      await asyncio.sleep(0.01)
+
+  assert runner.deleted_session_ids == ["session-1"]
+
+
+@pytest.mark.asyncio
+async def test_background_reap_failure_is_logged_not_raised(
+    monkeypatch, caplog
+):
+  """An unexpected reap error is logged and never fails the live call."""
+
+  async def failing_reap(*args, **kwargs):
+    raise RuntimeError("reap exploded")
+
+  monkeypatch.setattr(
+      "google.adk.tools.mcp_tool._agent_to_mcp._reap_orphaned_sessions",
+      failing_reap,
+  )
+  agent = _EchoAgent(name="assistant")
+  runner = _FakeRunner([_text_event("ok")])
+  server = to_mcp_server(agent, runner=runner)
+
+  with caplog.at_level(logging.WARNING):
+    async with connected_client_session(server) as client:
+      result = await client.call_tool("assistant", {"request": "first"})
+      await asyncio.sleep(0)
+
+  assert not field(result, "isError")
+  assert "Background reap of orphaned MCP agent sessions failed" in caplog.text
+  assert "reap exploded" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_background_reap_does_not_inherit_the_callers_context():
+  """The reap task starts from an empty context. Inheriting the tool call's
+  would keep that request, and on MCP SDK 1.x its connection, alive for as
+  long as the task runs."""
+  agent = _EchoAgent(name="assistant")
+  runner = _FakeRunner([_text_event("ok")])
+  record_delete = runner.session_service.delete_session
+  seen_in_reap: list[object] = []
+
+  async def delete_recording_context(**kwargs):
+    seen_in_reap.append(_CALLER_VAR.get(None))
+    await record_delete(**kwargs)
+
+  runner.session_service.delete_session = delete_recording_context
+  server = to_mcp_server(agent, runner=runner)
+
+  token = _CALLER_VAR.set("request-scoped value")
+  try:
+    async with connected_client_session(server) as client:
+      await client.call_tool("assistant", {"request": "first"})
+    gc.collect()
+    async with connected_client_session(server) as client:
+      await client.call_tool("assistant", {"request": "second"})
+  finally:
+    _CALLER_VAR.reset(token)
+
+  assert runner.deleted_session_ids == ["session-1"]
+  assert seen_in_reap == [None]
+
+
+def test_reap_is_not_blocked_by_a_task_from_another_event_loop():
+  """A reap stuck in an event loop that stopped without cancelling it must not
+  stop reaping in the loop that serves later calls."""
+  agent = _EchoAgent(name="assistant")
+  runner = _FakeRunner([_text_event("ok")])
+  record_delete = runner.session_service.delete_session
+
+  async def delete_blocking_first(**kwargs):
+    if kwargs["session_id"] == "session-1":
+      await asyncio.Event().wait()
+    await record_delete(**kwargs)
+
+  runner.session_service.delete_session = delete_blocking_first
+  server = to_mcp_server(agent, runner=runner)
+
+  async def call_on_new_connection(request: str) -> None:
+    async with connected_client_session(server) as client:
+      await client.call_tool("assistant", {"request": request})
+    gc.collect()
+
+  async def first_loop_calls() -> None:
+    await call_on_new_connection("a")
+    # Starts the reap of session-1, which never finishes in this loop.
+    await call_on_new_connection("b")
+
+  first_loop = asyncio.new_event_loop()
+  try:
+    first_loop.run_until_complete(first_loop_calls())
+
+    async def second_loop_calls() -> None:
+      await call_on_new_connection("c")
+      for _ in range(100):
+        if "session-2" in runner.deleted_session_ids:
+          break
+        await asyncio.sleep(0.01)
+
+    asyncio.run(second_loop_calls())
+
+    assert "session-2" in runner.deleted_session_ids
+  finally:
+
+    async def cancel_stuck_tasks() -> None:
+      pending = asyncio.all_tasks() - {asyncio.current_task()}
+      for task in pending:
+        task.cancel()
+      await asyncio.gather(*pending, return_exceptions=True)
+
+    first_loop.run_until_complete(cancel_stuck_tasks())
+    first_loop.close()
 
 
 @pytest.mark.asyncio
