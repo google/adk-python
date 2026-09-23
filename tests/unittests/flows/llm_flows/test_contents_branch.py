@@ -20,12 +20,42 @@ Child agents can see parent agents' events, but not sibling agents' events.
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
+from google.adk.flows.llm_flows.contents import _is_event_belongs_to_branch
 from google.adk.flows.llm_flows.contents import request_processor
 from google.adk.models.llm_request import LlmRequest
 from google.genai import types
 import pytest
 
 from ... import testing_utils
+
+
+@pytest.mark.parametrize(
+    "invocation_branch, event_branch, expected",
+    [
+        # No branch on either side: nothing to segregate.
+        (None, "p.a", True),
+        ("p.a", None, True),
+        # Same branch.
+        ("p.a", "p.a", True),
+        # Event from an enclosing level (event branch is a prefix).
+        ("p.a.q.x", "p.a", True),
+        # Event from a finished nested group below (invocation branch is a
+        # prefix). The reducer case from issue #3470.
+        ("p.a", "p.a.q.x", True),
+        # Sub-agents of the same ParallelAgent are isolated lanes. So is
+        # everything nested under them, including different ParallelAgents.
+        ("p.a", "p.b", False),
+        ("gp.x.p1.a", "gp.y.p2.d", False),
+        # Different ParallelAgents run one after another. The sequence of
+        # stages case from issue #3470.
+        ("p2.c", "p1.a", True),
+        # A name prefix is not ancestry.
+        ("p.agent_00", "p.agent_0", False),
+    ],
+)
+def test_is_event_belongs_to_branch(invocation_branch, event_branch, expected):
+  event = Event(invocation_id="inv", author="x", branch=event_branch)
+  assert _is_event_belongs_to_branch(invocation_branch, event) is expected
 
 
 @pytest.mark.asyncio
@@ -199,8 +229,10 @@ async def test_branch_filtering_grandchild_sees_grandparent():
   invocation_context = await testing_utils.create_invocation_context(
       agent=agent
   )
-  # Set deeply nested branch: grandparent.parent.grandchild
-  invocation_context.branch = "grandparent_agent.parent_agent.grandchild_agent"
+  # grandparent_agent forks parent_agent, which forks grandchild and sibling.
+  invocation_context.branch = (
+      "grandparent_agent.parent_agent.parent_agent.grandchild_agent"
+  )
 
   # Add events from all levels of hierarchy
   events = [
@@ -208,7 +240,7 @@ async def test_branch_filtering_grandchild_sees_grandparent():
           invocation_id="inv1",
           author="grandparent_agent",
           content=types.ModelContent("Grandparent response"),
-          branch="grandparent_agent",
+          branch=None,
       ),
       Event(
           invocation_id="inv2",
@@ -220,13 +252,13 @@ async def test_branch_filtering_grandchild_sees_grandparent():
           invocation_id="inv3",
           author="grandchild_agent",
           content=types.ModelContent("Grandchild response"),
-          branch="grandparent_agent.parent_agent.grandchild_agent",
+          branch="grandparent_agent.parent_agent.parent_agent.grandchild_agent",
       ),
       Event(
           invocation_id="inv4",
           author="sibling_agent",
           content=types.ModelContent("Sibling response"),
-          branch="grandparent_agent.parent_agent.sibling_agent",
+          branch="grandparent_agent.parent_agent.parent_agent.sibling_agent",
       ),
   ]
   invocation_context.session.events = events
@@ -251,15 +283,15 @@ async def test_branch_filtering_grandchild_sees_grandparent():
 
 
 @pytest.mark.asyncio
-async def test_branch_filtering_parent_cannot_see_child():
-  """Test that parent agents cannot see child agents' events."""
+async def test_branch_filtering_parent_sees_finished_children():
+  """A reducer after parallel agents sees their finished work (#3470)."""
   agent = Agent(model="gemini-2.5-flash", name="parent_agent")
   llm_request = LlmRequest(model="gemini-2.5-flash")
   invocation_context = await testing_utils.create_invocation_context(
       agent=agent
   )
-  # Set current branch as parent
-  invocation_context.branch = "parent_agent"
+  # parent_agent runs under outer, after workers and sub_workers finished.
+  invocation_context.branch = "outer.parent_agent"
 
   # Add events from parent and its children
   events = [
@@ -272,19 +304,22 @@ async def test_branch_filtering_parent_cannot_see_child():
           invocation_id="inv2",
           author="parent_agent",
           content=types.ModelContent("Parent response"),
-          branch="parent_agent",
+          branch="outer.parent_agent",
       ),
       Event(
           invocation_id="inv3",
           author="child_agent",
           content=types.ModelContent("Child response"),
-          branch="parent_agent.child_agent",
+          branch="outer.parent_agent.workers.child_agent",
       ),
       Event(
           invocation_id="inv4",
           author="grandchild_agent",
           content=types.ModelContent("Grandchild response"),
-          branch="parent_agent.child_agent.grandchild_agent",
+          branch=(
+              "outer.parent_agent.workers.child_agent.sub_workers"
+              ".grandchild_agent"
+          ),
       ),
   ]
   invocation_context.session.events = events
@@ -293,8 +328,22 @@ async def test_branch_filtering_parent_cannot_see_child():
   async for _ in request_processor.run_async(invocation_context, llm_request):
     pass
 
-  # Verify parent cannot see child or grandchild events
+  # Verify parent sees child and grandchild events
   assert llm_request.contents == [
       types.UserContent("User message"),
       types.ModelContent("Parent response"),
+      types.Content(
+          role="user",
+          parts=[
+              types.Part(text="For context:"),
+              types.Part(text="[child_agent] said: Child response"),
+          ],
+      ),
+      types.Content(
+          role="user",
+          parts=[
+              types.Part(text="For context:"),
+              types.Part(text="[grandchild_agent] said: Grandchild response"),
+          ],
+      ),
   ]
