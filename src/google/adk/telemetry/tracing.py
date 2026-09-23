@@ -48,6 +48,7 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_OPERATION_NAME
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_REQUEST_MODEL
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_RESPONSE_FINISH_REASONS
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_RESPONSE_MODEL
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_SYSTEM
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_CALL_ID
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_DESCRIPTION
@@ -689,6 +690,8 @@ def trace_call_llm(
   _set_context_cache_attributes(
       telemetry_config, span, getattr(llm_response, "cache_metadata", None)
   )
+  if llm_response.model_version:
+    span.set_attribute(GEN_AI_RESPONSE_MODEL, llm_response.model_version)
   if is_reported_finish_reason(finish_reason := llm_response.finish_reason):
     span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, [finish_reason.lower()])
 
@@ -1237,6 +1240,8 @@ def trace_inference_result(
   # reported does not reach here.
   if is_reported_finish_reason(finish_reason := llm_response.finish_reason):
     span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, [finish_reason.lower()])
+  if llm_response.model_version:
+    span.set_attribute(GEN_AI_RESPONSE_MODEL, llm_response.model_version)
   _set_usage_metadata_attributes(span, llm_response.usage_metadata)
   # Callers outside adk pass their own response objects here, which are only
   # required to carry the fields this function already read.

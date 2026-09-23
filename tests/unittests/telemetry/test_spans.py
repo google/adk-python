@@ -75,6 +75,7 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_OUTPUT_MESSAGES
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_REQUEST_MODEL
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_RESPONSE_FINISH_REASONS
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_RESPONSE_MODEL
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_SYSTEM
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_SYSTEM_INSTRUCTIONS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_INPUT_TOKENS
@@ -234,6 +235,52 @@ async def test_trace_call_llm(monkeypatch, mock_span_fixture):
       expected_calls, any_order=True
   )
   mock_span_fixture.set_attributes.assert_called_once_with(expected_usage_attrs)
+
+
+@pytest.mark.asyncio
+async def test_trace_call_llm_sets_response_model_from_model_version(
+    monkeypatch, mock_span_fixture
+):
+  """The served model, not just the requested one, belongs on the span."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest(model='requested-model')
+  llm_response = LlmResponse(
+      turn_complete=True,
+      model_version='served-model-v2',
+  )
+
+  trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
+
+  mock_span_fixture.set_attribute.assert_any_call(
+      GEN_AI_RESPONSE_MODEL, 'served-model-v2'
+  )
+
+
+@pytest.mark.asyncio
+async def test_trace_call_llm_omits_response_model_without_model_version(
+    monkeypatch, mock_span_fixture
+):
+  """No served model is known, so the attribute must not be published."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest(model='requested-model')
+  llm_response = LlmResponse(turn_complete=True)
+
+  trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
+
+  set_calls = [
+      call.args[0] for call in mock_span_fixture.set_attribute.call_args_list
+  ]
+  assert GEN_AI_RESPONSE_MODEL not in set_calls
 
 
 @pytest.mark.asyncio
@@ -484,6 +531,25 @@ async def test_trace_inference_result_omits_context_cache_without_opt_in(
   for call in mock_span_fixture.set_attributes.call_args_list:
     set_keys.extend(call.args[0])
   assert not [key for key in set_keys if key.startswith('adk.experimental.')]
+
+
+@pytest.mark.asyncio
+async def test_trace_inference_result_sets_response_model_from_model_version(
+    mock_span_fixture,
+):
+  """The generate_content span carries the served model, not just the request."""
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(agent)
+  llm_response = LlmResponse(
+      turn_complete=True,
+      model_version='served-model-v2',
+  )
+
+  trace_inference_result(invocation_context, mock_span_fixture, llm_response)
+
+  mock_span_fixture.set_attribute.assert_any_call(
+      GEN_AI_RESPONSE_MODEL, 'served-model-v2'
+  )
 
 
 @pytest.mark.asyncio
