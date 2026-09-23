@@ -750,17 +750,32 @@ def _is_event_belongs_to_branch(
 ) -> bool:
   """Check if an event belongs to the current branch.
 
-  This is for event context segregation between agents. E.g. agent A shouldn't
-  see output of agent B.
+  Sub-agents of a ParallelAgent are isolated lanes: an agent never sees output
+  from a sibling lane or from anything nested inside one. Everything else is
+  visible.
+
+  Only ParallelAgent writes branches, always as `parallel_agent.sub_agent`
+  pairs, so even segments name a ParallelAgent and odd segments name one of
+  its sub-agents. Walk both branches to the first mismatch:
+
+    odd    same ParallelAgent, different sub-agents: sibling lanes. Hidden.
+    even   different ParallelAgents. Every earlier segment matched, so no
+           ParallelAgent above forked them into different lanes. Visible.
+    none   one branch is a prefix of the other: same lane. Visible.
+
+    stage1.a    vs  stage1.b        mismatch at 1, odd   hidden
+    stage2.c    vs  stage1.a        mismatch at 0, even  visible
+    par.r1      vs  par.r1.abc.a    no mismatch, prefix  visible
+    gp.x.p1.a  vs  gp.y.p2.d      mismatch at 1, odd   hidden
   """
   if not invocation_branch or not event.branch:
     return True
-  # We use dot to delimit branch nodes. To avoid simple prefix match
-  # (e.g. agent_0 unexpectedly matching agent_00), require either perfect branch
-  # match, or match prefix with an additional explicit '.'
-  return invocation_branch == event.branch or invocation_branch.startswith(
-      f'{event.branch}.'
-  )
+  current = invocation_branch.split('.')
+  other = event.branch.split('.')
+  for i, (a, b) in enumerate(zip(current, other)):
+    if a != b:
+      return i % 2 == 0
+  return True
 
 
 def _is_function_call_event(event: Event, function_name: str) -> bool:
