@@ -177,6 +177,19 @@ class InvocationContext(BaseModel):
   None for non-workflow agents.
   """
 
+  _consumed_tool_confirmation_ids: set[str] = PrivateAttr(default_factory=set)
+  _tool_confirmation_consume_lock: asyncio.Lock = PrivateAttr(
+      default_factory=asyncio.Lock
+  )
+
+  async def _consume_tool_confirmation(self, function_call_id: str) -> bool:
+    """Atomically claim a confirmation so it can only resume a tool once."""
+    async with self._tool_confirmation_consume_lock:
+      if function_call_id in self._consumed_tool_confirmation_ids:
+        return False
+      self._consumed_tool_confirmation_ids.add(function_call_id)
+      return True
+
   agent_states: dict[str, dict[str, Any]] = Field(default_factory=dict)
   """The state of the agent for this invocation."""
 

@@ -354,6 +354,29 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
     if not tools_to_resume_with_confirmation:
       return
 
+    # Claim confirmations atomically before dispatch. Event-history dedup is
+    # useful for normal reruns, but cannot prevent two concurrent resume calls
+    # from both observing the same still-unresponded confirmation.
+    claimed_ids = {
+        function_call_id
+        for function_call_id in tools_to_resume_with_confirmation
+        if await invocation_context._consume_tool_confirmation(function_call_id)
+    }
+    if not claimed_ids:
+      return
+    tools_to_resume_with_confirmation = {
+        function_call_id: confirmation
+        for function_call_id, confirmation in (
+            tools_to_resume_with_confirmation.items()
+        )
+        if function_call_id in claimed_ids
+    }
+    tools_to_resume_with_args = {
+        function_call_id: function_call
+        for function_call_id, function_call in tools_to_resume_with_args.items()
+        if function_call_id in claimed_ids
+    }
+
     # Step 4: Re-execute only confirmed tools. Denials are handled here at the
     # framework boundary so custom BaseTool implementations cannot accidentally
     # perform a side effect after the user declines confirmation.
