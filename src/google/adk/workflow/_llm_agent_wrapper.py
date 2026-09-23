@@ -29,7 +29,7 @@ from ..agents.context import Context
 from ..agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME as _FINISH_TASK_FC_NAME
 from ..agents.llm.task._finish_task_tool import is_finish_task_terminal_fr
 from ..events.event import Event
-from ..flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ..flows.llm_flows.tools._functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from ..utils._schema_utils import validate_schema
 from ..utils.content_utils import to_user_content
 from ._errors import WorkflowConfigurationError
@@ -510,8 +510,6 @@ async def run_llm_agent_as_node(
             had_task_fc = True
             break  # close this run_iter; outer loop re-enters
           if event.actions.transfer_to_agent:
-            target_name = event.actions.transfer_to_agent
-
             from ..agents.llm_agent import LlmAgent
 
             if (

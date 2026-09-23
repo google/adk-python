@@ -141,7 +141,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
     # Mock session service
     mock_session = Mock()
@@ -243,7 +243,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
     mock_session = Mock()
     mock_session.id = "test-session"
@@ -308,7 +308,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -372,7 +372,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id=None,
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -400,7 +400,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="existing-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -544,7 +544,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -603,7 +603,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -660,7 +660,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -823,7 +823,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -894,7 +894,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -968,7 +968,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -1056,7 +1056,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service
@@ -1133,7 +1133,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Setup Interceptor
@@ -1239,7 +1239,7 @@ class TestA2aAgentExecutor:
         user_id="test-user",
         session_id="test-session",
         new_message=Mock(spec=Content),
-        run_config=Mock(spec=RunConfig),
+        run_config=RunConfig(),
     )
 
     # Mock session service

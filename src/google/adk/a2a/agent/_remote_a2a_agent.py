@@ -60,13 +60,13 @@ from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
 from ...auth.auth_tool import AuthConfig
 from ...events.event import Event
-from ...flows.llm_flows._fencing import _is_other_agent_reply
-from ...flows.llm_flows._fencing import _present_other_agent_message
-from ...flows.llm_flows._fencing import quote_untrusted
-from ...flows.llm_flows.functions import find_matching_function_call
-from ...flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
-from ...flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
-from ...flows.llm_flows.functions import REQUEST_INPUT_FUNCTION_CALL_NAME
+from ...flows.llm_flows.context._fencing import _is_other_agent_reply
+from ...flows.llm_flows.context._fencing import _present_other_agent_message
+from ...flows.llm_flows.context._fencing import quote_untrusted
+from ...flows.llm_flows.tools._functions import find_matching_function_call
+from ...flows.llm_flows.tools._functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ...flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from ...flows.llm_flows.tools._functions import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ...sessions.session import Session
 from ...utils.context_utils import Aclosing
 from ..converters.event_converter import convert_a2a_message_to_event
@@ -842,7 +842,7 @@ class RemoteA2aAgent(BaseAgent):
     from ...auth.auth_handler import AuthHandler
     from ...auth.auth_preprocessor import TOOLSET_AUTH_CREDENTIAL_ID_PREFIX
     from ...auth.credential_manager import CredentialManager
-    from ...flows.llm_flows.functions import build_auth_request_event
+    from ...flows.llm_flows.tools._functions import build_auth_request_event
 
     # Resolve against a copy, so a credential exchanged for one user is never
     # written back onto the config shared by every invocation.

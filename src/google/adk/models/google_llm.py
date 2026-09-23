@@ -34,11 +34,13 @@ from urllib.parse import urlunparse
 
 from google.genai import types
 from google.genai.errors import ClientError
+from pydantic import ConfigDict
 from pydantic import Field
 from typing_extensions import override
 
 from google import genai
 
+from ..utils._event_loop_cache import PerLoopCachedProperty
 from ..utils._google_client_headers import get_tracking_headers
 from ..utils._google_client_headers import merge_tracking_headers
 from ..utils.context_utils import Aclosing
@@ -103,23 +105,28 @@ class Gemini(BaseLlm):
 
   Customizing the underlying Client:
     To set ``google.genai.Client`` options ADK doesn't expose as fields
-    directly (location, project, credentials, http_options, etc.),
-    subclass ``Gemini`` and override the ``api_client`` property::
+    directly (location, project, credentials, http_options, etc.), pass them
+    in ``client_kwargs``::
 
-        from functools import cached_property
         from google.adk.models import Gemini
-        from google.genai import Client
 
-        class GlobalGemini(Gemini):
-          @cached_property
-          def api_client(self) -> Client:
-            return Client(enterprise=True, location="global")
+        agent = Agent(
+            model=Gemini(
+                model="gemini-3-pro-preview",
+                client_kwargs={"enterprise": True, "location": "global"},
+            )
+        )
 
-        agent = Agent(model=GlobalGemini(model="gemini-3-pro-preview"))
-
-    Use ``@property`` instead of ``@cached_property`` if you hit asyncio
-    lock contention in multithreaded code.
+    They are applied to every client this model builds, so the client stays
+    one per event loop. Overriding the ``api_client`` property instead pins a
+    single client to the model for its lifetime, which reaches into a closed
+    loop as soon as a second loop uses the model.
   """
+
+  # Pydantic exempts functools.cached_property by module name rather than by
+  # type, so the descriptor behind the per-loop clients has to be named here to
+  # be read as a descriptor rather than as an undeclared field.
+  model_config = ConfigDict(ignored_types=(PerLoopCachedProperty,))
 
   model: str = 'gemini-2.5-flash'
 
@@ -401,6 +408,7 @@ class Gemini(BaseLlm):
         api_client=self.api_client,
         llm_request=llm_request,
         stream=stream,
+        service_tier=llm_request.service_tier,
     ):
       yield llm_response
 
@@ -414,7 +422,7 @@ class Gemini(BaseLlm):
         output_schema_and_tools=gemini_output_schema_and_tools(self.model),
     )
 
-  @cached_property
+  @PerLoopCachedProperty
   def api_client(self) -> Client:
     """Provides the api client.
 
@@ -491,7 +499,7 @@ class Gemini(BaseLlm):
       # use v1alpha for using API KEY from Google AI Studio
       return 'v1alpha'
 
-  @cached_property
+  @PerLoopCachedProperty
   def _live_api_client(self) -> Client:
     if self.client:
       return self.client

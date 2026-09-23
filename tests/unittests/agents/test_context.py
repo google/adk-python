@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -44,6 +45,7 @@ def mock_invocation_context():
   mock_context.artifact_service = None
   mock_context.credential_service = None
   mock_context.memory_service = None
+  mock_context.is_aborted = False
   return mock_context
 
 
@@ -53,6 +55,43 @@ def test_context_branch_returns_invocation_branch(mock_invocation_context):
   context = Context(invocation_context=mock_invocation_context)
 
   assert context.branch == "test-branch"
+
+
+def test_context_is_aborted(mock_invocation_context):
+  """Context.is_aborted delegates to invocation context."""
+  mock_invocation_context.is_aborted = False
+  context = Context(invocation_context=mock_invocation_context)
+  assert context.is_aborted is False
+
+  mock_invocation_context.is_aborted = True
+  assert context.is_aborted is True
+
+
+@pytest.mark.asyncio
+async def test_context_is_aborted_with_real_invocation_context():
+  """Context reflects underlying InvocationContext cancellation."""
+  from google.adk.agents.base_agent import BaseAgent
+  from google.adk.agents.invocation_context import InvocationContext
+  from google.adk.sessions.base_session_service import BaseSessionService
+  from google.adk.sessions.session import Session
+
+  abort_signal = asyncio.Event()
+  inv_ctx = InvocationContext(
+      session_service=MagicMock(spec=BaseSessionService),
+      agent=MagicMock(spec=BaseAgent),
+      invocation_id="inv_1",
+      session=Session(id="s1", app_name="test_app", user_id="test_user"),
+  )
+  inv_ctx._attach_abort_signal(abort_signal)
+  context = Context(invocation_context=inv_ctx)
+  assert context.is_aborted is False
+  assert inv_ctx.is_aborted is False
+
+  inv_ctx.abort()
+
+  assert context.is_aborted is True
+  assert inv_ctx.is_aborted is True
+  assert abort_signal.is_set() is True
 
 
 @pytest.fixture
@@ -710,11 +749,11 @@ class TestContextGetInvocationContext:
 async def test_context_run_node_delegates_to_dynamic_node_executor(
     mock_invocation_context, mocker
 ):
-  """Context.run_node delegates execution to _dynamic_node_executor.run_node_internal."""
-  from google.adk.workflow import _dynamic_node_executor
+  """Context.run_node delegates execution to _dynamic_node_scheduler.run_node_internal."""
+  from google.adk.workflow import _dynamic_node_scheduler
 
   mock_run_internal = mocker.patch.object(
-      _dynamic_node_executor,
+      _dynamic_node_scheduler,
       "run_node_internal",
       return_value="executor_output",
   )

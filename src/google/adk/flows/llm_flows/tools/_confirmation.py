@@ -253,6 +253,8 @@ def _map_confirmation_to_original_fc_ids(
 class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
   """Handles tool confirmation information to build the LLM request."""
 
+  name = "request_confirmation"
+
   @override
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest

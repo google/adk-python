@@ -33,6 +33,8 @@ from ..core._utils import require_agent_name
 class _OutputSchemaRequestProcessor(BaseLlmRequestProcessor):
   """Processor that handles output schema for agents with tools."""
 
+  name = 'output_schema'
+
   @override
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest

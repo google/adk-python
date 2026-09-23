@@ -16,7 +16,7 @@
 
 This module provides the DevServer class which extends ApiServer with development-only endpoints.
 All production endpoints are inherited from ApiServer.
-All dev-only endpoints (eval, debug, graph, test management) are added by DevServer.
+All dev-only endpoints (eval, debug, graph, test management, deploy) are added by DevServer.
 
 Use this for local development with `adk web`.
 For production deployments, use api_server.py instead.
@@ -78,6 +78,7 @@ from ..evaluation.eval_result import EvalSetResult
 from ..evaluation.eval_set import EvalSet
 from ..utils._telemetry_config import read_telemetry_consent
 from ..utils._telemetry_config import write_telemetry_consent
+from ._dev_deploy import register_dev_deploy_endpoints
 from .api_server import ApiServer
 
 NESTED_APP_SEPARATOR = "."
@@ -425,6 +426,7 @@ class DevServer(ApiServer):
   """
 
   _allow_special_agents: bool = True
+  _serves_debug_trace_endpoints: bool = True
 
   def _get_agent_dir(self, app_name: str) -> str:
     """Resolves the agent directory and validates the app name to prevent path traversal."""
@@ -1523,6 +1525,8 @@ class DevServer(ApiServer):
         return GetEventGraphResult(dot_src=dot_graph.source)
       else:
         return {}
+
+    register_dev_deploy_endpoints(app, get_agent_dir=self._get_agent_dir)
 
   def _navigate_to_node(self, app_info: dict, node_path: str) -> dict | None:
     """Navigate to a specific node in the agent hierarchy.

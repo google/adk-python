@@ -29,7 +29,6 @@ def test_new_replay_manager_has_empty_state() -> None:
   """A freshly created ReplayManager initializes with empty state maps."""
   mgr = ReplayManager()
 
-  assert mgr.recovered_executions == {}
   assert mgr.sequence_barrier is None
 
 

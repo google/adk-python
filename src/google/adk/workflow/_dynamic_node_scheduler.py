@@ -32,21 +32,24 @@ from pydantic import ValidationError
 
 from ..agents.base_agent import BaseAgent
 from ..events._node_path_builder import _NodePathBuilder
-from ._errors import WorkflowConfigurationError
+from ._base_node import BaseNode
+from ._errors import DynamicNodeFailError
+from ._errors import NodeInterruptedError
 from ._errors import WorkflowInvariantError
+from ._graph import NodeLike
+from ._node_runner import NodeRunner
 from ._node_state import NodeState
 from ._node_status import NodeStatus
-from ._schedule_dynamic_node import ScheduleDynamicNode
 from .utils._rehydration_utils import _ChildScanState
 from .utils._rehydration_utils import _reconstruct_node_states
 from .utils._replay_interceptor import check_interception
 from .utils._replay_interceptor import create_mock_context
 from .utils._replay_manager import ReplayManager
 from .utils._transfer_utils import resolve_and_derive_transfer_context
+from .utils._workflow_graph_utils import build_node
 
 if TYPE_CHECKING:
   from ..agents.context import Context
-  from ._base_node import BaseNode
 
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -70,6 +73,9 @@ class DynamicNodeRun:
 
   recovered_state: _ChildScanState | None = None
   """The raw scan state from events, used for replay interception."""
+
+  is_static: bool = False
+  """Whether this run was scheduled as a static graph node."""
 
 
 @dataclass(kw_only=True)
@@ -112,10 +118,6 @@ class DynamicNodeState:
     counters[node_name] = counters.get(node_name, 0) + 1
     return str(counters[node_name])
 
-  def get_run_counter(self, node_name: str, parent_path: str = '') -> int:
-    """Get the current run counter for a node name under parent_path."""
-    return self.run_counters.get(parent_path, {}).get(node_name, 0)
-
   def get_dynamic_tasks(self) -> list[asyncio.Task[Context]]:
     """Get all active dynamic node tasks."""
     return [
@@ -125,13 +127,12 @@ class DynamicNodeState:
     ]
 
 
-class DynamicNodeScheduler(ScheduleDynamicNode):
+class DynamicNodeScheduler:
   """Handles dynamic node scheduling and sequential agent transfers.
 
-  Implements the ScheduleDynamicNode protocol via __call__. Serves as the
-  single runtime driver for both workflow-integrated dynamic execution
-  (with state tracking, deduplication, and replay) and standalone sequential
-  agent transfers.
+  Serves as the single runtime driver for both workflow-integrated dynamic
+  execution (with state tracking, deduplication, and replay) and standalone
+  sequential agent transfers.
 
   The scheduler manages four core execution concerns:
   1. Fresh Execution: Runs a node for the first time via NodeRunner.
@@ -283,10 +284,6 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
         )
 
       curr_parent_ctx = next_parent_ctx
-      if not curr_parent_ctx:
-        raise AssertionError(
-            'curr_parent_ctx cannot be None during active workflow execution'
-        )
       curr_node = target_agent
       curr_name = target_agent.name
       curr_run_id = None
@@ -335,6 +332,11 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
         else _NodePathBuilder([])
     )
     node_path = str(base_path_builder.append(target_node_name, run_id))
+    if (
+        override_isolation_scope is None
+        and getattr(node, 'mode', None) == 'task'
+    ):
+      override_isolation_scope = node_path
 
     # Rehydration chronological sequence barrier setup for the parent path
     if self._enable_replay and curr_parent_path:
@@ -434,23 +436,10 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
       logger.debug('node %s schedule: Awaiting existing task.', node_path)
       return await run.task, True
 
-    if run.recovered_state:
-      recovered = run.recovered_state
-      unresolved = recovered.interrupt_ids - recovered.resolved_ids
-      if recovered.interrupt_ids and not unresolved:
-        if curr_node.wait_for_output and not curr_node.rerun_on_resume:
-          raise WorkflowConfigurationError(
-              f'Node {node_path} is waiting for output but was called again'
-              ' with rerun_on_resume=False. This would cause it to'
-              ' auto-complete with empty output, which is likely a'
-              ' configuration error. Consider setting rerun_on_resume=True.'
-          )
-
-    # Delegate replay and same-turn interception check to ReplayInterceptor.
     result = check_interception(
         node=curr_node,
         recovered=run.recovered_state,
-        current_run=run,
+        current_run=None if run.is_static else run,
     )
 
     if not result.should_run:
@@ -467,13 +456,24 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
         run.output = result.output
         run.transfer_to_agent = result.transfer_to_agent
 
-      # Create a high-fidelity mock context with cached results.
+      if run.is_static:
+        ancestor_path = (
+            curr_parent_ctx.node_path
+            if (use_as_output and curr_parent_ctx)
+            else None
+        )
+        ancestors = ([ancestor_path] if ancestor_path else []) + list(
+            (curr_parent_ctx._output_for_ancestors if curr_parent_ctx else None)
+            or []
+        )
+      else:
+        ancestors = []
       mock_ctx = create_mock_context(
           parent_ctx=curr_parent_ctx,
           node=curr_node,
           run_id=curr_run_id,
           result=result,
-          ancestors=[],
+          ancestors=ancestors,
           node_path=node_path,
           branch=(run.recovered_state.branch if run.recovered_state else None),
       )
@@ -561,7 +561,6 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
           status=NodeStatus.RUNNING,
           input=node_input,
           run_id=run_id,
-          parent_run_id=ctx.run_id,
       )
       run = DynamicNodeRun(state=state)
       if self._enable_replay:
@@ -653,3 +652,129 @@ class DynamicNodeScheduler(ScheduleDynamicNode):
     else:
       state.status = NodeStatus.COMPLETED
       run.output = child_ctx.output
+
+
+async def run_node_internal(
+    ctx: Context,
+    node: NodeLike,
+    node_input: Any = None,
+    *,
+    use_as_output: bool = False,
+    run_id: str | None = None,
+    use_sub_branch: bool = False,
+    override_branch: str | None = None,
+    override_isolation_scope: str | None = None,
+    raise_on_wait: bool = False,
+    return_ctx: bool = False,
+    resume_inputs: dict[str, Any] | None = None,
+    skip_run_id_validation: bool = False,
+) -> Any:
+  """Executes a node dynamically (Internal Orchestration API)."""
+  from ._workflow import Workflow
+
+  if not ctx._node_rerun_on_resume:
+    raise ValueError(
+        'A node must have rerun_on_resume=True. Reason is that dynamically'
+        ' scheduled nodes might be interrupted, and the workflow'
+        ' wakes-up/re-runs the parent node, so it can get the child node'
+        ' response.'
+    )
+
+  built_node = build_node(node)
+
+  if isinstance(node, BaseAgent) and isinstance(built_node, BaseAgent):
+    built_node.parent_agent = node.parent_agent
+
+  if use_as_output:
+    if not isinstance(ctx.node, Workflow):
+      if ctx._output_delegated:
+        raise ValueError(
+            f'Node {ctx.node_path} already has a use_as_output delegate.'
+        )
+      ctx._output_delegated = True
+
+  if ctx._workflow_scheduler is not None:
+    if run_id and run_id.isdigit() and not skip_run_id_validation:
+      raise ValueError(
+          f'Explicit run_id "{run_id}" for node "{built_node.name}"'
+          ' must contain non-numeric characters to prevent collision'
+          ' with auto-generated IDs.'
+      )
+
+  scheduler = ctx._workflow_scheduler
+  if scheduler is None:
+    # No orchestrator installed one, so this call is not part of a replayable
+    # workflow. Use a transfer-only scheduler: it drives the sequential
+    # agent transfer loop but skips session event rehydration, keeping this
+    # path a direct pass-through to NodeRunner as it was before, without
+    # attaching a scheduler to ctx._workflow_scheduler.
+    #
+    # IMPORTANT: ctx._workflow_scheduler MUST remain None for standalone runs.
+    # Across ADK, `ctx._workflow_scheduler is not None` is the canonical check
+    # for whether execution is inside a workflow graph (e.g. for numeric run_id
+    # validation and replay semantics).
+    scheduler = DynamicNodeScheduler(
+        state=DynamicNodeState(), enable_replay=False
+    )
+
+  child_ctx = await scheduler(
+      ctx,
+      built_node,
+      node_input,
+      node_name=built_node.name,
+      use_as_output=use_as_output,
+      run_id=run_id,
+      use_sub_branch=use_sub_branch,
+      override_branch=override_branch,
+      override_isolation_scope=override_isolation_scope,
+      resume_inputs=resume_inputs,
+  )
+
+  transfer_to_agent = child_ctx.actions.transfer_to_agent if child_ctx else None
+
+  if not return_ctx:
+    if child_ctx.error:
+      executed_name = child_ctx.node.name if child_ctx.node else built_node.name
+      raise DynamicNodeFailError(
+          message=f'Dynamic node {executed_name} failed',
+          error=child_ctx.error,
+          error_node_path=child_ctx.error_node_path,
+      )
+    if child_ctx.interrupt_ids:
+      ctx._interrupt_ids.update(child_ctx.interrupt_ids)
+      raise NodeInterruptedError()
+    if raise_on_wait and child_ctx.output is None and not transfer_to_agent:
+      executed_node = child_ctx.node
+      if isinstance(executed_node, Workflow) or getattr(
+          executed_node, 'wait_for_output', False
+      ):
+        raise NodeInterruptedError()
+
+  if return_ctx:
+    return child_ctx
+  return child_ctx.output
+
+
+async def run_node_standalone(
+    ctx: Context,
+    node: BaseNode,
+    node_input: Any = None,
+    *,
+    use_as_output: bool = False,
+    run_id: str | None = None,
+    use_sub_branch: bool = False,
+    override_branch: str | None = None,
+    override_isolation_scope: str | None = None,
+    resume_inputs: dict[str, Any] | None = None,
+) -> Context:
+  """Run a node directly via NodeRunner without an orchestrator."""
+  runner = NodeRunner(
+      node=node,
+      parent_ctx=ctx,
+      run_id=run_id,
+      use_as_output=use_as_output,
+      use_sub_branch=use_sub_branch,
+      override_branch=override_branch,
+      override_isolation_scope=override_isolation_scope,
+  )
+  return await runner.run(node_input=node_input, resume_inputs=resume_inputs)

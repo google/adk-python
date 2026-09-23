@@ -61,6 +61,7 @@ from . import _prompt_cache
 from ..utils import streaming_utils
 from ..utils._google_client_headers import merge_tracking_headers
 from ..utils._schema_utils import lowercase_schema_types
+from ..utils.model_name_utils import is_gemini_model
 from ._capabilities import LlmCapabilities
 from .base_llm import BaseLlm
 from .interactions_utils import extract_system_instruction
@@ -410,6 +411,9 @@ def _get_provider_from_model(model: str) -> str:
   return ""
 
 
+# Providers that natively support response schemas (e.g. Azure OpenAI, OpenAI).
+_NATIVE_SCHEMA_PROVIDERS = frozenset({"azure", "openai"})
+
 # Providers that can route to Anthropic. bedrock and vertex_ai are multi-model
 # platforms, so _is_anthropic_route also checks the model name for them.
 _ANTHROPIC_PROVIDERS = frozenset({"anthropic", "bedrock", "vertex_ai"})
@@ -426,11 +430,19 @@ def _is_anthropic_route(provider: str, model: str) -> bool:
   bedrock and vertex_ai also host non-Anthropic models (Llama, Gemini), so for
   those platforms the model name must identify a Claude model too. Formatting
   thinking blocks for a non-Claude model triggers API validation (400) errors.
+  Unprefixed model strings (e.g. when passed with custom_llm_provider) are
+  synthesized with the provider prefix.
   """
   if not _is_anthropic_provider(provider):
     return False
   if provider.lower() in ("bedrock", "vertex_ai"):
-    return _is_anthropic_model(model)
+    model_part = model or ""
+    if model_part.lower().startswith(_PROXY_PROVIDER + "/"):
+      model_part = model_part[len(_PROXY_PROVIDER) + 1 :]
+    prefixed_model = (
+        model_part if "/" in model_part else f"{provider.lower()}/{model_part}"
+    )
+    return _is_anthropic_model(prefixed_model)
   return True
 
 
@@ -2197,9 +2209,11 @@ def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict[str, Any]:
   # camelCase alias, so an un-renamed union is silently dropped and the
   # argument reaches the model as a bare `{"type": "object"}`. `by_alias=True`
   # renames all nine; the recursion below also lowercases nested types.
-  any_of = schema_dict.pop("any_of", None)
+  any_of = schema_dict.get("anyOf")
   if any_of is None:
-    any_of = schema_dict.get("anyOf")
+    any_of = schema_dict.pop("any_of", None)
+  else:
+    schema_dict.pop("any_of", None)
   if any_of is not None:
     schema_dict["anyOf"] = [
         _schema_to_dict(item)
@@ -2217,9 +2231,46 @@ def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict[str, Any]:
         new_props[key] = value
     schema_dict["properties"] = new_props
 
-  additional_properties = schema_dict.pop("additional_properties", None)
+  # Reconcile pydantic field names (`ref`, `defs`, `additional_properties`) with
+  # standard JSON Schema keywords (`$ref`, `$defs`, `additionalProperties`),
+  # letting the standard JSON Schema keyword take precedence on collision.
+  # `_schema_to_dict` also serves the `parameters` path, so this recursion
+  # applies there too.
+  ref = schema_dict.get("$ref")
+  if ref is None:
+    ref = schema_dict.pop("ref", None)
+  else:
+    schema_dict.pop("ref", None)
+  if ref is not None:
+    if isinstance(ref, str):
+      if ref.startswith("#/defs/"):
+        ref = f"#/$defs/{ref[len('#/defs/'):]}"
+      elif ref == "#/defs":
+        ref = "#/$defs"
+    schema_dict["$ref"] = ref
+
+  defs = schema_dict.pop("defs", None)
+  if defs is not None:
+    if "$defs" not in schema_dict or schema_dict["$defs"] is None:
+      schema_dict["$defs"] = defs
+    elif isinstance(schema_dict["$defs"], dict) and isinstance(defs, dict):
+      schema_dict["$defs"] = {**defs, **schema_dict["$defs"]}
+
+  for defs_key in ("$defs", "definitions"):
+    if defs_key in schema_dict and isinstance(schema_dict[defs_key], dict):
+      new_defs = {}
+      for key, value in schema_dict[defs_key].items():
+        if isinstance(value, (types.Schema, dict)):
+          new_defs[key] = _schema_to_dict(value)
+        else:
+          new_defs[key] = value
+      schema_dict[defs_key] = new_defs
+
+  additional_properties = schema_dict.get("additionalProperties")
   if additional_properties is None:
-    additional_properties = schema_dict.get("additionalProperties")
+    additional_properties = schema_dict.pop("additional_properties", None)
+  else:
+    schema_dict.pop("additional_properties", None)
   if additional_properties is not None:
     schema_dict["additionalProperties"] = (
         _schema_to_dict(additional_properties)
@@ -2228,6 +2279,87 @@ def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict[str, Any]:
     )
 
   return schema_dict
+
+
+# Maximum character length for tool description in OpenAI / Azure function
+# calling schemas (OpenAI enforces a 1024-character ceiling on description).
+_MAX_TOOL_DESCRIPTION_LENGTH = 1024
+
+_SCHEMA_TYPE_TO_LABEL = {
+    "object": "a JSON object",
+    "array": "a JSON array",
+    "string": "a string",
+    "number": "a number",
+    "integer": "an integer",
+    "boolean": "a boolean",
+    "null": "a null value",
+}
+
+
+def _append_response_schema_to_description(
+    description: str,
+    function_declaration: types.FunctionDeclaration,
+) -> str:
+  """Appends a rendering of the function's output schema to its description.
+
+  OpenAI-compatible chat completions tool definitions have no standard field
+  for declaring the schema of a tool's result, so the schema is rendered into
+  the tool description, which is forwarded to the model. The description is
+  returned unchanged when the function declaration has no output schema, when
+  the schema carries no structure beyond its type, or when appending the schema
+  would exceed the maximum description length (1024 characters).
+
+  Args:
+    description: The original tool description.
+    function_declaration: The function declaration to read the output schema
+      from. `response_json_schema` takes precedence over `response`.
+
+  Returns:
+    The description, with the rendered output schema appended when one exists
+    and fits within length limits.
+  """
+  response_schema: Optional[dict[str, Any]] = None
+  if function_declaration.response_json_schema:
+    if isinstance(function_declaration.response_json_schema, types.Schema):
+      response_schema = _schema_to_dict(
+          function_declaration.response_json_schema
+      )
+    else:
+      response_schema = dict(function_declaration.response_json_schema)
+  elif function_declaration.response:
+    response_schema = _schema_to_dict(function_declaration.response)
+
+  if not response_schema or set(response_schema) <= {"type"}:
+    return description
+
+  schema_type = response_schema.get("type")
+  if isinstance(schema_type, str):
+    schema_type_lower = schema_type.lower()
+    if schema_type_lower in _SCHEMA_TYPE_TO_LABEL:
+      type_label = _SCHEMA_TYPE_TO_LABEL[schema_type_lower]
+    else:
+      article = (
+          "an" if schema_type_lower and schema_type_lower[0] in "aeiou" else "a"
+      )
+      type_label = f"{article} {schema_type}"
+  else:
+    type_label = "a value"
+
+  rendered_schema = json.dumps(
+      response_schema, sort_keys=True, separators=(",", ":")
+  )
+  suffix = f"Returns {type_label} conforming to this schema: {rendered_schema}"
+  candidate = f"{description}\n{suffix}" if description else suffix
+  if len(candidate) > _MAX_TOOL_DESCRIPTION_LENGTH:
+    logger.debug(
+        "Omitting output schema for tool %s: rendered description length %d"
+        " exceeds limit %d",
+        function_declaration.name,
+        len(candidate),
+        _MAX_TOOL_DESCRIPTION_LENGTH,
+    )
+    return description
+  return candidate
 
 
 def _function_declaration_to_tool_param(
@@ -2263,7 +2395,9 @@ def _function_declaration_to_tool_param(
       "type": "function",
       "function": {
           "name": function_declaration.name,
-          "description": function_declaration.description or "",
+          "description": _append_response_schema_to_description(
+              function_declaration.description or "", function_declaration
+          ),
           "parameters": parameters,
       },
   }
@@ -2945,7 +3079,9 @@ def _build_function_declaration_log(
         for k, v in func_decl.parameters.properties.items()
     })
   return_str = "None"
-  if func_decl.response:
+  if func_decl.response_json_schema:
+    return_str = str(func_decl.response_json_schema)
+  elif func_decl.response:
     return_str = str(func_decl.response.model_dump(exclude_none=True))
   return f"{func_decl.name}: {param_str} -> {return_str}"
 
@@ -3175,7 +3311,8 @@ class LiteLlm(BaseLlm):
 
   This wrapper can be used with any of the models supported by litellm. The
   environment variable(s) needed for authenticating with the model endpoint must
-  be set prior to instantiating this class.
+  be set prior to instantiating this class. Users with custom routing requirements
+  can subclass LiteLlm and override capabilities.
 
   Example usage:
   ```
@@ -3199,6 +3336,9 @@ class LiteLlm(BaseLlm):
   """The LLM client to use for the model."""
 
   _additional_args: Dict[str, Any] = PrivateAttr(default_factory=dict)
+  _cached_capabilities: tuple[tuple[str, Any], LlmCapabilities] | None = (
+      PrivateAttr(default=None)
+  )
 
   def __init__(self, model: str, **kwargs: Any) -> None:
     """Initializes the LiteLlm class.
@@ -3225,10 +3365,97 @@ class LiteLlm(BaseLlm):
   @property
   @override
   def capabilities(self) -> LlmCapabilities:
-    # LiteLLM reconciles tools + response_format per provider: providers with
-    # native support get both passed through, and the rest are converted to a
-    # json tool call with tool_choice enforcement.
-    return LlmCapabilities(output_schema_and_tools=True)
+    cache_key = (self.model, self._additional_args.get("custom_llm_provider"))
+    if (
+        self._cached_capabilities is not None
+        and self._cached_capabilities[0] == cache_key
+    ):
+      return self._cached_capabilities[1]
+
+    resolved = self._resolve_capabilities()
+    self._cached_capabilities = (cache_key, resolved)
+    return resolved
+
+  def _resolve_capabilities(self) -> LlmCapabilities:
+    if not self.model:
+      return LlmCapabilities(output_schema_and_tools=False)
+
+    _ensure_litellm_imported()
+    stripped_model = _strip_proxy_prefix(self.model)
+    custom_llm_provider = self._additional_args.get("custom_llm_provider")
+    provider = custom_llm_provider
+    if not provider:
+      try:
+        provider_info = litellm.get_llm_provider(
+            stripped_model, custom_llm_provider=custom_llm_provider
+        )
+        if isinstance(provider_info, (tuple, list)) and len(provider_info) > 1:
+          provider = provider_info[1]
+        elif isinstance(provider_info, str):
+          provider = provider_info
+        else:
+          logger.debug(
+              "Unexpected get_llm_provider return for %s: %r",
+              stripped_model,
+              provider_info,
+          )
+          provider = _get_provider_from_model(self.model)
+      except Exception as e:
+        logger.debug(
+            "Failed to resolve LLM provider for %s via litellm: %s",
+            stripped_model,
+            e,
+        )
+        provider = _get_provider_from_model(self.model)
+
+    if is_gemini_model(self.model) and (
+        not provider or provider.lower() != "vertex_ai"
+    ):
+      return LlmCapabilities(output_schema_and_tools=False)
+
+    is_native_provider = (
+        bool(provider) and provider.lower() in _NATIVE_SCHEMA_PROVIDERS
+    )
+    if not is_native_provider and (
+        (provider and _is_anthropic_route(provider, self.model))
+        or ("claude" in stripped_model.lower())
+    ):
+      return LlmCapabilities(output_schema_and_tools=False)
+
+    try:
+      if bool(
+          litellm.supports_response_schema(
+              model=stripped_model, custom_llm_provider=provider
+          )
+      ):
+        return LlmCapabilities(output_schema_and_tools=True)
+    except Exception as e:
+      logger.debug(
+          "supports_response_schema failed for %s (provider=%s): %s",
+          stripped_model,
+          provider,
+          e,
+      )
+
+    if is_native_provider:
+      # Custom Azure/OpenAI deployments (e.g. azure/my-deployment) are absent
+      # from litellm's static model pricing map and raise exceptions from
+      # get_model_info, but should still be treated as supporting schema and
+      # tools under native providers.
+      try:
+        litellm.get_model_info(
+            model=stripped_model, custom_llm_provider=provider
+        )
+      except Exception as e:
+        logger.debug(
+            "get_model_info failed for native provider %s, model %s: %s",
+            provider,
+            stripped_model,
+            e,
+        )
+        return LlmCapabilities(output_schema_and_tools=True)
+
+    return LlmCapabilities(output_schema_and_tools=False)
 
   async def generate_content_async(
       self, llm_request: LlmRequest, stream: bool = False

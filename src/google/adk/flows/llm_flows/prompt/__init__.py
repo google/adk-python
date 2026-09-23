@@ -16,4 +16,16 @@
 
 from . import _identity
 from . import _instructions
+from . import _instructions_utils
 from . import _schema
+from ._instructions_utils import inject_session_state as inject_session_state
+from ._instructions_utils import InstructionProvider as InstructionProvider
+
+__all__ = [
+    'InstructionProvider',
+    '_identity',
+    '_instructions',
+    '_instructions_utils',
+    '_schema',
+    'inject_session_state',
+]
