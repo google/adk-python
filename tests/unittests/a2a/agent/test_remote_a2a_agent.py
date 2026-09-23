@@ -6155,6 +6155,159 @@ class TestRemoteA2aAgentStreamTruncation:
     )
 
 
+class TestRemoteA2aAgentStreamingAnswerAggregation:
+  """Regression tests for #7255.
+
+  A streaming remote task whose answer arrives only as partial events (e.g.
+  status updates with no message on the terminal state) never yielded a
+  non-partial event, so the parent never saw a final response to persist.
+  """
+
+  @pytest.mark.asyncio
+  async def test_aggregates_partial_text_into_final_event_on_completion(self):
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=create_test_agent_card(),
+    )
+
+    mock_context = Mock(spec=InvocationContext)
+    mock_context.session = Mock(spec=Session)
+    mock_context.session.events = [_make_dummy_task_trigger_event()]
+    mock_context.session.state = {}
+    mock_context.agent_states = {}
+    mock_context.end_of_agents = {}
+    mock_context.isolation_scope = "task-1"
+    mock_context.invocation_id = "invocation-123"
+    mock_context.branch = "main"
+
+    working_task = A2ATask(
+        id="task-1",
+        context_id="context-123",
+        status=A2ATaskStatus(state=_compat.TS_WORKING),
+    )
+    completed_task = A2ATask(
+        id="task-1",
+        context_id="context-123",
+        status=A2ATaskStatus(state=_compat.TS_COMPLETED),
+    )
+    mock_send_message = AsyncMock()
+    mock_send_message.__aiter__.return_value = [
+        _make_stream_task(working_task),
+        _make_stream_task(completed_task),
+    ]
+    mock_a2a_client = Mock()
+    mock_a2a_client.send_message.return_value = mock_send_message
+    agent._a2a_client = mock_a2a_client
+
+    def _partial_event(text):
+      return Event(
+          author=agent.name,
+          partial=True,
+          invocation_id=mock_context.invocation_id,
+          branch=mock_context.branch,
+          content=genai_types.Content(
+              role="model",
+              parts=[genai_types.Part.from_text(text=text)],
+          ),
+      )
+
+    with patch.object(
+        agent, "_ensure_resolved", AsyncMock(return_value=mock_a2a_client)
+    ):
+      with patch.object(
+          agent, "_construct_message_parts_from_session"
+      ) as mock_construct:
+        mock_construct.return_value = (
+            [_compat.make_text_part("test_message")],
+            "context-123",
+        )
+        with patch.object(
+            agent, "_handle_a2a_response", new_callable=AsyncMock
+        ) as mock_handle:
+          mock_handle.side_effect = [
+              _partial_event("Hello, "),
+              _partial_event("world!"),
+          ]
+
+          events = [
+              event async for event in agent._run_async_impl(mock_context)
+          ]
+
+    assert len(events) == 3
+    assert events[0].partial is True
+    assert events[1].partial is True
+    # The aggregated final event carries the joined text, not just the last
+    # chunk, and is not marked partial.
+    assert not events[2].partial
+    assert events[2].content.parts[0].text == "Hello, world!"
+    assert events[2].error_message is None
+
+  @pytest.mark.asyncio
+  async def test_no_extra_event_when_a_final_answer_already_arrived(self):
+    """A well-behaved server that itself sends a final non-partial event
+    (e.g. the whole task in one non-streaming response) must not get a
+    duplicate aggregated event appended."""
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=create_test_agent_card(),
+    )
+
+    mock_context = Mock(spec=InvocationContext)
+    mock_context.session = Mock(spec=Session)
+    mock_context.session.events = [_make_dummy_task_trigger_event()]
+    mock_context.session.state = {}
+    mock_context.agent_states = {}
+    mock_context.end_of_agents = {}
+    mock_context.isolation_scope = "task-1"
+    mock_context.invocation_id = "invocation-123"
+    mock_context.branch = "main"
+
+    completed_task = A2ATask(
+        id="task-1",
+        context_id="context-123",
+        status=A2ATaskStatus(state=_compat.TS_COMPLETED),
+    )
+    mock_send_message = AsyncMock()
+    mock_send_message.__aiter__.return_value = [
+        _make_stream_task(completed_task),
+    ]
+    mock_a2a_client = Mock()
+    mock_a2a_client.send_message.return_value = mock_send_message
+    agent._a2a_client = mock_a2a_client
+
+    final_event = Event(
+        author=agent.name,
+        invocation_id=mock_context.invocation_id,
+        branch=mock_context.branch,
+        content=genai_types.Content(
+            role="model",
+            parts=[genai_types.Part.from_text(text="Complete answer")],
+        ),
+    )
+
+    with patch.object(
+        agent, "_ensure_resolved", AsyncMock(return_value=mock_a2a_client)
+    ):
+      with patch.object(
+          agent, "_construct_message_parts_from_session"
+      ) as mock_construct:
+        mock_construct.return_value = (
+            [_compat.make_text_part("test_message")],
+            "context-123",
+        )
+        with patch.object(
+            agent, "_handle_a2a_response", new_callable=AsyncMock
+        ) as mock_handle:
+          mock_handle.return_value = final_event
+
+          events = [
+              event async for event in agent._run_async_impl(mock_context)
+          ]
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == "Complete answer"
+
+
 class TestRemoteA2aAgentWorkflowOutput:
   """Tests that RemoteA2aAgent surfaces a workflow-node output value.
 

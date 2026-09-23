@@ -1681,6 +1681,13 @@ class RemoteA2aAgent(BaseAgent):
         # 0.3.x client behavior).
         normalize_stream_item = _compat.make_stream_normalizer()
         last_task = None
+        # Streaming artifact updates only carry their own increment (see the
+        # comment where `event.partial` is set below), so the answer has to be
+        # reassembled here; a task that ends without ever yielding a non-partial
+        # answer would otherwise leave the parent with no final response to
+        # persist.
+        buffered_answer_text: list[str] = []
+        saw_final_answer_event = False
         async with Aclosing(
             _compat.send_message(
                 a2a_client,
@@ -1734,6 +1741,23 @@ class RemoteA2aAgent(BaseAgent):
               event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (
                   _compat.a2a_to_dict(a2a_response)
               )
+
+            event_content = getattr(event, "content", None)
+            event_parts = (
+                event_content.parts if event_content is not None else None
+            )
+            answer_texts = [
+                part.text
+                for part in (
+                    event_parts if isinstance(event_parts, list) else []
+                )
+                if part.text and not part.thought
+            ]
+            if answer_texts:
+              if event.partial:
+                buffered_answer_text.extend(answer_texts)
+              else:
+                saw_final_answer_event = True
 
             if self.mode == "task" and is_finish_task_terminal_fr(event):
               args = _find_finish_task_args_from_history(
@@ -1813,6 +1837,19 @@ class RemoteA2aAgent(BaseAgent):
           yield Event(
               author=self.name,
               error_message=task_error_message,
+              invocation_id=ctx.invocation_id,
+              branch=ctx.branch,
+          )
+        elif buffered_answer_text and not saw_final_answer_event:
+          # The task reached a terminal state but every answer-bearing event
+          # was partial, so nothing above yielded a final response for ADK to
+          # persist. Emit one aggregating the streamed text.
+          yield Event(
+              author=self.name,
+              content=genai_types.Content(
+                  role="model",
+                  parts=[genai_types.Part(text="".join(buffered_answer_text))],
+              ),
               invocation_id=ctx.invocation_id,
               branch=ctx.branch,
           )
