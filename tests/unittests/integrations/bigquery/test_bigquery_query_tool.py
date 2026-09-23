@@ -14,10 +14,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import decimal
+import inspect
 import os
 import textwrap
+import threading
 from typing import Optional
 from unittest import mock
 import uuid
@@ -1397,13 +1400,14 @@ def test_execute_sql_unexpected_project_id():
 # AI.Forecast calls _execute_sql with a specific query statement. We need to
 # test that the query is properly constructed and call _execute_sql with the
 # correct parameters exactly once.
+@pytest.mark.asyncio
 @mock.patch.object(query_tool, "_execute_sql", autospec=True)
-def test_forecast_with_table_id(mock_execute_sql):
+async def test_forecast_with_table_id(mock_execute_sql):
   mock_credentials = mock.MagicMock(spec=Credentials)
   mock_settings = BigQueryToolConfig()
   mock_tool_context = mock.create_autospec(ToolContext, instance=True)
 
-  query_tool.forecast(
+  await query_tool.forecast(
       project_id="test-project",
       history_data="test-dataset.test-table",
       timestamp_col="ts_col",
@@ -1439,9 +1443,10 @@ def test_forecast_with_table_id(mock_execute_sql):
 # AI.Forecast calls _execute_sql with a specific query statement. We need to
 # test that the query is properly constructed and call _execute_sql with the
 # correct parameters exactly once.
+@pytest.mark.asyncio
 @mock.patch.object(query_tool, "_validate_subquery", autospec=True)
 @mock.patch.object(query_tool, "_execute_sql", autospec=True)
-def test_forecast_with_query_statement(
+async def test_forecast_with_query_statement(
     mock_execute_sql, mock_validate_subquery
 ):
   """Test forecast tool invocation with a query statement."""
@@ -1451,7 +1456,7 @@ def test_forecast_with_query_statement(
   mock_tool_context = mock.create_autospec(ToolContext, instance=True)
 
   history_data_query = "SELECT * FROM `test-dataset.test-table`"
-  query_tool.forecast(
+  await query_tool.forecast(
       project_id="test-project",
       history_data=history_data_query,
       timestamp_col="ts_col",
@@ -1481,6 +1486,62 @@ def test_forecast_with_query_statement(
   )
 
 
+@pytest.mark.asyncio
+async def test_forecast_leaves_the_event_loop_free_while_querying():
+  """forecast calls the sync BigQuery client, so it has to run off the loop.
+
+  The tool is awaited alongside a task that counts how many times the event
+  loop gets to run it. Calling the blocking client inline would starve that
+  task until the query returned.
+  """
+  query_started = threading.Event()
+  query_may_return = threading.Event()
+  ticks = 0
+  loop_ticked = False
+
+  async def count_ticks():
+    nonlocal ticks
+    while not query_started.is_set() or ticks < 3:
+      ticks += 1
+      await asyncio.sleep(0)
+    query_may_return.set()
+
+  def blocking_query_and_wait(*args, **kwargs):
+    nonlocal loop_ticked
+    query_started.set()
+    loop_ticked = query_may_return.wait(timeout=10)
+    return [{"num": 123}]
+
+  mock_credentials = mock.MagicMock(spec=Credentials)
+  mock_settings = BigQueryToolConfig()
+  mock_tool_context = mock.create_autospec(ToolContext, instance=True)
+
+  with mock.patch.object(bigquery, "Client", autospec=True) as Client:
+    bq_client = Client.return_value
+    query_job = mock.create_autospec(bigquery.QueryJob)
+    query_job.statement_type = "SELECT"
+    bq_client.query.return_value = query_job
+    bq_client.query_and_wait.side_effect = blocking_query_and_wait
+
+    result, _ = await asyncio.gather(
+        query_tool.forecast(
+            project_id="test-project",
+            history_data="test-dataset.test-table",
+            timestamp_col="ts_col",
+            data_col="data_col",
+            credentials=mock_credentials,
+            settings=mock_settings,
+            tool_context=mock_tool_context,
+        ),
+        count_ticks(),
+    )
+
+  assert loop_ticked, "the event loop was blocked for the whole query"
+  assert ticks >= 3
+  assert result == {"status": "SUCCESS", "rows": [{"num": 123}]}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "param_overrides, expected_error_substring",
     [
@@ -1502,7 +1563,7 @@ def test_forecast_with_query_statement(
         ({"horizon": "invalid"}, "horizon must be an integer"),
     ],
 )
-def test_forecast_invalid_inputs(param_overrides, expected_error_substring):
+async def test_forecast_invalid_inputs(param_overrides, expected_error_substring):
   mock_credentials = mock.MagicMock(spec=Credentials)
   mock_settings = BigQueryToolConfig()
   mock_tool_context = mock.create_autospec(ToolContext, instance=True)
@@ -1518,7 +1579,7 @@ def test_forecast_invalid_inputs(param_overrides, expected_error_substring):
   }
   default_params.update(param_overrides)
 
-  result = query_tool.forecast(**default_params)
+  result = await query_tool.forecast(**default_params)
 
   assert result["status"] == "ERROR"
   assert expected_error_substring in result["error_details"]
@@ -1527,16 +1588,17 @@ def test_forecast_invalid_inputs(param_overrides, expected_error_substring):
 # analyze_contribution calls _execute_sql twice. We need to test that the
 # queries are properly constructed and call _execute_sql with the correct
 # parameters exactly twice.
+@pytest.mark.asyncio
 @mock.patch.object(query_tool, "_execute_sql", autospec=True)
 @mock.patch.object(uuid, "uuid4", autospec=True)
-def test_analyze_contribution_with_table_id(mock_uuid, mock_execute_sql):
+async def test_analyze_contribution_with_table_id(mock_uuid, mock_execute_sql):
   """Test analyze_contribution tool invocation with a table id."""
   mock_credentials = mock.MagicMock(spec=Credentials)
   mock_settings = BigQueryToolConfig(write_mode=WriteMode.PROTECTED)
   mock_tool_context = mock.create_autospec(ToolContext, instance=True)
   mock_uuid.return_value = "test_uuid"
   mock_execute_sql.return_value = {"status": "SUCCESS"}
-  query_tool.analyze_contribution(
+  await query_tool.analyze_contribution(
       project_id="test-project",
       input_data="test-dataset.test-table",
       dimension_id_cols=["dim1", "dim2"],
@@ -1579,10 +1641,11 @@ def test_analyze_contribution_with_table_id(mock_uuid, mock_execute_sql):
 # analyze_contribution calls _execute_sql twice. We need to test that the
 # queries are properly constructed and call _execute_sql with the correct
 # parameters exactly twice.
+@pytest.mark.asyncio
 @mock.patch.object(query_tool, "_validate_subquery", autospec=True)
 @mock.patch.object(query_tool, "_execute_sql", autospec=True)
 @mock.patch.object(uuid, "uuid4", autospec=True)
-def test_analyze_contribution_with_query_statement(
+async def test_analyze_contribution_with_query_statement(
     mock_uuid, mock_execute_sql, mock_validate_subquery
 ):
   """Test analyze_contribution tool invocation with a query statement."""
@@ -1593,7 +1656,7 @@ def test_analyze_contribution_with_query_statement(
   mock_uuid.return_value = "test_uuid"
   mock_execute_sql.return_value = {"status": "SUCCESS"}
   input_data_query = "SELECT * FROM `test-dataset.test-table`"
-  query_tool.analyze_contribution(
+  await query_tool.analyze_contribution(
       project_id="test-project",
       input_data=input_data_query,
       dimension_id_cols=["dim1", "dim2"],
@@ -1633,6 +1696,7 @@ def test_analyze_contribution_with_query_statement(
   )
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "param_overrides, expected_error_substring",
     [
@@ -1650,7 +1714,7 @@ def test_analyze_contribution_with_query_statement(
         ({"pruning_method": "invalid"}, "Invalid pruning_method"),
     ],
 )
-def test_analyze_contribution_invalid_inputs(
+async def test_analyze_contribution_invalid_inputs(
     param_overrides, expected_error_substring
 ):
   mock_credentials = mock.MagicMock(spec=Credentials)
@@ -1669,15 +1733,16 @@ def test_analyze_contribution_invalid_inputs(
   }
   default_params.update(param_overrides)
 
-  result = query_tool.analyze_contribution(**default_params)
+  result = await query_tool.analyze_contribution(**default_params)
 
   assert result["status"] == "ERROR"
   assert expected_error_substring in result["error_details"]
 
 
+@pytest.mark.asyncio
 @mock.patch.object(query_tool, "_execute_sql", autospec=True)
 @mock.patch.object(uuid, "uuid4", autospec=True)
-def test_analyze_contribution_escaping(mock_uuid, mock_execute_sql):
+async def test_analyze_contribution_escaping(mock_uuid, mock_execute_sql):
   """Test analyze_contribution tool invocation with escaping."""
   mock_credentials = mock.MagicMock(spec=Credentials)
   mock_settings = BigQueryToolConfig(write_mode=WriteMode.PROTECTED)
@@ -1685,7 +1750,7 @@ def test_analyze_contribution_escaping(mock_uuid, mock_execute_sql):
   mock_uuid.return_value = "test_uuid"
   mock_execute_sql.return_value = {"status": "SUCCESS"}
 
-  query_tool.analyze_contribution(
+  await query_tool.analyze_contribution(
       project_id="test-project",
       input_data="test-dataset.test-table",
       dimension_id_cols=["dim1"],
@@ -1715,10 +1780,11 @@ def test_analyze_contribution_escaping(mock_uuid, mock_execute_sql):
 # detect_anomalies calls _execute_sql twice. We need to test that
 # the queries are properly constructed and call _execute_sql with the correct
 # parameters exactly twice.
+@pytest.mark.asyncio
 @mock.patch.object(query_tool, "_validate_subquery", autospec=True)
 @mock.patch.object(query_tool, "_execute_sql", autospec=True)
 @mock.patch.object(uuid, "uuid4", autospec=True)
-def test_detect_anomalies_with_table_id(
+async def test_detect_anomalies_with_table_id(
     mock_uuid, mock_execute_sql, mock_validate_subquery
 ):
   """Test time series anomaly detection tool invocation with a table id."""
@@ -1729,7 +1795,7 @@ def test_detect_anomalies_with_table_id(
   mock_uuid.return_value = "test_uuid"
   mock_execute_sql.return_value = {"status": "SUCCESS"}
   history_data_query = "SELECT * FROM `test-dataset.test-table`"
-  query_tool.detect_anomalies(
+  await query_tool.detect_anomalies(
       project_id="test-project",
       history_data=history_data_query,
       times_series_timestamp_col="ts_timestamp",
@@ -1768,13 +1834,67 @@ def test_detect_anomalies_with_table_id(
   )
 
 
-# detect_anomalies calls _execute_sql twice. We need to test that
-# the queries are properly constructed and call _execute_sql with the correct
-# parameters exactly twice.
+@pytest.mark.asyncio
 @mock.patch.object(query_tool, "_validate_subquery", autospec=True)
 @mock.patch.object(query_tool, "_execute_sql", autospec=True)
 @mock.patch.object(uuid, "uuid4", autospec=True)
-def test_detect_anomalies_with_custom_params(
+async def test_detect_anomalies_leaves_the_event_loop_free_for_both_queries(
+    mock_uuid, mock_execute_sql, mock_validate_subquery
+):
+  """CREATE MODEL and DETECT_ANOMALIES run as two sequential _execute_sql
+  calls. Both must run off the loop, or the loop stays blocked while the
+  model trains, not just during the first query.
+  """
+  mock_validate_subquery.return_value = None
+  mock_uuid.return_value = "test_uuid"
+
+  def blocking_execute_sql(*args, **kwargs):
+    # Stands in for a slow network call. Blocking the thread this runs on is
+    # fine; blocking the event loop's thread is the bug under test.
+    threading.Event().wait(timeout=0.05)
+    return {"status": "SUCCESS"}
+
+  mock_execute_sql.side_effect = blocking_execute_sql
+
+  ticks = 0
+
+  async def count_ticks():
+    nonlocal ticks
+    while True:
+      ticks += 1
+      await asyncio.sleep(0)
+
+  mock_credentials = mock.MagicMock(spec=Credentials)
+  mock_settings = BigQueryToolConfig(write_mode=WriteMode.PROTECTED)
+  mock_tool_context = mock.create_autospec(ToolContext, instance=True)
+
+  ticker = asyncio.ensure_future(count_ticks())
+  try:
+    result = await query_tool.detect_anomalies(
+        project_id="test-project",
+        history_data="test-dataset.test-table",
+        times_series_timestamp_col="ts_timestamp",
+        times_series_data_col="ts_data",
+        credentials=mock_credentials,
+        settings=mock_settings,
+        tool_context=mock_tool_context,
+    )
+  finally:
+    ticker.cancel()
+
+  assert mock_execute_sql.call_count == 2
+  assert ticks > 5, "the event loop was blocked while detect_anomalies ran"
+  assert result == {"status": "SUCCESS"}
+
+
+# detect_anomalies calls _execute_sql twice. We need to test that
+# the queries are properly constructed and call _execute_sql with the correct
+# parameters exactly twice.
+@pytest.mark.asyncio
+@mock.patch.object(query_tool, "_validate_subquery", autospec=True)
+@mock.patch.object(query_tool, "_execute_sql", autospec=True)
+@mock.patch.object(uuid, "uuid4", autospec=True)
+async def test_detect_anomalies_with_custom_params(
     mock_uuid, mock_execute_sql, mock_validate_subquery
 ):
   """Test time series anomaly detection tool invocation with a table id."""
@@ -1785,7 +1905,7 @@ def test_detect_anomalies_with_custom_params(
   mock_uuid.return_value = "test_uuid"
   mock_execute_sql.return_value = {"status": "SUCCESS"}
   history_data_query = "SELECT * FROM `test-dataset.test-table`"
-  query_tool.detect_anomalies(
+  await query_tool.detect_anomalies(
       project_id="test-project",
       history_data=history_data_query,
       times_series_timestamp_col="ts_timestamp",
@@ -1827,10 +1947,11 @@ def test_detect_anomalies_with_custom_params(
   )
 
 
+@pytest.mark.asyncio
 @mock.patch.object(query_tool, "_validate_subquery", autospec=True)
 @mock.patch.object(query_tool, "_execute_sql", autospec=True)
 @mock.patch.object(uuid, "uuid4", autospec=True)
-def test_detect_anomalies_with_hyphenated_columns(
+async def test_detect_anomalies_with_hyphenated_columns(
     mock_uuid, mock_execute_sql, mock_validate_subquery
 ):
   """Anomaly detection orders by hyphenated columns wrapped in backticks."""
@@ -1841,7 +1962,7 @@ def test_detect_anomalies_with_hyphenated_columns(
   mock_uuid.return_value = "test_uuid"
   mock_execute_sql.return_value = {"status": "SUCCESS"}
   history_data_query = "SELECT * FROM `test-dataset.test-table`"
-  query_tool.detect_anomalies(
+  await query_tool.detect_anomalies(
       project_id="test-project",
       history_data=history_data_query,
       times_series_timestamp_col="event-ts",
@@ -1884,10 +2005,11 @@ def test_detect_anomalies_with_hyphenated_columns(
 # detect_anomalies calls _execute_sql twice. We need to test that
 # the queries are properly constructed and call _execute_sql with the correct
 # parameters exactly twice.
+@pytest.mark.asyncio
 @mock.patch.object(query_tool, "_validate_subquery", autospec=True)
 @mock.patch.object(query_tool, "_execute_sql", autospec=True)
 @mock.patch.object(uuid, "uuid4", autospec=True)
-def test_detect_anomalies_on_target_table(
+async def test_detect_anomalies_on_target_table(
     mock_uuid, mock_execute_sql, mock_validate_subquery
 ):
   """Test time series anomaly detection tool with target data is provided."""
@@ -1899,7 +2021,7 @@ def test_detect_anomalies_on_target_table(
   mock_execute_sql.return_value = {"status": "SUCCESS"}
   history_data_query = "SELECT * FROM `test-dataset.history-table`"
   target_data_query = "SELECT * FROM `test-dataset.target-table`"
-  query_tool.detect_anomalies(
+  await query_tool.detect_anomalies(
       project_id="test-project",
       history_data=history_data_query,
       times_series_timestamp_col="ts_timestamp",
@@ -1945,10 +2067,11 @@ def test_detect_anomalies_on_target_table(
 # detect_anomalies calls execute_sql twice. We need to test that
 # the queries are properly constructed and call execute_sql with the correct
 # parameters exactly twice.
+@pytest.mark.asyncio
 @mock.patch.object(query_tool, "_validate_subquery", autospec=True)
 @mock.patch.object(query_tool, "_execute_sql", autospec=True)
 @mock.patch.object(uuid, "uuid4", autospec=True)
-def test_detect_anomalies_with_str_table_id(
+async def test_detect_anomalies_with_str_table_id(
     mock_uuid, mock_execute_sql, mock_validate_subquery
 ):
   """Test time series anomaly detection tool invocation with a table id."""
@@ -1959,7 +2082,7 @@ def test_detect_anomalies_with_str_table_id(
   mock_uuid.return_value = "test_uuid"
   mock_execute_sql.return_value = {"status": "SUCCESS"}
   history_data_query = "SELECT * FROM `test-dataset.test-table`"
-  query_tool.detect_anomalies(
+  await query_tool.detect_anomalies(
       project_id="test-project",
       history_data=history_data_query,
       times_series_timestamp_col="ts_timestamp",
@@ -1999,9 +2122,10 @@ def test_detect_anomalies_with_str_table_id(
   )
 
 
+@pytest.mark.asyncio
 @mock.patch.object(query_tool, "_validate_subquery", autospec=True)
 @mock.patch.object(query_tool, "_execute_sql", autospec=True)
-def test_detect_anomalies_returns_target_data_subquery_validation_error(
+async def test_detect_anomalies_returns_target_data_subquery_validation_error(
     mock_execute_sql, mock_validate_subquery
 ):
   """Test that a target data subquery is dry run validated before execution."""
@@ -2017,7 +2141,7 @@ def test_detect_anomalies_returns_target_data_subquery_validation_error(
       "SELECT 1) ; DROP TABLE my_dataset.my_table; SELECT * FROM (SELECT 1"
   )
 
-  result = query_tool.detect_anomalies(
+  result = await query_tool.detect_anomalies(
       project_id="test-project",
       history_data="test-dataset.history-table",
       times_series_timestamp_col="ts_timestamp",
@@ -2042,6 +2166,7 @@ def test_detect_anomalies_returns_target_data_subquery_validation_error(
   mock_execute_sql.assert_not_called()
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "param_overrides, expected_error_substring",
     [
@@ -2092,7 +2217,7 @@ def test_detect_anomalies_returns_target_data_subquery_validation_error(
         ),
     ],
 )
-def test_detect_anomalies_invalid_inputs(
+async def test_detect_anomalies_invalid_inputs(
     param_overrides, expected_error_substring
 ):
   mock_credentials = mock.MagicMock(spec=Credentials)
@@ -2110,7 +2235,7 @@ def test_detect_anomalies_invalid_inputs(
   }
   default_params.update(param_overrides)
 
-  result = query_tool.detect_anomalies(**default_params)
+  result = await query_tool.detect_anomalies(**default_params)
 
   assert result["status"] == "ERROR"
   assert expected_error_substring in result["error_details"]
@@ -2277,8 +2402,9 @@ def test_execute_sql_user_job_labels_augment_internal_labels(
         ),
     ],
 )
+@pytest.mark.asyncio
 @mock.patch.object(query_tool, "_validate_subquery", autospec=True)
-def test_ml_tool_job_labels(mock_validate, tool_call, expected_tool_label):
+async def test_ml_tool_job_labels(mock_validate, tool_call, expected_tool_label):
   """Test ML tools for job label."""
   mock_validate.return_value = None
 
@@ -2287,7 +2413,7 @@ def test_ml_tool_job_labels(mock_validate, tool_call, expected_tool_label):
 
     tool_context = mock.create_autospec(ToolContext, instance=True)
     tool_context.state.get.return_value = None
-    tool_call(tool_context)
+    await tool_call(tool_context)
 
     for call_args_list in [
         bq_client.query.call_args_list,
@@ -2351,8 +2477,9 @@ def test_ml_tool_job_labels(mock_validate, tool_call, expected_tool_label):
         ),
     ],
 )
+@pytest.mark.asyncio
 @mock.patch.object(query_tool, "_validate_subquery", autospec=True)
-def test_ml_tool_job_labels_w_application_name(
+async def test_ml_tool_job_labels_w_application_name(
     mock_validate, tool_call, expected_tool_label
 ):
   """Test ML tools for job label with application name."""
@@ -2363,7 +2490,7 @@ def test_ml_tool_job_labels_w_application_name(
 
     tool_context = mock.create_autospec(ToolContext, instance=True)
     tool_context.state.get.return_value = None
-    tool_call(tool_context)
+    await tool_call(tool_context)
 
     expected_labels = {
         "adk-bigquery-tool": expected_tool_label,
@@ -2445,8 +2572,9 @@ def test_ml_tool_job_labels_w_application_name(
         ),
     ],
 )
+@pytest.mark.asyncio
 @mock.patch.object(query_tool, "_validate_subquery", autospec=True)
-def test_ml_tool_user_job_labels_augment_internal_labels(
+async def test_ml_tool_user_job_labels_augment_internal_labels(
     mock_validate, tool_call, expected_labels
 ):
   """Test ML tools augment user job_labels with internal labels."""
@@ -2457,7 +2585,7 @@ def test_ml_tool_user_job_labels_augment_internal_labels(
 
     tool_context = mock.create_autospec(ToolContext, instance=True)
     tool_context.state.get.return_value = None
-    tool_call(tool_context)
+    await tool_call(tool_context)
 
     for call_args_list in [
         bq_client.query.call_args_list,
@@ -2603,8 +2731,9 @@ def test_execute_sql_maximum_bytes_billed_config():
         ),
     ],
 )
+@pytest.mark.asyncio
 @mock.patch.object(query_tool, "_validate_subquery", autospec=True)
-def test_tool_call_doesnt_change_global_settings(mock_validate, tool_call):
+async def test_tool_call_doesnt_change_global_settings(mock_validate, tool_call):
   """Test query tools don't change global settings."""
   mock_validate.return_value = None
   settings = BigQueryToolConfig(write_mode=WriteMode.ALLOWED)
@@ -2627,8 +2756,10 @@ def test_tool_call_doesnt_change_global_settings(mock_validate, tool_call):
     # Test settings write mode before
     assert settings.write_mode == WriteMode.ALLOWED
 
-    # Call the tool
+    # Call the tool. Only some of the query tools are coroutine functions.
     result = tool_call(settings, tool_context)
+    if inspect.isawaitable(result):
+      result = await result
 
     # Test successful executeion of the tool
     assert result == {"status": "SUCCESS", "rows": []}
@@ -2689,8 +2820,9 @@ def test_tool_call_doesnt_change_global_settings(mock_validate, tool_call):
         ),
     ],
 )
+@pytest.mark.asyncio
 @mock.patch.object(query_tool, "_validate_subquery", autospec=True)
-def test_tool_call_doesnt_mutate_job_labels(mock_validate, tool_call):
+async def test_tool_call_doesnt_mutate_job_labels(mock_validate, tool_call):
   """Test query tools don't mutate job_labels in global settings."""
   mock_validate.return_value = None
   original_labels = {"environment": "test", "team": "data"}
@@ -2718,8 +2850,10 @@ def test_tool_call_doesnt_mutate_job_labels(mock_validate, tool_call):
     assert settings.job_labels == original_labels
     assert "adk-bigquery-tool" not in settings.job_labels
 
-    # Call the tool
+    # Call the tool. Only some of the query tools are coroutine functions.
     result = tool_call(settings, tool_context)
+    if inspect.isawaitable(result):
+      result = await result
 
     # Test successful execution of the tool
     assert result == {"status": "SUCCESS", "rows": []}
