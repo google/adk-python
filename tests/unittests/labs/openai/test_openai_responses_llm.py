@@ -20,11 +20,17 @@ from unittest import mock
 from google.genai import types
 from pydantic import BaseModel
 
+# The repository may be tested locally with a google-genai version older than
+# the source tree expects (run_config.py imports types.AvatarConfig at import
+# time, so the shim must be installed before importing the labs model below).
+# The empty shim is installed process-wide and intentionally left in place: it
+# is harmless, and other test modules (e.g. test_live_streaming_configs) that
+# run later read ``types.AvatarConfig`` at runtime, so removing it on teardown
+# would break them.
 if not hasattr(types, 'AvatarConfig'):
-  # The repository may be tested locally with a google-genai version older than
-  # the source tree expects. Keep this test focused on the labs model behavior.
   types.AvatarConfig = type('AvatarConfig', (BaseModel,), {})
 
+from google.adk.labs.openai._openai_common import OpenAIGenerateContentConfig
 from google.adk.labs.openai._openai_responses_llm import _content_to_response_input_items
 from google.adk.labs.openai._openai_responses_llm import _function_declaration_to_response_tool
 from google.adk.labs.openai._openai_responses_llm import _loads_json_object
@@ -596,45 +602,23 @@ def test_structured_output_uses_responses_text_format():
   assert kwargs['text']['format']['schema']['required'] == ['answer']
 
 
-def test_thinking_config_zero_budget_maps_to_minimal_reasoning():
-  """thinking_budget=0 maps to minimal effort and overrides the static field."""
-  llm = OpenAIResponsesLlm(model='gpt-5', reasoning={'effort': 'medium'})
-  llm_request = LlmRequest(
-      contents=[
-          types.Content(role='user', parts=[types.Part.from_text(text='Hi')])
-      ],
-      config=types.GenerateContentConfig(
-          thinking_config=types.ThinkingConfig(thinking_budget=0)
-      ),
-  )
-
-  kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
-
-  assert kwargs['reasoning'] == {'effort': 'minimal', 'summary': 'concise'}
-
-
 @pytest.mark.parametrize(
-    ('thinking_level', 'effort'),
+    ('model', 'effort'),
     [
-        (types.ThinkingLevel.MINIMAL, 'minimal'),
-        (types.ThinkingLevel.LOW, 'low'),
-        (types.ThinkingLevel.MEDIUM, 'medium'),
-        (types.ThinkingLevel.HIGH, 'high'),
-        (types.ThinkingLevel.THINKING_LEVEL_UNSPECIFIED, 'medium'),
+        ('gpt-6-astra', 'max'),
+        ('gpt-5.6-sol', 'xhigh'),
+        ('gpt-5', 'minimal'),
+        ('o3', 'high'),
     ],
 )
-def test_thinking_config_level_maps_to_openai_reasoning_effort(
-    thinking_level, effort
-):
-  """thinking_level maps directly to Responses reasoning effort."""
-  llm = OpenAIResponsesLlm(model='gpt-5')
+def test_effort_maps_to_responses_reasoning(model, effort):
+  """OpenAIGenerateContentConfig.effort maps to the Responses reasoning object."""
+  llm = OpenAIResponsesLlm(model=model)
   llm_request = LlmRequest(
       contents=[
           types.Content(role='user', parts=[types.Part.from_text(text='Hi')])
       ],
-      config=types.GenerateContentConfig(
-          thinking_config=types.ThinkingConfig(thinking_level=thinking_level)
-      ),
+      config=OpenAIGenerateContentConfig(effort=effort),
   )
 
   kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
@@ -642,8 +626,132 @@ def test_thinking_config_level_maps_to_openai_reasoning_effort(
   assert kwargs['reasoning'] == {'effort': effort, 'summary': 'concise'}
 
 
-def test_thinking_config_level_takes_precedence_over_budget():
-  """thinking_level is a better OpenAI mapping than token budget."""
+def test_effort_overrides_only_effort_key_of_static_reasoning():
+  """A configured effort overrides only the effort of the model-level default."""
+  llm = OpenAIResponsesLlm(model='gpt-5', reasoning={'effort': 'medium'})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(role='user', parts=[types.Part.from_text(text='Hi')])
+      ],
+      config=OpenAIGenerateContentConfig(effort='high'),
+  )
+
+  kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
+
+  # effort is overridden; nothing else is injected (no forced 'concise').
+  assert kwargs['reasoning'] == {'effort': 'high'}
+
+
+def test_effort_preserves_static_reasoning_summary():
+  """A configured effort keeps a model-level summary instead of clobbering it."""
+  llm = OpenAIResponsesLlm(
+      model='gpt-5', reasoning={'effort': 'medium', 'summary': 'detailed'}
+  )
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(role='user', parts=[types.Part.from_text(text='Hi')])
+      ],
+      config=OpenAIGenerateContentConfig(effort='high'),
+  )
+
+  kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
+
+  assert kwargs['reasoning'] == {'effort': 'high', 'summary': 'detailed'}
+
+
+def test_effort_unsupported_tier_raises(monkeypatch):
+  """An effort tier the model does not accept raises before the request."""
+  # Tier validation only runs against the default OpenAI host, so clear any
+  # ambient base-url overrides that would otherwise skip it and mask the raise.
+  monkeypatch.delenv('OPENAI_BASE_URL', raising=False)
+  monkeypatch.delenv('AZURE_OPENAI_ENDPOINT', raising=False)
+  llm = OpenAIResponsesLlm(model='gpt-5')
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(role='user', parts=[types.Part.from_text(text='Hi')])
+      ],
+      config=OpenAIGenerateContentConfig(effort='xhigh'),
+  )
+
+  with pytest.raises(ValueError, match="not supported by model 'gpt-5'"):
+    llm._get_response_create_kwargs(llm_request, stream=False)
+
+
+def _unsupported_effort_request():
+  return LlmRequest(
+      contents=[
+          types.Content(role='user', parts=[types.Part.from_text(text='Hi')])
+      ],
+      config=OpenAIGenerateContentConfig(effort='xhigh'),
+  )
+
+
+def test_effort_unsupported_tier_passes_through_with_base_url():
+  """A custom base_url skips tier validation; the effort passes through."""
+  llm = OpenAIResponsesLlm(model='gpt-5', base_url='https://host.example/v1')
+
+  kwargs = llm._get_response_create_kwargs(
+      _unsupported_effort_request(), stream=False
+  )
+
+  assert kwargs['reasoning']['effort'] == 'xhigh'
+
+
+def test_effort_unsupported_tier_passes_through_with_injected_client():
+  """An injected client skips tier validation; the effort passes through."""
+  llm = OpenAIResponsesLlm(model='gpt-5', client=AsyncOpenAI(api_key='x'))
+
+  kwargs = llm._get_response_create_kwargs(
+      _unsupported_effort_request(), stream=False
+  )
+
+  assert kwargs['reasoning']['effort'] == 'xhigh'
+
+
+def test_effort_unsupported_tier_passes_through_with_openai_base_url_env(
+    monkeypatch,
+):
+  """OPENAI_BASE_URL skips tier validation; the effort passes through."""
+  monkeypatch.setenv('OPENAI_BASE_URL', 'https://host.example/v1')
+  llm = OpenAIResponsesLlm(model='gpt-5')
+
+  kwargs = llm._get_response_create_kwargs(
+      _unsupported_effort_request(), stream=False
+  )
+
+  assert kwargs['reasoning']['effort'] == 'xhigh'
+
+
+def test_effort_unsupported_tier_passes_through_with_azure_endpoint():
+  """An Azure endpoint skips tier validation; the effort passes through."""
+  llm = AzureOpenAIResponsesLlm(
+      model='gpt-5', azure_endpoint='https://example.openai.azure.com/'
+  )
+
+  kwargs = llm._get_response_create_kwargs(
+      _unsupported_effort_request(), stream=False
+  )
+
+  assert kwargs['reasoning']['effort'] == 'xhigh'
+
+
+def test_no_effort_falls_back_to_static_reasoning():
+  """Without a configured effort, the model-level reasoning default applies."""
+  llm = OpenAIResponsesLlm(model='gpt-5', reasoning={'effort': 'medium'})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(role='user', parts=[types.Part.from_text(text='Hi')])
+      ],
+      config=types.GenerateContentConfig(),
+  )
+
+  kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
+
+  assert kwargs['reasoning'] == {'effort': 'medium'}
+
+
+def test_standard_thinking_config_warns_and_is_ignored(caplog):
+  """Standard thinking_config is ignored (with a warning) for OpenAI models."""
   llm = OpenAIResponsesLlm(model='gpt-5')
   llm_request = LlmRequest(
       contents=[
@@ -651,66 +759,17 @@ def test_thinking_config_level_takes_precedence_over_budget():
       ],
       config=types.GenerateContentConfig(
           thinking_config=types.ThinkingConfig(
-              thinking_budget=0, thinking_level=types.ThinkingLevel.HIGH
+              thinking_level=types.ThinkingLevel.HIGH
           )
       ),
   )
 
-  kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
+  with caplog.at_level(logging.WARNING):
+    kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
 
-  assert kwargs['reasoning'] == {'effort': 'high', 'summary': 'concise'}
-
-
-def test_thinking_config_automatic_uses_medium_concise_reasoning():
-  """Negative budgets map to medium reasoning with concise summaries."""
-  llm = OpenAIResponsesLlm(model='gpt-5', reasoning={'effort': 'high'})
-  llm_request = LlmRequest(
-      contents=[
-          types.Content(role='user', parts=[types.Part.from_text(text='Hi')])
-      ],
-      config=types.GenerateContentConfig(
-          thinking_config=types.ThinkingConfig(thinking_budget=-1)
-      ),
-  )
-
-  kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
-
-  assert kwargs['reasoning'] == {'effort': 'medium', 'summary': 'concise'}
-
-
-def test_thinking_config_none_budget_raises():
-  """ThinkingConfig requires level or explicit budget semantics."""
-  llm = OpenAIResponsesLlm(model='gpt-5')
-  llm_request = LlmRequest(
-      contents=[
-          types.Content(role='user', parts=[types.Part.from_text(text='Hi')])
-      ],
-      config=types.GenerateContentConfig(
-          thinking_config=types.ThinkingConfig()
-      ),
-  )
-
-  with pytest.raises(
-      ValueError, match='thinking_budget must be set explicitly'
-  ):
-    llm._get_response_create_kwargs(llm_request, stream=False)
-
-
-def test_thinking_config_positive_budget_uses_medium_concise_reasoning():
-  """Positive budgets map to medium reasoning with concise summaries."""
-  llm = OpenAIResponsesLlm(model='gpt-5')
-  llm_request = LlmRequest(
-      contents=[
-          types.Content(role='user', parts=[types.Part.from_text(text='Hi')])
-      ],
-      config=types.GenerateContentConfig(
-          thinking_config=types.ThinkingConfig(thinking_budget=1024)
-      ),
-  )
-
-  kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
-
-  assert kwargs['reasoning'] == {'effort': 'medium', 'summary': 'concise'}
+  assert 'not supported for OpenAI models' in caplog.text
+  # Ignored -> no reasoning override (the None default is filtered out).
+  assert 'reasoning' not in kwargs
 
 
 def test_response_parsing_maps_text_reasoning_tool_calls_and_usage():
