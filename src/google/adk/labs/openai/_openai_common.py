@@ -29,22 +29,38 @@ from collections.abc import Callable
 from collections.abc import Mapping
 import inspect
 import logging
+import os
 import re
 from typing import Any
 from typing import cast
+from typing import Literal
 
 from google.genai import types
+from pydantic import Field
+from pydantic import model_validator
 from pydantic import ValidationError
 
 logger = logging.getLogger("google_adk." + __name__)
 
 __all__ = [
+    "OpenAIGenerateContentConfig",
+    "OpenAIReasoningEffort",
     "build_api_key",
+    "build_reasoning_effort",
     "is_reasoning_model",
     "map_finish_reason",
     "serialize_system_instruction",
     "strip_unsupported_sampling_params",
+    "supported_efforts",
+    "targets_default_openai_host",
     "tool_choice",
+]
+
+# The OpenAI *reasoning effort* tiers, ordered from least to most effort. The
+# set a given model actually accepts is model-dependent (see
+# ``supported_efforts``); sending an unsupported tier is an API 400.
+OpenAIReasoningEffort = Literal[
+    "minimal", "low", "medium", "high", "xhigh", "max"
 ]
 
 # Matches the OpenAI *reasoning* model families (the o-series and the gpt-5.x /
@@ -106,6 +122,249 @@ def strip_unsupported_sampling_params(
           model,
           _DEFAULT_SAMPLING_VALUE,
       )
+
+
+# --- Reasoning effort --------------------------------------------------------
+#
+# Which effort tiers a model accepts depends on BOTH the model family AND the
+# API surface: the same gpt-6.x/gpt-5.6.x model accepts ``max`` on the Responses
+# API but rejects it (400) on Chat Completions. A tier outside a model's set is
+# an API 400, so ``supported_efforts`` resolves (model, surface) to the accepted
+# set.
+#
+#   * gpt-6.x / gpt-5.5.x / gpt-5.6.x (advanced flagships):
+#       - Chat Completions: low/medium/high/xhigh (no minimal, no max).
+#       - Responses:        low/medium/high/xhigh/max (no minimal).
+#   * gpt-5 / gpt-5-mini / gpt-5-nano: minimal/low/medium/high.
+#   * o-series (o1, o3, o3-mini, o4-mini): low/medium/high (no minimal).
+#   * o1-mini / o1-preview: do not accept a reasoning-effort parameter at all
+#     (the parameter was introduced with the o1 GA release).
+#
+# The advanced-family sets are verified live (2026-09) against gpt-6-astra and
+# gpt-5.6-{sol,terra,luna} on both surfaces (see the reasoning integration
+# tests). The gpt-5 and o-series sets follow the OpenAI docs and are not
+# live-verified here. Adjust here if a family starts/stops accepting a tier.
+ApiSurface = Literal["chat", "responses"]
+
+_EFFORTS_ADVANCED_CHAT: frozenset[str] = frozenset(
+    {"low", "medium", "high", "xhigh"}
+)
+_EFFORTS_ADVANCED_RESPONSES: frozenset[str] = frozenset(
+    {"low", "medium", "high", "xhigh", "max"}
+)
+_EFFORTS_GPT5: frozenset[str] = frozenset({"minimal", "low", "medium", "high"})
+_EFFORTS_OSERIES: frozenset[str] = frozenset({"low", "medium", "high"})
+_NO_EFFORTS: frozenset[str] = frozenset()
+
+# gpt-6.x, gpt-5.5.x and gpt-5.6.x (a minor version follows ``gpt-6`` / a dotted
+# minor follows ``gpt-5``): the extended tier range including xhigh (+ max on
+# the Responses surface).
+_ADVANCED_RE = re.compile(
+    r"(?:^|/)(?:gpt-6|gpt-5\.[56])(?:[.\-]|$)", re.IGNORECASE
+)
+# Plain gpt-5 / gpt-5-mini / gpt-5-nano (and dated snapshots like
+# ``gpt-5-2025-08-07``): ``gpt-5`` NOT followed by a dotted minor version.
+_GPT5_RE = re.compile(r"(?:^|/)gpt-5(?![.\d])", re.IGNORECASE)
+# o1-mini and o1-preview predate the reasoning-effort parameter and reject it.
+_O1_NO_EFFORT_RE = re.compile(
+    r"(?:^|/)o1-(?:mini|preview)(?:[.\-]|$)", re.IGNORECASE
+)
+
+
+def supported_efforts(model: str | None, api: ApiSurface) -> frozenset[str]:
+  """Returns the reasoning-effort tiers ``model`` accepts on ``api``.
+
+  Args:
+    model: The model id.
+    api: The API surface -- ``"chat"`` (Chat Completions) or ``"responses"``.
+      Advanced flagships accept ``max`` on Responses but not on Chat.
+
+  Returns:
+    The accepted effort tiers. An empty set means the model takes no
+    reasoning-effort parameter at all (either it is not a reasoning model, or --
+    like ``o1-mini`` / ``o1-preview`` -- it is one that rejects the
+    parameter).
+  """
+  # Validate the API surface up front so an unknown value fails deterministically
+  # for every model family, not only the advanced ones below.
+  if api not in ("chat", "responses"):
+    raise ValueError(f"Unknown API surface {api!r}.")
+  if not model or not is_reasoning_model(model):
+    return _NO_EFFORTS
+  if _O1_NO_EFFORT_RE.search(model):
+    return _NO_EFFORTS
+  if _ADVANCED_RE.search(model):
+    if api == "responses":
+      return _EFFORTS_ADVANCED_RESPONSES
+    return _EFFORTS_ADVANCED_CHAT
+  if _GPT5_RE.search(model):
+    return _EFFORTS_GPT5
+  # Conservative default: the low/medium/high range shared by the o-series
+  # (o1/o3/o4...). This is also reached by any recognized reasoning model that
+  # is not special-cased above -- notably ``gpt-5.x`` outside 5.5/5.6 (e.g.
+  # ``gpt-5.1``), which matches neither _ADVANCED_RE nor _GPT5_RE. An
+  # unrecognized future model (e.g. gpt-7) returns _NO_EFFORTS above, so a
+  # configured effort raises until it is special-cased here or the caller
+  # passes validate=False.
+  return _EFFORTS_OSERIES
+
+
+class OpenAIGenerateContentConfig(types.GenerateContentConfig):
+  """GenerateContentConfig with OpenAI-specific reasoning controls.
+
+  This is the recommended way to configure reasoning effort for OpenAI models.
+  Set ``effort`` directly to pick a tier; the exact tiers a model accepts are
+  model-dependent (see ``supported_efforts``).
+
+  The standard ``thinking_config`` (``thinking_level`` / ``thinking_budget``) is
+  intentionally unsupported: the genai ``ThinkingLevel`` enum
+  (minimal/low/medium/high) cannot express OpenAI's full, model-dependent effort
+  range (which also includes ``xhigh`` / ``max``), so mirroring
+  ``AnthropicGenerateContentConfig`` we require the OpenAI-native ``effort``
+  field instead and reject a ``thinking_config`` that sets either field.
+
+  Attributes:
+    effort: The reasoning effort tier (e.g. ``"minimal"``, ``"high"``,
+      ``"max"``). This is the only supported way to configure reasoning effort
+      on this config; setting ``thinking_config.thinking_level`` or
+      ``thinking_budget`` is rejected (see ``_validate_no_thinking_config``).
+  """
+
+  effort: OpenAIReasoningEffort | None = Field(
+      default=None,
+      description=(
+          "Configures the OpenAI reasoning effort tier. This is the"
+          " recommended way to control reasoning depth on OpenAI reasoning"
+          " models; the accepted tiers are model-dependent."
+      ),
+  )
+
+  @model_validator(mode="after")
+  def _validate_no_thinking_config(self) -> "OpenAIGenerateContentConfig":
+    """Rejects a standard thinking_config on the OpenAI-specific config.
+
+    ``build_reasoning_effort`` treats both ``thinking_level`` and
+    ``thinking_budget`` as unsupported, so reject either here rather than
+    silently ignoring a ``thinking_budget`` set alongside ``effort``.
+    """
+    if self.thinking_config and (
+        self.thinking_config.thinking_level is not None
+        or self.thinking_config.thinking_budget is not None
+    ):
+      raise ValueError(
+          "thinking_config (thinking_level / thinking_budget) is not supported"
+          " in OpenAIGenerateContentConfig. Use the `effort` field directly to"
+          " configure reasoning effort."
+      )
+    return self
+
+
+def targets_default_openai_host(
+    *,
+    client: object | None,
+    base_url: str | None,
+    azure_endpoint: str | None = None,
+) -> bool:
+  """Returns True when the request targets api.openai.com, not a compatible backend.
+
+  Reasoning-effort validation against the OpenAI per-model tables is only safe
+  on the real OpenAI backend. An injected ``client``, a custom ``base_url`` (or
+  Azure ``azure_endpoint``), or ``OPENAI_BASE_URL`` in the environment (which
+  the default ``AsyncOpenAI`` client reads) all mean an OpenAI-compatible
+  backend (e.g. Grok on Vertex AI, or an Azure deployment) may be in use, whose
+  model id need not be an OpenAI id -- so the tier is passed through and the
+  backend rejects an unsupported one. ``AZURE_OPENAI_ENDPOINT`` is deliberately
+  not consulted: no wrapper here reads it, so a request made while it is set
+  still reaches the default host and must still be validated.
+  Both the Chat Completions and Responses wrappers share this predicate to avoid
+  drift.
+  """
+  return (
+      client is None
+      and base_url is None
+      and azure_endpoint is None
+      and not os.environ.get("OPENAI_BASE_URL")
+  )
+
+
+def build_reasoning_effort(
+    config: types.GenerateContentConfig | None,
+    model: str | None,
+    api: ApiSurface,
+    *,
+    validate: bool = True,
+) -> str | None:
+  """Resolves the reasoning-effort tier to send for ``model`` on ``api``.
+
+  The effort tier comes from ``OpenAIGenerateContentConfig.effort``. The
+  standard ``thinking_config`` (``thinking_level`` / ``thinking_budget``) is not
+  supported for OpenAI models -- the genai ``ThinkingLevel`` enum cannot express
+  OpenAI's model-dependent tier range. On an ``OpenAIGenerateContentConfig`` a
+  ``thinking_config`` is rejected at construction (see
+  ``_validate_no_thinking_config``); on a plain ``GenerateContentConfig`` it is
+  ignored here with a logged warning, mirroring
+  ``AnthropicGenerateContentConfig``. Callers must use
+  ``OpenAIGenerateContentConfig`` and set ``effort`` directly.
+
+  Args:
+    config: The request config, ideally an ``OpenAIGenerateContentConfig``.
+    model: The target model id, used to validate the tier is accepted.
+    api: The API surface the request targets (``"chat"`` or ``"responses"``);
+      the accepted tiers differ between surfaces.
+    validate: Whether to validate the tier against ``model``. Callers pass
+      ``False`` whenever the request may target an OpenAI-compatible backend
+      rather than api.openai.com -- that is, when an explicit ``client`` was
+      injected, a custom ``base_url`` (or Azure ``azure_endpoint``) was set, or
+      ``OPENAI_BASE_URL`` is present. On such a backend (e.g. Grok on Vertex AI
+      or an Azure deployment) the ``model`` id may be a partner id or a
+      deployment name that does not reveal the accepted tiers, so the configured
+      tier is passed through and the backend rejects an unsupported one.
+
+  Returns:
+    The effort string to send, or ``None`` when no effort is configured.
+
+  Raises:
+    ValueError: If ``validate`` and ``effort`` is set but the target
+      model/surface does not accept it (an empty supported set, or a tier
+      outside the range).
+  """
+  if not config:
+    return None
+
+  if isinstance(config, OpenAIGenerateContentConfig) and config.effort:
+    effort = config.effort
+  else:
+    if config.thinking_config and (
+        config.thinking_config.thinking_level is not None
+        or config.thinking_config.thinking_budget is not None
+    ):
+      # A logger warning is used rather than ``warnings.warn``: the default
+      # once-per-process warnings filter keys on the warn() call site, so a
+      # single ``stacklevel`` cannot fit both the shallower Chat and the deeper
+      # Responses call chains -- on one surface the message would be attributed
+      # to internal ADK code and suppressed after the first request.
+      logger.warning(
+          "Standard thinking_config is not supported for OpenAI models and"
+          " will be ignored. Use OpenAIGenerateContentConfig and set the"
+          " `effort` field directly to configure reasoning effort."
+      )
+    return None
+
+  if not validate:
+    return effort
+
+  supported = supported_efforts(model, api)
+  if not supported:
+    raise ValueError(
+        f"Model {model!r} does not accept a reasoning effort parameter; remove"
+        f" `effort` (got {effort!r}) from the config for this model."
+    )
+  if effort not in supported:
+    raise ValueError(
+        f"Reasoning effort {effort!r} is not supported by model {model!r} on"
+        f" the {api} API. Supported tiers: {sorted(supported)}."
+    )
+  return effort
 
 
 def serialize_system_instruction(
