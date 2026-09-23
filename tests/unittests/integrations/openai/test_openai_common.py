@@ -17,12 +17,12 @@
 import asyncio
 import logging
 
-from google.adk.labs.openai._openai_common import build_api_key
-from google.adk.labs.openai._openai_common import build_reasoning_effort
-from google.adk.labs.openai._openai_common import is_reasoning_model
-from google.adk.labs.openai._openai_common import OpenAIGenerateContentConfig
-from google.adk.labs.openai._openai_common import supported_efforts
-from google.adk.labs.openai._openai_common import targets_default_openai_host
+from google.adk.integrations.openai._openai_common import build_api_key
+from google.adk.integrations.openai._openai_common import build_reasoning_effort
+from google.adk.integrations.openai._openai_common import is_reasoning_model
+from google.adk.integrations.openai._openai_common import OpenAIGenerateContentConfig
+from google.adk.integrations.openai._openai_common import supported_efforts
+from google.adk.integrations.openai._openai_common import targets_default_openai_host
 from google.genai import types
 import pytest
 

@@ -40,7 +40,7 @@ try:
 except ImportError as e:
   raise ImportError(
       "The 'openai' package is not installed. Please install it with "
-      "`pip install openai` to use the OpenAILlm."
+      '`pip install "google-adk[openai]"` to use the OpenAILlm.'
   ) from e
 
 from pydantic import BaseModel

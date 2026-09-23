@@ -18,14 +18,14 @@ import logging
 import os
 from unittest import mock
 
-from google.adk.labs.openai import OpenAIGenerateContentConfig
-from google.adk.labs.openai._openai_llm import _function_declaration_to_openai_tool
-from google.adk.labs.openai._openai_llm import _map_finish_reason
-from google.adk.labs.openai._openai_llm import _part_to_openai_content
-from google.adk.labs.openai._openai_llm import _response_to_llm_response
-from google.adk.labs.openai._openai_llm import _serialize_system_instruction
-from google.adk.labs.openai._openai_llm import _usage_metadata
-from google.adk.labs.openai._openai_llm import OpenAILlm
+from google.adk.integrations.openai import OpenAIGenerateContentConfig
+from google.adk.integrations.openai._openai_llm import _function_declaration_to_openai_tool
+from google.adk.integrations.openai._openai_llm import _map_finish_reason
+from google.adk.integrations.openai._openai_llm import _part_to_openai_content
+from google.adk.integrations.openai._openai_llm import _response_to_llm_response
+from google.adk.integrations.openai._openai_llm import _serialize_system_instruction
+from google.adk.integrations.openai._openai_llm import _usage_metadata
+from google.adk.integrations.openai._openai_llm import OpenAILlm
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
@@ -86,7 +86,7 @@ def test_part_to_openai_content():
 
 
 def test_content_to_openai_messages_with_empty_response():
-  from google.adk.labs.openai._openai_llm import _content_to_openai_messages
+  from google.adk.integrations.openai._openai_llm import _content_to_openai_messages
 
   # Test with empty dict response
   content = types.Content(
@@ -149,7 +149,7 @@ async def test_generate_content_async():
       return mock_response
 
     with mock.patch(
-        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+        "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
     ) as mock_client_class:
       mock_client = mock.MagicMock()
       mock_client_class.return_value = mock_client
@@ -197,7 +197,7 @@ async def test_reasoning_model_uses_max_completion_tokens_and_drops_temp(model):
       return mock_response
 
     with mock.patch(
-        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+        "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
     ) as mock_client_class:
       mock_client = mock.MagicMock()
       mock_client_class.return_value = mock_client
@@ -235,7 +235,7 @@ async def _capture_chat_kwargs(openai_llm, llm_request) -> dict:
     return mock_response
 
   with mock.patch(
-      "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+      "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
   ) as mock_client_class:
     mock_client = mock.MagicMock()
     mock_client_class.return_value = mock_client
@@ -378,7 +378,7 @@ async def test_reasoning_effort_passthrough_on_base_url_backend():
     return _text_completion()
 
   with mock.patch(
-      "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+      "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
   ) as mock_client_class:
     mock_client = mock.MagicMock()
     mock_client_class.return_value = mock_client
@@ -454,7 +454,7 @@ async def test_reasoning_effort_passthrough_with_openai_base_url_env():
     )
 
     with mock.patch(
-        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+        "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
     ) as mock_client_class:
       mock_client = mock.MagicMock()
       mock_client_class.return_value = mock_client
@@ -546,7 +546,7 @@ async def test_generate_content_async_with_config():
       return mock_response
 
     with mock.patch(
-        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+        "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
     ) as mock_client_class:
       mock_client = mock.MagicMock()
       mock_client_class.return_value = mock_client
@@ -597,7 +597,7 @@ async def test_generate_content_async_with_system_instruction():
       return mock_response
 
     with mock.patch(
-        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+        "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
     ) as mock_client_class:
       mock_client = mock.MagicMock()
       mock_client_class.return_value = mock_client
@@ -657,7 +657,7 @@ async def test_generate_content_async_with_image():
       return mock_response
 
     with mock.patch(
-        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+        "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
     ) as mock_client_class:
       mock_client = mock.MagicMock()
       mock_client_class.return_value = mock_client
@@ -718,7 +718,7 @@ async def test_generate_content_async_reports_cached_tokens():
       return mock_response
 
     with mock.patch(
-        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+        "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
     ) as mock_client_class:
       mock_client = mock.MagicMock()
       mock_client_class.return_value = mock_client
@@ -752,7 +752,7 @@ async def test_generate_content_async_zero_cached_tokens():
       return mock_response
 
     with mock.patch(
-        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+        "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
     ) as mock_client_class:
       mock_client = mock.MagicMock()
       mock_client_class.return_value = mock_client
@@ -784,7 +784,7 @@ async def test_generate_content_async_absent_prompt_tokens_details():
       return mock_response
 
     with mock.patch(
-        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+        "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
     ) as mock_client_class:
       mock_client = mock.MagicMock()
       mock_client_class.return_value = mock_client
@@ -829,7 +829,7 @@ async def test_generate_content_async_routes_through_provided_client():
       client.chat.completions, "create", side_effect=mock_create
   ) as mock_client_create:
     with mock.patch(
-        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+        "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
     ) as mock_client_class:
       responses = [
           resp
@@ -1003,7 +1003,7 @@ def _stream_client(chunks):
       yield c
 
   with mock.patch(
-      "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+      "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
   ) as mock_client_class:
     mock_client = mock.MagicMock()
     mock_client_class.return_value = mock_client
@@ -1175,7 +1175,7 @@ def _text_completion(content="Hi", finish_reason="stop"):
 async def test_api_key_string_is_passed_to_client():
   """A string api_key is forwarded to the default AsyncOpenAI client."""
   with mock.patch(
-      "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+      "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
   ) as client_cls:
     _ = OpenAILlm(model="gpt-4o", api_key="secret")._openai_client
   client_cls.assert_called_once_with(api_key="secret")
@@ -1185,7 +1185,7 @@ async def test_api_key_string_is_passed_to_client():
 async def test_base_url_is_passed_to_client():
   """base_url is forwarded to the default AsyncOpenAI client."""
   with mock.patch(
-      "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+      "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
   ) as client_cls:
     _ = OpenAILlm(
         model="gpt-4o", api_key="secret", base_url="https://host.example/v1"
@@ -1211,7 +1211,7 @@ async def test_callable_api_key_wrapped_as_async_provider():
     return f"token-{calls['n']}"
 
   with mock.patch(
-      "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+      "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
   ) as client_cls:
     _ = OpenAILlm(
         model="xai/grok-4.6",
@@ -1239,7 +1239,7 @@ async def test_async_api_key_callable_supported():
     return "k"
 
   with mock.patch(
-      "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+      "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
   ) as client_cls:
     _ = OpenAILlm(model="gpt-4o", api_key=_key)._openai_client
 
@@ -1261,7 +1261,7 @@ async def test_response_maps_finish_reason():
       return _text_completion(finish_reason="length")
 
     with mock.patch(
-        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+        "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
     ) as mock_client_class:
       mock_client = mock.MagicMock()
       mock_client_class.return_value = mock_client
@@ -1291,7 +1291,7 @@ async def test_response_without_usage_does_not_crash():
       return response
 
     with mock.patch(
-        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+        "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
     ) as mock_client_class:
       mock_client = mock.MagicMock()
       mock_client_class.return_value = mock_client
@@ -1495,7 +1495,7 @@ async def test_system_instruction_content_is_serialized():
       return _text_completion()
 
     with mock.patch(
-        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+        "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
     ) as mock_client_class:
       mock_client = mock.MagicMock()
       mock_client_class.return_value = mock_client
@@ -1591,7 +1591,7 @@ async def _capture_create_kwargs(openai_llm, llm_request):
     return _text_completion()
 
   with mock.patch(
-      "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+      "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
   ) as mock_client_class:
     mock_client = mock.MagicMock()
     mock_client_class.return_value = mock_client
