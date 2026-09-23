@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import logging
 from unittest import mock
 
 from google.genai import types
@@ -111,15 +112,10 @@ def test_openai_responses_package_exports_required_types():
 
 
 def test_request_kwargs_use_responses_api_shape():
-  """ADK requests are converted to Responses input, tools, and config."""
-  llm = OpenAIResponsesLlm(
-      model='gpt-5',
-      store=False,
-      include=['reasoning.encrypted_content'],
-      reasoning={'effort': 'medium'},
-  )
+  """A standard (non-reasoning) chat model maps to the Responses shape."""
+  llm = OpenAIResponsesLlm(model='gpt-4o')
   llm_request = LlmRequest(
-      model='gpt-5-mini',
+      model='gpt-4o',
       previous_interaction_id='resp_previous',
       contents=[
           types.Content(
@@ -168,16 +164,14 @@ def test_request_kwargs_use_responses_api_shape():
 
   kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
 
-  assert kwargs['model'] == 'gpt-5-mini'
+  assert kwargs['model'] == 'gpt-4o'
   assert kwargs['instructions'] == 'You are concise.'
   assert kwargs['previous_response_id'] == 'resp_previous'
   assert kwargs['stream'] is False
+  # A non-reasoning model keeps temperature / top_p.
   assert kwargs['temperature'] == 0.2
   assert kwargs['top_p'] == 0.9
   assert kwargs['max_output_tokens'] == 128
-  assert kwargs['store'] is False
-  assert kwargs['include'] == ['reasoning.encrypted_content']
-  assert kwargs['reasoning'] == {'effort': 'medium'}
   assert kwargs['input'] == [
       {
           'type': 'message',
@@ -201,6 +195,101 @@ def test_request_kwargs_use_responses_api_shape():
       },
       'strict': False,
   }]
+
+
+def test_reasoning_request_kwargs_pass_reasoning_options_and_drop_sampling():
+  """A reasoning model forwards reasoning/store/include and drops temp/top_p."""
+  llm = OpenAIResponsesLlm(
+      model='gpt-5',
+      store=False,
+      include=['reasoning.encrypted_content'],
+      reasoning={'effort': 'medium'},
+  )
+  llm_request = LlmRequest(
+      model='gpt-5',
+      contents=[
+          types.Content(
+              role='user',
+              parts=[types.Part.from_text(text='What is the weather?')],
+          )
+      ],
+      config=types.GenerateContentConfig(
+          temperature=0.2, top_p=0.9, max_output_tokens=128
+      ),
+  )
+
+  kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
+
+  assert kwargs['model'] == 'gpt-5'
+  assert kwargs['store'] is False
+  assert kwargs['include'] == ['reasoning.encrypted_content']
+  assert kwargs['reasoning'] == {'effort': 'medium'}
+  assert kwargs['max_output_tokens'] == 128
+  # Reasoning models reject non-default temperature/top_p, so they are dropped.
+  assert 'temperature' not in kwargs
+  assert 'top_p' not in kwargs
+
+
+@pytest.mark.parametrize('model', ['gpt-5.6-sol', 'gpt-6-astra', 'o3-mini'])
+def test_reasoning_model_drops_temperature_and_top_p(model, caplog):
+  """Reasoning models reject non-default temperature/top_p; drop them."""
+  llm = OpenAIResponsesLlm(model=model)
+  llm_request = LlmRequest(
+      model=model,
+      contents=[
+          types.Content(role='user', parts=[types.Part.from_text(text='hi')])
+      ],
+      config=types.GenerateContentConfig(temperature=0.2, top_p=0.9),
+  )
+
+  with caplog.at_level(logging.WARNING):
+    kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
+
+  assert 'temperature' not in kwargs
+  assert 'top_p' not in kwargs
+  assert 'Ignoring temperature' in caplog.text
+  assert 'Ignoring top_p' in caplog.text
+
+
+@pytest.mark.parametrize('model', ['gpt-5.6-sol', 'gpt-6-astra', 'o3-mini'])
+def test_reasoning_model_keeps_default_temperature(model):
+  """Reasoning models accept the default temperature/top_p (1); keep them."""
+  llm = OpenAIResponsesLlm(model=model)
+  llm_request = LlmRequest(
+      model=model,
+      contents=[
+          types.Content(role='user', parts=[types.Part.from_text(text='hi')])
+      ],
+      config=types.GenerateContentConfig(temperature=1, top_p=1),
+  )
+
+  kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
+
+  assert kwargs['temperature'] == 1
+  assert kwargs['top_p'] == 1
+
+
+def test_llm_request_model_overrides_self_model_for_reasoning_detection():
+  """llm_request.model overrides self.model; reasoning detection reads it.
+
+  self.model is a reasoning model, but the request overrides it with a
+  non-reasoning model. temperature/top_p must survive because detection reads
+  the effective (overridden) model in kwargs, not self.model.
+  """
+  llm = OpenAIResponsesLlm(model='gpt-5', api_key='k')
+  llm_request = LlmRequest(
+      model='gpt-4o',
+      contents=[
+          types.Content(role='user', parts=[types.Part.from_text(text='hi')])
+      ],
+      config=types.GenerateContentConfig(temperature=0.2, top_p=0.9),
+  )
+
+  kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
+
+  assert kwargs['model'] == 'gpt-4o'
+  assert kwargs['temperature'] == 0.2
+  assert kwargs['top_p'] == 0.9
 
 
 def test_content_mapping_preserves_model_tool_calls_and_reasoning():

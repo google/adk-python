@@ -29,6 +29,8 @@ from collections.abc import Callable
 from collections.abc import Mapping
 import inspect
 import logging
+import re
+from typing import Any
 from typing import cast
 
 from google.genai import types
@@ -38,10 +40,72 @@ logger = logging.getLogger("google_adk." + __name__)
 
 __all__ = [
     "build_api_key",
+    "is_reasoning_model",
     "map_finish_reason",
     "serialize_system_instruction",
+    "strip_unsupported_sampling_params",
     "tool_choice",
 ]
+
+# Matches the OpenAI *reasoning* model families (the o-series and the gpt-5.x /
+# gpt-6.x families, optionally namespaced e.g. ``openai/o3-mini``). These reject
+# a non-default ``temperature`` / ``top_p`` on both the Chat Completions and
+# Responses APIs, and on Chat Completions additionally require
+# ``max_completion_tokens`` in place of ``max_tokens``.
+# Deliberately does NOT match ``gpt-4o`` / ``gpt-4.1`` or non-OpenAI models
+# such as ``xai/grok-4.6``, which accept the classic parameters. It also
+# excludes the ``-chat`` variants (``gpt-5-chat``, ``gpt-5-chat-latest``,
+# ``gpt-5.1-chat``), which are the non-reasoning chat models: they accept
+# ``temperature`` / ``top_p`` and take no reasoning-effort parameter. The
+# ``-chat`` exclusion is a lookahead on the whole tail (``(?!.*-chat)``) so a
+# minor-version dot (``gpt-5.1-``) cannot slip a chat model through ahead of it.
+_REASONING_MODEL_RE = re.compile(
+    r"(?:^|/)(?:o\d+|gpt-[56](?!.*-chat))(?:\..*|-.*|$)", re.IGNORECASE
+)
+
+
+def is_reasoning_model(model: str | None) -> bool:
+  """Returns True if ``model`` is an OpenAI reasoning model.
+
+  Reasoning models (o-series, gpt-5.x, gpt-6.x) reject non-default
+  ``temperature`` / ``top_p`` on both the Chat Completions and Responses APIs,
+  and on Chat Completions additionally require ``max_completion_tokens`` in
+  place of ``max_tokens``.
+  """
+  if not model:
+    return False
+  return bool(_REASONING_MODEL_RE.search(model))
+
+
+# The only ``temperature`` / ``top_p`` value a reasoning model accepts.
+_DEFAULT_SAMPLING_VALUE = 1
+
+
+def strip_unsupported_sampling_params(
+    kwargs: dict[str, Any], model: str | None
+) -> None:
+  """Strips ``temperature`` / ``top_p`` that a reasoning model would reject.
+
+  Reasoning models accept only the default value (1) for ``temperature`` and
+  ``top_p`` on both the Chat Completions and Responses APIs. A non-default
+  value would make the backend 400, so drop it (with a warning) in place;
+  the default is left untouched. No-op for non-reasoning models.
+  """
+  if not is_reasoning_model(model):
+    return
+  for name in ("temperature", "top_p"):
+    value = kwargs.get(name)
+    if value is not None and value != _DEFAULT_SAMPLING_VALUE:
+      kwargs.pop(name, None)
+      logger.warning(
+          "Ignoring %s=%r: reasoning model %r accepts only the default"
+          " value (%s); set it to that or remove it from the request"
+          " config.",
+          name,
+          value,
+          model,
+          _DEFAULT_SAMPLING_VALUE,
+      )
 
 
 def serialize_system_instruction(

@@ -77,6 +77,7 @@ _tool_choice = _openai_common.tool_choice
 # The finish-reason mapper lives in _openai_common; alias it under the private
 # name this module and its tests use.
 _map_finish_reason = _openai_common.map_finish_reason
+_is_reasoning_model = _openai_common.is_reasoning_model
 
 
 def _part_to_openai_content(
@@ -333,7 +334,12 @@ class OpenAILlm(BaseLlm):
 
   Attributes:
       model: The name of the OpenAI model.
-      max_tokens: The maximum number of tokens to generate.
+      max_tokens: The maximum number of tokens to generate. For reasoning models
+        this is sent as ``max_completion_tokens``, which also covers hidden
+        reasoning tokens; a budget too small for the reasoning phase yields an
+        empty response with ``finish_reason`` ``length`` (surfaced as a
+        MAX_TOKENS error, not silently), so raise this for reasoning models that
+        need visible output.
       api_key: The API key, either as a string or as a zero-argument callable
         returning a string (or an awaitable of one). ``AsyncOpenAI`` re-invokes
         a callable on every request, so it can supply a credential that expires
@@ -442,6 +448,19 @@ class OpenAILlm(BaseLlm):
         kwargs["stop"] = llm_request.config.stop_sequences
       if getattr(llm_request.config, "max_output_tokens", None) is not None:
         kwargs["max_tokens"] = llm_request.config.max_output_tokens
+
+    # Reasoning models (o-series, gpt-5.x, gpt-6.x) reject ``max_tokens`` (they
+    # require ``max_completion_tokens``) and reject a non-default
+    # ``temperature`` / ``top_p``. Normalize the assembled kwargs once so both
+    # the ``self.max_tokens`` and ``config.max_output_tokens`` write sites, and
+    # the streaming and non-streaming paths, are covered.
+    if _is_reasoning_model(self.model):
+      # ``max_tokens`` is always present (self.max_tokens is a non-optional int
+      # and any config override is also non-None), so move it unconditionally.
+      kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")
+    # Reasoning models reject a non-default temperature/top_p; strip either from
+    # the request (with a warning) when it would 400.
+    _openai_common.strip_unsupported_sampling_params(kwargs, self.model)
 
     if not stream:
       response = await self._openai_client.chat.completions.create(**kwargs)

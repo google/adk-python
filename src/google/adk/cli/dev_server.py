@@ -426,6 +426,7 @@ class DevServer(ApiServer):
   """
 
   _allow_special_agents: bool = True
+  _serves_debug_trace_endpoints: bool = True
 
   def _get_agent_dir(self, app_name: str) -> str:
     """Resolves the agent directory and validates the app name to prevent path traversal."""
