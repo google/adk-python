@@ -22,6 +22,7 @@ import asyncio
 import collections
 import dataclasses
 from enum import Enum
+import hashlib
 import json
 import logging
 import mimetypes
@@ -152,6 +153,10 @@ class SkillLifecycleConfig:
       PERSISTENT and EPHEMERAL skills never count against it.
     skill_overrides: Per-skill lifecycles. Names need not be registered locally,
       so a registry skill can be listed here too.
+    revalidate_skills: Recheck each request that the active skills still say
+      what they did when loaded, and re-state the ones that changed. Off by
+      default: a registry lookup per active skill per turn, and re-stating one
+      invalidates the prompt cache.
   """
 
   enabled: bool = True
@@ -160,6 +165,7 @@ class SkillLifecycleConfig:
   skill_overrides: dict[str, SkillLifecycleMode] = dataclasses.field(
       default_factory=dict
   )
+  revalidate_skills: bool = False
 
   def __post_init__(self) -> None:
     if self.max_active_skills < 1:
@@ -227,6 +233,82 @@ class SkillDiscoveryMode(Enum):
   turn costs more than the names do. Registry skills are unaffected: they are
   still reachable only through `search_skills`.
   """
+
+
+def _skill_content_hash(skill: models.Skill) -> str:
+  """Returns a digest of everything a skill can tell the model to do.
+
+  Instructions, frontmatter and every resource, so editing a reference or a
+  script is a new version too. Names and lengths go into the hash as well, so
+  moving content between two files does not hash the same.
+  """
+  hasher = hashlib.sha256()
+
+  def _feed(*values: str | bytes) -> None:
+    for value in values:
+      data = value.encode("utf-8") if isinstance(value, str) else value
+      hasher.update(len(data).to_bytes(8, "big"))
+      hasher.update(data)
+
+  _feed(skill.name, skill.instructions)
+  _feed(
+      json.dumps(
+          skill.frontmatter.model_dump(mode="json"),
+          sort_keys=True,
+          default=str,
+      )
+  )
+  resources = skill.resources
+  for kind, names, get in (
+      ("references", resources.list_references(), resources.get_reference),
+      ("assets", resources.list_assets(), resources.get_asset),
+  ):
+    for name in sorted(names):
+      content = get(name)
+      if content is None:
+        continue
+      _feed(kind, name, content)
+  for name in sorted(resources.list_scripts()):
+    script = resources.get_script(name)
+    if script is None or script.src is None:
+      continue
+    _feed("scripts", name, script.src)
+
+  return hasher.hexdigest()
+
+
+async def _write_skill_resources_to_env(
+    skill: models.Skill, skill_dir: Path, env: BaseEnvironment
+) -> None:
+  """Writes every resource of a skill into its folder in the environment."""
+  write_tasks = []
+
+  def _write(*path_parts: str, content: str | bytes) -> None:
+    write_tasks.append(
+        env.write_file(
+            cast(
+                Path,
+                PurePosixPath(skill_dir.joinpath(*path_parts).as_posix()),
+            ),
+            content,
+        )
+    )
+
+  for ref_name in skill.resources.list_references():
+    content = skill.resources.get_reference(ref_name)
+    if content is not None:
+      _write("references", ref_name, content=content)
+  for asset_name in skill.resources.list_assets():
+    content = skill.resources.get_asset(asset_name)
+    if content is not None:
+      _write("assets", asset_name, content=content)
+  for scr_name in skill.resources.list_scripts():
+    scr = skill.resources.get_script(scr_name)
+    if scr is not None and scr.src is not None:
+      _write("scripts", scr_name, content=scr.src)
+
+  if write_tasks:
+    await asyncio.gather(*write_tasks)
 
 
 def _prune_unloaded_skill_instructions(
@@ -611,6 +693,7 @@ class LoadSkillTool(BaseTool):
         tool_context.agent_name,
         skill_name,
         tool_context.invocation_id,
+        skill,
     )
 
     instructions = skill.instructions
@@ -1021,14 +1104,14 @@ _materialize_and_run()
           timeout={timeout!r},
           cwd=td,
         )
-        print(_json.dumps({{
+        print('\\n' + _json.dumps({{
             '__shell_result__': True,
             'stdout': _r.stdout,
             'stderr': _r.stderr,
             'returncode': _r.returncode,
         }}))
       except subprocess.TimeoutExpired as _e:
-        print(_json.dumps({{
+        print('\\n' + _json.dumps({{
             '__shell_result__': True,
             'stdout': _e.stdout or '',
             'stderr': 'Timed out after {timeout}s',
@@ -1108,21 +1191,44 @@ _materialize_and_run()
         # status says nothing about it. Both streams come back serialized as
         # JSON through stdout; that envelope carries the script's status.
         if stdout:
+          parsed = None
           try:
             parsed = json.loads(stdout)
-            if isinstance(parsed, dict) and parsed.get("__shell_result__"):
-              stdout = parsed.get("stdout", "")
-              stderr = parsed.get("stderr", "")
-              rc = parsed.get("returncode", 0)
-              if rc != 0 and not parsed.get("timeout", False):
-                exit_code_message = f"Exit code {rc}"
-                stderr = (
-                    f"{stderr.rstrip()}\n{exit_code_message}"
-                    if stderr
-                    else exit_code_message
-                )
           except (json.JSONDecodeError, ValueError):
-            pass
+            # Fallback: try parsing line by line to find the shell result
+            # envelope. This handles cases where other processes or Python
+            # startup scripts printed warnings to stdout.
+            for line in reversed(stdout.splitlines()):
+              line = line.strip()
+              if line.startswith("{") and line.endswith("}"):
+                try:
+                  candidate = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                  continue
+                if isinstance(candidate, dict) and candidate.get(
+                    "__shell_result__"
+                ):
+                  parsed = candidate
+                  break
+
+          if isinstance(parsed, dict) and parsed.get("__shell_result__"):
+            stdout = parsed.get("stdout", "")
+            stderr = parsed.get("stderr", "")
+            rc = parsed.get("returncode", 0)
+            if rc != 0 and not parsed.get("timeout", False):
+              exit_code_message = f"Exit code {rc}"
+              stderr = (
+                  f"{stderr.rstrip()}\n{exit_code_message}"
+                  if stderr
+                  else exit_code_message
+              )
+          else:
+            logger.warning(
+                "No shell execution envelope found in stdout for '%s' from"
+                " skill '%s'.",
+                file_path,
+                skill.name,
+            )
       else:
         # A Python script runs in the wrapper process itself, so the process
         # the executor ran exited with the script's own status. Executors that
@@ -1594,51 +1700,7 @@ class RunSkillScriptTool(BaseTool):
       logger.info(
           "Materializing skill resources for %s in environment", skill.name
       )
-      write_tasks = []
-      for ref_name in skill.resources.list_references():
-        content = skill.resources.get_reference(ref_name)
-        if content is not None:
-          write_tasks.append(
-              env.write_file(
-                  cast(
-                      Path,
-                      PurePosixPath(
-                          (skill_dir / "references" / ref_name).as_posix()
-                      ),
-                  ),
-                  content,
-              )
-          )
-      for asset_name in skill.resources.list_assets():
-        content = skill.resources.get_asset(asset_name)
-        if content is not None:
-          write_tasks.append(
-              env.write_file(
-                  cast(
-                      Path,
-                      PurePosixPath(
-                          (skill_dir / "assets" / asset_name).as_posix()
-                      ),
-                  ),
-                  content,
-              )
-          )
-      for scr_name in skill.resources.list_scripts():
-        scr = skill.resources.get_script(scr_name)
-        if scr is not None and scr.src is not None:
-          write_tasks.append(
-              env.write_file(
-                  cast(
-                      Path,
-                      PurePosixPath(
-                          (skill_dir / "scripts" / scr_name).as_posix()
-                      ),
-                  ),
-                  scr.src,
-              )
-          )
-      if write_tasks:
-        await asyncio.gather(*write_tasks)
+      await _write_skill_resources_to_env(skill, skill_dir, env)
 
   def _detect_error_in_response(self, response: Any) -> Optional[str]:
     """Telemetry hook: returns an error type if the response indicates an error."""
@@ -1688,9 +1750,10 @@ class SkillToolset(BaseToolset):
       discovery_mode: How the local catalog reaches the model. Defaults to
         `LAZY`, where it calls `list_skills`. `EAGER` drops that tool and
         injects the catalog into the system instruction instead.
-      lifecycle_config: How long skills stay active once loaded, and how many
-        may be at once. Defaults to leaving every skill active for the rest of
-        the session, which is how skills behaved before this existed.
+      lifecycle_config: How long skills stay active once loaded, how many may
+        be at once, and whether they are rechecked against their definition.
+        Defaults to leaving every skill active for the rest of the session,
+        which is how skills behaved before this existed.
 
     Raises:
       ValueError: If both `code_executor` and `environment` are given, or on a
@@ -1710,6 +1773,10 @@ class SkillToolset(BaseToolset):
         SkillLifecycleMode.EPHEMERAL
         in ({config.default_mode} | set(config.skill_overrides.values()))
     )
+    self._revalidate_skills = config.enabled and config.revalidate_skills
+    # Digest last written into the sandbox, per skill, so a stale skill is
+    # rewritten once rather than every request.
+    self._materialized_skill_hashes: dict[str, str] = {}
 
     skills = skills or []
 
@@ -1973,6 +2040,10 @@ class SkillToolset(BaseToolset):
     is not reported back, so a caller who needs to know should read
     `list_active_skills`.
 
+    Reloading an already active skill does not refresh what `revalidate_skills`
+    compares against, because nothing here is said to the model: a skill that
+    changed goes on being re-stated until the model loads it itself.
+
     Returns:
       True if the skill was activated, False if it already was. An already
       active skill is reported without consulting the registry, so this works
@@ -2000,7 +2071,7 @@ class SkillToolset(BaseToolset):
         ctx.state, ctx.agent_name, ctx.invocation_id
     )
     self._record_activation(
-        ctx.state, ctx.agent_name, skill_name, ctx.invocation_id
+        ctx.state, ctx.agent_name, skill_name, ctx.invocation_id, skill
     )
     return not was_active
 
@@ -2078,6 +2149,7 @@ class SkillToolset(BaseToolset):
       agent_name: str,
       skill_name: str,
       invocation_id: str | None,
+      skill: models.Skill | None = None,
   ) -> list[str]:
     """Marks a skill active for an agent and releases what that displaces.
 
@@ -2087,6 +2159,9 @@ class SkillToolset(BaseToolset):
       skill_name: The skill being activated.
       invocation_id: The invocation doing the activating, which is the turn an
         ephemeral skill gets.
+      skill: The definition being activated, when the caller has it. Recorded
+        as a digest, so a later request can tell that the skill has changed
+        since.
 
     Returns:
       The skills released, oldest first: ephemeral leftovers from an earlier
@@ -2106,7 +2181,9 @@ class SkillToolset(BaseToolset):
     if skill_name not in activated_skills:
       activated_skills.append(skill_name)
     elif lifecycle is SkillLifecycleMode.PERSISTENT:
-      if not expired:
+      # The record may still need refreshing, which is what stops a reload
+      # being re-stated.
+      if not expired and not self._records_for(lifecycle, skill):
         return []
     else:
       # Reloading is a use: move it to the end so the cap spares it.
@@ -2115,10 +2192,25 @@ class SkillToolset(BaseToolset):
     evicted = self._evict_over_cap(activated_skills)
     _write_activated_skills(state, agent_name, activated_skills)
     self._record_lifecycle(
-        state, agent_name, skill_name, lifecycle, invocation_id
+        state, agent_name, skill_name, lifecycle, invocation_id, skill
     )
     self._forget_lifecycle_records(state, agent_name, activated_skills)
     return expired + evicted
+
+  def _records_for(
+      self, lifecycle: SkillLifecycleMode, skill: models.Skill | None
+  ) -> dict[str, Any]:
+    """Returns the lifecycle record to store for an activation, if any.
+
+    A persistent skill nobody revalidates needs no bookkeeping, and the cap
+    reads the activation order it already has.
+    """
+    record: dict[str, Any] = {}
+    if lifecycle is SkillLifecycleMode.EPHEMERAL:
+      record["lifecycle"] = lifecycle.value
+    if self._revalidate_skills and skill is not None:
+      record["version_hash"] = _skill_content_hash(skill)
+    return record
 
   def _record_lifecycle(
       self,
@@ -2127,19 +2219,22 @@ class SkillToolset(BaseToolset):
       skill_name: str,
       lifecycle: SkillLifecycleMode,
       invocation_id: str | None,
+      skill: models.Skill | None = None,
   ) -> None:
-    """Notes which turn an ephemeral skill was loaded in.
-
-    Nothing is written for the others: persistent skills need no bookkeeping,
-    and the cap reads the activation order it already has.
-    """
-    if lifecycle is not SkillLifecycleMode.EPHEMERAL:
+    """Notes what a skill was when it was loaded, and which turn that was."""
+    record = self._records_for(lifecycle, skill)
+    if not record:
       return
+    if "lifecycle" in record:
+      record["activated_in"] = invocation_id
     records = _read_lifecycle_records(state, agent_name)
-    records[skill_name] = {
-        "lifecycle": lifecycle.value,
-        "activated_in": invocation_id,
-    }
+    if "version_hash" not in record:
+      # Re-activating without the definition in hand must not drop the digest
+      # the skill was loaded with.
+      loaded_hash = records.get(skill_name, {}).get("version_hash")
+      if loaded_hash:
+        record["version_hash"] = loaded_hash
+    records[skill_name] = record
     state[_skill_lifecycle_state_key(agent_name)] = records
 
   def _forget_lifecycle_records(
@@ -2261,6 +2356,9 @@ class SkillToolset(BaseToolset):
           " discover additional skills from the registry."
       )
 
+    if self._revalidate_skills:
+      instructions.extend(await self._restate_changed_skills(tool_context))
+
     llm_request.append_instructions(instructions)
 
     if self._lifecycle_enabled:
@@ -2281,6 +2379,110 @@ class SkillToolset(BaseToolset):
       logger.debug(
           "Pruned instructions for unloaded skills: %s", ", ".join(pruned)
       )
+
+  async def _restate_changed_skills(
+      self, tool_context: ToolContext
+  ) -> list[str]:
+    """Returns fresh instructions for active skills whose definition changed.
+
+    A session can outlive several releases of the skills it loaded, and what
+    the model was told is fixed in the transcript. Each request compares the
+    current definition against the digest taken at load time.
+
+    Only `load_skill` refreshes that digest, so a changed skill is re-stated
+    on every request until the model reloads it -- the same text each time, so
+    the prompt stays stable.
+
+    Args:
+      tool_context: Context of the request being built.
+
+    Returns:
+      One instruction block per changed skill, in activation order.
+    """
+    records = _read_lifecycle_records(
+        tool_context.state, tool_context.agent_name
+    )
+    if not records:
+      return []
+
+    to_check = []
+    for skill_name in self._active_skills(
+        tool_context.state, tool_context.agent_name, tool_context.invocation_id
+    ):
+      loaded_hash = records.get(skill_name, {}).get("version_hash")
+      if loaded_hash:
+        to_check.append((skill_name, loaded_hash))
+    if not to_check:
+      return []
+
+    # Together, so the first request of a turn does not wait out one registry
+    # round trip per active skill in series.
+    fetched = await asyncio.gather(
+        *(
+            self._get_or_fetch_skill(name, tool_context.invocation_id)
+            for name, _ in to_check
+        ),
+        return_exceptions=True,
+    )
+
+    p = f"{self.tool_name_prefix}_" if self.tool_name_prefix else ""
+    instructions = []
+    for (skill_name, loaded_hash), skill in zip(to_check, fetched):
+      if isinstance(skill, Exception):
+        # A registry that is down is no reason to fail the turn.
+        logger.warning(
+            "Could not revalidate skill '%s': %s",
+            skill_name,
+            skill,
+            exc_info=skill,
+        )
+        continue
+      if isinstance(skill, BaseException):
+        raise skill
+      if skill is None or _skill_content_hash(skill) == loaded_hash:
+        continue
+      try:
+        await self._rematerialize_skill(skill)
+      except Exception as e:  # pylint: disable=broad-exception-caught
+        # Still worth re-stating the skill; only the sandbox copy is stale.
+        logger.warning(
+            "Could not refresh skill '%s' in the environment: %s",
+            skill_name,
+            e,
+            exc_info=e,
+        )
+      logger.info(
+          "Skill '%s' changed since it was loaded; re-stating it.", skill_name
+      )
+      instructions.append(
+          f"\nThe skill `{skill_name}` has changed since it was loaded. These"
+          " instructions replace the ones the earlier"
+          f" `{p}{_LOAD_SKILL_TOOL_NAME}` response"
+          f" gave you:\n\n{skill.instructions}"
+      )
+    return instructions
+
+  async def _rematerialize_skill(self, skill: models.Skill) -> None:
+    """Rewrites a changed skill's resources into the environment.
+
+    Scripts are copied into the sandbox on first run and left there, so
+    without this the model would run the old copy of a script it has just been
+    re-briefed on.
+
+    Only writes. `BaseEnvironment` has no delete, so a resource the new version
+    dropped stays on disk; the re-stated instructions no longer mention it.
+    """
+    env = self._env
+    skills_folder = self.skills_folder
+    if env is None or skills_folder is None:
+      return
+    content_hash = _skill_content_hash(skill)
+    if self._materialized_skill_hashes.get(skill.name) == content_hash:
+      return
+    if not env.is_initialized:
+      await env.initialize()
+    await _write_skill_resources_to_env(skill, skills_folder / skill.name, env)
+    self._materialized_skill_hashes[skill.name] = content_hash
 
   @override
   async def close(self) -> None:

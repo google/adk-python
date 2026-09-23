@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import aclosing
+import contextvars
 import inspect
 import logging
 from pathlib import Path
@@ -50,8 +51,8 @@ from .errors._stale_session_error import StaleSessionError
 from .errors.session_not_found_error import SessionNotFoundError
 from .events.event import Event
 from .events.event_actions import EventActions
-from .flows.llm_flows import contents
-from .flows.llm_flows.functions import find_matching_function_call as _find_matching_function_call
+from .flows.llm_flows.context import _contents as contents
+from .flows.llm_flows.tools._functions import find_matching_function_call as _find_matching_function_call
 from .live import _runner_utils as _live_runner_utils
 from .live.live_request_queue import LiveRequestQueue
 from .memory.base_memory_service import BaseMemoryService
@@ -978,7 +979,10 @@ class Runner:
       finally:
         event_queue.put(None)
 
-    thread = create_thread(target=_asyncio_thread_main)
+    # A new thread starts with empty contextvars. Run it in a copy of the
+    # caller's so the invocation joins the caller's OpenTelemetry trace instead
+    # of starting a disconnected one.
+    thread = create_thread(contextvars.copy_context().run, _asyncio_thread_main)
     thread.start()
 
     exhausted = False
@@ -1284,7 +1288,12 @@ class Runner:
       rewind_before_invocation_id: str,
       run_config: Optional[RunConfig] = None,
   ) -> None:
-    """Rewinds the session to before the specified invocation."""
+    """Rewinds the session to before the specified invocation.
+
+    Raises:
+      InvocationNotFoundError: If rewind_before_invocation_id does not match
+        any event in the session.
+    """
     run_config = run_config or RunConfig()
     session = await self._get_or_create_session(
         user_id=user_id,

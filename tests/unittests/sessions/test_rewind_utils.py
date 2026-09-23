@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+from google.adk.errors import InvocationNotFoundError
+from google.adk.errors.not_found_error import NotFoundError
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.sessions import _rewind_utils
@@ -83,18 +85,22 @@ async def test_compute_artifact_delta_returns_empty_when_no_artifact_service():
 
 
 async def test_rewind_session_raises_when_invocation_not_found():
-  """Rewinding to an invocation id not present in session raises ValueError."""
+  """Rewinding to an invocation id not present in session raises InvocationNotFoundError."""
   session_service = InMemorySessionService()
   session = await session_service.create_session(
       app_name="app", user_id="u1", session_id="s1"
   )
 
-  with pytest.raises(ValueError, match="Invocation ID not found"):
+  with pytest.raises(
+      InvocationNotFoundError, match="Invocation ID not found"
+  ) as exc_info:
     await _rewind_utils.rewind_session(
         session_service=session_service,
         session=session,
         rewind_before_invocation_id="inv_missing",
     )
+  assert isinstance(exc_info.value, NotFoundError)
+  assert isinstance(exc_info.value, ValueError)
 
 
 async def test_rewind_session_appends_rewind_event_with_deltas():

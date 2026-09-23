@@ -32,6 +32,7 @@ from google.adk.models.lite_llm import _aggregate_streaming_thought_parts
 from google.adk.models.lite_llm import _append_fallback_user_content_if_missing
 from google.adk.models.lite_llm import _apply_provider_finish_reason
 from google.adk.models.lite_llm import _BraceDepthTracker
+from google.adk.models.lite_llm import _build_function_declaration_log
 from google.adk.models.lite_llm import _content_to_message_param
 from google.adk.models.lite_llm import _convert_reasoning_value_to_parts
 from google.adk.models.lite_llm import _enforce_strict_openai_schema
@@ -1950,6 +1951,486 @@ def test_function_declaration_to_tool_param_with_parameters_json_schema():
   }
 
   assert _function_declaration_to_tool_param(func_decl) == expected
+
+
+def test_function_declaration_to_tool_param_with_response_json_schema():
+  """Ensure a raw response_json_schema is rendered into the description."""
+
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_output",
+      description="desc",
+      parameters_json_schema={
+          "type": "object",
+          "properties": {"a": {"type": "string"}},
+      },
+      response_json_schema={
+          "type": "object",
+          "properties": {"result": {"type": "string"}},
+      },
+  )
+
+  tool_param = _function_declaration_to_tool_param(func_decl)
+
+  assert tool_param["function"]["description"] == (
+      "desc\nReturns a JSON object conforming to this schema:"
+      ' {"properties":{"result":{"type":"string"}},"type":"object"}'
+  )
+  assert tool_param["function"]["parameters"] == {
+      "type": "object",
+      "properties": {"a": {"type": "string"}},
+  }
+
+
+def test_function_declaration_to_tool_param_with_response_schema():
+  """Ensure a types.Schema response is rendered into the description."""
+
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_output_schema",
+      description="desc",
+      response=types.Schema(
+          type=types.Type.OBJECT,
+          properties={"result": types.Schema(type=types.Type.STRING)},
+      ),
+  )
+
+  tool_param = _function_declaration_to_tool_param(func_decl)
+
+  assert tool_param["function"]["description"] == (
+      "desc\nReturns a JSON object conforming to this schema:"
+      ' {"properties":{"result":{"type":"string"}},"type":"object"}'
+  )
+
+
+def test_function_declaration_to_tool_param_without_response_schema():
+  """Ensure the description is unchanged when no output schema is declared."""
+
+  func_decl = types.FunctionDeclaration(
+      name="fn_without_output",
+      description="desc",
+      parameters_json_schema={"type": "object", "properties": {}},
+  )
+
+  assert (
+      _function_declaration_to_tool_param(func_decl)["function"]["description"]
+      == "desc"
+  )
+
+
+def test_function_declaration_to_tool_param_response_schema_without_description():
+  """Ensure an empty description yields only the rendered output schema."""
+
+  func_decl = types.FunctionDeclaration(
+      name="fn_no_description",
+      response_json_schema={
+          "type": "object",
+          "properties": {"result": {"type": "string"}},
+      },
+  )
+
+  assert _function_declaration_to_tool_param(func_decl)["function"][
+      "description"
+  ] == (
+      "Returns a JSON object conforming to this schema:"
+      ' {"properties":{"result":{"type":"string"}},"type":"object"}'
+  )
+
+
+def test_function_declaration_to_tool_param_with_bare_response_schema():
+  """Ensure bare response schemas with no structural keys are omitted."""
+
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_bare_output",
+      description="desc",
+      response_json_schema={"type": "string"},
+  )
+
+  assert (
+      _function_declaration_to_tool_param(func_decl)["function"]["description"]
+      == "desc"
+  )
+
+
+def test_function_declaration_to_tool_param_with_minimum_response_schema():
+  """Ensure a scalar response schema with constraint keywords is appended."""
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_minimum_output",
+      description="desc",
+      response_json_schema={
+          "type": "integer",
+          "minimum": 0,
+      },
+  )
+
+  assert _function_declaration_to_tool_param(func_decl)["function"][
+      "description"
+  ] == (
+      "desc\nReturns an integer conforming to this schema:"
+      ' {"minimum":0,"type":"integer"}'
+  )
+
+
+def test_function_declaration_to_tool_param_with_string_enum_response_schema():
+  """Ensure a string response schema with structure derives string wording."""
+
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_string_output",
+      description="desc",
+      response_json_schema={
+          "type": "string",
+          "enum": ["option_a", "option_b"],
+      },
+  )
+
+  assert (
+      _function_declaration_to_tool_param(func_decl)["function"]["description"]
+      == "desc\nReturns a string conforming to this schema:"
+      ' {"enum":["option_a","option_b"],"type":"string"}'
+  )
+
+
+def test_function_declaration_to_tool_param_with_array_response_schema():
+  """Ensure an array response schema derives array wording."""
+
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_array_output",
+      description="desc",
+      response_json_schema={
+          "type": "array",
+          "items": {"type": "string"},
+      },
+  )
+
+  assert _function_declaration_to_tool_param(func_decl)["function"][
+      "description"
+  ] == (
+      "desc\nReturns a JSON array conforming to this schema:"
+      ' {"items":{"type":"string"},"type":"array"}'
+  )
+
+
+def test_function_declaration_to_tool_param_with_prefix_items_response_schema():
+  """Ensure an array response schema with prefixItems is rendered."""
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_prefix_items_output",
+      description="desc",
+      response_json_schema={
+          "type": "array",
+          "prefixItems": [
+              {"type": "string"},
+              {"type": "integer"},
+          ],
+      },
+  )
+
+  assert _function_declaration_to_tool_param(func_decl)["function"][
+      "description"
+  ] == (
+      "desc\nReturns a JSON array conforming to this schema:"
+      ' {"prefixItems":[{"type":"string"},{"type":"integer"}],"type":"array"}'
+  )
+
+
+def test_function_declaration_to_tool_param_with_schemaless_type_response():
+  """Ensure non-empty schemas without a type field use 'a value' wording."""
+
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_untyped_output",
+      description="desc",
+      response_json_schema={
+          "properties": {"result": {"type": "string"}},
+      },
+  )
+
+  assert _function_declaration_to_tool_param(func_decl)["function"][
+      "description"
+  ] == (
+      "desc\nReturns a value conforming to this schema:"
+      ' {"properties":{"result":{"type":"string"}}}'
+  )
+
+
+def test_function_declaration_to_tool_param_with_additional_properties_response_schema():
+  """Ensure an object response schema with additionalProperties is rendered."""
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_map_output",
+      description="desc",
+      response_json_schema={
+          "type": "object",
+          "additionalProperties": {"type": "string"},
+      },
+  )
+
+  assert _function_declaration_to_tool_param(func_decl)["function"][
+      "description"
+  ] == (
+      "desc\nReturns a JSON object conforming to this schema:"
+      ' {"additionalProperties":{"type":"string"},"type":"object"}'
+  )
+
+
+def test_function_declaration_to_tool_param_with_types_schema_additional_properties():
+  """Ensure a types.Schema response with additional_properties is rendered."""
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_map_output",
+      description="desc",
+      response=types.Schema(
+          type=types.Type.OBJECT,
+          additional_properties=types.Schema(type=types.Type.STRING),
+      ),
+  )
+
+  assert _function_declaration_to_tool_param(func_decl)["function"][
+      "description"
+  ] == (
+      "desc\nReturns a JSON object conforming to this schema:"
+      ' {"additionalProperties":{"type":"string"},"type":"object"}'
+  )
+
+
+def test_function_declaration_to_tool_param_response_schema_at_max_length_budget():
+  """Ensure schemas within 1024 characters are appended to description."""
+  # Candidate length: 125 + 899 = 1024 characters (at maximum budget).
+  func_decl = types.FunctionDeclaration(
+      name="fn_at_budget",
+      description="desc",
+      response_json_schema={
+          "type": "object",
+          "properties": {
+              "k": {"type": "string", "description": "x" * 899},
+          },
+      },
+  )
+
+  result = _function_declaration_to_tool_param(func_decl)["function"][
+      "description"
+  ]
+  assert len(result) == 1024
+  assert result.startswith(
+      "desc\nReturns a JSON object conforming to this schema:"
+  )
+
+
+def test_function_declaration_to_tool_param_response_schema_exceeds_max_length_budget(
+    caplog,
+):
+  """Ensure schemas exceeding 1024 characters are dropped and logged."""
+  # Candidate length: 125 + 900 = 1025 characters (exceeds 1024 budget).
+  func_decl = types.FunctionDeclaration(
+      name="fn_over_budget",
+      description="desc",
+      response_json_schema={
+          "type": "object",
+          "properties": {
+              "k": {"type": "string", "description": "x" * 900},
+          },
+      },
+  )
+
+  with caplog.at_level(logging.DEBUG):
+    result = _function_declaration_to_tool_param(func_decl)["function"][
+        "description"
+    ]
+
+  assert result == "desc"
+  assert "Omitting output schema for tool fn_over_budget" in caplog.text
+  assert "rendered description length 1025 exceeds limit 1024" in caplog.text
+
+
+def test_build_function_declaration_log_with_response_json_schema():
+  """Ensure _build_function_declaration_log prioritizes response_json_schema."""
+  func_decl = types.FunctionDeclaration(
+      name="my_tool",
+      parameters_json_schema={"type": "object", "properties": {}},
+      response_json_schema={
+          "type": "object",
+          "properties": {"out": {"type": "string"}},
+      },
+  )
+  log = _build_function_declaration_log(func_decl)
+  assert "my_tool" in log
+  assert "{'type': 'object', 'properties': {'out': {'type': 'string'}}}" in log
+
+
+def test_function_declaration_to_tool_param_with_ref_response_schema():
+  """Ensure schemas using $ref are appended to description."""
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_ref_output",
+      description="desc",
+      response_json_schema={
+          "$ref": "#/$defs/Node",
+          "$defs": {
+              "Node": {
+                  "type": "object",
+                  "properties": {"val": {"type": "integer"}},
+              }
+          },
+      },
+  )
+
+  tool_param = _function_declaration_to_tool_param(func_decl)
+
+  assert tool_param["function"]["description"] == (
+      "desc\nReturns a value conforming to this schema:"
+      ' {"$defs":{"Node":{"properties":{"val":{"type":"integer"}},"type":"object"}},"$ref":"#/$defs/Node"}'
+  )
+
+
+def test_function_declaration_to_tool_param_with_types_schema_response_json_schema():
+  """Ensure a types.Schema in response_json_schema is rendered into description."""
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_union_output",
+      description="desc",
+      response_json_schema=types.Schema(
+          any_of=[
+              types.Schema(type=types.Type.STRING),
+              types.Schema(type=types.Type.INTEGER),
+          ]
+      ),
+  )
+
+  tool_param = _function_declaration_to_tool_param(func_decl)
+
+  assert tool_param["function"]["description"] == (
+      "desc\nReturns a value conforming to this schema:"
+      ' {"anyOf":[{"type":"string"},{"type":"integer"}]}'
+  )
+
+
+def test_function_declaration_to_tool_param_with_types_schema_ref():
+  """Ensure schemas using types.Schema ref and defs are appended to description."""
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_types_ref_output",
+      description="desc",
+      response=types.Schema(
+          ref="#/defs/Node",
+          defs={
+              "Node": types.Schema(
+                  type=types.Type.OBJECT,
+                  properties={"val": types.Schema(type=types.Type.INTEGER)},
+              )
+          },
+      ),
+  )
+
+  tool_param = _function_declaration_to_tool_param(func_decl)
+
+  assert tool_param["function"]["description"] == (
+      "desc\nReturns a value conforming to this schema:"
+      ' {"$defs":{"Node":{"properties":{"val":{"type":"integer"}},"type":"object"}},"$ref":"#/$defs/Node"}'
+  )
+
+
+def test_function_declaration_to_tool_param_with_nullable_enum_response_json_schema():
+  """Ensure hand-written response_json_schema preserves None in enum."""
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_nullable_enum",
+      description="desc",
+      response_json_schema={
+          "type": ["string", "null"],
+          "enum": ["a", None, "b"],
+      },
+  )
+
+  tool_param = _function_declaration_to_tool_param(func_decl)
+
+  assert tool_param["function"]["description"] == (
+      "desc\nReturns a value conforming to this schema:"
+      ' {"enum":["a",null,"b"],"type":["string","null"]}'
+  )
+
+
+def test_schema_to_dict_defs_merge_does_not_mutate_caller_and_prefers_defs():
+  """Ensure merging defs into $defs does not mutate caller and prefers $defs on collision."""
+  defs_content = {
+      "Conflicting": {"type": "integer"},
+      "FromDefs": {"type": "string"},
+  }
+  standard_defs_content = {
+      "Conflicting": {"type": "string"},
+      "FromStandard": {"type": "boolean"},
+  }
+  schema = {
+      "$defs": standard_defs_content,
+      "defs": defs_content,
+  }
+
+  result = _schema_to_dict(schema)
+
+  assert standard_defs_content == {
+      "Conflicting": {"type": "string"},
+      "FromStandard": {"type": "boolean"},
+  }
+  assert result["$defs"]["Conflicting"] == {"type": "string"}
+  assert result["$defs"]["FromDefs"] == {"type": "string"}
+  assert result["$defs"]["FromStandard"] == {"type": "boolean"}
+
+
+def test_schema_to_dict_rewrites_defs_pointer_in_ref():
+  """Ensure references starting with #/defs/ are rewritten to #/$defs/."""
+  schema = {
+      "$ref": "#/defs/Node",
+      "properties": {
+          "child": {"ref": "#/defs/Child"},
+          "already_standard": {"$ref": "#/$defs/Other"},
+          "definitions_ref": {"$ref": "#/definitions/Legacy"},
+      },
+      "defs": {
+          "Node": {"type": "object"},
+          "Child": {"type": "string"},
+      },
+  }
+  result = _schema_to_dict(schema)
+  assert result["$ref"] == "#/$defs/Node"
+  assert result["properties"]["child"]["$ref"] == "#/$defs/Child"
+  assert result["properties"]["already_standard"]["$ref"] == "#/$defs/Other"
+  assert (
+      result["properties"]["definitions_ref"]["$ref"] == "#/definitions/Legacy"
+  )
+  assert "defs" not in result
+  assert "Node" in result["$defs"]
+  assert "Child" in result["$defs"]
+
+
+def test_schema_to_dict_ref_collision_prefers_standard_ref():
+  """Ensure $ref takes precedence over ref on collision."""
+  schema = {
+      "$ref": "#/$defs/Standard",
+      "ref": "#/defs/Pydantic",
+  }
+  result = _schema_to_dict(schema)
+  assert result["$ref"] == "#/$defs/Standard"
+  assert "ref" not in result
+
+
+def test_schema_to_dict_any_of_collision_prefers_standard_any_of():
+  """Ensure anyOf takes precedence over any_of on collision."""
+  schema = {
+      "anyOf": [{"type": "string"}],
+      "any_of": [{"type": "integer"}],
+  }
+  result = _schema_to_dict(schema)
+  assert result["anyOf"] == [{"type": "string"}]
+  assert "any_of" not in result
+
+
+def test_schema_to_dict_additional_properties_collision_prefers_standard():
+  """Ensure additionalProperties takes precedence over additional_properties on collision."""
+  schema = {
+      "additionalProperties": {"type": "string"},
+      "additional_properties": {"type": "integer"},
+  }
+  result = _schema_to_dict(schema)
+  assert result["additionalProperties"] == {"type": "string"}
+  assert "additional_properties" not in result
+
+  # Also ensure boolean additionalProperties (e.g. False) takes precedence.
+  schema_bool = {
+      "additionalProperties": False,
+      "additional_properties": {"type": "integer"},
+  }
+  result_bool = _schema_to_dict(schema_bool)
+  assert result_bool["additionalProperties"] is False
+  assert "additional_properties" not in result_bool
 
 
 @pytest.mark.asyncio
@@ -7046,6 +7527,10 @@ async def test_content_to_message_param_anthropic_no_signature_falls_back():
         ("bedrock", "bedrock/meta.llama3-70b-instruct-v1:0", False),
         ("vertex_ai", "vertex_ai/claude-3-5-sonnet@20241022", True),
         ("vertex_ai", "vertex_ai/gemini-2.5-flash", False),
+        ("vertex_ai", "claude-3-7-sonnet@20250219", True),
+        ("bedrock", "us.anthropic.claude-3-5-sonnet-20241022-v2:0", True),
+        ("vertex_ai", "gemini-2.5-flash", False),
+        ("bedrock", "meta.llama3-70b-instruct-v1:0", False),
         ("openai", "openai/gpt-4o", False),
         ("", "", False),
     ],

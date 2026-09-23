@@ -1277,6 +1277,68 @@ def test_cli_deploy_docker_failure(
   assert "Deploy failed: boom" in result.output
 
 
+def test_cli_deploy_agent_engine_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Exception from to_agent_engine should surface with a non-zero exit."""
+
+  def _boom(*_a: Any, **_k: Any) -> None:  # noqa: D401
+    raise RuntimeError("boom")
+
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_agent_engine", _boom)
+
+  agent_dir = tmp_path / "agent5"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "agent_engine",
+          "--project",
+          "test-proj",
+          "--region",
+          "us-central1",
+          str(agent_dir),
+      ],
+  )
+
+  assert result.exit_code == 1
+  assert "Deploy failed: boom" in result.output
+
+
+def test_cli_deploy_gke_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Exception from to_gke should surface with a non-zero exit."""
+
+  def _boom(*_a: Any, **_k: Any) -> None:  # noqa: D401
+    raise RuntimeError("boom")
+
+  monkeypatch.setattr("google.adk.cli.cli_deploy.to_gke", _boom)
+
+  agent_dir = tmp_path / "agent6"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "gke",
+          "--project",
+          "test-proj",
+          "--region",
+          "us-central1",
+          "--cluster_name",
+          "test-cluster",
+          str(agent_dir),
+      ],
+  )
+
+  assert result.exit_code == 1
+  assert "Deploy failed: boom" in result.output
+
+
 def test_cli_deploy_cloud_run_passthrough_args(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

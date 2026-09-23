@@ -34,7 +34,7 @@ from pydantic import PrivateAttr
 from typing_extensions import override
 
 from ..events.event import Event
-from ..flows.llm_flows.interactions_processor import _find_previous_interaction_state
+from ..flows.llm_flows.context._interactions import _find_previous_interaction_state
 from ..models.interactions_utils import _build_mcp_server_param
 from ..models.interactions_utils import _convert_content_to_step
 from ..models.interactions_utils import _create_interactions
