@@ -43,10 +43,10 @@ from __future__ import annotations
 import dataclasses
 import os
 
-from google.adk.labs.openai import OpenAIGenerateContentConfig
-from google.adk.labs.openai import OpenAILlm
-from google.adk.labs.openai import OpenAIResponsesLlm
-from google.adk.labs.openai._openai_common import supported_efforts
+from google.adk.integrations.openai import OpenAIGenerateContentConfig
+from google.adk.integrations.openai import OpenAILlm
+from google.adk.integrations.openai import OpenAIResponsesLlm
+from google.adk.integrations.openai._openai_common import supported_efforts
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.llm_request import LlmRequest
 from google.genai import types

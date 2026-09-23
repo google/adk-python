@@ -15,7 +15,7 @@
 """An ADK agent powered by xAI Grok 4.6 served on Vertex AI.
 
 Grok is a partner model on Vertex AI Model Garden. It is reached through the
-OpenAI-compatible Chat Completions surface (``endpoints/openapi``), so the labs
+OpenAI-compatible Chat Completions surface (``endpoints/openapi``), so the
 ``OpenAILlm`` model talks to it directly:
 
 - ``base_url`` points at the project's ``endpoints/openapi`` surface, and
@@ -35,7 +35,7 @@ import os
 import random
 
 from google.adk import Agent
-from google.adk.labs.openai import OpenAILlm
+from google.adk.integrations.openai import OpenAILlm
 from google.adk.models.base_llm import BaseLlm
 from google.adk.utils._mtls_utils import get_api_endpoint
 import google.auth

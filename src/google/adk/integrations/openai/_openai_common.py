@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Helpers for the labs OpenAI wrappers.
+"""Helpers for the OpenAI model wrappers.
 
 Home for parsing, mapping, and client-construction logic that the Chat
 Completions wrapper (``_openai_llm.py``) and the Responses wrapper

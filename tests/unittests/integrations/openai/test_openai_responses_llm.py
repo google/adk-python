@@ -22,7 +22,7 @@ from pydantic import BaseModel
 
 # The repository may be tested locally with a google-genai version older than
 # the source tree expects (run_config.py imports types.AvatarConfig at import
-# time, so the shim must be installed before importing the labs model below).
+# time, so the shim must be installed before importing the OpenAI model below).
 # The empty shim is installed process-wide and intentionally left in place: it
 # is harmless, and other test modules (e.g. test_live_streaming_configs) that
 # run later read ``types.AvatarConfig`` at runtime, so removing it on teardown
@@ -30,16 +30,16 @@ from pydantic import BaseModel
 if not hasattr(types, 'AvatarConfig'):
   types.AvatarConfig = type('AvatarConfig', (BaseModel,), {})
 
-from google.adk.labs.openai._openai_common import OpenAIGenerateContentConfig
-from google.adk.labs.openai._openai_responses_llm import _content_to_response_input_items
-from google.adk.labs.openai._openai_responses_llm import _function_declaration_to_response_tool
-from google.adk.labs.openai._openai_responses_llm import _loads_json_object
-from google.adk.labs.openai._openai_responses_llm import _response_to_llm_response
-from google.adk.labs.openai._openai_responses_llm import _serialize_system_instruction
-from google.adk.labs.openai._openai_responses_llm import _tool_choice
-from google.adk.labs.openai._openai_responses_llm import AzureOpenAIResponsesLlm
-from google.adk.labs.openai._openai_responses_llm import OpenAIResponsesLlm
-from google.adk.labs.openai._openai_schema import enforce_strict_openai_schema
+from google.adk.integrations.openai._openai_common import OpenAIGenerateContentConfig
+from google.adk.integrations.openai._openai_responses_llm import _content_to_response_input_items
+from google.adk.integrations.openai._openai_responses_llm import _function_declaration_to_response_tool
+from google.adk.integrations.openai._openai_responses_llm import _loads_json_object
+from google.adk.integrations.openai._openai_responses_llm import _response_to_llm_response
+from google.adk.integrations.openai._openai_responses_llm import _serialize_system_instruction
+from google.adk.integrations.openai._openai_responses_llm import _tool_choice
+from google.adk.integrations.openai._openai_responses_llm import AzureOpenAIResponsesLlm
+from google.adk.integrations.openai._openai_responses_llm import OpenAIResponsesLlm
+from google.adk.integrations.openai._openai_schema import enforce_strict_openai_schema
 from google.adk.models.llm_request import LlmRequest
 from openai import AsyncOpenAI
 from openai.types.responses import EasyInputMessageParam
@@ -960,7 +960,7 @@ async def test_callable_api_key_wrapped_as_async_provider():
     return f'token-{calls["n"]}'
 
   with mock.patch(
-      'google.adk.labs.openai._openai_responses_llm.AsyncOpenAI'
+      'google.adk.integrations.openai._openai_responses_llm.AsyncOpenAI'
   ) as client_cls:
     _ = OpenAIResponsesLlm(model='gpt-5', api_key=key_provider)._openai_client
 
@@ -978,7 +978,7 @@ async def test_callable_api_key_wrapped_as_async_provider():
 async def test_base_url_is_passed_to_client():
   """base_url is forwarded to the default AsyncOpenAI client."""
   with mock.patch(
-      'google.adk.labs.openai._openai_responses_llm.AsyncOpenAI'
+      'google.adk.integrations.openai._openai_responses_llm.AsyncOpenAI'
   ) as client_cls:
     _ = OpenAIResponsesLlm(
         model='gpt-5', api_key='secret', base_url='https://host.example/v1'
@@ -992,7 +992,7 @@ async def test_base_url_is_passed_to_client():
 async def test_azure_falls_back_to_base_url_without_azure_endpoint():
   """AzureOpenAIResponsesLlm uses base_url when azure_endpoint is unset."""
   with mock.patch(
-      'google.adk.labs.openai._openai_responses_llm.AsyncOpenAI'
+      'google.adk.integrations.openai._openai_responses_llm.AsyncOpenAI'
   ) as client_cls:
     _ = AzureOpenAIResponsesLlm(
         model='gpt-5', api_key='secret', base_url='https://host.example/v1'
@@ -1416,7 +1416,7 @@ async def test_streaming_generation_failed_event_is_terminal():
 def test_azure_client_uses_openai_v1_base_url():
   """Azure model uses the Azure OpenAI /openai/v1 base URL."""
   with mock.patch(
-      'google.adk.labs.openai._openai_responses_llm.AsyncOpenAI'
+      'google.adk.integrations.openai._openai_responses_llm.AsyncOpenAI'
   ) as client_cls:
     llm = AzureOpenAIResponsesLlm(
         model='deployment',
@@ -1507,7 +1507,7 @@ def test_provided_client_is_used():
 def test_default_client_built_with_resolved_api_key():
   """Without a client, AsyncOpenAI is constructed with the resolved key."""
   with mock.patch(
-      'google.adk.labs.openai._openai_responses_llm.AsyncOpenAI'
+      'google.adk.integrations.openai._openai_responses_llm.AsyncOpenAI'
   ) as client_cls:
     llm = OpenAIResponsesLlm(model='gpt-5', api_key='secret')
     _ = llm._openai_client
@@ -1519,7 +1519,7 @@ def test_default_client_built_with_resolved_api_key():
 async def test_api_key_callable_wrapped():
   """A sync api_key callable is wrapped in an async provider, not resolved."""
   with mock.patch(
-      'google.adk.labs.openai._openai_responses_llm.AsyncOpenAI'
+      'google.adk.integrations.openai._openai_responses_llm.AsyncOpenAI'
   ) as client_cls:
     _ = OpenAIResponsesLlm(
         model='gpt-5', api_key=lambda: 'dynamic'
@@ -1537,7 +1537,7 @@ async def test_async_api_key_callable_supported():
     return 'k'
 
   with mock.patch(
-      'google.adk.labs.openai._openai_responses_llm.AsyncOpenAI'
+      'google.adk.integrations.openai._openai_responses_llm.AsyncOpenAI'
   ) as client_cls:
     _ = OpenAIResponsesLlm(model='gpt-5', api_key=_key)._openai_client
 
@@ -1549,7 +1549,7 @@ def test_azure_api_key_env_fallback(monkeypatch):
   """Azure falls back to AZURE_OPENAI_API_KEY when no key is provided."""
   monkeypatch.setenv('AZURE_OPENAI_API_KEY', 'env-key')
   with mock.patch(
-      'google.adk.labs.openai._openai_responses_llm.AsyncOpenAI'
+      'google.adk.integrations.openai._openai_responses_llm.AsyncOpenAI'
   ) as client_cls:
     _ = AzureOpenAIResponsesLlm(
         model='deployment',
