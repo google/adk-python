@@ -35,6 +35,7 @@ from packaging.version import parse
 
 from ..version import __version__
 from .deployers import DeployerFactory
+from .deployers._dockerfile_template import _agent_deps_install_layer
 from .deployers._dockerfile_template import _DOCKERFILE_TEMPLATE
 from .utils import _onboarding
 
@@ -821,10 +822,8 @@ def run(
     ignore_func = _get_ignore_patterns_func(agent_folder)
     shutil.copytree(agent_folder, agent_src_path, ignore=ignore_func)
     requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
-    install_agent_deps = (
-        f'RUN pip install -r "/app/agents/{app_name}/requirements.txt"'
-        if os.path.exists(requirements_txt_path)
-        else '# No requirements.txt found.'
+    install_agent_deps = _agent_deps_install_layer(
+        app_name, os.path.exists(requirements_txt_path)
     )
     click.echo('Copying agent source code completed.')
 
@@ -1377,10 +1376,8 @@ def to_agent_engine(
 
     def create_dockerfile_for_agent_engine(resource_name: str) -> None:
       requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
-      install_agent_deps = (
-          f'RUN pip install -r "/app/agents/{app_name}/requirements.txt"'
-          if os.path.exists(requirements_txt_path)
-          else '# No requirements.txt found.'
+      install_agent_deps = _agent_deps_install_layer(
+          app_name, os.path.exists(requirements_txt_path)
       )
       trigger_sources_option = (
           f'--trigger_sources={trigger_sources}' if trigger_sources else ''
@@ -1593,10 +1590,8 @@ def to_gke(
     ignore_func = _get_ignore_patterns_func(agent_folder)
     shutil.copytree(agent_folder, agent_src_path, ignore=ignore_func)
     requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
-    install_agent_deps = (
-        f'RUN pip install -r "/app/agents/{app_name}/requirements.txt"'
-        if os.path.exists(requirements_txt_path)
-        else ''
+    install_agent_deps = _agent_deps_install_layer(
+        app_name, os.path.exists(requirements_txt_path)
     )
     click.secho('✅ Environment prepared.', fg='green')
 

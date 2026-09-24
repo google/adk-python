@@ -158,10 +158,20 @@ def test_to_cloud_run_happy_path(
   assert "--otel_to_cloud" in dockerfile_content
 
   # Check agent dependencies installation based on include_requirements
+  agent_copy = 'COPY --chown=myuser:myuser "agents/agent/" "/app/agents/agent/"'
   if include_requirements:
-    assert (
-        'RUN pip install -r "/app/agents/agent/requirements.txt"'
-        in dockerfile_content
+    req_copy = (
+        'COPY --chown=myuser:myuser "agents/agent/requirements.txt"'
+        ' "/app/agents/agent/requirements.txt"'
+    )
+    req_install = 'RUN pip install -r "/app/agents/agent/requirements.txt"'
+    assert req_copy in dockerfile_content
+    assert req_install in dockerfile_content
+    assert dockerfile_content.index(req_copy) < dockerfile_content.index(
+        req_install
+    )
+    assert dockerfile_content.index(req_install) < dockerfile_content.index(
+        agent_copy
     )
   else:
     assert "# No requirements.txt found." in dockerfile_content
