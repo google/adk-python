@@ -248,6 +248,7 @@ _DEFAULT_EFFICIENCY_METRICS: tuple[str, ...] = (
     PrebuiltMetrics.TOOL_CALL_COUNT_V1.value,
     PrebuiltMetrics.INFERENCE_CALL_COUNT_V1.value,
     PrebuiltMetrics.TOKEN_USAGE_V1.value,
+    PrebuiltMetrics.INVOCATION_DURATION_V1.value,
 )
 
 

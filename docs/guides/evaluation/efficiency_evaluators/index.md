@@ -1,7 +1,8 @@
 # Efficiency metrics
 
 The efficiency metrics report what an agent run *consumed* rather than how good
-it was: how many tool and model calls it made, and how many tokens it spent.
+it was: how many tool and model calls it made, how many tokens it spent, and
+how long it took.
 They are reference-free and informational — reported on every eval run with no
 configuration, and never passing or failing an eval case.
 
@@ -17,22 +18,24 @@ consumed:
 | `tool_call_count_v1` | Tool (function) invocations | Calls per invocation |
 | `inference_call_count_v1` | Model calls, a proxy for reasoning steps | Calls per invocation |
 | `token_usage_v1` | Tokens consumed, with a per-type breakdown | Tokens per invocation |
+| `invocation_duration_v1` | Wall-clock time the turn took | Seconds per invocation |
 
-Lower is better for all three. They require no reference data and incur no
+Lower is better for all four. They require no reference data and incur no
 additional model calls: the model backend already returns usage metadata on
-every call, and these metrics read it back at scoring time.
+every call, the duration is measured while the agent runs, and these metrics
+read it all back at scoring time.
 
 In ADK evaluation, an invocation corresponds to a complete conversation
 **turn**. Because all sub-agents executing within a turn share the same
 invocation ID, the reported metrics aggregate everything that ran during that
 turn. They therefore line up with the `invoke_workflow` metrics telemetry
-publishes per turn, such as
-`adk.experimental.invoke_workflow.inference_calls`, rather than the
+publishes per turn — `adk.experimental.invoke_workflow.inference_calls` and
+`gen_ai.invoke_workflow.duration` among them — rather than the
 `invoke_agent` ones, which report each sub-agent separately.
 
 ## Get started
 
-Nothing needs to be configured. Run any eval and the three values appear
+Nothing needs to be configured. Run any eval and the four values appear
 alongside your quality metrics:
 
 ```bash
@@ -60,6 +63,8 @@ Token breakdown:
     output:         227
       candidates:   30
       reasoning:    197
+---------------------------------------------------------------------
+Metric: invocation_duration_v1, Status: INFORMATIONAL, Score: 8.574, Threshold: None
 ```
 
 Configuration is needed only to change a metric's behaviour, never to turn one
@@ -114,6 +119,26 @@ always equals the sum of its top-level components.
   thinking budgets or cache efficiency to be inspected directly in
   `reasoning_tokens` or `cached_tokens` without extra configuration.
 
+## Duration is the noisy one
+
+`invocation_duration_v1` is the wall-clock seconds a turn took, measured while the agent
+runs — from the user message going in to the last event coming out, so it
+includes the final model call, tool execution and post-processing.
+
+**Do not judge a regression on a single duration.** Wall-clock time moves with
+model-server load and network conditions, not just with your agent: five runs
+of the same unchanged agent on the same one-turn case ranged from 5.99s to
+8.81s, a spread of nearly 50% with nothing changed. To tell whether a change
+made the agent slower, look at `inference_call_count_v1` and the token counts
+— those are deterministic for a given input and model, so a real change moves
+them.
+
+It reads `n/a` when the eval did not perform the inference itself, for instance
+when invocations were read back from a stored session. The timing cannot be
+recovered afterwards: an event is stamped when it is constructed, which for a
+model call is before the request is even sent, so a span between event
+timestamps would omit the last call entirely.
+
 ## How values are aggregated
 
 Each metric is computed **per invocation** (per conversation turn). The overall
@@ -166,8 +191,12 @@ thresholds. Setting a threshold on an efficiency metric raises an error
   leads to inflated `inference_call_count_v1` and token counts. Standard
   request-response evaluations (`adk eval`) report one event per call and are
   unaffected.
-* **No timing metric:** Wall-clock duration is not included in this release and
-  will be introduced as a dedicated metric in a follow-up.
+* **Duration is a single sample:** `invocation_duration_v1` reports one measurement per
+  turn, with no repetition to average out backend variance. Compare
+  distributions across several runs rather than two individual numbers.
+* **No timing breakdown yet:** `invocation_duration_v1` reports the total only. Splitting
+  it into model time, tool time and framework overhead — which is what tells
+  you whether ADK itself is the cost — is follow-up work.
 * **Observational only:** Threshold-based gating (e.g. failing a CI build when
   token spend exceeds a budget) is not currently supported.
 

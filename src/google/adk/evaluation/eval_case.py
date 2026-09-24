@@ -116,6 +116,16 @@ class Invocation(EvalBaseModel):
   creation_timestamp: float = 0.0
   """Timestamp for the current invocation, primarily intended for debugging purposes."""
 
+  duration: Optional[float] = None
+  """Wall-clock seconds this invocation took, measured while it ran.
+
+  Set only when the eval performed the inference itself; an invocation read
+  back from a stored session or a hand-written eval case carries no timing, and
+  leaves this None rather than reporting a reconstructed figure. Timings cannot
+  be recovered afterwards from event timestamps: an event is stamped when it is
+  constructed, which for a model call is before the request is even sent.
+  """
+
   rubrics: Optional[list[Rubric]] = Field(
       default=None,
   )

@@ -20,6 +20,7 @@ import warnings
 from google.adk.agents.common_configs import CodeConfig
 from google.adk.errors.not_found_error import NotFoundError
 from google.adk.evaluation._efficiency_evaluators import _InferenceCallCountV1Evaluator
+from google.adk.evaluation._efficiency_evaluators import _InvocationDurationV1Evaluator
 from google.adk.evaluation._efficiency_evaluators import _TokenUsageV1Evaluator
 from google.adk.evaluation._efficiency_evaluators import _ToolCallCountV1Evaluator
 from google.adk.evaluation.custom_metric_evaluator import _CustomMetricEvaluator
@@ -47,6 +48,7 @@ from google.adk.evaluation.metric_evaluator_registry import SafetyEvaluatorV1Met
 from google.adk.evaluation.metric_evaluator_registry import TrajectoryEvaluator
 from google.adk.evaluation.metric_evaluator_registry import TrajectoryEvaluatorMetricInfoProvider
 from google.adk.evaluation.metric_info_providers import InferenceCallCountV1MetricInfoProvider
+from google.adk.evaluation.metric_info_providers import InvocationDurationV1MetricInfoProvider
 from google.adk.evaluation.metric_info_providers import MultiTurnTaskSuccessV1MetricInfoProvider
 from google.adk.evaluation.metric_info_providers import MultiTurnToolUseQualityV1MetricInfoProvider
 from google.adk.evaluation.metric_info_providers import MultiTurnTrajectoryQualityV1MetricInfoProvider
@@ -160,6 +162,10 @@ class TestMetricEvaluatorRegistry:
               _InferenceCallCountV1Evaluator,
           ),
           (PrebuiltMetrics.TOKEN_USAGE_V1.value, _TokenUsageV1Evaluator),
+          (
+              PrebuiltMetrics.INVOCATION_DURATION_V1.value,
+              _InvocationDurationV1Evaluator,
+          ),
       ],
   )
   def test_efficiency_metrics_are_registered(self, metric_name, evaluator_type):
@@ -183,6 +189,7 @@ class TestMetricEvaluatorRegistry:
           PrebuiltMetrics.TOOL_CALL_COUNT_V1.value,
           PrebuiltMetrics.INFERENCE_CALL_COUNT_V1.value,
           PrebuiltMetrics.TOKEN_USAGE_V1.value,
+          PrebuiltMetrics.INVOCATION_DURATION_V1.value,
       ],
   )
   def test_efficiency_metrics_need_no_threshold(self, metric_name):
@@ -795,6 +802,7 @@ class TestMetricInfoProviders:
             ToolCallCountV1MetricInfoProvider(),
             InferenceCallCountV1MetricInfoProvider(),
             TokenUsageV1MetricInfoProvider(),
+            InvocationDurationV1MetricInfoProvider(),
         ]
     ]
 

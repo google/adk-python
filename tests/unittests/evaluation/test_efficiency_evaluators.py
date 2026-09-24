@@ -21,6 +21,7 @@ fail, so every result has an `EvalStatus` of `INFORMATIONAL`.
 from typing import Optional
 
 from google.adk.evaluation._efficiency_evaluators import _InferenceCallCountV1Evaluator
+from google.adk.evaluation._efficiency_evaluators import _InvocationDurationV1Evaluator
 from google.adk.evaluation._efficiency_evaluators import _TokenUsageV1Evaluator
 from google.adk.evaluation._efficiency_evaluators import _ToolCallCountV1Evaluator
 from google.adk.evaluation.eval_case import IntermediateData
@@ -152,6 +153,10 @@ def test_tool_call_count_never_fails_even_for_high_counts():
             PrebuiltMetrics.INFERENCE_CALL_COUNT_V1.value,
         ),
         (_TokenUsageV1Evaluator, PrebuiltMetrics.TOKEN_USAGE_V1.value),
+        (
+            _InvocationDurationV1Evaluator,
+            PrebuiltMetrics.INVOCATION_DURATION_V1.value,
+        ),
     ],
 )
 def test_efficiency_evaluator_rejects_a_configured_threshold(
@@ -546,3 +551,79 @@ def test_token_usage_counts_tool_use_tokens():
   assert details.tool_use_tokens == 42.0
   # They are part of the input, not an addition on top of it.
   assert details.input_tokens == 1000.0
+
+
+# ---------------------------------------------------------------------------
+# _InvocationDurationV1Evaluator
+# ---------------------------------------------------------------------------
+
+
+def _invocation_lasting(duration: Optional[float]) -> Invocation:
+  """Returns an invocation that recorded the given wall-clock duration."""
+  return Invocation(user_content=_USER_CONTENT, duration=duration)
+
+
+def test_duration_reports_the_recorded_wall_clock_time():
+  """The value is the duration measured while the invocation ran."""
+  evaluator = _InvocationDurationV1Evaluator(
+      eval_metric=EvalMetric(
+          metric_name=PrebuiltMetrics.INVOCATION_DURATION_V1.value
+      )
+  )
+
+  result = evaluator.evaluate_invocations([_invocation_lasting(2.844)])
+
+  assert result.overall_score == 2.844
+  assert result.overall_eval_status == EvalStatus.INFORMATIONAL
+
+
+def test_duration_averages_across_invocations():
+  """The eval case value is the mean of the per-turn durations."""
+  evaluator = _InvocationDurationV1Evaluator(
+      eval_metric=EvalMetric(
+          metric_name=PrebuiltMetrics.INVOCATION_DURATION_V1.value
+      )
+  )
+
+  result = evaluator.evaluate_invocations(
+      [_invocation_lasting(2.0), _invocation_lasting(4.0)]
+  )
+
+  assert result.overall_score == 3.0
+
+
+def test_duration_is_na_when_the_run_recorded_none():
+  """An invocation the eval did not time reports n/a rather than zero.
+
+  Invocations read back from a stored session carry no timing, and it cannot be
+  recovered from event timestamps afterwards.
+  """
+  evaluator = _InvocationDurationV1Evaluator(
+      eval_metric=EvalMetric(
+          metric_name=PrebuiltMetrics.INVOCATION_DURATION_V1.value
+      )
+  )
+
+  result = evaluator.evaluate_invocations([_invocation_lasting(None)])
+
+  assert result.overall_score is None
+  assert (
+      result.per_invocation_results[0].eval_status == EvalStatus.INFORMATIONAL
+  )
+
+
+def test_duration_averages_only_the_timed_invocations():
+  """An untimed turn is left out of the average rather than counted as zero."""
+  evaluator = _InvocationDurationV1Evaluator(
+      eval_metric=EvalMetric(
+          metric_name=PrebuiltMetrics.INVOCATION_DURATION_V1.value
+      )
+  )
+
+  result = evaluator.evaluate_invocations(
+      [_invocation_lasting(3.0), _invocation_lasting(None)]
+  )
+
+  # 3.0 / 1, not 3.0 / 2: the second turn has no measurement, which is not the
+  # same as having taken no time.
+  assert result.overall_score == 3.0

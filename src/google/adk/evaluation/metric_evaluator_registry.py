@@ -23,6 +23,7 @@ from typing import Protocol
 from ..errors.not_found_error import NotFoundError
 from ..utils.feature_decorator import experimental
 from ._efficiency_evaluators import _InferenceCallCountV1Evaluator
+from ._efficiency_evaluators import _InvocationDurationV1Evaluator
 from ._efficiency_evaluators import _TokenUsageV1Evaluator
 from ._efficiency_evaluators import _ToolCallCountV1Evaluator
 from .custom_metric_evaluator import _CustomMetricEvaluator
@@ -38,6 +39,7 @@ from .hallucinations_v1 import HallucinationsV1Evaluator
 from .metric_info_providers import FinalResponseMatchV2EvaluatorMetricInfoProvider
 from .metric_info_providers import HallucinationsV1EvaluatorMetricInfoProvider
 from .metric_info_providers import InferenceCallCountV1MetricInfoProvider
+from .metric_info_providers import InvocationDurationV1MetricInfoProvider
 from .metric_info_providers import MultiTurnTaskSuccessV1MetricInfoProvider
 from .metric_info_providers import MultiTurnToolUseQualityV1MetricInfoProvider
 from .metric_info_providers import MultiTurnTrajectoryQualityV1MetricInfoProvider
@@ -271,6 +273,10 @@ def _register_standard_metrics(
   metric_evaluator_registry.register_evaluator(
       metric_info=TokenUsageV1MetricInfoProvider().get_metric_info(),
       evaluator=_TokenUsageV1Evaluator,
+  )
+  metric_evaluator_registry.register_evaluator(
+      metric_info=InvocationDurationV1MetricInfoProvider().get_metric_info(),
+      evaluator=_InvocationDurationV1Evaluator,
   )
 
 

@@ -100,6 +100,8 @@ class PrebuiltMetrics(Enum):
 
   TOKEN_USAGE_V1 = "token_usage_v1"
 
+  INVOCATION_DURATION_V1 = "invocation_duration_v1"
+
 
 MetricName: TypeAlias = Union[str, PrebuiltMetrics]
 Threshold: TypeAlias = float

@@ -22,8 +22,10 @@ reports in:
   - `inference_call_count_v1`: calls made to the model -- a count.
   - `token_usage_v1`: tokens consumed -- a token count. The score is the total,
     and every token type is reported alongside it as a breakdown.
+  - `invocation_duration_v1`: wall-clock time the turn took -- seconds, not
+    milliseconds.
 
-Lower is better for all three. Every value is reported **per invocation** (per
+Lower is better for all four. Every value is reported **per invocation** (per
 conversation turn): each per-invocation result holds that turn's own value, and
 the overall value for the eval case is their average (see Aggregation below).
 So the overall number reads as "tool calls per turn", "tokens per turn" or
@@ -205,6 +207,54 @@ class _InferenceCallCountV1Evaluator(Evaluator):
         if _is_model_call_event(e)
     ]
     return float(len(model_events))
+
+  @override
+  def evaluate_invocations(
+      self,
+      actual_invocations: list[Invocation],
+      expected_invocations: Optional[list[Invocation]] = None,
+      conversation_scenario: Optional[ConversationScenario] = None,
+  ) -> EvaluationResult:
+    # Efficiency metrics are reference-free, so expected invocations and
+    # conversation scenarios are not used.
+    del expected_invocations, conversation_scenario
+    return _evaluate_efficiency_metric(actual_invocations, self._compute_value)
+
+
+class _InvocationDurationV1Evaluator(Evaluator):
+  """Reports how long an invocation took, in seconds.
+
+  Unit: seconds per invocation.
+
+  The value is measured while the agent runs and carried on the invocation; it
+  is never reconstructed from event timestamps, which mark when an event object
+  was built rather than when the model answered. An invocation that was not
+  produced by this eval run -- read back from a stored session, say -- carries
+  no timing and reports n/a.
+
+  An eval invocation spans a whole turn (every sub-agent shares the turn's
+  invocation id), so this is the quantity telemetry publishes per turn as
+  `gen_ai.invoke_workflow.duration`, not the per-agent
+  `gen_ai.invoke_agent.duration`.
+
+  Informational only. Wall-clock time is far noisier than the token and call
+  counts -- it moves with model-server load and network, not just with the
+  agent -- so read it as an indication and use the counts to judge a
+  regression.
+  """
+
+  def __init__(
+      self,
+      eval_metric: Optional[EvalMetric] = None,
+  ):
+    _reject_threshold(eval_metric)
+    self._eval_metric = eval_metric
+
+  def _compute_value(self, invocation: Invocation) -> Optional[float]:
+    # None here means the run did not record a duration, not that the turn took
+    # no time, so `_evaluate_efficiency_metric` leaves it out of the average
+    # rather than counting it as zero.
+    return invocation.duration
 
   @override
   def evaluate_invocations(

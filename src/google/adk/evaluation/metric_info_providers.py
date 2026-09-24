@@ -303,6 +303,29 @@ class InferenceCallCountV1MetricInfoProvider(MetricInfoProvider):
     )
 
 
+class InvocationDurationV1MetricInfoProvider(MetricInfoProvider):
+  """Metric info provider for _InvocationDurationV1Evaluator."""
+
+  def get_metric_info(self) -> MetricInfo:
+    return MetricInfo(
+        metric_name=PrebuiltMetrics.INVOCATION_DURATION_V1.value,
+        description=(
+            "This metric reports the wall-clock seconds an invocation took,"
+            " averaged across the eval case. The duration is measured while the"
+            " agent runs; an invocation not produced by this eval run reports"
+            " no value. Wall-clock time is noisier than the token and call"
+            " counts, since it moves with model-server load and network, so"
+            " read it as an indication rather than a regression signal. It is"
+            " an informational efficiency metric: it reports the value for"
+            " tracking and does not pass or fail the eval case."
+        ),
+        metric_value_info=MetricValueInfo(),
+        # Informational: reports a value, never gates, so no threshold
+        # is required and no value interval bounds it.
+        requires_threshold=False,
+    )
+
+
 class TokenUsageV1MetricInfoProvider(MetricInfoProvider):
   """Metric info provider for _TokenUsageV1Evaluator."""
 

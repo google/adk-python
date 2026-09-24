@@ -991,6 +991,72 @@ class TestGenerateInferencesFromRootAgent:
     assert called_with_content.parts[0].text == "message 1"
 
   @pytest.mark.asyncio
+  async def test_records_a_duration_for_each_invocation(
+      self, mocker, mock_runner, mock_session_service
+  ):
+    """Each turn is timed while it runs and the durations reach the converter.
+
+    Timing is taken here rather than reconstructed from event timestamps
+    afterwards: an event is stamped when it is constructed, which for a model
+    call is before the request is even sent, so a span between such stamps
+    would omit the last call entirely.
+    """
+    mock_agent = mocker.MagicMock()
+    mock_user_sim = mocker.MagicMock(spec=UserSimulator)
+
+    async def get_next_user_message_side_effect(*args, **kwargs):
+      count = mock_user_sim.get_next_user_message.call_count
+      if count <= 2:
+        return NextUserMessage(
+            status=UserSimulatorStatus.SUCCESS,
+            user_message=types.Content(
+                parts=[types.Part(text=f"message {count}")]
+            ),
+        )
+      return NextUserMessage(status=UserSimulatorStatus.STOP_SIGNAL_DETECTED)
+
+    mock_user_sim.get_next_user_message = mocker.AsyncMock(
+        side_effect=get_next_user_message_side_effect
+    )
+
+    mock_generate_inferences = mocker.patch(
+        "google.adk.evaluation.evaluation_generator.EvaluationGenerator._generate_inferences_for_single_user_invocation"
+    )
+    mocker.patch(
+        "google.adk.evaluation.evaluation_generator.EvaluationGenerator._get_app_details_by_invocation_id"
+    )
+    mock_convert = mocker.patch(
+        "google.adk.evaluation.evaluation_generator.EvaluationGenerator.convert_events_to_eval_invocations"
+    )
+
+    turns = iter(["inv1", "inv2"])
+
+    async def mock_generate_inferences_side_effect(
+        runner, user_id, session_id, user_content
+    ):
+      invocation_id = next(turns)
+      yield _build_event("user", user_content.parts, invocation_id)
+      yield _build_event("agent", [types.Part(text="ok")], invocation_id)
+
+    mock_generate_inferences.side_effect = mock_generate_inferences_side_effect
+
+    await EvaluationGenerator._generate_inferences_from_root_agent(
+        root_agent=mock_agent,
+        user_simulator=mock_user_sim,
+    )
+
+    durations = mock_convert.call_args.args[2]
+    # One entry per turn, keyed by that turn's invocation id.
+    assert set(durations) == {"inv1", "inv2"}
+    assert all(duration >= 0 for duration in durations.values())
+    # Rounded to milliseconds rather than carrying the float's full, and
+    # meaningless, precision. A raw `time.monotonic()` difference would keep
+    # far more digits than this.
+    assert all(
+        duration == round(duration, 3) for duration in durations.values()
+    )
+
+  @pytest.mark.asyncio
   async def test_pinned_session_id_reused_across_runs_no_collision(
       self, mocker, mock_runner
   ):
