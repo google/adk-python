@@ -38,6 +38,7 @@ from ..evaluation.eval_case import get_all_tool_calls
 from ..evaluation.eval_case import IntermediateDataType
 from ..evaluation.eval_metrics import EvalMetric
 from ..evaluation.eval_metrics import RubricsBasedCriterion
+from ..evaluation.eval_metrics import TokenUsageDetails
 from ..evaluation.eval_result import EvalCaseResult
 from ..evaluation.eval_sets_manager import EvalSetsManager
 from ..utils.context_utils import Aclosing
@@ -220,6 +221,42 @@ def _convert_tool_calls_to_text(
   return "\n".join([str(t) for t in tool_calls])
 
 
+def _format_token_count(value: Optional[float]) -> str:
+  """Formats a token count, showing unavailable counts as n/a rather than 0."""
+  return "n/a" if value is None else f"{value:g}"
+
+
+# The token counts to print, and how deep to indent each one. Indentation is
+# containment: every row is a part of the nearest row above it that is indented
+# less, so `cached` reads as a portion of `prompt` rather than an addition to
+# it. See `TokenUsageDetails` for the counts themselves.
+_TOKEN_BREAKDOWN_ROWS = (
+    ("total_tokens", 1),
+    ("input_tokens", 2),
+    ("prompt_tokens", 3),
+    ("cached_tokens", 4),
+    ("tool_use_tokens", 3),
+    ("output_tokens", 2),
+    ("candidates_tokens", 3),
+    ("reasoning_tokens", 3),
+)
+
+# Wide enough for the longest indented label, so the counts line up in a column.
+_TOKEN_BREAKDOWN_LABEL_WIDTH = 20
+
+
+def _echo_token_usage_details(details: TokenUsageDetails) -> None:
+  """Prints the per-type token counts, indented to show what contains what."""
+  click.echo("Token breakdown:")
+  for field_name, depth in _TOKEN_BREAKDOWN_ROWS:
+    # The heading already says these are tokens, so the shared suffix is
+    # dropped from the label rather than repeated on all eight rows.
+    name = field_name.removesuffix("_tokens").replace("_", " ")
+    label = f"{'  ' * depth}{name}:"
+    count = _format_token_count(getattr(details, field_name))
+    click.echo(f"{label:<{_TOKEN_BREAKDOWN_LABEL_WIDTH}}{count}")
+
+
 def pretty_print_eval_result(eval_result: EvalCaseResult) -> None:
   """Pretty prints eval result."""
   try:
@@ -242,6 +279,8 @@ def pretty_print_eval_result(eval_result: EvalCaseResult) -> None:
         f"Score: {metric_result.score}, "
         f"Threshold: {metric_result.threshold}"
     )
+    if metric_result.details and metric_result.details.token_usage_details:
+      _echo_token_usage_details(metric_result.details.token_usage_details)
     if metric_result.details and metric_result.details.rubric_scores:
       click.echo("Rubric Scores:")
       rubrics = (
@@ -290,6 +329,12 @@ def pretty_print_eval_result(eval_result: EvalCaseResult) -> None:
           f"Status: {metric_result.eval_status.name}, "
           f"Score: {metric_result.score}"
       )
+      if metric_result.details and metric_result.details.token_usage_details:
+        token_details = metric_result.details.token_usage_details
+        row_data[f"{metric_result.metric_name} breakdown"] = ", ".join(
+            f"{name}: {_format_token_count(getattr(token_details, name))}"
+            for name in TokenUsageDetails.model_fields
+        )
       if metric_result.details and metric_result.details.rubric_scores:
         rubrics = (
             metric_result.criterion.rubrics
