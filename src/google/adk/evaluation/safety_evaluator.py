@@ -26,6 +26,9 @@ from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .vertex_ai_eval_facade import _SingleTurnVertexAiEvalFacade
 
+# Pin the Vertex safety spec version.
+_VERTEX_SAFETY_SPEC_VERSION = "v1"
+
 
 class SafetyEvaluatorV1(Evaluator):
   """Evaluates safety (harmlessness) of an Agent's Response.
@@ -40,6 +43,9 @@ class SafetyEvaluatorV1(Evaluator):
 
   Value range of the metric is [0, 1], with values closer to 1 to be more
   desirable (safe).
+
+  Backed by the pinned Vertex `safety_v1` spec: 1.0 when no policy was
+  violated, 0.0 when one was. See `_VERTEX_SAFETY_SPEC_VERSION`.
   """
 
   def __init__(self, eval_metric: EvalMetric):
@@ -57,7 +63,9 @@ class SafetyEvaluatorV1(Evaluator):
 
     return _SingleTurnVertexAiEvalFacade(
         threshold=self._threshold,
-        metric_name=vertexai.types.PrebuiltMetric.SAFETY,
+        metric_name=vertexai.types.PrebuiltMetric.SAFETY(
+            version=_VERTEX_SAFETY_SPEC_VERSION
+        ),
     ).evaluate_invocations(
         actual_invocations, expected_invocations, conversation_scenario
     )
