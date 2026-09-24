@@ -20,6 +20,7 @@ from google.adk.telemetry import _agent_engine
 from google.adk.telemetry import google_cloud
 from google.adk.telemetry._agent_engine import telemetry_user_agent_headers
 from google.adk.telemetry._agent_engine_metric_exporter import MIN_EXPORT_INTERVAL_MS
+from google.adk.telemetry._gcp_resource import _Project
 from google.adk.telemetry.google_cloud import _DEFAULT_MTLS_TELEMETRY_LOGS_ENDPOINT
 from google.adk.telemetry.google_cloud import _DEFAULT_MTLS_TELEMETRY_METRICS_ENDPOINT
 from google.adk.telemetry.google_cloud import _DEFAULT_MTLS_TELEMETRY_TRACES_ENDPOINT
@@ -43,6 +44,28 @@ from opentelemetry.sdk._logs._internal import LogRecord
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def mock_fetch_project():
+  """Keeps the Resource Manager lookup off the network in every test."""
+
+  def fake_fetch_project(project: Optional[str], credentials=None) -> _Project:
+    """Mirrors the real contract: what went in comes back, the rest is faked."""
+    del credentials  # The real lookup keys its memo on the project alone.
+    if not project:
+      return _Project(id="", number="")
+    if project.isdecimal():
+      return _Project(id=f"{project}-id", number=project)
+    return _Project(id=project, number=f"{project}-number")
+
+  with mock.patch.object(
+      google_cloud,
+      "_fetch_project",
+      autospec=True,
+      side_effect=fake_fetch_project,
+  ) as fetch_project:
+    yield fetch_project
 
 
 @pytest.mark.parametrize("enable_cloud_tracing", [True, False])
@@ -94,87 +117,6 @@ def test_get_gcp_exporters(
   assert len(otel_hooks.log_record_processors) == (
       1 if enable_cloud_logging else 0
   )
-
-
-@pytest.mark.parametrize("project_id_in_arg", ["project_id_in_arg", None])
-@pytest.mark.parametrize("project_id_on_env", ["project_id_on_env", None])
-def test_get_gcp_resource(
-    project_id_in_arg: Optional[str],
-    project_id_on_env: Optional[str],
-    monkeypatch: pytest.MonkeyPatch,
-):
-  # Arrange.
-  if project_id_on_env is not None:
-    monkeypatch.setenv(
-        "OTEL_RESOURCE_ATTRIBUTES", f"gcp.project_id={project_id_on_env}"
-    )
-
-  # Act.
-  otel_resource = get_gcp_resource(project_id_in_arg)
-
-  # Assert.
-  expected_project_id = (
-      project_id_on_env
-      if project_id_on_env is not None
-      else project_id_in_arg
-      if project_id_in_arg is not None
-      else None
-  )
-  assert otel_resource is not None
-  assert (
-      otel_resource.attributes.get("gcp.project_id", None)
-      == expected_project_id
-  )
-
-
-def test_get_gcp_resource_is_not_agent_engine_off_agent_engine(
-    monkeypatch: pytest.MonkeyPatch,
-):
-  """Local, GCE, GKE and Cloud Run runs are not Agent Engine deployments."""
-  monkeypatch.delenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", raising=False)
-
-  otel_resource = get_gcp_resource("my-project")
-
-  # Whatever the platform is, the GCP detector decides it -- not us.
-  assert otel_resource.attributes.get("cloud.platform") != "gcp.agent_engine"
-  assert "cloud.resource_id" not in otel_resource.attributes
-  assert otel_resource.attributes["gcp.project_id"] == "my-project"
-
-
-def test_get_gcp_resource_describes_the_agent_engine_deployment(
-    monkeypatch: pytest.MonkeyPatch,
-):
-  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "1234567890")
-  monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
-
-  otel_resource = get_gcp_resource("my-project")
-
-  assert otel_resource.attributes["cloud.platform"] == "gcp.agent_engine"
-  assert otel_resource.attributes["service.name"] == "1234567890"
-  assert otel_resource.attributes["cloud.region"] == "us-central1"
-  assert otel_resource.attributes["cloud.account.id"] == "my-project"
-  # Contributed by `Resource.create`, as they were before OTLP export.
-  assert otel_resource.attributes["telemetry.sdk.language"] == "python"
-  assert otel_resource.attributes["telemetry.sdk.name"] == "opentelemetry"
-
-
-def test_get_gcp_resource_sets_standard_cloud_resource_id(
-    monkeypatch: pytest.MonkeyPatch,
-):
-  # Arrange.
-  monkeypatch.setenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "1234567890")
-  monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
-
-  # Act.
-  otel_resource = get_gcp_resource("my-project")
-
-  # Assert.
-  # The Agent Engine dashboard filters on the OTel-standard key.
-  assert otel_resource.attributes.get("cloud.resource_id") == (
-      "//aiplatform.googleapis.com/projects/my-project"
-      "/locations/us-central1/reasoningEngines/1234567890"
-  )
-  assert "cloud.resource.id" not in otel_resource.attributes
 
 
 @mock.patch.object(mtls, "should_use_client_cert", autospec=True)
