@@ -117,7 +117,9 @@ class FirestoreMemoryService(BaseMemoryService):  # type: ignore[misc]
   ) -> None:
     """Adds events, such as the latest turn, to the memories collection.
 
-    Re-adding an event with the same session ID overwrites its entry.
+    Re-adding an event with the same session ID overwrites its entry. The
+    session ID is part of that entry's ID, so an event added without one and
+    later added with one is stored twice; `search_memory` returns one copy.
     """
     _ = custom_metadata
     await self._write_memories(
