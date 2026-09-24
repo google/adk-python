@@ -20,6 +20,7 @@ from enum import Enum
 import logging
 import os
 import re
+import threading
 from typing import Any
 from typing import Callable
 from typing import Dict
@@ -205,17 +206,19 @@ class AgentRegistry:
 
     self._base_path = f"projects/{self.project_id}/locations/{self.location}"
     self._header_provider = header_provider
+    self._connect_lock = threading.Lock()
+    self._connect()
+
+  def _connect(self) -> None:
+    """Loads default credentials and configures the session that uses them."""
     try:
-      self._credentials, _ = google.auth.default()
+      credentials, _ = google.auth.default()
     except google.auth.exceptions.DefaultCredentialsError as e:
       raise RuntimeError(
           f"Failed to get default Google Cloud credentials: {e}"
       ) from e
 
-    # Instantiate and configure AuthorizedSession once during initialization.
-    self._session = requests_auth.AuthorizedSession(
-        credentials=self._credentials
-    )
+    session = requests_auth.AuthorizedSession(credentials=credentials)
     use_client_cert = _use_client_cert_effective()
     client_cert_source = None
     if use_client_cert:
@@ -224,16 +227,42 @@ class AgentRegistry:
           if mtls.has_default_client_cert_source()
           else None
       )
-      self._session.configure_mtls_channel(client_cert_source)
+      session.configure_mtls_channel(client_cert_source)
     self._use_mtls = _should_use_mtls_endpoint(client_cert_source)
     self._base_url = (
         AGENT_REGISTRY_MTLS_BASE_URL
         if self._use_mtls
         else AGENT_REGISTRY_BASE_URL
     )
+    self._credentials = credentials
+    # Set last: other threads treat a non-None session as fully connected.
+    self._session = session
+
+  def _ensure_connected(self) -> None:
+    if self._session is not None:
+      return
+    with self._connect_lock:
+      if self._session is None:
+        self._connect()
+
+  def __getstate__(self) -> Dict[str, Any]:
+    state = self.__dict__.copy()
+    # Toolsets built here are pickled when an agent is deployed. Carrying the
+    # credentials along would ship the deployer's default credentials, refresh
+    # token included, into the deployed agent, which would then call Google
+    # APIs as the deployer. The copy loads its own on first use instead.
+    state["_credentials"] = None
+    state["_session"] = None
+    del state["_connect_lock"]
+    return state
+
+  def __setstate__(self, state: Dict[str, Any]) -> None:
+    self.__dict__.update(state)
+    self._connect_lock = threading.Lock()
 
   def _get_auth_headers(self) -> Dict[str, str]:
     """Refreshes credentials and returns authorization headers."""
+    self._ensure_connected()
     try:
       request = google.auth.transport.requests.Request()
       self._credentials.refresh(request)
@@ -255,6 +284,7 @@ class AgentRegistry:
       json_data: Dict[str, Any] | None = None,
   ) -> Dict[str, Any]:
     """Helper function to make requests to the Agent Registry API."""
+    self._ensure_connected()
     if path.startswith("projects/"):
       url = f"{self._base_url}/{path}"
     else:
