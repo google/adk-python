@@ -1859,26 +1859,6 @@ def to_agent_engine(
       if 'GOOGLE_API_KEY' in env_vars:
         api_key = env_vars['GOOGLE_API_KEY']
         click.echo(f'api_key set by GOOGLE_API_KEY in {env_file}')
-    if otel_to_cloud:
-      if 'GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY' in env_vars:
-        click.secho(
-            'Ignoring GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY in .env'
-            ' as `--otel_to_cloud` was explicitly passed and takes precedence',
-            fg='yellow',
-        )
-      env_vars['GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY'] = 'true'
-      if 'ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS' not in env_vars:
-        env_vars['ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS'] = 'false'
-    else:
-      enable_telemetry = env_vars.get(
-          'GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY',
-      )
-      if enable_telemetry in ['true', '1']:
-        otel_to_cloud = True
-        click.echo(
-            '`--otel_to_cloud` is set to True by'
-            f' GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY in {env_file}'
-        )
     if env_vars:
       if 'env_vars' in agent_config:
         # sorted() over a dict iterates its keys, so this prints the variable
@@ -1891,6 +1871,30 @@ def to_agent_engine(
     _apply_service_account_to_agent_config(agent_config, service_account)
     # Set env_vars in agent_config to None if it is not set.
     agent_config['env_vars'] = agent_config.get('env_vars', env_vars)
+    if otel_to_cloud:
+      # Merge into the env_vars being deployed (from .env or the config file)
+      # so the user's own variables survive.
+      deployed_env_vars = agent_config['env_vars'] or {}
+      agent_config['env_vars'] = deployed_env_vars
+      if 'GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY' in deployed_env_vars:
+        click.secho(
+            'Ignoring GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY in env_vars'
+            ' as `--otel_to_cloud` was explicitly passed and takes precedence',
+            fg='yellow',
+        )
+      deployed_env_vars['GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY'] = 'true'
+      if 'ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS' not in deployed_env_vars:
+        deployed_env_vars['ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS'] = 'false'
+    else:
+      enable_telemetry = env_vars.get(
+          'GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY',
+      )
+      if enable_telemetry in ['true', '1']:
+        otel_to_cloud = True
+        click.echo(
+            '`--otel_to_cloud` is set to True by'
+            f' GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY in {env_file}'
+        )
 
     from ..dependencies._agentplatform import agentplatform
     from ..utils._google_client_headers import get_tracking_headers
