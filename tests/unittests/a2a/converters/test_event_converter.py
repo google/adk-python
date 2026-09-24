@@ -739,6 +739,39 @@ class TestA2AToEventConverters:
       assert called_message.role == _compat.ROLE_AGENT
       assert called_message.parts == [artifact_part]
 
+  def test_convert_a2a_task_to_event_keeps_every_artifact(self):
+    """Every artifact on the task reaches the event, in task order.
+
+    A remote agent returns one artifact per non-partial event it produced,
+    so reading only the last artifact drops its earlier output.
+    """
+    first_part = _compat.make_text_part("first artifact")
+    second_part = _compat.make_text_part("second artifact")
+    third_part = _compat.make_text_part("third artifact")
+
+    mock_artifacts = []
+    for part in (first_part, second_part, third_part):
+      mock_artifact = Mock(spec=Artifact)
+      mock_artifact.parts = [part]
+      mock_artifacts.append(mock_artifact)
+
+    mock_task = Mock(spec=Task)
+    mock_task.artifacts = mock_artifacts
+    mock_task.status = None
+    mock_task.history = []
+
+    with patch(
+        "google.adk.a2a.converters.event_converter.convert_a2a_message_to_event"
+    ) as mock_convert_message:
+      mock_convert_message.return_value = Mock(spec=Event)
+
+      convert_a2a_task_to_event(
+          mock_task, "test-author", self.mock_invocation_context
+      )
+
+      called_message = mock_convert_message.call_args[0][0]
+      assert called_message.parts == [first_part, second_part, third_part]
+
   def test_convert_a2a_task_to_event_with_status_message(self):
     """Test convert_a2a_task_to_event with status message (no artifacts)."""
 

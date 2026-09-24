@@ -230,10 +230,15 @@ def convert_a2a_task_to_event(
     # Extract message from task status or history
     message = None
     if a2a_task.artifacts:
+      # A task carries one artifact per non-partial event the remote agent
+      # produced, so reading only the last one drops every earlier output.
+      # to_adk_event.convert_a2a_task_to_event flattens them the same way.
       message = Message(
           message_id="",
           role=_compat.ROLE_AGENT,
-          parts=a2a_task.artifacts[-1].parts,
+          parts=[
+              part for artifact in a2a_task.artifacts for part in artifact.parts
+          ],
       )
     elif (
         a2a_task.status
