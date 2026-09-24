@@ -12,16 +12,8 @@ This release introduces advanced skill lifecycle management, expands database an
 * **Evaluation**: Optimize agent execution costs and latency with new evaluation metrics for tracking duration, token consumption, and model call counts. ([2d428ea](https://github.com/google/adk-python/commit/2d428ead3860fbc131de362b485eb15551373665))
 * **Model Support**: Integrate OpenAI reasoning models more effectively with automated request parameter adaptation and precise reasoning token reporting. ([52a2f0f](https://github.com/google/adk-python/commit/52a2f0f09f2910043127042e6ba3dd805d5a1479))
 
-#### Breaking changes
-
-* Ensure path segments do not contain slashes alongside reserved keywords ('apps', 'users', 'sessions', 'artifacts', 'versions') to prevent path validation failures.
-
 <details>
 <summary>All changes</summary>
-
-### ⚠ BREAKING CHANGES
-
-* validate_path_segment now rejects path segments containing slashes alongside reserved segment names ('apps', 'users', 'sessions', 'artifacts', 'versions').
 
 ### Features
 
@@ -88,7 +80,6 @@ This release introduces advanced skill lifecycle management, expands database an
 * coerce integral floats inside list[int] tool parameters ([b1cba29](https://github.com/google/adk-python/commit/b1cba290b2505e5e1c324fc34e4cf53605ccefa7))
 * **compaction:** stop backwards prompt token scan at compaction boundary ([4d9abb5](https://github.com/google/adk-python/commit/4d9abb5840a2f4d4135850cc4f9ee0c1ccf9fd24))
 * complete an A2A task whose run ends without a status message ([9750c4c](https://github.com/google/adk-python/commit/9750c4c4a8658b6d92ccecfe7feecf9967866f8c))
-* concatenate list values in deep_merge_dicts during parallel tool call merge ([6ac2e78](https://github.com/google/adk-python/commit/6ac2e7805b85e2068d3ae1b96635959ebe3f418a)), closes [#5190](https://github.com/google/adk-python/issues/5190)
 * confine agent builder file globs to the configured directory ([896a29a](https://github.com/google/adk-python/commit/896a29a94abfae5387ca4e6f92eb07747f190d5e))
 * **confirmation:** skip confirmation requests authored by other agents before resolving history ([e19ce05](https://github.com/google/adk-python/commit/e19ce0579b849a96df41fb27079d26548978970e))
 * **core:** stop executing code found in the model's private reasoning ([a2a2f66](https://github.com/google/adk-python/commit/a2a2f6656aca4d7fe3606162e807462afa21e2ff))
@@ -101,12 +92,10 @@ This release introduces advanced skill lifecycle management, expands database an
 * fence server-supplied tool description before reaching the model ([a519b6f](https://github.com/google/adk-python/commit/a519b6f6235146d5bc18f19582f8d4360b9adb64))
 * **flows:** hold a tool call that requires confirmation in the framework ([1d0daeb](https://github.com/google/adk-python/commit/1d0daebaf7fbc286d3fad9b03ecf75efa9039d8d))
 * **flows:** keep the streaming flags when after_model_callback replaces a response ([39e4538](https://github.com/google/adk-python/commit/39e4538578cc1c07be7bd201c3cda0e34040a271)), closes [#7035](https://github.com/google/adk-python/issues/7035)
-* **flows:** move before_tool_callback from prepare phase into per-tool execution ([a39ab52](https://github.com/google/adk-python/commit/a39ab52792cbc38cbe2742af803db01853e19b30))
 * **flows:** only hold a tool call when its confirmation hook answers True ([659e28f](https://github.com/google/adk-python/commit/659e28f1a2cd9f9d9ffe2b662527623a2aa1bbc7))
 * **flows:** prune orphaned function calls on interrupted turns ([54274cd](https://github.com/google/adk-python/commit/54274cdeba42a46e4346f48589c84fe2ebcc0da2))
 * **flows:** release a tool thread pool when its event loop closes ([7ae1c9b](https://github.com/google/adk-python/commit/7ae1c9b026c84bf8a65921003f71b0f30c8e3166))
 * forward tool output schema on the LiteLLM path ([fca7b88](https://github.com/google/adk-python/commit/fca7b887fba94e3b328025cd62e6a77830e0edc5)), closes [#6784](https://github.com/google/adk-python/issues/6784)
-* **gcs:** judge a local path by where it lands, not by whether it is absolute ([d15946e](https://github.com/google/adk-python/commit/d15946e974dcc77123ab480ed9810c3b0219c5a0))
 * give each LocalEvalService its own default UserSimulatorProvider ([55d47ae](https://github.com/google/adk-python/commit/55d47aea2ef7a495cb6de2358cd0df9f30c83553))
 * hide run_skill_script when no skill has a script ([d8d9715](https://github.com/google/adk-python/commit/d8d97159c9fa02a3b3bbce9326674964b8b61ed0)), closes [#6281](https://github.com/google/adk-python/issues/6281)
 * honor capability for schema and tools ([e37af14](https://github.com/google/adk-python/commit/e37af1435a7d4424c3d29c6cfd543c46e57a106e)), closes [#6954](https://github.com/google/adk-python/issues/6954)
@@ -121,7 +110,6 @@ This release introduces advanced skill lifecycle management, expands database an
 * mark a workflow's span failed when one of its nodes failed ([dfc4b58](https://github.com/google/adk-python/commit/dfc4b5803f49033227b49e7f53d291299d304148))
 * match a Latin word embedded in unspaced-script text ([13ecc31](https://github.com/google/adk-python/commit/13ecc31aca16ff8d862abcba9ba7974f5fb796fc))
 * match tool response by name instead of assuming first part ([f199858](https://github.com/google/adk-python/commit/f199858e0f62c9e2e2aba81410f39c07eccf8619)), closes [#6603](https://github.com/google/adk-python/issues/6603)
-* **mcp:** keep resolving MCP 1.x by default ([4c63c04](https://github.com/google/adk-python/commit/4c63c0461479fc2cd3e26f73e17efa255c7c3d18))
 * **mcp:** only attach application default credentials over https ([5a018c9](https://github.com/google/adk-python/commit/5a018c9af6a5ec47ef67e95481cd800b36ac1215))
 * **mcp:** rebuild a session the server reports it no longer holds ([86ea33d](https://github.com/google/adk-python/commit/86ea33d7e9f0ca0623351ffa7da76d16913b67fa)), closes [#7060](https://github.com/google/adk-python/issues/7060)
 * **mcp:** report an api key auth scheme that declares no key location ([d7370e1](https://github.com/google/adk-python/commit/d7370e11c47e156435eeb76ba737800489a94a5b))
@@ -152,7 +140,6 @@ This release introduces advanced skill lifecycle management, expands database an
 * reject the reserved segment 'user' as a session_id ([b8de426](https://github.com/google/adk-python/commit/b8de4266d90fb9a6500079d062561cfdd4cf21d6)), closes [#7063](https://github.com/google/adk-python/issues/7063)
 * report an A2A stream that ends before the remote task finishes ([e29ee23](https://github.com/google/adk-python/commit/e29ee231e02ec9e82dc91ee008c8a2798d021f3d)), closes [#6585](https://github.com/google/adk-python/issues/6585)
 * report the event fields a session backend cannot store ([3e1ae9f](https://github.com/google/adk-python/commit/3e1ae9faed934532b9f5015578d1b9731817ce60))
-* request visible thoughts for Claude adaptive thinking ([0e85233](https://github.com/google/adk-python/commit/0e85233fe9ee5c017ca3103cbc09bd39299f6921))
 * require agent authorship before resume-dispatching a function call ([2c61b84](https://github.com/google/adk-python/commit/2c61b8444a600c8d42ffaad36bdc31dfc31d13ed))
 * resolve agent transfers from the caller's declared targets ([1538efe](https://github.com/google/adk-python/commit/1538efe880e88ea264f0b5a9c0f7b799bfd9d131))
 * resolve deepcopy recursion in VertexAiCodeExecutor ([b3fe92b](https://github.com/google/adk-python/commit/b3fe92b38aa281efd083068ec5fc042f1011f1a2)), closes [#1762](https://github.com/google/adk-python/issues/1762)
@@ -178,7 +165,6 @@ This release introduces advanced skill lifecycle management, expands database an
 * StreamingResponseAggregator drops/duplicates function calls in streaming mode ([3cf4ce2](https://github.com/google/adk-python/commit/3cf4ce2b8d6d1523903e32f772f9112e09ac0c74)), closes [#6566](https://github.com/google/adk-python/issues/6566)
 * support openapi basic auth ([f2fe475](https://github.com/google/adk-python/commit/f2fe4759f1648439663a1f3b06957fd362c12a7f)), closes [#5492](https://github.com/google/adk-python/issues/5492)
 * **telemetry:** make ADK importable on OpenTelemetry 1.39 ([8f1323a](https://github.com/google/adk-python/commit/8f1323ae6daf5cc0a7e12f856fd56e5fa8c9c81b))
-* **telemetry:** only drop the OTel event name on Agent Engine ([5bc9e8c](https://github.com/google/adk-python/commit/5bc9e8c93355c14a7b4c996e8d0afd85375fd3f3))
 * **telemetry:** record only the function responses on a merged tool span ([42358b1](https://github.com/google/adk-python/commit/42358b156bd4862c1f86261ed76bf3ca7462fd2b))
 * **tools:** clarify google_search_agent instruction to use built-in grounding ([56d3cae](https://github.com/google/adk-python/commit/56d3caece5229d912faa1dbed7770f695a467dec))
 * **tools:** propagate outer CancelledError in stop_streaming ([b8836bd](https://github.com/google/adk-python/commit/b8836bdb22d75438640ec11edffec2b66bb9a30b))
@@ -222,10 +208,6 @@ This release introduces advanced skill lifecycle management, expands database an
 * **telemetry:** name the real do_not_elide parameter ([c7ae45a](https://github.com/google/adk-python/commit/c7ae45ad1aea4598549aa222021635f698921ea0))
 * **workflow:** index BaseNode unit guide in documentation ([692b40a](https://github.com/google/adk-python/commit/692b40aed6fe0f88c7ffeedbc115f540605ae13e))
 
-
-### Miscellaneous Chores
-
-* release 2.10.0 ([a0eda53](https://github.com/google/adk-python/commit/a0eda5394d32f88becfdfeca97b6859a6dec16a3))
 
 </details>
 
