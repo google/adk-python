@@ -3,17 +3,33 @@
 ## [2.10.0](https://github.com/google/adk-python/compare/v2.9.2...v2.10.0) (2026-09-24)
 
 
+### Highlights
+
+This release introduces advanced skill lifecycle management, expands database and model integration support, and brings richer efficiency metrics to agent evaluation.
+
+* **Skills**: Control resource usage and tool persistence dynamically using new ephemeral lifecycles and active skill limits. ([43b73e4](https://github.com/google/adk-python/commit/43b73e4fc0920c08693bcec3985c832c7d9870b0))
+* **Database Integrations**: Perform high-performance vector and hybrid searches seamlessly within your agent flows with the new MongoDB toolset. ([0961ced](https://github.com/google/adk-python/commit/0961ced3e3dd92056ecf10c7b10aa736eead08f1))
+* **Evaluation**: Optimize agent execution costs and latency with new evaluation metrics for tracking duration, token consumption, and model call counts. ([2d428ea](https://github.com/google/adk-python/commit/2d428ead3860fbc131de362b485eb15551373665))
+* **Model Support**: Integrate OpenAI reasoning models more effectively with automated request parameter adaptation and precise reasoning token reporting. ([52a2f0f](https://github.com/google/adk-python/commit/52a2f0f09f2910043127042e6ba3dd805d5a1479))
+
+#### Breaking changes
+
+* Ensure path segments do not contain slashes alongside reserved keywords ('apps', 'users', 'sessions', 'artifacts', 'versions') to prevent path validation failures.
+
+<details>
+<summary>All changes</summary>
+
 ### ⚠ BREAKING CHANGES
 
 * validate_path_segment now rejects path segments containing slashes alongside reserved segment names ('apps', 'users', 'sessions', 'artifacts', 'versions').
 
 ### Features
 
-* Add a duration efficiency metric to ADK eval ([49e7264](https://github.com/google/adk-python/commit/49e7264bf6a72a6b42813300a2192e0898ff5b23))
+* add a duration efficiency metric to ADK eval ([49e7264](https://github.com/google/adk-python/commit/49e7264bf6a72a6b42813300a2192e0898ff5b23))
 * add an EPHEMERAL skill lifecycle that lasts one turn ([f938abd](https://github.com/google/adk-python/commit/f938abd8beb213774eda069dd2a315fe998c399e))
 * add an opt-in unload_skill tool to SkillToolset ([ce53a36](https://github.com/google/adk-python/commit/ce53a36c0a221542afbd22dc4f3d6f5e3c8fecd7))
 * add dev-only deploy endpoints for Agent Runtime, Cloud Run, and GKE ([1235104](https://github.com/google/adk-python/commit/1235104b6598eb3a6b92abc5d07c52edb62dee5b))
-* Add informational efficiency metrics (tokens, calls) to ADK eval ([2d428ea](https://github.com/google/adk-python/commit/2d428ead3860fbc131de362b485eb15551373665))
+* add informational efficiency metrics (tokens, calls) to ADK eval ([2d428ea](https://github.com/google/adk-python/commit/2d428ead3860fbc131de362b485eb15551373665))
 * add MongoDB toolset with vector and hybrid search ([0961ced](https://github.com/google/adk-python/commit/0961ced3e3dd92056ecf10c7b10aa736eead08f1))
 * add name-based request processor helpers to BaseLlmFlow ([fd335cd](https://github.com/google/adk-python/commit/fd335cda08be4764c2ef3570d172cf0fcd468ef7))
 * add on_error handler to skill listing functions ([9b220e7](https://github.com/google/adk-python/commit/9b220e7546858fecfc1bb94430d8e2af9b50f78c))
@@ -46,7 +62,7 @@
 * **skills:** add SkillDiscoveryMode to control how the skill catalog is disclosed ([3d3c1d9](https://github.com/google/adk-python/commit/3d3c1d90c89128d721569f54115be2b1d0ac5a74)), closes [#7092](https://github.com/google/adk-python/issues/7092)
 * stamp the Agent Registry URN as gen_ai.main_agent.id ([5c3f64e](https://github.com/google/adk-python/commit/5c3f64e08c21912194acf71d0992e59f897c3229))
 * stream partial function-call arguments across model adapters ([f449780](https://github.com/google/adk-python/commit/f44978013378ecba9e3cfc0c955b7890ceb7951b))
-* **telemetry:** Allow per-feature enabling of experimental telemetry ([0add163](https://github.com/google/adk-python/commit/0add163161099f435ce32bf3ba35d4502c80efd7))
+* **telemetry:** allow per-feature enabling of experimental telemetry ([0add163](https://github.com/google/adk-python/commit/0add163161099f435ce32bf3ba35d4502c80efd7))
 * **tools:** add `behavior` field to control Live non-blocking function calls ([6189b2e](https://github.com/google/adk-python/commit/6189b2e03ab7979950bca90755b0d628822e97d7))
 * when using interactions api with deferred tier, wait on an interaction operation ([b011fb2](https://github.com/google/adk-python/commit/b011fb21bd50ac006273d71dba8c32f1123a5519))
 * **workflow:** filter rewound invocations during workflow rehydration ([ab4dba6](https://github.com/google/adk-python/commit/ab4dba6ef14c1deed57f9759a4cb6e089a94de67))
@@ -75,7 +91,6 @@
 * **compaction:** stop backwards prompt token scan at compaction boundary ([4d9abb5](https://github.com/google/adk-python/commit/4d9abb5840a2f4d4135850cc4f9ee0c1ccf9fd24))
 * complete an A2A task whose run ends without a status message ([9750c4c](https://github.com/google/adk-python/commit/9750c4c4a8658b6d92ccecfe7feecf9967866f8c))
 * concatenate list values in deep_merge_dicts during parallel tool call merge ([6ac2e78](https://github.com/google/adk-python/commit/6ac2e7805b85e2068d3ae1b96635959ebe3f418a)), closes [#5190](https://github.com/google/adk-python/issues/5190)
-* concatenate list values in deep_merge_dicts during parallel tool call merge ([7b246e0](https://github.com/google/adk-python/commit/7b246e0166b77dbeda83e94d622de4ca92c3539e)), closes [#5190](https://github.com/google/adk-python/issues/5190)
 * confine agent builder file globs to the configured directory ([896a29a](https://github.com/google/adk-python/commit/896a29a94abfae5387ca4e6f92eb07747f190d5e))
 * **confirmation:** skip confirmation requests authored by other agents before resolving history ([e19ce05](https://github.com/google/adk-python/commit/e19ce0579b849a96df41fb27079d26548978970e))
 * **context:** prevent deepcopy of active event loop in _AbortState ([5791e11](https://github.com/google/adk-python/commit/5791e119c8ae3582dea0dca939c5c691dd79108b))
@@ -83,7 +98,7 @@
 * correct get_bigtable_data_client return annotation ([c673c59](https://github.com/google/adk-python/commit/c673c59c979822128ecdad8c63c378ffc1a9600e))
 * do not match dollar-brace or escaped patterns in instructions ([0caecd2](https://github.com/google/adk-python/commit/0caecd236f95131da625a3bf1de282130f6aa437)), closes [#5706](https://github.com/google/adk-python/issues/5706)
 * **eval:** ignore UI-only InvocationEvent fields on eval case save ([a4a50a4](https://github.com/google/adk-python/commit/a4a50a4d5bfe54e4ebe5173464b74bb4c2c0c055))
-* **eval:** Pin the specific version for safety_v1 ([997f408](https://github.com/google/adk-python/commit/997f40899042e0f00be83929bcf094fddded9355))
+* **eval:** pin the specific version for safety_v1 ([997f408](https://github.com/google/adk-python/commit/997f40899042e0f00be83929bcf094fddded9355))
 * **events:** restore _BranchPath.parent helper property ([3f4bb8f](https://github.com/google/adk-python/commit/3f4bb8fa069955db0ac428df991a724d9ff9e1ea))
 * exclude the local .adk folder from deployed agent images ([c409bd3](https://github.com/google/adk-python/commit/c409bd334b821c779fecb06cbdfcb4fa97a3b9f4))
 * extract URL fragment key-value pairs as query params ([0cfe43b](https://github.com/google/adk-python/commit/0cfe43b657ead31fe463866f2a348b7d7ce38119))
@@ -138,7 +153,7 @@
 * raise when evaluate or evaluate_eval_set evaluates zero cases ([9dbc2ae](https://github.com/google/adk-python/commit/9dbc2aebd7a0ad88183d166c19398bbbab93d507)), closes [#6951](https://github.com/google/adk-python/issues/6951)
 * redact signed URIs and HTTP options from errors and logs ([f425287](https://github.com/google/adk-python/commit/f42528732e73b5f13dc633e1558f0313099b0db9))
 * reject num_samples=0 in JudgeModelOptions at construction time ([85e0868](https://github.com/google/adk-python/commit/85e08686f8310e00b2b031a042db86405920b4b2))
-* reject parallelism &lt; 1 in LocalEvalService instead of hanging ([9beb524](https://github.com/google/adk-python/commit/9beb52416d6b0c377e58e7e84bdfcd7e88eea415))
+* reject parallelism < 1 in LocalEvalService instead of hanging ([9beb524](https://github.com/google/adk-python/commit/9beb52416d6b0c377e58e7e84bdfcd7e88eea415))
 * reject reserved path segments with slashes in validate_path_segment ([5e29872](https://github.com/google/adk-python/commit/5e29872b1c29850929e126191af1bd2d8a7f94d1)), closes [#6973](https://github.com/google/adk-python/issues/6973)
 * reject the reserved segment 'user' as a session_id ([b8de426](https://github.com/google/adk-python/commit/b8de4266d90fb9a6500079d062561cfdd4cf21d6)), closes [#7063](https://github.com/google/adk-python/issues/7063)
 * report an A2A stream that ends before the remote task finishes ([e29ee23](https://github.com/google/adk-python/commit/e29ee231e02ec9e82dc91ee008c8a2798d021f3d)), closes [#6585](https://github.com/google/adk-python/issues/6585)
@@ -221,6 +236,8 @@
 ### Miscellaneous Chores
 
 * release 2.10.0 ([a0eda53](https://github.com/google/adk-python/commit/a0eda5394d32f88becfdfeca97b6859a6dec16a3))
+
+</details>
 
 ## [2.9.2](https://github.com/google/adk-python/compare/v2.9.1...v2.9.2) (2026-09-18)
 
