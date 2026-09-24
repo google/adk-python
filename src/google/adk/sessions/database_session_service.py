@@ -382,6 +382,14 @@ class DatabaseSessionService(BaseSessionService):
         elif url.get_backend_name() != _SQLITE_DIALECT:
           engine_kwargs.setdefault("pool_pre_ping", True)
 
+        poolclass = engine_kwargs.get("poolclass")
+        if isinstance(poolclass, type) and issubclass(poolclass, StaticPool):
+          # When using StaticPool, exactly one underlying DBAPI connection is
+          # shared across all sessions. Disabling automatic rollback on return
+          # prevents closing a completed session from rolling back uncommitted
+          # transactions concurrently in flight on the same shared connection.
+          engine_kwargs.setdefault("pool_reset_on_return", None)
+
         db_engine = create_async_engine(db_url, **engine_kwargs)
         if db_engine.dialect.name == _SQLITE_DIALECT:
           # Set sqlite pragma to enable foreign keys constraints
