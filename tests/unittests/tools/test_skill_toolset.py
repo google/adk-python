@@ -231,6 +231,7 @@ async def test_clone_with_updated_skills_keeps_filter_and_prefix(
   """The clone exposes the same tools, under the same names, as the original."""
   mock_skill2 = mock.create_autospec(models.Skill, instance=True)
   mock_skill2.name = "skill2"
+  mock_skill2.resources = models.Resources()
 
   toolset = skill_toolset.SkillToolset(
       [mock_skill1],
@@ -262,7 +263,7 @@ async def test_clone_with_updated_skills_keeps_discovery_mode(
       discovery_mode=skill_toolset.SkillDiscoveryMode.EAGER,
   )
 
-  new_toolset = toolset.clone_with_updated_skills([mock_skill2])
+  new_toolset = toolset.clone_with_updated_skills([mock_skill1, mock_skill2])
 
   original_names = [
       t.name for t in await toolset.get_tools(tool_context_instance)
@@ -3492,6 +3493,116 @@ async def test_get_tools_keeps_run_skill_script_without_context(mock_skill1):
 
 
 @pytest.mark.asyncio
+async def test_get_tools_hides_run_skill_script_when_no_skill_has_scripts(
+    mock_skill2,
+):
+  """Every call would return SCRIPT_NOT_FOUND, so drop the tool."""
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill2], code_executor=_make_mock_executor()
+  )
+
+  tools = await toolset.get_tools(
+      _make_readonly_context(mock.MagicMock(spec=[]))
+  )
+
+  assert not any(isinstance(t, skill_toolset.RunSkillScriptTool) for t in tools)
+
+
+@pytest.mark.asyncio
+async def test_get_tools_keeps_run_skill_script_when_one_skill_has_scripts(
+    mock_skill1, mock_skill2
+):
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill2, mock_skill1], code_executor=_make_mock_executor()
+  )
+
+  tools = await toolset.get_tools(
+      _make_readonly_context(mock.MagicMock(spec=[]))
+  )
+
+  assert any(isinstance(t, skill_toolset.RunSkillScriptTool) for t in tools)
+
+
+@pytest.mark.asyncio
+async def test_get_tools_keeps_run_skill_script_with_registry(mock_skill2):
+  """A registry skill's scripts are unknown until it is fetched."""
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill2],
+      registry=mock.create_autospec(skill_toolset.SkillRegistry, instance=True),
+      code_executor=_make_mock_executor(),
+  )
+
+  tools = await toolset.get_tools(
+      _make_readonly_context(mock.MagicMock(spec=[]))
+  )
+
+  assert any(isinstance(t, skill_toolset.RunSkillScriptTool) for t in tools)
+
+
+_CONTEXTS_WITHOUT_SESSION = {
+    "no_context": lambda: None,
+    "no_invocation_context": lambda: mock.create_autospec(
+        ReadonlyContext, instance=True, spec_set=True
+    ),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "make_context",
+    _CONTEXTS_WITHOUT_SESSION.values(),
+    ids=_CONTEXTS_WITHOUT_SESSION.keys(),
+)
+async def test_get_tools_keeps_run_skill_script_without_session(
+    mock_skill2, make_context
+):
+  """A subclass may need session state to list its skills, so keep the tool."""
+  toolset = skill_toolset.SkillToolset([mock_skill2])
+
+  tools = await toolset.get_tools(make_context())
+
+  assert any(isinstance(t, skill_toolset.RunSkillScriptTool) for t in tools)
+
+
+@pytest.mark.asyncio
+async def test_get_tools_checks_scripts_of_listed_skills(
+    mock_skill1, mock_skill2
+):
+  """Subclasses that rescan or filter skills override `_list_skills`."""
+
+  class _RescanningToolset(skill_toolset.SkillToolset):
+
+    def _list_skills(self):
+      return [mock_skill1]
+
+  toolset = _RescanningToolset(
+      [mock_skill2], code_executor=_make_mock_executor()
+  )
+
+  tools = await toolset.get_tools(
+      _make_readonly_context(mock.MagicMock(spec=[]))
+  )
+
+  assert any(isinstance(t, skill_toolset.RunSkillScriptTool) for t in tools)
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_drops_script_guidance_without_scripts(
+    mock_skill2,
+):
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill2], code_executor=_make_mock_executor()
+  )
+  ctx = _make_tool_context_with_agent(agent=mock.MagicMock(spec=[]))
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(tool_context=ctx, llm_request=llm_req)
+
+  instruction = llm_req.append_instructions.call_args[0][0][0]
+  assert "run_skill_script" not in instruction
+
+
+@pytest.mark.asyncio
 async def test_process_llm_request_drops_script_guidance_without_backend(
     mock_skill1,
 ):
@@ -4325,6 +4436,7 @@ def _lifecycle_skill(name, additional_tools=None):
   skill.name = name
   skill.instructions = f"instructions for {name}"
   skill.frontmatter = frontmatter
+  skill.resources = models.Resources()
   skill._uri = None
   return skill
 

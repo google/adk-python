@@ -174,11 +174,12 @@ def _find_unresolved_task_delegations(
   current turn's scope would hide the coordinator's own FC from a
   prior turn.  Author + tool-name filtering is sufficient.
   """
+  from ..events._rewind_events import _apply_rewinds
   from ..tools.agent_tool import _TaskAgentTool
 
   fc_by_id: dict[str, types.FunctionCall] = {}
   fr_ids: set[str] = set()
-  for event in session.events:
+  for event in _apply_rewinds(session.events):
     if event.author != owner and event.author != 'user':
       continue
     if not event.content or not event.content.parts:
@@ -293,16 +294,13 @@ def prepare_llm_agent_context(agent: LlmAgent, ctx: Context) -> Context:
   if agent.mode != 'single_turn':
     return ctx
 
-  ic = ctx._invocation_context.model_copy()
+  ic = ctx.get_invocation_context()
   ic._event_queue = ctx._invocation_context._event_queue
-  ic.isolation_scope = ctx.isolation_scope
   agent_ctx = Context(
       invocation_context=ic,
-      node_path=ctx.node_path,
       run_id=ctx.run_id,
       resume_inputs=ctx.resume_inputs,
   )
-  agent_ctx.isolation_scope = ctx.isolation_scope
 
   # Share the parent's `session` object (don't copy it): a mid-invocation
   # write such as compaction must be visible to later nodes, or the DB
@@ -416,14 +414,6 @@ async def run_llm_agent_as_node(
 
   ic = agent_ctx.get_invocation_context()
   update: dict[str, object] = {'agent': agent}
-  # thread the agent's isolation_scope into the
-  # InvocationContext so the content processor can filter session
-  # events to this agent's scope only.  Only mode=task and
-  # mode=single_turn agents need scope-based filtering — chat agents
-  # see the full conversation.
-  _agent_iso = getattr(agent_ctx, 'isolation_scope', None)
-  if agent.mode in ('task', 'single_turn') and _agent_iso:
-    update['isolation_scope'] = _agent_iso
   # Override ``user_content`` for task mode with this node's input.
   # The content-builder uses it as the fallback first user turn when
   # there is no originating delegation FC (the workflow-node task

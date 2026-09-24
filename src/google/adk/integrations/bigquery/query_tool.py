@@ -273,10 +273,10 @@ def _execute_sql(
               labels=bq_job_labels,
           ),
       )
-      if (
-          dry_run_query_job.statement_type != "SELECT"
-          and dry_run_query_job.destination
-          and dry_run_query_job.destination.dataset_id != bq_session_dataset_id
+      # A write runs only where the dry run places it in the session dataset.
+      if dry_run_query_job.statement_type != "SELECT" and not (
+          dry_run_query_job.destination
+          and dry_run_query_job.destination.dataset_id == bq_session_dataset_id
       ):
         return {
             "status": "ERROR",

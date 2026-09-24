@@ -112,6 +112,31 @@ def test_has_no_unit_guide_tag_ignores_a_prose_mention(
   assert not check_new_py_files.has_no_unit_guide_tag('no_unit_guide=x')
 
 
+def test_has_no_unit_guide_tag_requires_a_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """A waiver with no reason waives nothing, in either channel.
+
+  The reason is the only record of the decision, and a bare tag waived every
+  file the change added while leaving nothing for a reviewer to weigh.
+  """
+  monkeypatch.delenv('NO_UNIT_GUIDE', raising=False)
+  monkeypatch.delenv('SKIP_UNIT_GUIDE', raising=False)
+
+  assert not check_new_py_files.has_no_unit_guide_tag('body\nNO_UNIT_GUIDE=\n')
+  assert not check_new_py_files.has_no_unit_guide_tag(
+      'body\nSKIP_UNIT_GUIDE=   \n'
+  )
+  # A reason still waives, with or without space after the '='.
+  assert check_new_py_files.has_no_unit_guide_tag('NO_UNIT_GUIDE=a reason')
+  assert check_new_py_files.has_no_unit_guide_tag('NO_UNIT_GUIDE= a reason')
+
+  monkeypatch.setenv('NO_UNIT_GUIDE', '   ')
+  assert not check_new_py_files.has_no_unit_guide_tag('')
+  monkeypatch.setenv('NO_UNIT_GUIDE', 'a reason')
+  assert check_new_py_files.has_no_unit_guide_tag('')
+
+
 def test_run_turns_a_crash_into_a_setup_error(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1469,3 +1494,94 @@ def test_real_git_reports_a_staged_addition(tmp_path: pathlib.Path) -> None:
   assert check_new_py_files.get_vcs_added_files(str(repo)) == {
       'src/google/adk/agents/_added.py'
   }
+
+
+def _stage_an_unguided_module(repo: pathlib.Path) -> None:
+  """Stages a module that needs a guide and does not have one."""
+  (repo / 'src' / 'google' / 'adk' / 'agents' / '_brand_new.py').write_text(
+      '', encoding='utf-8'
+  )
+  _git(repo, 'add', '-A')
+
+
+def test_real_git_previous_commits_waiver_does_not_cover_staged_addition(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """A waiver belongs to the commit carrying it, not to the next one.
+
+  Dropping COMMIT_EDITMSG closed one route for a stale waiver and left another
+  open: at pre-commit time HEAD is the previous commit, so reading its message
+  waived whatever was staged on top of it.
+
+  The assertion is the exit code rather than get_commit_message, because any
+  later channel reaching has_no_unit_guide_tag revives the same user-visible
+  defect while that function still returns ''.
+  """
+  monkeypatch.delenv('NO_UNIT_GUIDE', raising=False)
+  monkeypatch.delenv('SKIP_UNIT_GUIDE', raising=False)
+  repo = _git_repo_with_a_guided_module(tmp_path)
+  _git(repo, 'commit', '--amend', '-qm', 'base\n\nNO_UNIT_GUIDE=an old reason')
+  _stage_an_unguided_module(repo)
+
+  assert check_new_py_files.main(['--new-dir', str(repo)]) == 1
+
+
+def test_real_git_a_waiver_in_the_committed_change_still_applies(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Control for the test above: nothing staged, so HEAD is the change.
+
+  Continuous integration reaches this path, and a contributor's waiver has to
+  keep working there. Without this, the test above would also pass if waiving
+  stopped working everywhere.
+  """
+  monkeypatch.delenv('NO_UNIT_GUIDE', raising=False)
+  monkeypatch.delenv('SKIP_UNIT_GUIDE', raising=False)
+  repo = _git_repo_with_a_guided_module(tmp_path)
+  _stage_an_unguided_module(repo)
+  _git(repo, 'commit', '-qm', 'add a module\n\nNO_UNIT_GUIDE=a stated reason')
+
+  assert check_new_py_files.main(['--new-dir', str(repo)]) == 0
+
+
+def test_real_git_the_same_addition_without_a_waiver_is_flagged(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Second control: the committed change passes only on its own tag.
+
+  This fails if the guide rule stops firing on the file the two tests above
+  rely on, which would otherwise let either of them pass for the wrong reason.
+  """
+  monkeypatch.delenv('NO_UNIT_GUIDE', raising=False)
+  monkeypatch.delenv('SKIP_UNIT_GUIDE', raising=False)
+  repo = _git_repo_with_a_guided_module(tmp_path)
+  _stage_an_unguided_module(repo)
+  _git(repo, 'commit', '-qm', 'add a module')
+
+  assert check_new_py_files.main(['--new-dir', str(repo)]) == 1
+
+
+def test_real_git_an_unreadable_index_is_indeterminate_not_a_pass(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """A staged addition nobody could read is not a clean bill of health.
+
+  Treating an unreadable index as "nothing is staged" sent the scan to
+  HEAD~1..HEAD, which reports what the previous commit added and passes the
+  staged file unexamined.
+
+  The second commit matters: with only one, HEAD~1 does not resolve and the
+  fallback fails on its own, so the test would pass whether or not the index
+  was ever consulted.
+  """
+  monkeypatch.delenv('NO_UNIT_GUIDE', raising=False)
+  monkeypatch.delenv('SKIP_UNIT_GUIDE', raising=False)
+  repo = _git_repo_with_a_guided_module(tmp_path)
+  existing = repo / 'src' / 'google' / 'adk' / 'agents' / '_existing.py'
+  existing.write_text('# edited\n', encoding='utf-8')
+  _git(repo, 'add', '-A')
+  _git(repo, 'commit', '-qm', 'a second commit, so that HEAD~1 resolves')
+  _stage_an_unguided_module(repo)
+  (repo / '.git' / 'index').write_text('not an index', encoding='utf-8')
+
+  assert check_new_py_files.main(['--new-dir', str(repo)]) == 3
