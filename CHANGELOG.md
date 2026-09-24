@@ -150,6 +150,7 @@ This release introduces advanced skill lifecycle management, expands database an
 * **samples:** approve built-in file tools in the antigravity_agent sample ([2c465e5](https://github.com/google/adk-python/commit/2c465e5572859685d1a090e70e6095a60017f1a0))
 * **sessions:** avoid redundant temp state processing in append_event and exclude temp keys from rewind delta ([52b247e](https://github.com/google/adk-python/commit/52b247eccabb8b2f16bbc795fe8a35670aa2f371))
 * **sessions:** avoid runtime index drop and guard concurrent index creation ([cd6dee0](https://github.com/google/adk-python/commit/cd6dee0503f5d5495125e5b023e64230f8da4b7b))
+* **sessions:** disable pool reset on return for StaticPool in DatabaseSessionService ([8ff50af](https://github.com/google/adk-python/commit/8ff50af7f0135b758b84e1c6c4405443f3464f5a))
 * **sessions:** report the redacted database URL when migration cannot connect ([1579927](https://github.com/google/adk-python/commit/1579927e5eb95593d5b0a56f1e272fec1f9dc892))
 * **sessions:** restrict state schema validation bypass to recognized scope prefixes ([9f8db53](https://github.com/google/adk-python/commit/9f8db53fe278e65abb6a8366e80ff742ccc28f48))
 * **sessions:** stop get_user_state aliasing stored user state ([dd96b81](https://github.com/google/adk-python/commit/dd96b811ea1abd2febfac781ad4f4b43efd8e36f))
