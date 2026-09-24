@@ -433,17 +433,38 @@ class CredentialManager:
       return False
 
     flows = auth_scheme.flows
+    scopes = (
+        {scope: "" for scope in metadata.scopes_supported}
+        if metadata.scopes_supported
+        else {}
+    )
 
     if flows.implicit and not flows.implicit.authorizationUrl:
       flows.implicit.authorizationUrl = metadata.authorization_endpoint
+    if flows.implicit and scopes and not flows.implicit.scopes:
+      flows.implicit.scopes = scopes
     if flows.password and not flows.password.tokenUrl:
       flows.password.tokenUrl = metadata.token_endpoint
+    if flows.password and scopes and not flows.password.scopes:
+      flows.password.scopes = scopes
     if flows.clientCredentials and not flows.clientCredentials.tokenUrl:
       flows.clientCredentials.tokenUrl = metadata.token_endpoint
+    if (
+        flows.clientCredentials
+        and scopes
+        and not flows.clientCredentials.scopes
+    ):
+      flows.clientCredentials.scopes = scopes
     if flows.authorizationCode and not flows.authorizationCode.authorizationUrl:
       flows.authorizationCode.authorizationUrl = metadata.authorization_endpoint
     if flows.authorizationCode and not flows.authorizationCode.tokenUrl:
       flows.authorizationCode.tokenUrl = metadata.token_endpoint
+    if (
+        flows.authorizationCode
+        and scopes
+        and not flows.authorizationCode.scopes
+    ):
+      flows.authorizationCode.scopes = scopes
     return True
 
   def _missing_oauth_info(self) -> bool:
