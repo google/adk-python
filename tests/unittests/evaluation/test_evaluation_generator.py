@@ -104,7 +104,12 @@ class TestConvertEventsToEvalInvocation:
     assert invocation.invocation_id == "inv1"
     assert invocation.user_content.parts[0].text == "Hello"
     assert invocation.final_response.parts[0].text == "Hi there!"
-    assert len(invocation.intermediate_data.invocation_events) == 0
+    # The final-response event is kept so that its efficiency metadata
+    # survives, but its text is dropped to avoid duplicating the final
+    # response for judges that read the intermediate events.
+    events = invocation.intermediate_data.invocation_events
+    assert len(events) == 1
+    assert events[0].content is None
 
   def test_convert_keeps_text_response_over_trailing_audio(
       self,
@@ -132,8 +137,10 @@ class TestConvertEventsToEvalInvocation:
     invocation = invocations[0]
     assert invocation.final_response.parts[0].text == "Hello there."
     intermediate = invocation.intermediate_data.invocation_events
-    assert len(intermediate) == 1
-    assert intermediate[0].content.parts[0].inline_data.data == b"fake-audio"
+    assert len(intermediate) == 2
+    # The text event is the final response: kept in order, without its text.
+    assert intermediate[0].content is None
+    assert intermediate[1].content.parts[0].inline_data.data == b"fake-audio"
 
   def test_convert_single_turn_tool_call(
       self,
@@ -191,8 +198,10 @@ class TestConvertEventsToEvalInvocation:
     invocation = invocations[0]
     assert invocation.final_response.parts[0].text == "It is sunny in SF."
     events = invocation.intermediate_data.invocation_events
-    assert len(events) == 1
+    assert len(events) == 2
     assert events[0].content.parts[0].function_call.name == "get_weather"
+    # The final-response event is kept, without its text.
+    assert events[1].content is None
 
   def test_multi_turn(
       self,
@@ -266,11 +275,13 @@ class TestConvertEventsToEvalInvocation:
     assert invocation.final_response.parts[0].text == "All done."
     events = invocation.intermediate_data.invocation_events
 
-    assert len(events) == 4
+    assert len(events) == 5
     assert events[0].author == "root_agent"
     assert events[1].author == "sub_agent_1"
     assert events[2].author == "sub_agent_1"
     assert events[3].author == "sub_agent_2"
+    # The final-response event is kept, without its text.
+    assert events[4].content is None
 
   def test_convert_multi_agent_final_responses(
       self,
@@ -289,10 +300,13 @@ class TestConvertEventsToEvalInvocation:
     assert invocation.final_response.parts[0].text == "Second response"
 
     intermediate_events = invocation.intermediate_data.invocation_events
-    # agent1 is included because it is not the final_event (which is agent2)
-    assert len(intermediate_events) == 1
+    assert len(intermediate_events) == 2
+    # agent1 keeps its content because it is not the final event.
     assert intermediate_events[0].author == "agent1"
     assert intermediate_events[0].content.parts[0].text == "First response"
+    # agent2 is the final event: kept for its metadata, without its text.
+    assert intermediate_events[1].author == "agent2"
+    assert intermediate_events[1].content is None
 
   def test_convert_preserves_grounding_metadata_from_final_response(
       self,
@@ -2080,3 +2094,101 @@ def test_generate_responses_from_session_reads_non_ascii_with_non_utf8_default(
 
   assert results[0][0]["query"] == non_ascii_text
   assert results[0][0]["response"] == "response " + non_ascii_text
+
+
+def test_convert_events_records_invocation_events_including_final_response():
+  """Invocation events capture metadata (usage/model) for efficiency.
+
+  This includes the final response event, whose metadata is preserved on
+  InvocationEvent while its text content is omitted to prevent duplication.
+  """
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.Content(parts=[types.Part(text="Hi")], role="user"),
+          timestamp=1000.0,
+      ),
+      Event(
+          invocation_id="inv1",
+          author="agent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(name="tool1", args={})
+                  )
+              ]
+          ),
+          model_version="gemini-2.5-flash",
+          usage_metadata=types.GenerateContentResponseUsageMetadata(
+              prompt_token_count=10,
+              candidates_token_count=5,
+              total_token_count=15,
+          ),
+      ),
+      # Tool-result event: framework produced, no model usage metadata.
+      Event(
+          invocation_id="inv1",
+          author="agent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name="tool1", response={"result": "ok"}
+                      )
+                  )
+              ]
+          ),
+      ),
+      # Final response event: metadata is captured on InvocationEvent even
+      # though plain text content is omitted from intermediate events.
+      Event(
+          invocation_id="inv1",
+          author="agent",
+          content=types.Content(parts=[types.Part(text="All done.")]),
+          model_version="gemini-2.5-flash",
+          usage_metadata=types.GenerateContentResponseUsageMetadata(
+              prompt_token_count=20,
+              candidates_token_count=8,
+              total_token_count=28,
+          ),
+      ),
+  ]
+
+  invocations = EvaluationGenerator.convert_events_to_eval_invocations(events)
+
+  assert len(invocations) == 1
+  invocation = invocations[0]
+  assert invocation.final_response == types.Content(
+      parts=[types.Part(text="All done.")]
+  )
+  invocation_events = invocation.intermediate_data.invocation_events
+  assert len(invocation_events) == 3
+  # First event: function call
+  assert invocation_events[0].content is not None
+  assert invocation_events[0].usage_metadata.total_token_count == 15
+  assert invocation_events[0].model_version == "gemini-2.5-flash"
+  # Second event: tool response
+  assert invocation_events[1].content is not None
+  assert invocation_events[1].usage_metadata is None
+  # Third event: final response (content omitted to prevent judge duplication)
+  assert invocation_events[2].content is None
+  assert invocation_events[2].usage_metadata.total_token_count == 28
+  assert invocation_events[2].model_version == "gemini-2.5-flash"
+
+
+def test_convert_events_empty_invocation_events_when_no_agent_events():
+  """invocation_events is empty for an invocation with no agent events."""
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.Content(parts=[types.Part(text="Hi")], role="user"),
+          timestamp=1000.0,
+      ),
+  ]
+
+  invocations = EvaluationGenerator.convert_events_to_eval_invocations(events)
+
+  assert len(invocations) == 1
+  assert invocations[0].intermediate_data.invocation_events == []

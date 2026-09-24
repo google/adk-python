@@ -2761,6 +2761,32 @@ def test_list_metrics_info(builder_test_client):
     assert "metricValueInfo" in metric
 
 
+def test_list_metrics_info_omits_metrics_that_need_no_threshold(
+    builder_test_client,
+):
+  """Always-on informational metrics are not offered for threshold selection.
+
+  This surface asks the user to pick metrics and set a threshold for each, and
+  bounds the threshold control by the metric's value interval. Metrics that
+  need no threshold have neither, so listing them leaves consumers with nothing
+  to render.
+  """
+  response = builder_test_client.get("/dev/apps/test_app/metrics-info")
+
+  assert response.status_code == 200
+  listed = [metric["metricName"] for metric in response.json()["metricsInfo"]]
+  assert "tool_trajectory_avg_score" in listed
+  for informational in (
+      "tool_call_count_v1",
+      "inference_call_count_v1",
+      "token_usage_v1",
+  ):
+    assert informational not in listed
+  # Everything that is listed can be rendered as a bounded threshold control.
+  for metric in response.json()["metricsInfo"]:
+    assert metric["metricValueInfo"]["interval"]
+
+
 def test_debug_trace(test_app):
   """Test the debug trace endpoint."""
   # This test will likely return 404 since we haven't set up trace data,

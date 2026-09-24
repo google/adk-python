@@ -75,6 +75,14 @@ class InvocationEvent(EvalBaseModel):
   grounding_metadata: Optional[genai_types.GroundingMetadata] = None
   """Grounding metadata emitted with the event."""
 
+  usage_metadata: Optional[genai_types.GenerateContentResponseUsageMetadata] = (
+      None
+  )
+  """Token usage reported by the model for this event."""
+
+  model_version: Optional[str] = None
+  """The version/name of the model that served this call."""
+
 
 class InvocationEvents(EvalBaseModel):
   """A container for events that occur during the course of an invocation."""
@@ -277,3 +285,16 @@ def get_all_tool_calls_with_responses(
     tool_call_and_responses.append((tool_call, response))
 
   return tool_call_and_responses
+
+
+def get_all_usage_metadata(
+    invocation: Invocation,
+) -> list[genai_types.GenerateContentResponseUsageMetadata]:
+  """Returns the usage metadata for every invocation event that reported it."""
+  if not isinstance(invocation.intermediate_data, InvocationEvents):
+    return []
+  return [
+      event.usage_metadata
+      for event in invocation.intermediate_data.invocation_events
+      if event.usage_metadata is not None
+  ]

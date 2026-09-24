@@ -1016,25 +1016,21 @@ class EvaluationGenerator:
 
       invocation_events = []
       for e in events_to_add:
-        # Keep the final event only when it carries tool calls (so the judge
-        # still sees the function call) or grounding metadata; every other
-        # event is always included.
-        if (
-            final_event is not None
-            and e is final_event
-            and not e.get_function_calls()
-            and not e.grounding_metadata
-        ):
-          continue
         invocation_events.append(
             InvocationEvent(
                 author=e.author,
+                # The final response's text is already on
+                # `Invocation.final_response`, so repeating it here would
+                # double-count it. Function calls stay: `get_all_tool_calls()`
+                # reads them from here.
                 content=(
                     e.content
                     if e is not final_event or e.get_function_calls()
                     else None
                 ),
                 grounding_metadata=e.grounding_metadata,
+                usage_metadata=e.usage_metadata,
+                model_version=e.model_version,
             )
         )
       invocations.append(
