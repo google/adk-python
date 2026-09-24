@@ -54,6 +54,8 @@ from google.api_core.exceptions import InvalidArgument
 from google.genai import types
 from pydantic import BaseModel
 import pytest
+from starlette.applications import Starlette
+from starlette.routing import Mount
 
 # Configure logging to help diagnose server startup issues
 logging.basicConfig(
@@ -5227,6 +5229,61 @@ def test_agent_run_sse_deferred_without_streaming_is_allowed(
   response = test_app.post("/run_sse", json=payload)
 
   assert response.status_code == 200
+
+
+def test_runtime_config_endpoint_shadows_static_file(tmp_path):
+  """The in-memory config must win over the file still shipped in the package.
+
+  ApiServer registers this route before mounting StaticFiles at "/dev-ui/".
+  Starlette matches in registration order, so moving the route after the mount
+  would silently serve the stale on-disk file instead -- with a 200 and no
+  error. Assert on the payload, not just the status code.
+  """
+  app = get_fast_api_app(
+      agents_dir=str(tmp_path), web=True, url_prefix="/custom"
+  )
+
+  # The prefix is stripped by whatever mounts the app (reverse proxy, gateway,
+  # or an outer Starlette Mount); ADK registers its routes unprefixed.
+  outer = Starlette(routes=[Mount("/custom", app)])
+  response = TestClient(outer).get(
+      "/custom/dev-ui/assets/config/runtime-config.json"
+  )
+
+  assert response.status_code == 200
+  body = response.json()
+  # A stale file on disk would report "" here.
+  assert body["backendUrl"] == "/custom"
+  assert "telemetry" in body
+  assert response.headers["cache-control"] == "no-store"
+
+
+def test_runtime_config_endpoint_does_not_write_to_disk(tmp_path):
+  """Serving the config must not touch the installed package directory."""
+  import google.adk.cli as cli_package
+
+  config_path = (
+      Path(cli_package.__file__).parent
+      / "browser"
+      / "assets"
+      / "config"
+      / "runtime-config.json"
+  )
+  before = config_path.read_bytes() if config_path.exists() else None
+
+  app = get_fast_api_app(
+      agents_dir=str(tmp_path), web=True, url_prefix="/prefix"
+  )
+  TestClient(app).get("/dev-ui/assets/config/runtime-config.json")
+
+  after = config_path.read_bytes() if config_path.exists() else None
+  assert after == before
+
+
+def test_runtime_config_rejects_half_specified_logo(tmp_path):
+  """--logo-text without --logo-image-url is a config error, not a silent drop."""
+  with pytest.raises(ValueError, match="Both --logo-text and --logo-image-url"):
+    get_fast_api_app(agents_dir=str(tmp_path), web=True, logo_text="ACME")
 
 
 if __name__ == "__main__":
