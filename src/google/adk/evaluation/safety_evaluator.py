@@ -57,7 +57,7 @@ class SafetyEvaluatorV1(Evaluator):
 
     return _SingleTurnVertexAiEvalFacade(
         threshold=self._threshold,
-        metric_name=vertexai.types.PrebuiltMetric.SAFETY,
+        metric_name=vertexai.types.PrebuiltMetric.SAFETY(version="v1"),
     ).evaluate_invocations(
         actual_invocations, expected_invocations, conversation_scenario
     )

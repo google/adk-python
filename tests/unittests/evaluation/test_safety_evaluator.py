@@ -76,3 +76,9 @@ class TestSafetyEvaluatorV1:
     assert [m.name for m in mock_kwargs["metrics"]] == [
         vertexai_types.PrebuiltMetric.SAFETY.name
     ]
+    # The metric must be pinned to the "v1" spec. An unversioned metric
+    # silently resolves to the SDK's "latest" spec (currently safety_v3),
+    # which scores in the opposite direction and inverts the safety gate.
+    assert [m._get_api_metric_spec_name() for m in mock_kwargs["metrics"]] == [
+        "safety_v1"
+    ]
