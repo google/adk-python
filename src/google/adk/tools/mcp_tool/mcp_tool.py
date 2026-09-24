@@ -23,6 +23,7 @@ from typing import Callable
 from typing import cast
 from typing import Protocol
 from typing import runtime_checkable
+from typing import TYPE_CHECKING
 import warnings
 
 from fastapi.openapi.models import APIKeyIn
@@ -42,9 +43,12 @@ from ...dependencies._mcp import Tool as McpBaseTool
 from ...events.ui_widget import UiWidget
 from ...features import FeatureName
 from ...features import is_feature_enabled
-from ...flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
-from ...flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
-from ...flows.llm_flows.functions import REQUEST_INPUT_FUNCTION_CALL_NAME
+from ...flows.llm_flows.context._fencing import fence_schema_descriptions
+from ...flows.llm_flows.context._fencing import fence_tool_description
+from ...flows.llm_flows.context._fencing import TOOL_DESCRIPTION_PREAMBLE
+from ...flows.llm_flows.tools._functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ...flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from ...flows.llm_flows.tools._functions import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ...utils.context_utils import find_context_parameter
 # `is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING)` gates the
 # error-boundary and transport-crash-detection behavior added in this module.
@@ -61,6 +65,9 @@ from .mcp_session_manager import _is_session_terminated_error
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_errors
 from .session_context import SessionContext
+
+if TYPE_CHECKING:
+  from ...models.llm_request import LlmRequest
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -349,14 +356,36 @@ class McpTool(BaseAuthenticatedTool):
     """Gets the function declaration for the tool.
 
     Returns:
-        FunctionDeclaration: The Gemini function declaration for the tool.
+      FunctionDeclaration: The Gemini function declaration for the tool.
     """
+    return self._build_declaration(fenced=False)
+
+  def _build_fenced_declaration(self) -> FunctionDeclaration:
+    """Builds the fenced function declaration for the tool."""
+    return self._build_declaration(fenced=True)
+
+  def _build_declaration(self, *, fenced: bool = False) -> FunctionDeclaration:
     input_schema = _read_field(self._mcp_tool, "inputSchema", "input_schema")
-    output_schema = _read_field(self._mcp_tool, "outputSchema", "output_schema")
+    description = (
+        fence_tool_description(self.description) if fenced else self.description
+    )
+    input_schema = (
+        fence_schema_descriptions(input_schema)
+        if fenced and input_schema is not None
+        else input_schema
+    )
     if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+      output_schema = _read_field(
+          self._mcp_tool, "outputSchema", "output_schema"
+      )
+      output_schema = (
+          fence_schema_descriptions(output_schema)
+          if fenced and output_schema is not None
+          else output_schema
+      )
       function_decl = FunctionDeclaration(
           name=self.name,
-          description=self.description,
+          description=description,
           parameters_json_schema=input_schema,
           response_json_schema=output_schema,
       )
@@ -364,10 +393,61 @@ class McpTool(BaseAuthenticatedTool):
       parameters = _to_gemini_schema(input_schema)
       function_decl = FunctionDeclaration(
           name=self.name,
-          description=self.description,
+          description=description,
           parameters=parameters,
       )
     return function_decl
+
+  @override
+  async def process_llm_request(
+      self, *, tool_context: ToolContext, llm_request: LlmRequest
+  ) -> None:
+    await super().process_llm_request(
+        tool_context=tool_context, llm_request=llm_request
+    )
+    if (
+        llm_request.config
+        and llm_request.config.system_instruction is not None
+        and not isinstance(llm_request.config.system_instruction, str)
+    ):
+      logger.error(
+          "Cannot fence tool descriptions: system_instruction must be a str or"
+          " None, got %s; skipping fencing for this request.",
+          type(llm_request.config.system_instruction).__name__,
+      )
+      return
+
+    # The tool declaration is fenced when it goes to the model, while
+    # _get_declaration keeps the server's own text for other consumers
+    # (e.g. dev UI tool listings via get_tools_info).
+    replaced = False
+    if llm_request.config and llm_request.config.tools:
+      for tool in reversed(llm_request.config.tools):
+        function_declarations = getattr(tool, "function_declarations", None)
+        if function_declarations:
+          for i in range(len(function_declarations) - 1, -1, -1):
+            if getattr(function_declarations[i], "name", None) == self.name:
+              function_declarations[i] = self._build_fenced_declaration()
+              replaced = True
+              break
+        if replaced:
+          break
+
+    if not replaced:
+      logger.error(
+          "Failed to find function declaration for tool %r in LlmRequest to"
+          " apply fencing.",
+          self.name,
+      )
+
+    current_instruction = (
+        llm_request.config.system_instruction
+        if llm_request.config
+        and isinstance(llm_request.config.system_instruction, str)
+        else ""
+    )
+    if TOOL_DESCRIPTION_PREAMBLE not in current_instruction:
+      llm_request.append_instructions([TOOL_DESCRIPTION_PREAMBLE])
 
   @property
   def raw_mcp_tool(self) -> McpBaseTool:

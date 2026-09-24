@@ -705,8 +705,9 @@ def _get_service_option_by_adk_version(
 def _get_ignore_patterns_func(
     agent_folder: str,
 ) -> Callable[[Any, list[str]], set[str]]:
-  """Returns a shutil.ignore_patterns function with combined patterns from .gitignore, .gcloudignore and .ae_ignore."""
-  patterns = set('.adk/')
+  """Returns a shutil.ignore_patterns function that excludes the local .adk folder along with the combined patterns from .gitignore, .gcloudignore and .ae_ignore."""
+  # .adk holds the developer's own sessions and artifacts.
+  patterns = {'.adk'}
 
   for filename in ['.gitignore', '.gcloudignore', '.ae_ignore']:
     filepath = os.path.join(agent_folder, filename)
@@ -1662,7 +1663,9 @@ def to_gke(
         ' below.)'
     )
     project = _resolve_project(project)
-    image_name = f'gcr.io/{project}/{service_name}'
+    # Tag each build uniquely rather than overwriting one floating tag.
+    image_tag = datetime.now().strftime('%Y%m%d-%H%M%S')
+    image_name = f'gcr.io/{project}/{service_name}:{image_tag}'
     subprocess.run(
         [
             _GCLOUD_CMD,
@@ -1670,6 +1673,8 @@ def to_gke(
             'submit',
             '--tag',
             image_name,
+            '--project',
+            project,
             '--verbosity',
             log_level.lower(),
             temp_folder,

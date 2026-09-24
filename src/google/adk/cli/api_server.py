@@ -12,9 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Api server with all production ADK endpoints.
-"""
+"""Api server with all production ADK endpoints."""
 
 from __future__ import annotations
 
@@ -82,12 +80,13 @@ from ..errors.input_validation_error import InputValidationError
 from ..errors.session_not_found_error import SessionNotFoundError
 from ..events.event import Event
 from ..events.event_actions import EventActions
-from ..flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
-from ..flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
-from ..flows.llm_flows.functions import REQUEST_INPUT_FUNCTION_CALL_NAME
+from ..flows.llm_flows.tools._functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ..flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from ..flows.llm_flows.tools._functions import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ..live.live_request_queue import LiveRequest
 from ..live.live_request_queue import LiveRequestQueue
 from ..memory.base_memory_service import BaseMemoryService
+from ..models._service_tier import ServiceTier
 from ..plugins.base_plugin import BasePlugin
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
@@ -554,6 +553,8 @@ class InMemoryExporter(export_lib.SpanExporter):
 
 
 class RunAgentRequest(common.BaseModel):
+  """Request body for the /run and /run_sse endpoints."""
+
   app_name: Optional[str] = None
   user_id: str
   session_id: str
@@ -565,6 +566,9 @@ class RunAgentRequest(common.BaseModel):
   # for resume long-running functions
   invocation_id: Optional[str] = None
   custom_metadata: Optional[dict[str, Any]] = None
+  # Serving tier for this run's model calls, e.g. ServiceTier.DEFERRED. Only
+  # models on the interactions API have a serving tier; others ignore it.
+  service_tier: Optional[ServiceTier | str] = None
 
 
 class CreateSessionRequest(common.BaseModel):
@@ -867,6 +871,11 @@ class ApiServer:
   """
 
   _allow_special_agents: bool = False
+
+  # Whether this server serves the debug endpoints that read the in-memory
+  # span buffers. Nothing evicts from those buffers, so a server that has no
+  # reader for them must not fill them.
+  _serves_debug_trace_endpoints: bool = False
 
   def __init__(
       self,
@@ -1264,12 +1273,16 @@ class ApiServer:
     memory_exporter = InMemoryExporter(session_trace_dict)
     self._memory_exporter = memory_exporter
 
+    internal_exporters: list[SpanProcessor] = []
+    if self._serves_debug_trace_endpoints:
+      internal_exporters = [
+          export_lib.SimpleSpanProcessor(ApiServerSpanExporter(trace_dict)),
+          export_lib.SimpleSpanProcessor(memory_exporter),
+      ]
+
     _setup_telemetry(
         otel_to_cloud=otel_to_cloud,
-        internal_exporters=[
-            export_lib.SimpleSpanProcessor(ApiServerSpanExporter(trace_dict)),
-            export_lib.SimpleSpanProcessor(memory_exporter),
-        ],
+        internal_exporters=internal_exporters,
     )
     if web_assets_dir:
       self._setup_runtime_config(web_assets_dir)
@@ -1917,11 +1930,12 @@ class ApiServer:
       self.current_app_name_ref.value = req.app_name
       runner = await self.get_runner_async(req.app_name)
       _set_telemetry_context_if_needed(runner)
-      run_config = (
-          RunConfig(custom_metadata=req.custom_metadata)
-          if req.custom_metadata
-          else None
-      )
+      run_config = None
+      if req.custom_metadata or req.service_tier:
+        run_config = RunConfig(
+            custom_metadata=req.custom_metadata,
+            service_tier=req.service_tier,
+        )
 
       async def worker():
         try:
@@ -1985,6 +1999,19 @@ class ApiServer:
       runner = await self.get_runner_async(req.app_name)
       _set_telemetry_context_if_needed(runner)
 
+      # Build the run config before the response starts. Constructing it
+      # inside event_generator() would run its validation after the 200 and
+      # the SSE headers are already on the wire, turning a bad request into a
+      # broken stream instead of a rejected call.
+      try:
+        run_config = RunConfig(
+            streaming_mode=stream_mode,
+            custom_metadata=req.custom_metadata,
+            service_tier=req.service_tier,
+        )
+      except ValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+
       # Validate session existence before starting the stream.
       # We check directly here instead of eagerly advancing the
       # runner's async generator with anext(), because splitting
@@ -2014,10 +2041,7 @@ class ApiServer:
                   session_id=req.session_id,
                   new_message=req.new_message,
                   state_delta=req.state_delta,
-                  run_config=RunConfig(
-                      streaming_mode=stream_mode,
-                      custom_metadata=req.custom_metadata,
-                  ),
+                  run_config=run_config,
                   invocation_id=req.invocation_id,
               )
           ) as agen:

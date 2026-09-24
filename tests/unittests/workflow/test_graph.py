@@ -73,6 +73,31 @@ def test_get_next_pending_nodes() -> None:
   assert set(next_nodes) == {'NodeB', 'NodeC'}
 
 
+def test_get_next_pending_nodes_with_default_route_fan_out() -> None:
+  """Tests that an unmatched route triggers every DEFAULT_ROUTE target."""
+  node_a = TestingNode(name='NodeA')
+  node_b = TestingNode(name='NodeB')
+  node_c = TestingNode(name='NodeC')
+  node_d = TestingNode(name='NodeD')
+
+  graph = Graph(
+      edges=[
+          Edge(from_node=node_a, to_node=node_b, route='route1'),
+          Edge(from_node=node_a, to_node=node_c, route=DEFAULT_ROUTE),
+          Edge(from_node=node_a, to_node=node_d, route=DEFAULT_ROUTE),
+      ],
+  )
+
+  next_nodes = graph.get_next_pending_nodes(
+      'NodeA', routes_to_match='unknown_route'
+  )
+  assert set(next_nodes) == {'NodeC', 'NodeD'}
+
+  # A matched specific route still suppresses every default target.
+  next_nodes = graph.get_next_pending_nodes('NodeA', routes_to_match='route1')
+  assert next_nodes == ['NodeB']
+
+
 def test_get_next_pending_nodes_unmatched_route_warning(caplog) -> None:
   """Tests that a warning is logged when a route is unmatched and there's no DEFAULT_ROUTE."""
   node_a = TestingNode(name='NodeA')

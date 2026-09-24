@@ -69,6 +69,19 @@ def _get_session_id() -> str:
   return f"{EVAL_SESSION_ID_PREFIX}{str(uuid.uuid4())}"
 
 
+def _parallelism_semaphore(parallelism: int) -> asyncio.Semaphore:
+  """Returns a semaphore bounding concurrency to `parallelism`.
+
+  `asyncio.Semaphore(0)` never admits an `acquire()`, so a parallelism of 0
+  would leave the run waiting forever with no output and no error. Negative
+  values do raise, but the message names the semaphore rather than the config
+  field the caller set. Reject both here with an actionable message.
+  """
+  if parallelism < 1:
+    raise ValueError(f"`parallelism` must be at least 1, got {parallelism}.")
+  return asyncio.Semaphore(value=parallelism)
+
+
 def _add_rubrics_to_invocation(
     invocation: Invocation, rubrics_to_add: list[Rubric]
 ) -> None:
@@ -185,8 +198,8 @@ class LocalEvalService(BaseEvalService):
           if eval_case.eval_id in inference_request.eval_case_ids
       ]
 
-    semaphore = asyncio.Semaphore(
-        value=inference_request.inference_config.parallelism
+    semaphore = _parallelism_semaphore(
+        inference_request.inference_config.parallelism
     )
 
     async def run_inference(eval_case: EvalCase) -> InferenceResult:
@@ -215,8 +228,8 @@ class LocalEvalService(BaseEvalService):
       evaluate_request: The request to perform metric evaluations on the
         inferences.
     """
-    semaphore = asyncio.Semaphore(
-        value=evaluate_request.evaluate_config.parallelism
+    semaphore = _parallelism_semaphore(
+        evaluate_request.evaluate_config.parallelism
     )
 
     async def run_evaluation(

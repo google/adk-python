@@ -1323,3 +1323,46 @@ def test_default_user_simulator_provider_is_not_shared_between_services(
       service._user_simulator_provider
       is not other_service._user_simulator_provider
   )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parallelism", [0, -1])
+async def test_perform_inference_rejects_non_positive_parallelism(
+    eval_service, mock_eval_sets_manager, parallelism
+):
+  """A parallelism of 0 would hang the run, so reject it before it can.
+
+  `asyncio.Semaphore(0)` never admits an `acquire()`, so every inference task
+  would wait forever, with no output and no error to point at the cause.
+  """
+  mock_eval_sets_manager.get_eval_set.return_value = EvalSet(
+      eval_set_id="test_eval_set",
+      eval_cases=[
+          EvalCase(eval_id="case1", conversation=[], session_input=None)
+      ],
+  )
+  inference_request = InferenceRequest(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      inference_config=InferenceConfig(parallelism=parallelism),
+  )
+
+  with pytest.raises(ValueError, match="`parallelism` must be at least 1"):
+    async for _ in eval_service.perform_inference(inference_request):
+      pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parallelism", [0, -1])
+async def test_evaluate_rejects_non_positive_parallelism(
+    eval_service, parallelism
+):
+  """`evaluate` builds the same semaphore and would hang the same way."""
+  evaluate_request = EvaluateRequest(
+      inference_results=[],
+      evaluate_config=EvaluateConfig(eval_metrics=[], parallelism=parallelism),
+  )
+
+  with pytest.raises(ValueError, match="`parallelism` must be at least 1"):
+    async for _ in eval_service.evaluate(evaluate_request):
+      pass

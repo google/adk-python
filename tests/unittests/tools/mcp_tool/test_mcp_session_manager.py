@@ -50,6 +50,7 @@ from google.adk.tools.mcp_tool.mcp_session_manager import retry_on_errors
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
+from google.adk.utils._google_client_headers import merge_tracking_headers
 from mcp import StdioServerParameters
 import pytest
 
@@ -411,11 +412,36 @@ class TestMCPSessionManager:
     additional = {"Authorization": "Bearer token"}
     merged = manager._merge_headers(additional)
 
-    expected = {
+    expected = merge_tracking_headers({
         "Content-Type": "application/json",
         "Authorization": "Bearer token",
-    }
+    })
     assert merged == expected
+
+  def test_merge_headers_adds_adk_user_agent(self):
+    """An MCP server can attribute the request to ADK."""
+    manager = MCPSessionManager(
+        SseConnectionParams(url="https://example.com/mcp")
+    )
+
+    merged = manager._merge_headers(None)  # pylint: disable=protected-access
+
+    assert merged["user-agent"].startswith("google-adk/")
+
+  def test_merge_headers_keeps_custom_user_agent(self):
+    """A caller's own user-agent survives, however they spelled the header."""
+    manager = MCPSessionManager(
+        SseConnectionParams(
+            url="https://example.com/mcp",
+            headers={"User-Agent": "my-app/1.0"},
+        )
+    )
+
+    merged = manager._merge_headers(None)  # pylint: disable=protected-access
+
+    assert "User-Agent" not in merged
+    assert merged["user-agent"].startswith("google-adk/")
+    assert merged["user-agent"].endswith(" my-app/1.0")
 
   def test_is_session_disconnected(self):
     """Test session disconnection detection."""

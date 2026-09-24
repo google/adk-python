@@ -127,8 +127,8 @@ def _build_basic_request(
     llm_request.config.labels.update(invocation_context.run_config.labels)
   # Only set output_schema if no tools are specified. as of now, model don't
   # support output_schema and tools together. we have a workaround to support
-  # both output_schema and tools at the same time. see
-  # _output_schema_processor.py for details
+  # both output_schema and tools at the same time. see prompt/_schema.py for
+  # details
   #
   # task-mode agents skip output_schema configuration in
   # the basic flow. Structured output for tasks is collected via the

@@ -14,24 +14,32 @@
 
 from __future__ import annotations
 
+import logging
 from unittest import mock
 
 from google.genai import types
 from pydantic import BaseModel
 
+# The repository may be tested locally with a google-genai version older than
+# the source tree expects (run_config.py imports types.AvatarConfig at import
+# time, so the shim must be installed before importing the OpenAI model below).
+# The empty shim is installed process-wide and intentionally left in place: it
+# is harmless, and other test modules (e.g. test_live_streaming_configs) that
+# run later read ``types.AvatarConfig`` at runtime, so removing it on teardown
+# would break them.
 if not hasattr(types, 'AvatarConfig'):
-  # The repository may be tested locally with a google-genai version older than
-  # the source tree expects. Keep this test focused on the labs model behavior.
   types.AvatarConfig = type('AvatarConfig', (BaseModel,), {})
 
-from google.adk.labs.openai._openai_responses_llm import _content_to_response_input_items
-from google.adk.labs.openai._openai_responses_llm import _function_declaration_to_response_tool
-from google.adk.labs.openai._openai_responses_llm import _loads_json_object
-from google.adk.labs.openai._openai_responses_llm import _response_to_llm_response
-from google.adk.labs.openai._openai_responses_llm import _tool_choice
-from google.adk.labs.openai._openai_responses_llm import AzureOpenAIResponsesLlm
-from google.adk.labs.openai._openai_responses_llm import OpenAIResponsesLlm
-from google.adk.labs.openai._openai_schema import enforce_strict_openai_schema
+from google.adk.integrations.openai._openai_common import OpenAIGenerateContentConfig
+from google.adk.integrations.openai._openai_responses_llm import _content_to_response_input_items
+from google.adk.integrations.openai._openai_responses_llm import _function_declaration_to_response_tool
+from google.adk.integrations.openai._openai_responses_llm import _loads_json_object
+from google.adk.integrations.openai._openai_responses_llm import _response_to_llm_response
+from google.adk.integrations.openai._openai_responses_llm import _serialize_system_instruction
+from google.adk.integrations.openai._openai_responses_llm import _tool_choice
+from google.adk.integrations.openai._openai_responses_llm import AzureOpenAIResponsesLlm
+from google.adk.integrations.openai._openai_responses_llm import OpenAIResponsesLlm
+from google.adk.integrations.openai._openai_schema import enforce_strict_openai_schema
 from google.adk.models.llm_request import LlmRequest
 from openai import AsyncOpenAI
 from openai.types.responses import EasyInputMessageParam
@@ -110,15 +118,10 @@ def test_openai_responses_package_exports_required_types():
 
 
 def test_request_kwargs_use_responses_api_shape():
-  """ADK requests are converted to Responses input, tools, and config."""
-  llm = OpenAIResponsesLlm(
-      model='gpt-5',
-      store=False,
-      include=['reasoning.encrypted_content'],
-      reasoning={'effort': 'medium'},
-  )
+  """A standard (non-reasoning) chat model maps to the Responses shape."""
+  llm = OpenAIResponsesLlm(model='gpt-4o')
   llm_request = LlmRequest(
-      model='gpt-5-mini',
+      model='gpt-4o',
       previous_interaction_id='resp_previous',
       contents=[
           types.Content(
@@ -167,16 +170,14 @@ def test_request_kwargs_use_responses_api_shape():
 
   kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
 
-  assert kwargs['model'] == 'gpt-5-mini'
+  assert kwargs['model'] == 'gpt-4o'
   assert kwargs['instructions'] == 'You are concise.'
   assert kwargs['previous_response_id'] == 'resp_previous'
   assert kwargs['stream'] is False
+  # A non-reasoning model keeps temperature / top_p.
   assert kwargs['temperature'] == 0.2
   assert kwargs['top_p'] == 0.9
   assert kwargs['max_output_tokens'] == 128
-  assert kwargs['store'] is False
-  assert kwargs['include'] == ['reasoning.encrypted_content']
-  assert kwargs['reasoning'] == {'effort': 'medium'}
   assert kwargs['input'] == [
       {
           'type': 'message',
@@ -200,6 +201,101 @@ def test_request_kwargs_use_responses_api_shape():
       },
       'strict': False,
   }]
+
+
+def test_reasoning_request_kwargs_pass_reasoning_options_and_drop_sampling():
+  """A reasoning model forwards reasoning/store/include and drops temp/top_p."""
+  llm = OpenAIResponsesLlm(
+      model='gpt-5',
+      store=False,
+      include=['reasoning.encrypted_content'],
+      reasoning={'effort': 'medium'},
+  )
+  llm_request = LlmRequest(
+      model='gpt-5',
+      contents=[
+          types.Content(
+              role='user',
+              parts=[types.Part.from_text(text='What is the weather?')],
+          )
+      ],
+      config=types.GenerateContentConfig(
+          temperature=0.2, top_p=0.9, max_output_tokens=128
+      ),
+  )
+
+  kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
+
+  assert kwargs['model'] == 'gpt-5'
+  assert kwargs['store'] is False
+  assert kwargs['include'] == ['reasoning.encrypted_content']
+  assert kwargs['reasoning'] == {'effort': 'medium'}
+  assert kwargs['max_output_tokens'] == 128
+  # Reasoning models reject non-default temperature/top_p, so they are dropped.
+  assert 'temperature' not in kwargs
+  assert 'top_p' not in kwargs
+
+
+@pytest.mark.parametrize('model', ['gpt-5.6-sol', 'gpt-6-astra', 'o3-mini'])
+def test_reasoning_model_drops_temperature_and_top_p(model, caplog):
+  """Reasoning models reject non-default temperature/top_p; drop them."""
+  llm = OpenAIResponsesLlm(model=model)
+  llm_request = LlmRequest(
+      model=model,
+      contents=[
+          types.Content(role='user', parts=[types.Part.from_text(text='hi')])
+      ],
+      config=types.GenerateContentConfig(temperature=0.2, top_p=0.9),
+  )
+
+  with caplog.at_level(logging.WARNING):
+    kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
+
+  assert 'temperature' not in kwargs
+  assert 'top_p' not in kwargs
+  assert 'Ignoring temperature' in caplog.text
+  assert 'Ignoring top_p' in caplog.text
+
+
+@pytest.mark.parametrize('model', ['gpt-5.6-sol', 'gpt-6-astra', 'o3-mini'])
+def test_reasoning_model_keeps_default_temperature(model):
+  """Reasoning models accept the default temperature/top_p (1); keep them."""
+  llm = OpenAIResponsesLlm(model=model)
+  llm_request = LlmRequest(
+      model=model,
+      contents=[
+          types.Content(role='user', parts=[types.Part.from_text(text='hi')])
+      ],
+      config=types.GenerateContentConfig(temperature=1, top_p=1),
+  )
+
+  kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
+
+  assert kwargs['temperature'] == 1
+  assert kwargs['top_p'] == 1
+
+
+def test_llm_request_model_overrides_self_model_for_reasoning_detection():
+  """llm_request.model overrides self.model; reasoning detection reads it.
+
+  self.model is a reasoning model, but the request overrides it with a
+  non-reasoning model. temperature/top_p must survive because detection reads
+  the effective (overridden) model in kwargs, not self.model.
+  """
+  llm = OpenAIResponsesLlm(model='gpt-5', api_key='k')
+  llm_request = LlmRequest(
+      model='gpt-4o',
+      contents=[
+          types.Content(role='user', parts=[types.Part.from_text(text='hi')])
+      ],
+      config=types.GenerateContentConfig(temperature=0.2, top_p=0.9),
+  )
+
+  kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
+
+  assert kwargs['model'] == 'gpt-4o'
+  assert kwargs['temperature'] == 0.2
+  assert kwargs['top_p'] == 0.9
 
 
 def test_content_mapping_preserves_model_tool_calls_and_reasoning():
@@ -506,45 +602,23 @@ def test_structured_output_uses_responses_text_format():
   assert kwargs['text']['format']['schema']['required'] == ['answer']
 
 
-def test_thinking_config_zero_budget_maps_to_minimal_reasoning():
-  """thinking_budget=0 maps to minimal effort and overrides the static field."""
-  llm = OpenAIResponsesLlm(model='gpt-5', reasoning={'effort': 'medium'})
-  llm_request = LlmRequest(
-      contents=[
-          types.Content(role='user', parts=[types.Part.from_text(text='Hi')])
-      ],
-      config=types.GenerateContentConfig(
-          thinking_config=types.ThinkingConfig(thinking_budget=0)
-      ),
-  )
-
-  kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
-
-  assert kwargs['reasoning'] == {'effort': 'minimal', 'summary': 'concise'}
-
-
 @pytest.mark.parametrize(
-    ('thinking_level', 'effort'),
+    ('model', 'effort'),
     [
-        (types.ThinkingLevel.MINIMAL, 'minimal'),
-        (types.ThinkingLevel.LOW, 'low'),
-        (types.ThinkingLevel.MEDIUM, 'medium'),
-        (types.ThinkingLevel.HIGH, 'high'),
-        (types.ThinkingLevel.THINKING_LEVEL_UNSPECIFIED, 'medium'),
+        ('gpt-6-astra', 'max'),
+        ('gpt-5.6-sol', 'xhigh'),
+        ('gpt-5', 'minimal'),
+        ('o3', 'high'),
     ],
 )
-def test_thinking_config_level_maps_to_openai_reasoning_effort(
-    thinking_level, effort
-):
-  """thinking_level maps directly to Responses reasoning effort."""
-  llm = OpenAIResponsesLlm(model='gpt-5')
+def test_effort_maps_to_responses_reasoning(model, effort):
+  """OpenAIGenerateContentConfig.effort maps to the Responses reasoning object."""
+  llm = OpenAIResponsesLlm(model=model)
   llm_request = LlmRequest(
       contents=[
           types.Content(role='user', parts=[types.Part.from_text(text='Hi')])
       ],
-      config=types.GenerateContentConfig(
-          thinking_config=types.ThinkingConfig(thinking_level=thinking_level)
-      ),
+      config=OpenAIGenerateContentConfig(effort=effort),
   )
 
   kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
@@ -552,8 +626,132 @@ def test_thinking_config_level_maps_to_openai_reasoning_effort(
   assert kwargs['reasoning'] == {'effort': effort, 'summary': 'concise'}
 
 
-def test_thinking_config_level_takes_precedence_over_budget():
-  """thinking_level is a better OpenAI mapping than token budget."""
+def test_effort_overrides_only_effort_key_of_static_reasoning():
+  """A configured effort overrides only the effort of the model-level default."""
+  llm = OpenAIResponsesLlm(model='gpt-5', reasoning={'effort': 'medium'})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(role='user', parts=[types.Part.from_text(text='Hi')])
+      ],
+      config=OpenAIGenerateContentConfig(effort='high'),
+  )
+
+  kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
+
+  # effort is overridden; nothing else is injected (no forced 'concise').
+  assert kwargs['reasoning'] == {'effort': 'high'}
+
+
+def test_effort_preserves_static_reasoning_summary():
+  """A configured effort keeps a model-level summary instead of clobbering it."""
+  llm = OpenAIResponsesLlm(
+      model='gpt-5', reasoning={'effort': 'medium', 'summary': 'detailed'}
+  )
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(role='user', parts=[types.Part.from_text(text='Hi')])
+      ],
+      config=OpenAIGenerateContentConfig(effort='high'),
+  )
+
+  kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
+
+  assert kwargs['reasoning'] == {'effort': 'high', 'summary': 'detailed'}
+
+
+def test_effort_unsupported_tier_raises(monkeypatch):
+  """An effort tier the model does not accept raises before the request."""
+  # Tier validation only runs against the default OpenAI host, so clear any
+  # ambient base-url overrides that would otherwise skip it and mask the raise.
+  monkeypatch.delenv('OPENAI_BASE_URL', raising=False)
+  monkeypatch.delenv('AZURE_OPENAI_ENDPOINT', raising=False)
+  llm = OpenAIResponsesLlm(model='gpt-5')
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(role='user', parts=[types.Part.from_text(text='Hi')])
+      ],
+      config=OpenAIGenerateContentConfig(effort='xhigh'),
+  )
+
+  with pytest.raises(ValueError, match="not supported by model 'gpt-5'"):
+    llm._get_response_create_kwargs(llm_request, stream=False)
+
+
+def _unsupported_effort_request():
+  return LlmRequest(
+      contents=[
+          types.Content(role='user', parts=[types.Part.from_text(text='Hi')])
+      ],
+      config=OpenAIGenerateContentConfig(effort='xhigh'),
+  )
+
+
+def test_effort_unsupported_tier_passes_through_with_base_url():
+  """A custom base_url skips tier validation; the effort passes through."""
+  llm = OpenAIResponsesLlm(model='gpt-5', base_url='https://host.example/v1')
+
+  kwargs = llm._get_response_create_kwargs(
+      _unsupported_effort_request(), stream=False
+  )
+
+  assert kwargs['reasoning']['effort'] == 'xhigh'
+
+
+def test_effort_unsupported_tier_passes_through_with_injected_client():
+  """An injected client skips tier validation; the effort passes through."""
+  llm = OpenAIResponsesLlm(model='gpt-5', client=AsyncOpenAI(api_key='x'))
+
+  kwargs = llm._get_response_create_kwargs(
+      _unsupported_effort_request(), stream=False
+  )
+
+  assert kwargs['reasoning']['effort'] == 'xhigh'
+
+
+def test_effort_unsupported_tier_passes_through_with_openai_base_url_env(
+    monkeypatch,
+):
+  """OPENAI_BASE_URL skips tier validation; the effort passes through."""
+  monkeypatch.setenv('OPENAI_BASE_URL', 'https://host.example/v1')
+  llm = OpenAIResponsesLlm(model='gpt-5')
+
+  kwargs = llm._get_response_create_kwargs(
+      _unsupported_effort_request(), stream=False
+  )
+
+  assert kwargs['reasoning']['effort'] == 'xhigh'
+
+
+def test_effort_unsupported_tier_passes_through_with_azure_endpoint():
+  """An Azure endpoint skips tier validation; the effort passes through."""
+  llm = AzureOpenAIResponsesLlm(
+      model='gpt-5', azure_endpoint='https://example.openai.azure.com/'
+  )
+
+  kwargs = llm._get_response_create_kwargs(
+      _unsupported_effort_request(), stream=False
+  )
+
+  assert kwargs['reasoning']['effort'] == 'xhigh'
+
+
+def test_no_effort_falls_back_to_static_reasoning():
+  """Without a configured effort, the model-level reasoning default applies."""
+  llm = OpenAIResponsesLlm(model='gpt-5', reasoning={'effort': 'medium'})
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(role='user', parts=[types.Part.from_text(text='Hi')])
+      ],
+      config=types.GenerateContentConfig(),
+  )
+
+  kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
+
+  assert kwargs['reasoning'] == {'effort': 'medium'}
+
+
+def test_standard_thinking_config_warns_and_is_ignored(caplog):
+  """Standard thinking_config is ignored (with a warning) for OpenAI models."""
   llm = OpenAIResponsesLlm(model='gpt-5')
   llm_request = LlmRequest(
       contents=[
@@ -561,66 +759,17 @@ def test_thinking_config_level_takes_precedence_over_budget():
       ],
       config=types.GenerateContentConfig(
           thinking_config=types.ThinkingConfig(
-              thinking_budget=0, thinking_level=types.ThinkingLevel.HIGH
+              thinking_level=types.ThinkingLevel.HIGH
           )
       ),
   )
 
-  kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
+  with caplog.at_level(logging.WARNING):
+    kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
 
-  assert kwargs['reasoning'] == {'effort': 'high', 'summary': 'concise'}
-
-
-def test_thinking_config_automatic_uses_medium_concise_reasoning():
-  """Negative budgets map to medium reasoning with concise summaries."""
-  llm = OpenAIResponsesLlm(model='gpt-5', reasoning={'effort': 'high'})
-  llm_request = LlmRequest(
-      contents=[
-          types.Content(role='user', parts=[types.Part.from_text(text='Hi')])
-      ],
-      config=types.GenerateContentConfig(
-          thinking_config=types.ThinkingConfig(thinking_budget=-1)
-      ),
-  )
-
-  kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
-
-  assert kwargs['reasoning'] == {'effort': 'medium', 'summary': 'concise'}
-
-
-def test_thinking_config_none_budget_raises():
-  """ThinkingConfig requires level or explicit budget semantics."""
-  llm = OpenAIResponsesLlm(model='gpt-5')
-  llm_request = LlmRequest(
-      contents=[
-          types.Content(role='user', parts=[types.Part.from_text(text='Hi')])
-      ],
-      config=types.GenerateContentConfig(
-          thinking_config=types.ThinkingConfig()
-      ),
-  )
-
-  with pytest.raises(
-      ValueError, match='thinking_budget must be set explicitly'
-  ):
-    llm._get_response_create_kwargs(llm_request, stream=False)
-
-
-def test_thinking_config_positive_budget_uses_medium_concise_reasoning():
-  """Positive budgets map to medium reasoning with concise summaries."""
-  llm = OpenAIResponsesLlm(model='gpt-5')
-  llm_request = LlmRequest(
-      contents=[
-          types.Content(role='user', parts=[types.Part.from_text(text='Hi')])
-      ],
-      config=types.GenerateContentConfig(
-          thinking_config=types.ThinkingConfig(thinking_budget=1024)
-      ),
-  )
-
-  kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
-
-  assert kwargs['reasoning'] == {'effort': 'medium', 'summary': 'concise'}
+  assert 'not supported for OpenAI models' in caplog.text
+  # Ignored -> no reasoning override (the None default is filtered out).
+  assert 'reasoning' not in kwargs
 
 
 def test_response_parsing_maps_text_reasoning_tool_calls_and_usage():
@@ -793,6 +942,64 @@ async def test_generate_content_async_calls_responses_create():
   assert client.responses.kwargs['stream'] is False
   assert responses[0].content.parts[0].text == 'Hello'
   assert responses[0].interaction_id == 'resp_123'
+
+
+@pytest.mark.asyncio
+async def test_callable_api_key_wrapped_as_async_provider():
+  """A callable api_key becomes the async provider AsyncOpenAI refreshes.
+
+  A Vertex OAuth bearer token expires ~1h, so ``AsyncOpenAI`` awaits its api_key
+  provider on every request rather than freezing the key at construction. A sync
+  callable is adapted into that async provider; the callable is not consumed at
+  construction time and is re-invoked on each await.
+  """
+  calls = {'n': 0}
+
+  def key_provider() -> str:
+    calls['n'] += 1
+    return f'token-{calls["n"]}'
+
+  with mock.patch(
+      'google.adk.integrations.openai._openai_responses_llm.AsyncOpenAI'
+  ) as client_cls:
+    _ = OpenAIResponsesLlm(model='gpt-5', api_key=key_provider)._openai_client
+
+  client_cls.assert_called_once()
+  provider = client_cls.call_args.kwargs['api_key']
+  # Not resolved eagerly at construction...
+  assert calls['n'] == 0
+  # ...and re-invoked (awaited) on each request, yielding a fresh token.
+  assert await provider() == 'token-1'
+  assert await provider() == 'token-2'
+  assert calls['n'] == 2
+
+
+@pytest.mark.asyncio
+async def test_base_url_is_passed_to_client():
+  """base_url is forwarded to the default AsyncOpenAI client."""
+  with mock.patch(
+      'google.adk.integrations.openai._openai_responses_llm.AsyncOpenAI'
+  ) as client_cls:
+    _ = OpenAIResponsesLlm(
+        model='gpt-5', api_key='secret', base_url='https://host.example/v1'
+    )._openai_client
+  client_cls.assert_called_once_with(
+      api_key='secret', base_url='https://host.example/v1'
+  )
+
+
+@pytest.mark.asyncio
+async def test_azure_falls_back_to_base_url_without_azure_endpoint():
+  """AzureOpenAIResponsesLlm uses base_url when azure_endpoint is unset."""
+  with mock.patch(
+      'google.adk.integrations.openai._openai_responses_llm.AsyncOpenAI'
+  ) as client_cls:
+    _ = AzureOpenAIResponsesLlm(
+        model='gpt-5', api_key='secret', base_url='https://host.example/v1'
+    )._openai_client
+  client_cls.assert_called_once_with(
+      api_key='secret', base_url='https://host.example/v1'
+  )
 
 
 @pytest.mark.asyncio
@@ -1209,7 +1416,7 @@ async def test_streaming_generation_failed_event_is_terminal():
 def test_azure_client_uses_openai_v1_base_url():
   """Azure model uses the Azure OpenAI /openai/v1 base URL."""
   with mock.patch(
-      'google.adk.labs.openai._openai_responses_llm.AsyncOpenAI'
+      'google.adk.integrations.openai._openai_responses_llm.AsyncOpenAI'
   ) as client_cls:
     llm = AzureOpenAIResponsesLlm(
         model='deployment',
@@ -1300,7 +1507,7 @@ def test_provided_client_is_used():
 def test_default_client_built_with_resolved_api_key():
   """Without a client, AsyncOpenAI is constructed with the resolved key."""
   with mock.patch(
-      'google.adk.labs.openai._openai_responses_llm.AsyncOpenAI'
+      'google.adk.integrations.openai._openai_responses_llm.AsyncOpenAI'
   ) as client_cls:
     llm = OpenAIResponsesLlm(model='gpt-5', api_key='secret')
     _ = llm._openai_client
@@ -1308,37 +1515,49 @@ def test_default_client_built_with_resolved_api_key():
   client_cls.assert_called_once_with(api_key='secret')
 
 
-def test_api_key_callable_is_resolved():
-  """A sync api_key callable is invoked to produce the key."""
+@pytest.mark.asyncio
+async def test_api_key_callable_wrapped():
+  """A sync api_key callable is wrapped in an async provider, not resolved."""
   with mock.patch(
-      'google.adk.labs.openai._openai_responses_llm.AsyncOpenAI'
+      'google.adk.integrations.openai._openai_responses_llm.AsyncOpenAI'
   ) as client_cls:
-    llm = OpenAIResponsesLlm(model='gpt-5', api_key=lambda: 'dynamic')
-    _ = llm._openai_client
+    _ = OpenAIResponsesLlm(
+        model='gpt-5', api_key=lambda: 'dynamic'
+    )._openai_client
 
-  client_cls.assert_called_once_with(api_key='dynamic')
+  provider = client_cls.call_args.kwargs['api_key']
+  assert await provider() == 'dynamic'
 
 
-@pytest.mark.filterwarnings('ignore:coroutine .* was never awaited')
-def test_async_api_key_callable_raises():
-  """An async api_key provider fails fast instead of leaking a coroutine."""
+@pytest.mark.asyncio
+async def test_async_api_key_callable_supported():
+  """An async api_key provider is passed through for AsyncOpenAI to await."""
 
   async def _key() -> str:
     return 'k'
 
-  llm = OpenAIResponsesLlm(model='gpt-5', api_key=_key)
-  with pytest.raises(TypeError, match='Async api_key'):
-    llm._resolve_api_key()
+  with mock.patch(
+      'google.adk.integrations.openai._openai_responses_llm.AsyncOpenAI'
+  ) as client_cls:
+    _ = OpenAIResponsesLlm(model='gpt-5', api_key=_key)._openai_client
+
+  provider = client_cls.call_args.kwargs['api_key']
+  assert await provider() == 'k'
 
 
 def test_azure_api_key_env_fallback(monkeypatch):
   """Azure falls back to AZURE_OPENAI_API_KEY when no key is provided."""
   monkeypatch.setenv('AZURE_OPENAI_API_KEY', 'env-key')
-  llm = AzureOpenAIResponsesLlm(
-      model='deployment',
-      azure_endpoint='https://example.openai.azure.com/',
-  )
-  assert llm._resolve_api_key() == 'env-key'
+  with mock.patch(
+      'google.adk.integrations.openai._openai_responses_llm.AsyncOpenAI'
+  ) as client_cls:
+    _ = AzureOpenAIResponsesLlm(
+        model='deployment',
+        azure_endpoint='https://example.openai.azure.com/',
+    )._openai_client
+
+  # A string env key passes through build_api_key unchanged.
+  assert client_cls.call_args.kwargs['api_key'] == 'env-key'
 
 
 def test_extra_request_args_override_and_merge_extra_body():
@@ -1434,6 +1653,110 @@ def test_tool_choice_maps_function_calling_mode(mode, expected):
       )
   )
   assert _tool_choice(config) == expected
+
+
+def test_tool_choice_is_omitted_without_tools():
+  """tool_choice is not sent when there are no tools to choose from."""
+  llm = OpenAIResponsesLlm(model='gpt-5', api_key='k')
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(role='user', parts=[types.Part.from_text(text='Hi')])
+      ],
+      config=types.GenerateContentConfig(
+          tool_config=types.ToolConfig(
+              function_calling_config=types.FunctionCallingConfig(
+                  mode=types.FunctionCallingConfigMode.ANY
+              )
+          )
+      ),
+  )
+
+  kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
+
+  assert 'tool_choice' not in kwargs
+  assert 'tools' not in kwargs
+
+
+def test_tool_choice_applied_when_tools_from_extra_request_args():
+  """tool_choice is resolved even when tools arrive via extra_request_args."""
+  llm = OpenAIResponsesLlm(
+      model='gpt-5',
+      api_key='k',
+      extra_request_args={
+          'tools': [{'type': 'function', 'name': 'a', 'parameters': {}}]
+      },
+  )
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(role='user', parts=[types.Part.from_text(text='Hi')])
+      ],
+      config=types.GenerateContentConfig(
+          tool_config=types.ToolConfig(
+              function_calling_config=types.FunctionCallingConfig(
+                  mode=types.FunctionCallingConfigMode.ANY
+              )
+          )
+      ),
+  )
+
+  kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
+
+  assert kwargs['tools']
+  assert kwargs['tool_choice'] == 'required'
+
+
+def test_tool_choice_applied_when_tools_from_config():
+  """tool_choice is resolved when tools come from config.tools + tool_config."""
+  llm = OpenAIResponsesLlm(model='gpt-5', api_key='k')
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(role='user', parts=[types.Part.from_text(text='Hi')])
+      ],
+      config=types.GenerateContentConfig(
+          tools=[
+              types.Tool(
+                  function_declarations=[
+                      types.FunctionDeclaration(name='a', description='A')
+                  ]
+              )
+          ],
+          tool_config=types.ToolConfig(
+              function_calling_config=types.FunctionCallingConfig(
+                  mode=types.FunctionCallingConfigMode.ANY
+              )
+          ),
+      ),
+  )
+
+  kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
+
+  assert kwargs['tools']
+  assert kwargs['tool_choice'] == 'required'
+
+
+def test_tool_without_function_declarations_is_skipped_with_warning(caplog):
+  """A tool with no function declarations is skipped and logged, not sent."""
+  llm = OpenAIResponsesLlm(model='gpt-5', api_key='k')
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(role='user', parts=[types.Part.from_text(text='Hi')])
+      ],
+      config=types.GenerateContentConfig(
+          tools=[
+              types.Tool(function_declarations=None),
+              types.Tool(
+                  function_declarations=[
+                      types.FunctionDeclaration(name='a', description='A')
+                  ]
+              ),
+          ]
+      ),
+  )
+
+  kwargs = llm._get_response_create_kwargs(llm_request, stream=False)
+
+  assert len(kwargs['tools']) == 1
+  assert 'no function declarations' in caplog.text
 
 
 def test_response_parsing_incomplete_max_tokens_sets_error():
@@ -1569,3 +1892,26 @@ async def test_streaming_output_item_done_uses_done_item_text():
   ]
 
   assert responses[-1].content.parts[0].text == 'Done text'
+
+
+def test_serialize_system_instruction_part_shaped_mapping():
+  """A Part-shaped mapping serializes to its text."""
+  assert _serialize_system_instruction({'text': 'Be concise.'}) == 'Be concise.'
+
+
+def test_serialize_system_instruction_content_shaped_mapping():
+  """A Content-shaped mapping is serialized instead of raising ValidationError.
+
+  Previously the Mapping branch did types.Part(**mapping), which raised an
+  uncaught pydantic ValidationError on a {'role': ..., 'parts': [...]} dict.
+  """
+  mapping = {
+      'role': 'system',
+      'parts': [{'text': 'Be '}, {'text': 'concise.'}],
+  }
+  assert _serialize_system_instruction(mapping) == 'Be concise.'
+
+
+def test_serialize_system_instruction_unparseable_mapping_returns_none():
+  """A mapping that fits neither Part nor Content is dropped, not raised."""
+  assert _serialize_system_instruction({'not_a_field': 123}) is None

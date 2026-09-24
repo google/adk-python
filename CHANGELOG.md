@@ -1,5 +1,31 @@
 # Changelog
 
+## [2.9.2](https://github.com/google/adk-python/compare/v2.9.1...v2.9.2) (2026-09-18)
+
+
+### Highlights
+
+This release focuses on refining telemetry behavior by correcting how OpenTelemetry event names are handled across different environments.
+
+* **Telemetry**: OpenTelemetry event names are now preserved on platforms outside of Agent Engine, ensuring more accurate and consistent tracking. ([9110770](https://github.com/google/adk-python/commit/9110770dc487283b95844ad843db9eec9e56e92d))
+
+### Bug Fixes
+
+* **telemetry:** only drop the OTel event name on Agent Engine ([9110770](https://github.com/google/adk-python/commit/9110770dc487283b95844ad843db9eec9e56e92d))
+
+## [2.9.1](https://github.com/google/adk-python/compare/v2.9.0...v2.9.1) (2026-09-15)
+
+
+### Highlights
+
+This release focuses on improving visibility into model reasoning steps when utilizing Claude's adaptive thinking capabilities.
+
+* **Claude Integration**: Access the step-by-step reasoning process of Claude models by ensuring visible thoughts are requested during adaptive thinking tasks. ([ba0d542](https://github.com/google/adk-python/commit/ba0d542181df87b6e1da9709fa0410082484443a))
+
+### Bug Fixes
+
+* request visible thoughts for Claude adaptive thinking ([ba0d542](https://github.com/google/adk-python/commit/ba0d542181df87b6e1da9709fa0410082484443a))
+
 ## [2.9.0](https://github.com/google/adk-python/compare/v2.8.0...v2.9.0) (2026-09-10)
 
 

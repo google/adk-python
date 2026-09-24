@@ -21,6 +21,7 @@ import logging
 from ...agents.context import Context
 from ...events._branch_path import _BranchPath
 from ...events._node_path_builder import _NodePathBuilder
+from ...events._rewind_events import _apply_rewinds
 from ...events.event import Event
 from ._rehydration_utils import _ChildScanState
 from ._rehydration_utils import _reconstruct_node_states
@@ -50,6 +51,7 @@ class ReplayManager:
     self._events_by_parent: dict[str, list[Event]] = {}
     self._transitive_events_by_parent: dict[str, list[Event]] = {}
     self._fc_to_parent: dict[str, str] = {}
+    self._live_events: list[Event] = []
     self._indexed_event_count: int = 0
     self._indexed_last_event: Event | None = None
 
@@ -76,14 +78,25 @@ class ReplayManager:
     existing buckets then hold events the session no longer has.
     """
     ic = ctx._invocation_context
-    events = ic.session.events
-    if self._indexed_prefix_is_intact(events):
-      if len(events) > self._indexed_event_count:
-        self._index_events(events[self._indexed_event_count :])
-        self._record_indexed_through(events)
-    else:
-      self._build_event_index(events)
-    return events
+    raw_events = ic.session.events
+    if self._indexed_event_count > 0 and self._indexed_prefix_is_intact(
+        raw_events
+    ):
+      delta = raw_events[self._indexed_event_count :]
+      has_new_rewind = any(
+          ev.actions and ev.actions.rewind_before_invocation_id for ev in delta
+      )
+      if not has_new_rewind:
+        if delta:
+          self._live_events.extend(delta)
+          self._index_events(delta)
+          self._record_indexed_through(raw_events)
+        return self._live_events
+
+    self._live_events = _apply_rewinds(raw_events)
+    self._build_event_index(self._live_events)
+    self._record_indexed_through(raw_events)
+    return self._live_events
 
   def _indexed_prefix_is_intact(self, events: list[Event]) -> bool:
     """Whether the already-indexed events are still a prefix of `events`.
@@ -116,6 +129,7 @@ class ReplayManager:
     self._events_by_parent = {}
     self._transitive_events_by_parent = {}
     self._fc_to_parent = {}
+    self._live_events = list(events)
     self._index_events(events)
     self._record_indexed_through(events)
 
@@ -317,8 +331,7 @@ class ReplayManager:
     """Scan session events for direct child workflow nodes and initialize sequence barrier."""
     ic = ctx._invocation_context
 
-    # Build the index
-    self._build_event_index(ic.session.events)
+    self._ensure_index(ctx)
 
     # Use transitive parent events for static child nodes so deeper descendant events (e.g. delegated outputs/interrupts) are recovered
     filtered_events = self._transitive_events_by_parent.get(ctx.node_path, [])

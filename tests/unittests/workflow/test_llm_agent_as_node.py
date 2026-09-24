@@ -556,6 +556,40 @@ async def test_single_turn_propagates_isolation_scope(
 
 
 @pytest.mark.asyncio
+async def test_chat_mode_preserves_isolation_scope(
+    request: pytest.FixtureRequest,
+):
+  """Scoped chat-mode workflow node preserves ctx.isolation_scope in InvocationContext."""
+  agent = _make_agent(mode='chat')
+  wrapper = build_node(agent)
+  captured_isolation_scopes = []
+
+  async def fake_run_async(invocation_context):
+    captured_isolation_scopes.append(invocation_context.isolation_scope)
+    yield Event(
+        invocation_id='inv',
+        author=wrapper.name,
+        content=types.Content(parts=[types.Part(text='ok')]),
+    )
+
+  object.__setattr__(wrapper, 'run_async', fake_run_async)
+
+  ic = await create_parent_invocation_context(
+      request.function.__name__, wrapper
+  )
+  ctx = Context(invocation_context=ic)
+  ctx.isolation_scope = 'scoped-chat-123'
+
+  events = [
+      event async for event in wrapper._run_impl(ctx=ctx, node_input='hi')
+  ]
+
+  assert len(events) == 1
+  assert events[0].content.parts[0].text == 'ok'
+  assert captured_isolation_scopes == ['scoped-chat-123']
+
+
+@pytest.mark.asyncio
 async def test_single_turn_writes_session_bookkeeping_back_to_the_caller(
     request: pytest.FixtureRequest,
 ):

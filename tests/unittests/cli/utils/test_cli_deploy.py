@@ -20,6 +20,7 @@ import importlib
 import inspect
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -408,12 +409,24 @@ def test_to_gke_happy_path(
   assert len(run_recorder.calls) == 3, "Expected 3 subprocess calls"
 
   build_args = run_recorder.calls[0][0][0]
+  # The image is tagged uniquely per build. kubectl apply diffs the manifest,
+  # so reusing one floating tag leaves the Deployment spec unchanged and the
+  # freshly pushed image never rolls out.
+  image_ref = build_args[build_args.index("--tag") + 1]
+  image_name, _, image_tag = image_ref.partition(":")
+  assert image_name == "gcr.io/gke-proj/gke-svc"
+  assert re.fullmatch(r"\d{8}-\d{6}", image_tag), image_tag
+
   expected_build_args = [
       cli_deploy._GCLOUD_CMD,
       "builds",
       "submit",
       "--tag",
-      "gcr.io/gke-proj/gke-svc",
+      image_ref,
+      # Without --project the build runs in whatever project gcloud config
+      # points at, while the image is tagged for `project`.
+      "--project",
+      "gke-proj",
       "--verbosity",
       "debug",
       str(tmp_path),
@@ -448,6 +461,7 @@ def test_to_gke_happy_path(
   yaml_content = deployment_yaml_path.read_text()
 
   assert "kind: Deployment" in yaml_content
+  assert f"image: {image_ref}" in yaml_content
   assert "kind: Service" in yaml_content
   assert "name: gke-svc" in yaml_content
   assert "image: gcr.io/gke-proj/gke-svc" in yaml_content

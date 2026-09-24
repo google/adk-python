@@ -18,12 +18,12 @@ from __future__ import annotations
 
 import base64
 from collections.abc import AsyncGenerator
+from collections.abc import Awaitable
 from collections.abc import Callable
 from collections.abc import Mapping
 import copy
 import enum
 from functools import cached_property
-import inspect
 import json
 import logging
 import os
@@ -63,9 +63,11 @@ try:
 except ImportError as e:
   raise ImportError(
       "The 'openai' package is not installed. Please install it with "
-      '`pip install openai` to use the OpenAI Responses API labs models.'
+      '`pip install "google-adk[openai]"` to use the OpenAI Responses API'
+      ' models.'
   ) from e
 
+from . import _openai_common
 from ...models.base_llm import BaseLlm
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
@@ -179,36 +181,10 @@ def _loads_json_object(value: str | None) -> dict[str, Any]:
   return {}
 
 
-def _part_text(part: types.Part) -> str:
-  """Returns a Part's text as a string ('' when unset)."""
-  return str(part.text or '')
-
-
-def _serialize_system_instruction(
-    system_instruction: types.ContentUnion | None,
-) -> str | None:
-  """Serializes ADK system instructions to Responses API instructions."""
-  if not system_instruction:
-    return None
-  if isinstance(system_instruction, str):
-    return system_instruction
-  if isinstance(system_instruction, types.Part):
-    return _part_text(system_instruction)
-  if isinstance(system_instruction, types.Content):
-    return ''.join(_part_text(part) for part in system_instruction.parts or [])
-  if isinstance(system_instruction, Mapping):
-    return _part_text(types.Part(**system_instruction))
-  if isinstance(system_instruction, list):
-    texts: list[str] = []
-    for item in system_instruction:
-      if isinstance(item, str):
-        texts.append(item)
-      elif isinstance(item, types.Part):
-        texts.append(_part_text(item))
-      elif isinstance(item, Mapping):
-        texts.append(_part_text(types.Part(**item)))
-    return ''.join(texts)
-  return None
+# System-instruction serialization is shared with the Chat Completions model;
+# alias it under the private name this module and its tests have historically
+# used.
+_serialize_system_instruction = _openai_common.serialize_system_instruction
 
 
 def _schema_to_dict(schema: object) -> dict[str, Any]:
@@ -266,31 +242,43 @@ def _reasoning(effort: str) -> OpenAIReasoning:
 
 def _openai_reasoning_config(
     config: types.GenerateContentConfig,
-) -> OpenAIReasoning | None | Literal[_Sentinel.REASONING_NOT_GIVEN]:
-  """Maps ADK thinking config to Responses reasoning config."""
-  if not config.thinking_config:
+    model: str | None,
+    base_reasoning: OpenAIReasoning | None = None,
+    *,
+    validate: bool = True,
+) -> OpenAIReasoning | Literal[_Sentinel.REASONING_NOT_GIVEN]:
+  """Maps OpenAI reasoning config to a Responses ``reasoning`` object.
+
+  Effort comes from ``OpenAIGenerateContentConfig.effort``. On the default
+  OpenAI host it is validated against ``model``; pass ``validate=False`` for an
+  OpenAI-compatible backend (an injected client, a custom ``base_url`` or Azure
+  endpoint, or ``OPENAI_BASE_URL`` in the environment; see
+  ``_openai_common.targets_default_openai_host``) whose
+  ``model`` is a partner id or deployment name (see
+  ``_openai_common.build_reasoning_effort``). Returns the sentinel when no
+  effort is configured so the model-level ``self.reasoning`` default still
+  applies.
+
+  A configured effort overrides only the ``effort`` key of ``base_reasoning``
+  (the model-level ``self.reasoning``), preserving the rest of it -- e.g. a
+  ``summary`` of ``detailed`` -- rather than replacing the whole object. The
+  ``concise`` summary default is applied ONLY when ``base_reasoning`` is unset.
+  When ``base_reasoning`` is set it is preserved as-is, so a per-request effort
+  override of a base that carries no ``summary`` yields a ``reasoning`` with no
+  ``summary``: the default is intentionally not injected on top of an explicit
+  instance-level ``reasoning`` object, so the instance stays authoritative for
+  every key except ``effort``.
+  """
+  effort = _openai_common.build_reasoning_effort(
+      config, model, 'responses', validate=validate
+  )
+  if effort is None:
     return _REASONING_NOT_GIVEN
-
-  thinking_level = config.thinking_config.thinking_level
-  if thinking_level:
-    effort = str(thinking_level.value).lower()
-    if effort == 'thinking_level_unspecified':
-      effort = 'medium'
-    return _reasoning(effort)
-
-  thinking_budget = config.thinking_config.thinking_budget
-  if thinking_budget is None:
-    raise ValueError(
-        'thinking_budget must be set explicitly when ThinkingConfig is'
-        ' provided without thinking_level for OpenAI Responses models. Use'
-        ' thinking_level for effort-based reasoning, 0 for minimal reasoning,'
-        ' or -1 for medium reasoning.'
-    )
-  # OpenAI Responses reasoning is effort-based, not token-budget based: a zero
-  # budget maps to minimal effort, any nonzero budget to medium.
-  if thinking_budget == 0:
-    return _reasoning('minimal')
-  return _reasoning('medium')
+  if base_reasoning:
+    merged = dict(base_reasoning)
+    merged['effort'] = effort
+    return cast(OpenAIReasoning, merged)
+  return _reasoning(effort)
 
 
 def _role_to_responses_role(role: str | None) -> str:
@@ -511,17 +499,9 @@ def _function_declaration_to_response_tool(
   )
 
 
-def _tool_choice(config: types.GenerateContentConfig) -> str | None:
-  if not config.tool_config or not config.tool_config.function_calling_config:
-    return None
-  mode = config.tool_config.function_calling_config.mode
-  if mode == types.FunctionCallingConfigMode.ANY:
-    return 'required'
-  if mode == types.FunctionCallingConfigMode.NONE:
-    return 'none'
-  if mode == types.FunctionCallingConfigMode.AUTO:
-    return 'auto'
-  return None
+# Function-calling-mode -> tool_choice mapping is shared with the Chat
+# Completions model.
+_tool_choice = _openai_common.tool_choice
 
 
 def _usage_metadata(
@@ -554,6 +534,16 @@ def _usage_metadata(
 def _map_finish_reason(
     response: Response | Mapping[str, Any],
 ) -> types.FinishReason | None:
+  """Maps a Responses API status to an ADK FinishReason.
+
+  Unlike the Chat Completions surface, the Responses API reports a *status*
+  rather than a finish-reason string. ``OTHER`` is reserved for recognized
+  abnormal terminations (``failed``/``cancelled``, or an ``incomplete`` response
+  whose reason we do not map to a specific code). A non-terminal or unrecognized
+  status returns ``None`` so streaming can keep accumulating; it is not an
+  unrecognized *reason* and so is deliberately not
+  ``FINISH_REASON_UNSPECIFIED``.
+  """
   status = _get_value(response, 'status')
   if status == 'completed':
     return types.FinishReason.STOP
@@ -1095,13 +1085,43 @@ class _StreamAccumulator:
 class OpenAIResponsesLlm(BaseLlm):
   """ADK model implementation backed by the OpenAI Responses API.
 
-  For configuration beyond ``api_key`` (organization, base_url, timeout,
-  retries, custom headers, ...), pass a pre-configured ``AsyncOpenAI`` instance
-  as ``client``.
+  Set ``api_key`` and ``base_url`` to reach the default OpenAI host or an
+  OpenAI-compatible backend. ``api_key`` may be a string or a zero-arg callable
+  (sync or async) that returns one; ``AsyncOpenAI`` re-invokes it per request so
+  an expiring credential is refreshed. For anything the client supports beyond
+  these (organization, timeout, retries, custom headers, ...), pass a
+  pre-configured ``AsyncOpenAI`` instance as ``client``.
+
+  Reasoning: set the instance-level ``reasoning`` attribute for a model-wide
+  default (e.g. ``{"effort": "medium", "summary": "detailed"}``). A per-request
+  ``OpenAIGenerateContentConfig.effort`` overrides only the ``effort`` key of
+  that instance-level object, preserving its other keys (such as ``summary``);
+  when no instance-level ``reasoning`` is set, a per-request effort applies a
+  ``concise`` summary default. The effort tier is validated against the model
+  only when the request targets the default OpenAI host. It is passed through
+  unvalidated when an OpenAI-compatible backend may be in use: an injected
+  ``client``, a custom ``base_url`` or Azure endpoint, or ``OPENAI_BASE_URL``
+  in the environment; such a backend rejects an unsupported tier itself.
+
+  Reasoning configuration fails as follows:
+
+  * An ``OpenAIGenerateContentConfig`` that sets ``thinking_config``
+    (``thinking_level`` / ``thinking_budget``) raises ``ValueError`` when the
+    config is constructed. Set ``effort`` instead.
+  * A plain ``types.GenerateContentConfig`` that sets ``thinking_config`` is
+    not an error: the ``thinking_config`` is ignored with a logged warning and
+    no effort is sent.
+  * On the default OpenAI host, an ``effort`` the model does not accept (a
+    tier outside its range, or any tier for a model that takes no effort)
+    raises ``ValueError`` while the request is assembled, before anything is
+    sent to the backend.
   """
 
   model: str = 'gpt-5'
-  api_key: str | Callable[[], str] | None = None
+  api_key: str | Callable[[], str] | Callable[[], Awaitable[str]] | None = (
+      Field(default=None, exclude=True, repr=False)
+  )
+  base_url: str | None = None
   client: AsyncOpenAI | None = None
   store: bool | None = None
   include: list[str] | None = None
@@ -1122,8 +1142,9 @@ class OpenAIResponsesLlm(BaseLlm):
       self, llm_request: LlmRequest, stream: bool = False
   ) -> AsyncGenerator[LlmResponse, None]:
     kwargs = self._get_response_create_kwargs(llm_request, stream=stream)
+    client = self._openai_client
     if not stream:
-      response = await self._openai_client.responses.create(**kwargs)
+      response = await client.responses.create(**kwargs)
       yield _response_to_llm_response(
           response,
           include_response_metadata=self.include_response_metadata,
@@ -1133,7 +1154,7 @@ class OpenAIResponsesLlm(BaseLlm):
     accumulator = _StreamAccumulator(
         include_response_metadata=self.include_response_metadata
     )
-    response_stream = await self._openai_client.responses.create(**kwargs)
+    response_stream = await client.responses.create(**kwargs)
     async for event in response_stream:
       for response in accumulator.process_event(event):
         yield response
@@ -1157,6 +1178,21 @@ class OpenAIResponsesLlm(BaseLlm):
       kwargs['previous_response_id'] = llm_request.previous_interaction_id
 
     self._apply_config(config, kwargs)
+    # Reasoning models (o-series, gpt-5.x, gpt-6.x) reject a non-default
+    # ``temperature`` / ``top_p`` on the Responses API too. Drop them for the
+    # effective model rather than letting the backend 400.
+    #
+    # NOTE: detection is by model-id shape. ``AzureOpenAIResponsesLlm`` sends a
+    # deployment name here (``kwargs['model']``), which is operator-chosen and
+    # need not resemble the underlying OpenAI id -- so a reasoning deployment
+    # named e.g. ``o3-mini`` (or ``azure/o1``) is detected, but an arbitrary
+    # name is not. When a custom-named Azure deployment is a reasoning model,
+    # name the deployment after its base model (or omit ``temperature`` /
+    # ``top_p`` upstream) so the backend does not 400.
+    model = kwargs.get('model')
+    # Reasoning models reject a non-default temperature/top_p; strip either from
+    # the request (with a warning) when it would 400.
+    _openai_common.strip_unsupported_sampling_params(kwargs, model)
     self._apply_model_options(kwargs)
     # extra_request_args overrides computed top-level kwargs, but extra_body is
     # merged so a user-supplied extra_body does not silently drop computed keys
@@ -1167,6 +1203,16 @@ class OpenAIResponsesLlm(BaseLlm):
         **extra_args.pop('extra_body', {}),
     }
     kwargs.update(extra_args)
+    # tool_choice is resolved here, after extra_request_args are merged, rather
+    # than in _apply_config: tools may come from config.tools or from
+    # extra_request_args, so resolving off the final kwargs['tools'] applies it
+    # whenever tools are present from either source. It is derived from
+    # config.tool_config; the API rejects a tool_choice with no tools to choose
+    # from.
+    if kwargs.get('tools') and 'tool_choice' not in kwargs:
+      tool_choice = _tool_choice(config)
+      if tool_choice:
+        kwargs['tool_choice'] = tool_choice
     if extra_body:
       kwargs['extra_body'] = extra_body
     return {key: value for key, value in kwargs.items() if value is not None}
@@ -1197,20 +1243,36 @@ class OpenAIResponsesLlm(BaseLlm):
     text = _response_text_config(config)
     if text:
       kwargs['text'] = text
-    reasoning = _openai_reasoning_config(config)
+    # Validate the tier against the model only when the request targets the
+    # real OpenAI backend (see ``targets_default_openai_host``); otherwise it
+    # is passed through for the compatible backend to accept or reject.
+    validate_effort = _openai_common.targets_default_openai_host(
+        client=self.client,
+        base_url=self.base_url,
+        azure_endpoint=getattr(self, 'azure_endpoint', None),
+    )
+    reasoning = _openai_reasoning_config(
+        config, kwargs.get('model'), self.reasoning, validate=validate_effort
+    )
     if reasoning is not _REASONING_NOT_GIVEN:
       kwargs['reasoning'] = reasoning
     tools: list[ToolParam] = []
     for tool in config.tools or []:
-      for function_declaration in tool.function_declarations or []:
+      if not tool.function_declarations:
+        logger.warning(
+            'Skipping a tool with no function declarations; only function'
+            ' tools are supported on the Responses API.'
+        )
+        continue
+      for function_declaration in tool.function_declarations:
         tools.append(
             _function_declaration_to_response_tool(function_declaration)
         )
     if tools:
       kwargs['tools'] = tools
-    tool_choice = _tool_choice(config)
-    if tool_choice:
-      kwargs['tool_choice'] = tool_choice
+    # tool_choice is resolved after extra_request_args are merged (see
+    # _get_response_create_kwargs), so it tracks the final tools payload from
+    # either config.tools or extra_request_args rather than being set here.
 
   def _apply_model_options(self, kwargs: dict[str, Any]) -> None:
     kwargs['store'] = self.store
@@ -1221,22 +1283,19 @@ class OpenAIResponsesLlm(BaseLlm):
     kwargs['truncation'] = self.truncation
     kwargs['service_tier'] = self.service_tier
 
-  def _resolve_api_key(self) -> str | None:
-    if callable(self.api_key):
-      value = self.api_key()
-      if inspect.isawaitable(value):
-        raise TypeError(
-            'Async api_key providers are not supported; provide a sync'
-            ' callable that returns a string, or a string.'
-        )
-      return value
-    return self.api_key
-
   @cached_property
   def _openai_client(self) -> AsyncOpenAI:
     if self.client is not None:
       return self.client
-    return AsyncOpenAI(api_key=self._resolve_api_key())
+    kwargs: dict[str, Any] = {}
+    api_key = _openai_common.build_api_key(self.api_key)
+    if api_key is not None:
+      kwargs['api_key'] = api_key
+    if self.base_url is not None:
+      kwargs['base_url'] = self.base_url
+    # ``AsyncOpenAI`` awaits a callable api_key on every request, so an
+    # expiring credential is refreshed without rebuilding the client.
+    return AsyncOpenAI(**kwargs)
 
 
 class AzureOpenAIResponsesLlm(OpenAIResponsesLlm):
@@ -1244,19 +1303,26 @@ class AzureOpenAIResponsesLlm(OpenAIResponsesLlm):
 
   Azure's Responses API is exposed through an OpenAI-compatible
   `/openai/v1/responses` endpoint. The `model` field should be the Azure model
-  deployment name.
+  deployment name. Set `azure_endpoint` to the Azure resource endpoint; it is
+  turned into the `/openai/v1/` base URL. If `azure_endpoint` is unset, the
+  inherited `base_url` is used verbatim as a fallback so it is not silently
+  ignored.
   """
 
   azure_endpoint: str | None = None
-
-  def _resolve_api_key(self) -> str | None:
-    return super()._resolve_api_key() or os.environ.get('AZURE_OPENAI_API_KEY')
 
   @cached_property
   def _openai_client(self) -> AsyncOpenAI:
     if self.client is not None:
       return self.client
-    kwargs: dict[str, Any] = {'api_key': self._resolve_api_key()}
+    kwargs: dict[str, Any] = {}
+    api_key = _openai_common.build_api_key(
+        self.api_key or os.environ.get('AZURE_OPENAI_API_KEY')
+    )
+    if api_key is not None:
+      kwargs['api_key'] = api_key
     if self.azure_endpoint:
       kwargs['base_url'] = self.azure_endpoint.rstrip('/') + '/openai/v1/'
+    elif self.base_url is not None:
+      kwargs['base_url'] = self.base_url
     return AsyncOpenAI(**kwargs)

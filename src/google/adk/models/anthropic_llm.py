@@ -431,24 +431,59 @@ def _function_response_media_blocks(
 
 
 class _ToolUseIdSanitizer:
-  """Maps invalid tool_use IDs to deterministic fallbacks.
+  """Maps invalid or empty tool_use IDs to deterministic unique fallbacks.
 
   Reuse one instance per conversation so a tool_use and its paired
-  tool_result with the same invalid source ID get matching outputs.
+  tool_result get matching unique outputs without collision across turns.
   """
 
   def __init__(self) -> None:
     self._mapping: dict[str, str] = {}
+    self._unpaired_calls_by_name: dict[str, list[str]] = {}
+    self._unpaired_calls_list: list[str] = []
     self._next_fallback: int = 0
 
-  def sanitize(self, tool_id: str | None) -> str:
+  def sanitize(
+      self,
+      tool_id: str | None,
+      tool_name: str | None = None,
+      is_call: bool = False,
+  ) -> str:
     if tool_id and re.fullmatch(r"[a-zA-Z0-9_-]+", tool_id):
       return tool_id
-    key = tool_id or ""
-    if key not in self._mapping:
-      self._mapping[key] = f"toolu_fallback_{self._next_fallback}"
+    if tool_id and tool_id in self._mapping:
+      return self._mapping[tool_id]
+
+    if is_call or (tool_id and tool_id not in self._mapping):
+      assigned_id = f"toolu_fallback_{self._next_fallback}"
       self._next_fallback += 1
-    return self._mapping[key]
+      if tool_id:
+        self._mapping[tool_id] = assigned_id
+      else:
+        if tool_name:
+          self._unpaired_calls_by_name.setdefault(tool_name, []).append(
+              assigned_id
+          )
+        self._unpaired_calls_list.append(assigned_id)
+      return assigned_id
+    else:
+      # Response with empty/None tool_id: pair with oldest pending call
+      if tool_name and self._unpaired_calls_by_name.get(tool_name):
+        assigned_id = self._unpaired_calls_by_name[tool_name].pop(0)
+        if assigned_id in self._unpaired_calls_list:
+          self._unpaired_calls_list.remove(assigned_id)
+        return assigned_id
+      elif self._unpaired_calls_list:
+        assigned_id = self._unpaired_calls_list.pop(0)
+        for ids in self._unpaired_calls_by_name.values():
+          if assigned_id in ids:
+            ids.remove(assigned_id)
+            break
+        return assigned_id
+      else:
+        assigned_id = f"toolu_fallback_{self._next_fallback}"
+        self._next_fallback += 1
+        return assigned_id
 
 
 def _part_to_message_block(
@@ -479,7 +514,9 @@ def _part_to_message_block(
     tool_input: dict[str, object] = dict(function_call.args or {})
 
     return anthropic_types.ToolUseBlockParam(
-        id=sanitizer.sanitize(function_call.id),
+        id=sanitizer.sanitize(
+            function_call.id, tool_name=function_call.name, is_call=True
+        ),
         name=function_call.name,
         input=tool_input,
         type="tool_use",
@@ -546,7 +583,11 @@ def _part_to_message_block(
       tool_result_content = content
 
     return anthropic_types.ToolResultBlockParam(
-        tool_use_id=sanitizer.sanitize(function_response.id),
+        tool_use_id=sanitizer.sanitize(
+            function_response.id,
+            tool_name=function_response.name,
+            is_call=False,
+        ),
         type="tool_result",
         content=tool_result_content,
         is_error=False,

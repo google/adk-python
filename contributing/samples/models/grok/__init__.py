@@ -12,19 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Backward compatibility module for content compaction helpers.
-
-Content compaction helpers have moved to
-``google.adk.flows.llm_flows.context._compaction``. This module re-exports
-all symbols for backward compatibility.
-"""
-
-from __future__ import annotations
-
-from .context._compaction import _process_compaction_events as _process_compaction_events
-from .context._compaction import _recover_compacted_function_calls as _recover_compacted_function_calls
-
-__all__ = [
-    '_process_compaction_events',
-    '_recover_compacted_function_calls',
-]
+from . import agent

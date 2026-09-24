@@ -51,6 +51,7 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.adk.tools.base_toolset import BaseToolset
 from google.genai import types
+from opentelemetry import trace
 import pytest
 
 from tests.unittests import testing_utils
@@ -510,6 +511,50 @@ def test_run_passes_state_delta():
 
   user_event = next(e for e in session_events if e.author == "user")
   assert user_event.actions.state_delta == state_delta
+
+
+def test_run_keeps_caller_otel_trace():
+  """run should run the agent inside the caller's trace, not a new one."""
+  caller_span_context = trace.SpanContext(
+      trace_id=0x0AF7651916CD43DD8448EB211C80319C,
+      span_id=0xB7AD6B7169203331,
+      is_remote=True,
+      trace_flags=trace.TraceFlags(trace.TraceFlags.SAMPLED),
+  )
+  agent_trace_ids: list[int] = []
+
+  class TraceRecordingAgent(BaseAgent):
+
+    async def _run_async_impl(
+        self, invocation_context: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      agent_trace_ids.append(
+          trace.get_current_span().get_span_context().trace_id
+      )
+      yield Event(
+          invocation_id=invocation_context.invocation_id, author=self.name
+      )
+
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=TraceRecordingAgent(name="trace_recording_agent"),
+      session_service=InMemorySessionService(),
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  with trace.use_span(trace.NonRecordingSpan(caller_span_context)):
+    list(
+        runner.run(
+            user_id=TEST_USER_ID,
+            session_id=TEST_SESSION_ID,
+            new_message=types.Content(
+                role="user", parts=[types.Part(text="hello")]
+            ),
+        )
+    )
+
+  assert agent_trace_ids == [caller_span_context.trace_id]
 
 
 def test_run_reraises_agent_error():

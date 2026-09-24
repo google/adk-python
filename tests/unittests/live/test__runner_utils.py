@@ -250,3 +250,35 @@ async def test_run_node_live_notifies_plugins_when_the_root_node_fails():
       pass
 
   assert [str(e) for e in plugin.errors] == ["root node exploded"]
+
+
+@pytest.mark.asyncio
+async def test_merge_live_event_streams_interleaves_agent_and_queued_events():
+  """merge_live_event_streams drains both agent_events and ic._event_queue."""
+  import asyncio
+
+  agent = _MockLiveAgent(name="root")
+  runner = Runner(
+      app_name="test_app",
+      agent=agent,
+      session_service=InMemorySessionService(),
+  )
+  session = await runner.session_service.create_session(
+      user_id="u1", session_id="s1", app_name=runner.app_name
+  )
+  ic = runner._new_invocation_context_for_live(
+      session, live_request_queue=LiveRequestQueue()
+  )
+  ic._event_queue = asyncio.Queue()
+
+  async def _agent_stream() -> AsyncGenerator[Event, None]:
+    await ic._enqueue_event(Event(author="queued_tool"))
+    yield Event(author="agent_turn")
+
+  collected = [
+      event.author
+      async for event in _runner_utils._merge_live_event_streams(
+          runner, ic, _agent_stream()
+      )
+  ]
+  assert set(collected) == {"agent_turn", "queued_tool"}
