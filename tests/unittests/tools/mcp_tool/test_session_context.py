@@ -923,6 +923,47 @@ class TestSessionContextRunGuarded:
       finally:
         await killer
 
+  @pytest.mark.asyncio
+  async def test_run_guarded_cancels_coro_when_caller_is_cancelled(self):
+    """Cancelling the caller also cancels the in-flight tool call.
+
+    asyncio.wait does not own the futures it waits on, so a cancelled
+    caller would leave the call running against a session that
+    McpTool._run_async_impl has already released back to the pool.
+    """
+    mock_client = MockClient()
+    session_context = SessionContext(
+        mock_client, timeout=5.0, sse_read_timeout=None
+    )
+
+    with patch(
+        'google.adk.tools.mcp_tool.session_context.ClientSession'
+    ) as mock_session_class:
+      mock_session_class.return_value = MockClientSession()
+      await session_context.start()
+
+      coro_started = asyncio.Event()
+      coro_was_cancelled = False
+
+      async def slow_coro():
+        nonlocal coro_was_cancelled
+        coro_started.set()
+        try:
+          await asyncio.sleep(300)
+          return 'should never reach here'
+        except asyncio.CancelledError:
+          coro_was_cancelled = True
+          raise
+
+      caller = asyncio.create_task(session_context._run_guarded(slow_coro()))
+      await coro_started.wait()
+      caller.cancel()
+
+      with pytest.raises(asyncio.CancelledError):
+        await caller
+
+      assert coro_was_cancelled is True
+
 
 class TestSessionContextFlagOffPreservesPreFixBehavior:
   """Pin down that flag=OFF reproduces pre-fix behavior exactly.
