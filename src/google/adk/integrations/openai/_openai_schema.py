@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Shared JSON-schema helpers for the OpenAI labs models."""
+"""Shared JSON-schema helpers for the OpenAI models."""
 
 from __future__ import annotations
 

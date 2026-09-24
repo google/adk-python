@@ -63,7 +63,8 @@ try:
 except ImportError as e:
   raise ImportError(
       "The 'openai' package is not installed. Please install it with "
-      '`pip install openai` to use the OpenAI Responses API labs models.'
+      '`pip install "google-adk[openai]"` to use the OpenAI Responses API'
+      ' models.'
   ) from e
 
 from . import _openai_common
@@ -241,31 +242,43 @@ def _reasoning(effort: str) -> OpenAIReasoning:
 
 def _openai_reasoning_config(
     config: types.GenerateContentConfig,
-) -> OpenAIReasoning | None | Literal[_Sentinel.REASONING_NOT_GIVEN]:
-  """Maps ADK thinking config to Responses reasoning config."""
-  if not config.thinking_config:
+    model: str | None,
+    base_reasoning: OpenAIReasoning | None = None,
+    *,
+    validate: bool = True,
+) -> OpenAIReasoning | Literal[_Sentinel.REASONING_NOT_GIVEN]:
+  """Maps OpenAI reasoning config to a Responses ``reasoning`` object.
+
+  Effort comes from ``OpenAIGenerateContentConfig.effort``. On the default
+  OpenAI host it is validated against ``model``; pass ``validate=False`` for an
+  OpenAI-compatible backend (an injected client, a custom ``base_url`` or Azure
+  endpoint, or ``OPENAI_BASE_URL`` in the environment; see
+  ``_openai_common.targets_default_openai_host``) whose
+  ``model`` is a partner id or deployment name (see
+  ``_openai_common.build_reasoning_effort``). Returns the sentinel when no
+  effort is configured so the model-level ``self.reasoning`` default still
+  applies.
+
+  A configured effort overrides only the ``effort`` key of ``base_reasoning``
+  (the model-level ``self.reasoning``), preserving the rest of it -- e.g. a
+  ``summary`` of ``detailed`` -- rather than replacing the whole object. The
+  ``concise`` summary default is applied ONLY when ``base_reasoning`` is unset.
+  When ``base_reasoning`` is set it is preserved as-is, so a per-request effort
+  override of a base that carries no ``summary`` yields a ``reasoning`` with no
+  ``summary``: the default is intentionally not injected on top of an explicit
+  instance-level ``reasoning`` object, so the instance stays authoritative for
+  every key except ``effort``.
+  """
+  effort = _openai_common.build_reasoning_effort(
+      config, model, 'responses', validate=validate
+  )
+  if effort is None:
     return _REASONING_NOT_GIVEN
-
-  thinking_level = config.thinking_config.thinking_level
-  if thinking_level:
-    effort = str(thinking_level.value).lower()
-    if effort == 'thinking_level_unspecified':
-      effort = 'medium'
-    return _reasoning(effort)
-
-  thinking_budget = config.thinking_config.thinking_budget
-  if thinking_budget is None:
-    raise ValueError(
-        'thinking_budget must be set explicitly when ThinkingConfig is'
-        ' provided without thinking_level for OpenAI Responses models. Use'
-        ' thinking_level for effort-based reasoning, 0 for minimal reasoning,'
-        ' or -1 for medium reasoning.'
-    )
-  # OpenAI Responses reasoning is effort-based, not token-budget based: a zero
-  # budget maps to minimal effort, any nonzero budget to medium.
-  if thinking_budget == 0:
-    return _reasoning('minimal')
-  return _reasoning('medium')
+  if base_reasoning:
+    merged = dict(base_reasoning)
+    merged['effort'] = effort
+    return cast(OpenAIReasoning, merged)
+  return _reasoning(effort)
 
 
 def _role_to_responses_role(role: str | None) -> str:
@@ -1078,6 +1091,30 @@ class OpenAIResponsesLlm(BaseLlm):
   an expiring credential is refreshed. For anything the client supports beyond
   these (organization, timeout, retries, custom headers, ...), pass a
   pre-configured ``AsyncOpenAI`` instance as ``client``.
+
+  Reasoning: set the instance-level ``reasoning`` attribute for a model-wide
+  default (e.g. ``{"effort": "medium", "summary": "detailed"}``). A per-request
+  ``OpenAIGenerateContentConfig.effort`` overrides only the ``effort`` key of
+  that instance-level object, preserving its other keys (such as ``summary``);
+  when no instance-level ``reasoning`` is set, a per-request effort applies a
+  ``concise`` summary default. The effort tier is validated against the model
+  only when the request targets the default OpenAI host. It is passed through
+  unvalidated when an OpenAI-compatible backend may be in use: an injected
+  ``client``, a custom ``base_url`` or Azure endpoint, or ``OPENAI_BASE_URL``
+  in the environment; such a backend rejects an unsupported tier itself.
+
+  Reasoning configuration fails as follows:
+
+  * An ``OpenAIGenerateContentConfig`` that sets ``thinking_config``
+    (``thinking_level`` / ``thinking_budget``) raises ``ValueError`` when the
+    config is constructed. Set ``effort`` instead.
+  * A plain ``types.GenerateContentConfig`` that sets ``thinking_config`` is
+    not an error: the ``thinking_config`` is ignored with a logged warning and
+    no effort is sent.
+  * On the default OpenAI host, an ``effort`` the model does not accept (a
+    tier outside its range, or any tier for a model that takes no effort)
+    raises ``ValueError`` while the request is assembled, before anything is
+    sent to the backend.
   """
 
   model: str = 'gpt-5'
@@ -1206,7 +1243,17 @@ class OpenAIResponsesLlm(BaseLlm):
     text = _response_text_config(config)
     if text:
       kwargs['text'] = text
-    reasoning = _openai_reasoning_config(config)
+    # Validate the tier against the model only when the request targets the
+    # real OpenAI backend (see ``targets_default_openai_host``); otherwise it
+    # is passed through for the compatible backend to accept or reject.
+    validate_effort = _openai_common.targets_default_openai_host(
+        client=self.client,
+        base_url=self.base_url,
+        azure_endpoint=getattr(self, 'azure_endpoint', None),
+    )
+    reasoning = _openai_reasoning_config(
+        config, kwargs.get('model'), self.reasoning, validate=validate_effort
+    )
     if reasoning is not _REASONING_NOT_GIVEN:
       kwargs['reasoning'] = reasoning
     tools: list[ToolParam] = []

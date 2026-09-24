@@ -29,7 +29,7 @@ from .registry import LLMRegistry
 
 if TYPE_CHECKING:
   from google.adk.integrations.oci._oci_genai_llm import OCIGenAILlm
-  from google.adk.labs.openai import OpenAILlm
+  from google.adk.integrations.openai import OpenAILlm
 
   from ._fallback_model import FallbackModel
   from .anthropic_llm import AnthropicGenerateContentConfig
@@ -79,7 +79,7 @@ _LAZY_PROVIDERS: dict[str, tuple[list[str], str]] = {
     'Gemma3Ollama': ([r'ollama/gemma3.*'], 'gemma_llm'),
     'OpenAILlm': (
         [r'gpt-.*', r'o\d+-.*'],
-        'google.adk.labs.openai',
+        'google.adk.integrations.openai._openai_llm',
     ),
     'LiteLlm': (
         [

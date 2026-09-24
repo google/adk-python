@@ -336,6 +336,19 @@ class RecordingsPlugin(BasePlugin):
           state.records,
           recordings_file,
           sort_keys=False,
+          exclude={
+              "recordings": {
+                  "__all__": {
+                      "llm_recording": {
+                          "llm_request": {
+                              # Excluded whole: `headers` commonly holds an
+                              # Authorization bearer token.
+                              "config": {"http_options": True}
+                          }
+                      }
+                  }
+              }
+          },
       )
       logger.info(
           "Saved %d recordings to %s",

@@ -87,6 +87,7 @@ This directory contains specific developer guides for the ADK Python implementat
 ### Models
 * [BaseLlm and LLMRegistry](models/llm_registry/index.md) - The model interface, how a model name resolves to an implementation, and how to plug in your own.
 * [FallbackModel](models/fallback_model/index.md) - Wrapping an ordered list of models and moving to the next one when a call fails.
+* [ServiceTier](models/service_tier/index.md) - Choosing serving tiers for Interactions API calls, including deferred execution on off-peak capacity.
 
 ### Optimization
 * [AgentOptimizer and Sampler](optimization/agent_optimizer/index.md) - Rewriting an agent's instruction automatically, scoring candidate prompts against an evaluation set and keeping the better one.

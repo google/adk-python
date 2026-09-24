@@ -40,7 +40,7 @@ try:
 except ImportError as e:
   raise ImportError(
       "The 'openai' package is not installed. Please install it with "
-      "`pip install openai` to use the OpenAILlm."
+      '`pip install "google-adk[openai]"` to use the OpenAILlm.'
   ) from e
 
 from pydantic import BaseModel
@@ -242,6 +242,13 @@ def _extract_cached_token_count(usage: CompletionUsage) -> int | None:
   return cached if isinstance(cached, int) else None
 
 
+def _extract_reasoning_token_count(usage: CompletionUsage) -> int | None:
+  """Returns OpenAI completion_tokens_details.reasoning_tokens, if present."""
+  details = getattr(usage, "completion_tokens_details", None)
+  reasoning = getattr(details, "reasoning_tokens", None)
+  return reasoning if isinstance(reasoning, int) else None
+
+
 def _usage_metadata(
     usage: CompletionUsage | None,
 ) -> types.GenerateContentResponseUsageMetadata | None:
@@ -253,6 +260,14 @@ def _usage_metadata(
       candidates_token_count=usage.completion_tokens,
       total_token_count=usage.total_tokens,
       cached_content_token_count=_extract_cached_token_count(usage),
+      # Reasoning tokens are also counted in completion_tokens, matching the
+      # Responses surface's candidates/thoughts mapping. Unlike Gemini, where
+      # the two buckets are disjoint, thoughts here is a subset of candidates,
+      # so telemetry/_token_usage.py (which sums candidates + thoughts into
+      # output tokens) over-counts reasoning tokens for OpenAI models. That
+      # aggregator needs to learn about overlapping buckets; until then this
+      # keeps both OpenAI surfaces consistent.
+      thoughts_token_count=_extract_reasoning_token_count(usage),
   )
 
 
@@ -461,6 +476,24 @@ class OpenAILlm(BaseLlm):
     # Reasoning models reject a non-default temperature/top_p; strip either from
     # the request (with a warning) when it would 400.
     _openai_common.strip_unsupported_sampling_params(kwargs, self.model)
+
+    # Reasoning effort (from OpenAIGenerateContentConfig.effort) maps to the
+    # flat ``reasoning_effort`` Chat Completions parameter. The tier is
+    # validated against the model only when the request targets the real
+    # OpenAI backend (see ``targets_default_openai_host``); otherwise it is
+    # passed through for the compatible backend to accept or reject.
+    validate = _openai_common.targets_default_openai_host(
+        client=self.client,
+        base_url=self.base_url,
+    )
+    effort = _openai_common.build_reasoning_effort(
+        llm_request.config,
+        self.model,
+        "chat",
+        validate=validate,
+    )
+    if effort is not None:
+      kwargs["reasoning_effort"] = effort
 
     if not stream:
       response = await self._openai_client.chat.completions.create(**kwargs)

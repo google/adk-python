@@ -18,13 +18,14 @@ import logging
 import os
 from unittest import mock
 
-from google.adk.labs.openai._openai_common import is_reasoning_model
-from google.adk.labs.openai._openai_llm import _function_declaration_to_openai_tool
-from google.adk.labs.openai._openai_llm import _map_finish_reason
-from google.adk.labs.openai._openai_llm import _part_to_openai_content
-from google.adk.labs.openai._openai_llm import _response_to_llm_response
-from google.adk.labs.openai._openai_llm import _serialize_system_instruction
-from google.adk.labs.openai._openai_llm import OpenAILlm
+from google.adk.integrations.openai import OpenAIGenerateContentConfig
+from google.adk.integrations.openai._openai_llm import _function_declaration_to_openai_tool
+from google.adk.integrations.openai._openai_llm import _map_finish_reason
+from google.adk.integrations.openai._openai_llm import _part_to_openai_content
+from google.adk.integrations.openai._openai_llm import _response_to_llm_response
+from google.adk.integrations.openai._openai_llm import _serialize_system_instruction
+from google.adk.integrations.openai._openai_llm import _usage_metadata
+from google.adk.integrations.openai._openai_llm import OpenAILlm
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
@@ -85,7 +86,7 @@ def test_part_to_openai_content():
 
 
 def test_content_to_openai_messages_with_empty_response():
-  from google.adk.labs.openai._openai_llm import _content_to_openai_messages
+  from google.adk.integrations.openai._openai_llm import _content_to_openai_messages
 
   # Test with empty dict response
   content = types.Content(
@@ -148,7 +149,7 @@ async def test_generate_content_async():
       return mock_response
 
     with mock.patch(
-        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+        "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
     ) as mock_client_class:
       mock_client = mock.MagicMock()
       mock_client_class.return_value = mock_client
@@ -196,7 +197,7 @@ async def test_reasoning_model_uses_max_completion_tokens_and_drops_temp(model):
       return mock_response
 
     with mock.patch(
-        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+        "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
     ) as mock_client_class:
       mock_client = mock.MagicMock()
       mock_client_class.return_value = mock_client
@@ -215,39 +216,258 @@ async def test_reasoning_model_uses_max_completion_tokens_and_drops_temp(model):
     assert "top_p" not in captured
 
 
-@pytest.mark.parametrize(
-    "model",
-    [
-        "o1",
-        "o3-mini",
-        "gpt-5",
-        "gpt-5.6-sol",
-        "gpt-6-astra",
-        "openai/o3-mini",
-        "azure/o1",
-    ],
-)
-def test_is_reasoning_model_positive(model):
-  """o-series and gpt-5.x/6.x families (namespaced too) are reasoning."""
-  assert is_reasoning_model(model) is True
+async def _capture_chat_kwargs(openai_llm, llm_request) -> dict:
+  """Runs a mocked non-streaming request and returns the create() kwargs."""
+  mock_response = mock.MagicMock()
+  mock_choice = mock.MagicMock()
+  mock_choice.message.content = "hi"
+  mock_choice.message.tool_calls = None
+  mock_choice.finish_reason = "stop"
+  mock_response.choices = [mock_choice]
+  mock_response.usage.prompt_tokens = 1
+  mock_response.usage.completion_tokens = 1
+  mock_response.usage.total_tokens = 2
+
+  captured = {}
+
+  async def mock_create(*args, **kwargs):
+    captured.update(kwargs)
+    return mock_response
+
+  with mock.patch(
+      "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
+  ) as mock_client_class:
+    mock_client = mock.MagicMock()
+    mock_client_class.return_value = mock_client
+    mock_client.chat.completions.create = mock_create
+    _ = [
+        resp
+        async for resp in openai_llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+  return captured
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "model",
+    "model,effort",
     [
-        "gpt-4o",
-        "gpt-4.1",
-        "gpt-5-chat",
-        "gpt-5-chat-latest",
-        "gpt-5.1-chat-latest",
-        "xai/grok-4.6",
-        None,
-        "",
+        # Chat Completions: advanced models accept up to xhigh (not max).
+        ("gpt-6-astra", "xhigh"),
+        ("gpt-5.6-sol", "high"),
+        ("gpt-5", "minimal"),
+        ("o3", "medium"),
     ],
 )
-def test_is_reasoning_model_negative(model):
-  """Chat models, other providers, and empty input are not reasoning."""
-  assert is_reasoning_model(model) is False
+async def test_reasoning_effort_sent(model, effort):
+  """OpenAIGenerateContentConfig.effort maps to the reasoning_effort kwarg."""
+  with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
+    openai_llm = OpenAILlm(model=model, max_tokens=256)
+    llm_request = LlmRequest(
+        model=model,
+        contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+        config=OpenAIGenerateContentConfig(effort=effort),
+    )
+    captured = await _capture_chat_kwargs(openai_llm, llm_request)
+    assert captured["reasoning_effort"] == effort
+
+
+@pytest.mark.asyncio
+async def test_reasoning_effort_absent_without_config():
+  """No reasoning_effort is sent when effort is not configured."""
+  with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test_key"}):
+    openai_llm = OpenAILlm(model="gpt-5.6-sol", max_tokens=256)
+    llm_request = LlmRequest(
+        model="gpt-5.6-sol",
+        contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+    )
+    captured = await _capture_chat_kwargs(openai_llm, llm_request)
+    assert "reasoning_effort" not in captured
+
+
+@pytest.mark.asyncio
+async def test_reasoning_effort_unsupported_tier_raises():
+  """An effort tier the model does not accept raises before the request."""
+  with mock.patch.dict(
+      os.environ, {"OPENAI_API_KEY": "test_key", "OPENAI_BASE_URL": ""}
+  ):
+    openai_llm = OpenAILlm(model="o3", max_tokens=256)
+    llm_request = LlmRequest(
+        model="o3",
+        contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+        config=OpenAIGenerateContentConfig(effort="minimal"),
+    )
+    with pytest.raises(ValueError, match="not supported by model 'o3'"):
+      _ = [
+          resp
+          async for resp in openai_llm.generate_content_async(
+              llm_request, stream=False
+          )
+      ]
+
+
+@pytest.mark.asyncio
+async def test_reasoning_effort_on_non_reasoning_model_raises():
+  """Setting effort on a non-reasoning model raises before the request."""
+  with mock.patch.dict(
+      os.environ, {"OPENAI_API_KEY": "test_key", "OPENAI_BASE_URL": ""}
+  ):
+    openai_llm = OpenAILlm(model="gpt-4o")
+    llm_request = LlmRequest(
+        model="gpt-4o",
+        contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+        config=OpenAIGenerateContentConfig(effort="high"),
+    )
+    with pytest.raises(ValueError, match="does not accept a reasoning effort"):
+      _ = [
+          resp
+          async for resp in openai_llm.generate_content_async(
+              llm_request, stream=False
+          )
+      ]
+
+
+@pytest.mark.asyncio
+async def test_reasoning_effort_max_rejected_on_chat():
+  """``max`` is a Responses-only tier; Chat Completions rejects it."""
+  with mock.patch.dict(
+      os.environ, {"OPENAI_API_KEY": "test_key", "OPENAI_BASE_URL": ""}
+  ):
+    openai_llm = OpenAILlm(model="gpt-6-astra", max_tokens=256)
+    llm_request = LlmRequest(
+        model="gpt-6-astra",
+        contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+        config=OpenAIGenerateContentConfig(effort="max"),
+    )
+    with pytest.raises(ValueError, match="on the chat API"):
+      _ = [
+          resp
+          async for resp in openai_llm.generate_content_async(
+              llm_request, stream=False
+          )
+      ]
+
+
+@pytest.mark.asyncio
+async def test_reasoning_effort_passthrough_on_base_url_backend():
+  """With a custom base_url, effort is passed through without model gating.
+
+  An OpenAI-compatible backend (e.g. Grok on Vertex AI) accepts
+  reasoning_effort but its model id is not an OpenAI id, so the tier must not
+  be validated against the OpenAI per-model tables; the backend rejects an
+  unsupported one.
+  """
+  openai_llm = OpenAILlm(
+      model="xai/grok-4.6",
+      api_key="k",
+      base_url="https://host.example/v1",
+      max_tokens=256,
+  )
+  llm_request = LlmRequest(
+      model="xai/grok-4.6",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=OpenAIGenerateContentConfig(effort="high"),
+  )
+
+  captured = {}
+
+  async def mock_create(*args, **kwargs):
+    nonlocal captured
+    captured = kwargs
+    return _text_completion()
+
+  with mock.patch(
+      "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
+  ) as mock_client_class:
+    mock_client = mock.MagicMock()
+    mock_client_class.return_value = mock_client
+    mock_client.chat.completions.create = mock_create
+
+    _ = [
+        resp
+        async for resp in openai_llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  assert captured["reasoning_effort"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_reasoning_effort_passthrough_with_injected_client():
+  """An injected client may point at a compatible backend; skip model gating.
+
+  base_url is None, but the host can come from client=AsyncOpenAI(base_url=...),
+  so the tier must be passed through rather than validated against the OpenAI
+  per-model tables (grok-4.6 is not an OpenAI reasoning model).
+  """
+  captured = {}
+
+  async def mock_create(*args, **kwargs):
+    nonlocal captured
+    captured = kwargs
+    return _text_completion()
+
+  client = AsyncOpenAI(api_key="k", base_url="https://host.example/v1")
+  openai_llm = OpenAILlm(model="xai/grok-4.6", client=client, max_tokens=256)
+  llm_request = LlmRequest(
+      model="xai/grok-4.6",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+      config=OpenAIGenerateContentConfig(effort="high"),
+  )
+
+  with mock.patch.object(client.chat.completions, "create", mock_create):
+    _ = [
+        resp
+        async for resp in openai_llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+
+  assert captured["reasoning_effort"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_reasoning_effort_passthrough_with_openai_base_url_env():
+  """OPENAI_BASE_URL points the default client at a compatible backend.
+
+  base_url is None, but the SDK reads OPENAI_BASE_URL, so the tier must be
+  passed through rather than validated against the OpenAI per-model tables.
+  """
+  captured = {}
+
+  async def mock_create(*args, **kwargs):
+    nonlocal captured
+    captured = kwargs
+    return _text_completion()
+
+  with mock.patch.dict(
+      os.environ,
+      {"OPENAI_API_KEY": "k", "OPENAI_BASE_URL": "https://host.example/v1"},
+  ):
+    openai_llm = OpenAILlm(model="xai/grok-4.6", max_tokens=256)
+    llm_request = LlmRequest(
+        model="xai/grok-4.6",
+        contents=[Content(role="user", parts=[Part.from_text(text="Hi")])],
+        config=OpenAIGenerateContentConfig(effort="high"),
+    )
+
+    with mock.patch(
+        "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
+    ) as mock_client_class:
+      mock_client = mock.MagicMock()
+      mock_client_class.return_value = mock_client
+      mock_client.chat.completions.create = mock_create
+
+      _ = [
+          resp
+          async for resp in openai_llm.generate_content_async(
+              llm_request, stream=False
+          )
+      ]
+
+  assert captured["reasoning_effort"] == "high"
 
 
 @pytest.mark.asyncio
@@ -326,7 +546,7 @@ async def test_generate_content_async_with_config():
       return mock_response
 
     with mock.patch(
-        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+        "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
     ) as mock_client_class:
       mock_client = mock.MagicMock()
       mock_client_class.return_value = mock_client
@@ -377,7 +597,7 @@ async def test_generate_content_async_with_system_instruction():
       return mock_response
 
     with mock.patch(
-        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+        "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
     ) as mock_client_class:
       mock_client = mock.MagicMock()
       mock_client_class.return_value = mock_client
@@ -437,7 +657,7 @@ async def test_generate_content_async_with_image():
       return mock_response
 
     with mock.patch(
-        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+        "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
     ) as mock_client_class:
       mock_client = mock.MagicMock()
       mock_client_class.return_value = mock_client
@@ -498,7 +718,7 @@ async def test_generate_content_async_reports_cached_tokens():
       return mock_response
 
     with mock.patch(
-        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+        "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
     ) as mock_client_class:
       mock_client = mock.MagicMock()
       mock_client_class.return_value = mock_client
@@ -532,7 +752,7 @@ async def test_generate_content_async_zero_cached_tokens():
       return mock_response
 
     with mock.patch(
-        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+        "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
     ) as mock_client_class:
       mock_client = mock.MagicMock()
       mock_client_class.return_value = mock_client
@@ -564,7 +784,7 @@ async def test_generate_content_async_absent_prompt_tokens_details():
       return mock_response
 
     with mock.patch(
-        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+        "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
     ) as mock_client_class:
       mock_client = mock.MagicMock()
       mock_client_class.return_value = mock_client
@@ -609,7 +829,7 @@ async def test_generate_content_async_routes_through_provided_client():
       client.chat.completions, "create", side_effect=mock_create
   ) as mock_client_create:
     with mock.patch(
-        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+        "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
     ) as mock_client_class:
       responses = [
           resp
@@ -783,7 +1003,7 @@ def _stream_client(chunks):
       yield c
 
   with mock.patch(
-      "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+      "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
   ) as mock_client_class:
     mock_client = mock.MagicMock()
     mock_client_class.return_value = mock_client
@@ -955,7 +1175,7 @@ def _text_completion(content="Hi", finish_reason="stop"):
 async def test_api_key_string_is_passed_to_client():
   """A string api_key is forwarded to the default AsyncOpenAI client."""
   with mock.patch(
-      "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+      "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
   ) as client_cls:
     _ = OpenAILlm(model="gpt-4o", api_key="secret")._openai_client
   client_cls.assert_called_once_with(api_key="secret")
@@ -965,7 +1185,7 @@ async def test_api_key_string_is_passed_to_client():
 async def test_base_url_is_passed_to_client():
   """base_url is forwarded to the default AsyncOpenAI client."""
   with mock.patch(
-      "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+      "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
   ) as client_cls:
     _ = OpenAILlm(
         model="gpt-4o", api_key="secret", base_url="https://host.example/v1"
@@ -991,7 +1211,7 @@ async def test_callable_api_key_wrapped_as_async_provider():
     return f"token-{calls['n']}"
 
   with mock.patch(
-      "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+      "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
   ) as client_cls:
     _ = OpenAILlm(
         model="xai/grok-4.6",
@@ -1019,7 +1239,7 @@ async def test_async_api_key_callable_supported():
     return "k"
 
   with mock.patch(
-      "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+      "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
   ) as client_cls:
     _ = OpenAILlm(model="gpt-4o", api_key=_key)._openai_client
 
@@ -1041,7 +1261,7 @@ async def test_response_maps_finish_reason():
       return _text_completion(finish_reason="length")
 
     with mock.patch(
-        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+        "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
     ) as mock_client_class:
       mock_client = mock.MagicMock()
       mock_client_class.return_value = mock_client
@@ -1071,7 +1291,7 @@ async def test_response_without_usage_does_not_crash():
       return response
 
     with mock.patch(
-        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+        "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
     ) as mock_client_class:
       mock_client = mock.MagicMock()
       mock_client_class.return_value = mock_client
@@ -1275,7 +1495,7 @@ async def test_system_instruction_content_is_serialized():
       return _text_completion()
 
     with mock.patch(
-        "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+        "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
     ) as mock_client_class:
       mock_client = mock.MagicMock()
       mock_client_class.return_value = mock_client
@@ -1371,7 +1591,7 @@ async def _capture_create_kwargs(openai_llm, llm_request):
     return _text_completion()
 
   with mock.patch(
-      "google.adk.labs.openai._openai_llm.AsyncOpenAI"
+      "google.adk.integrations.openai._openai_llm.AsyncOpenAI"
   ) as mock_client_class:
     mock_client = mock.MagicMock()
     mock_client_class.return_value = mock_client
@@ -1459,3 +1679,25 @@ async def test_model_function_call_becomes_assistant_tool_calls():
   assert json.loads(tool_calls[0]["function"]["arguments"]) == {
       "location": "NYC"
   }
+
+
+@pytest.mark.parametrize(
+    "details, expected",
+    [
+        (mock.MagicMock(reasoning_tokens=42), 42),
+        (mock.MagicMock(reasoning_tokens=0), 0),
+        (None, None),
+    ],
+)
+def test_usage_metadata_maps_reasoning_tokens(details, expected):
+  """completion_tokens_details.reasoning_tokens maps to thoughts_token_count."""
+  usage = mock.MagicMock(
+      prompt_tokens=100,
+      completion_tokens=50,
+      total_tokens=150,
+      prompt_tokens_details=None,
+      completion_tokens_details=details,
+  )
+  metadata = _usage_metadata(usage)
+  assert metadata.thoughts_token_count == expected
+  assert metadata.candidates_token_count == 50

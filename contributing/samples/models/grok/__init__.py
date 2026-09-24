@@ -12,14 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Backward compatibility shim for _output_schema_processor.
-
-Use google.adk.flows.llm_flows.prompt._schema instead.
-"""
-
-from __future__ import annotations
-
-from .prompt._schema import _OutputSchemaRequestProcessor as _OutputSchemaRequestProcessor
-from .prompt._schema import create_final_model_response_event as create_final_model_response_event
-from .prompt._schema import get_structured_model_response as get_structured_model_response
-from .prompt._schema import request_processor as request_processor
+from . import agent

@@ -3088,6 +3088,8 @@ async def _capture_anthropic_messages(
             2,
         ),
         ("matching_empty_ids_pair", [""], [""], 1),
+        ("multiple_empty_ids_pair_distinctly", ["", ""], ["", ""], 2),
+        ("multiple_none_ids_pair_distinctly", [None, None], [None, None], 2),
         ("none_and_empty_collapse", [None], [""], 1),
         ("repeated_invalid_id_consistent", ["bad!"], ["bad!"], 1),
     ],
@@ -3134,6 +3136,155 @@ async def test_generate_content_async_pairs_invalid_tool_ids(
   ]
   assert len(set(use_ids)) == expected_unique
   assert set(use_ids) == set(result_ids)
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_multiturn_empty_tool_ids_unique(
+    generate_content_response,
+    generate_llm_response,
+):
+  """Multi-turn conversation with empty tool IDs assigns unique paired tool IDs."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  contents = [
+      Content(role="user", parts=[Part.from_text(text="Question 1")]),
+      Content(
+          role="model",
+          parts=[_make_tool_call_part("execute_sql", "")],
+      ),
+      Content(
+          role="user",
+          parts=[_make_tool_response_part("execute_sql", "")],
+      ),
+      Content(role="user", parts=[Part.from_text(text="Question 2")]),
+      Content(
+          role="model",
+          parts=[_make_tool_call_part("execute_sql", "")],
+      ),
+      Content(
+          role="user",
+          parts=[_make_tool_response_part("execute_sql", "")],
+      ),
+  ]
+
+  messages = await _capture_anthropic_messages(
+      llm, contents, generate_content_response, generate_llm_response
+  )
+
+  use_ids = [
+      b["id"]
+      for m in messages
+      if m["role"] == "assistant"
+      for b in m["content"]
+      if b["type"] == "tool_use"
+  ]
+  result_ids = [
+      b["tool_use_id"]
+      for m in messages
+      if m["role"] == "user"
+      for b in m["content"]
+      if b["type"] == "tool_result"
+  ]
+  assert len(use_ids) == 2
+  assert len(set(use_ids)) == 2
+  assert use_ids == result_ids
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_named_response_removes_from_fallback_list(
+    generate_content_response,
+    generate_llm_response,
+):
+  """Named response removes assigned ID from fallback list so anonymous response gets next call."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  contents = [
+      Content(role="user", parts=[Part.from_text(text="Question 1")]),
+      Content(
+          role="model",
+          parts=[
+              _make_tool_call_part("fetch_schema", ""),
+              _make_tool_call_part("execute_sql", ""),
+          ],
+      ),
+      Content(
+          role="user",
+          parts=[
+              _make_tool_response_part("fetch_schema", ""),
+              _make_tool_response_part("", ""),
+          ],
+      ),
+  ]
+
+  messages = await _capture_anthropic_messages(
+      llm, contents, generate_content_response, generate_llm_response
+  )
+
+  use_ids = [
+      b["id"]
+      for m in messages
+      if m["role"] == "assistant"
+      for b in m["content"]
+      if b["type"] == "tool_use"
+  ]
+  result_ids = [
+      b["tool_use_id"]
+      for m in messages
+      if m["role"] == "user"
+      for b in m["content"]
+      if b["type"] == "tool_result"
+  ]
+  assert len(use_ids) == 2
+  assert len(set(use_ids)) == 2
+  assert len(set(result_ids)) == 2
+  assert use_ids == result_ids
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_anonymous_response_removes_from_named_map(
+    generate_content_response,
+    generate_llm_response,
+):
+  """Anonymous response removes assigned ID from named map so named response gets next call."""
+  llm = AnthropicLlm(model="claude-sonnet-4-20250514")
+  contents = [
+      Content(role="user", parts=[Part.from_text(text="Question 1")]),
+      Content(
+          role="model",
+          parts=[
+              _make_tool_call_part("fetch_schema", ""),
+              _make_tool_call_part("fetch_schema", ""),
+          ],
+      ),
+      Content(
+          role="user",
+          parts=[
+              _make_tool_response_part("", ""),
+              _make_tool_response_part("fetch_schema", ""),
+          ],
+      ),
+  ]
+
+  messages = await _capture_anthropic_messages(
+      llm, contents, generate_content_response, generate_llm_response
+  )
+
+  use_ids = [
+      b["id"]
+      for m in messages
+      if m["role"] == "assistant"
+      for b in m["content"]
+      if b["type"] == "tool_use"
+  ]
+  result_ids = [
+      b["tool_use_id"]
+      for m in messages
+      if m["role"] == "user"
+      for b in m["content"]
+      if b["type"] == "tool_result"
+  ]
+  assert len(use_ids) == 2
+  assert len(set(use_ids)) == 2
+  assert len(set(result_ids)) == 2
+  assert use_ids == result_ids
 
 
 @pytest.mark.asyncio

@@ -242,24 +242,41 @@ async def call_llm_async(
                 call_llm_span=span,
             )
         ) as agen:
-          async for llm_response in agen:
-            trace_call_llm(
-                invocation_context,
-                model_response_event.id,
-                llm_request,
-                llm_response,
-                span,
-            )
-            # Rebind to call_llm span for after_model_callback.
-            with trace.use_span(span, end_on_exit=False):
-              if altered := await flow._handle_after_model_callback(
-                  invocation_context,
-                  llm_response,
-                  model_response_event,
-              ):
-                llm_response = altered
+          # Partials overwrite each other on the span; trace only the last one.
+          deferred_partial: tuple[str, LlmResponse] | None = None
+          try:
+            async for llm_response in agen:
+              if llm_response.partial:
+                deferred_partial = (model_response_event.id, llm_response)
+              else:
+                deferred_partial = None
+                trace_call_llm(
+                    invocation_context,
+                    model_response_event.id,
+                    llm_request,
+                    llm_response,
+                    span,
+                )
+              # Rebind to call_llm span for after_model_callback.
+              with trace.use_span(span, end_on_exit=False):
+                if altered := await flow._handle_after_model_callback(
+                    invocation_context,
+                    llm_response,
+                    model_response_event,
+                ):
+                  llm_response = altered
 
-            yield llm_response
+              yield llm_response
+          finally:
+            if deferred_partial is not None:
+              deferred_event_id, partial_response = deferred_partial
+              trace_call_llm(
+                  invocation_context,
+                  deferred_event_id,
+                  llm_request,
+                  partial_response,
+                  span,
+              )
 
   async with Aclosing(
       _with_caller_context(_call_llm_with_tracing(), caller_context)

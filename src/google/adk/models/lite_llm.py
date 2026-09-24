@@ -1745,8 +1745,12 @@ async def _get_content(
       # arrived via a default fallback; raise early with an actionable message.
       if not file_mime_type or file_mime_type == "application/octet-stream":
         type_label = file_mime_type or "(unknown)"
+        redacted_file_uri = _redact_file_uri_for_log(
+            part.file_data.file_uri,
+            display_name=part.file_data.display_name,
+        )
         raise ValueError(
-            f"Cannot process file_uri {part.file_data.file_uri!r}: MIME type"
+            f"Cannot process file_uri {redacted_file_uri!r}: MIME type"
             f" {type_label!r} is not supported. Please set a specific MIME"
             " type on `file_data.mime_type`."
         )

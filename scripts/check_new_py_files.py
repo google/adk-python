@@ -90,6 +90,19 @@ _LOCAL_COMMITS = 'draft() & ::.'
 # NO_UNIT_GUIDE waiver would be written.
 _GIT_HEAD_RANGE = 'HEAD~1..HEAD'
 
+# Entries that bring a genuinely new path into the tree.
+#
+# Renames are included because renaming a private module to a public one
+# creates a name no rule has ever been applied to. They are asked for
+# separately from plain adds, with --name-status, because only the ones that
+# change the file's *name* qualify: moving `runners.py` to another directory
+# keeps a public name that was already accepted, and treating that as new
+# would fail it against a prefix rule that has no waiver. When rename
+# detection is off the same change arrives as an add plus a delete, which the
+# add filter covers.
+_GIT_ADD_FILTER = '--diff-filter=A'
+_GIT_RENAME_FILTER = '--diff-filter=R'
+
 # The unit guide waiver, as it appears in a commit message: its own line, in
 # `KEY=<reason>` form, flush left and with no space before the `=`. Matching
 # the bare word anywhere in the text instead would waive the rule for any
@@ -98,7 +111,14 @@ _GIT_HEAD_RANGE = 'HEAD~1..HEAD'
 # one a tag parser accepts: waiving locally on a line that the surrounding
 # tooling would not read as a tag is how an author ends up believing they are
 # covered when they are not.
-_NO_UNIT_GUIDE_TAG = re.compile(r'^(?:NO|SKIP)_UNIT_GUIDE=', re.MULTILINE)
+#
+# The tag has to carry a reason, so it has to reach a non-space character. A
+# bare `NO_UNIT_GUIDE=` would otherwise waive every file the change adds while
+# recording nothing a reviewer can weigh, which is the opposite of what the tag
+# exists for.
+_NO_UNIT_GUIDE_TAG = re.compile(
+    r'^(?:NO|SKIP)_UNIT_GUIDE=[ \t]*\S', re.MULTILINE
+)
 
 _PREFIX_VIOLATION_LINE = (
     "Error: New Python file '{path}' must have a '_' prefix.\n"
@@ -113,8 +133,10 @@ _GUIDE_VIOLATION_LINE = (
     "Expected guide at 'docs/guides/{expected}/index.md' or"
     " 'docs/guides/{expected}.md'.\n"
     'If a unit guide is not required for this file, explain why with a'
-    " 'NO_UNIT_GUIDE=<reason>' tag in your commit message, or by setting"
-    " NO_UNIT_GUIDE='<reason>' in the environment where this check runs.\n"
+    " 'NO_UNIT_GUIDE=<reason>' tag in the commit message of the change that"
+    ' adds it. Where no message can be read, as when the change is only'
+    ' staged or the tree carries no version control, set the tag in the'
+    " environment instead: NO_UNIT_GUIDE='<reason>' git commit ...\n"
     'See .agents/skills/adk-unit-guide/SKILL.md for details on creating unit'
     ' guides.'
 )
@@ -207,6 +229,144 @@ def _run_cmd(cmd: list[str], cwd: str | None = None) -> tuple[int, str]:
     return -1, ''
 
 
+def _is_private_name(path: str) -> bool:
+  """Whether `path`'s basename is private by the '_' prefix convention."""
+  return os.path.basename(path).startswith('_')
+
+
+def _package_relative(repo_relative: str) -> str | None:
+  """Returns a path relative to the package, or None if it lies outside it.
+
+  Args:
+    repo_relative: A path as git reports it, e.g. `src/google/adk/a/b.py`.
+
+  Returns:
+    The package-relative form, or None when the path is not library source
+    these rules cover.
+  """
+  prefix = _PACKAGE_RELPATH.replace(os.sep, '/') + '/'
+  path = repo_relative.replace(os.sep, '/')
+  if not path.startswith(prefix) or not path.endswith('.py'):
+    return None
+  rel = path[len(prefix) :]
+  return rel if _keep_relative_path(rel) else None
+
+
+def _rename_exposes_a_new_name(source: str, destination: str) -> bool:
+  """Whether a rename produces a name neither rule has judged before.
+
+  The two rules do not cover the same files, so "was the source already
+  judged" has to be asked once per rule. A move out of `cli/` is judged by
+  the prefix rule at both ends but meets the unit guide rule only on arrival,
+  and a `.pyi` renamed to `.py` was never library source at all.
+
+  Args:
+    source: The rename's source, as git reports it.
+    destination: The rename's destination, as git reports it.
+
+  Returns:
+    True when the destination carries a name that has not been held to a rule
+    it is now subject to.
+  """
+  source_rel = _package_relative(source)
+  if source_rel is None:
+    # Never library source, so nothing has ever looked at this name.
+    return True
+  destination_rel = _package_relative(destination)
+  if destination_rel is None:
+    # Leaving the library; the destination is not ours to judge.
+    return False
+
+  # The prefix rule covers both ends, so it matters only when visibility
+  # changes.
+  if _is_private_name(source_rel) and not _is_private_name(destination_rel):
+    return True
+  # The guide rule does not cover every file, so leaving an exemption puts a
+  # name under it for the first time.
+  was_exempt = is_exempt_from_unit_guide(
+      source_rel, os.path.basename(source_rel)
+  )
+  now_exempt = is_exempt_from_unit_guide(
+      destination_rel, os.path.basename(destination_rel)
+  )
+  return was_exempt and not now_exempt
+
+
+def _git_renamed_to_new_names(base_cmd: list[str], root: str) -> set[str]:
+  """Returns rename destinations that newly expose a public name.
+
+  A rename needs judging when it produces a name nothing has judged before.
+  Relocating `runners.py`, or renaming it to `runner.py`, carries a public
+  name that was accepted when the file was created; re-judging either would
+  fail an ordinary refactor against the prefix rule, which has no waiver.
+  Two cases do need it: renaming `_runners.py` to `runners.py`, which puts a
+  module on the public surface, and moving a file in from `tests/` or
+  anywhere else these rules never covered, whose name has never been held to
+  them whatever it happens to be.
+
+  Args:
+    base_cmd: The git diff invocation to extend, e.g. `['git', 'diff']`.
+    root: The root directory of the repository.
+
+  Returns:
+    The destination paths worth checking. Empty when git reports no renames.
+  """
+  _, out = _run_cmd(base_cmd + ['--name-status', _GIT_RENAME_FILTER], cwd=root)
+  renamed: set[str] = set()
+  for line in out.splitlines():
+    # `R100\told/path\tnew/path`, with the similarity score on the status.
+    parts = line.split('\t')
+    if len(parts) != 3 or not parts[0].startswith('R'):
+      continue
+    _, source, destination = parts
+    source, destination = source.strip(), destination.strip()
+    if _rename_exposes_a_new_name(source, destination):
+      renamed.add(destination)
+  return renamed
+
+
+def _git_added_paths(base_cmd: list[str], root: str) -> set[str]:
+  """Returns the paths a git diff brings into the tree under a new name.
+
+  Args:
+    base_cmd: The git diff invocation to extend, e.g. `['git', 'diff']`.
+    root: The root directory of the repository.
+
+  Returns:
+    Plain additions, plus renames that change the file's name.
+  """
+  _, out = _run_cmd(base_cmd + ['--name-only', _GIT_ADD_FILTER], cwd=root)
+  added = {f for f in out.splitlines() if f.strip()}
+  return added | _git_renamed_to_new_names(base_cmd, root)
+
+
+def _git_is_mid_commit(root: str) -> bool | None:
+  """Reports whether a change is staged and not yet committed.
+
+  Both the added-file scan and the waiver scan branch on this, and they must
+  branch on it together: the index and HEAD describe different changes, so
+  reading files from one and the waiver from the other lets a tag written for
+  the previous commit apply to this one.
+
+  Args:
+    root: The root directory of the repository.
+
+  Returns:
+    True when anything at all is staged. Asking whether any *addition* is
+    staged would send a commit that adds nothing down the HEAD~1..HEAD path,
+    where it would be judged on what the previous commit added. None when git
+    could not say, as with an unreadable index: treating that as "nothing is
+    staged" sent the scan to HEAD~1..HEAD, which reports what the previous
+    commit added and passes a staged file nobody looked at.
+  """
+  code, staged_any = _run_cmd(
+      ['git', 'diff', '--cached', '--name-only'], cwd=root
+  )
+  if code != 0:
+    return None
+  return bool(staged_any.strip())
+
+
 def get_vcs_added_files(root: str = '.') -> set[str] | None:
   """Detects added files using local VCS (git, jj, hg, g4, p4).
 
@@ -221,14 +381,19 @@ def get_vcs_added_files(root: str = '.') -> set[str] | None:
   if shutil.which('git'):
     code, _ = _run_cmd(['git', 'rev-parse', '--is-inside-work-tree'], cwd=root)
     if code == 0:
-      _, staged = _run_cmd(
-          ['git', 'diff', '--cached', '--name-only', '--diff-filter=A'],
-          cwd=root,
-      )
-      if staged:
-        return {f for f in staged.splitlines() if f.strip()}
+      mid_commit = _git_is_mid_commit(root)
+      if mid_commit is None:
+        print(
+            'git is active but its index cannot be read, so whether this'
+            ' change is staged or committed is unknown, and so is what it'
+            ' adds.',
+            file=sys.stderr,
+        )
+        return None
+      if mid_commit:
+        return _git_added_paths(['git', 'diff', '--cached'], root)
       range_code, head_diff = _run_cmd(
-          ['git', 'diff', _GIT_HEAD_RANGE, '--name-only', '--diff-filter=A'],
+          ['git', 'diff', _GIT_HEAD_RANGE, '--name-only', _GIT_ADD_FILTER],
           cwd=root,
       )
       if range_code != 0:
@@ -245,9 +410,10 @@ def get_vcs_added_files(root: str = '.') -> set[str] | None:
             file=sys.stderr,
         )
         return None
-      if head_diff:
-        return {f for f in head_diff.splitlines() if f.strip()}
-      return set()
+      added = {f for f in head_diff.splitlines() if f.strip()}
+      return added | _git_renamed_to_new_names(
+          ['git', 'diff', _GIT_HEAD_RANGE], root
+      )
 
   # 2. jj
   if shutil.which('jj'):
@@ -319,11 +485,30 @@ def get_vcs_added_files(root: str = '.') -> set[str] | None:
 
 
 def get_commit_message(root: str = '.') -> str:
-  """Retrieves commit message or description from VCS."""
+  """Retrieves commit message or description from VCS.
+
+  Args:
+    root: The root directory of the repository.
+
+  Returns:
+    The message to search for a waiver tag, or '' when none can be read.
+  """
   # 1. git
   if shutil.which('git'):
     code, _ = _run_cmd(['git', 'rev-parse', '--is-inside-work-tree'], cwd=root)
     if code == 0:
+      if _git_is_mid_commit(root) is not False:
+        # The change is staged, so the commit carrying it does not exist yet
+        # and its message is nowhere to be read: a pre-commit hook runs before
+        # git records what the author typed, and HEAD still describes the
+        # previous change. Returning HEAD's message here is what let a waiver
+        # written for an earlier commit silently cover this one. Waiving the
+        # change being committed goes through the environment instead --
+        # `NO_UNIT_GUIDE='<reason>' git commit ...` -- which
+        # has_no_unit_guide_tag honours and the violation text advertises.
+        # None lands here too: a waiver that cannot be attributed to a change
+        # must not be applied to one.
+        return ''
       _, msg = _run_cmd(['git', 'log', '-1', '--pretty=%B'], cwd=root)
       # On a pull request, HEAD is a merge commit whose own message is
       # generated by CI and can hold no waiver. The commits being merged are
@@ -334,19 +519,12 @@ def get_commit_message(root: str = '.') -> str:
       )
       if range_msg:
         msg = f'{msg}\n{range_msg}'
-      _, git_dir = _run_cmd(['git', 'rev-parse', '--git-dir'], cwd=root)
-      if git_dir:
-        editmsg_path = (
-            os.path.join(root, git_dir, 'COMMIT_EDITMSG')
-            if not os.path.isabs(git_dir)
-            else os.path.join(git_dir, 'COMMIT_EDITMSG')
-        )
-        if os.path.isfile(editmsg_path):
-          try:
-            with open(editmsg_path, 'r', encoding='utf-8') as f:
-              msg = f'{msg} {f.read()}'
-          except OSError:
-            pass
+      # COMMIT_EDITMSG is deliberately not consulted. It was read here to
+      # catch the message of the commit being made, which it never held: git
+      # writes it only after the pre-commit hook has run, so during that hook
+      # it carries the previous commit's message, or the message of an attempt
+      # some hook rejected. Both are messages written for another change, and
+      # neither can be told from a current one by inspection.
       return msg
 
   # 2. jj
@@ -407,9 +585,14 @@ def is_exempt_from_unit_guide(rel_path: str, filename: str) -> bool:
 
 
 def has_no_unit_guide_tag(commit_msg: str) -> bool:
-  """Checks if NO_UNIT_GUIDE / SKIP_UNIT_GUIDE is present in env or commit message."""
-  if os.environ.get('NO_UNIT_GUIDE') or os.environ.get('SKIP_UNIT_GUIDE'):
-    return True
+  """Checks if NO_UNIT_GUIDE / SKIP_UNIT_GUIDE is present in env or commit message.
+
+  A reason is required in either channel, so a variable holding only whitespace
+  waives nothing, the same way a bare tag in a message does not.
+  """
+  for name in ('NO_UNIT_GUIDE', 'SKIP_UNIT_GUIDE'):
+    if os.environ.get(name, '').strip():
+      return True
   return bool(_NO_UNIT_GUIDE_TAG.search(commit_msg))
 
 
@@ -437,6 +620,84 @@ def _depot_path_to_abs(depot_path: str, adk_real_root: str) -> str:
     rel_to_package = clean_path.rsplit(marker, 1)[1]
     return os.path.realpath(os.path.join(adk_real_root, rel_to_package))
   return os.path.realpath(clean_path)
+
+
+def _subpackage_renames(package_dir: str) -> dict[str, str]:
+  """Maps a subpackage's real directory to the name the source tree gives it.
+
+  A subpackage can be exposed under a name of its own: `dependencies` points
+  at `dependencies_external`. Which of the two names a path arrives wearing
+  depends only on how it was detected -- git reports it relative to the
+  checkout, while the Piper-shaped detectors report the real location -- so
+  without this the same file demands its guide in two different directories.
+
+  Args:
+    package_dir: The checkout's own `src/google/adk`, symlinks unresolved.
+
+  Returns:
+    Real directory path -> source-tree name, for each renamed subpackage.
+  """
+  # The whole walk is guarded, not just the listing: is_dir() follows the
+  # link, so a symlink loop or an unreadable target raises here rather than at
+  # the scandir. Letting that escape would turn a checkout oddity into a
+  # failed check.
+  renames: dict[str, str] = {}
+  try:
+    for entry in os.scandir(package_dir):
+      if not entry.is_symlink() or not entry.is_dir():
+        continue
+      target = os.path.realpath(entry.path)
+      if os.path.basename(target) != entry.name:
+        renames[target] = entry.name
+  except OSError:
+    return {}
+  return renames
+
+
+def _apply_subpackage_rename(
+    rel_to_adk: str, abs_file: str, renames: dict[str, str]
+) -> str:
+  """Restores the source-tree name of a path that resolved through a symlink.
+
+  Args:
+    rel_to_adk: The package-relative path, possibly wearing the real name.
+    abs_file: The same file, resolved.
+    renames: The mapping from `_subpackage_renames`.
+
+  Returns:
+    `rel_to_adk` with its leading component put back to the name the source
+    tree uses, or unchanged when no rename applies.
+  """
+  if not renames:
+    return rel_to_adk
+  first, sep, rest = rel_to_adk.partition('/')
+  if not sep:
+    return rel_to_adk
+  # Match on the resolved directory rather than on the name, so that two
+  # subpackages sharing a basename cannot be confused for one another.
+  subpackage_real = abs_file[: -(len(rest) + 1)] if rest else abs_file
+  renamed = renames.get(os.path.normpath(subpackage_real))
+  return f'{renamed}/{rest}' if renamed else rel_to_adk
+
+
+def _keep_relative_path(rel_to_adk: str) -> bool:
+  """Whether a package-relative path names a file these rules apply to.
+
+  Args:
+    rel_to_adk: A path relative to the package root, e.g. `agents/_agent.py`.
+
+  Returns:
+    False for a path under an ignored prefix, or under a top-level directory
+    that holds no library source.
+  """
+  full_rel = os.path.join('src', 'google', 'adk', rel_to_adk).replace(
+      os.sep, '/'
+  )
+  if not _should_check(full_rel):
+    return False
+  # Anchored at the package root: a nested directory that happens to carry an
+  # excluded name still holds source to check.
+  return rel_to_adk.split('/')[0] not in _EXCLUDE_DIR_NAMES
 
 
 def _normalize_and_filter_files(
@@ -468,6 +729,8 @@ def _normalize_and_filter_files(
   else:
     adk_real_root = package_real_dir
 
+  renames = _subpackage_renames(package_dir)
+
   results: list[tuple[str, str, str]] = []
   for raw_file in sorted(raw_files):
     if not raw_file or not raw_file.endswith('.py'):
@@ -481,6 +744,23 @@ def _normalize_and_filter_files(
       abs_file = os.path.realpath(raw_file)
     else:
       abs_file = os.path.realpath(os.path.join(repo_root, raw_file))
+
+    # Before resolving anything, see whether the path already sits under the
+    # checkout's own src/google/adk. A subpackage exposed there under a name
+    # different from its own -- `dependencies` for `dependencies_external` --
+    # would otherwise resolve through the symlink and come back wearing the
+    # name the source tree does not use, so the guide would be demanded at a
+    # directory that does not exist in the exported repository. Keeping the
+    # unresolved form makes the source-tree name win, which is the one both
+    # this checkout and the exported repository agree on.
+    lexical = os.path.abspath(os.path.join(repo_root, raw_file))
+    if not raw_file.startswith('//') and lexical.startswith(
+        package_dir + os.sep
+    ):
+      rel_to_adk = os.path.relpath(lexical, package_dir).replace(os.sep, '/')
+      if _keep_relative_path(rel_to_adk):
+        results.append((raw_file, rel_to_adk, os.path.basename(lexical)))
+      continue
 
     # Check whether the file belongs to the package in either internal or
     # external layout.
@@ -503,15 +783,11 @@ def _normalize_and_filter_files(
     else:
       continue
 
-    # Check ignored prefixes and exclude directories
-    full_rel = os.path.join('src', 'google', 'adk', rel_to_adk).replace(
-        os.sep, '/'
-    )
-    if not _should_check(full_rel):
-      continue
+    # These two branches reached the file through its real location, so a
+    # renamed subpackage arrives under the name the source tree does not use.
+    rel_to_adk = _apply_subpackage_rename(rel_to_adk, abs_file, renames)
 
-    # Check excluded subdirectories, anchored at the package root.
-    if rel_to_adk.split('/')[0] in _EXCLUDE_DIR_NAMES:
+    if not _keep_relative_path(rel_to_adk):
       continue
 
     filename = os.path.basename(abs_file)

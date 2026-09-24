@@ -194,11 +194,13 @@ def restore_branch_from_history(
   (a fresh direct-node turn, or a new invocation continuing a sub-agent), the
   most recent matching event across the session is used.
   """
+  from ..events._rewind_events import _apply_rewinds
   from ..workflow._base_node import find_static_node_path
 
+  live_events = _apply_rewinds(invocation_context.session.events)
   expected_static_path = find_static_node_path(root, node)
-  tool_call_ids = _collect_function_call_ids(invocation_context.session.events)
-  for event in reversed(invocation_context.session.events):
+  tool_call_ids = _collect_function_call_ids(live_events)
+  for event in reversed(live_events):
     if invocation_id is not None and event.invocation_id != invocation_id:
       continue
     if not event.branch:

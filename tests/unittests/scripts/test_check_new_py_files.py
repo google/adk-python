@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import shutil
 import subprocess
 
 import pytest
@@ -109,6 +110,31 @@ def test_has_no_unit_guide_tag_ignores_a_prose_mention(
   assert not check_new_py_files.has_no_unit_guide_tag('  NO_UNIT_GUIDE=x')
   assert not check_new_py_files.has_no_unit_guide_tag('NO_UNIT_GUIDE = x')
   assert not check_new_py_files.has_no_unit_guide_tag('no_unit_guide=x')
+
+
+def test_has_no_unit_guide_tag_requires_a_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """A waiver with no reason waives nothing, in either channel.
+
+  The reason is the only record of the decision, and a bare tag waived every
+  file the change added while leaving nothing for a reviewer to weigh.
+  """
+  monkeypatch.delenv('NO_UNIT_GUIDE', raising=False)
+  monkeypatch.delenv('SKIP_UNIT_GUIDE', raising=False)
+
+  assert not check_new_py_files.has_no_unit_guide_tag('body\nNO_UNIT_GUIDE=\n')
+  assert not check_new_py_files.has_no_unit_guide_tag(
+      'body\nSKIP_UNIT_GUIDE=   \n'
+  )
+  # A reason still waives, with or without space after the '='.
+  assert check_new_py_files.has_no_unit_guide_tag('NO_UNIT_GUIDE=a reason')
+  assert check_new_py_files.has_no_unit_guide_tag('NO_UNIT_GUIDE= a reason')
+
+  monkeypatch.setenv('NO_UNIT_GUIDE', '   ')
+  assert not check_new_py_files.has_no_unit_guide_tag('')
+  monkeypatch.setenv('NO_UNIT_GUIDE', 'a reason')
+  assert check_new_py_files.has_no_unit_guide_tag('')
 
 
 def test_run_turns_a_crash_into_a_setup_error(
@@ -950,17 +976,50 @@ def test_get_commit_message_git(
       return 0, 'Git Commit Message'
     return 0, ''
 
+  monkeypatch.setattr(check_new_py_files.shutil, 'which', fake_which)
+  monkeypatch.setattr(check_new_py_files, '_run_cmd', fake_run_cmd)
+
+  assert 'Git Commit Message' in check_new_py_files.get_commit_message(
+      str(tmp_path)
+  )
+
+
+def test_get_commit_message_git_ignores_commit_editmsg(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+  """A waiver left in COMMIT_EDITMSG must not be picked up.
+
+  git writes that file only after the pre-commit hook has run, so it holds
+  either the previous commit's message or the message of an attempt some hook
+  rejected. Both are waivers written for a different change, and neither can
+  be told apart from a current message by looking at it.
+  """
+
+  def fake_which(cmd: str) -> str | None:
+    return '/usr/bin/' + cmd if cmd == 'git' else None
+
+  def fake_run_cmd(cmd: list[str], cwd: str | None = None) -> tuple[int, str]:
+    if 'rev-parse' in cmd and '--is-inside-work-tree' in cmd:
+      return 0, 'true'
+    if 'rev-parse' in cmd and '--git-dir' in cmd:
+      return 0, str(tmp_path / '.git')
+    if 'log' in cmd:
+      return 0, 'a commit that waived nothing'
+    return 0, ''
+
   (tmp_path / '.git').mkdir(parents=True)
   (tmp_path / '.git' / 'COMMIT_EDITMSG').write_text(
-      'NO_UNIT_GUIDE=1', encoding='utf-8'
+      'an abandoned attempt\n\nNO_UNIT_GUIDE=for some other change\n',
+      encoding='utf-8',
   )
 
   monkeypatch.setattr(check_new_py_files.shutil, 'which', fake_which)
   monkeypatch.setattr(check_new_py_files, '_run_cmd', fake_run_cmd)
+  monkeypatch.delenv('NO_UNIT_GUIDE', raising=False)
+  monkeypatch.delenv('SKIP_UNIT_GUIDE', raising=False)
 
   msg = check_new_py_files.get_commit_message(str(tmp_path))
-  assert 'Git Commit Message' in msg
-  assert 'NO_UNIT_GUIDE=1' in msg
+  assert not check_new_py_files.has_no_unit_guide_tag(msg)
 
 
 def test_get_commit_message_git_reads_the_merged_commits_on_a_pull_request(
@@ -1132,3 +1191,397 @@ def test_sh_forwarder_execution_from_any_cwd(tmp_path: pathlib.Path) -> None:
       'usage:' in proc.stdout.lower()
       or 'show this help message' in proc.stdout.lower()
   )
+
+
+# Tests that drive a real repository rather than monkeypatching _run_cmd. The
+# faked tests above pin the parsing of each VCS's output; these pin what the
+# VCS actually says, which is where the interesting mistakes live -- a rename
+# reported as R100 rather than as an add, for one.
+
+
+def _require_git() -> None:
+  """Skips the calling test when no usable git is on PATH."""
+  if shutil.which('git') is None:
+    pytest.skip('git is not available')
+
+
+def test_a_renamed_subpackage_keeps_its_source_tree_name(
+    tmp_path: pathlib.Path,
+) -> None:
+  """A subpackage exposed under another name is checked under that name.
+
+  `dependencies` points at `dependencies_external`. Resolving the symlink
+  would report the target's name, and the guide would then be demanded at a
+  directory that does not exist in the tree the contributor sees.
+  """
+  # The internal shape: a package root holding the real subpackage, and a
+  # checkout inside it whose src/google/adk exposes it under another name.
+  package_root = tmp_path / 'pkg'
+  (package_root / 'dependencies_external').mkdir(parents=True)
+  (package_root / '__init__.py').write_text('', encoding='utf-8')
+  added = package_root / 'dependencies_external' / '_thing.py'
+  added.write_text('', encoding='utf-8')
+
+  checkout = package_root / 'checkout'
+  adk_src = checkout / 'src' / 'google' / 'adk'
+  adk_src.mkdir(parents=True)
+  (checkout / 'docs' / 'guides').mkdir(parents=True)
+  os.symlink(package_root / 'dependencies_external', adk_src / 'dependencies')
+  os.symlink(package_root / '__init__.py', adk_src / '__init__.py')
+
+  # Which of the subpackage's two names a path arrives wearing depends only on
+  # how it was detected: git reports it relative to the checkout, while the
+  # Piper-shaped detectors report the real location. All of them have to land
+  # on the name the source tree uses, or the same file demands its guide in
+  # two different directories depending on where it is checked.
+  for raw in (
+      'src/google/adk/dependencies/_thing.py',  # git, --baseline-dir
+      str(added),  # hg and jj, an absolute path into the real subpackage
+      (  # g4 and p4
+          '//depot/mirror/third_party/py/google/adk/'
+          'dependencies_external/_thing.py'
+      ),
+  ):
+    results = check_new_py_files._normalize_and_filter_files(
+        [raw], repo_root=str(checkout)
+    )
+    assert [rel for _, rel, _ in results] == [
+        'dependencies/_thing.py'
+    ], f'{raw} resolved to {[rel for _, rel, _ in results]}'
+
+    # And the guide it asks for is under that same name.
+    _, guide_errors = check_new_py_files.check_files(
+        results, repo_root=str(checkout), skip_prefix=True
+    )
+    assert len(guide_errors) == 1
+    assert 'docs/guides/dependencies/thing' in guide_errors[0], raw
+
+
+def _git(repo: pathlib.Path, *args: str) -> str:
+  """Runs a git command in `repo` and returns its stdout."""
+  return subprocess.run(
+      ['git', *args],
+      cwd=repo,
+      check=True,
+      capture_output=True,
+      text=True,
+  ).stdout
+
+
+def _git_repo_with_a_guided_module(tmp_path: pathlib.Path) -> pathlib.Path:
+  """Creates a git repo holding one committed, guided, private module."""
+  _require_git()
+  repo = tmp_path / 'repo'
+  (repo / 'src' / 'google' / 'adk' / 'agents').mkdir(parents=True)
+  (repo / 'docs' / 'guides' / 'agents').mkdir(parents=True)
+  (repo / 'src' / 'google' / 'adk' / '__init__.py').write_text(
+      '', encoding='utf-8'
+  )
+  (repo / 'src' / 'google' / 'adk' / 'agents' / '_existing.py').write_text(
+      '', encoding='utf-8'
+  )
+  (repo / 'docs' / 'guides' / 'agents' / 'existing.md').write_text(
+      '# guide', encoding='utf-8'
+  )
+  # `git init -b` needs git 2.28; the CI image is older, and these tests never
+  # name a branch, so let git pick its default.
+  _git(repo, 'init', '-q')
+  _git(repo, 'config', 'user.email', 'probe@example.com')
+  _git(repo, 'config', 'user.name', 'Probe')
+  _git(repo, 'add', '-A')
+  _git(repo, 'commit', '-qm', 'base')
+  return repo
+
+
+def test_real_git_flags_a_rename_into_a_public_name(
+    tmp_path: pathlib.Path,
+) -> None:
+  """Renaming a private module to a public one creates an unchecked name.
+
+  git reports it as R100, which `--diff-filter=A` does not list, so the new
+  public name used to reach the tree without either rule being applied to it.
+  """
+  repo = _git_repo_with_a_guided_module(tmp_path)
+  _git(
+      repo,
+      'mv',
+      'src/google/adk/agents/_existing.py',
+      'src/google/adk/agents/brand_new_public.py',
+  )
+  _git(repo, 'commit', '-qm', 'refactor: rename')
+
+  added = check_new_py_files.get_vcs_added_files(str(repo))
+  assert added == {'src/google/adk/agents/brand_new_public.py'}
+
+
+def test_real_git_ignores_a_pure_relocation(tmp_path: pathlib.Path) -> None:
+  """Moving a file without renaming it does not make its name new.
+
+  Most of the package is public-named, so treating a relocation as an addition
+  would fail routine moves against the prefix rule, which has no waiver.
+  """
+  repo = _git_repo_with_a_guided_module(tmp_path)
+  (repo / 'src' / 'google' / 'adk' / 'apps').mkdir()
+  _git(
+      repo,
+      'mv',
+      'src/google/adk/agents/_existing.py',
+      'src/google/adk/apps/_existing.py',
+  )
+  _git(repo, 'commit', '-qm', 'refactor: relocate')
+
+  assert check_new_py_files.get_vcs_added_files(str(repo)) == set()
+
+
+def test_real_git_ignores_a_public_to_public_rename(
+    tmp_path: pathlib.Path,
+) -> None:
+  """Renaming one public name to another exposes nothing new.
+
+  The prefix rule judges a name, and a public name was already accepted when
+  the file was created. Treating the destination as new would fail an ordinary
+  rename against a rule that has no waiver.
+  """
+  repo = _git_repo_with_a_guided_module(tmp_path)
+  public = repo / 'src' / 'google' / 'adk' / 'agents' / 'old_public.py'
+  public.write_text('', encoding='utf-8')
+  (repo / 'docs' / 'guides' / 'agents' / 'old_public.md').write_text(
+      '# guide', encoding='utf-8'
+  )
+  _git(repo, 'add', '-A')
+  _git(repo, 'commit', '-qm', 'add a public module')
+
+  _git(
+      repo,
+      'mv',
+      'src/google/adk/agents/old_public.py',
+      'src/google/adk/agents/new_public.py',
+  )
+  _git(repo, 'commit', '-qm', 'refactor: rename')
+
+  assert check_new_py_files.get_vcs_added_files(str(repo)) == set()
+
+
+def test_real_git_flags_a_file_moved_in_from_an_excluded_tree(
+    tmp_path: pathlib.Path,
+) -> None:
+  """A name carried in from outside the library has never been judged.
+
+  The reasoning that spares a rename -- that its name was accepted when the
+  file was created -- only holds if the source was itself under these rules.
+  A file arriving from `tests/` was never held to either of them, so its name
+  is new here whatever it happens to be.
+  """
+  repo = _git_repo_with_a_guided_module(tmp_path)
+  (repo / 'tests').mkdir()
+  (repo / 'tests' / 'helper_public.py').write_text('', encoding='utf-8')
+  _git(repo, 'add', '-A')
+  _git(repo, 'commit', '-qm', 'add a test helper')
+
+  _git(
+      repo,
+      'mv',
+      'tests/helper_public.py',
+      'src/google/adk/agents/helper_public.py',
+  )
+  _git(repo, 'commit', '-qm', 'promote the helper')
+
+  assert check_new_py_files.get_vcs_added_files(str(repo)) == {
+      'src/google/adk/agents/helper_public.py'
+  }
+
+
+def test_real_git_flags_a_stub_promoted_to_a_module(
+    tmp_path: pathlib.Path,
+) -> None:
+  """A `.pyi` was never library source, so the `.py` it becomes is new."""
+  repo = _git_repo_with_a_guided_module(tmp_path)
+  (repo / 'src' / 'google' / 'adk' / 'agents' / 'thing.pyi').write_text(
+      '', encoding='utf-8'
+  )
+  _git(repo, 'add', '-A')
+  _git(repo, 'commit', '-qm', 'add a stub')
+
+  _git(
+      repo,
+      'mv',
+      'src/google/adk/agents/thing.pyi',
+      'src/google/adk/agents/thing.py',
+  )
+  _git(repo, 'commit', '-qm', 'promote the stub')
+
+  assert check_new_py_files.get_vcs_added_files(str(repo)) == {
+      'src/google/adk/agents/thing.py'
+  }
+
+
+def test_real_git_flags_a_move_out_of_a_guide_exempt_subtree(
+    tmp_path: pathlib.Path,
+) -> None:
+  """Leaving `cli/` puts a name under the guide rule for the first time.
+
+  Both ends are judged by the prefix rule, so visibility does not change --
+  but `cli/` is exempt from the unit guide rule and `agents/` is not, so the
+  destination faces a rule the source never did.
+  """
+  repo = _git_repo_with_a_guided_module(tmp_path)
+  (repo / 'src' / 'google' / 'adk' / 'cli').mkdir()
+  (repo / 'src' / 'google' / 'adk' / 'cli' / 'tool.py').write_text(
+      '', encoding='utf-8'
+  )
+  _git(repo, 'add', '-A')
+  _git(repo, 'commit', '-qm', 'add a cli tool')
+
+  _git(
+      repo,
+      'mv',
+      'src/google/adk/cli/tool.py',
+      'src/google/adk/agents/tool.py',
+  )
+  _git(repo, 'commit', '-qm', 'move it out of cli')
+
+  assert check_new_py_files.get_vcs_added_files(str(repo)) == {
+      'src/google/adk/agents/tool.py'
+  }
+
+
+def test_subpackage_renames_survives_an_unreadable_symlink(
+    tmp_path: pathlib.Path,
+) -> None:
+  """A symlink loop is a checkout oddity, not a reason to fail the check.
+
+  `is_dir()` follows the link, so the guard has to cover the walk and not
+  just the listing.
+  """
+  package_dir = tmp_path / 'src' / 'google' / 'adk'
+  package_dir.mkdir(parents=True)
+  os.symlink(package_dir / 'loop', package_dir / 'loop')
+
+  assert check_new_py_files._subpackage_renames(str(package_dir)) == {}
+
+
+def test_real_git_staged_edit_is_not_judged_on_the_previous_commit(
+    tmp_path: pathlib.Path,
+) -> None:
+  """Something staged means the index is what to check, additions or not.
+
+  Asking whether any *addition* was staged sent a commit that adds nothing
+  down the HEAD~1..HEAD path, where it was judged on what the previous commit
+  had added.
+  """
+  repo = _git_repo_with_a_guided_module(tmp_path)
+  (
+      repo / 'src' / 'google' / 'adk' / 'agents' / 'public_no_guide.py'
+  ).write_text('', encoding='utf-8')
+  _git(repo, 'add', '-A')
+  _git(repo, 'commit', '-qm', 'a commit that added a bad file')
+
+  # Stage an edit only. The previous commit's bad file must not resurface.
+  existing = repo / 'src' / 'google' / 'adk' / 'agents' / '_existing.py'
+  existing.write_text('# edited\n', encoding='utf-8')
+  _git(repo, 'add', str(existing))
+
+  assert check_new_py_files.get_vcs_added_files(str(repo)) == set()
+
+
+def test_real_git_reports_a_staged_addition(tmp_path: pathlib.Path) -> None:
+  repo = _git_repo_with_a_guided_module(tmp_path)
+  (repo / 'src' / 'google' / 'adk' / 'agents' / '_added.py').write_text(
+      '', encoding='utf-8'
+  )
+  _git(repo, 'add', '-A')
+
+  assert check_new_py_files.get_vcs_added_files(str(repo)) == {
+      'src/google/adk/agents/_added.py'
+  }
+
+
+def _stage_an_unguided_module(repo: pathlib.Path) -> None:
+  """Stages a module that needs a guide and does not have one."""
+  (repo / 'src' / 'google' / 'adk' / 'agents' / '_brand_new.py').write_text(
+      '', encoding='utf-8'
+  )
+  _git(repo, 'add', '-A')
+
+
+def test_real_git_previous_commits_waiver_does_not_cover_staged_addition(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """A waiver belongs to the commit carrying it, not to the next one.
+
+  Dropping COMMIT_EDITMSG closed one route for a stale waiver and left another
+  open: at pre-commit time HEAD is the previous commit, so reading its message
+  waived whatever was staged on top of it.
+
+  The assertion is the exit code rather than get_commit_message, because any
+  later channel reaching has_no_unit_guide_tag revives the same user-visible
+  defect while that function still returns ''.
+  """
+  monkeypatch.delenv('NO_UNIT_GUIDE', raising=False)
+  monkeypatch.delenv('SKIP_UNIT_GUIDE', raising=False)
+  repo = _git_repo_with_a_guided_module(tmp_path)
+  _git(repo, 'commit', '--amend', '-qm', 'base\n\nNO_UNIT_GUIDE=an old reason')
+  _stage_an_unguided_module(repo)
+
+  assert check_new_py_files.main(['--new-dir', str(repo)]) == 1
+
+
+def test_real_git_a_waiver_in_the_committed_change_still_applies(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Control for the test above: nothing staged, so HEAD is the change.
+
+  Continuous integration reaches this path, and a contributor's waiver has to
+  keep working there. Without this, the test above would also pass if waiving
+  stopped working everywhere.
+  """
+  monkeypatch.delenv('NO_UNIT_GUIDE', raising=False)
+  monkeypatch.delenv('SKIP_UNIT_GUIDE', raising=False)
+  repo = _git_repo_with_a_guided_module(tmp_path)
+  _stage_an_unguided_module(repo)
+  _git(repo, 'commit', '-qm', 'add a module\n\nNO_UNIT_GUIDE=a stated reason')
+
+  assert check_new_py_files.main(['--new-dir', str(repo)]) == 0
+
+
+def test_real_git_the_same_addition_without_a_waiver_is_flagged(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Second control: the committed change passes only on its own tag.
+
+  This fails if the guide rule stops firing on the file the two tests above
+  rely on, which would otherwise let either of them pass for the wrong reason.
+  """
+  monkeypatch.delenv('NO_UNIT_GUIDE', raising=False)
+  monkeypatch.delenv('SKIP_UNIT_GUIDE', raising=False)
+  repo = _git_repo_with_a_guided_module(tmp_path)
+  _stage_an_unguided_module(repo)
+  _git(repo, 'commit', '-qm', 'add a module')
+
+  assert check_new_py_files.main(['--new-dir', str(repo)]) == 1
+
+
+def test_real_git_an_unreadable_index_is_indeterminate_not_a_pass(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """A staged addition nobody could read is not a clean bill of health.
+
+  Treating an unreadable index as "nothing is staged" sent the scan to
+  HEAD~1..HEAD, which reports what the previous commit added and passes the
+  staged file unexamined.
+
+  The second commit matters: with only one, HEAD~1 does not resolve and the
+  fallback fails on its own, so the test would pass whether or not the index
+  was ever consulted.
+  """
+  monkeypatch.delenv('NO_UNIT_GUIDE', raising=False)
+  monkeypatch.delenv('SKIP_UNIT_GUIDE', raising=False)
+  repo = _git_repo_with_a_guided_module(tmp_path)
+  existing = repo / 'src' / 'google' / 'adk' / 'agents' / '_existing.py'
+  existing.write_text('# edited\n', encoding='utf-8')
+  _git(repo, 'add', '-A')
+  _git(repo, 'commit', '-qm', 'a second commit, so that HEAD~1 resolves')
+  _stage_an_unguided_module(repo)
+  (repo / '.git' / 'index').write_text('not an index', encoding='utf-8')
+
+  assert check_new_py_files.main(['--new-dir', str(repo)]) == 3
