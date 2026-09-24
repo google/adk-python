@@ -27,6 +27,7 @@ from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events.event import Event
 from google.adk.tools.mcp_tool._agent_to_mcp import _connection_key
+from google.adk.tools.mcp_tool._agent_to_mcp import _MAX_CONCURRENT_DELETES
 from google.adk.tools.mcp_tool._agent_to_mcp import _reap_orphaned_sessions
 from google.adk.tools.mcp_tool._agent_to_mcp import _run_agent
 from google.adk.tools.mcp_tool._agent_to_mcp import to_mcp_server
@@ -367,6 +368,205 @@ async def test_reap_failure_does_not_raise_and_is_retried():
 
   assert runner.deleted_session_ids == ["session-dead"]
   assert created == {"session-live"}
+
+
+@pytest.mark.asyncio
+async def test_reap_partial_failure_requeues_only_the_failed_ids():
+  """In a batch, a failed delete is retried later without undoing the
+  deletes that were already in flight and succeeded."""
+  runner = _FakeRunner([_text_event("ok")])
+  runner.failing_deletes = 1
+  record_delete = runner.session_service.delete_session
+
+  async def io_bound_delete(**kwargs):
+    # Yield like real I/O, so all three deletes are in flight together.
+    await asyncio.sleep(0)
+    await record_delete(**kwargs)
+
+  runner.session_service.delete_session = io_bound_delete
+  created = {"session-a", "session-b", "session-c"}
+
+  await _reap_orphaned_sessions(runner, {}, created)
+
+  assert len(runner.deleted_session_ids) == 2
+  assert len(created) == 1
+  assert created.isdisjoint(runner.deleted_session_ids)
+
+  await _reap_orphaned_sessions(runner, {}, created)
+
+  assert sorted(runner.deleted_session_ids) == [
+      "session-a",
+      "session-b",
+      "session-c",
+  ]
+  assert not created
+
+
+@pytest.mark.asyncio
+async def test_reap_stops_after_a_failure_instead_of_hammering_the_service(
+    caplog,
+):
+  """While the session service is down, a reap makes a number of delete
+  attempts bounded by the pool size instead of one per waiting session, and
+  keeps every id for a later retry."""
+  attempts = 0
+
+  async def unavailable_delete(**kwargs):
+    nonlocal attempts
+    attempts += 1
+    await asyncio.sleep(0.01)
+    raise ConnectionError("session service unavailable")
+
+  runner = _FakeRunner([_text_event("ok")])
+  runner.session_service.delete_session = unavailable_delete
+  backlog = {f"session-{i}" for i in range(10 * _MAX_CONCURRENT_DELETES)}
+  created = set(backlog)
+
+  with caplog.at_level(logging.WARNING):
+    await _reap_orphaned_sessions(runner, {}, created)
+
+  # Workers whose delete failed early may each start one more before the
+  # pool's last failure lands, hence fewer than twice the pool size.
+  assert _MAX_CONCURRENT_DELETES <= attempts < 2 * _MAX_CONCURRENT_DELETES
+  assert created == backlog
+  # One summary per pass, not one record per failed delete.
+  assert caplog.text.count("Failed to delete") == 1
+  assert f"Failed to delete {attempts} orphaned" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_one_failing_session_does_not_hold_up_the_rest():
+  """A session whose delete keeps failing, e.g. one a custom session service
+  rejects, must not stop the rest of the batch from being deleted."""
+  runner = _FakeRunner([_text_event("ok")])
+  record_delete = runner.session_service.delete_session
+
+  async def delete_rejecting_one(**kwargs):
+    if kwargs["session_id"] == "session-rejected":
+      raise ValueError("rejected by the session service")
+    await asyncio.sleep(0)
+    await record_delete(**kwargs)
+
+  runner.session_service.delete_session = delete_rejecting_one
+  healthy = {f"session-{i}" for i in range(100)}
+  created = healthy | {"session-rejected"}
+
+  await _reap_orphaned_sessions(runner, {}, created)
+
+  assert set(runner.deleted_session_ids) == healthy
+  assert created == {"session-rejected"}
+
+
+@pytest.mark.asyncio
+async def test_hung_delete_times_out_instead_of_stopping_reaping(
+    monkeypatch, caplog
+):
+  """Only one reap runs at a time, so a delete that never returns must time
+  out and be retried later rather than block every future reap."""
+  monkeypatch.setattr(
+      "google.adk.tools.mcp_tool._agent_to_mcp._DELETE_TIMEOUT_SECONDS", 0.05
+  )
+  runner = _FakeRunner([_text_event("ok")])
+  record_delete = runner.session_service.delete_session
+
+  async def delete_hanging_once(**kwargs):
+    if kwargs["session_id"] == "session-hung":
+      await asyncio.Event().wait()
+    await record_delete(**kwargs)
+
+  runner.session_service.delete_session = delete_hanging_once
+  created = {"session-hung", "session-ok"}
+
+  with caplog.at_level(logging.WARNING):
+    await asyncio.wait_for(
+        _reap_orphaned_sessions(runner, {}, created), timeout=5
+    )
+
+  assert runner.deleted_session_ids == ["session-ok"]
+  assert created == {"session-hung"}
+  assert "TimeoutError" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_reap_task_count_stays_bounded_for_a_large_backlog():
+  """After an outage the backlog can hold many thousands of ids; draining it
+  must not create a task per waiting session."""
+  peak_tasks = 0
+  deleted = 0
+
+  async def counting_delete(**kwargs):
+    nonlocal peak_tasks, deleted
+    peak_tasks = max(peak_tasks, len(asyncio.all_tasks()))
+    await asyncio.sleep(0)
+    deleted += 1
+
+  runner = _FakeRunner([_text_event("ok")])
+  runner.session_service.delete_session = counting_delete
+  created = {f"session-{i}" for i in range(1000)}
+
+  await _reap_orphaned_sessions(runner, {}, created)
+
+  assert deleted == 1000
+  assert not created
+  # Bounded by the pool size, not the backlog: the workers, the task running
+  # this test, and on Python < 3.12 one wait_for task per in-flight delete.
+  assert peak_tasks <= 2 * _MAX_CONCURRENT_DELETES + 1
+
+
+@pytest.mark.asyncio
+async def test_slow_deletes_run_concurrently_up_to_the_cap():
+  """With a slow session service, one reap deletes a backlog concurrently
+  but never has more than the cap in flight. Deleting one at a time caps
+  throughput at one session per delete round trip, so under frequent short
+  connections the backlog grows faster than it drains."""
+  runner = _FakeRunner([_text_event("ok")])
+  record_delete = runner.session_service.delete_session
+  in_flight = 0
+  max_in_flight = 0
+
+  async def slow_delete(**kwargs):
+    nonlocal in_flight, max_in_flight
+    in_flight += 1
+    max_in_flight = max(max_in_flight, in_flight)
+    await asyncio.sleep(0.01)
+    in_flight -= 1
+    await record_delete(**kwargs)
+
+  runner.session_service.delete_session = slow_delete
+  backlog = {f"session-{i}" for i in range(3 * _MAX_CONCURRENT_DELETES)}
+  created = set(backlog)
+
+  await _reap_orphaned_sessions(runner, {}, created)
+
+  assert sorted(runner.deleted_session_ids) == sorted(backlog)
+  assert max_in_flight == _MAX_CONCURRENT_DELETES
+  assert not created
+
+
+@pytest.mark.asyncio
+async def test_reap_drains_orphans_that_appear_while_it_runs():
+  """Sessions orphaned while a reap is deleting are picked up by that same
+  reap, so a backlog drains without waiting for another tool call."""
+  runner = _FakeRunner([_text_event("ok")])
+  record_delete = runner.session_service.delete_session
+  release = asyncio.Event()
+  created = {"session-early"}
+
+  async def gated_delete(**kwargs):
+    if kwargs["session_id"] == "session-early":
+      await release.wait()
+    await record_delete(**kwargs)
+
+  runner.session_service.delete_session = gated_delete
+  reap = asyncio.create_task(_reap_orphaned_sessions(runner, {}, created))
+  await asyncio.sleep(0)
+  # Orphaned while the first delete is still in flight.
+  created.add("session-late")
+  release.set()
+  await asyncio.wait_for(reap, timeout=5)
+
+  assert runner.deleted_session_ids == ["session-early", "session-late"]
+  assert not created
 
 
 @pytest.mark.asyncio

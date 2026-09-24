@@ -21,6 +21,7 @@ import base64
 import contextvars
 import logging
 from typing import Any
+from typing import Iterator
 from typing import MutableMapping
 from typing import Optional
 import weakref
@@ -44,6 +45,11 @@ logger = logging.getLogger("google_adk." + __name__)
 
 _MCP_USER_ID = "mcp_user"
 _INLINE_RESOURCE_URI = "resource://adk-agent/inline-data"
+# Caps the deletes one reap has in flight, so a large backlog does not hit a
+# database-backed session service all at once. Arbitrary, not measured.
+_MAX_CONCURRENT_DELETES = 8
+# Same bound runners.py gives toolset cleanup. Arbitrary, not measured.
+_DELETE_TIMEOUT_SECONDS = 10.0
 
 
 def _build_runner(agent: BaseAgent) -> Runner:
@@ -125,8 +131,21 @@ async def _reap_orphaned_sessions(
   connection is garbage-collected; the ADK session it pointed to would stay
   in the session service forever. Under a stateless streamable HTTP transport
   the connection lives for a single request, which turns that into one leaked
-  session per tool call. Reaping runs lazily from the next tool call because
-  a GC callback may fire without a running event loop.
+  session per tool call. Reaping is started from tool calls rather than from
+  a GC callback, because a GC callback may fire without a running event loop.
+
+  The reap repeats until no orphan is left, including connections that close
+  while it runs, so a backlog drains without waiting for further tool calls.
+  Each batch is deleted by ``_MAX_CONCURRENT_DELETES`` workers sharing one
+  iterator: concurrently, because deleting one at a time caps throughput at
+  one session per delete round trip, which a slow session service cannot
+  sustain under frequent short connections; and through a fixed pool rather
+  than a task per session, because after an outage the backlog can hold
+  many thousands of ids. Once as many deletes have failed as there are
+  workers, the workers stop deleting and the pass ends, so an unavailable
+  service sees fewer than twice the pool size of attempts per pass, while a
+  single session that keeps failing does not hold up the others. Every id
+  the pass did not delete is put back, and a later tool call retries it.
 
   Args:
     runner: The Runner whose session service owns the sessions.
@@ -134,29 +153,55 @@ async def _reap_orphaned_sessions(
     created: Ids of every session ever entered into ``sessions``. Ids no
       longer reachable through ``sessions`` are deleted and removed from it.
   """
-  live = set(sessions.values())
-  for session_id in created - live:
-    if session_id not in created:
-      # A concurrent reap already took this one; the discard below and this
-      # check share one synchronous stretch, so each id is deleted once.
-      continue
-    created.discard(session_id)
-    try:
-      await runner.session_service.delete_session(
-          app_name=runner.app_name,
-          user_id=_MCP_USER_ID,
-          session_id=session_id,
-      )
-    except Exception:  # pylint: disable=broad-exception-caught
-      # Reaping is housekeeping; it must not fail the tool call that
-      # triggered it. Put the id back so a later call retries the delete.
-      created.add(session_id)
+
+  async def delete_pending(
+      pending: Iterator[str], errors: list[Exception], max_errors: int
+  ) -> None:
+    for session_id in pending:
+      if len(errors) >= max_errors:
+        created.add(session_id)
+        continue
+      try:
+        # Only one reap runs at a time, so a delete that never returns would
+        # stop all reaping; time it out and retry it on a later call instead.
+        await asyncio.wait_for(
+            runner.session_service.delete_session(
+                app_name=runner.app_name,
+                user_id=_MCP_USER_ID,
+                session_id=session_id,
+            ),
+            timeout=_DELETE_TIMEOUT_SECONDS,
+        )
+      except Exception as e:  # pylint: disable=broad-exception-caught
+        # Reaping is housekeeping; it must not fail the tool call that
+        # triggered it. Put the id back so a later call retries it.
+        created.add(session_id)
+        errors.append(e)
+
+  while True:
+    batch = list(created - set(sessions.values()))
+    if not batch:
+      return
+    # Claimed in the same synchronous stretch that computed it, so a
+    # concurrent reap never deletes the same id twice.
+    created.difference_update(batch)
+    pending = iter(batch)
+    errors: list[Exception] = []
+    workers = min(_MAX_CONCURRENT_DELETES, len(batch))
+    # Stopping only once there have been as many failures as workers tells an
+    # outage apart from a single session that keeps failing, which must not
+    # hold up the rest of the batch.
+    await asyncio.gather(
+        *(delete_pending(pending, errors, workers) for _ in range(workers))
+    )
+    if errors:
       logger.warning(
-          "Failed to delete orphaned MCP agent session %s; will retry on a"
+          "Failed to delete %d orphaned MCP agent session(s); will retry on a"
           " later tool call.",
-          session_id,
-          exc_info=True,
+          len(errors),
+          exc_info=errors[0],
       )
+      return
 
 
 def _log_reap_failure(task: asyncio.Task[None]) -> None:
@@ -289,8 +334,9 @@ def to_mcp_server(
 
   One ADK session is kept per MCP connection, so successive tool calls on the
   same connection form a single multi-turn conversation. When a connection
-  goes away its ADK session is deleted from the session service on a later
-  tool call, so a long-running server does not accumulate dead conversations.
+  goes away its ADK session is deleted from the session service in the
+  background, by a reap that tool calls start, so a long-running server does
+  not accumulate dead conversations.
 
   The caller chooses the transport, e.g. ``server.run(transport="stdio")`` for
   a local host or ``server.run(transport="streamable-http")`` for a networked
