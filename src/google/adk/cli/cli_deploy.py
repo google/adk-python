@@ -35,7 +35,9 @@ from packaging.version import parse
 
 from ..version import __version__
 from .deployers import DeployerFactory
-from .deployers._dockerfile_template import _DOCKERFILE_TEMPLATE
+from .deployers._dockerfile_template import _render_dockerfile
+from .deployers._dockerfile_template import _render_install_agent_deps
+from .deployers._dockerfile_template import _validate_app_name
 from .utils import _onboarding
 
 _IS_WINDOWS = os.name == 'nt'
@@ -503,36 +505,6 @@ def _resolve_project(project_in_option: Optional[str]) -> str:
   return project
 
 
-# app_name is interpolated verbatim into the generated Dockerfile (COPY/RUN
-# instructions and the shell-form CMD) by _DOCKERFILE_TEMPLATE. It defaults to
-# the basename of the agent source folder, so its value can come from a
-# directory name the deploying developer did not choose (a cloned or shared
-# agent template). Restrict it to a plain identifier before it reaches the
-# template so it cannot break out of a Dockerfile instruction or the CMD shell.
-_APP_NAME_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r'^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,62}$'
-)
-
-
-def _validate_app_name(app_name: str) -> None:
-  """Validates the deploy app name before it is written into a Dockerfile.
-
-  Args:
-    app_name: The app name, either passed via --app_name or derived from the
-      agent source folder basename.
-
-  Raises:
-    click.ClickException: If the app name is not a plain identifier.
-  """
-  if not _APP_NAME_PATTERN.fullmatch(app_name):
-    raise click.ClickException(
-        f'Invalid app name {app_name!r}. The app name is used in the generated'
-        ' Dockerfile and must contain only letters, digits, hyphens,'
-        ' underscores, and periods (1-63 characters, starting with a letter,'
-        ' digit, hyphen, or underscore).'
-    )
-
-
 def _validate_dockerfile_env_value(name: str, value: Optional[str]) -> None:
   """Validates a value before it is written into a Dockerfile ENV instruction.
 
@@ -669,14 +641,14 @@ def _validate_agent_import(
         sys.modules.pop(key, None)
 
 
-def _get_service_option_by_adk_version(
+def _get_service_options_by_adk_version(
     adk_version: str,
     session_uri: Optional[str],
     artifact_uri: Optional[str],
     memory_uri: Optional[str],
     use_local_storage: Optional[bool] = None,
-) -> str:
-  """Returns service option string based on adk_version."""
+) -> list[str]:
+  """Returns the service options based on adk_version, one per argv entry."""
   parsed_version = parse(adk_version)
   options: list[str] = []
 
@@ -699,7 +671,7 @@ def _get_service_option_by_adk_version(
           else '--no_use_local_storage'
       ))
 
-  return ' '.join(options)
+  return options
 
 
 def _get_ignore_patterns_func(
@@ -801,8 +773,9 @@ def run(
     with_cloud_run_sandbox: Whether to enable the Cloud Run sandbox for code
       execution.
   """
-  app_name = app_name or os.path.basename(os.path.normpath(agent_folder))
-  _validate_app_name(app_name)
+  app_name = _validate_app_name(
+      app_name or os.path.basename(os.path.normpath(agent_folder))
+  )
   if parse(adk_version) >= parse('1.3.0') and not use_local_storage:
     session_service_uri = session_service_uri or 'memory://'
     artifact_service_uri = artifact_service_uri or 'memory://'
@@ -821,10 +794,8 @@ def run(
     ignore_func = _get_ignore_patterns_func(agent_folder)
     shutil.copytree(agent_folder, agent_src_path, ignore=ignore_func)
     requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
-    install_agent_deps = (
-        f'RUN pip install -r "/app/agents/{app_name}/requirements.txt"'
-        if os.path.exists(requirements_txt_path)
-        else '# No requirements.txt found.'
+    install_agent_deps = _render_install_agent_deps(
+        app_name, requirements_txt_path, '# No requirements.txt found.'
     )
     click.echo('Copying agent source code completed.')
 
@@ -848,12 +819,12 @@ def run(
         if trigger_oidc_service_accounts
         else ''
     )
-    dockerfile_content = _DOCKERFILE_TEMPLATE.format(
+    dockerfile_content = _render_dockerfile(
         app_name=app_name,
         port=port,
         command='api_server --with_ui' if with_ui else 'api_server',
         install_agent_deps=install_agent_deps,
-        service_option=_get_service_option_by_adk_version(
+        service_options=_get_service_options_by_adk_version(
             adk_version,
             session_service_uri,
             artifact_service_uri,
@@ -1377,10 +1348,8 @@ def to_agent_engine(
 
     def create_dockerfile_for_agent_engine(resource_name: str) -> None:
       requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
-      install_agent_deps = (
-          f'RUN pip install -r "/app/agents/{app_name}/requirements.txt"'
-          if os.path.exists(requirements_txt_path)
-          else '# No requirements.txt found.'
+      install_agent_deps = _render_install_agent_deps(
+          app_name, requirements_txt_path, '# No requirements.txt found.'
       )
       trigger_sources_option = (
           f'--trigger_sources={trigger_sources}' if trigger_sources else ''
@@ -1424,12 +1393,12 @@ def to_agent_engine(
       extra_env_vars = (
           '\n' + '\n'.join(gcp_env_lines) + '\n' if gcp_env_lines else ''
       )
-      dockerfile_content = _DOCKERFILE_TEMPLATE.format(
+      dockerfile_content = _render_dockerfile(
           app_name=app_name,
           port=8080,
           command='api_server',
           install_agent_deps=install_agent_deps,
-          service_option=_get_service_option_by_adk_version(
+          service_options=_get_service_options_by_adk_version(
               adk_version,
               session_service_uri or agent_engine_uri,
               artifact_service_uri,
@@ -1451,7 +1420,7 @@ def to_agent_engine(
               else ''
           ),
           express_mode_option=(
-              ' --express_mode' if api_key and not project else ''
+              '--express_mode' if api_key and not project else ''
           ),
           extra_packages_copy=extra_packages_copy,
           extra_env_vars=extra_env_vars,
@@ -1593,10 +1562,8 @@ def to_gke(
     ignore_func = _get_ignore_patterns_func(agent_folder)
     shutil.copytree(agent_folder, agent_src_path, ignore=ignore_func)
     requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
-    install_agent_deps = (
-        f'RUN pip install -r "/app/agents/{app_name}/requirements.txt"'
-        if os.path.exists(requirements_txt_path)
-        else ''
+    install_agent_deps = _render_install_agent_deps(
+        app_name, requirements_txt_path, ''
     )
     click.secho('✅ Environment prepared.', fg='green')
 
@@ -1618,12 +1585,12 @@ def to_gke(
         if trigger_oidc_service_accounts
         else ''
     )
-    dockerfile_content = _DOCKERFILE_TEMPLATE.format(
+    dockerfile_content = _render_dockerfile(
         app_name=app_name,
         port=port,
         command='api_server --with_ui' if with_ui else 'api_server',
         install_agent_deps=install_agent_deps,
-        service_option=_get_service_option_by_adk_version(
+        service_options=_get_service_options_by_adk_version(
             adk_version,
             session_service_uri,
             artifact_service_uri,
