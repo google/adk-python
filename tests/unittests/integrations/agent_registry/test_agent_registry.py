@@ -14,6 +14,7 @@
 
 
 import os
+import pickle
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -31,6 +32,7 @@ from google.adk.integrations.agent_registry.agent_registry import _should_use_mt
 from google.adk.telemetry.tracing import GCP_MCP_SERVER_DESTINATION_ID
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.adk.utils._google_client_headers import merge_tracking_headers
+import google.oauth2.credentials
 import httpx
 from mcp import ClientSession
 from mcp.types import ListToolsResult
@@ -704,6 +706,48 @@ class TestAgentRegistry:
     headers = registry._get_auth_headers()
     assert headers["Authorization"] == "Bearer fake-token"
     assert "x-goog-user-project" not in headers
+
+  def test_pickle_drops_credentials_and_reloads_on_use(self):
+    """A pickled registry leaves its credentials behind and loads new ones."""
+    deployer_credentials = google.oauth2.credentials.Credentials(
+        token="deployer-token",
+        refresh_token="deployer-refresh-token",
+        client_id="client-id",
+        client_secret="client-secret",
+        token_uri="https://oauth2.googleapis.com/token",
+    )
+    with patch(
+        "google.auth.default",
+        return_value=(deployer_credentials, "project-id"),
+    ):
+      registry = AgentRegistry(project_id="test-project", location="l")
+
+    pickled = pickle.dumps(registry)
+
+    assert b"deployer-refresh-token" not in pickled
+    assert b"client-secret" not in pickled
+
+    runtime_credentials = MagicMock()
+    runtime_credentials.quota_project_id = None
+    with (
+        patch(
+            "google.auth.default",
+            return_value=(runtime_credentials, "project-id"),
+        ) as mock_default,
+        patch(
+            "google.auth.transport.requests.AuthorizedSession"
+        ) as mock_session_class,
+    ):
+      restored = pickle.loads(pickled)  # pylint: disable=g-unsafe-pickle-load
+      mock_default.assert_not_called()
+      mock_session_class.return_value.get.return_value.json.return_value = {
+          "name": "test-mcp"
+      }
+
+      assert restored.get_mcp_server("test-mcp") == {"name": "test-mcp"}
+
+    assert restored._credentials is runtime_credentials
+    mock_session_class.assert_called_once_with(credentials=runtime_credentials)
 
   def test_registry_requests_identify_adk(self, registry):
     """Registry calls carry the ADK client label.
