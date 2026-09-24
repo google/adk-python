@@ -49,6 +49,7 @@ from .artifacts.base_artifact_service import BaseArtifactService
 from .auth.credential_service.base_credential_service import BaseCredentialService
 from .errors._stale_session_error import StaleSessionError
 from .errors.session_not_found_error import SessionNotFoundError
+from .events._rewind_events import _apply_rewinds
 from .events.event import Event
 from .events.event_actions import EventActions
 from .flows.llm_flows.context import _contents as contents
@@ -120,8 +121,9 @@ def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
   # We must do this in a separate pass because walking backward directly would
   # hit post-finish events (like status updates or duplicate FRs) before hitting
   # the older success FR, falsely indicating the scope is still active.
+  live_events = _apply_rewinds(session.events)
   finished_scopes: set[str] = set()
-  for event in session.events:
+  for event in live_events:
     scope = event.isolation_scope
     if not scope:
       continue
@@ -138,7 +140,7 @@ def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
           break
 
   # Pass 2: Walk backward to find the latest active scope that is not finished.
-  for event in reversed(session.events):
+  for event in reversed(live_events):
     scope = event.isolation_scope
     if not scope:
       continue
@@ -637,7 +639,7 @@ class Runner:
 
     # Find invocation_id for each FR by matching its FC in session
     invocation_ids = set()
-    for event in reversed(session.events):
+    for event in reversed(_apply_rewinds(session.events)):
       for fc in event.get_function_calls():
         if fc.id in fr_ids:
           invocation_ids.add(event.invocation_id)
@@ -736,7 +738,7 @@ class Runner:
     invocation used to fail outright, because the caller treats "not found" as
     an error.
     """
-    for event in events:
+    for event in _apply_rewinds(events):
       if (
           event.invocation_id == invocation_id
           and event.author == 'user'

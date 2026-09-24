@@ -118,6 +118,7 @@ def _make_fr_event(fc_id, response, invocation_id='inv-1'):
   event.branch = None
   event.isolation_scope = None
   event.long_running_tool_ids = None
+  event.actions = None
 
   fr = MagicMock()
   fr.id = fc_id

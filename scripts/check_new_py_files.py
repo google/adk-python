@@ -111,7 +111,14 @@ _GIT_RENAME_FILTER = '--diff-filter=R'
 # one a tag parser accepts: waiving locally on a line that the surrounding
 # tooling would not read as a tag is how an author ends up believing they are
 # covered when they are not.
-_NO_UNIT_GUIDE_TAG = re.compile(r'^(?:NO|SKIP)_UNIT_GUIDE=', re.MULTILINE)
+#
+# The tag has to carry a reason, so it has to reach a non-space character. A
+# bare `NO_UNIT_GUIDE=` would otherwise waive every file the change adds while
+# recording nothing a reviewer can weigh, which is the opposite of what the tag
+# exists for.
+_NO_UNIT_GUIDE_TAG = re.compile(
+    r'^(?:NO|SKIP)_UNIT_GUIDE=[ \t]*\S', re.MULTILINE
+)
 
 _PREFIX_VIOLATION_LINE = (
     "Error: New Python file '{path}' must have a '_' prefix.\n"
@@ -126,8 +133,10 @@ _GUIDE_VIOLATION_LINE = (
     "Expected guide at 'docs/guides/{expected}/index.md' or"
     " 'docs/guides/{expected}.md'.\n"
     'If a unit guide is not required for this file, explain why with a'
-    " 'NO_UNIT_GUIDE=<reason>' tag in your commit message, or by setting"
-    " NO_UNIT_GUIDE='<reason>' in the environment where this check runs.\n"
+    " 'NO_UNIT_GUIDE=<reason>' tag in the commit message of the change that"
+    ' adds it. Where no message can be read, as when the change is only'
+    ' staged or the tree carries no version control, set the tag in the'
+    " environment instead: NO_UNIT_GUIDE='<reason>' git commit ...\n"
     'See .agents/skills/adk-unit-guide/SKILL.md for details on creating unit'
     ' guides.'
 )
@@ -331,6 +340,33 @@ def _git_added_paths(base_cmd: list[str], root: str) -> set[str]:
   return added | _git_renamed_to_new_names(base_cmd, root)
 
 
+def _git_is_mid_commit(root: str) -> bool | None:
+  """Reports whether a change is staged and not yet committed.
+
+  Both the added-file scan and the waiver scan branch on this, and they must
+  branch on it together: the index and HEAD describe different changes, so
+  reading files from one and the waiver from the other lets a tag written for
+  the previous commit apply to this one.
+
+  Args:
+    root: The root directory of the repository.
+
+  Returns:
+    True when anything at all is staged. Asking whether any *addition* is
+    staged would send a commit that adds nothing down the HEAD~1..HEAD path,
+    where it would be judged on what the previous commit added. None when git
+    could not say, as with an unreadable index: treating that as "nothing is
+    staged" sent the scan to HEAD~1..HEAD, which reports what the previous
+    commit added and passes a staged file nobody looked at.
+  """
+  code, staged_any = _run_cmd(
+      ['git', 'diff', '--cached', '--name-only'], cwd=root
+  )
+  if code != 0:
+    return None
+  return bool(staged_any.strip())
+
+
 def get_vcs_added_files(root: str = '.') -> set[str] | None:
   """Detects added files using local VCS (git, jj, hg, g4, p4).
 
@@ -345,14 +381,16 @@ def get_vcs_added_files(root: str = '.') -> set[str] | None:
   if shutil.which('git'):
     code, _ = _run_cmd(['git', 'rev-parse', '--is-inside-work-tree'], cwd=root)
     if code == 0:
-      # Whether anything at all is staged decides which of the two modes
-      # applies. Asking whether any *addition* is staged would send a commit
-      # that adds nothing down the HEAD~1..HEAD path, where it would be judged
-      # on what the previous commit added.
-      _, staged_any = _run_cmd(
-          ['git', 'diff', '--cached', '--name-only'], cwd=root
-      )
-      if staged_any.strip():
+      mid_commit = _git_is_mid_commit(root)
+      if mid_commit is None:
+        print(
+            'git is active but its index cannot be read, so whether this'
+            ' change is staged or committed is unknown, and so is what it'
+            ' adds.',
+            file=sys.stderr,
+        )
+        return None
+      if mid_commit:
         return _git_added_paths(['git', 'diff', '--cached'], root)
       range_code, head_diff = _run_cmd(
           ['git', 'diff', _GIT_HEAD_RANGE, '--name-only', _GIT_ADD_FILTER],
@@ -455,15 +493,22 @@ def get_commit_message(root: str = '.') -> str:
   Returns:
     The message to search for a waiver tag, or '' when none can be read.
   """
-  # Note that the message of the commit currently being written is not
-  # readable here at all. A pre-commit hook runs before git has put it
-  # anywhere, so a waiver for the change being made has to come from the
-  # environment -- `NO_UNIT_GUIDE=<reason> git commit ...` -- which
-  # has_no_unit_guide_tag honours and the violation text advertises.
   # 1. git
   if shutil.which('git'):
     code, _ = _run_cmd(['git', 'rev-parse', '--is-inside-work-tree'], cwd=root)
     if code == 0:
+      if _git_is_mid_commit(root) is not False:
+        # The change is staged, so the commit carrying it does not exist yet
+        # and its message is nowhere to be read: a pre-commit hook runs before
+        # git records what the author typed, and HEAD still describes the
+        # previous change. Returning HEAD's message here is what let a waiver
+        # written for an earlier commit silently cover this one. Waiving the
+        # change being committed goes through the environment instead --
+        # `NO_UNIT_GUIDE='<reason>' git commit ...` -- which
+        # has_no_unit_guide_tag honours and the violation text advertises.
+        # None lands here too: a waiver that cannot be attributed to a change
+        # must not be applied to one.
+        return ''
       _, msg = _run_cmd(['git', 'log', '-1', '--pretty=%B'], cwd=root)
       # On a pull request, HEAD is a merge commit whose own message is
       # generated by CI and can hold no waiver. The commits being merged are
@@ -477,12 +522,9 @@ def get_commit_message(root: str = '.') -> str:
       # COMMIT_EDITMSG is deliberately not consulted. It was read here to
       # catch the message of the commit being made, which it never held: git
       # writes it only after the pre-commit hook has run, so during that hook
-      # it still carries the previous commit's message -- or, after a commit
-      # that some hook rejected, the message of that abandoned attempt. Either
-      # way a waiver written for another change would silently cover this one,
-      # and neither case can be told from a current message by inspection.
-      # Waiving a commit that does not exist yet goes through the environment
-      # instead, which has_no_unit_guide_tag reads.
+      # it carries the previous commit's message, or the message of an attempt
+      # some hook rejected. Both are messages written for another change, and
+      # neither can be told from a current one by inspection.
       return msg
 
   # 2. jj
@@ -543,9 +585,14 @@ def is_exempt_from_unit_guide(rel_path: str, filename: str) -> bool:
 
 
 def has_no_unit_guide_tag(commit_msg: str) -> bool:
-  """Checks if NO_UNIT_GUIDE / SKIP_UNIT_GUIDE is present in env or commit message."""
-  if os.environ.get('NO_UNIT_GUIDE') or os.environ.get('SKIP_UNIT_GUIDE'):
-    return True
+  """Checks if NO_UNIT_GUIDE / SKIP_UNIT_GUIDE is present in env or commit message.
+
+  A reason is required in either channel, so a variable holding only whitespace
+  waives nothing, the same way a bare tag in a message does not.
+  """
+  for name in ('NO_UNIT_GUIDE', 'SKIP_UNIT_GUIDE'):
+    if os.environ.get(name, '').strip():
+      return True
   return bool(_NO_UNIT_GUIDE_TAG.search(commit_msg))
 
 

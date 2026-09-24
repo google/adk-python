@@ -4820,6 +4820,29 @@ async def test_get_content_file_uri_explicit_octet_stream_raises():
 
 
 @pytest.mark.asyncio
+async def test_get_content_unsupported_mime_type_error_redacts_file_uri():
+  """The unsupported-MIME-type error names the file, not the signed URL."""
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri=(
+                  "https://example.com/bucket/artifact"
+                  "?X-Goog-Signature=0123456789abcdef"
+              )
+          )
+      )
+  ]
+
+  with pytest.raises(ValueError) as exc_info:
+    await _get_content(parts)
+
+  message = str(exc_info.value)
+  assert "https://<redacted>/artifact" in message
+  assert "X-Goog-Signature" not in message
+  assert "0123456789abcdef" not in message
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "uri,expected_mime_type",
     [

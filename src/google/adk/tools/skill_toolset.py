@@ -1865,6 +1865,17 @@ class SkillToolset(BaseToolset):
       return True
     return getattr(agent, "code_executor", None) is not None
 
+  def _offers_script_tool(self, context: ReadonlyContext | None) -> bool:
+    """Whether `run_skill_script` can succeed; anything unknown counts as yes."""
+    if not self._has_script_execution(context):
+      return False
+    if (
+        getattr(context, "_invocation_context", None) is None
+        or self._registry is not None
+    ):
+      return True
+    return any(skill.resources.list_scripts() for skill in self._list_skills())
+
   async def get_tools(
       self, readonly_context: ReadonlyContext | None = None
   ) -> list[BaseTool]:
@@ -1873,7 +1884,7 @@ class SkillToolset(BaseToolset):
         readonly_context
     )
     all_tools = self._tools + dynamic_tools
-    if not self._has_script_execution(readonly_context):
+    if not self._offers_script_tool(readonly_context):
       all_tools = [
           t for t in all_tools if not isinstance(t, RunSkillScriptTool)
       ]
@@ -2338,7 +2349,7 @@ class SkillToolset(BaseToolset):
             prefix=self.tool_name_prefix,
             allowed_tools=selected_core_tools,
             skills_folder=self.skills_folder,
-            script_execution_enabled=self._has_script_execution(tool_context),
+            script_execution_enabled=self._offers_script_tool(tool_context),
             unload_enabled=self._lifecycle_enabled,
         )
     ]

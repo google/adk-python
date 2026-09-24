@@ -185,7 +185,14 @@ def _latest_prompt_token_count(
     current_branch: str | None = None,
     agent_name: str = '',
 ) -> int | None:
-  """Returns the most recently observed prompt token count, if available."""
+  """Returns the most recently observed prompt token count, if available.
+
+  When `agent_name` is given, only counts recorded by that agent are
+  considered. A count belongs to whichever agent made the model call, so
+  reading another agent's is reading another context: a multi-agent app whose
+  turn ends in a small sub-agent otherwise measures that sub-agent forever and
+  never reaches its threshold.
+  """
   for event in reversed(events):
     if event.actions and event.actions.compaction:
       # Counts at or before a summarization describe a prompt it replaced.
@@ -193,6 +200,7 @@ def _latest_prompt_token_count(
     if (
         event.usage_metadata
         and event.usage_metadata.prompt_token_count is not None
+        and (not agent_name or event.author == agent_name)
     ):
       return event.usage_metadata.prompt_token_count
   return _estimate_prompt_token_count(
