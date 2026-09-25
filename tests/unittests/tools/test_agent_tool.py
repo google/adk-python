@@ -39,6 +39,7 @@ from google.adk.runners import Runner
 import google.adk.runners as _runners_module
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.agent_tool import AgentTool
+from google.adk.tools.base_toolset import BaseToolset
 from google.adk.tools.tool_context import ToolContext
 from google.adk.utils._schema_utils import validate_node_data
 from google.adk.utils.variant_utils import GoogleLLMVariant
@@ -49,6 +50,37 @@ import pytest
 from pytest import mark
 
 from .. import testing_utils
+
+
+class CountingToolset(BaseToolset):
+  """Toolset that records how many times close() ran."""
+
+  def __init__(self):
+    super().__init__()
+    self.close_count = 0
+
+  async def get_tools(self, readonly_context=None):
+    del readonly_context
+    return []
+
+  async def close(self):
+    self.close_count += 1
+
+
+async def _tool_context_for(root_agent: Agent) -> ToolContext:
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name='test_app', user_id='test_user'
+  )
+  invocation_context = InvocationContext(
+      invocation_id='invocation_id',
+      agent=root_agent,
+      session=session,
+      session_service=session_service,
+      plugin_manager=PluginManager(),
+  )
+  return ToolContext(invocation_context=invocation_context)
+
 
 function_call_custom = Part.from_function_call(
     name='tool_agent', args={'custom_input': 'test1'}
@@ -919,6 +951,75 @@ async def test_include_plugins_true_sub_runner_does_not_close_parent_plugins():
 
   # The sub-Runner must not have closed the parent's plugin.
   assert parent_plugin.close_calls == 0
+
+
+@mark.asyncio
+async def test_parallel_agent_tools_do_not_close_shared_toolset_early():
+  toolset = CountingToolset()
+  started = asyncio.Event()
+  release = asyncio.Event()
+
+  async def _hold(_callback_context):
+    started.set()
+    await release.wait()
+    return None
+
+  mock_model = testing_utils.MockModel.create(responses=['ok-a', 'ok-b'])
+  agent_a = Agent(name='tool_a', model=mock_model, tools=[toolset])
+  agent_b = Agent(
+      name='tool_b',
+      model=mock_model,
+      tools=[toolset],
+      before_agent_callback=_hold,
+  )
+  root_agent = Agent(name='root_agent', model='test-model')
+  tool_context = await _tool_context_for(root_agent)
+
+  slow = asyncio.create_task(
+      AgentTool(agent=agent_b).run_async(
+          args={'request': 'b'}, tool_context=tool_context
+      )
+  )
+  await started.wait()
+  await AgentTool(agent=agent_a).run_async(
+      args={'request': 'a'}, tool_context=tool_context
+  )
+  assert toolset.close_count == 0
+  release.set()
+  await slow
+  assert toolset.close_count == 1
+
+
+@mark.asyncio
+async def test_failed_agent_tool_still_closes_shared_toolset():
+  async def _boom(_callback_context):
+    raise RuntimeError('boom')
+
+  toolset = CountingToolset()
+  boom_agent = Agent(
+      name='boom_agent',
+      model='test-model',
+      tools=[toolset],
+      before_agent_callback=_boom,
+  )
+  ok_agent = Agent(
+      name='ok_agent',
+      model=testing_utils.MockModel.create(responses=['ok']),
+      tools=[toolset],
+  )
+  root_agent = Agent(name='root_agent', model='test-model')
+  tool_context = await _tool_context_for(root_agent)
+
+  with pytest.raises(RuntimeError, match='boom'):
+    await AgentTool(agent=boom_agent).run_async(
+        args={'request': 'x'}, tool_context=tool_context
+    )
+  assert toolset.close_count == 1
+
+  await AgentTool(agent=ok_agent).run_async(
+      args={'request': 'y'}, tool_context=tool_context
+  )
+  assert toolset.close_count == 2
 
 
 def test_agent_tool_description_with_input_schema():
