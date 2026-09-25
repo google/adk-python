@@ -269,7 +269,7 @@ def validate_schema(schema: SchemaType, json_text: str) -> Any:
     json_schema = (
         schema
         if isinstance(schema, dict)
-        else schema.model_dump(exclude_none=True, mode="json")
+        else schema.model_dump(exclude_none=True, mode="json", by_alias=True)
     )
     if not isinstance(schema, dict):
       lowercase_schema_types(json_schema)

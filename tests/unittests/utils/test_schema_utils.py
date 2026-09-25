@@ -264,6 +264,31 @@ class TestValidateSchema:
     with pytest.raises(jsonschema.ValidationError):
       validate_schema(schema, '{"a": 1}')
 
+  def test_types_schema_any_of_rejects_invalid_value(self):
+    """Test that types.Schema's any_of (aliased to anyOf) is enforced."""
+    schema = types.Schema(
+        type="OBJECT",
+        properties={
+            "a": types.Schema(
+                any_of=[types.Schema(type="STRING"), types.Schema(type="NUMBER")]
+            )
+        },
+        required=["a"],
+    )
+    with pytest.raises(jsonschema.ValidationError):
+      validate_schema(schema, '{"a": true}')
+
+  def test_types_schema_additional_properties_rejects_extra_field(self):
+    """Test that types.Schema's additional_properties (aliased) is enforced."""
+    schema = types.Schema(
+        type="OBJECT",
+        properties={"a": types.Schema(type="STRING")},
+        required=["a"],
+        additional_properties=False,
+    )
+    with pytest.raises(jsonschema.ValidationError):
+      validate_schema(schema, '{"a": "ok", "unexpected_extra_field": 123}')
+
   def test_json_code_fence_is_stripped(self):
     """Test that a ```json fenced payload is unwrapped before validation."""
     json_text = '```json\n{"name": "test", "value": 42}\n```'
