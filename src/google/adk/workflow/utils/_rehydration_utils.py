@@ -31,6 +31,7 @@ from ...events._branch_path import _BranchPath
 from ...events._node_path_builder import _NodePathBuilder
 from ...events.event import Event
 from .._errors import WorkflowDataError
+from ._workflow_hitl_utils import get_request_input_interrupt_ids
 from ._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
 
 if TYPE_CHECKING:
@@ -293,6 +294,8 @@ def _reconstruct_node_states(
 
     # 1. Match user function responses
     if event.author == 'user' and event.content and event.content.parts:
+      if not interrupt_owner and not scan_states:
+        continue
       for part in event.content.parts:
         fr = part.function_response
         if fr and fr.id:
@@ -350,16 +353,16 @@ def _reconstruct_node_states(
       owner_path_builder = _NodePathBuilder.from_string(owner_key)
       scan_states[owner_key] = _ChildScanState(run_id=owner_path_builder.run_id)
 
-    child = scan_states[owner_key]
-    if event.isolation_scope:
-      child.isolation_scope = event.isolation_scope
-
     # 4. Determine if event is direct child or delegated output
     is_direct = False
     if group_by_direct_child:
       is_direct = event_path_builder.is_direct_child_of(base_path_builder)
     else:
       is_direct = event_path_builder == base_path_builder
+
+    child = scan_states[owner_key]
+    if is_direct and event.isolation_scope:
+      child.isolation_scope = event.isolation_scope
 
     has_output = event.output is not None
     use_message_as_output = False
@@ -415,8 +418,6 @@ def _reconstruct_node_states(
 
     # Fallback for older session JSONs where RequestInput/Auth events were exported
     # without populating long_running_tool_ids. We extract the IDs directly from the function calls.
-    from ._workflow_hitl_utils import get_request_input_interrupt_ids
-
     interrupt_ids_to_process.update(get_request_input_interrupt_ids(event))
 
     if interrupt_ids_to_process:

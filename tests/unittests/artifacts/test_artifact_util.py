@@ -202,6 +202,32 @@ def test_validate_path_segment_invalid(value, field_name):
 
 
 @pytest.mark.parametrize(
+    "session_id",
+    ["user", "user/x", "user\\x", "user/has/slash", "user\\has\\backslash"],
+)
+def test_validate_session_id_for_flat_storage_rejects_reserved_user(
+    session_id: str,
+):
+  with pytest.raises(InputValidationError, match="reserved value 'user'"):
+    artifact_util._validate_session_id_for_flat_storage(session_id)
+
+
+@pytest.mark.parametrize(
+    "session_id",
+    ["session1", "users", "username", "group/user", "has/slash"],
+)
+def test_validate_session_id_for_flat_storage_allows_ordinary_values(
+    session_id: str,
+):
+  artifact_util._validate_session_id_for_flat_storage(session_id)
+
+
+def test_validate_session_id_for_flat_storage_still_runs_path_segment_checks():
+  with pytest.raises(InputValidationError, match="must not be empty"):
+    artifact_util._validate_session_id_for_flat_storage("")
+
+
+@pytest.mark.parametrize(
     "caller_session_id, uri_session_id",
     [
         # Session-scoped reference read from the session that owns it.

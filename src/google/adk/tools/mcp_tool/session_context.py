@@ -30,12 +30,19 @@ from ...dependencies._mcp import ElicitationFnT
 from ...dependencies._mcp import IS_MCP_SDK_V2
 from ...dependencies._mcp import SamplingCapability
 from ...dependencies._mcp import SamplingFnT
+from ...dependencies._mcp import types
 from ...features import FeatureName
 from ...features import is_feature_enabled
+from ...version import __version__
 
 logger = logging.getLogger('google_adk.' + __name__)
 
 _T = TypeVar('_T')
+
+# Who ADK says it is when it connects. Left unset, the SDK sends its own
+# default -- `mcp` / `0.1.0` -- so a server sees no difference between an ADK
+# agent and any other script built on the SDK.
+_CLIENT_INFO = types.Implementation(name='google-adk', version=__version__)
 
 
 def _read_timeout(seconds: Optional[float]) -> Optional[float | timedelta]:
@@ -372,6 +379,7 @@ class SessionContext:
                   sampling_callback=self._sampling_callback,
                   sampling_capabilities=self._sampling_capabilities,
                   elicitation_callback=self._elicitation_callback,
+                  client_info=_CLIENT_INFO,
               )
           )
         else:
@@ -384,6 +392,7 @@ class SessionContext:
                   sampling_callback=self._sampling_callback,
                   sampling_capabilities=self._sampling_capabilities,
                   elicitation_callback=self._elicitation_callback,
+                  client_info=_CLIENT_INFO,
               )
           )
         # pylint: disable-next=protected-access

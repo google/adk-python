@@ -101,6 +101,67 @@ def test_to_cloud_run_respects_ignore_files(
   ).exists(), "Should respect root-anchored (leading slash) patterns"
 
 
+def test_to_cloud_run_excludes_local_adk_storage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+  """Test that the local .adk folder is never copied into the image."""
+  agent_dir = tmp_path / "agent"
+  agent_dir.mkdir()
+  (agent_dir / "agent.py").write_text("# agent")
+  (agent_dir / "__init__.py").write_text("")
+  dot_adk_dir = agent_dir / ".adk"
+  (dot_adk_dir / "artifacts").mkdir(parents=True)
+  (dot_adk_dir / "session.db").write_text("local sessions")
+  (dot_adk_dir / "artifacts" / "upload.txt").write_text("user upload")
+  # Single-character names collide with the characters of ".adk/" and must be
+  # kept.
+  for name in ["a", "d", "k"]:
+    (agent_dir / name).write_text("keep")
+
+  temp_deploy_dir = tmp_path / "temp_deploy"
+
+  # Mock subprocess.run to avoid actual gcloud call
+  monkeypatch.setattr(subprocess, "run", mock.Mock())
+  # Mock shutil.rmtree to keep the temp folder for verification
+  monkeypatch.setattr(
+      shutil,
+      "rmtree",
+      lambda path, **kwargs: None
+      if "temp_deploy" in str(path)
+      else shutil.rmtree(path, **kwargs),
+  )
+
+  cli_deploy.run(
+      agent_folder=str(agent_dir),
+      provider="cloud_run",
+      project="proj",
+      region="us-central1",
+      service_name="svc",
+      app_name="app",
+      temp_folder=str(temp_deploy_dir),
+      port=8080,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="info",
+      verbosity="info",
+      adk_version="1.0.0",
+  )
+
+  agent_src_path = temp_deploy_dir / "agents" / "app"
+
+  assert (agent_src_path / "agent.py").exists()
+  assert not (
+      agent_src_path / ".adk"
+  ).exists(), "Should not copy local .adk storage into the image"
+
+  for name in ["a", "d", "k"]:
+    assert (
+        agent_src_path / name
+    ).exists(), f"Should not drop a file named {name!r}"
+
+
 def test_to_agent_engine_respects_multiple_ignore_files(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

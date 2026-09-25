@@ -364,9 +364,9 @@ class StreamingResponseAggregator:
       # Generate ID on first chunk if not provided by LLM
       if not fc.id and not self._current_fc_id:
         # Lazy import to avoid circular dependency
-        from ..flows.llm_flows.functions import generate_client_function_call_id
+        from ..flows.llm_flows.tools._functions import _new_client_function_call_id
 
-        fc.id = generate_client_function_call_id()
+        fc.id = _new_client_function_call_id()
 
       # Save thought_signature from the part (first chunk should have it)
       if part.thought_signature and not self._current_thought_signature:
@@ -379,9 +379,9 @@ class StreamingResponseAggregator:
         # Generate ID if not provided by LLM
         if not fc.id:
           # Lazy import to avoid circular dependency
-          from ..flows.llm_flows.functions import generate_client_function_call_id
+          from ..flows.llm_flows.tools._functions import _new_client_function_call_id
 
-          fc.id = generate_client_function_call_id()
+          fc.id = _new_client_function_call_id()
         # Flush any buffered text first, then add the FC part
         self._flush_text_buffer_to_sequence()
         self._parts_sequence.append(part)
@@ -489,7 +489,27 @@ class StreamingResponseAggregator:
       )
       self._thought_text = []
       self._text = []
+
     yield llm_response
+
+  def _deduplicate_function_calls(
+      self, parts: list[types.Part]
+  ) -> list[types.Part]:
+    """Drops function call parts that repeat a model-provided ID.
+
+    Calls without a model-provided ID are all kept: two identical calls in one
+    turn are two calls, as they are without streaming.
+    """
+    seen_fc_ids: set[str] = set()
+    deduped_parts: list[types.Part] = []
+    for part in parts:
+      fc = part.function_call
+      if fc and fc.id and not fc.id.startswith('adk-'):
+        if fc.id in seen_fc_ids:
+          continue
+        seen_fc_ids.add(fc.id)
+      deduped_parts.append(part)
+    return deduped_parts
 
   def close(self) -> Optional[LlmResponse]:
     """Generate an aggregated response at the end, if needed.
@@ -524,8 +544,11 @@ class StreamingResponseAggregator:
       self._flush_text_buffer_to_sequence()
       self._flush_function_call_to_sequence()
 
-      final_parts = self._parts_sequence
-      content = types.ModelContent(parts=final_parts) if final_parts else None
+      deduped_parts = self._deduplicate_function_calls(self._parts_sequence)
+
+      content = (
+          types.ModelContent(parts=deduped_parts) if deduped_parts else None
+      )
 
       return LlmResponse(
           content=content,
@@ -545,6 +568,7 @@ class StreamingResponseAggregator:
       parts.append(types.Part(text=''.join(self._thought_text), thought=True))
     if self._text:
       parts.append(types.Part.from_text(text=''.join(self._text)))
+
     content = types.ModelContent(parts=parts) if parts else None
 
     return LlmResponse(

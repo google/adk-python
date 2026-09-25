@@ -294,6 +294,8 @@ class TestToAdk:
       [
           _compat.TS_SUBMITTED,
           _compat.TS_WORKING,
+          _compat.TS_INPUT_REQUIRED,
+          _compat.TS_AUTH_REQUIRED,
       ],
   )
   def test_convert_a2a_task_to_event_non_terminal_state_does_not_set_skip_summarization(

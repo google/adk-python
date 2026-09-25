@@ -121,6 +121,60 @@ def test_database_session_service_enables_pool_pre_ping_by_default():
   assert captured_kwargs.get('pool_pre_ping') is True
 
 
+def test_database_session_service_disables_pool_reset_on_return_for_static_pool():
+  """StaticPool shares a single connection, so reset_on_return must be disabled."""
+  captured_kwargs = {}
+
+  def fake_create_async_engine(_db_url: str, **kwargs):
+    captured_kwargs.update(kwargs)
+    fake_engine = mock.Mock()
+    fake_engine.dialect.name = 'sqlite'
+    fake_engine.sync_engine = mock.Mock()
+    return fake_engine
+
+  with (
+      mock.patch.object(
+          database_session_service,
+          'create_async_engine',
+          side_effect=fake_create_async_engine,
+      ),
+      mock.patch.object(database_session_service.event, 'listen'),
+  ):
+    database_session_service.DatabaseSessionService(
+        'sqlite+aiosqlite:///:memory:'
+    )
+
+  assert captured_kwargs.get('poolclass') is StaticPool
+  assert captured_kwargs.get('pool_reset_on_return') is None
+
+
+def test_database_session_service_respects_custom_pool_reset_on_return_for_static_pool():
+  """Explicit pool_reset_on_return is respected even when StaticPool is used."""
+  captured_kwargs = {}
+
+  def fake_create_async_engine(_db_url: str, **kwargs):
+    captured_kwargs.update(kwargs)
+    fake_engine = mock.Mock()
+    fake_engine.dialect.name = 'sqlite'
+    fake_engine.sync_engine = mock.Mock()
+    return fake_engine
+
+  with (
+      mock.patch.object(
+          database_session_service,
+          'create_async_engine',
+          side_effect=fake_create_async_engine,
+      ),
+      mock.patch.object(database_session_service.event, 'listen'),
+  ):
+    database_session_service.DatabaseSessionService(
+        'sqlite+aiosqlite:///:memory:',
+        pool_reset_on_return='commit',
+    )
+
+  assert captured_kwargs.get('pool_reset_on_return') == 'commit'
+
+
 @pytest.mark.parametrize('decorator', [DynamicJSON, DynamicPickleType])
 def test_session_type_decorators_opt_into_statement_cache(decorator):
   """Session TypeDecorators must declare cache_ok to stay cacheable.
@@ -2841,6 +2895,55 @@ async def test_get_user_state_copies_to_session_state_depth(light_copy):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('light_copy', [False, True])
+@pytest.mark.parametrize('session_source', ['create', 'get', 'list'])
+async def test_returned_session_scoped_state_uses_configured_copy_depth(
+    light_copy, session_source
+):
+  """Returned sessions copy nested scoped state to the configured depth."""
+  override_feature_enabled(
+      FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY, light_copy
+  )
+  try:
+    service = InMemorySessionService()
+    created = await service.create_session(
+        app_name='my_app',
+        user_id='u1',
+        session_id='s1',
+        state={
+            'app:config': {'theme': 'light'},
+            'user:profile': {'name': 'Alice'},
+        },
+    )
+
+    if session_source == 'create':
+      returned = created
+    elif session_source == 'get':
+      returned = await service.get_session(
+          app_name='my_app', user_id='u1', session_id='s1'
+      )
+    else:
+      returned = (
+          await service.list_sessions(app_name='my_app', user_id='u1')
+      ).sessions[0]
+
+    returned.state['app:config']['theme'] = 'dark'
+    returned.state['user:profile']['name'] = 'Mallory'
+    later = await service.create_session(
+        app_name='my_app', user_id='u1', session_id='s2'
+    )
+
+    expected_theme = 'dark' if light_copy else 'light'
+    expected_name = 'Mallory' if light_copy else 'Alice'
+    assert later.state['app:config']['theme'] == expected_theme
+    assert later.state['user:profile']['name'] == expected_name
+  finally:
+    override_feature_enabled(
+        FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY, False
+    )
+
+
+@pytest.mark.asyncio
 async def test_vertex_ai_session_service_raises_not_implemented_for_get_user_state():
   """Verifies VertexAiSessionService raises NotImplementedError."""
   service = VertexAiSessionService(project='proj', location='us-central1')
@@ -3369,3 +3472,46 @@ async def test_append_different_events_not_deduplicated(session_service):
       len(retrieved.events) == 2
   ), f'Expected 2 distinct events, got {len(retrieved.events)}'
   assert [e.author for e in retrieved.events] == ['user', 'agent']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'service_type',
+    [
+        SessionServiceType.IN_MEMORY,
+        SessionServiceType.SQLITE,
+        SessionServiceType.DATABASE,
+    ],
+)
+async def test_append_event_applies_and_trims_temp_state_once(
+    service_type: SessionServiceType, tmp_path
+):
+  """Persistent session services must not invoke _apply_temp_state/_trim_temp_delta_state twice."""
+  session_service = get_session_service(service_type, tmp_path)
+  session = await session_service.create_session(
+      app_name='test_app', user_id='user_1', session_id='session_1'
+  )
+  event = Event(
+      invocation_id='inv_1',
+      author='agent',
+      actions=EventActions(
+          state_delta={'temp:scratch': 'ephemeral', 'persisted': 'val'}
+      ),
+  )
+  with (
+      mock.patch.object(
+          session_service,
+          '_apply_temp_state',
+          wraps=session_service._apply_temp_state,
+      ) as spy_apply,
+      mock.patch.object(
+          session_service,
+          '_trim_temp_delta_state',
+          wraps=session_service._trim_temp_delta_state,
+      ) as spy_trim,
+  ):
+    await session_service.append_event(session=session, event=event)
+    assert spy_apply.call_count == 1
+    assert spy_trim.call_count == 1
+  assert session.state.get('temp:scratch') == 'ephemeral'
+  assert session.state.get('persisted') == 'val'

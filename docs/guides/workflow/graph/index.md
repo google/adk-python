@@ -80,7 +80,7 @@ To emit a route, the source node yields an `Event(route="my_route")`, or returns
 
 #### Default route
 
-For the cases you have not enumerated, you can add a fallback edge using `DEFAULT_ROUTE`, which you get with `from google.adk.workflow import DEFAULT_ROUTE` or write as the literal `"__DEFAULT__"`. That edge is taken when the source node emits a route and no specific conditional edge matches it.
+For the cases you have not enumerated, you can add a fallback edge using `DEFAULT_ROUTE`, which you get with `from google.adk.workflow import DEFAULT_ROUTE` or write as the literal `"__DEFAULT__"`. That edge is taken when the source node emits a route and no specific conditional edge matches it. Like any other route, the default can fan out to several nodes at once: `{DEFAULT_ROUTE: (step_b, step_c)}` triggers both.
 
 Without a fallback, a route that matches no edge ends that branch where it stands. Nothing downstream of the source node runs, and the workflow carries on with whatever other branches it has.
 
@@ -208,7 +208,7 @@ The same two nodes may be joined only once. Listing `Edge(from_node=A, to_node=B
 
 ### 6. Default route constraints
 
-A node may have at most one outgoing `DEFAULT_ROUTE` edge, since two fallbacks would leave the choice undefined. `DEFAULT_ROUTE` also cannot share a list with other routes, so `route=["success", DEFAULT_ROUTE]` is invalid.
+`DEFAULT_ROUTE` cannot share a list with other routes, so `route=["success", DEFAULT_ROUTE]` is invalid. A node may have more than one outgoing `DEFAULT_ROUTE` edge, and every one of them is taken when the fallback fires.
 
 ### 7. No unconditional cycles
 

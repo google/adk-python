@@ -20,6 +20,9 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import dataclasses
+from enum import Enum
+import hashlib
 import json
 import logging
 import mimetypes
@@ -30,6 +33,7 @@ from typing import Any
 from typing import cast
 from typing import Optional
 from typing import TYPE_CHECKING
+import warnings
 
 from google.genai import types
 from typing_extensions import override
@@ -37,6 +41,8 @@ from typing_extensions import override
 from ..agents.readonly_context import ReadonlyContext
 from ..code_executors.base_code_executor import BaseCodeExecutor
 from ..code_executors.code_execution_utils import CodeExecutionInput
+from ..features import FeatureName
+from ..features import is_feature_enabled
 from ..skills import models
 from ..skills import prompt
 from ..skills import SkillRegistry
@@ -69,15 +75,316 @@ _BINARY_FILE_DETECTED_MSG = (
 _LIST_SKILLS_TOOL_NAME = "list_skills"
 _SEARCH_SKILLS_TOOL_NAME = "search_skills"
 _LOAD_SKILL_TOOL_NAME = "load_skill"
+_UNLOAD_SKILL_TOOL_NAME = "unload_skill"
 _LOAD_SKILL_RESOURCE_TOOL_NAME = "load_skill_resource"
 _RUN_SKILL_SCRIPT_TOOL_NAME = "run_skill_script"
 
+# Stands in for the instructions of a skill that is no longer active.
+_UNLOADED_SKILL_STATUS = "unloaded"
+_UNLOADED_SKILL_NOTICE = (
+    "This skill has been unloaded. Its instructions no longer apply and the"
+    " tools it contributed are no longer available. Load it again if you need"
+    " them."
+)
+
+
+def _activated_skills_state_key(agent_name: str) -> str:
+  """Returns the session state key holding an agent's activated skill names."""
+  return f"_adk_activated_skill_{agent_name}"
+
+
+def _read_activated_skills(state: Any, agent_name: str) -> list[str]:
+  """Returns a mutable copy of an agent's activated skill names."""
+  return list(state.get(_activated_skills_state_key(agent_name)) or [])
+
+
+def _write_activated_skills(
+    state: Any, agent_name: str, skill_names: list[str]
+) -> None:
+  """Stores an agent's activated skill names."""
+  # Assign rather than mutate in place so the state delta is recorded.
+  state[_activated_skills_state_key(agent_name)] = skill_names
+
+
+_DEFAULT_MAX_ACTIVE_SKILLS = 5
+
+
+class SkillLifecycleMode(Enum):
+  """How long a skill stays active once loaded."""
+
+  PERSISTENT = "persistent"
+  """Stays active for the rest of the session unless explicitly unloaded.
+
+  The default, and what every skill did before this setting existed. A
+  persistent skill neither counts against `max_active_skills` nor is evicted
+  by it.
+  """
+
+  BOUNDED = "bounded"
+  """As PERSISTENT, but also subject to the `max_active_skills` cap.
+
+  Loading a bounded skill past the cap releases the bounded skill that was
+  least recently loaded. Reloading one counts as a use.
+  """
+
+  EPHEMERAL = "ephemeral"
+  """Released once the turn that loaded it ends.
+
+  Active for every model step of that turn, so the model can finish what it
+  loaded the skill for, and gone from the next turn on. Loading it again buys
+  another turn. Bounded by time, so the `max_active_skills` cap ignores it.
+
+  Not supported under `run_live`, which runs the whole bidi stream as one
+  invocation: with no turn boundary to expire on, an ephemeral skill there
+  behaves as PERSISTENT and stays active until the stream ends.
+  """
+
+
+@dataclasses.dataclass(frozen=True)
+class SkillLifecycleConfig:
+  """How long a toolset's skills stay active once loaded.
+
+  Attributes:
+    enabled: False leaves every skill active for the whole session, whatever the
+      rest of this says.
+    default_mode: Lifecycle for any skill not in `skill_overrides`. PERSISTENT
+      is how skills behaved before this config existed.
+    max_active_skills: How many BOUNDED skills may be active at once, per agent.
+      PERSISTENT and EPHEMERAL skills never count against it.
+    skill_overrides: Per-skill lifecycles. Names need not be registered locally,
+      so a registry skill can be listed here too.
+    revalidate_skills: Recheck each request that the active skills still say
+      what they did when loaded, and re-state the ones that changed. Off by
+      default: a registry lookup per active skill per turn, and re-stating one
+      invalidates the prompt cache.
+  """
+
+  enabled: bool = True
+  default_mode: SkillLifecycleMode = SkillLifecycleMode.PERSISTENT
+  max_active_skills: int = _DEFAULT_MAX_ACTIVE_SKILLS
+  skill_overrides: dict[str, SkillLifecycleMode] = dataclasses.field(
+      default_factory=dict
+  )
+  revalidate_skills: bool = False
+
+  def __post_init__(self) -> None:
+    if self.max_active_skills < 1:
+      raise ValueError(
+          "`max_active_skills` must be at least 1, got"
+          f" {self.max_active_skills}."
+      )
+
+
+def _skill_lifecycle_state_key(agent_name: str) -> str:
+  """Returns the session state key holding an agent's lifecycle records.
+
+  Deliberately not under the `_adk_activated_skill_` prefix: consumers
+  elsewhere scan for that prefix and read every match as a list of names.
+  """
+  return f"_adk_skill_meta_{agent_name}"
+
+
+def _read_lifecycle_records(
+    state: Any, agent_name: str
+) -> dict[str, dict[str, Any]]:
+  """Returns a mutable copy of an agent's per-skill lifecycle records."""
+  records = state.get(_skill_lifecycle_state_key(agent_name))
+  if not isinstance(records, dict):
+    return {}
+  return {
+      name: dict(record)
+      for name, record in records.items()
+      if isinstance(record, dict)
+  }
+
+
+def _is_expired(record: dict[str, Any], invocation_id: str | None) -> bool:
+  """Whether a lifecycle record has outlived the turn that created it.
+
+  An invocation is a turn: every model step and tool call the user's message
+  sets off shares its id. So an ephemeral skill is expired as soon as some
+  other invocation asks. Except under `run_live`, where the whole stream is
+  one invocation and nothing ever expires.
+
+  A record with no id was activated without one, which only a hand-built
+  context does. Left active, since guessing would release a skill in use.
+  """
+  if record.get("lifecycle") != SkillLifecycleMode.EPHEMERAL.value:
+    return False
+  activated_in = record.get("activated_in")
+  return bool(activated_in) and activated_in != invocation_id
+
+
+class SkillDiscoveryMode(Enum):
+  """How the local skill catalog is disclosed to the model."""
+
+  LAZY = "lazy"
+  """The model discovers skills by calling `list_skills` (default).
+
+  Costs a model turn before the first `load_skill`, and keeps the system
+  instruction free of skill names. Preferable for a large or changing catalog.
+  """
+
+  EAGER = "eager"
+  """The catalog is injected into the system instruction as XML.
+
+  The `list_skills` tool is not offered, and the model can call `load_skill`
+  straight away. Preferable for a small, stable catalog, where the discovery
+  turn costs more than the names do. Registry skills are unaffected: they are
+  still reachable only through `search_skills`.
+  """
+
+
+def _skill_content_hash(skill: models.Skill) -> str:
+  """Returns a digest of everything a skill can tell the model to do.
+
+  Instructions, frontmatter and every resource, so editing a reference or a
+  script is a new version too. Names and lengths go into the hash as well, so
+  moving content between two files does not hash the same.
+  """
+  hasher = hashlib.sha256()
+
+  def _feed(*values: str | bytes) -> None:
+    for value in values:
+      data = value.encode("utf-8") if isinstance(value, str) else value
+      hasher.update(len(data).to_bytes(8, "big"))
+      hasher.update(data)
+
+  _feed(skill.name, skill.instructions)
+  _feed(
+      json.dumps(
+          skill.frontmatter.model_dump(mode="json"),
+          sort_keys=True,
+          default=str,
+      )
+  )
+  resources = skill.resources
+  for kind, names, get in (
+      ("references", resources.list_references(), resources.get_reference),
+      ("assets", resources.list_assets(), resources.get_asset),
+  ):
+    for name in sorted(names):
+      content = get(name)
+      if content is None:
+        continue
+      _feed(kind, name, content)
+  for name in sorted(resources.list_scripts()):
+    script = resources.get_script(name)
+    if script is None or script.src is None:
+      continue
+    _feed("scripts", name, script.src)
+
+  return hasher.hexdigest()
+
+
+async def _write_skill_resources_to_env(
+    skill: models.Skill, skill_dir: Path, env: BaseEnvironment
+) -> None:
+  """Writes every resource of a skill into its folder in the environment."""
+  write_tasks = []
+
+  def _write(*path_parts: str, content: str | bytes) -> None:
+    write_tasks.append(
+        env.write_file(
+            cast(
+                Path,
+                PurePosixPath(skill_dir.joinpath(*path_parts).as_posix()),
+            ),
+            content,
+        )
+    )
+
+  for ref_name in skill.resources.list_references():
+    content = skill.resources.get_reference(ref_name)
+    if content is not None:
+      _write("references", ref_name, content=content)
+  for asset_name in skill.resources.list_assets():
+    content = skill.resources.get_asset(asset_name)
+    if content is not None:
+      _write("assets", asset_name, content=content)
+  for scr_name in skill.resources.list_scripts():
+    scr = skill.resources.get_script(scr_name)
+    if scr is not None and scr.src is not None:
+      _write("scripts", scr_name, content=scr.src)
+
+  if write_tasks:
+    await asyncio.gather(*write_tasks)
+
+
+def _prune_unloaded_skill_instructions(
+    contents: list[types.Content] | None,
+    load_skill_tool_name: str,
+    active_skills: set[str],
+) -> list[str]:
+  """Strips the instructions of unloaded skills out of a request's history.
+
+  A `load_skill` response carries the whole SKILL.md body and stays in the
+  transcript after the skill is released, so the model keeps reading rules for
+  a skill whose tools are gone. Each one is replaced by a short notice. It is
+  rewritten rather than dropped because the API wants a response for every
+  function call, so removing the part would orphan its call.
+
+  Args:
+    contents: The request's conversation history, rewritten in place by
+      replacing whole `Content` objects.
+    load_skill_tool_name: Name of the load tool as it appears in the history,
+      prefix included.
+    active_skills: Skills still active for this agent. Anything else that was
+      loaded counts as released.
+
+  Returns:
+    The skills stripped, in the order they appear, once per response.
+  """
+  if not contents:
+    return []
+
+  pruned: list[str] = []
+  for index, content in enumerate(contents):
+    new_parts: list[types.Part] | None = None
+    for part_index, part in enumerate(content.parts or []):
+      function_response = part.function_response
+      if (
+          function_response is None
+          or function_response.name != load_skill_tool_name
+      ):
+        continue
+      response = function_response.response
+      if not isinstance(response, dict) or "instructions" not in response:
+        continue
+      skill_name = response.get("skill_name")
+      # Without a name there is no telling which skill this is, so leave it.
+      if not isinstance(skill_name, str) or skill_name in active_skills:
+        continue
+      if new_parts is None:
+        new_parts = list(content.parts or [])
+      new_parts[part_index] = part.model_copy(
+          update={
+              "function_response": function_response.model_copy(
+                  update={
+                      "response": {
+                          "skill_name": skill_name,
+                          "status": _UNLOADED_SKILL_STATUS,
+                          "detail": _UNLOADED_SKILL_NOTICE,
+                      }
+                  }
+              )
+          }
+      )
+      pruned.append(skill_name)
+    if new_parts is not None:
+      # A request's contents are shallow copies of the session's events, so
+      # this response dict is the one history holds. Replace, never edit.
+      contents[index] = content.model_copy(update={"parts": new_parts})
+  return pruned
+
 
 def _build_skill_system_instruction(
+    *,
     prefix: str | None = None,
     allowed_tools: set[str] | frozenset[str] | None = None,
     skills_folder: Path | None = None,
     script_execution_enabled: bool = True,
+    unload_enabled: bool = False,
 ) -> str:
   """Builds the skill guidance injected into the model's system instruction.
 
@@ -92,6 +399,9 @@ def _build_skill_system_instruction(
     script_execution_enabled: Whether scripts can actually be run. When False,
       `run_skill_script` is not offered to the model either, so advertising it
       here would promise a capability that always fails.
+    unload_enabled: Whether the lifecycle feature is on. When it is,
+      `unload_skill` is documented here, and named in the ban notice if
+      `allowed_tools` filters it out.
 
   Returns:
     The system instruction text.
@@ -155,6 +465,15 @@ def _build_skill_system_instruction(
       " (search, data retrieval, render), then write your reply. Never end"
       " your turn with an empty response right after loading a skill."
   )
+  if unload_enabled:
+    steps.append(
+        "Once a skill's task is finished and you no longer need its"
+        f" instructions or its tools, call `{p}{_UNLOAD_SKILL_TOOL_NAME}` with"
+        ' `skill_name="<SKILL_NAME>"` to release it. Only unload a skill you'
+        " are done with: its tools stop being available, and you would have to"
+        f" `{p}{_LOAD_SKILL_TOOL_NAME}` it again to use them. Unloading is"
+        " optional; never unload a skill just because you loaded it."
+    )
   if script_execution_enabled and skills_folder_posix is not None:
     steps.append(
         "NOTE ON ENVIRONMENT EXECUTION: When using"
@@ -184,13 +503,16 @@ def _build_skill_system_instruction(
   )
 
   if allowed_tools is not None:
-    banned = []
-    for tool_name in (
+    bannable = [
         _RUN_SKILL_SCRIPT_TOOL_NAME,
         _LOAD_SKILL_RESOURCE_TOOL_NAME,
         _LOAD_SKILL_TOOL_NAME,
         _LIST_SKILLS_TOOL_NAME,
-    ):
+    ]
+    if unload_enabled:
+      bannable.append(_UNLOAD_SKILL_TOOL_NAME)
+    banned = []
+    for tool_name in bannable:
       if tool_name not in allowed_tools:
         banned.append(f"`{p}{tool_name}`")
     if banned:
@@ -366,13 +688,13 @@ class LoadSkillTool(BaseTool):
     )
 
     # Record skill activation in agent state for tool resolution.
-    agent_name = tool_context.agent_name
-    state_key = f"_adk_activated_skill_{agent_name}"
-
-    activated_skills = list(tool_context.state.get(state_key) or [])
-    if skill_name not in activated_skills:
-      activated_skills.append(skill_name)
-      tool_context.state[state_key] = activated_skills
+    evicted = self._toolset._record_activation(
+        tool_context.state,
+        tool_context.agent_name,
+        skill_name,
+        tool_context.invocation_id,
+        skill,
+    )
 
     instructions = skill.instructions
     if skill.frontmatter.metadata.get("adk_inject_state"):
@@ -381,10 +703,105 @@ class LoadSkillTool(BaseTool):
           tool_context,
       )
 
-    return {
+    result = {
         "skill_name": skill_name,
         "instructions": instructions,
         "frontmatter": skill.frontmatter.model_dump(),
+    }
+    if evicted:
+      # Tell the model, rather than letting the declarations quietly vanish.
+      result["unloaded_skills"] = evicted
+    if self._toolset._lifecycle_for(skill_name) is SkillLifecycleMode.EPHEMERAL:
+      result["lifecycle_notice"] = (
+          "This skill is released at the end of the current turn. Do what it"
+          " is needed for now; in a later turn, load it again."
+      )
+    return result
+
+  def _detect_error_in_response(self, response: Any) -> Optional[str]:
+    """Telemetry hook: returns an error type if the response indicates an error."""
+    if isinstance(response, dict) and response.get("error"):
+      error_code = response.get("error_code")
+      return error_code if error_code else "TOOL_ERROR"
+    return None
+
+
+class UnloadSkillTool(BaseTool):
+  """Tool to release an active skill.
+
+  Drops the skill from the agent's activated-skill state, so the tools it
+  contributed via ``adk_additional_tools`` stop being declared. Later requests
+  replace the instructions it was loaded with by a short notice; the session's
+  own events keep them. Nothing is re-fetched, so this also works for a skill
+  that has left the registry.
+
+  Known limitation: the activated-skill list is rewritten wholesale, so
+  parallel writes to it race. The deltas merge per key and the last call in the
+  batch wins, so two unloads issued together can leave one of the skills active
+  while both report success. ``load_skill`` can lose an activation the same
+  way.
+  """
+
+  TOOL_NAME = _UNLOAD_SKILL_TOOL_NAME
+
+  def __init__(self, toolset: "SkillToolset"):
+    super().__init__(
+        name=self.TOOL_NAME,
+        description=(
+            "Unloads an active skill once its task is complete, releasing its"
+            " dynamic tools from the context."
+        ),
+    )
+    self._toolset = toolset
+
+  def _get_declaration(self) -> types.FunctionDeclaration | None:
+    return types.FunctionDeclaration(
+        name=self.name,
+        description=self.description,
+        parameters_json_schema={
+            "type": "object",
+            "properties": {
+                "skill_name": {
+                    "type": "string",
+                    "description": "The name of the skill to unload.",
+                },
+            },
+            "required": ["skill_name"],
+        },
+    )
+
+  async def run_async(
+      self, *, args: dict[str, Any], tool_context: ToolContext
+  ) -> Any:
+    """Drops a skill from the calling agent's activated-skill list.
+
+    Args:
+      args: Tool arguments. ``skill_name`` (required) is the skill to release.
+      tool_context: Context of the call; its session state holds the list.
+
+    Returns:
+      ``{"skill_name": str, "unloaded": True, "active_skills": list[str]}`` on
+      success, listing what stays active. On failure, ``{"error": str,
+      "error_code": str}``, where ``error_code`` is ``INVALID_ARGUMENTS``
+      (``skill_name`` missing or empty) or ``SKILL_NOT_ACTIVE``.
+    """
+    skill_name: str | None = args.get("skill_name")
+    if not skill_name:
+      return {
+          "error": "Argument 'skill_name' is required.",
+          "error_code": "INVALID_ARGUMENTS",
+      }
+
+    if not self._toolset.unload_skill(tool_context, skill_name):
+      return {
+          "error": f"Skill '{skill_name}' is not active.",
+          "error_code": "SKILL_NOT_ACTIVE",
+      }
+
+    return {
+        "skill_name": skill_name,
+        "unloaded": True,
+        "active_skills": self._toolset.list_active_skills(tool_context),
     }
 
   def _detect_error_in_response(self, response: Any) -> Optional[str]:
@@ -687,14 +1104,14 @@ _materialize_and_run()
           timeout={timeout!r},
           cwd=td,
         )
-        print(_json.dumps({{
+        print('\\n' + _json.dumps({{
             '__shell_result__': True,
             'stdout': _r.stdout,
             'stderr': _r.stderr,
             'returncode': _r.returncode,
         }}))
       except subprocess.TimeoutExpired as _e:
-        print(_json.dumps({{
+        print('\\n' + _json.dumps({{
             '__shell_result__': True,
             'stdout': _e.stdout or '',
             'stderr': 'Timed out after {timeout}s',
@@ -774,21 +1191,44 @@ _materialize_and_run()
         # status says nothing about it. Both streams come back serialized as
         # JSON through stdout; that envelope carries the script's status.
         if stdout:
+          parsed = None
           try:
             parsed = json.loads(stdout)
-            if isinstance(parsed, dict) and parsed.get("__shell_result__"):
-              stdout = parsed.get("stdout", "")
-              stderr = parsed.get("stderr", "")
-              rc = parsed.get("returncode", 0)
-              if rc != 0 and not parsed.get("timeout", False):
-                exit_code_message = f"Exit code {rc}"
-                stderr = (
-                    f"{stderr.rstrip()}\n{exit_code_message}"
-                    if stderr
-                    else exit_code_message
-                )
           except (json.JSONDecodeError, ValueError):
-            pass
+            # Fallback: try parsing line by line to find the shell result
+            # envelope. This handles cases where other processes or Python
+            # startup scripts printed warnings to stdout.
+            for line in reversed(stdout.splitlines()):
+              line = line.strip()
+              if line.startswith("{") and line.endswith("}"):
+                try:
+                  candidate = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                  continue
+                if isinstance(candidate, dict) and candidate.get(
+                    "__shell_result__"
+                ):
+                  parsed = candidate
+                  break
+
+          if isinstance(parsed, dict) and parsed.get("__shell_result__"):
+            stdout = parsed.get("stdout", "")
+            stderr = parsed.get("stderr", "")
+            rc = parsed.get("returncode", 0)
+            if rc != 0 and not parsed.get("timeout", False):
+              exit_code_message = f"Exit code {rc}"
+              stderr = (
+                  f"{stderr.rstrip()}\n{exit_code_message}"
+                  if stderr
+                  else exit_code_message
+              )
+          else:
+            logger.warning(
+                "No shell execution envelope found in stdout for '%s' from"
+                " skill '%s'.",
+                file_path,
+                skill.name,
+            )
       else:
         # A Python script runs in the wrapper process itself, so the process
         # the executor ran exited with the script's own status. Executors that
@@ -1260,51 +1700,7 @@ class RunSkillScriptTool(BaseTool):
       logger.info(
           "Materializing skill resources for %s in environment", skill.name
       )
-      write_tasks = []
-      for ref_name in skill.resources.list_references():
-        content = skill.resources.get_reference(ref_name)
-        if content is not None:
-          write_tasks.append(
-              env.write_file(
-                  cast(
-                      Path,
-                      PurePosixPath(
-                          (skill_dir / "references" / ref_name).as_posix()
-                      ),
-                  ),
-                  content,
-              )
-          )
-      for asset_name in skill.resources.list_assets():
-        content = skill.resources.get_asset(asset_name)
-        if content is not None:
-          write_tasks.append(
-              env.write_file(
-                  cast(
-                      Path,
-                      PurePosixPath(
-                          (skill_dir / "assets" / asset_name).as_posix()
-                      ),
-                  ),
-                  content,
-              )
-          )
-      for scr_name in skill.resources.list_scripts():
-        scr = skill.resources.get_script(scr_name)
-        if scr is not None and scr.src is not None:
-          write_tasks.append(
-              env.write_file(
-                  cast(
-                      Path,
-                      PurePosixPath(
-                          (skill_dir / "scripts" / scr_name).as_posix()
-                      ),
-                  ),
-                  scr.src,
-              )
-          )
-      if write_tasks:
-        await asyncio.gather(*write_tasks)
+      await _write_skill_resources_to_env(skill, skill_dir, env)
 
   def _detect_error_in_response(self, response: Any) -> Optional[str]:
     """Telemetry hook: returns an error type if the response indicates an error."""
@@ -1331,6 +1727,8 @@ class SkillToolset(BaseToolset):
       additional_tools: list[ToolUnion] | None = None,
       tool_name_prefix: str | None = None,
       tool_filter: ToolPredicate | list[str] | None = None,
+      discovery_mode: SkillDiscoveryMode = SkillDiscoveryMode.LAZY,
+      lifecycle_config: SkillLifecycleConfig | None = None,
   ):
     """Initializes the SkillToolset.
 
@@ -1349,8 +1747,36 @@ class SkillToolset(BaseToolset):
         to be made available to the agent when certain skills are activated.
       tool_name_prefix: Optional prefix to prepend to tool names.
       tool_filter: Optional filter to select specific tools.
+      discovery_mode: How the local catalog reaches the model. Defaults to
+        `LAZY`, where it calls `list_skills`. `EAGER` drops that tool and
+        injects the catalog into the system instruction instead.
+      lifecycle_config: How long skills stay active once loaded, how many may
+        be at once, and whether they are rechecked against their definition.
+        Defaults to leaving every skill active for the rest of the session,
+        which is how skills behaved before this existed.
+
+    Raises:
+      ValueError: If both `code_executor` and `environment` are given, or on a
+        duplicate skill name or a relative `skills_folder`.
     """
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
+
+    config = lifecycle_config or SkillLifecycleConfig()
+    # Copy the overrides: editing the config later must not change a session
+    # already running.
+    self._lifecycle_config = dataclasses.replace(
+        config, skill_overrides=dict(config.skill_overrides)
+    )
+    # Nothing is ephemeral for most callers, and then the lifecycle records
+    # are never touched at all.
+    self._tracks_ephemeral_skills = config.enabled and (
+        SkillLifecycleMode.EPHEMERAL
+        in ({config.default_mode} | set(config.skill_overrides.values()))
+    )
+    self._revalidate_skills = config.enabled and config.revalidate_skills
+    # Digest last written into the sandbox, per skill, so a stale skill is
+    # rewritten once rather than every request.
+    self._materialized_skill_hashes: dict[str, str] = {}
 
     skills = skills or []
 
@@ -1401,15 +1827,23 @@ class SkillToolset(BaseToolset):
         ft = FunctionTool(tool_union)
         self._provided_tools_by_name[ft.name] = ft
 
+    self._discovery_mode = discovery_mode
+    self._warned_on_filtered_list_skills = False
+    self._lifecycle_enabled = is_feature_enabled(FeatureName.SKILL_LIFECYCLE)
+
     # Initialize core skill tools
-    self._tools = [
-        ListSkillsTool(self),
+    self._tools: list[BaseTool] = []
+    if discovery_mode is SkillDiscoveryMode.LAZY:
+      self._tools.append(ListSkillsTool(self))
+    self._tools.extend([
         LoadSkillTool(self),
         LoadSkillResourceTool(self),
         RunSkillScriptTool(self),
-    ]
+    ])
     if self._registry:
       self._tools.append(SearchSkillsTool(self))
+    if self._lifecycle_enabled:
+      self._tools.append(UnloadSkillTool(self))
 
   @property
   def skills_folder(self) -> Path | None:
@@ -1431,6 +1865,17 @@ class SkillToolset(BaseToolset):
       return True
     return getattr(agent, "code_executor", None) is not None
 
+  def _offers_script_tool(self, context: ReadonlyContext | None) -> bool:
+    """Whether `run_skill_script` can succeed; anything unknown counts as yes."""
+    if not self._has_script_execution(context):
+      return False
+    if (
+        getattr(context, "_invocation_context", None) is None
+        or self._registry is not None
+    ):
+      return True
+    return any(skill.resources.list_scripts() for skill in self._list_skills())
+
   async def get_tools(
       self, readonly_context: ReadonlyContext | None = None
   ) -> list[BaseTool]:
@@ -1439,7 +1884,7 @@ class SkillToolset(BaseToolset):
         readonly_context
     )
     all_tools = self._tools + dynamic_tools
-    if not self._has_script_execution(readonly_context):
+    if not self._offers_script_tool(readonly_context):
       all_tools = [
           t for t in all_tools if not isinstance(t, RunSkillScriptTool)
       ]
@@ -1453,9 +1898,11 @@ class SkillToolset(BaseToolset):
     if not readonly_context:
       return []
 
-    agent_name = readonly_context.agent_name
-    state_key = f"_adk_activated_skill_{agent_name}"
-    activated_skills = readonly_context.state.get(state_key) or []
+    activated_skills = self._active_skills(
+        readonly_context.state,
+        readonly_context.agent_name,
+        readonly_context.invocation_id,
+    )
 
     if not activated_skills:
       return []
@@ -1569,6 +2016,281 @@ class SkillToolset(BaseToolset):
     """Returns the list of available skills."""
     return self._list_skills()
 
+  def list_active_skills(self, ctx: ReadonlyContext) -> list[str]:
+    """Returns the skills active for `ctx`'s agent, least recently loaded first.
+
+    That is activation order, except that reloading a skill that is not
+    PERSISTENT moves it to the end — the order the cap evicts in. An EPHEMERAL
+    skill loaded in an earlier turn has been released and is not listed.
+
+    Args:
+      ctx: A context for the running agent. `ToolContext` is one.
+
+    Returns:
+      The active skill names. Activation is recorded by name, so a name here
+      is not guaranteed to still resolve against the registry.
+    """
+    return self._active_skills(ctx.state, ctx.agent_name, ctx.invocation_id)
+
+  async def load_skill(self, ctx: ToolContext, skill_name: str) -> bool:
+    """Activates a skill for `ctx`'s agent without going through the model.
+
+    Activation is what registers the skill's `adk_additional_tools`. Unlike the
+    `load_skill` tool, this does not put the skill's instructions into the
+    conversation: the model gets the tools without being told what they are
+    for, so supply that guidance yourself.
+
+    Args:
+      ctx: A context for the running agent, e.g. the `ToolContext` a tool or
+        callback was handed.
+      skill_name: The skill to activate.
+
+    The lifecycle applies here exactly as it does to the `load_skill` tool:
+    loading a BOUNDED skill can release other bounded ones, reloading an active
+    one counts as a use, and an EPHEMERAL skill gets the turn `ctx` is in. That
+    is not reported back, so a caller who needs to know should read
+    `list_active_skills`.
+
+    Reloading an already active skill does not refresh what `revalidate_skills`
+    compares against, because nothing here is said to the model: a skill that
+    changed goes on being re-stated until the model loads it itself.
+
+    Returns:
+      True if the skill was activated, False if it already was. An already
+      active skill is reported without consulting the registry, so this works
+      for one that has since been removed from it.
+
+    Raises:
+      ValueError: If no such skill is available locally or in the registry.
+      Exception: Whatever the registry raises if the lookup itself fails.
+    """
+    if skill_name in self._active_skills(
+        ctx.state, ctx.agent_name, ctx.invocation_id
+    ):
+      self._record_activation(
+          ctx.state, ctx.agent_name, skill_name, ctx.invocation_id
+      )
+      return False
+
+    skill = await self._get_or_fetch_skill(skill_name, ctx.invocation_id)
+    if skill is None:
+      raise ValueError(f"Skill '{skill_name}' not found.")
+
+    # The fetch suspends, so re-read: a concurrent activation may have written
+    # the list since.
+    was_active = skill_name in self._active_skills(
+        ctx.state, ctx.agent_name, ctx.invocation_id
+    )
+    self._record_activation(
+        ctx.state, ctx.agent_name, skill_name, ctx.invocation_id, skill
+    )
+    return not was_active
+
+  def unload_skill(self, ctx: ToolContext, skill_name: str) -> bool:
+    """Deactivates a skill for `ctx`'s agent, releasing its dynamic tools.
+
+    Later requests replace the instructions it was loaded with by a short
+    notice; the session's own events keep them. Synchronous, unlike
+    `load_skill`, because deactivation never consults the registry — so it also
+    works for a skill that has since been removed from one.
+
+    Args:
+      ctx: A context for the running agent, e.g. the `ToolContext` a tool or
+        callback was handed.
+      skill_name: The skill to deactivate.
+
+    Returns:
+      True if the skill was deactivated, False if it was not active. An
+      EPHEMERAL skill whose turn has passed was already released, so it reports
+      False, but what it left behind in state is cleaned up all the same.
+    """
+    stored_skills = _read_activated_skills(ctx.state, ctx.agent_name)
+    if skill_name not in stored_skills:
+      return False
+    was_active = skill_name in self._active_skills(
+        ctx.state, ctx.agent_name, ctx.invocation_id
+    )
+    stored_skills.remove(skill_name)
+    _write_activated_skills(ctx.state, ctx.agent_name, stored_skills)
+    self._forget_lifecycle_records(ctx.state, ctx.agent_name, stored_skills)
+    return was_active
+
+  def _lifecycle_for(self, skill_name: str) -> SkillLifecycleMode:
+    """Returns the lifecycle configured for a skill.
+
+    The only reader of the config, so `enabled=False` is enough to switch the
+    whole feature off.
+    """
+    config = self._lifecycle_config
+    if not config.enabled:
+      return SkillLifecycleMode.PERSISTENT
+    return config.skill_overrides.get(skill_name, config.default_mode)
+
+  def _active_skills(
+      self, state: Any, agent_name: str, invocation_id: str | None
+  ) -> list[str]:
+    """Returns the skills active for an agent this invocation.
+
+    Read-only, so `get_tools` can call it with a read-only context. Expired
+    skills are filtered out here and dropped from state by the next
+    activation.
+
+    Args:
+      state: Session state to read.
+      agent_name: The agent whose skills to report.
+      invocation_id: The invocation asking. An ephemeral skill loaded in
+        another one has expired.
+
+    Returns:
+      The active skill names, oldest activation first.
+    """
+    activated_skills = _read_activated_skills(state, agent_name)
+    if not activated_skills or not self._tracks_ephemeral_skills:
+      return activated_skills
+    records = _read_lifecycle_records(state, agent_name)
+    return [
+        name
+        for name in activated_skills
+        if not _is_expired(records.get(name, {}), invocation_id)
+    ]
+
+  def _record_activation(
+      self,
+      state: Any,
+      agent_name: str,
+      skill_name: str,
+      invocation_id: str | None,
+      skill: models.Skill | None = None,
+  ) -> list[str]:
+    """Marks a skill active for an agent and releases what that displaces.
+
+    Args:
+      state: The session state to record activation in.
+      agent_name: The agent the skill is being activated for.
+      skill_name: The skill being activated.
+      invocation_id: The invocation doing the activating, which is the turn an
+        ephemeral skill gets.
+      skill: The definition being activated, when the caller has it. Recorded
+        as a digest, so a later request can tell that the skill has changed
+        since.
+
+    Returns:
+      The skills released, oldest first: ephemeral leftovers from an earlier
+      turn, then whatever the cap evicted.
+    """
+    stored_skills = _read_activated_skills(state, agent_name)
+    activated_skills = self._active_skills(state, agent_name, invocation_id)
+    # Not the skill being loaded: it is getting a fresh turn, so reporting it
+    # as released in the same breath would contradict itself.
+    expired = [
+        name
+        for name in stored_skills
+        if name not in activated_skills and name != skill_name
+    ]
+    lifecycle = self._lifecycle_for(skill_name)
+
+    if skill_name not in activated_skills:
+      activated_skills.append(skill_name)
+    elif lifecycle is SkillLifecycleMode.PERSISTENT:
+      # The record may still need refreshing, which is what stops a reload
+      # being re-stated.
+      if not expired and not self._records_for(lifecycle, skill):
+        return []
+    else:
+      # Reloading is a use: move it to the end so the cap spares it.
+      activated_skills.remove(skill_name)
+      activated_skills.append(skill_name)
+    evicted = self._evict_over_cap(activated_skills)
+    _write_activated_skills(state, agent_name, activated_skills)
+    self._record_lifecycle(
+        state, agent_name, skill_name, lifecycle, invocation_id, skill
+    )
+    self._forget_lifecycle_records(state, agent_name, activated_skills)
+    return expired + evicted
+
+  def _records_for(
+      self, lifecycle: SkillLifecycleMode, skill: models.Skill | None
+  ) -> dict[str, Any]:
+    """Returns the lifecycle record to store for an activation, if any.
+
+    A persistent skill nobody revalidates needs no bookkeeping, and the cap
+    reads the activation order it already has.
+    """
+    record: dict[str, Any] = {}
+    if lifecycle is SkillLifecycleMode.EPHEMERAL:
+      record["lifecycle"] = lifecycle.value
+    if self._revalidate_skills and skill is not None:
+      record["version_hash"] = _skill_content_hash(skill)
+    return record
+
+  def _record_lifecycle(
+      self,
+      state: Any,
+      agent_name: str,
+      skill_name: str,
+      lifecycle: SkillLifecycleMode,
+      invocation_id: str | None,
+      skill: models.Skill | None = None,
+  ) -> None:
+    """Notes what a skill was when it was loaded, and which turn that was."""
+    record = self._records_for(lifecycle, skill)
+    if not record:
+      return
+    if "lifecycle" in record:
+      record["activated_in"] = invocation_id
+    records = _read_lifecycle_records(state, agent_name)
+    if "version_hash" not in record:
+      # Re-activating without the definition in hand must not drop the digest
+      # the skill was loaded with.
+      loaded_hash = records.get(skill_name, {}).get("version_hash")
+      if loaded_hash:
+        record["version_hash"] = loaded_hash
+    records[skill_name] = record
+    state[_skill_lifecycle_state_key(agent_name)] = records
+
+  def _forget_lifecycle_records(
+      self, state: Any, agent_name: str, activated_skills: list[str]
+  ) -> None:
+    """Drops records for skills that are no longer active.
+
+    The only place they are pruned. A request cannot do it: the tool context
+    built there is thrown away with the request, so its state delta never
+    reaches an event. A tool call's delta is committed, so cleanup rides along
+    with the next activation.
+    """
+    state_key = _skill_lifecycle_state_key(agent_name)
+    records = _read_lifecycle_records(state, agent_name)
+    kept = {
+        name: record
+        for name, record in records.items()
+        if name in activated_skills
+    }
+    if len(kept) != len(records):
+      state[state_key] = kept
+
+  def _evict_over_cap(self, activated_skills: list[str]) -> list[str]:
+    """Drops the oldest bounded skills over the cap, editing the list in place.
+
+    Only bounded skills count against `max_active_skills` and only they are
+    evicted, so a persistent or ephemeral skill can neither be dropped nor push
+    one out.
+    """
+    bounded = [
+        name
+        for name in activated_skills
+        if self._lifecycle_for(name) is SkillLifecycleMode.BOUNDED
+    ]
+    overflow = len(bounded) - self._lifecycle_config.max_active_skills
+    if overflow <= 0:
+      return []
+
+    evicted = bounded[:overflow]
+    dropped = set(evicted)
+    activated_skills[:] = [
+        name for name in activated_skills if name not in dropped
+    ]
+    return evicted
+
   def clone_with_updated_skills(
       self, skills: list[models.Skill]
   ) -> SkillToolset:
@@ -1586,7 +2308,31 @@ class SkillToolset(BaseToolset):
         additional_tools=additional_tools,
         tool_name_prefix=self.tool_name_prefix,
         tool_filter=self.tool_filter,
+        discovery_mode=self._discovery_mode,
+        lifecycle_config=self._lifecycle_config,
     )
+
+  def _inject_catalog(self, selected_core_tools: set[str]) -> bool:
+    """Whether to write the local catalog into the system instruction."""
+    if self._discovery_mode is SkillDiscoveryMode.EAGER:
+      return True
+    if _LIST_SKILLS_TOOL_NAME in selected_core_tools:
+      return False
+    # A tool_filter that hides list_skills used to imply eager disclosure.
+    # Kept so those callers keep a way to discover skills, but the mode is now
+    # how you ask for this.
+    # FutureWarning rather than DeprecationWarning so callers see it by default.
+    if not self._warned_on_filtered_list_skills:
+      self._warned_on_filtered_list_skills = True
+      warnings.warn(
+          "Filtering out `list_skills` to inject the skill catalog into the"
+          " system instruction is deprecated. Pass"
+          " `discovery_mode=SkillDiscoveryMode.EAGER` instead; a future release"
+          " will let tool_filter remove the tool without changing the prompt.",
+          FutureWarning,
+          stacklevel=2,
+      )
+    return True
 
   async def process_llm_request(
       self, *, tool_context: ToolContext, llm_request: LlmRequest
@@ -1603,13 +2349,12 @@ class SkillToolset(BaseToolset):
             prefix=self.tool_name_prefix,
             allowed_tools=selected_core_tools,
             skills_folder=self.skills_folder,
-            script_execution_enabled=self._has_script_execution(tool_context),
+            script_execution_enabled=self._offers_script_tool(tool_context),
+            unload_enabled=self._lifecycle_enabled,
         )
     ]
 
-    has_list_skills = _LIST_SKILLS_TOOL_NAME in selected_core_tools
-
-    if not has_list_skills:
+    if self._inject_catalog(selected_core_tools):
       skills = self._list_skills()
       skills_xml = prompt.format_skills_as_xml(skills)
       instructions.append(skills_xml)
@@ -1622,7 +2367,133 @@ class SkillToolset(BaseToolset):
           " discover additional skills from the registry."
       )
 
+    if self._revalidate_skills:
+      instructions.extend(await self._restate_changed_skills(tool_context))
+
     llm_request.append_instructions(instructions)
+
+    if self._lifecycle_enabled:
+      self._prune_unloaded_skills(tool_context, llm_request)
+
+  def _prune_unloaded_skills(
+      self, tool_context: ToolContext, llm_request: LlmRequest
+  ) -> None:
+    """Drops released skills' instructions from the outgoing request."""
+    active_skills = set(self.list_active_skills(tool_context))
+    p = f"{self.tool_name_prefix}_" if self.tool_name_prefix else ""
+    pruned = _prune_unloaded_skill_instructions(
+        llm_request.contents,
+        f"{p}{_LOAD_SKILL_TOOL_NAME}",
+        active_skills,
+    )
+    if pruned:
+      logger.debug(
+          "Pruned instructions for unloaded skills: %s", ", ".join(pruned)
+      )
+
+  async def _restate_changed_skills(
+      self, tool_context: ToolContext
+  ) -> list[str]:
+    """Returns fresh instructions for active skills whose definition changed.
+
+    A session can outlive several releases of the skills it loaded, and what
+    the model was told is fixed in the transcript. Each request compares the
+    current definition against the digest taken at load time.
+
+    Only `load_skill` refreshes that digest, so a changed skill is re-stated
+    on every request until the model reloads it -- the same text each time, so
+    the prompt stays stable.
+
+    Args:
+      tool_context: Context of the request being built.
+
+    Returns:
+      One instruction block per changed skill, in activation order.
+    """
+    records = _read_lifecycle_records(
+        tool_context.state, tool_context.agent_name
+    )
+    if not records:
+      return []
+
+    to_check = []
+    for skill_name in self._active_skills(
+        tool_context.state, tool_context.agent_name, tool_context.invocation_id
+    ):
+      loaded_hash = records.get(skill_name, {}).get("version_hash")
+      if loaded_hash:
+        to_check.append((skill_name, loaded_hash))
+    if not to_check:
+      return []
+
+    # Together, so the first request of a turn does not wait out one registry
+    # round trip per active skill in series.
+    fetched = await asyncio.gather(
+        *(
+            self._get_or_fetch_skill(name, tool_context.invocation_id)
+            for name, _ in to_check
+        ),
+        return_exceptions=True,
+    )
+
+    p = f"{self.tool_name_prefix}_" if self.tool_name_prefix else ""
+    instructions = []
+    for (skill_name, loaded_hash), skill in zip(to_check, fetched):
+      if isinstance(skill, Exception):
+        # A registry that is down is no reason to fail the turn.
+        logger.warning(
+            "Could not revalidate skill '%s': %s",
+            skill_name,
+            skill,
+            exc_info=skill,
+        )
+        continue
+      if isinstance(skill, BaseException):
+        raise skill
+      if skill is None or _skill_content_hash(skill) == loaded_hash:
+        continue
+      try:
+        await self._rematerialize_skill(skill)
+      except Exception as e:  # pylint: disable=broad-exception-caught
+        # Still worth re-stating the skill; only the sandbox copy is stale.
+        logger.warning(
+            "Could not refresh skill '%s' in the environment: %s",
+            skill_name,
+            e,
+            exc_info=e,
+        )
+      logger.info(
+          "Skill '%s' changed since it was loaded; re-stating it.", skill_name
+      )
+      instructions.append(
+          f"\nThe skill `{skill_name}` has changed since it was loaded. These"
+          " instructions replace the ones the earlier"
+          f" `{p}{_LOAD_SKILL_TOOL_NAME}` response"
+          f" gave you:\n\n{skill.instructions}"
+      )
+    return instructions
+
+  async def _rematerialize_skill(self, skill: models.Skill) -> None:
+    """Rewrites a changed skill's resources into the environment.
+
+    Scripts are copied into the sandbox on first run and left there, so
+    without this the model would run the old copy of a script it has just been
+    re-briefed on.
+
+    Only writes. `BaseEnvironment` has no delete, so a resource the new version
+    dropped stays on disk; the re-stated instructions no longer mention it.
+    """
+    env = self._env
+    skills_folder = self.skills_folder
+    if env is None or skills_folder is None:
+      return
+    content_hash = _skill_content_hash(skill)
+    if self._materialized_skill_hashes.get(skill.name) == content_hash:
+      return
+    if not env.is_initialized:
+      await env.initialize()
+    await _write_skill_resources_to_env(skill, skills_folder / skill.name, env)
+    self._materialized_skill_hashes[skill.name] = content_hash
 
   @override
   async def close(self) -> None:

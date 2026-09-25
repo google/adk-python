@@ -42,7 +42,7 @@ _EXCLUDED_FROM_MTLS = {
     'src/google/adk/tools/apihub_tool/clients/apihub_client.py',
     'src/google/adk/tools/google_api_tool/google_api_toolset.py',
     'tests/unittests/auth/test_credential_manager.py',
-    'tests/unittests/flows/llm_flows/test_functions_request_euc.py',
+    'tests/unittests/flows/llm_flows/tools/test_functions_request_euc.py',
     'tests/unittests/tools/application_integration_tool/test_application_integration_toolset.py',
     'tests/unittests/tools/data_agent/test_data_agent_tool.py',
     'tests/unittests/tools/google_api_tool/test_docs_batchupdate.py',

@@ -12,9 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Api server with all production ADK endpoints.
-"""
+"""Api server with all production ADK endpoints."""
 
 from __future__ import annotations
 
@@ -22,7 +20,9 @@ import asyncio
 import base64
 import binascii
 from contextlib import asynccontextmanager
+import contextvars
 import importlib
+import inspect
 import json
 import logging
 import os
@@ -34,6 +34,7 @@ import typing
 from typing import Any
 from typing import Awaitable
 from typing import Callable
+from typing import cast
 from typing import List
 from typing import Literal
 from typing import Mapping
@@ -46,6 +47,7 @@ from fastapi import Query
 from fastapi import Request
 from fastapi import Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.responses import RedirectResponse
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -79,12 +81,13 @@ from ..errors.input_validation_error import InputValidationError
 from ..errors.session_not_found_error import SessionNotFoundError
 from ..events.event import Event
 from ..events.event_actions import EventActions
-from ..flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
-from ..flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
-from ..flows.llm_flows.functions import REQUEST_INPUT_FUNCTION_CALL_NAME
+from ..flows.llm_flows.tools._functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ..flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from ..flows.llm_flows.tools._functions import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ..live.live_request_queue import LiveRequest
 from ..live.live_request_queue import LiveRequestQueue
 from ..memory.base_memory_service import BaseMemoryService
+from ..models._service_tier import ServiceTier
 from ..plugins.base_plugin import BasePlugin
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
@@ -371,6 +374,37 @@ async def _send_forbidden(send: Any, reason: str) -> None:
   })
 
 
+def _accepts_kwargs(func: Callable[..., Any], kwargs: dict[str, Any]) -> bool:
+  """Returns True if func accepts all keys in kwargs as keyword arguments."""
+  try:
+    sig = inspect.signature(func)
+  except (ValueError, TypeError):
+    return False
+
+  # Check if there is a **kwargs parameter
+  if any(
+      param.kind == inspect.Parameter.VAR_KEYWORD
+      for param in sig.parameters.values()
+  ):
+    return True
+
+  # Otherwise, check if all keys in kwargs are accepted as explicit parameters
+  for key in kwargs:
+    param = sig.parameters.get(key)
+    if param is None or param.kind in (
+        inspect.Parameter.POSITIONAL_ONLY,
+        inspect.Parameter.VAR_POSITIONAL,
+    ):
+      return False
+
+  return True
+
+
+_current_session_options: contextvars.ContextVar[Optional[dict[str, Any]]] = (
+    contextvars.ContextVar("current_session_options", default=None)
+)
+
+
 class _OriginCheckMiddleware:
   """ASGI middleware that blocks cross-origin requests."""
 
@@ -520,6 +554,8 @@ class InMemoryExporter(export_lib.SpanExporter):
 
 
 class RunAgentRequest(common.BaseModel):
+  """Request body for the /run and /run_sse endpoints."""
+
   app_name: Optional[str] = None
   user_id: str
   session_id: str
@@ -531,6 +567,9 @@ class RunAgentRequest(common.BaseModel):
   # for resume long-running functions
   invocation_id: Optional[str] = None
   custom_metadata: Optional[dict[str, Any]] = None
+  # Serving tier for this run's model calls, e.g. ServiceTier.DEFERRED. Only
+  # models on the interactions API have a serving tier; others ignore it.
+  service_tier: Optional[ServiceTier | str] = None
 
 
 class CreateSessionRequest(common.BaseModel):
@@ -547,6 +586,12 @@ class CreateSessionRequest(common.BaseModel):
   events: Optional[list[Event]] = Field(
       default=None,
       description="A list of events to initialize the session with.",
+  )
+  options: Optional[dict[str, Any]] = Field(
+      default=None,
+      description=(
+          "Optional configuration options forwarded to the session service."
+      ),
   )
 
 
@@ -659,11 +704,17 @@ def _setup_telemetry(
     _setup_telemetry_from_env(internal_exporters=internal_exporters)
   else:
     # Old logic - to be removed when above leaves experimental.
-    tracer_provider = TracerProvider()
+    tracer_provider = trace.get_tracer_provider()
+    is_proxy = isinstance(tracer_provider, trace.ProxyTracerProvider)
+    if is_proxy:
+      tracer_provider = TracerProvider()
     if internal_exporters is not None:
-      for exporter in internal_exporters:
-        tracer_provider.add_span_processor(exporter)
-    trace.set_tracer_provider(tracer_provider=tracer_provider)
+      add_proc = getattr(tracer_provider, "add_span_processor", None)
+      if callable(add_proc):
+        for exporter in internal_exporters:
+          add_proc(exporter)
+    if is_proxy:
+      trace.set_tracer_provider(tracer_provider=tracer_provider)
 
 
 def _otel_env_vars_enabled() -> bool:
@@ -821,6 +872,11 @@ class ApiServer:
   """
 
   _allow_special_agents: bool = False
+
+  # Whether this server serves the debug endpoints that read the in-memory
+  # span buffers. Nothing evicts from those buffers, so a server that has no
+  # reader for them must not fill them.
+  _serves_debug_trace_endpoints: bool = False
 
   def __init__(
       self,
@@ -990,7 +1046,9 @@ class ApiServer:
   def _get_root_agent(self, agent_or_app: BaseAgent | App) -> BaseAgent:
     """Extract root agent from either a BaseAgent or App object."""
     if isinstance(agent_or_app, App):
-      return agent_or_app.root_agent
+      # App.root_agent is a BaseNode; every caller here needs an agent, and the
+      # App validator already rejects a missing root.
+      return cast(BaseAgent, agent_or_app.root_agent)
     return agent_or_app
 
   def _create_runner(self, agentic_app: App, app_name: str) -> Runner:
@@ -1041,57 +1099,6 @@ class ApiServer:
     module = importlib.import_module(module_name)
     return getattr(module, obj_name)
 
-  def _setup_runtime_config(self, web_assets_dir: str):
-    """Sets up the runtime config for the web server."""
-    # Read existing runtime config file.
-    runtime_config_path = os.path.join(
-        web_assets_dir, "assets", "config", "runtime-config.json"
-    )
-    runtime_config = {}
-    try:
-      with open(runtime_config_path, "r") as f:
-        runtime_config = json.load(f)
-    except FileNotFoundError:
-      logger.info(
-          "File not found: %s. A new runtime config file will be created.",
-          runtime_config_path,
-      )
-    except json.JSONDecodeError:
-      logger.warning(
-          "Failed to decode JSON from %s. The file content will be"
-          " overwritten.",
-          runtime_config_path,
-      )
-    runtime_config["backendUrl"] = self.url_prefix if self.url_prefix else ""
-    # Inject telemetry consent on bootstrapping to avoid an extra API call
-    # when loading the UI.
-    runtime_config["telemetry"] = read_telemetry_consent()
-
-    # Set custom logo config.
-    if self.logo_text or self.logo_image_url:
-      if not self.logo_text or not self.logo_image_url:
-        raise ValueError(
-            "Both --logo-text and --logo-image-url must be defined when using"
-            " logo config."
-        )
-      runtime_config["logo"] = {
-          "text": self.logo_text,
-          "imageUrl": self.logo_image_url,
-      }
-    elif "logo" in runtime_config:
-      del runtime_config["logo"]
-
-    # Write the runtime config file.
-    try:
-      os.makedirs(os.path.dirname(runtime_config_path), exist_ok=True)
-      with open(runtime_config_path, "w") as f:
-        json.dump(runtime_config, f, indent=2)
-        f.write("\n")
-    except IOError as e:
-      logger.error(
-          "Failed to write runtime config file %s: %s", runtime_config_path, e
-      )
-
   async def _create_session(
       self,
       *,
@@ -1100,12 +1107,38 @@ class ApiServer:
       session_id: Optional[str] = None,
       state: Optional[dict[str, Any]] = None,
   ) -> Session:
+    session_options = _current_session_options.get() or {}
+    conflicting_keys = session_options.keys() & {
+        "app_name",
+        "user_id",
+        "state",
+        "session_id",
+    }
+    if conflicting_keys:
+      raise HTTPException(
+          status_code=400,
+          detail=(
+              "Session options cannot contain keys already bound by the"
+              f" endpoint: {', '.join(sorted(conflicting_keys))}"
+          ),
+      )
+    if session_options and not _accepts_kwargs(
+        self.session_service.create_session, session_options
+    ):
+      raise HTTPException(
+          status_code=400,
+          detail=(
+              "Session options are not supported by the configured session"
+              " service."
+          ),
+      )
     try:
       session = await self.session_service.create_session(
           app_name=app_name,
           user_id=user_id,
           state=state,
           session_id=session_id,
+          **session_options,
       )
       logger.info("New session created: %s", session.id)
       return session
@@ -1113,6 +1146,8 @@ class ApiServer:
       raise HTTPException(
           status_code=409, detail=f"Session already exists: {session_id}"
       ) from e
+    except (ValueError, TypeError) as e:
+      raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
       logger.error(
           "Internal server error during session creation: %s", e, exc_info=True
@@ -1188,16 +1223,17 @@ class ApiServer:
     memory_exporter = InMemoryExporter(session_trace_dict)
     self._memory_exporter = memory_exporter
 
+    internal_exporters: list[SpanProcessor] = []
+    if self._serves_debug_trace_endpoints:
+      internal_exporters = [
+          export_lib.SimpleSpanProcessor(ApiServerSpanExporter(trace_dict)),
+          export_lib.SimpleSpanProcessor(memory_exporter),
+      ]
+
     _setup_telemetry(
         otel_to_cloud=otel_to_cloud,
-        internal_exporters=[
-            export_lib.SimpleSpanProcessor(ApiServerSpanExporter(trace_dict)),
-            export_lib.SimpleSpanProcessor(memory_exporter),
-        ],
+        internal_exporters=internal_exporters,
     )
-    if web_assets_dir:
-      self._setup_runtime_config(web_assets_dir)
-
     tracer_provider = trace.get_tracer_provider()
     register_processors(tracer_provider)
 
@@ -1257,6 +1293,33 @@ class ApiServer:
       redirect_dev_ui_url = (
           self.url_prefix + "/dev-ui/" if self.url_prefix else "/dev-ui/"
       )
+
+      # Both logo flags travel together; a half-specified logo is a
+      # configuration error rather than something to silently drop.
+      if bool(self.logo_text) != bool(self.logo_image_url):
+        raise ValueError(
+            "Both --logo-text and --logo-image-url must be defined when using"
+            " logo config."
+        )
+
+      # Serves what used to be written into the installed package at startup.
+      # MUST stay ahead of the app.mount() below: Starlette matches routes in
+      # registration order and the "/dev-ui/" mount would otherwise shadow this
+      # path and return a stale file from disk.
+      @app.get("/dev-ui/assets/config/runtime-config.json")
+      async def get_runtime_config():
+        config: dict[str, Any] = {
+            "backendUrl": self.url_prefix or "",
+            # Read per request so a consent change takes effect on reload,
+            # instead of being frozen at server startup.
+            "telemetry": read_telemetry_consent(),
+        }
+        if self.logo_text:
+          config["logo"] = {
+              "text": self.logo_text,
+              "imageUrl": self.logo_image_url,
+          }
+        return JSONResponse(config, headers={"Cache-Control": "no-store"})
 
       @app.get("/dev-ui/config")
       async def get_ui_config():
@@ -1516,12 +1579,16 @@ class ApiServer:
       if req.events:
         _validate_session_initialization_events(req.events)
 
-      session = await self._create_session(
-          app_name=app_name,
-          user_id=user_id,
-          state=req.state,
-          session_id=req.session_id,
-      )
+      token = _current_session_options.set(req.options)
+      try:
+        session = await self._create_session(
+            app_name=app_name,
+            user_id=user_id,
+            state=req.state,
+            session_id=req.session_id,
+        )
+      finally:
+        _current_session_options.reset(token)
 
       if req.events:
         for event in req.events:
@@ -1837,11 +1904,12 @@ class ApiServer:
       self.current_app_name_ref.value = req.app_name
       runner = await self.get_runner_async(req.app_name)
       _set_telemetry_context_if_needed(runner)
-      run_config = (
-          RunConfig(custom_metadata=req.custom_metadata)
-          if req.custom_metadata
-          else None
-      )
+      run_config = None
+      if req.custom_metadata or req.service_tier:
+        run_config = RunConfig(
+            custom_metadata=req.custom_metadata,
+            service_tier=req.service_tier,
+        )
 
       async def worker():
         try:
@@ -1905,6 +1973,19 @@ class ApiServer:
       runner = await self.get_runner_async(req.app_name)
       _set_telemetry_context_if_needed(runner)
 
+      # Build the run config before the response starts. Constructing it
+      # inside event_generator() would run its validation after the 200 and
+      # the SSE headers are already on the wire, turning a bad request into a
+      # broken stream instead of a rejected call.
+      try:
+        run_config = RunConfig(
+            streaming_mode=stream_mode,
+            custom_metadata=req.custom_metadata,
+            service_tier=req.service_tier,
+        )
+      except ValidationError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+
       # Validate session existence before starting the stream.
       # We check directly here instead of eagerly advancing the
       # runner's async generator with anext(), because splitting
@@ -1934,10 +2015,7 @@ class ApiServer:
                   session_id=req.session_id,
                   new_message=req.new_message,
                   state_delta=req.state_delta,
-                  run_config=RunConfig(
-                      streaming_mode=stream_mode,
-                      custom_metadata=req.custom_metadata,
-                  ),
+                  run_config=run_config,
                   invocation_id=req.invocation_id,
               )
           ) as agen:

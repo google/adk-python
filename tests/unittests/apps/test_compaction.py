@@ -522,6 +522,29 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
     # Visible text after compaction is: 'S' + ('c' * 20) = 21 chars.
     self.assertEqual(estimated_token_count, 21 // 4)
 
+  def test_latest_prompt_token_count_stops_at_compaction_event(self):
+    events = [
+        self._create_event(1.0, 'inv1', 'a' * 40, prompt_token_count=1000),
+        self._create_compacted_event(1.0, 1.0, 'S'),
+        self._create_event(2.0, 'inv2', 'b' * 20),
+    ]
+
+    estimated_token_count = compaction_module._latest_prompt_token_count(events)
+
+    # Prompt token count recorded before compaction describes the replaced prompt
+    # and must not be picked up; falls back to estimated count ('S' + 20 chars).
+    self.assertEqual(estimated_token_count, 21 // 4)
+
+    events_with_post_count = [
+        self._create_event(1.0, 'inv1', 'a' * 40, prompt_token_count=1000),
+        self._create_compacted_event(1.0, 1.0, 'S'),
+        self._create_event(2.0, 'inv2', 'b' * 20, prompt_token_count=50),
+    ]
+    self.assertEqual(
+        compaction_module._latest_prompt_token_count(events_with_post_count),
+        50,
+    )
+
   def test_latest_prompt_token_count_fallback_uses_effective_contents(self):
     events = [
         self._create_event(1.0, 'inv1', 'visible'),
@@ -540,6 +563,44 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
 
     # Thought-only events are filtered by contents processing.
     self.assertEqual(estimated_token_count, len('visible') // 4)
+
+  def _create_agent_event(
+      self,
+      timestamp: float,
+      author: str,
+      prompt_token_count: int,
+  ) -> Event:
+    return Event(
+        timestamp=timestamp,
+        invocation_id='inv1',
+        author=author,
+        content=Content(role='model', parts=[Part(text='response')]),
+        usage_metadata=types.GenerateContentResponseUsageMetadata(
+            prompt_token_count=prompt_token_count
+        ),
+    )
+
+  def test_latest_prompt_token_count_ignores_other_agents(self):
+    events = [
+        self._create_agent_event(1.0, 'worker', 5000),
+        self._create_agent_event(2.0, 'formatter', 100),
+    ]
+
+    token_count = compaction_module._latest_prompt_token_count(
+        events, agent_name='worker'
+    )
+
+    self.assertEqual(token_count, 5000)
+
+  def test_latest_prompt_token_count_without_agent_name_uses_latest(self):
+    events = [
+        self._create_agent_event(1.0, 'worker', 5000),
+        self._create_agent_event(2.0, 'formatter', 100),
+    ]
+
+    token_count = compaction_module._latest_prompt_token_count(events)
+
+    self.assertEqual(token_count, 100)
 
   async def test_run_compaction_for_token_threshold_keeps_retention_events(
       self,

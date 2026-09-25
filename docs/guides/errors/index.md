@@ -1,6 +1,6 @@
 # ADK exceptions
 
-`google.adk.errors` holds the six exception types ADK raises on its own behalf
+`google.adk.errors` holds the seven exception types ADK raises on its own behalf
 rather than passing along from a dependency. They come from four parts of the
 framework: the session services, the artifact services, the evaluation
 subsystem, and tool code.
@@ -9,33 +9,36 @@ subsystem, and tool code.
 
 Most of the failures you see from ADK come from somewhere else, whether that is
 a `ValidationError` from Pydantic, an `APIError` from the GenAI SDK, or a
-`ModuleNotFoundError` from an extra you have not installed. The six types in
+`ModuleNotFoundError` from an extra you have not installed. The seven types in
 `google.adk.errors` are the ones ADK defines itself, and each of them marks a
 place where the framework has a specific condition to report and expects you to
 be able to do something about it.
 
 Three facts shape how you work with them, and all three catch people out.
 
-*   **There is no common base class.** These six do not descend from a shared
+*   **There is no common base class.** These seven do not descend from a shared
     `AdkError`, so there is no single `except` clause that means "an ADK error".
-    Three of them subclass `ValueError` and three subclass `Exception` directly.
-*   **Three of them subclass `ValueError`.** If you already have an
+    Four of them subclass `ValueError` and three subclass `Exception` directly.
+*   **Four of them subclass `ValueError`.** If you already have an
     `except ValueError` anywhere near session or artifact code, it is catching
-    `StaleSessionError`, `SessionNotFoundError` and `InputValidationError` right
-    now, almost certainly without you intending it to. That inheritance is
-    deliberate backward compatibility, and of everything these six types do it
-    is the most likely to cost you data.
-*   **Only one is re-exported from the package.** You can write
-    `from google.adk.errors import StaleSessionError`, and the other five have
-    to be reached by module path. `StaleSessionError` has no public module of
-    its own, so the package import is the only route to it.
+    `StaleSessionError`, `SessionNotFoundError`, `InvocationNotFoundError` and
+    `InputValidationError` right now, almost certainly without you intending it
+    to. That inheritance is deliberate backward compatibility, and of
+    everything these seven types do it is the most likely to cost you data.
+*   **Only two are re-exported from the package.** You can write
+    `from google.adk.errors import StaleSessionError` or
+    `from google.adk.errors import InvocationNotFoundError`, and the other five
+    have to be reached by module path. `StaleSessionError` and
+    `InvocationNotFoundError` have no public module of their own, so the package
+    import is the only route to them.
 
-## The six exceptions
+## The seven exceptions
 
 | Exception | Base | Import from |
 | :--- | :--- | :--- |
 | `StaleSessionError` | `ValueError` | `google.adk.errors` |
 | `SessionNotFoundError` | `ValueError` | `google.adk.errors.session_not_found_error` |
+| `InvocationNotFoundError` | `NotFoundError`, `ValueError` | `google.adk.errors` |
 | `InputValidationError` | `ValueError` | `google.adk.errors.input_validation_error` |
 | `AlreadyExistsError` | `Exception` | `google.adk.errors.already_exists_error` |
 | `NotFoundError` | `Exception` | `google.adk.errors.not_found_error` |
@@ -78,6 +81,21 @@ error to HTTP 404.
 
 One thing to watch for is that `get_session` does *not* raise it. A missing
 session comes back from there as `None`.
+
+### `InvocationNotFoundError`
+
+**Raised by** `Runner.rewind_async` when the invocation ID to rewind before does
+not match any event in the session.
+
+**Means** you referenced an invocation ID that does not exist in the session's
+event history.
+
+**Catch it** if your application rewinds sessions based on user or client input
+and you want to handle an unknown invocation ID gracefully.
+
+It inherits from `NotFoundError` (joining the general not-found hierarchy) and
+`ValueError` (for backward compatibility). Calling
+`str(InvocationNotFoundError())` returns `"Invocation ID not found."`.
 
 ### `InputValidationError`
 
@@ -177,14 +195,14 @@ raise ToolExecutionError(
 
 ## The `ValueError` trap
 
-`StaleSessionError`, `SessionNotFoundError` and `InputValidationError` all
-subclass `ValueError`, and each of them says so for backward compatibility.
-Callers were catching `ValueError` in these places before the specific types
-existed, and narrowing the base class afterwards would have broken all of that
-code at once.
+`StaleSessionError`, `SessionNotFoundError`, `InvocationNotFoundError` and
+`InputValidationError` all subclass `ValueError`, and each of them says so for
+backward compatibility. Callers were catching `ValueError` in these places
+before the specific types existed, and narrowing the base class afterwards would
+have broken all of that code at once.
 
 The bill for that decision is paid by new code. An `except ValueError` anywhere
-near a session or artifact call now swallows three conditions you almost
+near a session or artifact call now swallows four conditions you almost
 certainly wanted to hear about, and it does so without a word. The code below
 looks like careful error handling and behaves like a hole in the floor:
 
@@ -231,17 +249,19 @@ exception sails straight past it.
 *   **No shared base class.** You cannot write one `except` for "any ADK error",
     and adding a base class later would itself be a breaking change for anyone
     relying on the current ones.
-*   **The package re-exports only `StaleSessionError`.** The other five need
-    their module path, which means a longer import and a path with no obvious
-    guarantee of stability.
+*   **The package re-exports only `StaleSessionError` and `InvocationNotFoundError`.**
+    The other five need their module path, which means a longer import and a
+    path with no obvious guarantee of stability.
 *   **The constructors are inconsistent.** `NotFoundError`,
-    `AlreadyExistsError` and `InputValidationError` take an optional message
-    with a sensible default and expose it as `.message`. `ToolExecutionError`
-    also exposes `.message`, but requires it. `SessionNotFoundError` has a
-    default of its own but exposes no `.message`. `StaleSessionError` defines no
-    constructor at all, so `str(StaleSessionError())` is the empty string while
-    every other default-constructed type here gives you a sentence.
-*   **`NotFoundError` is named more generally than it behaves.** It belongs to
+    `AlreadyExistsError`, `InvocationNotFoundError` and `InputValidationError`
+    take an optional message with a sensible default and expose it as `.message`.
+    `ToolExecutionError` also exposes `.message`, but requires it.
+    `SessionNotFoundError` has a default of its own but exposes no `.message`.
+    `StaleSessionError` defines no constructor at all, so
+    `str(StaleSessionError())` is the empty string while every other
+    default-constructed type here gives you a sentence.
+*   **`NotFoundError` is named more generally than it behaves.** Outside of its
+    `InvocationNotFoundError` subclass raised by session rewinds, it belongs to
     the evaluation subsystem, and a missing session or file raises something
     else entirely.
 *   **Nothing carries structured detail.** Apart from `ToolExecutionError` and

@@ -40,16 +40,19 @@
         ],
         "role": "model"
       },
-      "finishReason": "STOP",
       "id": "e-3",
       "invocationId": "i-1",
       "nodeInfo": {
-        "messageAsOutput": true,
         "outputFor": [
           "root_agent@1/find_related_topics@1"
         ],
         "path": "root_agent@1/find_related_topics@1"
-      }
+      },
+      "output": [
+        "gardening",
+        "plants",
+        "botany"
+      ]
     },
     {
       "author": "root_agent",
@@ -117,15 +120,17 @@
         ],
         "role": "model"
       },
-      "finishReason": "STOP",
       "id": "e-8",
       "invocationId": "i-1",
       "nodeInfo": {
-        "messageAsOutput": true,
         "outputFor": [
           "root_agent@1/explain_topic@1/explain_topic@1"
         ],
         "path": "root_agent@1/explain_topic@1/explain_topic@1"
+      },
+      "output": {
+        "explanation": "Gardening is the practice of growing and cultivating plants, and flowers are a central element in many gardening practices. Gardeners often plant, nurture, and arrange flowers for their aesthetic beauty, fragrance, or to attract pollinators, making flowers an integral part of the gardening world.",
+        "topic": "GARDENING"
       }
     },
     {
@@ -139,15 +144,17 @@
         ],
         "role": "model"
       },
-      "finishReason": "STOP",
       "id": "e-9",
       "invocationId": "i-1",
       "nodeInfo": {
-        "messageAsOutput": true,
         "outputFor": [
           "root_agent@1/explain_topic@1/explain_topic@2"
         ],
         "path": "root_agent@1/explain_topic@1/explain_topic@2"
+      },
+      "output": {
+        "explanation": "A flower is a reproductive part of many types of plants. Plants are the larger biological kingdom to which flowers belong, as flowers grow on and are integral components of flowering plants (angiosperms).",
+        "topic": "PLANTS"
       }
     },
     {
@@ -161,15 +168,17 @@
         ],
         "role": "model"
       },
-      "finishReason": "STOP",
       "id": "e-10",
       "invocationId": "i-1",
       "nodeInfo": {
-        "messageAsOutput": true,
         "outputFor": [
           "root_agent@1/explain_topic@1/explain_topic@3"
         ],
         "path": "root_agent@1/explain_topic@1/explain_topic@3"
+      },
+      "output": {
+        "explanation": "Botany is the scientific study of plants, including their structure, growth, reproduction, metabolism, development, diseases, and chemical properties. Flowers are the reproductive organs of many plants, specifically angiosperms, and are therefore a primary subject of study within botany, with botanists analyzing their morphology, physiology, ecology, and evolutionary significance.",
+        "topic": "BOTANY"
       }
     },
     {

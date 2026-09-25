@@ -85,6 +85,10 @@ def eval_service(
       metric_info=FakeSingleSidedEvaluator.get_metric_info(),
       evaluator=FakeSingleSidedEvaluator,
   )
+  DEFAULT_METRIC_EVALUATOR_REGISTRY.register_evaluator(
+      metric_info=FakeInformationalEvaluator.get_metric_info(),
+      evaluator=FakeInformationalEvaluator,
+  )
   return LocalEvalService(
       root_agent=dummy_agent,
       eval_sets_manager=mock_eval_sets_manager,
@@ -167,6 +171,43 @@ class FakeSingleSidedEvaluator(Evaluator):
     return EvaluationResult(
         overall_score=0.95,
         overall_eval_status=EvalStatus.PASSED,
+        per_invocation_results=per_invocation_results,
+    )
+
+
+class FakeInformationalEvaluator(Evaluator):
+  """Mimics an informational metric: reports values with INFORMATIONAL status."""
+
+  def __init__(self, eval_metric: EvalMetric):
+    self._eval_metric = eval_metric
+
+  @staticmethod
+  def get_metric_info() -> MetricInfo:
+    return MetricInfo(
+        metric_name="fake_informational_metric",
+        description="Fake informational metric description",
+        metric_value_info=MetricValueInfo(),
+    )
+
+  @override
+  def evaluate_invocations(
+      self,
+      actual_invocations: list[Invocation],
+      expected_invocations: Optional[list[Invocation]] = None,
+      conversation_scenario: Optional[ConversationScenario] = None,
+  ) -> EvaluationResult:
+    per_invocation_results = []
+    for i, actual in enumerate(actual_invocations):
+      per_invocation_results.append(
+          PerInvocationResult(
+              actual_invocation=actual,
+              score=float(i + 1),
+              eval_status=EvalStatus.INFORMATIONAL,
+          )
+      )
+    return EvaluationResult(
+        overall_score=2.0,
+        overall_eval_status=EvalStatus.INFORMATIONAL,
         per_invocation_results=per_invocation_results,
     )
 
@@ -466,6 +507,68 @@ async def test_evaluate_single_inference_result(
     assert metric_result.metric_name == "fake_metric"
     assert metric_result.score == 0.9
     assert metric_result.eval_status == EvalStatus.PASSED
+
+
+@pytest.mark.asyncio
+async def test_evaluate_informational_metric_preserves_per_invocation_scores(
+    eval_service, mock_eval_sets_manager, mocker
+):
+  """Informational metrics report per-invocation values despite INFORMATIONAL.
+
+  An informational metric returns an overall status of INFORMATIONAL while
+  still producing per-invocation scores. Those per-invocation scores must be
+  surfaced rather than replaced with empty placeholders.
+  """
+  invocation = Invocation(
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text="test user content.")]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="test final response.")]
+      ),
+  )
+  inference_result = InferenceResult(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      eval_case_id="case1",
+      inferences=[
+          invocation.model_copy(deep=True),
+          invocation.model_copy(deep=True),
+      ],
+      session_id="session1",
+  )
+  eval_metric = EvalMetric(metric_name="fake_informational_metric")
+  evaluate_config = EvaluateConfig(eval_metrics=[eval_metric], parallelism=1)
+
+  mock_eval_case = mocker.MagicMock(spec=EvalCase)
+  mock_eval_case.conversation = [
+      invocation.model_copy(deep=True),
+      invocation.model_copy(deep=True),
+  ]
+  mock_eval_case.conversation_scenario = None
+  mock_eval_case.session_input = None
+  mock_eval_sets_manager.get_eval_case.return_value = mock_eval_case
+
+  _, result = await eval_service._evaluate_single_inference_result(
+      inference_result=inference_result, evaluate_config=evaluate_config
+  )
+
+  # The overall value is reported, with an INFORMATIONAL status.
+  assert len(result.overall_eval_metric_results) == 1
+  assert result.overall_eval_metric_results[0].score == 2.0
+  assert (
+      result.overall_eval_metric_results[0].eval_status
+      == EvalStatus.INFORMATIONAL
+  )
+
+  # The per-invocation values are preserved (not wiped to None).
+  assert len(result.eval_metric_result_per_invocation) == 2
+  for i in range(2):
+    metric_result = result.eval_metric_result_per_invocation[
+        i
+    ].eval_metric_results[0]
+    assert metric_result.score == float(i + 1)
+    assert metric_result.eval_status == EvalStatus.INFORMATIONAL
 
 
 @pytest.mark.asyncio
@@ -1244,3 +1347,125 @@ async def test_perform_inference_single_eval_item_failure(
   assert result.status == InferenceStatus.FAILURE
   assert result.error_message == "model crashed"
   assert result.inferences is None
+
+
+@pytest.mark.asyncio
+async def test_eval_injects_session_input_state_into_instruction(
+    mock_eval_sets_manager, mock_eval_set_results_manager
+):
+  """EvalCase.session_input.state must populate `{placeholders}` in instructions.
+
+  Tools already see this state; instruction templates must too (google/adk-python#5037).
+  """
+  from tests.unittests.testing_utils import MockModel
+
+  mock_model = MockModel.create(responses=["ok"])
+  agent = LlmAgent(
+      model=mock_model,
+      name="stateful_agent",
+      instruction="You will receive {some_key}.",
+  )
+  eval_case = EvalCase(
+      eval_id="state_case",
+      conversation=[
+          Invocation(
+              user_content=genai_types.Content(
+                  parts=[genai_types.Part(text="hello")]
+              )
+          )
+      ],
+      session_input=SessionInput(
+          app_name="test_app",
+          user_id="test_user",
+          state={"some_key": "secret-value"},
+      ),
+  )
+  mock_eval_sets_manager.get_eval_set.return_value = EvalSet(
+      eval_set_id="set-1",
+      eval_cases=[eval_case],
+  )
+  service = LocalEvalService(
+      root_agent=agent,
+      eval_sets_manager=mock_eval_sets_manager,
+      eval_set_results_manager=mock_eval_set_results_manager,
+  )
+  request = InferenceRequest(
+      app_name="test_app",
+      eval_set_id="set-1",
+      eval_case_ids=["state_case"],
+      inference_config=InferenceConfig(),
+  )
+
+  results = []
+  async for result in service.perform_inference(inference_request=request):
+    results.append(result)
+
+  assert results
+  assert results[0].status == InferenceStatus.SUCCESS, results[0].error_message
+  assert results[0].inferences
+  app_details = results[0].inferences[0].app_details
+  assert app_details
+  instruction_text = app_details.get_developer_instructions("stateful_agent")
+  assert "secret-value" in instruction_text
+  assert "{some_key}" not in instruction_text
+
+
+def test_default_user_simulator_provider_is_not_shared_between_services(
+    dummy_agent, mock_eval_sets_manager
+):
+  service = LocalEvalService(
+      root_agent=dummy_agent,
+      eval_sets_manager=mock_eval_sets_manager,
+  )
+  other_service = LocalEvalService(
+      root_agent=dummy_agent,
+      eval_sets_manager=mock_eval_sets_manager,
+  )
+
+  assert (
+      service._user_simulator_provider
+      is not other_service._user_simulator_provider
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parallelism", [0, -1])
+async def test_perform_inference_rejects_non_positive_parallelism(
+    eval_service, mock_eval_sets_manager, parallelism
+):
+  """A parallelism of 0 would hang the run, so reject it before it can.
+
+  `asyncio.Semaphore(0)` never admits an `acquire()`, so every inference task
+  would wait forever, with no output and no error to point at the cause.
+  """
+  mock_eval_sets_manager.get_eval_set.return_value = EvalSet(
+      eval_set_id="test_eval_set",
+      eval_cases=[
+          EvalCase(eval_id="case1", conversation=[], session_input=None)
+      ],
+  )
+  inference_request = InferenceRequest(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      inference_config=InferenceConfig(parallelism=parallelism),
+  )
+
+  with pytest.raises(ValueError, match="`parallelism` must be at least 1"):
+    async for _ in eval_service.perform_inference(inference_request):
+      pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parallelism", [0, -1])
+async def test_evaluate_rejects_non_positive_parallelism(
+    eval_service, parallelism
+):
+  """`evaluate` builds the same semaphore and would hang the same way."""
+  evaluate_request = EvaluateRequest(
+      inference_results=[],
+      evaluate_config=EvaluateConfig(eval_metrics=[], parallelism=parallelism),
+  )
+
+  with pytest.raises(ValueError, match="`parallelism` must be at least 1"):
+    async for _ in eval_service.evaluate(evaluate_request):
+      pass

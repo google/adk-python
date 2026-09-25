@@ -30,6 +30,7 @@ from google.adk.integrations.bigquery import client as bq_client_lib
 from google.adk.integrations.bigquery import query_tool
 from google.adk.integrations.bigquery.config import BigQueryToolConfig
 from google.adk.integrations.bigquery.config import WriteMode
+from google.adk.sessions import Session
 from google.adk.tools import function_tool
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
@@ -886,20 +887,25 @@ def test_execute_sql_non_select_stmt_write_protected_persistent_target(
   credentials = mock.create_autospec(Credentials, instance=True)
   tool_settings = BigQueryToolConfig(write_mode=WriteMode.PROTECTED)
   tool_context = mock.create_autospec(ToolContext, instance=True)
-  tool_context.state.get.return_value = (
-      "test-bq-session-id",
-      "_anonymous_dataset",
-  )
 
   with mock.patch.object(bigquery, "Client", autospec=True) as Client:
     # The mock instance
     bq_client = Client.return_value
 
+    # Simulate the result of the query API creating the BigQuery session
+    session_creator_job = mock.create_autospec(bigquery.QueryJob)
+    session_creator_job.session_info.session_id = "test-bq-session-id"
+    session_creator_job.destination.dataset_id = "_anonymous_dataset"
+
     # Simulate the result of query API
     query_job = mock.create_autospec(bigquery.QueryJob)
     query_job.statement_type = statement_type
     query_job.destination.dataset_id = "my_dataset"
-    bq_client.query.return_value = query_job
+    bq_client.query.side_effect = (
+        lambda sql, **kwargs: session_creator_job
+        if sql == "SELECT 1"
+        else query_job
+    )
 
     # Simulate the result of query_and_wait API
     bq_client.query_and_wait.return_value = query_result
@@ -915,6 +921,90 @@ def test_execute_sql_non_select_stmt_write_protected_persistent_target(
             " operations in the anonymous dataset of a BigQuery session."
         ),
     }
+
+
+@pytest.mark.parametrize(
+    ("query", "statement_type"),
+    [
+        pytest.param(
+            "CREATE TEMP TABLE my_table AS SELECT 123 AS num;"
+            " DROP TABLE my_dataset.my_table",
+            "SCRIPT",
+            id="script",
+        ),
+        pytest.param(
+            "CALL my_dataset.my_procedure()",
+            "CALL",
+            id="call",
+        ),
+        pytest.param(
+            "EXPORT DATA OPTIONS (uri = 'gs://my_bucket/*.csv', format ="
+            " 'CSV') AS SELECT * FROM my_dataset.my_table",
+            "EXPORT_DATA",
+            id="export-data",
+        ),
+        pytest.param(
+            "INSERT INTO my_table (num) VALUES (123)",
+            "INSERT",
+            id="insert",
+        ),
+        pytest.param(
+            "DROP TABLE my_table",
+            "DROP_TABLE",
+            id="drop-table",
+        ),
+    ],
+)
+def test_execute_sql_unconfined_stmt_write_protected(query, statement_type):
+  """Test execute_sql tool for a statement the dry run leaves undestined.
+
+  A dry run that reports no destination shows nothing about where the statement
+  writes, so the protected write mode should fail every non-SELECT it leaves
+  undestined, whether that statement writes through other statements like a
+  script, a procedure call and an export, or writes to one table like an INSERT
+  and a DROP TABLE.
+  """
+  project = "my_project"
+  query_result = []
+  credentials = mock.create_autospec(Credentials, instance=True)
+  tool_settings = BigQueryToolConfig(write_mode=WriteMode.PROTECTED)
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+
+  with mock.patch.object(bigquery, "Client", autospec=True) as Client:
+    # The mock instance
+    bq_client = Client.return_value
+
+    # Simulate the result of the query API creating the BigQuery session
+    session_creator_job = mock.create_autospec(bigquery.QueryJob)
+    session_creator_job.session_info.session_id = "test-bq-session-id"
+    session_creator_job.destination.dataset_id = "_anonymous_dataset"
+
+    # Simulate the result of query API
+    query_job = mock.create_autospec(bigquery.QueryJob)
+    query_job.statement_type = statement_type
+    query_job.destination = None
+    bq_client.query.side_effect = (
+        lambda sql, **kwargs: session_creator_job
+        if sql == "SELECT 1"
+        else query_job
+    )
+
+    # Simulate the result of query_and_wait API
+    bq_client.query_and_wait.return_value = query_result
+
+    # Test the tool
+    result = query_tool.execute_sql(
+        project, query, credentials, tool_settings, tool_context
+    )
+
+    assert result == {
+        "status": "ERROR",
+        "error_details": (
+            "Protected write mode only supports SELECT statements, or write"
+            " operations in the anonymous dataset of a BigQuery session."
+        ),
+    }
+    bq_client.query_and_wait.assert_not_called()
 
 
 def test_validate_subquery_success():
@@ -1004,6 +1094,96 @@ def test_validate_subquery_exception_generic():
     )
     assert result["status"] == "ERROR"
     assert "Subquery dry run validation failed" in result["error_details"]
+
+
+def test_execute_sql_write_protected_ignores_session_info_in_state():
+  """Test protected write mode ignores BigQuery session info found in state."""
+  project = "my_project"
+  query = "CREATE TABLE my_dataset.my_table AS SELECT 123 AS num"
+  credentials = mock.create_autospec(Credentials, instance=True)
+  tool_settings = BigQueryToolConfig(write_mode=WriteMode.PROTECTED)
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+  tool_context.session = Session(
+      id="session-in-state", app_name="test_app", user_id="test_user"
+  )
+  # A BigQuery session and a dataset of the caller's choosing, written into the
+  # session state before the tool ran.
+  tool_context.state.get.return_value = ("other-bq-session-id", "my_dataset")
+
+  with mock.patch.object(bigquery, "Client", autospec=True) as Client:
+    bq_client = Client.return_value
+
+    # Simulate the result of the query API creating the BigQuery session
+    session_creator_job = mock.create_autospec(bigquery.QueryJob)
+    session_creator_job.session_info.session_id = "test-bq-session-id"
+    session_creator_job.destination.dataset_id = "_anonymous_dataset"
+
+    # Simulate the result of query API
+    query_job = mock.create_autospec(bigquery.QueryJob)
+    query_job.statement_type = "CREATE_AS_SELECT"
+    query_job.destination.dataset_id = "my_dataset"
+    bq_client.query.side_effect = (
+        lambda sql, **kwargs: session_creator_job
+        if sql == "SELECT 1"
+        else query_job
+    )
+
+    result = query_tool.execute_sql(
+        project, query, credentials, tool_settings, tool_context
+    )
+
+  # The write is compared against the anonymous dataset of the BigQuery session
+  # this invocation created, not the one named in the state.
+  assert result == {
+      "status": "ERROR",
+      "error_details": (
+          "Protected write mode only supports SELECT statements, or write"
+          " operations in the anonymous dataset of a BigQuery session."
+      ),
+  }
+
+
+def test_execute_sql_write_protected_reuses_bq_session_of_same_session():
+  """Test protected write mode reuses the BigQuery session of the session."""
+  project = "my_project"
+  query = "SELECT 123 AS num"
+  credentials = mock.create_autospec(Credentials, instance=True)
+  tool_settings = BigQueryToolConfig(write_mode=WriteMode.PROTECTED)
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+  tool_context.session = Session(
+      id="session-reused", app_name="test_app", user_id="test_user"
+  )
+
+  with mock.patch.object(bigquery, "Client", autospec=True) as Client:
+    bq_client = Client.return_value
+
+    session_creator_job = mock.create_autospec(bigquery.QueryJob)
+    session_creator_job.session_info.session_id = "test-bq-session-id"
+    session_creator_job.destination.dataset_id = "_anonymous_dataset"
+
+    query_job = mock.create_autospec(bigquery.QueryJob)
+    query_job.statement_type = "SELECT"
+    bq_client.query.side_effect = (
+        lambda sql, **kwargs: session_creator_job
+        if sql == "SELECT 1"
+        else query_job
+    )
+    bq_client.query_and_wait.return_value = []
+
+    query_tool.execute_sql(
+        project, query, credentials, tool_settings, tool_context
+    )
+    query_tool.execute_sql(
+        project, query, credentials, tool_settings, tool_context
+    )
+
+    # The BigQuery session is created once and reused by the second query.
+    assert bq_client.query.call_count == 3
+    for call_args in bq_client.query.call_args_list[1:]:
+      _, mock_kwargs = call_args
+      assert mock_kwargs["job_config"].connection_properties[0].value == (
+          "test-bq-session-id"
+      )
 
 
 def test_execute_sql_dry_run_true():

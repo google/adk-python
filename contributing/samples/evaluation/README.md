@@ -45,6 +45,7 @@ answer.
 | [`llm_judge_match`](./llm_judge_match/)           | LLM-judged semantic match                   | `final_response_match_v2`                                                    |
 | [`rubric_criteria`](./rubric_criteria/)           | LLM-judged quality via rubrics              | `rubric_based_final_response_quality_v1`, `rubric_based_tool_use_quality_v1` |
 | [`user_simulation`](./user_simulation/)           | Dynamically simulated user turns            | `hallucinations_v1`, `per_turn_user_simulator_quality_v1`                    |
+| [`efficiency_metrics`](./efficiency_metrics/)     | Always-on efficiency metrics                | `token_usage_v1`, `tool_call_count_v1`, `inference_call_count_v1`            |
 
 ## Graph
 

@@ -125,6 +125,7 @@ optional-dependencies.all = [
   "pillow>=10.3",
   "protobuf>=6",
   "pyarrow>=14",
+  "pymongo>=4.9,<5",
   "pypika>=0.50",
   "python-dateutil>=2.9.0.post0,<3",
   "redis>=4.2",
@@ -195,10 +196,10 @@ optional-dependencies.e2b = [
 ]
 optional-dependencies.eval = [
   "gepa>=0.1",
-  "google-cloud-aiplatform[evaluation]>=1.148",
+  "google-cloud-aiplatform[evaluation]>=1.148,<2",
   "google-cloud-texttospeech>=2.37",
-  "jinja2>=3.1.4,<4",                           # For eval template rendering
-  "nltk!=3.10.1",                               # Transitive via rouge-score; 3.10.1's import hook breaks any venv living inside the working directory (reverted upstream in nltk/nltk#3732).
+  "jinja2>=3.1.4,<4",                              # For eval template rendering
+  "nltk!=3.10.1",                                  # Transitive via rouge-score; 3.10.1's import hook breaks any venv living inside the working directory (reverted upstream in nltk/nltk#3732).
   "openpyxl>=3.1.5,<4",
   "pandas>=2.2.3",
   "rouge-score>=0.1.2",
@@ -264,9 +265,11 @@ optional-dependencies.mcp = [
   "anyio>=4.9,<5",
   "mcp>=1.24,<3",
 ]
+optional-dependencies.mongodb = [ "pymongo>=4.9,<5" ]
 optional-dependencies.oci = [
   "oci>=2.126", # OCI Generative AI native SDK (OCIGenAILlm)
 ]
+optional-dependencies.openai = [ "openai>=2.20,<3" ]
 optional-dependencies.otel-gcp = [
   "opentelemetry-instrumentation-google-genai>=0.7b1,<1",
   "opentelemetry-instrumentation-grpc>=0.43b0,<1",
@@ -396,8 +399,8 @@ known_third_party = [ "a2a", "google.adk" ]
 #   hel/serie/strin -> substrings in test fixtures; te -> local variable;
 #   rouge -> the ROUGE metric; unparseable -> valid spelling variant;
 #   re-use/re-used -> intentional hyphenation; lamda -> Google LaMDA project;
-#   astroid -> AST library used by pylint.
-ignore-words-list = "hel,serie,strin,te,rouge,unparseable,re-use,re-used,lamda,astroid"
+#   astroid -> AST library used by pylint; nin -> the MongoDB $nin operator.
+ignore-words-list = "hel,serie,strin,te,rouge,unparseable,re-use,re-used,lamda,astroid,nin"
 # CHANGELOG.md is generated from commit messages; lockfiles, notebooks, JSON
 # fixtures, bundled JS/source maps, and the vendored CLI browser bundle are
 # generated or data files, not prose we own.
