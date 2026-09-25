@@ -98,7 +98,7 @@ from google.adk.integrations.e2b import E2BEnvironment
 async def setup_custom_env(env: E2BEnvironment):
     # Install a specific version of pandas
     await env.execute("pip install pandas==2.2.0")
-    
+
     # Verify the installation
     result = await env.execute("python -c 'import pandas; print(pandas.__version__)'")
     print(f"Installed version: {result.stdout}")

@@ -379,7 +379,11 @@ class _DebugHttpxClientFactory:
       timeout: httpx.Timeout | None = None,
       auth: httpx.Auth | None = None,
   ) -> httpx.AsyncClient:
-    client = self._base_factory(headers=headers, timeout=timeout, auth=auth)
+    client = self._base_factory(
+        headers=headers,
+        timeout=None if timeout is None else httpx.PortableTimeout(timeout),
+        auth=auth,
+    )
     if hasattr(client, 'event_hooks') and isinstance(client.event_hooks, dict):
       client.event_hooks.setdefault('response', []).append(self._response_hook)
     return client
