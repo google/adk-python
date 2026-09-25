@@ -63,6 +63,7 @@ This release introduces advanced skill lifecycle management, expands database an
 
 ### Bug Fixes
 
+* accept a client factory written against either httpx major ([b726964](https://github.com/google/adk-python/commit/b7269649074507e9c8640135472cc1c9e5c09f57))
 * **agents:** accept the default hint in request_confirmation ([768969d](https://github.com/google/adk-python/commit/768969db14c0764dd72b04107d4fa25811772791))
 * **agents:** allow descriptionless BaseNode in LlmAgent tools ([6373f23](https://github.com/google/adk-python/commit/6373f232c79136b80fe196bde1b351ddde13f9f4))
 * **agents:** trigger after_agent_callback on cancellation ([37aa730](https://github.com/google/adk-python/commit/37aa7308bbcfd41a2eebee73f51e6f40a5448e78))
@@ -152,7 +153,6 @@ This release introduces advanced skill lifecycle management, expands database an
 * **sessions:** avoid runtime index drop and guard concurrent index creation ([cd6dee0](https://github.com/google/adk-python/commit/cd6dee0503f5d5495125e5b023e64230f8da4b7b))
 * **sessions:** disable pool reset on return for StaticPool in DatabaseSessionService ([8ff50af](https://github.com/google/adk-python/commit/8ff50af7f0135b758b84e1c6c4405443f3464f5a))
 * **sessions:** report the redacted database URL when migration cannot connect ([1579927](https://github.com/google/adk-python/commit/1579927e5eb95593d5b0a56f1e272fec1f9dc892))
-* **sessions:** restrict state schema validation bypass to recognized scope prefixes ([9f8db53](https://github.com/google/adk-python/commit/9f8db53fe278e65abb6a8366e80ff742ccc28f48))
 * **sessions:** stop get_user_state aliasing stored user state ([dd96b81](https://github.com/google/adk-python/commit/dd96b811ea1abd2febfac781ad4f4b43efd8e36f))
 * skip unreplayable function responses ([7dcfade](https://github.com/google/adk-python/commit/7dcfadedafc280c1c5e07ddf0a7b3fe30b00c107))
 * stop a re-emitted output echo from reordering the replay sequence ([4b819ab](https://github.com/google/adk-python/commit/4b819ab7f28c639cff79991a3ea095a16d715e81)), closes [#7027](https://github.com/google/adk-python/issues/7027)
