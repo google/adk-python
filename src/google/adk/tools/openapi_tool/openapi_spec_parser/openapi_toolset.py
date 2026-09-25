@@ -256,6 +256,10 @@ class OpenAPIToolset(BaseToolset):
     operations = parser.parse(openapi_spec_dict)
 
     tools: List[RestApiTool] = []
+    # operationIds that share a long common prefix collapse to the same
+    # truncated name (RestApiTool.__init__ caps it at 60 chars); disambiguate
+    # so each operation still gets its own callable tool.
+    name_counts: Dict[str, int] = {}
     for o in operations:
       tool = RestApiTool.from_parsed_operation(
           o,
@@ -263,6 +267,12 @@ class OpenAPIToolset(BaseToolset):
           header_provider=self._header_provider,
           httpx_client_factory=self._httpx_client_factory,
       )
+      if tool.name in name_counts:
+        name_counts[tool.name] += 1
+        suffix = f"_{name_counts[tool.name]}"
+        tool.name = tool.name[: 60 - len(suffix)] + suffix
+      else:
+        name_counts[tool.name] = 1
       logger.info("Parsed tool: %s", tool.name)
       tools.append(tool)
     return tools
