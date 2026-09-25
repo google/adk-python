@@ -50,6 +50,8 @@ from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.adk.tools.base_toolset import BaseToolset
+from google.adk.workflow._base_node import START
+from google.adk.workflow._workflow import Workflow
 from google.genai import types
 from opentelemetry import trace
 import pytest
@@ -1579,11 +1581,10 @@ class TestRunnerWithPlugins:
           raise
 
     toolset = SlowCloseToolset()
+    self.root_agent.tools = [toolset]
     runner = Runner(
         app_name="test_app",
-        agent=LlmAgent(
-            name="test_agent", model="gemini-1.5-pro", tools=[toolset]
-        ),
+        agent=self.root_agent,
         session_service=self.session_service,
         artifact_service=self.artifact_service,
     )
@@ -1598,6 +1599,122 @@ class TestRunnerWithPlugins:
     assert close_task.cancelled() is True
     assert toolset.close_cancelled is False
     assert toolset.close_finished.is_set()
+
+  @pytest.mark.asyncio
+  async def test_runner_close_closes_toolsets_in_workflow_with_llm_agent(self):
+    """LlmAgent inside a Workflow has its toolsets collected and closed by Runner.close()."""
+
+    class RecordingToolset(BaseToolset):
+
+      def __init__(self):
+        super().__init__()
+        self.closed = False
+
+      async def get_tools(self, readonly_context=None):
+        del readonly_context
+        return []
+
+      async def close(self) -> None:
+        self.closed = True
+
+    toolset = RecordingToolset()
+    mock_model = testing_utils.MockModel.create(responses=["hello"])
+    agent = LlmAgent(name="llm_agent", model=mock_model, tools=[toolset])
+    workflow = Workflow(name="wf", edges=[(START, agent)])
+    runner = Runner(
+        app_name="test_app",
+        agent=workflow,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+        auto_create_session=True,
+    )
+    async for _ in runner.run_async(
+        user_id="test_user",
+        session_id="test_session",
+        new_message=types.Content(role="user", parts=[types.Part(text="hi")]),
+    ):
+      pass
+
+    assert not toolset.closed
+    await runner.close()
+    assert toolset.closed
+
+  @pytest.mark.asyncio
+  async def test_runner_close_closes_toolsets_in_workflow_node(self):
+    """Workflow passed as root node has toolsets collected and closed by Runner.close()."""
+
+    class RecordingToolset(BaseToolset):
+
+      def __init__(self):
+        super().__init__()
+        self.closed = False
+
+      async def get_tools(self, readonly_context=None):
+        del readonly_context
+        return []
+
+      async def close(self) -> None:
+        self.closed = True
+
+    toolset = RecordingToolset()
+    mock_model = testing_utils.MockModel.create(responses=["hello"])
+    agent = LlmAgent(name="llm_agent", model=mock_model, tools=[toolset])
+    workflow = Workflow(name="wf", edges=[(START, agent)])
+    runner = Runner(
+        app_name="test_app",
+        node=workflow,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+        auto_create_session=True,
+    )
+    async for _ in runner.run_async(
+        user_id="test_user",
+        session_id="test_session",
+        new_message=types.Content(role="user", parts=[types.Part(text="hi")]),
+    ):
+      pass
+
+    assert not toolset.closed
+    await runner.close()
+    assert toolset.closed
+
+  @pytest.mark.asyncio
+  async def test_runner_close_closes_toolsets_in_workflow_parallel_worker(self):
+    """LlmAgent with parallel_worker=True in a Workflow has its toolsets closed."""
+
+    class RecordingToolset(BaseToolset):
+
+      def __init__(self):
+        super().__init__()
+        self.closed = False
+
+      async def get_tools(self, readonly_context=None):
+        del readonly_context
+        return []
+
+      async def close(self) -> None:
+        self.closed = True
+
+    toolset = RecordingToolset()
+    mock_model = testing_utils.MockModel.create(responses=["hello"])
+    agent = LlmAgent(
+        name="llm_agent",
+        model=mock_model,
+        tools=[toolset],
+        parallel_worker=True,
+    )
+    workflow = Workflow(name="wf", edges=[(START, agent)])
+    runner = Runner(
+        app_name="test_app",
+        agent=workflow,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+        auto_create_session=True,
+    )
+
+    assert not toolset.closed
+    await runner.close()
+    assert toolset.closed
 
   @pytest.mark.asyncio
   async def test_runner_passes_plugin_close_timeout(self):

@@ -26,6 +26,8 @@ from google.adk.agents.llm_agent import Agent
 from google.adk.agents.run_config import RunConfig
 from google.adk.agents.run_config import StreamingMode
 from google.adk.events.event import Event
+from google.adk.features._feature_registry import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
 from google.adk.flows.llm_flows.core import _model_call
 from google.adk.live.live_request_queue import LiveRequestQueue
@@ -145,6 +147,86 @@ async def test_apply_empty_response_policy_leaves_non_empty_response_untouched()
   _model_call.apply_empty_response_policy(ctx, response)
 
   assert response.error_code is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'streaming_mode', [StreamingMode.NONE, StreamingMode.SSE]
+)
+async def test_apply_empty_response_policy_marks_thought_only_stop(
+    streaming_mode: StreamingMode,
+):
+  agent = Agent(name='test_agent', tools=[])
+  ctx = await testing_utils.create_invocation_context(
+      agent=agent,
+      run_config=RunConfig(streaming_mode=streaming_mode),
+  )
+  response = LlmResponse(
+      content=types.Content(
+          role='model',
+          parts=[types.Part(text='thinking...', thought=True)],
+      ),
+      finish_reason=types.FinishReason.STOP,
+      partial=False,
+  )
+
+  _model_call.apply_empty_response_policy(ctx, response)
+
+  assert response.error_code == _model_call.NO_CONTENT_ERROR_CODE
+  assert (
+      response.error_message == _model_call.NO_MEANINGFUL_CONTENT_ERROR_MESSAGE
+  )
+
+
+@pytest.mark.asyncio
+async def test_apply_empty_response_policy_skips_thought_only_stop_when_progressive_sse_off():
+  agent = Agent(name='test_agent', tools=[])
+  ctx = await testing_utils.create_invocation_context(
+      agent=agent,
+      run_config=RunConfig(streaming_mode=StreamingMode.SSE),
+  )
+  response = LlmResponse(
+      content=types.Content(
+          role='model',
+          parts=[types.Part(text='thinking...', thought=True)],
+      ),
+      finish_reason=types.FinishReason.STOP,
+  )
+
+  with temporary_feature_override(FeatureName.PROGRESSIVE_SSE_STREAMING, False):
+    _model_call.apply_empty_response_policy(ctx, response)
+
+  assert response.error_code is None
+  assert response.error_message is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'streaming_mode', [StreamingMode.NONE, StreamingMode.SSE]
+)
+async def test_apply_empty_response_policy_marks_whitespace_only_stop(
+    streaming_mode: StreamingMode,
+):
+  agent = Agent(name='test_agent', tools=[])
+  ctx = await testing_utils.create_invocation_context(
+      agent=agent,
+      run_config=RunConfig(streaming_mode=streaming_mode),
+  )
+  response = LlmResponse(
+      content=types.Content(
+          role='model',
+          parts=[types.Part.from_text(text='   \n\t  ')],
+      ),
+      finish_reason=types.FinishReason.STOP,
+      partial=False,
+  )
+
+  _model_call.apply_empty_response_policy(ctx, response)
+
+  assert response.error_code == _model_call.NO_CONTENT_ERROR_CODE
+  assert (
+      response.error_message == _model_call.NO_MEANINGFUL_CONTENT_ERROR_MESSAGE
+  )
 
 
 # --- Tests for resolve_llm ---
