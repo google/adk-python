@@ -121,6 +121,60 @@ def test_database_session_service_enables_pool_pre_ping_by_default():
   assert captured_kwargs.get('pool_pre_ping') is True
 
 
+def test_database_session_service_disables_pool_reset_on_return_for_static_pool():
+  """StaticPool shares a single connection, so reset_on_return must be disabled."""
+  captured_kwargs = {}
+
+  def fake_create_async_engine(_db_url: str, **kwargs):
+    captured_kwargs.update(kwargs)
+    fake_engine = mock.Mock()
+    fake_engine.dialect.name = 'sqlite'
+    fake_engine.sync_engine = mock.Mock()
+    return fake_engine
+
+  with (
+      mock.patch.object(
+          database_session_service,
+          'create_async_engine',
+          side_effect=fake_create_async_engine,
+      ),
+      mock.patch.object(database_session_service.event, 'listen'),
+  ):
+    database_session_service.DatabaseSessionService(
+        'sqlite+aiosqlite:///:memory:'
+    )
+
+  assert captured_kwargs.get('poolclass') is StaticPool
+  assert captured_kwargs.get('pool_reset_on_return') is None
+
+
+def test_database_session_service_respects_custom_pool_reset_on_return_for_static_pool():
+  """Explicit pool_reset_on_return is respected even when StaticPool is used."""
+  captured_kwargs = {}
+
+  def fake_create_async_engine(_db_url: str, **kwargs):
+    captured_kwargs.update(kwargs)
+    fake_engine = mock.Mock()
+    fake_engine.dialect.name = 'sqlite'
+    fake_engine.sync_engine = mock.Mock()
+    return fake_engine
+
+  with (
+      mock.patch.object(
+          database_session_service,
+          'create_async_engine',
+          side_effect=fake_create_async_engine,
+      ),
+      mock.patch.object(database_session_service.event, 'listen'),
+  ):
+    database_session_service.DatabaseSessionService(
+        'sqlite+aiosqlite:///:memory:',
+        pool_reset_on_return='commit',
+    )
+
+  assert captured_kwargs.get('pool_reset_on_return') == 'commit'
+
+
 @pytest.mark.parametrize('decorator', [DynamicJSON, DynamicPickleType])
 def test_session_type_decorators_opt_into_statement_cache(decorator):
   """Session TypeDecorators must declare cache_ok to stay cacheable.
