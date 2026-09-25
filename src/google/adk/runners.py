@@ -2063,15 +2063,37 @@ class Runner:
           state_delta=state_delta,
       )
 
-  def _collect_toolset(self, agent: BaseAgent) -> set[BaseToolset]:
+  def _collect_toolset(
+      self, root: BaseNode, visited: set[int] | None = None
+  ) -> set[BaseToolset]:
+    if visited is None:
+      visited = set()
+    root_id = id(root)
+    if root_id in visited:
+      return set()
+    visited.add(root_id)
+
     toolsets: set[BaseToolset] = set()
-    if hasattr(agent, 'tools'):
-      for tool_union in agent.tools:
+    if hasattr(root, 'tools'):
+      for tool_union in getattr(root, 'tools', ()) or ():
         if isinstance(tool_union, BaseToolset):
           toolsets.add(tool_union)
-    if hasattr(agent, 'sub_agents'):
-      for sub_agent in agent.sub_agents:
-        toolsets.update(self._collect_toolset(sub_agent))
+    if hasattr(root, 'sub_agents'):
+      for sub_agent in getattr(root, 'sub_agents', ()) or ():
+        toolsets.update(self._collect_toolset(sub_agent, visited))
+    if hasattr(root, 'graph') and getattr(root, 'graph', None):
+      graph = getattr(root, 'graph')
+      nodes = getattr(graph, 'nodes', None)
+      if nodes:
+        node_iter = nodes.values() if isinstance(nodes, dict) else nodes
+        for node in node_iter:
+          toolsets.update(self._collect_toolset(node, visited))
+    if hasattr(root, '_node') and getattr(root, '_node', None):
+      toolsets.update(self._collect_toolset(getattr(root, '_node'), visited))
+    if hasattr(root, '_inner_node') and getattr(root, '_inner_node', None):
+      toolsets.update(
+          self._collect_toolset(getattr(root, '_inner_node'), visited)
+      )
     return toolsets
 
   async def _cleanup_toolsets(
@@ -2139,7 +2161,7 @@ class Runner:
     """Closes the runner."""
     logger.info('Closing runner...')
     # Close Toolsets
-    if isinstance(self.agent, BaseAgent):
+    if self.agent is not None:
       await self._cleanup_toolsets(self._collect_toolset(self.agent))
 
     # Close Plugins

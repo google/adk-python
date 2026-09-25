@@ -33,7 +33,9 @@ questions in the same session, and the agent will maintain context.
 ## Tools Used
 
 - `list_accessible_data_agents`: Lists Data Agents you have permission to
-  access in the configured GCP project.
+  access in the configured GCP project. Automatically fetches all pages by
+  default, or supports manual pagination via optional `page_size` and
+  `page_token` parameters.
 - `get_data_agent_info`: Retrieves details about a specific Data Agent given
   its full resource name.
 - `ask_data_agent`: Chats with a specific Data Agent using natural language.
