@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 from unittest.mock import create_autospec
 from unittest.mock import patch
 
@@ -38,6 +39,22 @@ MOCK_CONFIRMATION_FUNCTION_CALL_ID = "mock_confirmation_function_call_id"
 def mock_tool(param1: str):
   """Mock tool function."""
   return f"Mock tool result with {param1}"
+
+
+@pytest.mark.asyncio
+async def test_tool_confirmation_claim_is_atomic():
+  """Only one concurrent resume may claim a function call confirmation."""
+  agent = LlmAgent(name="test_agent")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  claims = await asyncio.gather(
+      invocation_context._consume_tool_confirmation(MOCK_FUNCTION_CALL_ID),
+      invocation_context._consume_tool_confirmation(MOCK_FUNCTION_CALL_ID),
+  )
+
+  assert sorted(claims) == [False, True]
 
 
 @pytest.mark.asyncio

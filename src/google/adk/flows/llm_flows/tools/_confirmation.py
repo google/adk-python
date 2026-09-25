@@ -299,20 +299,13 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
 
     # Step 2: Drop confirmations that have already been consumed.
     #
-    # This must happen BEFORE resolving targets. The processor re-runs on every
-    # LLM step of the invocation, and the approval stays the last user event for
-    # the rest of the turn, so a confirmation the previous step already acted on
-    # is seen again here. Re-validating consumed state is not just wasted work:
-    # the session and the toolset have moved on since the approval, so the
-    # strict checks in `_resolve_confirmation_targets` can now legitimately fail
-    # and abort the invocation.
+    # This must happen BEFORE resolving targets. Persisted event history is the
+    # durable source of truth when a later run rebuilds InvocationContext.
     confirmation_to_original_fc_id = _map_confirmation_to_original_fc_ids(
         events, set(confirmations_by_fc_id.keys())
     )
     responded_fc_ids: set[str] = set()
-    for event in reversed(events):
-      if event.author == "user":
-        break
+    for event in events:
       for function_response in event.get_function_responses():
         if function_response.id:
           responded_fc_ids.add(function_response.id)
@@ -361,6 +354,26 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
 
     if not tools_to_resume_with_confirmation:
       return
+
+    claimed_ids = {
+        function_call_id
+        for function_call_id in tools_to_resume_with_confirmation
+        if await invocation_context._consume_tool_confirmation(function_call_id)
+    }
+    if not claimed_ids:
+      return
+    tools_to_resume_with_confirmation = {
+        function_call_id: confirmation
+        for function_call_id, confirmation in (
+            tools_to_resume_with_confirmation.items()
+        )
+        if function_call_id in claimed_ids
+    }
+    tools_to_resume_with_args = {
+        function_call_id: function_call
+        for function_call_id, function_call in tools_to_resume_with_args.items()
+        if function_call_id in claimed_ids
+    }
 
     # Step 4: Re-execute the confirmed tools.
     from .. import functions
