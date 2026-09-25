@@ -293,20 +293,13 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
 
     # Step 2: Drop confirmations that have already been consumed.
     #
-    # This must happen BEFORE resolving targets. The processor re-runs on every
-    # LLM step of the invocation, and the approval stays the last user event for
-    # the rest of the turn, so a confirmation the previous step already acted on
-    # is seen again here. Re-validating consumed state is not just wasted work:
-    # the session and the toolset have moved on since the approval, so the
-    # strict checks in `_resolve_confirmation_targets` can now legitimately fail
-    # and abort the invocation.
+    # This must happen BEFORE resolving targets. Persisted event history is the
+    # durable source of truth when a later run rebuilds InvocationContext.
     confirmation_to_original_fc_id = _map_confirmation_to_original_fc_ids(
         events, set(confirmations_by_fc_id.keys())
     )
     responded_fc_ids: set[str] = set()
-    for event in reversed(events):
-      if event.author == "user":
-        break
+    for event in events:
       for function_response in event.get_function_responses():
         if function_response.id:
           responded_fc_ids.add(function_response.id)
@@ -356,9 +349,6 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
     if not tools_to_resume_with_confirmation:
       return
 
-    # Claim confirmations atomically before dispatch. Event-history dedup is
-    # useful for normal reruns, but cannot prevent two concurrent resume calls
-    # from both observing the same still-unresponded confirmation.
     claimed_ids = {
         function_call_id
         for function_call_id in tools_to_resume_with_confirmation
@@ -379,51 +369,17 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
         if function_call_id in claimed_ids
     }
 
-    # Step 4: Re-execute only confirmed tools. Denials are handled here at the
-    # framework boundary so custom BaseTool implementations cannot accidentally
-    # perform a side effect after the user declines confirmation.
+    # Step 4: Re-execute the confirmed tools.
     from .. import functions
 
-    denied_parts: list[types.Part] = []
-    confirmed_args: list[types.FunctionCall] = []
-    confirmed_ids: set[str] = set()
-    confirmed_tools: dict[str, ToolConfirmation] = {}
-    for function_call_id, function_call in tools_to_resume_with_args.items():
-      confirmation = tools_to_resume_with_confirmation[function_call_id]
-      if confirmation.confirmed:
-        confirmed_args.append(function_call)
-        confirmed_ids.add(function_call_id)
-        confirmed_tools[function_call_id] = confirmation
-      else:
-        denied_parts.append(
-            types.Part(
-                function_response=types.FunctionResponse(
-                    name=function_call.name,
-                    id=function_call_id,
-                    response={"error": "Tool execution not confirmed"},
-                )
-            )
-        )
-
-    if confirmed_args:
-      if function_response_event := await functions.handle_function_call_list_async(
-          invocation_context,
-          confirmed_args,
-          tools_dict,
-          confirmed_ids,
-          confirmed_tools,
-      ):
-        denied_parts.extend(function_response_event.content.parts)
-        yield function_response_event.model_copy(update={
-            "content": types.Content(parts=denied_parts)
-        })
-        return
-
-    if denied_parts:
-      yield Event(
-          author=invocation_context.agent.name if invocation_context.agent else "agent",
-          content=types.Content(parts=denied_parts),
-      )
+    if function_response_event := await functions.handle_function_call_list_async(
+        invocation_context,
+        list(tools_to_resume_with_args.values()),
+        tools_dict,
+        set(tools_to_resume_with_confirmation.keys()),
+        tools_to_resume_with_confirmation,
+    ):
+      yield function_response_event
     return
 
 
