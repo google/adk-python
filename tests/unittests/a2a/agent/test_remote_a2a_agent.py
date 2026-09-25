@@ -6581,6 +6581,7 @@ def _resume_events(
     responses,
     user_text=None,
     task_id="task-123",
+    relayed_by=None,
 ):
   """Builds the ``[pause_event, user_response_event]`` sequence seen on resume.
 
@@ -6592,6 +6593,8 @@ def _resume_events(
       which needs two responses in the same turn.
     user_text: optional sibling text part appended to the response event.
     task_id: value stamped into the pausing event's a2a metadata.
+    relayed_by: name of the remote agent whose own pause this is, relayed into
+      the caller's session; None for a pause raised by a local agent.
 
   Returns:
     ``[pause_event, user_response_event]``.
@@ -6602,16 +6605,19 @@ def _resume_events(
       )
       for name, cid in calls
   ]
+  call_metadata = {
+      A2A_METADATA_PREFIX + "task_id": task_id,
+      A2A_METADATA_PREFIX + "context_id": "context-123",
+  }
+  if relayed_by:
+    call_metadata[A2A_METADATA_PREFIX + "response"] = {"id": task_id}
   call_event = Event(
       invocation_id="inv-1",
-      author="agent",
+      author=relayed_by or "agent",
       id="e_call",
       content=genai_types.Content(role="model", parts=call_parts),
       long_running_tool_ids={cid for _, cid in calls if cid},
-      custom_metadata={
-          A2A_METADATA_PREFIX + "task_id": task_id,
-          A2A_METADATA_PREFIX + "context_id": "context-123",
-      },
+      custom_metadata=call_metadata,
   )
   response_parts = [
       genai_types.Part(
@@ -6769,6 +6775,88 @@ class TestHitlResumeRewrite:
     )
     assert parts
     assert "data" not in _kinds(parts)
+
+  @pytest.mark.parametrize(
+      ("name", "response"),
+      [
+          ("adk_request_confirmation", {"confirmed": True}),
+          ("adk_request_input", {"company_name": "Okta"}),
+      ],
+  )
+  def test_relayed_remote_pause_is_forwarded_as_function_response(
+      self, name, response
+  ):
+    """The answer to the remote agent's own pause resumes it, id intact."""
+    message = _make_agent()._create_a2a_request_for_user_function_response(  # pylint: disable=protected-access
+        _make_ctx(
+            _resume_events(
+                calls=[(name, "fc-1")],
+                responses=[(name, "fc-1", response)],
+                user_text="yes",
+                relayed_by="test_agent",
+            )
+        )
+    )
+    assert _kinds(message.parts) == ["data"]
+    assert _data(message.parts[0]).get("id") == "fc-1"
+    assert _data(message.parts[0]).get("response") == response
+    assert message.task_id == "task-123"
+
+  def test_pause_relayed_by_another_remote_agent_is_flattened(self):
+    """A pause another remote agent raised is not this agent's to resume."""
+    parts = _forwarded_parts(
+        _make_agent(),
+        _resume_events(
+            calls=[("adk_request_confirmation", "fc-1")],
+            responses=[
+                ("adk_request_confirmation", "fc-1", {"confirmed": True})
+            ],
+            relayed_by="other_agent",
+        ),
+    )
+    assert _kinds(parts) == ["text"]
+
+  def test_own_name_pause_without_a2a_response_is_flattened(self):
+    """A local pause under the agent's own name is not a relayed one."""
+    pause, answer = _resume_events(
+        calls=[("adk_request_confirmation", "fc-1")],
+        responses=[("adk_request_confirmation", "fc-1", {"confirmed": True})],
+    )
+    parts = _forwarded_parts(
+        _make_agent(),
+        [pause.model_copy(update={"author": "test_agent"}), answer],
+    )
+    assert _kinds(parts) == ["text"]
+
+  def test_relayed_mock_input_required_is_flattened(self):
+    """A call ADK synthesized for the remote agent is still answered as text."""
+    parts = _forwarded_parts(
+        _make_agent(),
+        _resume_events(
+            calls=[("mock_function_call_for_required_user_input", "fc-1")],
+            responses=[(
+                "mock_function_call_for_required_user_input",
+                "fc-1",
+                {"result": "Okta"},
+            )],
+            relayed_by="test_agent",
+        ),
+    )
+    assert _kinds(parts) == ["text"]
+    assert _text(parts[0]) == "Okta"
+
+  def test_relayed_credential_answer_is_dropped(self):
+    """A credential never reaches the remote agent, even for its own pause."""
+    message = _make_agent()._create_a2a_request_for_user_function_response(  # pylint: disable=protected-access
+        _make_ctx(
+            _resume_events(
+                calls=[("adk_request_credential", "fc-1")],
+                responses=[("adk_request_credential", "fc-1", _AUTH_PAYLOAD)],
+                relayed_by="test_agent",
+            )
+        )
+    )
+    assert message is None
 
   def test_real_long_running_tool_response_is_preserved(self):
     """A real remote long-running tool response is preserved id-for-id."""

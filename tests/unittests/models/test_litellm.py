@@ -2226,7 +2226,9 @@ def test_function_declaration_to_tool_param_response_schema_exceeds_max_length_b
       },
   )
 
-  with caplog.at_level(logging.DEBUG):
+  # Other tests (e.g. CLI tests via setup_adk_logger) may raise the
+  # "google_adk" logger level, so set it explicitly for this capture.
+  with caplog.at_level(logging.DEBUG, logger="google_adk"):
     result = _function_declaration_to_tool_param(func_decl)["function"][
         "description"
     ]
