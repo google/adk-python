@@ -256,7 +256,7 @@ class GoogleOidcVerifier:
       )
       if self._allowed_emails:
         if (
-            not claims.get("email_verified")
+            claims.get("email_verified") is not True
             or claims.get("email") not in self._allowed_emails
         ):
           raise HTTPException(
