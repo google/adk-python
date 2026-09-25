@@ -167,7 +167,7 @@ workflow = Workflow(
 
 Writing an undeclared key raises `StateSchemaError`, and so does writing a declared key with the wrong type. `StateSchemaError` is exported from `google.adk.sessions`; it subclasses `TypeError`, not `ValueError`.
 
-Keys prefixed `app:`, `user:` or `temp:` bypass the schema entirely, because those are scoped outside the workflow's own state. See [State](../../sessions/state/index.md).
+Any key containing `:` bypasses the schema entirely: `app:`, `user:` and `temp:` are scoped outside the workflow's own state, and ADK keeps its own state under `<owner>:<key>` names. A typo in a scope prefix is therefore not caught. See [State](../../sessions/state/index.md).
 
 A child node inherits its parent's schema through the `Context` unless it declares one of its own, so setting the schema on the enclosing `Workflow` covers the whole graph.
 
