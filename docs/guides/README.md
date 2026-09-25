@@ -46,6 +46,7 @@ This directory contains specific developer guides for the ADK Python implementat
 ### Evaluation
 * [AgentEvaluator](evaluation/agent_evaluator/index.md) - Measuring agent quality from inside a pytest suite by replaying recorded conversations and scoring each answer and tool call.
 * [BaseEvalService and LocalEvalService](evaluation/eval_service/index.md) - Running evaluations that return results as data rather than as a test that passed or failed.
+* [Efficiency metrics](evaluation/efficiency_evaluators/index.md) - Reference-free metrics reporting what a run consumed: tool calls, model calls and tokens.
 * [EvalConfig and the eval config file](evaluation/eval_config/index.md) - The schema of the file that says which metrics score a run and how strict each one is.
 * [Evaluator](evaluation/evaluator/index.md) - The interface behind the built-in metrics, and how to score a rule that is specific to your agent.
 

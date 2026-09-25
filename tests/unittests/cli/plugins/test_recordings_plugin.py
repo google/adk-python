@@ -12,15 +12,35 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for what the recordings plugin writes to the recording file."""
+"""Tests for the conformance recordings plugin."""
+
+from pathlib import Path
+from unittest import mock
 
 from google.adk.agents.callback_context import CallbackContext
+from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.cli.plugins.recordings_plugin import RecordingsPlugin
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
+import pytest
 
 from ... import testing_utils
+
+_AGENT_NAME = 'recording_test_agent'
+
+
+async def _make_invocation_context(test_case_dir: Path) -> InvocationContext:
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=LlmAgent(name=_AGENT_NAME)
+  )
+  invocation_context.session.state['_adk_recordings_config'] = {
+      'dir': str(test_case_dir),
+      'user_message_index': 0,
+      'streaming_mode': 'none',
+  }
+  return invocation_context
 
 
 async def test_after_run_omits_http_options_from_the_recording_file(tmp_path):
@@ -76,9 +96,51 @@ async def test_after_run_omits_http_options_from_the_recording_file(tmp_path):
   assert 'test-bearer-token' not in written
   assert 'test-signature' not in written
   assert 'test-extra-body-key' not in written
-  # after_run_callback swallows write failures, so confirm the recording was
-  # written at all and that only http_options was dropped from the config.
+  # Confirm that only http_options was dropped from the config.
   assert 'fake-model' in written
   assert 'roll a die' in written
   assert 'rolled a 4' in written
   assert 'temperature: 0.5' in written
+
+
+@pytest.mark.asyncio
+async def test_recordings_are_saved_on_run_completion(tmp_path: Path):
+  invocation_context = await _make_invocation_context(tmp_path)
+  plugin = RecordingsPlugin()
+
+  await plugin.before_run_callback(invocation_context=invocation_context)
+  await plugin.after_run_callback(invocation_context=invocation_context)
+
+  assert (tmp_path / 'generated-recordings.yaml').exists()
+  assert not plugin._invocation_states
+
+
+@pytest.mark.asyncio
+async def test_failure_to_save_recordings_is_surfaced(tmp_path: Path):
+  invocation_context = await _make_invocation_context(tmp_path)
+  plugin = RecordingsPlugin()
+
+  await plugin.before_run_callback(invocation_context=invocation_context)
+
+  with mock.patch(
+      'google.adk.cli.plugins.recordings_plugin.dump_pydantic_to_yaml',
+      autospec=True,
+      side_effect=OSError('disk is full'),
+  ):
+    with pytest.raises(OSError, match='disk is full'):
+      await plugin.after_run_callback(invocation_context=invocation_context)
+
+  # The per-invocation state is still cleaned up.
+  assert not plugin._invocation_states
+
+
+@pytest.mark.asyncio
+async def test_unsupported_streaming_mode_is_surfaced(tmp_path: Path):
+  invocation_context = await _make_invocation_context(tmp_path)
+  plugin = RecordingsPlugin()
+
+  await plugin.before_run_callback(invocation_context=invocation_context)
+  plugin._streaming_mode = 'bidi'
+
+  with pytest.raises(ValueError, match='Unsupported streaming mode'):
+    await plugin.after_run_callback(invocation_context=invocation_context)

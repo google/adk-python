@@ -12,11 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for ConformanceTestRunner in cli_test.py."""
+"""Tests for cli_test.py."""
 
+from typing import Optional
 from unittest.mock import MagicMock
 
+import click
+from click.testing import CliRunner
 from google.adk.agents.run_config import StreamingMode
+from google.adk.cli.conformance.cli_test import _ConformanceTestSummary
+from google.adk.cli.conformance.cli_test import _print_test_summary
+from google.adk.cli.conformance.cli_test import _TestResult
 from google.adk.cli.conformance.cli_test import ConformanceTestRunner
 from google.adk.cli.conformance.test_case import TestCase
 from google.adk.cli.conformance.test_case import TestSpec
@@ -259,3 +265,115 @@ async def test_run_user_messages_sse_ignores_partial_event_transient_id():
       captured_requests[1].new_message.parts[0].function_response.id
       == "final-id"
   )
+
+
+def _summary(
+    streaming_mode: StreamingMode, passed: int, failed: int
+) -> _ConformanceTestSummary:
+  results = [
+      _TestResult(category="cat", name=f"passing_{i}", success=True)
+      for i in range(passed)
+  ] + [
+      _TestResult(
+          category="cat",
+          name=f"failing_{i}",
+          success=False,
+          error_message="event mismatch",
+      )
+      for i in range(failed)
+  ]
+  return _ConformanceTestSummary(
+      total_tests=len(results),
+      passed_tests=passed,
+      failed_tests=failed,
+      results=results,
+      streaming_mode=streaming_mode,
+  )
+
+
+def _run(
+    summaries: list[_ConformanceTestSummary],
+    selected_streaming_mode: Optional[StreamingMode] = None,
+):
+  @click.command()
+  def _command():
+    _print_test_summary(summaries, selected_streaming_mode)
+
+  return CliRunner().invoke(_command)
+
+
+def test_summary_reports_every_streaming_mode_when_first_mode_has_no_tests():
+  result = _run([
+      _summary(StreamingMode.NONE, passed=0, failed=0),
+      _summary(StreamingMode.SSE, passed=1, failed=2),
+  ])
+
+  assert "STREAMING MODE: StreamingMode.SSE" in result.output
+  assert "Total tests: 3" in result.output
+  assert result.exit_code != 0
+  assert (
+      "2 test(s) failed for streaming mode StreamingMode.SSE" in result.output
+  )
+
+
+def test_summary_reports_every_streaming_mode_when_first_mode_fails():
+  result = _run([
+      _summary(StreamingMode.NONE, passed=0, failed=1),
+      _summary(StreamingMode.SSE, passed=2, failed=0),
+  ])
+
+  assert "STREAMING MODE: StreamingMode.NONE" in result.output
+  assert "STREAMING MODE: StreamingMode.SSE" in result.output
+  assert result.exit_code != 0
+  assert "1 test(s) failed for streaming mode StreamingMode.NONE" in (
+      result.output
+  )
+
+
+def test_summary_fails_when_no_test_cases_were_discovered():
+  result = _run([_summary(StreamingMode.NONE, passed=0, failed=0)])
+
+  assert result.exit_code != 0
+  assert "No test cases were found for streaming mode StreamingMode.NONE" in (
+      result.output
+  )
+
+
+def test_summary_fails_when_there_is_nothing_to_summarize():
+  result = _run([])
+
+  assert result.exit_code != 0
+  assert "No conformance tests were run" in result.output
+
+
+def test_summary_ignores_an_unrecorded_streaming_mode():
+  result = _run([
+      _summary(StreamingMode.NONE, passed=2, failed=0),
+      _summary(StreamingMode.SSE, passed=0, failed=0),
+  ])
+
+  assert result.exit_code == 0
+  assert "No tests were run." in result.output
+  assert "No test cases were found" not in result.output
+
+
+def test_summary_fails_when_the_requested_streaming_mode_has_no_tests():
+  result = _run(
+      [_summary(StreamingMode.SSE, passed=0, failed=0)],
+      selected_streaming_mode=StreamingMode.SSE,
+  )
+
+  assert result.exit_code != 0
+  assert "No test cases were found for streaming mode StreamingMode.SSE" in (
+      result.output
+  )
+
+
+def test_summary_succeeds_when_every_streaming_mode_passes():
+  result = _run([
+      _summary(StreamingMode.NONE, passed=2, failed=0),
+      _summary(StreamingMode.SSE, passed=3, failed=0),
+  ])
+
+  assert result.exit_code == 0
+  assert result.output.count("All tests passed!") == 2

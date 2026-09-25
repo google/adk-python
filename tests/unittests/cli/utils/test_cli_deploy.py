@@ -144,10 +144,11 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             "rag://m",
             None,
-            (
-                "--session_service_uri=sqlite://s --artifact_service_uri=gs://a"
-                " --memory_service_uri=rag://m"
-            ),
+            [
+                "--session_service_uri=sqlite://s",
+                "--artifact_service_uri=gs://a",
+                "--memory_service_uri=rag://m",
+            ],
         ),
         (
             "1.2.5",
@@ -155,10 +156,11 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             "rag://m",
             None,
-            (
-                "--session_service_uri=sqlite://s --artifact_service_uri=gs://a"
-                " --memory_service_uri=rag://m"
-            ),
+            [
+                "--session_service_uri=sqlite://s",
+                "--artifact_service_uri=gs://a",
+                "--memory_service_uri=rag://m",
+            ],
         ),
         (
             "0.5.0",
@@ -166,10 +168,11 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             "rag://m",
             None,
-            (
-                "--session_service_uri=sqlite://s --artifact_service_uri=gs://a"
-                " --memory_service_uri=rag://m"
-            ),
+            [
+                "--session_service_uri=sqlite://s",
+                "--artifact_service_uri=gs://a",
+                "--memory_service_uri=rag://m",
+            ],
         ),
         (
             "1.3.0",
@@ -177,7 +180,7 @@ def test_resolve_project_from_gcloud_fails(
             None,
             None,
             None,
-            "--session_service_uri=sqlite://s",
+            ["--session_service_uri=sqlite://s"],
         ),
         (
             "1.3.0",
@@ -185,7 +188,7 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             "rag://m",
             None,
-            "--artifact_service_uri=gs://a --memory_service_uri=rag://m",
+            ["--artifact_service_uri=gs://a", "--memory_service_uri=rag://m"],
         ),
         (
             "1.2.0",
@@ -193,7 +196,7 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             None,
             None,
-            "--artifact_service_uri=gs://a",
+            ["--artifact_service_uri=gs://a"],
         ),
         (
             "1.21.0",
@@ -201,7 +204,7 @@ def test_resolve_project_from_gcloud_fails(
             None,
             None,
             False,
-            "--no_use_local_storage",
+            ["--no_use_local_storage"],
         ),
         (
             "1.21.0",
@@ -209,7 +212,7 @@ def test_resolve_project_from_gcloud_fails(
             None,
             None,
             True,
-            "--use_local_storage",
+            ["--use_local_storage"],
         ),
         (
             "1.21.0",
@@ -217,27 +220,40 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             None,
             False,
-            "--session_service_uri=sqlite://s --artifact_service_uri=gs://a",
+            [
+                "--session_service_uri=sqlite://s",
+                "--artifact_service_uri=gs://a",
+            ],
+        ),
+        # A value containing a space stays one argv entry; joining into a
+        # single string would have word split it into two flags.
+        (
+            "1.3.0",
+            "sqlite:///tmp/my sessions.db",
+            None,
+            None,
+            None,
+            ["--session_service_uri=sqlite:///tmp/my sessions.db"],
         ),
     ],
 )
-def test_get_service_option_by_adk_version(
+def test_get_service_options_by_adk_version(
     adk_version: str,
     session_uri: str | None,
     artifact_uri: str | None,
     memory_uri: str | None,
     use_local_storage: bool | None,
-    expected: str,
+    expected: list[str],
 ) -> None:
   """It should return the correct service URI flags for a given ADK version."""
-  actual = cli_deploy._get_service_option_by_adk_version(
+  actual = cli_deploy._get_service_options_by_adk_version(
       adk_version=adk_version,
       session_uri=session_uri,
       artifact_uri=artifact_uri,
       memory_uri=memory_uri,
       use_local_storage=use_local_storage,
   )
-  assert actual.rstrip() == expected.rstrip()
+  assert actual == expected
 
 
 def test_print_agent_engine_url() -> None:
@@ -403,8 +419,13 @@ def test_to_gke_happy_path(
   dockerfile_path = tmp_path / "Dockerfile"
   assert dockerfile_path.is_file()
   dockerfile_content = dockerfile_path.read_text()
-  assert "CMD adk api_server --with_ui --port=9090" in dockerfile_content
-  assert 'RUN pip install "google-adk[a2a]==1.2.0"' in dockerfile_content
+  assert (
+      'CMD ["adk", "api_server", "--with_ui", "--port=9090"'
+      in dockerfile_content
+  )
+  assert (
+      'RUN ["pip", "install", "google-adk[a2a]==1.2.0"]' in dockerfile_content
+  )
 
   assert len(run_recorder.calls) == 3, "Expected 3 subprocess calls"
 
