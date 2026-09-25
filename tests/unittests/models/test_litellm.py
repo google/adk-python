@@ -5649,6 +5649,52 @@ async def test_generate_content_async_stream_with_only_finish_reason(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "finish_reason", ["stop", "tool_calls", "function_call", None]
+)
+async def test_generate_content_async_stream_with_only_stop_finish_reason(
+    mock_completion, lite_llm_instance, finish_reason
+):
+  """A stream with a STOP-mapped finish_reason and no content yields a terminal response."""
+  mock_completion.return_value = iter([
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(finish_reason=finish_reason, delta=Delta())
+          ],
+          usage={
+              "prompt_tokens": 5,
+              "completion_tokens": 0,
+              "total_tokens": 5,
+          },
+      ),
+  ])
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          llm_request, stream=True
+      )
+  ]
+
+  assert len(responses) == 1
+  assert responses[0].content.parts == []
+  assert responses[0].partial is False
+  assert responses[0].finish_reason == types.FinishReason.STOP
+  assert responses[0].error_code is None
+  assert responses[0].usage_metadata.prompt_token_count == 5
+  assert responses[0].usage_metadata.total_token_count == 5
+
+
+@pytest.mark.asyncio
 async def test_generate_content_async_stream_with_reasoning_tokens(
     mock_completion, lite_llm_instance
 ):
