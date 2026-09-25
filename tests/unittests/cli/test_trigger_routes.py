@@ -545,6 +545,33 @@ class TestTriggerOidcVerification:
     assert resp.status_code == 403
 
   @pytest.mark.parametrize("endpoint,payload", _TRIGGER_ENDPOINTS_AND_PAYLOADS)
+  @pytest.mark.parametrize("email_verified", ["false", "true", 1])
+  def test_rejects_non_boolean_email_verified(
+      self, client_oidc_emails, monkeypatch, endpoint, payload, email_verified
+  ):
+    """The claim must be the boolean True; a truthy non-boolean is not verified."""
+
+    def _ok(token, request, audience):
+      return {
+          "aud": audience,
+          "email": "allowed@project.iam",
+          "email_verified": email_verified,
+      }
+
+    monkeypatch.setattr(
+        trigger_routes_module.google_id_token,
+        "verify_oauth2_token",
+        _ok,
+    )
+    resp = client_oidc_emails.post(
+        endpoint,
+        json=payload,
+        headers={"Authorization": "Bearer some.jwt.value"},
+    )
+    assert resp.status_code == 403
+    assert "Untrusted token principal" in resp.json()["detail"]
+
+  @pytest.mark.parametrize("endpoint,payload", _TRIGGER_ENDPOINTS_AND_PAYLOADS)
   def test_accepts_allowed_email(
       self, client_oidc_emails, monkeypatch, endpoint, payload
   ):
