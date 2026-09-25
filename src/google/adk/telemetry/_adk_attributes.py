@@ -26,7 +26,6 @@ renamed, restructured, or removed in any release.
 from __future__ import annotations
 
 ADK_EXPERIMENTAL_SKILL_NAME = 'adk.experimental.skill.name'
-ADK_EXPERIMENTAL_SKILL_SOURCE_TYPE = 'adk.experimental.skill.source.type'
 ADK_EXPERIMENTAL_SKILL_DESCRIPTION = 'adk.experimental.skill.description'
 ADK_EXPERIMENTAL_SKILL_ADDITIONAL_TOOLS = (
     'adk.experimental.skill.additional_tools'

@@ -20,6 +20,7 @@ import base64
 import collections.abc
 import enum
 from functools import cached_property
+from functools import partial
 import json
 import logging
 import os
@@ -29,6 +30,7 @@ from typing import Generator
 from typing import Optional
 from typing import TYPE_CHECKING
 import warnings
+import weakref
 
 from google.adk import version as adk_version
 from google.genai import types
@@ -37,6 +39,8 @@ import tenacity
 from typing_extensions import override
 
 from ..utils import _json_utils
+from ..utils import streaming_utils
+from ..utils._event_loop_cache import PerLoopCachedProperty
 from ..utils.env_utils import is_enterprise_mode_enabled
 from .google_llm import Gemini
 from .llm_response import LlmResponse
@@ -276,7 +280,7 @@ class ApigeeLlm(Gemini):
           await self._adapt_computer_use_tool(llm_request)
     self._maybe_append_user_content(llm_request)
 
-  @cached_property
+  @PerLoopCachedProperty
   def api_client(self) -> Client:
     """Provides the api client.
 
@@ -477,6 +481,11 @@ def _validate_model_string(model: str) -> bool:
   return False
 
 
+# Keeps a strong reference to fire-and-forget cleanup tasks so they are not
+# garbage collected before they finish (see CompletionsHTTPClient._cleanup_client).
+_CLEANUP_TASKS: set[asyncio.Task[None]] = set()
+
+
 class CompletionsHTTPClient:
   """A generic HTTP client for completions, compatible with OpenAI API."""
 
@@ -502,17 +511,29 @@ class CompletionsHTTPClient:
         timeout=_httpx_timeout(),
         follow_redirects=False,
     )
-    atexit.register(self._cleanup_client, client)
+    # Register with a weakref.proxy so the atexit registry does not keep the
+    # client (and its connection pool) alive for the whole process. Keep the
+    # bound callback per instance so close()/aclose() can unregister just this
+    # client's handler without affecting other CompletionsHTTPClient instances.
+    self._atexit_callback = partial(self._cleanup_client, weakref.proxy(client))
+    atexit.register(self._atexit_callback)
     return client
 
   @staticmethod
   def _cleanup_client(client: httpx.AsyncClient) -> None:
     """Cleans up the httpx client."""
-    if client.is_closed:
+    try:
+      if client.is_closed:
+        return
+    except ReferenceError:
+      # The client was already garbage collected via its weakref.proxy.
       return
     try:
       loop = asyncio.get_running_loop()
-      loop.create_task(client.aclose())
+      task = loop.create_task(client.aclose())
+      # Retain a reference so the task is not garbage collected while pending.
+      _CLEANUP_TASKS.add(task)
+      task.add_done_callback(_CLEANUP_TASKS.discard)
     except RuntimeError:
       try:
         # This fails if asyncio.run is already called in main and is closing.
@@ -524,10 +545,12 @@ class CompletionsHTTPClient:
     if '_client' not in self.__dict__:
       return
     self._cleanup_client(self._client)
+    atexit.unregister(self._atexit_callback)
 
   async def aclose(self) -> None:
     if '_client' not in self.__dict__:
       return
+    atexit.unregister(self._atexit_callback)
     if self._client.is_closed:
       return
     await self._client.aclose()
@@ -984,6 +1007,8 @@ class ChatCompletionsResponseHandler:
   def __init__(self) -> None:
     self.content_parts = ''
     self.tool_call_parts: dict[int, types.Part] = {}
+    self._tool_call_deltas: dict[int, list[str]] = {}
+    self._tool_call_trackers: dict[int, streaming_utils._JsonPathTracker] = {}
     self.role = ''
     self.streaming_complete = False
     self.model = ''
@@ -1197,7 +1222,7 @@ class ChatCompletionsResponseHandler:
     """
     parts = []
     for tool_call in delta.get('tool_calls', []):
-      chunk_part = self._upsert_tool_call(tool_call)
+      chunk_part = self._upsert_tool_call(tool_call, is_streaming=True)
       parts.append(chunk_part)
     merged_content = self._accumulate_content(delta)
     if merged_content:
@@ -1245,10 +1270,43 @@ class ChatCompletionsResponseHandler:
       parts.append(types.Part.from_text(text=self.content_parts))
     sorted_indices = sorted(self.tool_call_parts.keys())
     for index in sorted_indices:
-      parts.append(self.tool_call_parts[index])
+      part = self.tool_call_parts[index]
+      if part.function_call and not part.function_call.args:
+        accumulated_args = ''.join(self._tool_call_deltas.get(index, []))
+        if accumulated_args:
+          try:
+            part.function_call.args = _json_utils.safe_json_loads(
+                accumulated_args,
+                context=f'tool call arguments: {accumulated_args}',
+            )
+          except ValueError:
+            # Fallback: try parsing individual deltas and merging them
+            deltas = self._tool_call_deltas.get(index, [])
+            merged_args = {}
+            for delta in deltas:
+              if not delta.strip():
+                continue
+              try:
+                parsed_delta = _json_utils.safe_json_loads(
+                    delta, context=f'tool call arguments: {delta}'
+                )
+                if isinstance(parsed_delta, dict):
+                  merged_args.update(parsed_delta)
+                else:
+                  logger.warning('Parsed delta is not a dict: %s', parsed_delta)
+              except ValueError:
+                logger.warning(
+                    'Failed to parse individual delta as JSON: %s', delta
+                )
+            if not merged_args:
+              raise
+            part.function_call.args = merged_args
+      parts.append(part)
     return parts
 
-  def _upsert_tool_call(self, tool_call: dict[str, Any]) -> types.Part:
+  def _upsert_tool_call(
+      self, tool_call: dict[str, Any], is_streaming: bool = False
+  ) -> types.Part:
     """Upserts a tool call into the accumulated tool call parts.
 
     This method handles partial tool call chunks in streaming responses by
@@ -1257,6 +1315,7 @@ class ChatCompletionsResponseHandler:
     Args:
       tool_call: A dictionary representing a tool call or a delta of a tool call
         from the chat completions API.
+      is_streaming: Whether this is a streaming response chunk.
 
     Returns:
       A `types.Part` object representing the updated or newly created tool call.
@@ -1285,24 +1344,35 @@ class ChatCompletionsResponseHandler:
       )
     func = tool_call.get('function', {})
     args_delta = func.get('arguments', '')
-    if args_delta:
-      args = _json_utils.safe_json_loads(
-          args_delta, context=f'tool call arguments: {args_delta}'
-      )
-      chunk_function_call.args = args
-      if not function_call.args:
-        function_call.args = dict(args)
-      else:
-        function_call.args.update(args)
+    if is_streaming:
+      chunk_function_call.will_continue = True
+      if args_delta:
+        self._tool_call_deltas.setdefault(index, []).append(args_delta)
+        tracker = self._tool_call_trackers.setdefault(
+            index, streaming_utils._JsonPathTracker()
+        )
+        partial_args = tracker.handle_chunk(args_delta)
+        chunk_function_call.partial_args = partial_args or None
+    else:
+      if args_delta:
+        args = _json_utils.safe_json_loads(
+            args_delta, context=f'tool call arguments: {args_delta}'
+        )
+        chunk_function_call.args = args
+        if not function_call.args:
+          function_call.args = dict(args)
+        else:
+          function_call.args.update(args)
 
     func_name = func.get('name')
     if func_name:
       function_call.name = func_name
-      chunk_function_call.name = func_name
     tool_call_id = tool_call.get('id')
     if tool_call_id:
       function_call.id = tool_call_id
-      chunk_function_call.id = tool_call_id
+
+    chunk_function_call.id = function_call.id
+    chunk_function_call.name = function_call.name
 
     # Add support for gemini's thought_signature.
     thought_signature = (

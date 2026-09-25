@@ -255,3 +255,197 @@ async def test_non_none_condition_continues_after_none():
 
   assert result == {}
   assert calls == ['none', 'empty']
+
+
+@pytest.mark.asyncio
+async def test_callback_adapts_keyword_args_to_positional_params():
+  """Callbacks with positional param names accept keyword arguments."""
+
+  def callback(ctx: str, resp: str) -> str:
+    return f'{ctx}:{resp}'
+
+  result = await _run_callbacks(
+      [callback],
+      _stop_on_truthy,
+      callback_context='context_val',
+      llm_response='response_val',
+  )
+
+  assert result == 'context_val:response_val'
+
+
+@pytest.mark.asyncio
+async def test_async_callback_adapts_keyword_args_to_positional_params():
+  """Async callbacks with positional param names accept keyword arguments."""
+
+  async def callback(a: str, b: str) -> str:
+    return f'{a}:{b}'
+
+  result = await _run_callbacks(
+      [callback],
+      _stop_on_truthy,
+      callback_context='arg_a',
+      llm_response='arg_b',
+  )
+
+  assert result == 'arg_a:arg_b'
+
+
+@pytest.mark.asyncio
+async def test_lambda_callback_adapts_keyword_args():
+  """Lambda callbacks with non-matching param names accept keyword arguments."""
+  callback = lambda c, r: f'lambda_{c}_{r}'
+
+  result = await _run_callbacks(
+      [callback],
+      _stop_on_truthy,
+      callback_context='c1',
+      llm_response='r1',
+  )
+
+  assert result == 'lambda_c1_r1'
+
+
+@pytest.mark.asyncio
+async def test_callback_with_body_type_error_is_not_masked():
+  """A TypeError raised inside the callback body is preserved."""
+
+  def callback(ctx: str, resp: str) -> None:
+    raise TypeError('error inside callback body')
+
+  with pytest.raises(TypeError, match='error inside callback body'):
+    await _run_callbacks(
+        [callback],
+        _stop_on_truthy,
+        callback_context='ctx',
+        llm_response='resp',
+    )
+
+
+@pytest.mark.asyncio
+async def test_callback_with_reordered_kwargs_maintains_canonical_order():
+  """Reordering kwargs at call site still binds positional parameters in canonical order."""
+  callback = lambda ctx, resp: f'{ctx}:{resp}'
+
+  result = await _run_callbacks(
+      [callback],
+      _stop_on_truthy,
+      llm_response='resp_val',
+      callback_context='ctx_val',
+  )
+
+  assert result == 'ctx_val:resp_val'
+
+
+@pytest.mark.asyncio
+async def test_callback_with_callback_kwarg_does_not_collide():
+  """A kwarg named 'callback' does not collide with _callback parameter."""
+  callback = lambda c, cb: f'{c}:{cb}'
+
+  result = await _run_callbacks(
+      [callback],
+      _stop_on_truthy,
+      callback_context='ctx_val',
+      callback='custom_callback',
+  )
+
+  assert result == 'ctx_val:custom_callback'
+
+
+@pytest.mark.asyncio
+async def test_callback_with_incompatible_signature_raises_type_error():
+  """When both keyword and positional binding fail, original TypeError is raised."""
+
+  def callback(a: str, b: str, c: str, d: str) -> None:
+    pass
+
+  with pytest.raises(TypeError):
+    await _run_callbacks(
+        [callback],
+        _stop_on_truthy,
+        callback_context='ctx',
+        llm_response='resp',
+    )
+
+
+@pytest.mark.asyncio
+async def test_before_tool_callback_with_reordered_kwargs_maintains_canonical_order():
+  """Tool callbacks receive (tool, args, tool_context) in canonical order even if kwargs are reordered."""
+  callback = lambda t, a, tc: f'{t}:{a}:{tc}'
+
+  result = await _run_callbacks(
+      [callback],
+      _stop_on_non_none,
+      tool_context='ctx_val',
+      args='args_val',
+      tool='tool_val',
+  )
+
+  assert result == 'tool_val:args_val:ctx_val'
+
+
+@pytest.mark.asyncio
+async def test_after_tool_callback_with_reordered_kwargs_maintains_canonical_order():
+  """After-tool callbacks receive (tool, args, tool_context, response) in canonical order."""
+  callback = lambda t, a, tc, r: f'{t}:{a}:{tc}:{r}'
+
+  result = await _run_callbacks(
+      [callback],
+      _stop_on_non_none,
+      response='resp_val',
+      tool_context='ctx_val',
+      args='args_val',
+      tool='tool_val',
+  )
+
+  assert result == 'tool_val:args_val:ctx_val:resp_val'
+
+
+@pytest.mark.asyncio
+async def test_after_tool_callback_with_tool_response_kwarg_maintains_canonical_order():
+  """After-tool callbacks with tool_response kwarg receive parameters in canonical order."""
+  callback = lambda t, a, tc, tr: f'{t}:{a}:{tc}:{tr}'
+
+  result = await _run_callbacks(
+      [callback],
+      _stop_on_non_none,
+      tool_response='tr_val',
+      tool_context='ctx_val',
+      args='args_val',
+      tool='tool_val',
+  )
+
+  assert result == 'tool_val:args_val:ctx_val:tr_val'
+
+
+@pytest.mark.asyncio
+async def test_on_tool_error_callback_with_reordered_kwargs_maintains_canonical_order():
+  """Tool error callbacks receive (tool, args, tool_context, error) in canonical order."""
+  callback = lambda t, a, tc, err: f'{t}:{a}:{tc}:{err}'
+
+  result = await _run_callbacks(
+      [callback],
+      _stop_on_non_none,
+      error='err_val',
+      tool_context='ctx_val',
+      args='args_val',
+      tool='tool_val',
+  )
+
+  assert result == 'tool_val:args_val:ctx_val:err_val'
+
+
+@pytest.mark.asyncio
+async def test_on_model_error_callback_with_reordered_kwargs_maintains_canonical_order():
+  """Model error callbacks receive (callback_context, llm_request, error) in canonical order."""
+  callback = lambda ctx, req, err: f'{ctx}:{req}:{err}'
+
+  result = await _run_callbacks(
+      [callback],
+      _stop_on_truthy,
+      error='err_val',
+      llm_request='req_val',
+      callback_context='ctx_val',
+  )
+
+  assert result == 'ctx_val:req_val:err_val'

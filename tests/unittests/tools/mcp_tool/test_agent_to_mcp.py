@@ -28,6 +28,7 @@ from google.genai import types
 import pytest
 
 from ._in_memory_session import connected_client_session
+from ._sdk_compat import field
 
 
 class _EchoAgent(BaseAgent):
@@ -136,7 +137,7 @@ async def test_to_mcp_server_registers_agent_as_single_tool():
   assert len(tools) == 1
   assert tools[0].name == "my_agent"
   assert tools[0].description == "does useful things"
-  assert "request" in tools[0].inputSchema["properties"]
+  assert "request" in field(tools[0], "inputSchema")["properties"]
 
 
 @pytest.mark.asyncio
@@ -157,7 +158,7 @@ async def test_call_tool_runs_agent_end_to_end():
   async with connected_client_session(server) as client:
     result = await client.call_tool("assistant", {"request": "hi"})
 
-  assert not result.isError
+  assert not field(result, "isError")
   assert "hello from the agent" in result.content[0].text
 
 
@@ -199,7 +200,7 @@ async def test_run_agent_maps_image_output_to_image_content():
 
   assert len(result) == 1
   assert result[0].type == "image"
-  assert result[0].mimeType == "image/png"
+  assert field(result[0], "mimeType") == "image/png"
   assert base64.b64decode(result[0].data) == png
 
 

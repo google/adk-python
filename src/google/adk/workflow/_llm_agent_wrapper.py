@@ -29,9 +29,11 @@ from ..agents.context import Context
 from ..agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME as _FINISH_TASK_FC_NAME
 from ..agents.llm.task._finish_task_tool import is_finish_task_terminal_fr
 from ..events.event import Event
-from ..flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ..flows.llm_flows.tools._functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from ..utils._schema_utils import validate_schema
 from ..utils.content_utils import to_user_content
+from ._errors import WorkflowConfigurationError
+from ._errors import WorkflowInvariantError
 
 if TYPE_CHECKING:
   from ..agents.llm_agent import LlmAgent
@@ -172,11 +174,12 @@ def _find_unresolved_task_delegations(
   current turn's scope would hide the coordinator's own FC from a
   prior turn.  Author + tool-name filtering is sufficient.
   """
+  from ..events._rewind_events import _apply_rewinds
   from ..tools.agent_tool import _TaskAgentTool
 
   fc_by_id: dict[str, types.FunctionCall] = {}
   fr_ids: set[str] = set()
-  for event in session.events:
+  for event in _apply_rewinds(session.events):
     if event.author != owner and event.author != 'user':
       continue
     if not event.content or not event.content.parts:
@@ -236,11 +239,17 @@ async def _dispatch_task_fc(
   task's own function calls.  ``isolation_scope`` remains keyed by the
   FC id to keep task history scoped independently of branch ancestry.
   """
+  # Both call sites select FCs that already carry a name and an id, so an
+  # unnamed or id-less FC arriving here means that filtering was bypassed.
   if fc.name is None or fc.id is None:
-    raise ValueError('Task delegation calls require both a name and an ID.')
+    raise WorkflowInvariantError(
+        'Task delegation calls require both a name and an ID.'
+    )
   target_agent = parent_agent.root_agent.find_agent(fc.name)
   if target_agent is None:
-    raise ValueError(f'Task target agent {fc.name!r} not found.')
+    raise WorkflowConfigurationError(
+        f'Task target agent {fc.name!r} not found.'
+    )
   from .utils._workflow_graph_utils import build_node
 
   wrapped_target = build_node(target_agent)
@@ -285,16 +294,13 @@ def prepare_llm_agent_context(agent: LlmAgent, ctx: Context) -> Context:
   if agent.mode != 'single_turn':
     return ctx
 
-  ic = ctx._invocation_context.model_copy()
+  ic = ctx.get_invocation_context()
   ic._event_queue = ctx._invocation_context._event_queue
-  ic.isolation_scope = ctx.isolation_scope
   agent_ctx = Context(
       invocation_context=ic,
-      node_path=ctx.node_path,
       run_id=ctx.run_id,
       resume_inputs=ctx.resume_inputs,
   )
-  agent_ctx.isolation_scope = ctx.isolation_scope
 
   # Share the parent's `session` object (don't copy it): a mid-invocation
   # write such as compaction must be visible to later nodes, or the DB
@@ -394,7 +400,7 @@ async def run_llm_agent_as_node(
     agent.mode = 'single_turn'
 
   if agent.mode not in ('task', 'single_turn', 'chat'):
-    raise ValueError(
+    raise WorkflowConfigurationError(
         f'LlmAgent as node only supports task, single_turn, and chat mode,'
         f" but agent '{agent.name}' has mode='{agent.mode}'."
     )
@@ -408,14 +414,6 @@ async def run_llm_agent_as_node(
 
   ic = agent_ctx.get_invocation_context()
   update: dict[str, object] = {'agent': agent}
-  # thread the agent's isolation_scope into the
-  # InvocationContext so the content processor can filter session
-  # events to this agent's scope only.  Only mode=task and
-  # mode=single_turn agents need scope-based filtering — chat agents
-  # see the full conversation.
-  _agent_iso = getattr(agent_ctx, 'isolation_scope', None)
-  if agent.mode in ('task', 'single_turn') and _agent_iso:
-    update['isolation_scope'] = _agent_iso
   # Override ``user_content`` for task mode with this node's input.
   # The content-builder uses it as the fallback first user turn when
   # there is no originating delegation FC (the workflow-node task
@@ -502,8 +500,6 @@ async def run_llm_agent_as_node(
             had_task_fc = True
             break  # close this run_iter; outer loop re-enters
           if event.actions.transfer_to_agent:
-            target_name = event.actions.transfer_to_agent
-
             from ..agents.llm_agent import LlmAgent
 
             if (

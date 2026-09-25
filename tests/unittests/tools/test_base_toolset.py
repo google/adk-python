@@ -17,6 +17,7 @@
 from typing import Optional
 
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.models.llm_request import LlmRequest
@@ -448,3 +449,72 @@ async def test_get_tools_with_prefix_caching():
       readonly_context=readonly_context2
   )
   assert tools4 is not tools5
+
+
+@pytest.mark.asyncio
+async def test_get_tools_override_can_replace_a_failed_listing():
+  """A subclass can catch its own listing failure and contribute placeholders."""
+
+  class _FailingToolset(_TestingToolset):
+
+    async def get_tools(
+        self, readonly_context: Optional[ReadonlyContext] = None
+    ) -> list[BaseTool]:
+      raise ConnectionError('HTTP 401 Unauthorized')
+
+  class _OAuthPromptingToolset(_FailingToolset):
+
+    async def get_tools(
+        self, readonly_context: Optional[ReadonlyContext] = None
+    ) -> list[BaseTool]:
+      try:
+        return await super().get_tools(readonly_context)
+      except ConnectionError as e:
+        return [_TestingTool(name='connect', description=f'Authorize ({e})')]
+
+  with pytest.raises(ConnectionError):
+    await _FailingToolset().get_tools_with_prefix()
+
+  tools = await _OAuthPromptingToolset(
+      tool_name_prefix='mcp'
+  ).get_tools_with_prefix()
+
+  assert len(tools) == 1
+  assert tools[0].name == 'mcp_connect'
+  assert tools[0].description == 'Authorize (HTTP 401 Unauthorized)'
+
+
+@pytest.mark.asyncio
+async def test_canonical_tools_resolves_placeholders_from_overridden_toolset():
+  """LlmAgent.canonical_tools integrates placeholders from an overridden toolset."""
+
+  class _FailingToolset(_TestingToolset):
+
+    async def get_tools(
+        self, readonly_context: Optional[ReadonlyContext] = None
+    ) -> list[BaseTool]:
+      raise ConnectionError('HTTP 401 Unauthorized')
+
+  class _OAuthPromptingToolset(_FailingToolset):
+
+    async def get_tools(
+        self, readonly_context: Optional[ReadonlyContext] = None
+    ) -> list[BaseTool]:
+      try:
+        return await super().get_tools(readonly_context)
+      except ConnectionError as e:
+        return [_TestingTool(name='connect', description=f'Authorize ({e})')]
+
+  agent = LlmAgent(
+      name='test_agent',
+      model='gemini-pro',
+      tools=[
+          _FailingToolset(),
+          _OAuthPromptingToolset(tool_name_prefix='mcp'),
+      ],
+  )
+  tools = await agent.canonical_tools()
+
+  assert len(tools) == 1
+  assert tools[0].name == 'mcp_connect'
+  assert tools[0].description == 'Authorize (HTTP 401 Unauthorized)'

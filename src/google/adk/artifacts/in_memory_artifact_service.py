@@ -47,6 +47,23 @@ class _ArtifactEntry:
   artifact_version: ArtifactVersion
 
 
+# Runner._compute_artifact_delta_for_rewind marks an artifact as
+# inaccessible by saving exactly this part. Match it exactly rather than
+# treating every empty payload as absent, so a caller that saves a
+# legitimately empty artifact can read it back.
+#
+# Notes:
+# 1. A caller that saves an empty artifact with mime type exactly
+#    application/octet-stream will still read back None. That collision is
+#    inherent to using content shape as a tombstone; narrowing the match
+#    shrinks the hole from every empty artifact to one specific mime type.
+# 2. This tombstone convention is in-memory only; other artifact services
+#    (such as GcsArtifactService) do not perform this empty-payload check.
+_REWIND_TOMBSTONE = types.Part(
+    inline_data=types.Blob(mime_type="application/octet-stream", data=b"")
+)
+
+
 class InMemoryArtifactService(BaseArtifactService, BaseModel):
   """An in-memory implementation of the artifact service.
 
@@ -109,6 +126,12 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       session_id: Optional[str] = None,
       custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
+    if not self._file_has_user_namespace(filename):
+      if session_id is None:
+        raise InputValidationError(
+            "Session ID must be provided for session-scoped artifacts."
+        )
+      artifact_util._validate_session_id_for_flat_storage(session_id)
     artifact = ensure_part(artifact)
     path = self._artifact_path(app_name, user_id, filename, session_id)
     if path not in self.artifacts:
@@ -167,6 +190,26 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       session_id: Optional[str] = None,
       version: Optional[int] = None,
   ) -> Optional[types.Part]:
+    return await self._load_artifact(
+        app_name=app_name,
+        user_id=user_id,
+        filename=filename,
+        session_id=session_id,
+        version=version,
+        remaining_depth=artifact_util._MAX_ARTIFACT_REFERENCE_DEPTH,
+    )
+
+  async def _load_artifact(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      filename: str,
+      session_id: Optional[str],
+      version: Optional[int],
+      remaining_depth: int,
+  ) -> Optional[types.Part]:
+    """Loads an artifact, following at most `remaining_depth` references."""
     path = self._artifact_path(app_name, user_id, filename, session_id)
     versions = self.artifacts.get(path)
     if not versions:
@@ -187,32 +230,23 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     if artifact_util.is_artifact_ref(artifact_data):
       file_data = artifact_data.file_data
       assert file_data is not None
-      parsed_uri = artifact_util.parse_artifact_uri(
-          cast(str, file_data.file_uri)
-      )
-      if not parsed_uri:
-        raise InputValidationError(
-            f"Invalid artifact reference URI: {file_data.file_uri}"
-        )
-      artifact_util.validate_artifact_reference_scope(
+      parsed_uri = artifact_util.resolve_artifact_reference(
+          file_uri=cast(str, file_data.file_uri),
           app_name=app_name,
           user_id=user_id,
           session_id=session_id,
-          parsed_uri=parsed_uri,
+          remaining_depth=remaining_depth,
       )
-      return await self.load_artifact(
+      return await self._load_artifact(
           app_name=parsed_uri.app_name,
           user_id=parsed_uri.user_id,
           filename=parsed_uri.filename,
           session_id=parsed_uri.session_id,
           version=parsed_uri.version,
+          remaining_depth=remaining_depth - 1,
       )
 
-    if (
-        artifact_data == types.Part()
-        or artifact_data == types.Part(text="")
-        or (artifact_data.inline_data and not artifact_data.inline_data.data)
-    ):
+    if artifact_data == types.Part() or artifact_data == _REWIND_TOMBSTONE:
       return None
     return artifact_data
 

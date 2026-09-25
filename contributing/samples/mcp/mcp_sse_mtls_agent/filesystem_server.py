@@ -21,11 +21,24 @@ import sys
 import tempfile
 
 import google.auth.transport.mtls as google_mtls
-from mcp.server.fastmcp import FastMCP
+
+# MCP 2.0 renamed this server class. ADK supports both majors, so this sample
+# does too.
+try:
+  from mcp.server.mcpserver import MCPServer as FastMCP
+except ImportError:
+  from mcp.server.fastmcp import FastMCP
+
 import uvicorn
 
-# Create an MCP server with a name
-mcp = FastMCP("Filesystem Server (mTLS)", host="localhost", port=3000)
+HOST = "localhost"
+PORT = 3000
+LOG_LEVEL = "info"
+
+# This sample serves through uvicorn rather than mcp.run(), so the bind address
+# goes to uvicorn below. 2.0 dropped the `settings` attribute that used to
+# carry it back off the server object.
+mcp = FastMCP("Filesystem Server (mTLS)")
 
 
 # Add a tool to read file contents
@@ -120,9 +133,9 @@ if __name__ == "__main__":
 
   config = uvicorn.Config(
       app,
-      host=mcp.settings.host,
-      port=mcp.settings.port,
-      log_level=mcp.settings.log_level.lower(),
+      host=HOST,
+      port=PORT,
+      log_level=LOG_LEVEL,
       ssl_keyfile=keyfile,
       ssl_certfile=certfile,
       ssl_cert_reqs=int(ssl.CERT_REQUIRED),
@@ -130,10 +143,7 @@ if __name__ == "__main__":
   )
   server = uvicorn.Server(config)
 
-  print(
-      "Starting MCP server with mTLS on"
-      f" https://{mcp.settings.host}:{mcp.settings.port}"
-  )
+  print(f"Starting MCP server with mTLS on https://{HOST}:{PORT}")
   try:
     asyncio.run(server.serve())
   except KeyboardInterrupt:

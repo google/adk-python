@@ -33,6 +33,16 @@ class AgentInfo(pydantic.BaseModel):
   tools: list[types.Tool]
   sub_agents: list[str]
 
+  @pydantic.field_validator('instruction', mode='before')
+  @classmethod
+  def _coerce_callable_instruction(cls, value: object) -> object:
+    # LlmAgent.instruction is str | InstructionProvider. Providers may be
+    # async and may need session state, so app-info must not resolve them.
+    if callable(value):
+      name = getattr(value, '__name__', None) or type(value).__name__
+      return f'<InstructionProvider: {name}>'
+    return value
+
 
 async def get_tools_info(tools: list[ToolUnion]) -> list[Any]:
   """Returns the info for a given list of tools."""

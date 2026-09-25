@@ -30,7 +30,7 @@ from .tool_context import ToolContext
 logger = logging.getLogger('google_adk.' + __name__)
 
 if TYPE_CHECKING:
-  from ..models import LlmRequest
+  from ..models.llm_request import LlmRequest
 
 
 class VertexAiSearchTool(BaseTool):

@@ -18,6 +18,7 @@ from collections.abc import Awaitable
 from collections.abc import Callable
 from collections.abc import Sequence
 import inspect
+from typing import Any
 from typing import TypeVar
 
 from typing_extensions import ParamSpec
@@ -25,6 +26,56 @@ from typing_extensions import ParamSpec
 _P = ParamSpec('_P')
 _TCallback = TypeVar('_TCallback', bound=Callable[..., object])
 _TResult = TypeVar('_TResult')
+
+
+_CANONICAL_PARAM_ORDER: tuple[str, ...] = (
+    'tool',
+    'args',
+    'tool_context',
+    'response',
+    'tool_response',
+    'callback_context',
+    'llm_request',
+    'llm_response',
+    'error',
+)
+
+
+def _canonical_order_key(name: str) -> int:
+  try:
+    return _CANONICAL_PARAM_ORDER.index(name)
+  except ValueError:
+    return len(_CANONICAL_PARAM_ORDER)
+
+
+def _invoke_callback(
+    _callback: Callable[..., Any], /, *args: Any, **kwargs: Any
+) -> Any:
+  """Invokes callback, adapting keyword arguments to positional if needed."""
+  if kwargs:
+    use_pos = False
+    pos_args: tuple[Any, ...] = ()
+    try:
+      sig = inspect.signature(_callback)
+      try:
+        sig.bind(*args, **kwargs)
+      except TypeError:
+        sorted_kwarg_values = [
+            val
+            for _, val in sorted(
+                kwargs.items(), key=lambda item: _canonical_order_key(item[0])
+            )
+        ]
+        pos_args = args + tuple(sorted_kwarg_values)
+        sig.bind(*pos_args)
+        use_pos = True
+    except (ValueError, TypeError):
+      pass
+
+    if use_pos:
+      return _callback(*pos_args)
+
+  return _callback(*args, **kwargs)
 
 
 async def _run_callbacks(
@@ -41,7 +92,7 @@ async def _run_callbacks(
   """Runs callbacks in order while preserving their stop semantics."""
   result: _TResult | None = None
   for callback in callbacks:
-    callback_result = callback(*args, **kwargs)
+    callback_result = _invoke_callback(callback, *args, **kwargs)
     if inspect.isawaitable(callback_result):
       result = await callback_result
     else:

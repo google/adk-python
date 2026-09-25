@@ -136,29 +136,31 @@ class ConformanceTestRunner:
     ):
       # Create content from UserMessage object
       if user_message.content is not None:
-        content = user_message.content
+        content = user_message.content.model_copy(deep=True)
 
         # If the user provides a function response, it means this is for
         # long-running tool. Replace the function call ID with the actual
         # function call ID. This is needed because the function call ID is not
         # known when writing the test case.
-        if (
-            user_message.content.parts
-            and user_message.content.parts[0].function_response
-            and user_message.content.parts[0].function_response.name
-        ):
-          if (
-              user_message.content.parts[0].function_response.name
-              not in function_call_name_to_id_map
-          ):
-            raise ValueError(
-                "Function response for"
-                f" {user_message.content.parts[0].function_response.name} does"
-                " not match any pending function call."
-            )
-          content.parts[0].function_response.id = function_call_name_to_id_map[
-              user_message.content.parts[0].function_response.name
-          ]
+        if content.parts:
+          for part in content.parts:
+            if part.function_response:
+              name = part.function_response.name
+              if not name:
+                raise ValueError(
+                    "FunctionResponse part is missing a 'name' field."
+                )
+              if (
+                  name not in function_call_name_to_id_map
+                  or not function_call_name_to_id_map[name]
+              ):
+                raise ValueError(
+                    "Function response for"
+                    f" {name} does not match any pending function call."
+                )
+              part.function_response.id = function_call_name_to_id_map[
+                  name
+              ].pop(0)
       elif user_message.text is not None:
         content = types.UserContent(parts=[types.Part(text=user_message.text)])
       else:
@@ -183,12 +185,14 @@ class ConformanceTestRunner:
           test_case_dir=str(test_case.dir),
           user_message_index=user_message_index,
       ):
+        if getattr(event, "partial", False):
+          continue
         if event.content and event.content.parts:
           for part in event.content.parts:
             if part.function_call:
-              function_call_name_to_id_map[part.function_call.name] = (
-                  part.function_call.id
-              )
+              function_call_name_to_id_map.setdefault(
+                  part.function_call.name, []
+              ).append(part.function_call.id)
 
   async def _validate_test_results(
       self, session_id: str, test_case: TestCase
@@ -340,10 +344,12 @@ async def run_conformance_test(
   _print_test_header(mode)
 
   test_summaries: list[_ConformanceTestSummary] = []
+  selected_streaming_mode: Optional[StreamingMode] = None
   async with AdkWebServerClient() as client:
     modes_to_run = _SUPPORTED_STREAMING_MODES
     if streaming_mode and streaming_mode in _SUPPORTED_STREAMING_MODES:
       modes_to_run = [streaming_mode]
+      selected_streaming_mode = streaming_mode
     for current_streaming_mode in modes_to_run:
       runner = ConformanceTestRunner(
           test_paths, client, mode, streaming_mode=current_streaming_mode
@@ -354,7 +360,7 @@ async def run_conformance_test(
       version_data = await client.get_version_data()
       generate_markdown_report(version_data, test_summaries, report_dir)
 
-  _print_test_summary(test_summaries)
+  _print_test_summary(test_summaries, selected_streaming_mode)
 
 
 def _print_test_header(mode: str) -> None:
@@ -382,8 +388,33 @@ def _print_test_result_details(result: _TestResult) -> None:
     click.secho(indented_message, fg="red", err=True)
 
 
-def _print_test_summary(summaries: list[_ConformanceTestSummary]) -> None:
-  """Print the conformance test summary results."""
+def _print_test_summary(
+    summaries: list[_ConformanceTestSummary],
+    selected_streaming_mode: Optional[StreamingMode] = None,
+) -> None:
+  """Print the conformance test summary results.
+
+  Args:
+    summaries: One summary per streaming mode that was run.
+    selected_streaming_mode: The streaming mode the user asked for, if any.
+      Recordings are made one streaming mode at a time, so a mode with no test
+      cases is only a failure when the user asked for that mode, or when no
+      mode ran anything.
+
+  Raises:
+    click.ClickException: If any streaming mode failed tests, if the requested
+      streaming mode ran no test, or if no streaming mode ran any test, so that
+      the command exits with a non-zero status.
+  """
+  failures: list[str] = []
+
+  if not summaries:
+    failures.append("No conformance tests were run")
+
+  fail_when_mode_is_empty = selected_streaming_mode is not None or not any(
+      summary.total_tests for summary in summaries
+  )
+
   for summary in summaries:
     click.echo("\n" + "=" * 50)
     click.echo(
@@ -393,7 +424,12 @@ def _print_test_summary(summaries: list[_ConformanceTestSummary]) -> None:
 
     if summary.total_tests == 0:
       click.secho("No tests were run.", fg="yellow")
-      return
+      if fail_when_mode_is_empty:
+        failures.append(
+            "No test cases were found for streaming mode"
+            f" {summary.streaming_mode}"
+        )
+      continue
 
     click.echo(f"Total tests: {summary.total_tests}")
     click.secho(f"Passed: {summary.passed_tests}", fg="green")
@@ -412,8 +448,14 @@ def _print_test_summary(summaries: list[_ConformanceTestSummary]) -> None:
       for result in failed_tests:
         _print_test_result_details(result)
 
-    # Exit with error code if any tests failed
     if summary.failed_tests > 0:
-      raise click.ClickException(f"{summary.failed_tests} test(s) failed")
+      failures.append(
+          f"{summary.failed_tests} test(s) failed for streaming mode"
+          f" {summary.streaming_mode}"
+      )
     else:
       click.secho("\nAll tests passed! 🎉", fg="green")
+
+  # Exit with an error code if any streaming mode failed.
+  if failures:
+    raise click.ClickException("\n".join(failures))

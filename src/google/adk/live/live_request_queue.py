@@ -70,8 +70,18 @@ class LiveRequestQueue:
 
   def __init__(self) -> None:
     self._queue: asyncio.Queue[LiveRequest] = asyncio.Queue()
+    self._closed = False
+
+  @property
+  def closed(self) -> bool:
+    """Whether the client has closed this queue.
+
+    Sticky: the `close=True` sentinel is gone by the time reconnect logic asks.
+    """
+    return self._closed
 
   def close(self) -> None:
+    self._closed = True
     self._queue.put_nowait(LiveRequest(close=True))
 
   def send_content(self, content: types.Content, partial: bool = False) -> None:
@@ -93,6 +103,8 @@ class LiveRequestQueue:
     self._queue.put_nowait(LiveRequest(audio_stream_end=True))
 
   def send(self, req: LiveRequest) -> None:
+    if req.close:
+      self._closed = True
     self._queue.put_nowait(req)
 
   async def get(self) -> LiveRequest:
