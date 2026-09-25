@@ -571,7 +571,18 @@ class RestApiTool(BaseTool):
         api_args.update(auth_args)
 
     # Got all parameters. Call the API.
-    request_params = self._prepare_request_params(api_params, api_args)
+    try:
+      request_params = self._prepare_request_params(api_params, api_args)
+    except KeyError as e:
+      missing_param = e.args[0] if e.args else str(e)
+      return {
+          "error": (
+              f"Tool {self.name} execution failed. Analyze this execution"
+              " error and your inputs. Retry with adjustments if"
+              " applicable. Execution Error: Missing required path"
+              f" parameter '{missing_param}'."
+          )
+      }
     if self._ssl_verify is not None:
       request_params["verify"] = self._ssl_verify
 
