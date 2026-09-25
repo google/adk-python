@@ -1705,6 +1705,58 @@ async def test_append_event_to_stale_session():
 
 
 @pytest.mark.asyncio
+async def test_append_event_same_timestamp_single_writer_not_stale():
+  """A single writer must not be rejected when two events share a timestamp.
+
+  Regression test: `StorageSession.update_time` used to be declared with
+  `onupdate=func.now()`. When an event's timestamp equalled the value
+  already stored, SQLAlchemy saw no change to that column and omitted it
+  from the UPDATE, so `onupdate` fired and wrote the database's own clock
+  instead. The in-memory revision marker (read before commit) then no
+  longer matched storage, and the next append from the same, only, writer
+  was incorrectly rejected as stale.
+  """
+  session_service = get_session_service(
+      service_type=SessionServiceType.DATABASE
+  )
+
+  async with session_service:
+    app_name = 'my_app'
+    user_id = 'user'
+    same_timestamp = datetime.now().astimezone(timezone.utc).timestamp()
+
+    session = await session_service.create_session(
+        app_name=app_name, user_id=user_id
+    )
+    event1 = Event(
+        invocation_id='inv1',
+        author='user',
+        timestamp=same_timestamp,
+    )
+    await session_service.append_event(session, event1)
+
+    # Same timestamp as the previous event, with a state change so the
+    # UPDATE statement still runs for other columns.
+    event2 = Event(
+        invocation_id='inv2',
+        author='user',
+        timestamp=same_timestamp,
+        actions=EventActions(state_delta={'sk1': 'v1'}),
+    )
+    await session_service.append_event(session, event2)
+
+    event3 = Event(
+        invocation_id='inv3',
+        author='user',
+        timestamp=same_timestamp + 1,
+    )
+    # The same writer appending a third event must not be rejected.
+    await session_service.append_event(session, event3)
+
+    assert len(session.events) == 3
+
+
+@pytest.mark.asyncio
 async def test_sqlite_append_event_uses_typed_stale_session_error(tmp_path):
   """The legacy SQLite backend exposes the shared stale-writer contract."""
   service = get_session_service(SessionServiceType.SQLITE, tmp_path)
