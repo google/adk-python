@@ -42,6 +42,7 @@ from google.adk.tools import base_tool as base_tool_lib
 from google.adk.tools import tool_context as tool_context_lib
 from google.adk.utils import streaming_utils
 from google.adk.utils._telemetry_context import _is_visual_builder
+from google.adk.utils._telemetry_context import _telemetry_surface
 from google.adk.version import __version__
 from google.api_core import exceptions as api_exceptions
 import google.auth
@@ -3318,6 +3319,403 @@ class TestBigQueryAgentAnalyticsPlugin:
           assert requests[0].trace_id.endswith(f"/{__version__}")
     finally:
       _is_visual_builder.reset(token)
+
+  @pytest.mark.asyncio
+  async def test_surface_stamps_trace_id_and_user_agent(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """An ambient _telemetry_surface reaches both user_agent and trace_id."""
+    mock_write_client = mock.AsyncMock()
+
+    token = _telemetry_surface.set("my-surface")
+    try:
+      with mock.patch(
+          "google.adk.plugins.bigquery_agent_analytics_plugin.BigQueryWriteAsyncClient",
+          autospec=True,
+      ) as mock_write_cls:
+        mock_write_cls.return_value = mock_write_client
+        async with managed_plugin(PROJECT_ID, DATASET_ID) as plugin:
+          await plugin._ensure_started()
+
+          _, kwargs = mock_write_cls.call_args
+          user_agent = kwargs.get("client_info").user_agent
+          # The base token must stay first and unchanged: existing consumers
+          # anchor on it.
+          assert user_agent.startswith(f"google-adk-bq-logger/{__version__}")
+          assert f"google-adk-my-surface/{__version__}" in user_agent
+
+          mock_write_client.append_rows.reset_mock()
+          llm_request = llm_request_lib.LlmRequest(
+              model="gemini-pro",
+              contents=[types.Content(parts=[types.Part(text="Hi")])],
+          )
+          await plugin.before_model_callback(
+              callback_context=callback_context, llm_request=llm_request
+          )
+          await plugin.flush()
+
+          requests_iter = mock_write_client.append_rows.call_args.args[0]
+          requests = [req async for req in requests_iter]
+          assert (
+              requests[0].trace_id
+              == f"google-adk-bq-logger-my-surface/{__version__}"
+          )
+    finally:
+      _telemetry_surface.reset(token)
+
+  @pytest.mark.asyncio
+  async def test_surface_takes_precedence_over_visual_builder(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """An explicit _telemetry_surface wins over _is_visual_builder."""
+    mock_write_client = mock.AsyncMock()
+
+    vb_token = _is_visual_builder.set(True)
+    surface_token = _telemetry_surface.set("my-surface")
+    try:
+      with mock.patch(
+          "google.adk.plugins.bigquery_agent_analytics_plugin.BigQueryWriteAsyncClient",
+          autospec=True,
+      ) as mock_write_cls:
+        mock_write_cls.return_value = mock_write_client
+        async with managed_plugin(PROJECT_ID, DATASET_ID) as plugin:
+          await plugin._ensure_started()
+          mock_write_client.append_rows.reset_mock()
+
+          llm_request = llm_request_lib.LlmRequest(
+              model="gemini-pro",
+              contents=[types.Content(parts=[types.Part(text="Hi")])],
+          )
+          await plugin.before_model_callback(
+              callback_context=callback_context, llm_request=llm_request
+          )
+          await plugin.flush()
+
+          requests_iter = mock_write_client.append_rows.call_args.args[0]
+          requests = [req async for req in requests_iter]
+          assert requests[0].trace_id.startswith(
+              "google-adk-bq-logger-my-surface"
+          )
+          assert "visual-builder" not in requests[0].trace_id
+
+          user_agent = mock_write_cls.call_args.kwargs["client_info"].user_agent
+          assert f"google-adk-my-surface/{__version__}" in user_agent
+          assert "visual-builder" not in user_agent
+    finally:
+      _telemetry_surface.reset(surface_token)
+      _is_visual_builder.reset(vb_token)
+
+  @pytest.mark.asyncio
+  async def test_visual_builder_set_after_construction_is_attributed(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """api_server sets _is_visual_builder per request, post-construction."""
+    mock_write_client = mock.AsyncMock()
+
+    with mock.patch(
+        "google.adk.plugins.bigquery_agent_analytics_plugin.BigQueryWriteAsyncClient",
+        autospec=True,
+    ) as mock_write_cls:
+      mock_write_cls.return_value = mock_write_client
+      # Built outside any Visual Builder context, mirroring api_server's
+      # get_runner_async() running before _set_telemetry_context_if_needed().
+      async with managed_plugin(PROJECT_ID, DATASET_ID) as plugin:
+        assert plugin._surface is None
+
+        token = _is_visual_builder.set(True)
+        try:
+          await plugin._ensure_started()
+          mock_write_client.append_rows.reset_mock()
+
+          llm_request = llm_request_lib.LlmRequest(
+              model="gemini-pro",
+              contents=[types.Content(parts=[types.Part(text="Hi")])],
+          )
+          await plugin.before_model_callback(
+              callback_context=callback_context, llm_request=llm_request
+          )
+          await plugin.flush()
+        finally:
+          _is_visual_builder.reset(token)
+
+        user_agent = mock_write_cls.call_args.kwargs["client_info"].user_agent
+        assert f"google-adk-visual-builder/{__version__}" in user_agent
+
+        requests_iter = mock_write_client.append_rows.call_args.args[0]
+        requests = [req async for req in requests_iter]
+        assert (
+            requests[0].trace_id
+            == f"google-adk-bq-logger-visual-builder/{__version__}"
+        )
+
+  @pytest.mark.asyncio
+  async def test_surface_unset_preserves_unlabeled_prefix(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """The default (None) is byte-for-byte the pre-existing behavior."""
+    mock_write_client = mock.AsyncMock()
+
+    with mock.patch(
+        "google.adk.plugins.bigquery_agent_analytics_plugin.BigQueryWriteAsyncClient",
+        autospec=True,
+    ) as mock_write_cls:
+      mock_write_cls.return_value = mock_write_client
+      async with managed_plugin(PROJECT_ID, DATASET_ID) as plugin:
+        await plugin._ensure_started()
+        assert (
+            mock_write_cls.call_args.kwargs["client_info"].user_agent
+            == f"google-adk-bq-logger/{__version__}"
+        )
+
+        mock_write_client.append_rows.reset_mock()
+        llm_request = llm_request_lib.LlmRequest(
+            model="gemini-pro",
+            contents=[types.Content(parts=[types.Part(text="Hi")])],
+        )
+        await plugin.before_model_callback(
+            callback_context=callback_context, llm_request=llm_request
+        )
+        await plugin.flush()
+
+        requests_iter = mock_write_client.append_rows.call_args.args[0]
+        requests = [req async for req in requests_iter]
+        assert requests[0].trace_id == f"google-adk-bq-logger/{__version__}"
+
+  def test_surface_not_exposed_on_config_or_plugin_kwargs(self):
+    """BigQueryLoggerConfig has no public surface field; kwargs ignore it."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+    assert not hasattr(config, "surface")
+
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        surface="my-surface",
+    )
+    assert plugin._surface is None
+    assert not hasattr(plugin.config, "surface")
+
+  @pytest.mark.asyncio
+  async def test_surface_at_init_survives_contextvar_reset_on_bg_loop(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """Surface captured at __init__ reaches the bg loop after reset."""
+    mock_write_client = mock.AsyncMock()
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        use_dedicated_background_loop=True
+    )
+
+    with mock.patch(
+        "google.adk.plugins.bigquery_agent_analytics_plugin.BigQueryWriteAsyncClient",
+        autospec=True,
+    ) as mock_write_cls:
+      mock_write_cls.return_value = mock_write_client
+
+      token = _telemetry_surface.set("my-surface")
+      try:
+        plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+            project_id=PROJECT_ID,
+            dataset_id=DATASET_ID,
+            config=config,
+        )
+      finally:
+        _telemetry_surface.reset(token)
+
+      # ContextVar is already reset before lazy startup or background loop
+      # writes.
+      assert _telemetry_surface.get() is None
+
+      async with plugin:
+        await plugin._ensure_started()
+        mock_write_client.append_rows.reset_mock()
+
+        llm_request = llm_request_lib.LlmRequest(
+            model="gemini-pro",
+            contents=[types.Content(parts=[types.Part(text="Hi")])],
+        )
+        await plugin.before_model_callback(
+            callback_context=callback_context, llm_request=llm_request
+        )
+        await plugin.flush()
+
+        user_agent = mock_write_cls.call_args.kwargs["client_info"].user_agent
+        assert f"google-adk-my-surface/{__version__}" in user_agent
+
+        requests_iter = mock_write_client.append_rows.call_args.args[0]
+        requests = [req async for req in requests_iter]
+        assert (
+            requests[0].trace_id
+            == f"google-adk-bq-logger-my-surface/{__version__}"
+        )
+
+  def test_surface_isolates_bg_loop_key(self):
+    """_get_bg_loop_key isolates plugins with distinct surfaces."""
+    unlabeled = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID, dataset_id=DATASET_ID
+    )
+    token = _telemetry_surface.set("my-surface")
+    try:
+      labeled = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          project_id=PROJECT_ID, dataset_id=DATASET_ID
+      )
+    finally:
+      _telemetry_surface.reset(token)
+
+    assert unlabeled._get_bg_loop_key() != labeled._get_bg_loop_key()
+
+  def test_setstate_migrates_legacy_visual_builder_pickle(self):
+    """A legacy _visual_builder flag migrates onto _surface."""
+    unlabeled = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID, dataset_id=DATASET_ID
+    )
+
+    # Legacy pickle with _visual_builder=True and no _surface migrates to
+    # "visual-builder".
+    legacy_state = unlabeled.__getstate__()
+    legacy_state.pop("_surface", None)
+    legacy_state["_visual_builder"] = True
+    restored = (
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin.__new__(
+            bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin
+        )
+    )
+    restored.__setstate__(legacy_state)
+    assert restored._surface == "visual-builder"
+    assert "_visual_builder" not in restored.__dict__
+
+    # An explicit "_surface": None alongside legacy "_visual_builder": True
+    # must still migrate rather than dropping the legacy flag.
+    explicit_none_state = unlabeled.__getstate__()
+    explicit_none_state["_surface"] = None
+    explicit_none_state["_visual_builder"] = True
+    restored_from_none = (
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin.__new__(
+            bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin
+        )
+    )
+    restored_from_none.__setstate__(explicit_none_state)
+    assert restored_from_none._surface == "visual-builder"
+
+  def test_setstate_preserves_existing_surface_over_legacy_flag(self):
+    """An explicit _surface wins over a stale _visual_builder flag."""
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID, dataset_id=DATASET_ID
+    )
+    state = plugin.__getstate__()
+    state["_surface"] = "my-surface"
+    state["_visual_builder"] = True
+
+    restored = (
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin.__new__(
+            bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin
+        )
+    )
+    restored.__setstate__(state)
+
+    assert restored._surface == "my-surface"
+    assert "_visual_builder" not in restored.__dict__
+
+  def test_setstate_backfills_surface_on_pre_surface_pickle(self):
+    """A pickle predating both fields backfills _surface to None."""
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID, dataset_id=DATASET_ID
+    )
+    state = plugin.__getstate__()
+    state.pop("_surface", None)
+    state.pop("_visual_builder", None)
+
+    restored = (
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin.__new__(
+            bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin
+        )
+    )
+    restored.__setstate__(state)
+
+    assert restored._surface is None
+    # _get_bg_loop_key reads _surface unguarded; it must not raise, and an
+    # unlabeled plugin keeps the bare credentials key.
+    assert restored._get_bg_loop_key() == (
+        f"{PROJECT_ID}.{DATASET_ID}.{restored.table_id}",
+        None,
+    )
+
+  @pytest.mark.asyncio
+  async def test_dedicated_bg_loop_ignores_post_construction_ambient_surface(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """Process-global _BG_LOOP_STATES must match its construction-time key."""
+    mock_write_client = mock.AsyncMock()
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        use_dedicated_background_loop=True
+    )
+
+    with mock.patch(
+        "google.adk.plugins.bigquery_agent_analytics_plugin.BigQueryWriteAsyncClient",
+        autospec=True,
+    ) as mock_write_cls:
+      mock_write_cls.return_value = mock_write_client
+      # Both plugins are constructed outside any telemetry context, so both
+      # have self._surface is None and share the same _BG_LOOP_STATES key.
+      plugin_a = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          project_id=PROJECT_ID, dataset_id=DATASET_ID, config=config
+      )
+      plugin_b = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          project_id=PROJECT_ID, dataset_id=DATASET_ID, config=config
+      )
+      assert plugin_a._get_bg_loop_key() == plugin_b._get_bg_loop_key()
+
+      # Plugin A triggers the initial _BG_LOOP_STATES build while an ambient
+      # surface happens to be set on the calling thread.
+      token = _is_visual_builder.set(True)
+      try:
+        async with plugin_a:
+          await plugin_a._ensure_started()
+      finally:
+        _is_visual_builder.reset(token)
+
+      # Plugin B reuses that shared _BG_LOOP_STATES entry outside any surface
+      # context; its rows must NOT be falsely stamped as visual-builder.
+      async with plugin_b:
+        await plugin_b._ensure_started()
+        mock_write_client.append_rows.reset_mock()
+        llm_request = llm_request_lib.LlmRequest(
+            model="gemini-pro",
+            contents=[types.Content(parts=[types.Part(text="Hi")])],
+        )
+        await plugin_b.before_model_callback(
+            callback_context=callback_context, llm_request=llm_request
+        )
+        await plugin_b.flush()
+
+        user_agent = mock_write_cls.call_args.kwargs["client_info"].user_agent
+        assert user_agent == f"google-adk-bq-logger/{__version__}"
+
+        requests_iter = mock_write_client.append_rows.call_args.args[0]
+        requests = [req async for req in requests_iter]
+        assert requests[0].trace_id == f"google-adk-bq-logger/{__version__}"
 
   @pytest.mark.asyncio
   async def test_flush_mechanism(
