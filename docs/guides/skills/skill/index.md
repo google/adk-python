@@ -455,6 +455,13 @@ so it has to equal the declared `name`.
     can call to drop one. Its tools go away, and later requests replace the
     instructions it was loaded with by a short notice that it was unloaded. The
     session's stored events keep what was originally said.
+*   **A loaded skill is a snapshot.** What the model was told is fixed in the
+    transcript, so editing a skill does not reach a session that already loaded
+    it. Pass `SkillLifecycleConfig(revalidate_skills=True)` as the toolset's
+    `lifecycle_config` to compare each active skill against its definition
+    every request and re-state the ones that changed. It costs a registry
+    lookup per active skill per turn, and re-stating a skill invalidates the
+    prompt cache.
 *   **Experimental.** The package's own
     [README](../../../../src/google/adk/skills/README.md) marks skills as
     experimental and under active development, so the API may change without

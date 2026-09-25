@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import aclosing
+import contextvars
 import inspect
 import logging
 from pathlib import Path
@@ -48,10 +49,11 @@ from .artifacts.base_artifact_service import BaseArtifactService
 from .auth.credential_service.base_credential_service import BaseCredentialService
 from .errors._stale_session_error import StaleSessionError
 from .errors.session_not_found_error import SessionNotFoundError
+from .events._rewind_events import _apply_rewinds
 from .events.event import Event
 from .events.event_actions import EventActions
-from .flows.llm_flows import contents
-from .flows.llm_flows.functions import find_matching_function_call as _find_matching_function_call
+from .flows.llm_flows.context import _contents as contents
+from .flows.llm_flows.tools._functions import find_matching_function_call as _find_matching_function_call
 from .live import _runner_utils as _live_runner_utils
 from .live.live_request_queue import LiveRequestQueue
 from .memory.base_memory_service import BaseMemoryService
@@ -119,8 +121,9 @@ def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
   # We must do this in a separate pass because walking backward directly would
   # hit post-finish events (like status updates or duplicate FRs) before hitting
   # the older success FR, falsely indicating the scope is still active.
+  live_events = _apply_rewinds(session.events)
   finished_scopes: set[str] = set()
-  for event in session.events:
+  for event in live_events:
     scope = event.isolation_scope
     if not scope:
       continue
@@ -137,7 +140,7 @@ def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
           break
 
   # Pass 2: Walk backward to find the latest active scope that is not finished.
-  for event in reversed(session.events):
+  for event in reversed(live_events):
     scope = event.isolation_scope
     if not scope:
       continue
@@ -636,7 +639,7 @@ class Runner:
 
     # Find invocation_id for each FR by matching its FC in session
     invocation_ids = set()
-    for event in reversed(session.events):
+    for event in reversed(_apply_rewinds(session.events)):
       for fc in event.get_function_calls():
         if fc.id in fr_ids:
           invocation_ids.add(event.invocation_id)
@@ -735,7 +738,7 @@ class Runner:
     invocation used to fail outright, because the caller treats "not found" as
     an error.
     """
-    for event in events:
+    for event in _apply_rewinds(events):
       if (
           event.invocation_id == invocation_id
           and event.author == 'user'
@@ -978,7 +981,10 @@ class Runner:
       finally:
         event_queue.put(None)
 
-    thread = create_thread(target=_asyncio_thread_main)
+    # A new thread starts with empty contextvars. Run it in a copy of the
+    # caller's so the invocation joins the caller's OpenTelemetry trace instead
+    # of starting a disconnected one.
+    thread = create_thread(contextvars.copy_context().run, _asyncio_thread_main)
     thread.start()
 
     exhausted = False
@@ -1284,7 +1290,12 @@ class Runner:
       rewind_before_invocation_id: str,
       run_config: Optional[RunConfig] = None,
   ) -> None:
-    """Rewinds the session to before the specified invocation."""
+    """Rewinds the session to before the specified invocation.
+
+    Raises:
+      InvocationNotFoundError: If rewind_before_invocation_id does not match
+        any event in the session.
+    """
     run_config = run_config or RunConfig()
     session = await self._get_or_create_session(
         user_id=user_id,
@@ -1640,66 +1651,6 @@ class Runner:
     ) as agen:
       async for event in agen:
         yield event
-
-  async def _merge_live_event_streams(
-      self,
-      ic: InvocationContext,
-      agent_events: AsyncGenerator[Event, None],
-  ) -> AsyncGenerator[Event, None]:
-    """Interleaves the live agent's events with events from ``ic._event_queue``.
-
-    Code running underneath the live agent — a streaming tool, or a node — has
-    no way to yield an event back through the agent's own stream, so it
-    enqueues on ``ic._event_queue`` instead. Both sources are drained
-    concurrently into one queue and surfaced in the order they are produced.
-
-    Each source keeps its own post-processing: the agent's events are already
-    persisted and plugin-processed by ``_exec_with_plugin``, and the queued
-    events by ``_consume_event_queue``, so nothing is handled twice.
-    """
-    if ic._event_queue is None:
-      raise RuntimeError(
-          'Live event stream merging requires an initialized event queue.'
-      )
-    # Bind the queue to a local: the narrowing above does not reach into the
-    # nested pumps below.
-    event_queue = ic._event_queue
-    done_sentinel = object()
-    merged: asyncio.Queue[Any] = asyncio.Queue(maxsize=1)
-
-    async def _pump_agent_events() -> None:
-      try:
-        async with aclosing(agent_events) as agen:
-          async for event in agen:
-            await merged.put(event)
-      finally:
-        # The queue consumer owns the merged sentinel, so end its stream
-        # rather than the merged one; that also lets already-enqueued events
-        # drain before the merge finishes.
-        await event_queue.put((done_sentinel, None))
-
-    async def _pump_queued_events() -> None:
-      try:
-        async with aclosing(
-            self._consume_event_queue(ic, done_sentinel)
-        ) as agen:
-          async for event in agen:
-            await merged.put(event)
-      finally:
-        await merged.put(done_sentinel)
-
-    agent_task = asyncio.create_task(_pump_agent_events())
-    queue_task = asyncio.create_task(_pump_queued_events())
-    try:
-      while True:
-        event_or_done = await merged.get()
-        if event_or_done is done_sentinel:
-          break
-        yield event_or_done
-    finally:
-      # _cleanup_root_task re-raises a failure from either pump.
-      await self._cleanup_root_task(agent_task, self.agent.name)
-      await self._cleanup_root_task(queue_task, self.agent.name)
 
   def _find_agent_to_run(
       self, session: Session, root_agent: BaseAgent

@@ -24,6 +24,8 @@ from .auth_schemes import AuthSchemeType
 from .auth_schemes import OpenIdConnectWithConfig
 from .auth_tool import AuthConfig
 from .exchanger.oauth2_credential_exchanger import OAuth2CredentialExchanger
+from .oauth2_credential_util import _credential_without_client_secret
+from .oauth2_credential_util import _with_configured_client
 
 if TYPE_CHECKING:
   from ..sessions.state import State
@@ -46,18 +48,6 @@ def _normalize_oauth_scopes(
   if isinstance(scopes, dict):
     return list(scopes.keys())
   return list(scopes)
-
-
-def _credential_without_client_secret(
-    credential: AuthCredential | None,
-) -> AuthCredential | None:
-  """Returns a copy of credential with the OAuth2 client secret removed."""
-  if credential is None:
-    return None
-  redacted = credential.model_copy(deep=True)
-  if redacted.oauth2 is not None:
-    redacted.oauth2.client_secret = None
-  return redacted
 
 
 def _without_client_secret(auth_config: AuthConfig) -> AuthConfig:
@@ -103,8 +93,9 @@ class AuthHandler:
 
     temp_credential_key = "temp:" + credential_key
 
-    self.auth_config.exchanged_auth_credential = self._with_configured_client(
-        self.auth_config.exchanged_auth_credential
+    self.auth_config.exchanged_auth_credential = _with_configured_client(
+        credential=self.auth_config.exchanged_auth_credential,
+        raw_credential=self.auth_config.raw_auth_credential,
     )
     credential = self.auth_config.exchanged_auth_credential
     if self._is_exchangeable(credential):
@@ -116,28 +107,6 @@ class AuthHandler:
   def _validate(self) -> None:
     if not self.auth_config.auth_scheme:
       raise ValueError("auth_scheme is empty.")
-
-  def _with_configured_client(
-      self, credential: AuthCredential | None
-  ) -> AuthCredential | None:
-    """Returns credential with the configured OAuth2 client identity restored.
-
-    The credential comes back from the client, which must not be able to
-    choose which OAuth2 client the token is exchanged for. The original is
-    left untouched, so the copy held in session state keeps no secret.
-    """
-    raw_credential = self.auth_config.raw_auth_credential
-    if (
-        credential is None
-        or credential.oauth2 is None
-        or raw_credential is None
-        or raw_credential.oauth2 is None
-    ):
-      return credential
-    restored = credential.model_copy(deep=True)
-    restored.oauth2.client_id = raw_credential.oauth2.client_id
-    restored.oauth2.client_secret = raw_credential.oauth2.client_secret
-    return restored
 
   def _is_exchangeable(self, credential: AuthCredential | None) -> bool:
     """Returns whether credential still needs, and can do, a token exchange."""
@@ -197,7 +166,10 @@ class AuthHandler:
       return None
 
     key, credential = stored
-    credential = self._with_configured_client(credential)
+    credential = _with_configured_client(
+        credential=credential,
+        raw_credential=self.auth_config.raw_auth_credential,
+    )
     if not self._is_exchangeable(credential):
       return credential
 

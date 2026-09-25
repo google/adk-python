@@ -34,7 +34,7 @@ When building a `Workflow` graph, any `LlmAgent` added to the graph defaults to
 
 ```python
 from google.adk.agents import LlmAgent
-from google.adk.workflow import Workflow, build_node
+from google.adk.workflow import Workflow
 
 # Defaults to mode="single_turn" when run as a node
 writer_agent = LlmAgent(
@@ -42,13 +42,10 @@ writer_agent = LlmAgent(
     instruction="Write a short story about the input topic."
 )
 
-writer_node = build_node(writer_agent)
-
 wf = Workflow(
     name="story_generator",
     edges=[
-        ("START", writer_node),
-        (writer_node, "END")
+        ("START", writer_agent)
     ]
 )
 ```

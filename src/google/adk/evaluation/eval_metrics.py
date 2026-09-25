@@ -30,6 +30,14 @@ from pydantic import SerializeAsAny
 from pydantic.json_schema import SkipJsonSchema
 from typing_extensions import TypeAlias
 
+from ..telemetry._token_usage import CACHE_READ_INPUT_TOKENS_MEANING
+from ..telemetry._token_usage import CANDIDATE_OUTPUT_TOKENS_MEANING
+from ..telemetry._token_usage import INPUT_TOKENS_MEANING
+from ..telemetry._token_usage import OUTPUT_TOKENS_MEANING
+from ..telemetry._token_usage import PROMPT_INPUT_TOKENS_MEANING
+from ..telemetry._token_usage import REASONING_OUTPUT_TOKENS_MEANING
+from ..telemetry._token_usage import TOOL_INPUT_TOKENS_MEANING
+from ..telemetry._token_usage import TOTAL_TOKENS_MEANING
 from .common import EvalBaseModel
 from .eval_case import Invocation
 from .eval_rubrics import Rubric as Rubric
@@ -40,6 +48,11 @@ class EvalStatus(Enum):
   PASSED = 1
   FAILED = 2
   NOT_EVALUATED = 3
+  # Reported for reference-free, informational metrics (e.g. the efficiency
+  # metrics): a value was computed and reported, but the metric does not pass
+  # or fail an eval case. Distinct from NOT_EVALUATED, which means the metric
+  # was not evaluated at all.
+  INFORMATIONAL = 4
 
 
 class PrebuiltMetrics(Enum):
@@ -72,6 +85,22 @@ class PrebuiltMetrics(Enum):
   RUBRIC_BASED_MULTI_TURN_TRAJECTORY_QUALITY_V1 = (
       "rubric_based_multi_turn_trajectory_quality_v1"
   )
+
+  # Efficiency metrics. These are reference-free, informational metrics: they
+  # report a value (lower is better) for the user to track their agent's
+  # efficiency, and do not pass or fail the eval case.
+  TOOL_CALL_COUNT_V1 = "tool_call_count_v1"
+
+  # "inference call" rather than "LLM call", matching the name ADK telemetry
+  # publishes this count under. An eval invocation spans a whole turn -- every
+  # sub-agent shares the turn's invocation id -- so the quantity lines up with
+  # telemetry's per-turn `adk.invoke_workflow.inference_calls` rather than its
+  # per-agent counterpart.
+  INFERENCE_CALL_COUNT_V1 = "inference_call_count_v1"
+
+  TOKEN_USAGE_V1 = "token_usage_v1"
+
+  INVOCATION_DURATION_V1 = "invocation_duration_v1"
 
 
 MetricName: TypeAlias = Union[str, PrebuiltMetrics]
@@ -292,6 +321,74 @@ class LlmBackedUserSimulatorCriterion(LlmAsAJudgeCriterion):
   )
 
 
+class TokenUsageDetails(EvalBaseModel):
+  """Per-type token counts behind a `token_usage_v1` score.
+
+  Reported for every eval, with no configuration. The counts nest rather than
+  form a flat list of addends::
+
+      total_tokens
+        input_tokens
+          prompt_tokens
+            cached_tokens
+          tool_use_tokens
+        output_tokens
+          candidates_tokens
+          reasoning_tokens
+
+  where each count contains the ones indented under it. `total_tokens` is
+  derived from `input_tokens` and `output_tokens` rather than taken from the
+  backend's reported total, so it always agrees with the two directions it sums.
+
+  What each count means is defined once, by `google.adk.telemetry._token_usage`,
+  and reused here, so an eval breakdown and the telemetry ADK publishes for the
+  same run describe the same quantities.
+
+  A field is None when no model call reported that count, meaning the value is
+  unavailable (n/a) rather than zero.
+  """
+
+  total_tokens: Optional[float] = Field(
+      default=None,
+      description=TOTAL_TOKENS_MEANING,
+  )
+
+  input_tokens: Optional[float] = Field(
+      default=None,
+      description=INPUT_TOKENS_MEANING,
+  )
+
+  prompt_tokens: Optional[float] = Field(
+      default=None,
+      description=PROMPT_INPUT_TOKENS_MEANING,
+  )
+
+  cached_tokens: Optional[float] = Field(
+      default=None,
+      description=CACHE_READ_INPUT_TOKENS_MEANING,
+  )
+
+  tool_use_tokens: Optional[float] = Field(
+      default=None,
+      description=TOOL_INPUT_TOKENS_MEANING,
+  )
+
+  output_tokens: Optional[float] = Field(
+      default=None,
+      description=OUTPUT_TOKENS_MEANING,
+  )
+
+  candidates_tokens: Optional[float] = Field(
+      default=None,
+      description=CANDIDATE_OUTPUT_TOKENS_MEANING,
+  )
+
+  reasoning_tokens: Optional[float] = Field(
+      default=None,
+      description=REASONING_OUTPUT_TOKENS_MEANING,
+  )
+
+
 class EvalMetric(EvalBaseModel):
   """A metric used to evaluate a particular aspect of an eval case."""
 
@@ -340,6 +437,14 @@ class EvalMetricResultDetails(EvalBaseModel):
       description=(
           "The scores obtained after applying the rubrics to the Agent's"
           " response."
+      ),
+  )
+
+  token_usage_details: Optional[TokenUsageDetails] = Field(
+      default=None,
+      description=(
+          "The per-type token counts behind a token usage score. Populated"
+          " only by the token usage metric."
       ),
   )
 
@@ -428,6 +533,17 @@ class MetricInfo(EvalBaseModel):
 
   metric_value_info: MetricValueInfo = Field(
       description="Information on the nature of values supported by the metric."
+  )
+
+  requires_threshold: bool = Field(
+      default=True,
+      description=(
+          "Whether a threshold must be supplied for this metric to produce a"
+          " verdict. A metric that does not require one reports a value, and"
+          " an `INFORMATIONAL` status rather than a pass or fail, when no"
+          " threshold is configured. Surfaces that ask the user to pick"
+          " metrics and set thresholds should skip these."
+      ),
   )
 
 

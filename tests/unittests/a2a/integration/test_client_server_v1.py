@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+from a2a.types import Artifact
+from a2a.types import TaskArtifactUpdateEvent
 from google.adk.a2a import _compat
 from google.adk.a2a.executor.config import A2aAgentExecutorConfig
 from google.adk.a2a.executor.interceptors.include_artifacts_in_a2a_event import include_artifacts_in_a2a_event_interceptor
@@ -651,6 +653,44 @@ async def test_streaming_artifacts_are_aggregated_into_single_task():
   # Both recorded artifacts are present (plus any text-carrying artifact).
   artifact_names = {a.name for a in task.artifacts}
   assert {"file1", "file2"}.issubset(artifact_names)
+
+
+@pytest.mark.asyncio
+async def test_answer_sent_only_as_artifact_completes_the_task():
+  """A run whose answer never reaches a status message still completes."""
+
+  def answer_as_artifact(event, invocation_context, task_id, context_id, _):
+    return [
+        TaskArtifactUpdateEvent(
+            task_id=task_id,
+            context_id=context_id,
+            artifact=Artifact(
+                artifact_id="answer",
+                parts=[_compat.make_text_part("Hello world")],
+            ),
+            last_chunk=True,
+        )
+    ]
+
+  app = create_server_app_v1(
+      _non_streaming_run_async([]),
+      config=A2aAgentExecutorConfig(event_converter=answer_as_artifact),
+  )
+
+  async with app.router.lifespan_context(app):
+    a2a_client = create_a2a_client(app, streaming=True, use_legacy=True)
+    request = _compat.make_message(
+        message_id="test_message_id",
+        role=_compat.ROLE_USER,
+        parts=[_compat.make_text_part("Hi")],
+    )
+    events = []
+    normalize = _compat.make_stream_normalizer()
+    async for item in _compat.send_message(a2a_client, request=request):
+      events.append(normalize(item))
+
+  final_task, _ = events[-1]
+  assert final_task.status.state == _compat.TS_COMPLETED
 
 
 @pytest.mark.asyncio

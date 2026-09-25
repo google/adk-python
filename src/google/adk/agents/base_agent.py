@@ -512,31 +512,38 @@ class BaseAgent(BaseNode, abc.ABC):
     """
     return _normalize_callbacks(self.after_agent_callback)
 
-  async def _handle_before_agent_callback(
-      self, ctx: InvocationContext
+  async def _handle_agent_callbacks(
+      self,
+      ctx: InvocationContext,
+      *,
+      plugin_hook: Callable[..., Awaitable[Optional[types.Content]]],
+      callbacks: list[_SingleAgentCallback],
+      end_invocation_on_content: bool,
   ) -> Optional[Event]:
-    """Runs the before_agent_callback if it exists.
+    """Runs the plugin hook and then the canonical agent callbacks.
 
     Args:
       ctx: InvocationContext, the invocation context for this agent.
+      plugin_hook: The plugin manager hook consulted before the canonical
+        callbacks. A non-empty result from it suppresses them.
+      callbacks: The canonical callbacks to run when the plugins provide no
+        override.
+      end_invocation_on_content: Whether returned content ends the invocation.
 
     Returns:
-      Optional[Event]: an event if callback provides content or changed state.
+      Optional[Event]: an event if a callback provides content or changed state.
     """
     callback_context = CallbackContext(ctx)
 
     # Run callbacks from the plugins.
-    before_agent_callback_content = (
-        await ctx.plugin_manager.run_before_agent_callback(
-            agent=self, callback_context=callback_context
-        )
+    callback_content = await plugin_hook(
+        agent=self, callback_context=callback_context
     )
 
     # If no overrides are provided from the plugins, further run the canonical
     # callbacks.
-    callbacks = self.canonical_before_agent_callbacks
-    if not before_agent_callback_content and callbacks:
-      before_agent_callback_content = await _run_callbacks(
+    if not callback_content and callbacks:
+      callback_content = await _run_callbacks(
           callbacks,
           _stop_on_truthy,
           callback_context=callback_context,
@@ -544,15 +551,16 @@ class BaseAgent(BaseNode, abc.ABC):
 
     # Process the override content if exists, and further process the state
     # change if exists.
-    if before_agent_callback_content:
+    if callback_content:
       ret_event = Event(
           invocation_id=ctx.invocation_id,
           author=self.name,
           branch=ctx.branch,
-          content=before_agent_callback_content,
+          content=callback_content,
           actions=callback_context._event_actions,
       )
-      ctx.end_invocation = True
+      if end_invocation_on_content:
+        ctx.end_invocation = True
       return ret_event
 
     if callback_context.state.has_delta():
@@ -564,6 +572,24 @@ class BaseAgent(BaseNode, abc.ABC):
       )
 
     return None
+
+  async def _handle_before_agent_callback(
+      self, ctx: InvocationContext
+  ) -> Optional[Event]:
+    """Runs the before_agent_callback if it exists.
+
+    Args:
+      ctx: InvocationContext, the invocation context for this agent.
+
+    Returns:
+      Optional[Event]: an event if callback provides content or changed state.
+    """
+    return await self._handle_agent_callbacks(
+        ctx,
+        plugin_hook=ctx.plugin_manager.run_before_agent_callback,
+        callbacks=self.canonical_before_agent_callbacks,
+        end_invocation_on_content=True,
+    )
 
   async def _handle_after_agent_callback(
       self, invocation_context: InvocationContext
@@ -577,47 +603,12 @@ class BaseAgent(BaseNode, abc.ABC):
     Returns:
       Optional[Event]: an event if callback provides content or changed state.
     """
-
-    callback_context = CallbackContext(invocation_context)
-
-    # Run callbacks from the plugins.
-    after_agent_callback_content = (
-        await invocation_context.plugin_manager.run_after_agent_callback(
-            agent=self, callback_context=callback_context
-        )
+    return await self._handle_agent_callbacks(
+        invocation_context,
+        plugin_hook=invocation_context.plugin_manager.run_after_agent_callback,
+        callbacks=self.canonical_after_agent_callbacks,
+        end_invocation_on_content=False,
     )
-
-    # If no overrides are provided from the plugins, further run the canonical
-    # callbacks.
-    callbacks = self.canonical_after_agent_callbacks
-    if not after_agent_callback_content and callbacks:
-      after_agent_callback_content = await _run_callbacks(
-          callbacks,
-          _stop_on_truthy,
-          callback_context=callback_context,
-      )
-
-    # Process the override content if exists, and further process the state
-    # change if exists.
-    if after_agent_callback_content:
-      ret_event = Event(
-          invocation_id=invocation_context.invocation_id,
-          author=self.name,
-          branch=invocation_context.branch,
-          content=after_agent_callback_content,
-          actions=callback_context._event_actions,
-      )
-      return ret_event
-
-    if callback_context.state.has_delta():
-      return Event(
-          invocation_id=invocation_context.invocation_id,
-          author=self.name,
-          branch=invocation_context.branch,
-          content=after_agent_callback_content,
-          actions=callback_context._event_actions,
-      )
-    return None
 
   async def _handle_agent_error_callback(
       self,

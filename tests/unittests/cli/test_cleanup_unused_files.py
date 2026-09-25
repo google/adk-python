@@ -117,6 +117,44 @@ async def test_cleanup_unused_files_reports_a_missing_root_directory(tmp_path):
   assert result["unused_files"] == []
 
 
+async def test_cleanup_unused_files_rejects_a_pattern_leaving_the_root(
+    tmp_path,
+):
+  """A glob pattern cannot enumerate files outside the root directory."""
+  root = tmp_path / "project"
+  root.mkdir()
+  _populate(root, ["orphan.py"])
+  _populate(tmp_path, ["outside.py"])
+
+  result = await cleanup_unused_files(
+      used_files=[],
+      tool_context=_tool_context(root),
+      file_patterns=["../*.py"],
+  )
+
+  assert result["unused_files"] == []
+  assert result["errors"] == [
+      "File pattern must stay within the root directory: ../*.py"
+  ]
+
+
+async def test_cleanup_unused_files_skips_a_match_pointing_outside_the_root(
+    tmp_path,
+):
+  """A symlink inside the root does not pull an outside file into the scan."""
+  root = tmp_path / "project"
+  root.mkdir()
+  _populate(tmp_path, ["outside/secret.py"])
+  (root / "link.py").symlink_to(tmp_path / "outside" / "secret.py")
+
+  result = await cleanup_unused_files(
+      used_files=[], tool_context=_tool_context(root)
+  )
+
+  assert result["success"]
+  assert result["unused_files"] == []
+
+
 async def test_cleanup_unused_files_fails_closed_on_a_used_file_escape(
     tmp_path,
 ):
