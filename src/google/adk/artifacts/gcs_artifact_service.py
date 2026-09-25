@@ -213,6 +213,7 @@ class GcsArtifactService(BaseArtifactService):
     if self._file_has_user_namespace(filename):
       return f"{app_name}/{user_id}/user/{filename}"
 
+    session_id = artifact_util.normalize_session_id(session_id)
     if session_id is None:
       raise InputValidationError(
           "Session ID must be provided for session-scoped artifacts."
@@ -263,6 +264,7 @@ class GcsArtifactService(BaseArtifactService):
       artifact_util._validate_session_id_for_flat_storage(session_id)
 
     artifact = ensure_part(artifact)
+    session_id = artifact_util.normalize_session_id(session_id)
     blob_metadata = {k: str(v) for k, v in (custom_metadata or {}).items()}
     if artifact.inline_data and artifact.inline_data.display_name:
       blob_metadata[_GCS_DISPLAY_NAME_METADATA_KEY] = (
@@ -358,6 +360,7 @@ class GcsArtifactService(BaseArtifactService):
       *,
       max_depth: int = artifact_util._MAX_ARTIFACT_REFERENCE_DEPTH,
   ) -> Optional[types.Part]:
+    session_id = artifact_util.normalize_session_id(session_id)
     if version is None:
       versions = self._list_versions(
           app_name=app_name,
@@ -435,6 +438,7 @@ class GcsArtifactService(BaseArtifactService):
   ) -> list[str]:
     artifact_util.validate_path_segment(app_name, "app_name")
     artifact_util.validate_path_segment(user_id, "user_id")
+    session_id = artifact_util.normalize_session_id(session_id)
     if session_id is not None:
       artifact_util.validate_path_segment(session_id, "session_id")
     filenames = set()
@@ -640,6 +644,7 @@ class GcsArtifactService(BaseArtifactService):
       max_depth: int = artifact_util._MAX_ARTIFACT_REFERENCE_DEPTH,
   ) -> Optional[str]:
     """Generates an authenticated browser URL for an artifact."""
+    session_id = artifact_util.normalize_session_id(session_id)
     if version is None:
       versions = self._list_versions(
           app_name=app_name,
@@ -738,6 +743,7 @@ class GcsArtifactService(BaseArtifactService):
       max_depth: int = artifact_util._MAX_ARTIFACT_REFERENCE_DEPTH,
   ) -> Optional[str]:
     """Generates a time-limited signed URL for an artifact."""
+    session_id = artifact_util.normalize_session_id(session_id)
     if version is None:
       versions = self._list_versions(
           app_name=app_name,
