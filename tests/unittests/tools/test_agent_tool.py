@@ -1338,6 +1338,89 @@ async def test_run_async_preserves_error_when_only_thought_parts():
   assert result == 'A2A request failed: 503'
 
 
+@mark.asyncio
+async def test_run_async_reports_error_when_wrapped_agent_pauses():
+  """A HITL pause (adk_request_confirmation) must not look like a success.
+
+  The nested run's session is thrown away once AgentTool.run_async returns,
+  so a pending long_running_tool_ids call can never be resumed. The caller
+  must see an explicit error instead of {"result": ""}, which would make its
+  model believe the pending action already completed.
+  """
+  result = await _run_agent_tool_with_events([
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name='adk_request_confirmation', args={}
+                      )
+                  )
+              ],
+          ),
+          long_running_tool_ids={'adk-123'},
+      ),
+  ])
+  assert result != ''
+  assert 'adk-123' in result
+  assert 'inner_agent' in result
+
+
+@mark.asyncio
+async def test_run_async_returns_final_answer_after_long_running_tool_resolves():
+  """A long-running call answered later in the same run is not a pause.
+
+  An ordinary LongRunningFunctionTool that returns a truthy progress value
+  (e.g. {'status': 'pending'}) gets an auto-built function response in the
+  very same turn (see _caller.py), and the agent can go on to produce a real
+  final answer after that. long_running_tool_ids is still set on the call
+  event in this case, but the call is not actually left pending when the run
+  ends, so AgentTool must return the genuine final answer instead of the
+  "paused" error.
+  """
+  result = await _run_agent_tool_with_events([
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name='slow_tool', args={}, id='adk-123'
+                      )
+                  )
+              ],
+          ),
+          long_running_tool_ids={'adk-123'},
+      ),
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='slow_tool',
+                          response={'status': 'pending'},
+                          id='adk-123',
+                      )
+                  )
+              ],
+          ),
+      ),
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='model',
+              parts=[types.Part(text='final answer after pending tool')],
+          ),
+      ),
+  ])
+  assert result == 'final answer after pending tool'
+
+
 class TestAgentToolWithCompositeAgents:
   """Tests for AgentTool wrapping composite agents (SequentialAgent, etc.)."""
 

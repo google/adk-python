@@ -317,6 +317,14 @@ class AgentTool(BaseTool):
     last_content = None
     last_error_message = None
     last_grounding_metadata = None
+    # Long-running tool calls (adk_request_confirmation, adk_request_input, a
+    # remote agent's input_required, or an ordinary LongRunningFunctionTool)
+    # all set long_running_tool_ids on the event carrying the call. Most of
+    # them resolve later in the very same run via an auto-built function
+    # response (e.g. a progress-reporting tool that returns a truthy value),
+    # so only a call id that is *never* answered by a following function
+    # response before the run ends is actually still pending.
+    pending_tool_ids: set[str] = set()
     async with Aclosing(
         runner.run_async(
             user_id=session.user_id,
@@ -334,10 +342,29 @@ class AgentTool(BaseTool):
         if event.content:
           last_content = event.content
           last_grounding_metadata = event.grounding_metadata
+          pending_tool_ids -= {
+              fr.id for fr in event.get_function_responses() if fr.id
+          }
+        if event.long_running_tool_ids:
+          pending_tool_ids |= event.long_running_tool_ids
 
     # Clean up runner resources (especially MCP sessions)
     # to avoid "Attempted to exit cancel scope in a different task" errors
     await runner.close()
+
+    if pending_tool_ids:
+      # The nested run's own session is discarded once this call returns, so
+      # a call id still pending here (e.g. adk_request_confirmation or
+      # adk_request_input) has nowhere left to be resumed. Surface that as an
+      # explicit error instead of silently returning "" and letting the
+      # caller's model believe the wrapped agent finished.
+      return (
+          f'Error: agent {self.agent.name!r} paused for human input or'
+          ' confirmation'
+          f' (pending call ids: {sorted(pending_tool_ids)}), which AgentTool'
+          ' cannot resume. Wrap it as a single_turn sub-agent instead if it'
+          ' needs to pause mid-call.'
+      )
 
     if last_content is None or last_content.parts is None:
       return last_error_message or ''
