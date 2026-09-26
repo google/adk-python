@@ -282,6 +282,43 @@ async def test_run_with_auth_async(
     assert result == {"status": "success", "data": "mock_data"}
 
 
+@pytest.mark.asyncio
+async def test_run_with_auth_async_keeps_token_out_of_caller_args_and_logs(
+    integration_tool_with_auth, mock_rest_api_tool, caplog
+):
+  """The caller's args also feed after-tool callbacks and the tool span."""
+  input_args = {"user_id": "user123"}
+
+  with mock.patch.object(
+      ToolAuthHandler, "from_tool_context", autospec=True
+  ) as mock_from_tool_context:
+    mock_from_tool_context.return_value.prepare_auth_credentials = (
+        mock.AsyncMock(
+            return_value=AuthPreparationResult(
+                state="done",
+                auth_credential=AuthCredential(
+                    auth_type=AuthCredentialTypes.HTTP,
+                    http=HttpAuth(
+                        scheme="bearer",
+                        credentials=HttpCredentials(token="secret-token"),
+                    ),
+                ),
+            )
+        )
+    )
+    with caplog.at_level("INFO"):
+      await integration_tool_with_auth.run_async(
+          args=input_args, tool_context={}
+      )
+
+  assert input_args == {"user_id": "user123"}
+  sent_args = mock_rest_api_tool.call.call_args.kwargs["args"]
+  assert sent_args["dynamic_auth_config"] == {
+      "oauth2_auth_code_flow.access_token": "secret-token"
+  }
+  assert "secret-token" not in caplog.text
+
+
 class TestIntegrationConnectorToolWithJsonSchema:
 
   def test_get_declaration_with_json_schema_feature_enabled(

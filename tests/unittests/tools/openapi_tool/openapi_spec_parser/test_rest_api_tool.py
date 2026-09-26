@@ -369,6 +369,42 @@ class TestRestApiTool:
       "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
   )
   @pytest.mark.asyncio
+  async def test_call_does_not_add_auth_params_to_caller_args(
+      self,
+      mock_request,
+      mock_tool_context,
+      sample_endpoint,
+      sample_operation,
+  ):
+    """The caller's args also feed after-tool callbacks and the tool span."""
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"result": "success"}
+    mock_request.return_value = mock_response
+    auth_scheme, auth_credential = token_to_scheme_credential(
+        "apikey", "header", "X-API-Key", "secret-api-key"
+    )
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_scheme=auth_scheme,
+        auth_credential=auth_credential,
+    )
+    args = {"testBodyParam": "value"}
+
+    await tool.call(args=args, tool_context=mock_tool_context)
+
+    assert args == {"testBodyParam": "value"}
+    assert (
+        mock_request.call_args.kwargs["headers"]["X-API-Key"]
+        == "secret-api-key"
+    )
+
+  @patch(
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
+  )
+  @pytest.mark.asyncio
   async def test_call_http_failure(
       self,
       mock_request,

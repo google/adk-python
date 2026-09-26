@@ -173,6 +173,12 @@ class IntegrationConnectorTool(BaseTool):
           'message': 'Needs your authorization to access your data.',
       }
 
+    # The access token added below must stay out of this log line and out of
+    # the caller's args, which are also handed to after-tool callbacks and
+    # recorded on the tool span.
+    logger.info('Running tool: %s with args: %s', self.name, args)
+    args = args.copy()
+
     # Attach parameters from auth into main parameters list
     if auth_result.auth_credential:
       # Attach parameters from auth into main parameters list
@@ -192,7 +198,6 @@ class IntegrationConnectorTool(BaseTool):
     args['entity'] = self._entity
     args['operation'] = self._operation
     args['action'] = self._action
-    logger.info('Running tool: %s with args: %s', self.name, args)
     return await self._rest_api_tool.call(args=args, tool_context=tool_context)
 
   def __str__(self):
