@@ -507,9 +507,10 @@ def convert_a2a_task_to_event(
         )
         if not metadata_fields:
           metadata_fields = _extract_all_metadata_fields(artifact.metadata)
-      output_parts, _ = _convert_a2a_parts_to_adk_parts(
+      output_parts, ids = _convert_a2a_parts_to_adk_parts(
           artifact_parts, part_converter
       )
+      long_running_function_ids.update(ids)
     if status_message and (
         a2a_task.status.state == _compat.TS_INPUT_REQUIRED
         or a2a_task.status.state == _compat.TS_AUTH_REQUIRED
@@ -586,7 +587,7 @@ def convert_a2a_message_to_event(
     raise ValueError("A2A message cannot be None")
 
   try:
-    output_parts, _ = _convert_a2a_parts_to_adk_parts(
+    output_parts, long_running_function_ids = _convert_a2a_parts_to_adk_parts(
         a2a_message.parts, part_converter
     )
     content_role = _a2a_role_to_content_role(getattr(a2a_message, "role", None))
@@ -596,6 +597,7 @@ def convert_a2a_message_to_event(
         invocation_context,
         author,
         _extract_event_actions(a2a_message.metadata),
+        long_running_function_ids,
         content_role=content_role,
         **metadata_fields,
     )
@@ -685,7 +687,7 @@ def convert_a2a_artifact_update_to_event(
     raise ValueError("A2A artifact update cannot be None")
 
   try:
-    output_parts, _ = _convert_a2a_parts_to_adk_parts(
+    output_parts, long_running_function_ids = _convert_a2a_parts_to_adk_parts(
         a2a_artifact_update.artifact.parts, part_converter
     )
     metadata_fields = _extract_all_metadata_fields(
@@ -696,6 +698,7 @@ def convert_a2a_artifact_update_to_event(
         invocation_context,
         author,
         _extract_event_actions(a2a_artifact_update.artifact.metadata),
+        long_running_function_ids,
         partial=not a2a_artifact_update.last_chunk,
         **metadata_fields,
     )
