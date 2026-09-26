@@ -24,6 +24,7 @@ if TYPE_CHECKING:
   from .agents.llm_agent import Agent
   from .events.event import Event
   from .runners import Runner
+  from .utils.event_loop import enable_uvloop
   from .workflow import Workflow
 
 __version__ = version.__version__
@@ -33,7 +34,8 @@ _LAZY_MEMBERS: dict[str, str] = {
     'Event': '.events.event',
     'Runner': '.runners',
     'Workflow': '.workflow',
+    'enable_uvloop': '.utils.event_loop',
 }
-__all__ = ['Agent', 'Context', 'Event', 'Runner', 'Workflow']
+__all__ = ['Agent', 'Context', 'Event', 'Runner', 'Workflow', 'enable_uvloop']
 
 __getattr__, __dir__ = _lazy.accessors(globals(), _LAZY_MEMBERS)
