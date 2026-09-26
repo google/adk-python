@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from google.adk.runners import Runner
@@ -30,6 +31,13 @@ except ImportError as e:
   ) from e
 
 logger = logging.getLogger("google_adk." + __name__)
+
+_SESSION_ID_UNSAFE_CHARS = re.compile(r"[^A-Za-z0-9_-]")
+
+
+def _to_session_id_part(value: str) -> str:
+  """Converts Slack identifiers into ADK session-id-safe strings."""
+  return _SESSION_ID_UNSAFE_CHARS.sub("_", value)
 
 
 class SlackRunner:
@@ -73,8 +81,14 @@ class SlackRunner:
     if not text or not user_id or not channel_id:
       return
 
-    # In Slack, we can use the channel_id (and optionally thread_ts) as a session ID.
-    session_id = f"{channel_id}-{thread_ts}" if thread_ts else channel_id
+    # In Slack, we can use the channel_id (and optionally thread_ts) as a
+    # session ID. Slack timestamps contain "." but managed session services only
+    # accept letters, numbers, "_" and "-".
+    session_id = (
+        f"{_to_session_id_part(channel_id)}-{_to_session_id_part(thread_ts)}"
+        if thread_ts
+        else _to_session_id_part(channel_id)
+    )
 
     new_message = types.Content(role="user", parts=[types.Part(text=text)])
 
