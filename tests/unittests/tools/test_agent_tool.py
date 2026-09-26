@@ -28,6 +28,7 @@ from google.adk.agents.run_config import StreamingMode
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
@@ -1336,6 +1337,37 @@ async def test_run_async_preserves_error_when_only_thought_parts():
       Event(author='inner_agent', error_message='A2A request failed: 503'),
   ])
   assert result == 'A2A request failed: 503'
+
+
+@mark.asyncio
+async def test_run_async_extracts_output_when_final_event_has_no_content():
+  """A task-mode `finish_task` event carries its result on `output`, not `content`."""
+  result = await _run_agent_tool_with_events([
+      Event(author='inner_agent', output={'result': '42'}),
+  ])
+  assert result == {'result': '42'}
+
+
+@mark.asyncio
+async def test_run_async_extracts_skip_summarization_function_response():
+  """A tool response with `skip_summarization` set carries the real result."""
+  result = await _run_agent_tool_with_events([
+      Event(
+          author='inner_agent',
+          content=types.Content(
+              role='user',
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name='lookup', response={'answer': '42'}
+                      )
+                  )
+              ],
+          ),
+          actions=EventActions(skip_summarization=True),
+      ),
+  ])
+  assert result == {'answer': '42'}
 
 
 class TestAgentToolWithCompositeAgents:
