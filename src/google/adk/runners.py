@@ -764,6 +764,11 @@ class Runner:
             f'Unexpected node event queue item: {type(event_or_done).__name__}'
         )
       event = event_or_done
+      output_event = await self._process_event_with_plugin_callbacks(
+          invocation_context=ic,
+          event=event,
+      )
+
       # When an LlmAgent node uses ``message_as_output`` (no
       # ``output_schema``), the wrapper sets both ``event.content``
       # (the model's text) AND ``event.output`` (the same text) to
@@ -772,17 +777,14 @@ class Runner:
       # surface the same text twice.  Task-mode agents set
       # ``event.output`` from the ``finish_task`` FC args without
       # ``message_as_output``, so this clearing doesn't affect them.
-      if not event.partial:
-        if event.node_info.message_as_output and event.content is not None:
-          event = event.model_copy()
-          event.output = None
-
-      output_event = await self._process_event_with_plugin_callbacks(
-          invocation_context=ic,
-          event=event,
-      )
-
-      if not event.partial:
+      if not output_event.partial:
+        if (
+            output_event.node_info
+            and output_event.node_info.message_as_output
+            and output_event.content is not None
+        ):
+          output_event = output_event.model_copy()
+          output_event.output = None
         await self.session_service.append_event(
             session=ic.session, event=output_event
         )
@@ -1442,7 +1444,7 @@ class Runner:
             invocation_context=invocation_context,
             event=early_exit_event,
         )
-        if self._should_append_event(early_exit_event, is_live_call):
+        if self._should_append_event(output_event, is_live_call):
           await self.session_service.append_event(
               session=invocation_context.session,
               event=output_event,
@@ -1461,15 +1463,16 @@ class Runner:
 
             if is_live_call:
               # Skip partial transcriptions for Live
-              if event.partial is not True and self._should_append_event(
-                  event, is_live_call
+              if (
+                  output_event.partial is not True
+                  and self._should_append_event(output_event, is_live_call)
               ):
                 logger.debug('Appending live event: %s', output_event)
                 await self.session_service.append_event(
                     session=invocation_context.session, event=output_event
                 )
             else:
-              if event.partial is not True:
+              if output_event.partial is not True:
                 await self.session_service.append_event(
                     session=invocation_context.session, event=output_event
                 )
@@ -2063,15 +2066,37 @@ class Runner:
           state_delta=state_delta,
       )
 
-  def _collect_toolset(self, agent: BaseAgent) -> set[BaseToolset]:
+  def _collect_toolset(
+      self, root: BaseNode, visited: set[int] | None = None
+  ) -> set[BaseToolset]:
+    if visited is None:
+      visited = set()
+    root_id = id(root)
+    if root_id in visited:
+      return set()
+    visited.add(root_id)
+
     toolsets: set[BaseToolset] = set()
-    if hasattr(agent, 'tools'):
-      for tool_union in agent.tools:
+    if hasattr(root, 'tools'):
+      for tool_union in getattr(root, 'tools', ()) or ():
         if isinstance(tool_union, BaseToolset):
           toolsets.add(tool_union)
-    if hasattr(agent, 'sub_agents'):
-      for sub_agent in agent.sub_agents:
-        toolsets.update(self._collect_toolset(sub_agent))
+    if hasattr(root, 'sub_agents'):
+      for sub_agent in getattr(root, 'sub_agents', ()) or ():
+        toolsets.update(self._collect_toolset(sub_agent, visited))
+    if hasattr(root, 'graph') and getattr(root, 'graph', None):
+      graph = getattr(root, 'graph')
+      nodes = getattr(graph, 'nodes', None)
+      if nodes:
+        node_iter = nodes.values() if isinstance(nodes, dict) else nodes
+        for node in node_iter:
+          toolsets.update(self._collect_toolset(node, visited))
+    if hasattr(root, '_node') and getattr(root, '_node', None):
+      toolsets.update(self._collect_toolset(getattr(root, '_node'), visited))
+    if hasattr(root, '_inner_node') and getattr(root, '_inner_node', None):
+      toolsets.update(
+          self._collect_toolset(getattr(root, '_inner_node'), visited)
+      )
     return toolsets
 
   async def _cleanup_toolsets(
@@ -2139,7 +2164,7 @@ class Runner:
     """Closes the runner."""
     logger.info('Closing runner...')
     # Close Toolsets
-    if isinstance(self.agent, BaseAgent):
+    if self.agent is not None:
       await self._cleanup_toolsets(self._collect_toolset(self.agent))
 
     # Close Plugins

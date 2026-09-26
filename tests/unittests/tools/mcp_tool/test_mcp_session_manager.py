@@ -26,6 +26,7 @@ from unittest.mock import patch
 import urllib.parse
 
 from google.adk.dependencies import _httpx as httpx
+from google.adk.dependencies._mcp import IS_MCP_SDK_V2
 from google.adk.dependencies._mcp import McpError
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
@@ -2485,6 +2486,88 @@ class TestDebugHttpxClientFactory:
     assert record["response_body"].startswith("b" * 1000)
 
     await base_client.aclose()
+
+  @pytest.mark.asyncio
+  async def test_timeout_reaches_a_factory_built_on_the_other_httpx(self):
+    """A factory returning the other major's client must get a usable timeout.
+
+    Neither major recognizes the other's `Timeout`, and each stores an
+    unrecognized one whole as all four of its own fields. The mismatch is
+    therefore silent at construction and only surfaces as arithmetic on the
+    first request.
+    """
+    foreign = pytest.importorskip(
+        "httpx" if IS_MCP_SDK_V2 else "httpx2",
+        reason="the other httpx major is not installed",
+    )
+
+    def foreign_factory(headers=None, timeout=None, auth=None):
+      return foreign.AsyncClient(headers=headers, timeout=timeout, auth=auth)
+
+    debug_factory = _DebugHttpxClientFactory(foreign_factory)
+    client = debug_factory(timeout=httpx.Timeout(15.0, read=300.0))
+    try:
+      assert client.timeout.connect == 15.0
+      assert client.timeout.read == 300.0
+      assert client.timeout.write == 15.0
+      assert client.timeout.pool == 15.0
+    finally:
+      await client.aclose()
+
+  @pytest.mark.asyncio
+  async def test_timeout_reaches_the_factory_in_a_portable_form(self):
+    """The test above needs both majors installed; this one needs neither.
+
+    A four-item tuple is the fallback both majors' `Timeout` constructors
+    accept, so handing the factory something that is one is what makes the
+    other major able to read it at all.
+    """
+    received = {}
+
+    def recording_factory(headers=None, timeout=None, auth=None):
+      received["timeout"] = timeout
+      return httpx.AsyncClient()
+
+    debug_factory = _DebugHttpxClientFactory(recording_factory)
+    client = debug_factory(timeout=httpx.Timeout(15.0, read=300.0))
+    try:
+      assert tuple(received["timeout"]) == (15.0, 300.0, 15.0, 15.0)
+    finally:
+      await client.aclose()
+
+  @pytest.mark.asyncio
+  async def test_timeout_stays_a_timeout_for_a_matching_factory(self):
+    """A factory that reads the timeout's own fields keeps working."""
+    received = {}
+
+    def introspecting_factory(headers=None, timeout=None, auth=None):
+      received["timeout"] = timeout
+      return httpx.AsyncClient(timeout=timeout.connect)
+
+    debug_factory = _DebugHttpxClientFactory(introspecting_factory)
+    client = debug_factory(timeout=httpx.Timeout(15.0, read=300.0))
+    try:
+      assert isinstance(received["timeout"], httpx.Timeout)
+      assert received["timeout"].connect == 15.0
+      assert received["timeout"].read == 300.0
+    finally:
+      await client.aclose()
+
+  @pytest.mark.asyncio
+  async def test_timeout_of_none_reaches_the_factory_unchanged(self):
+    """A `None` timeout stays `None` rather than becoming a default."""
+    received = {}
+
+    def recording_factory(headers=None, timeout=None, auth=None):
+      received["timeout"] = timeout
+      return httpx.AsyncClient()
+
+    debug_factory = _DebugHttpxClientFactory(recording_factory)
+    client = debug_factory()
+    try:
+      assert received["timeout"] is None
+    finally:
+      await client.aclose()
 
 
 class TestDebugHttpxClientFactoryOtelReporting:
