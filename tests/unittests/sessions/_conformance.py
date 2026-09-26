@@ -137,9 +137,6 @@ BACKENDS = [
     _Backend('in_memory_light_copy', _make_in_memory_light_copy),
     _Backend('database', _make_database),
     _Backend('sqlite', _make_sqlite),
-    # One more Redis divergence has no contract test to hang an xfail on yet:
-    # it builds its key scan pattern from a truthiness check on the user id, so
-    # an empty one lists every user's sessions.
     _Backend(
         'redis',
         _make_redis,

@@ -626,6 +626,32 @@ async def test_list_sessions_all_users(session_service):
 
 
 @pytest.mark.asyncio
+async def test_list_sessions_with_empty_user_id_lists_only_that_user(
+    session_service,
+):
+  """An empty user id is a user id, not a request for every user."""
+  app_name = 'my_app'
+  await session_service.create_session(
+      app_name=app_name, user_id='', session_id='empty_user_session'
+  )
+  await session_service.create_session(
+      app_name=app_name,
+      user_id='other_user',
+      session_id='other_user_session',
+      state={'user:name': 'other'},
+  )
+
+  list_sessions_response = await session_service.list_sessions(
+      app_name=app_name, user_id=''
+  )
+
+  assert [s.id for s in list_sessions_response.sessions] == [
+      'empty_user_session'
+  ]
+  assert list_sessions_response.sessions[0].state == {}
+
+
+@pytest.mark.asyncio
 async def test_app_state_is_shared_by_all_users_of_app(session_service):
   app_name = 'my_app'
   # User 1 creates a session, establishing app:k1
