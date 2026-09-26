@@ -251,6 +251,59 @@ async def test_evaluate_invocations_with_mock(
 
 
 @pytest.mark.asyncio
+async def test_evaluate_invocations_default_config_disables_afc(
+    mock_judge_model, mocker
+):
+  # The default judge request must disable google-genai's automatic function
+  # calling, since the judge never calls tools and enabling it only produces
+  # a spurious AFC warning on every eval run.
+  judge = MockLlmAsJudge(
+      eval_metric=EvalMetric(
+          metric_name="test_metric",
+          threshold=0.5,
+          criterion=LlmAsAJudgeCriterion(
+              threshold=0.5,
+              judge_model_options=JudgeModelOptions(
+                  judge_model="gemini-2.5-flash",
+                  num_samples=1,
+              ),
+          ),
+      ),
+      criterion_type=LlmAsAJudgeCriterion,
+  )
+  judge._judge_model = mock_judge_model
+  captured_requests = []
+  original_generate_content_async = mock_judge_model.generate_content_async
+
+  def capturing_generate_content_async(llm_request):
+    captured_requests.append(llm_request)
+    return original_generate_content_async(llm_request)
+
+  judge._judge_model.generate_content_async = capturing_generate_content_async
+
+  actual_invocations = [
+      Invocation(
+          invocation_id="id1",
+          user_content=genai_types.Content(
+              parts=[genai_types.Part(text="user content 1")],
+              role="user",
+          ),
+          final_response=genai_types.Content(
+              parts=[genai_types.Part(text="final response 1")],
+              role="model",
+          ),
+      )
+  ]
+
+  await judge.evaluate_invocations(actual_invocations)
+
+  assert len(captured_requests) == 1
+  config = captured_requests[0].config
+  assert config.automatic_function_calling is not None
+  assert config.automatic_function_calling.disable is True
+
+
+@pytest.mark.asyncio
 async def test_evaluate_invocations_grades_criterion_only_metric(
     mock_judge_model,
 ):
