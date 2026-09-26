@@ -17,7 +17,11 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from collections.abc import Awaitable
+from collections.abc import Callable
 import re
+from typing import Any
+from unittest.mock import Mock
 
 
 class FakeRedisAsync:
@@ -29,6 +33,7 @@ class FakeRedisAsync:
     self._created_at: dict[str, float] = {}
     self._current_time: float = 0.0
     self.scan_patterns: list[str] = []
+    self._versions: dict[str, int] = {}
 
   def advance_time(self, seconds: float) -> None:
     self._current_time += seconds
@@ -43,6 +48,7 @@ class FakeRedisAsync:
         self._store.pop(key, None)
         self._ex_store.pop(key, None)
         self._created_at.pop(key, None)
+        self._versions[key] = self._versions.get(key, 0) + 1
         return True
     return False
 
@@ -63,6 +69,7 @@ class FakeRedisAsync:
     self._store[key] = value
     self._ex_store[key] = ex
     self._created_at[key] = self._current_time
+    self._versions[key] = self._versions.get(key, 0) + 1
     return True
 
   async def delete(self, key: str) -> int:
@@ -70,8 +77,26 @@ class FakeRedisAsync:
     self._created_at.pop(key, None)
     if key in self._store:
       del self._store[key]
+      self._versions[key] = self._versions.get(key, 0) + 1
       return 1
     return 0
+
+  async def transaction(
+      self, func: Callable[[Any], Awaitable[None]], key: str
+  ) -> list[bool | None]:
+    """Retries a queued write if the watched key changed or expired."""
+    while True:
+      self._is_expired(key)
+      version = self._versions.get(key, 0)
+      pipe = Mock(get=self.get)
+      await func(pipe)
+      self._is_expired(key)
+      if self._versions.get(key, 0) != version:
+        continue
+      return [
+          await self.set(*call.args, **call.kwargs)
+          for call in pipe.set.call_args_list
+      ]
 
   @staticmethod
   def _glob_match(pattern: str, key: str) -> bool:
