@@ -519,3 +519,100 @@ def test_a2a_to_dict_v1_keeps_the_flat_raw_field_by_default(monkeypatch):
   monkeypatch.setattr(_compat, 'IS_A2A_V1', True)
 
   assert _compat.a2a_to_dict(_v1_file_part())['raw'] == _ENCODED_PAYLOAD
+
+
+# --------------------------------------------------------------------------
+# make_stream_normalizer
+# --------------------------------------------------------------------------
+v1_only = pytest.mark.skipif(
+    not _compat.IS_A2A_V1, reason='1.x StreamResponse shapes'
+)
+
+
+def _v1_artifact_chunk(artifact_id: str, text: str, *, append: bool):
+  from a2a.types import Artifact
+  from a2a.types import StreamResponse
+  from a2a.types import TaskArtifactUpdateEvent
+
+  return StreamResponse(
+      artifact_update=TaskArtifactUpdateEvent(
+          task_id='task-1',
+          context_id='ctx-1',
+          append=append,
+          last_chunk=False,
+          artifact=Artifact(
+              artifact_id=artifact_id, parts=[_compat.make_text_part(text)]
+          ),
+      )
+  )
+
+
+def _v1_task_snapshot():
+  from a2a.types import StreamResponse
+  from a2a.types import Task
+  from a2a.types import TaskState
+  from a2a.types import TaskStatus
+
+  # What a server or proxy emits as the running task's state: status only.
+  return StreamResponse(
+      task=Task(
+          id='task-1',
+          context_id='ctx-1',
+          status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
+      )
+  )
+
+
+@v1_only
+def test_stream_normalizer_task_snapshot_keeps_streamed_artifacts():
+  """A running-Task snapshot arriving between two chunks of one artifact must
+  not erase the chunk already folded in (#6680).
+
+  Before the fix the snapshot replaced the aggregate wholesale, so the
+  ``append=True`` chunk that followed raised ``append=True for nonexistent
+  artifact_id`` in ``append_artifact_to_task`` -- the crash reported on the
+  ``RemoteA2aAgent`` delegation path. The append/partial flag on the chunks
+  is not the cause and is unchanged here.
+  """
+  normalize = _compat.make_stream_normalizer()
+
+  normalize(_v1_artifact_chunk('art-1', 'The', append=False))
+  task, _ = normalize(_v1_task_snapshot())
+  assert [a.artifact_id for a in task.artifacts] == ['art-1']
+
+  task, _ = normalize(_v1_artifact_chunk('art-1', ' sky', append=True))
+
+  assert len(task.artifacts) == 1
+  assert [p.text for p in task.artifacts[0].parts] == ['The', ' sky']
+
+
+@v1_only
+def test_stream_normalizer_task_snapshot_with_artifacts_is_authoritative():
+  """A snapshot that does carry an artifact wins for that id; only artifacts
+  the snapshot lacks are carried over."""
+  from a2a.types import Artifact
+  from a2a.types import StreamResponse
+  from a2a.types import Task
+  from a2a.types import TaskState
+  from a2a.types import TaskStatus
+
+  normalize = _compat.make_stream_normalizer()
+  normalize(_v1_artifact_chunk('art-1', 'stale', append=False))
+  normalize(_v1_artifact_chunk('art-2', 'other', append=False))
+
+  snapshot = StreamResponse(
+      task=Task(
+          id='task-1',
+          context_id='ctx-1',
+          status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
+          artifacts=[
+              Artifact(
+                  artifact_id='art-1', parts=[_compat.make_text_part('fresh')]
+              )
+          ],
+      )
+  )
+  task, _ = normalize(snapshot)
+
+  by_id = {a.artifact_id: [p.text for p in a.parts] for a in task.artifacts}
+  assert by_id == {'art-1': ['fresh'], 'art-2': ['other']}

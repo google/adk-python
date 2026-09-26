@@ -727,7 +727,20 @@ def make_stream_normalizer() -> Callable[[Any], Any]:
     if kind == "message":
       return payload
     if kind == "task":
-      # A full task state is already passed; use it as the aggregate.
+      # A full task state is already passed; use it as the aggregate -- but
+      # a snapshot is only as complete as its sender made it. Servers and
+      # proxies emit running-Task snapshots that carry status and no
+      # artifacts; replacing the aggregate with one of those after an
+      # ``append=False`` chunk has been folded in discards that artifact, and
+      # the next ``append=True`` chunk then fails in ``append_artifact_to_task``
+      # with "append=True for nonexistent artifact_id" (#6680). Carry over any
+      # artifact the running task already holds that the snapshot does not.
+      running: Optional[Task] = state["task"]
+      if running is not None and running.artifacts:
+        known = {a.artifact_id for a in payload.artifacts}
+        for artifact in running.artifacts:
+          if artifact.artifact_id not in known:
+            payload.artifacts.append(artifact)
       state["task"] = payload
       return (_snapshot(payload), None)
     task = _ensure_task(payload)
