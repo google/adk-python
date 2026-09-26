@@ -743,6 +743,16 @@ def _is_gemma4_model(model: str) -> bool:
   return bool(_GEMMA4_MODEL_PATTERN.search(model.lower()))
 
 
+def _resolve_tool_result_role(
+    model: str,
+    tool_result_role: Literal["tool", "tool_responses"] | None = None,
+) -> Literal["tool", "tool_responses"]:
+  """Returns the override, or Gemma-4 auto-detect when unset."""
+  if tool_result_role is not None:
+    return tool_result_role
+  return "tool_responses" if _is_gemma4_model(model) else "tool"
+
+
 class ChatCompletionFileUrlObject(TypedDict, total=False):
   file_data: str
   file_id: str
@@ -1304,6 +1314,7 @@ async def _content_to_message_param(
     *,
     provider: str = "",
     model: str = "",
+    tool_result_role: Literal["tool", "tool_responses"] | None = None,
 ) -> Union[Message, list[Message]] | None:
   """Converts a types.Content to a litellm Message or list of Messages.
 
@@ -1314,6 +1325,8 @@ async def _content_to_message_param(
     content: The content to convert.
     provider: The LLM provider name (e.g., "openai", "azure").
     model: The LiteLLM model string, used for provider-specific behavior.
+    tool_result_role: Override for tool-result message role. None keeps
+      Gemma-4 auto-detect.
 
   Returns:
     A litellm Message, a list of litellm Messages, or None if skipped.
@@ -1340,8 +1353,8 @@ async def _content_to_message_param(
       # from the tool call, instead of OpenAI-compatible 'tool' role used by other models.
       # Earlier Gemma versions before version 4 do not support tool use,
       # so this check is intentionally scoped to only look for "gemma4" in the model name.
-      tool_role: Literal["tool", "tool_responses"] = (
-          "tool_responses" if _is_gemma4_model(model) else "tool"
+      tool_role: Literal["tool", "tool_responses"] = _resolve_tool_result_role(
+          model, tool_result_role
       )
       tool_messages.append(
           _tool_message(
@@ -1365,6 +1378,7 @@ async def _content_to_message_param(
         types.Content(role=content.role, parts=non_tool_parts),
         provider=provider,
         model=model,
+        tool_result_role=tool_result_role,
     )
     follow_up_messages = (
         follow_up if isinstance(follow_up, list) else [follow_up]
@@ -1498,7 +1512,12 @@ async def _content_to_message_param(
     )
 
 
-def _ensure_tool_results(messages: List[Message], model: str) -> List[Message]:
+def _ensure_tool_results(
+    messages: List[Message],
+    model: str,
+    *,
+    tool_result_role: Literal["tool", "tool_responses"] | None = None,
+) -> List[Message]:
   """Insert placeholder tool messages for missing tool results.
 
   LiteLLM-backed providers like OpenAI and Anthropic reject histories where an
@@ -1517,7 +1536,7 @@ def _ensure_tool_results(messages: List[Message], model: str) -> List[Message]:
   healed_messages: List[Message] = []
   pending_tool_call_ids: List[str] = []
   expected_tool_role: Literal["tool", "tool_responses"] = (
-      "tool_responses" if _is_gemma4_model(model) else "tool"
+      _resolve_tool_result_role(model, tool_result_role)
   )
 
   for message in messages:
@@ -2941,6 +2960,8 @@ def _to_litellm_response_format(
 async def _get_completion_inputs(
     llm_request: LlmRequest,
     model: str,
+    *,
+    tool_result_role: Literal["tool", "tool_responses"] | None = None,
 ) -> Tuple[
     List[Message],
     Optional[List[Dict[str, Any]]],
@@ -2967,7 +2988,10 @@ async def _get_completion_inputs(
   messages: List[Message] = []
   for content in llm_request.contents or []:
     message_param_or_list = await _content_to_message_param(
-        content, provider=provider, model=model
+        content,
+        provider=provider,
+        model=model,
+        tool_result_role=tool_result_role,
     )
     if isinstance(message_param_or_list, list):
       messages.extend(message_param_or_list)
@@ -2983,7 +3007,9 @@ async def _get_completion_inputs(
             content=system_instruction,
         ),
     )
-  messages = _ensure_tool_results(messages, model)
+  messages = _ensure_tool_results(
+      messages, model, tool_result_role=tool_result_role
+  )
 
   # 2. Convert tool declarations
   tools: Optional[List[Dict[str, Any]]] = None
@@ -3332,12 +3358,17 @@ class LiteLlm(BaseLlm):
   Attributes:
     model: The name of the LiteLlm model.
     llm_client: The LLM client to use for the model.
+    tool_result_role: Override for tool-result message role. None keeps
+      Gemma-4 auto-detect.
   """
 
   # LiteLLMClient has no JSON serializer, so it is excluded from dumps to keep
   # model_dump(mode="json") from raising.
   llm_client: LiteLLMClient = Field(default_factory=LiteLLMClient, exclude=True)
   """The LLM client to use for the model."""
+
+  tool_result_role: Optional[Literal["tool", "tool_responses"]] = None
+  """Override for tool-result message role. None keeps Gemma-4 auto-detect."""
 
   _additional_args: Dict[str, Any] = PrivateAttr(default_factory=dict)
   _cached_capabilities: tuple[tuple[str, Any], LlmCapabilities] | None = (
@@ -3359,6 +3390,7 @@ class LiteLlm(BaseLlm):
     # preventing generation call with llm_client
     # and overriding messages, tools and stream which are managed internally
     self._additional_args.pop("llm_client", None)
+    self._additional_args.pop("tool_result_role", None)
     self._additional_args.pop("messages", None)
     self._additional_args.pop("tools", None)
     # public api called from runner determines to stream or not
@@ -3482,7 +3514,11 @@ class LiteLlm(BaseLlm):
 
     effective_model = llm_request.model or self.model
     messages, tools, response_format, generation_params, tool_choice = (
-        await _get_completion_inputs(llm_request, effective_model)
+        await _get_completion_inputs(
+            llm_request,
+            effective_model,
+            tool_result_role=self.tool_result_role,
+        )
     )
     normalized_messages = _normalize_ollama_chat_messages(
         messages,
