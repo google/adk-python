@@ -620,6 +620,79 @@ class TestContextMemoryMethods:
           ]
       )
 
+  async def test_delete_session_memory_default_current_session(
+      self, mock_invocation_context
+  ):
+
+    memory_service = AsyncMock()
+    mock_invocation_context.memory_service = memory_service
+
+    context = Context(mock_invocation_context)
+    await context.delete_session_memory()
+
+    memory_service.delete_session_memory.assert_called_once_with(
+        app_name=mock_invocation_context.app_name,
+        user_id=mock_invocation_context.user_id,
+        session_id=mock_invocation_context.session.id,
+    )
+
+  async def test_delete_session_memory_explicit_session_id(
+      self, mock_invocation_context
+  ):
+
+    memory_service = AsyncMock()
+    mock_invocation_context.memory_service = memory_service
+
+    context = Context(mock_invocation_context)
+    await context.delete_session_memory(session_id="custom-session-id")
+
+    memory_service.delete_session_memory.assert_called_once_with(
+        app_name=mock_invocation_context.app_name,
+        user_id=mock_invocation_context.user_id,
+        session_id="custom-session-id",
+    )
+
+  async def test_delete_session_memory_no_service_raises(
+      self, mock_invocation_context
+  ):
+
+    mock_invocation_context.memory_service = None
+
+    context = Context(mock_invocation_context)
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"Cannot delete session memory: memory service is not available\."
+        ),
+    ):
+      await context.delete_session_memory()
+
+  async def test_delete_user_memory_success(self, mock_invocation_context):
+
+    memory_service = AsyncMock()
+    mock_invocation_context.memory_service = memory_service
+
+    context = Context(mock_invocation_context)
+    await context.delete_user_memory()
+
+    memory_service.delete_user_memory.assert_called_once_with(
+        app_name=mock_invocation_context.app_name,
+        user_id=mock_invocation_context.user_id,
+    )
+
+  async def test_delete_user_memory_no_service_raises(
+      self, mock_invocation_context
+  ):
+
+    mock_invocation_context.memory_service = None
+
+    context = Context(mock_invocation_context)
+    with pytest.raises(
+        ValueError,
+        match=r"Cannot delete user memory: memory service is not available\.",
+    ):
+      await context.delete_user_memory()
+
 
 class TestContextAddUiWidget:
   """Test render_ui_widget method in Context."""

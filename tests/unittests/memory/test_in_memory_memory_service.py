@@ -17,6 +17,8 @@ import threading
 import unicodedata
 
 from google.adk.events.event import Event
+from google.adk.memory.base_memory_service import BaseMemoryService
+from google.adk.memory.base_memory_service import SearchMemoryResponse
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.platform import thread as platform_thread
 from google.adk.sessions.session import Session
@@ -602,3 +604,221 @@ def test_search_memory_is_thread_safe_against_concurrent_writes():
   assert (
       not errors
   ), f'search_memory raced with concurrent writes: {errors[0]!r}'
+
+
+@pytest.mark.asyncio
+async def test_delete_session_memory():
+  """Tests that delete_session_memory purges memories for a specific session."""
+  memory_service = InMemoryMemoryService()
+  await memory_service.add_session_to_memory(MOCK_SESSION_1)
+  await memory_service.add_session_to_memory(MOCK_SESSION_2)
+
+
+  res1 = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='ADK'
+  )
+  assert len(res1.memories) == 2
+
+  res2 = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='Python'
+  )
+  assert len(res2.memories) == 1
+
+
+  await memory_service.delete_session_memory(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      session_id=MOCK_SESSION_1.id,
+  )
+
+
+  res1_after = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='ADK'
+  )
+  assert not res1_after.memories
+
+
+  res2_after = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='Python'
+  )
+  assert len(res2_after.memories) == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_session_memory_cleans_up_empty_user_bucket():
+  """Tests that deleting the last session memory removes the user key."""
+  memory_service = InMemoryMemoryService()
+  await memory_service.add_session_to_memory(MOCK_SESSION_1)
+
+  user_key = (MOCK_APP_NAME, MOCK_USER_ID)
+  assert user_key in memory_service._session_events
+
+  await memory_service.delete_session_memory(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      session_id=MOCK_SESSION_1.id,
+  )
+
+  assert user_key not in memory_service._session_events
+
+
+@pytest.mark.asyncio
+async def test_delete_session_memory_nonexistent_is_noop():
+  """Tests that deleting a nonexistent session or user does not error."""
+  memory_service = InMemoryMemoryService()
+
+  await memory_service.delete_session_memory(
+      app_name=MOCK_APP_NAME,
+      user_id='nonexistent-user',
+      session_id='nonexistent-session',
+  )
+
+
+  await memory_service.add_session_to_memory(MOCK_SESSION_1)
+  await memory_service.delete_session_memory(
+      app_name=MOCK_APP_NAME,
+      user_id=MOCK_USER_ID,
+      session_id='nonexistent-session',
+  )
+  user_key = (MOCK_APP_NAME, MOCK_USER_ID)
+  assert MOCK_SESSION_1.id in memory_service._session_events[user_key]
+
+
+@pytest.mark.asyncio
+async def test_delete_user_memory():
+  """Tests that delete_user_memory removes all sessions for a user."""
+  memory_service = InMemoryMemoryService()
+  await memory_service.add_session_to_memory(MOCK_SESSION_1)
+  await memory_service.add_session_to_memory(MOCK_SESSION_2)
+  await memory_service.add_session_to_memory(MOCK_SESSION_DIFFERENT_USER)
+
+
+  await memory_service.delete_user_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID
+  )
+
+
+  res1 = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='ADK'
+  )
+  assert not res1.memories
+  res2 = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='Python'
+  )
+  assert not res2.memories
+
+  res_other = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_OTHER_USER_ID, query='secret'
+  )
+  assert len(res_other.memories) == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_user_memory_nonexistent_is_noop():
+  """Tests that deleting user memory for an unknown user is a no-op."""
+  memory_service = InMemoryMemoryService()
+  await memory_service.delete_user_memory(
+      app_name=MOCK_APP_NAME, user_id='nonexistent-user'
+  )
+
+
+@pytest.mark.asyncio
+async def test_base_memory_service_default_deletion_methods():
+  """Tests that BaseMemoryService default deletion methods raise NotImplementedError."""
+
+  class _DummyMemoryService(BaseMemoryService):
+
+    async def add_session_to_memory(self, session: Session) -> None:
+      pass
+
+    async def search_memory(
+        self, *, app_name: str, user_id: str, query: str
+    ) -> SearchMemoryResponse:
+      return SearchMemoryResponse()
+
+  dummy = _DummyMemoryService()
+  with pytest.raises(
+      NotImplementedError, match='does not support session memory deletion'
+  ):
+    await dummy.delete_session_memory(
+        app_name=MOCK_APP_NAME,
+        user_id=MOCK_USER_ID,
+        session_id='session-1',
+    )
+
+  with pytest.raises(
+      NotImplementedError, match='does not support user memory deletion'
+  ):
+    await dummy.delete_user_memory(
+        app_name=MOCK_APP_NAME,
+        user_id=MOCK_USER_ID,
+    )
+
+
+def test_delete_memory_is_thread_safe_against_concurrent_searches():
+  """Deleting memory while other threads search must not crash."""
+  memory_service = InMemoryMemoryService()
+  seed_loop = asyncio.new_event_loop()
+  try:
+    for i in range(50):
+      seed_loop.run_until_complete(
+          memory_service.add_session_to_memory(_make_session(f'seed-{i}'))
+      )
+  finally:
+    seed_loop.close()
+
+  errors = []
+  stop = threading.Event()
+  barrier = threading.Barrier(3)
+
+  def deleter():
+    loop = asyncio.new_event_loop()
+    barrier.wait()
+    try:
+      for i in range(50):
+        if stop.is_set():
+          return
+        loop.run_until_complete(
+            memory_service.delete_session_memory(
+                app_name=MOCK_APP_NAME,
+                user_id=MOCK_USER_ID,
+                session_id=f'session-seed-{i}',
+            )
+        )
+    except Exception as e:  
+      errors.append(e)
+      stop.set()
+    finally:
+      loop.close()
+
+  def reader():
+    loop = asyncio.new_event_loop()
+    barrier.wait()
+    try:
+      for _ in range(500):
+        if stop.is_set():
+          return
+        loop.run_until_complete(
+            memory_service.search_memory(
+                app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='fact'
+            )
+        )
+    except Exception as e:  
+      errors.append(e)
+      stop.set()
+    finally:
+      loop.close()
+
+  threads = [
+      platform_thread.create_thread(deleter),
+      platform_thread.create_thread(reader),
+      platform_thread.create_thread(reader),
+  ]
+  for thread in threads:
+    thread.start()
+  for thread in threads:
+    thread.join()
+
+  assert (
+      not errors
+  ), f'search_memory raced with concurrent deletes: {errors[0]!r}'
