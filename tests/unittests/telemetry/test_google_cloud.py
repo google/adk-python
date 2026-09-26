@@ -117,6 +117,10 @@ def test_get_gcp_exporters(
   assert len(otel_hooks.log_record_processors) == (
       1 if enable_cloud_logging else 0
   )
+  # A service-account key file has requires_scopes=True and no scopes; the
+  # scope must be requested explicitly or its token refresh fails with
+  # invalid_scope (see issue #7024).
+  auth_mock.assert_called_once_with(scopes=[google_cloud.CLOUD_PLATFORM_SCOPE])
 
 
 @mock.patch.object(mtls, "should_use_client_cert", autospec=True)
@@ -374,9 +378,8 @@ def test_get_gcp_otlp_metric_exporter_uses_default_credentials(
   credentials = mock.create_autospec(
       google.auth.credentials.Credentials, instance=True
   )
-  monkeypatch.setattr(
-      "google.auth.default", lambda: (credentials, "project-id")
-  )
+  auth_default = mock.MagicMock(return_value=(credentials, "project-id"))
+  monkeypatch.setattr("google.auth.default", auth_default)
   session = mock.MagicMock(name="session")
   monkeypatch.setattr(
       "google.auth.transport.requests.AuthorizedSession",
@@ -393,6 +396,12 @@ def test_get_gcp_otlp_metric_exporter_uses_default_credentials(
   )
 
   assert _get_gcp_otlp_metric_exporter() is exporter
+  # A service-account key file has requires_scopes=True and no scopes; the
+  # scope must be requested explicitly or its token refresh fails with
+  # invalid_scope (see issue #7024).
+  auth_default.assert_called_once_with(
+      scopes=[google_cloud.CLOUD_PLATFORM_SCOPE]
+  )
 
 
 def test_get_gcp_metrics_exporter_wraps_otlp_in_periodic_reader(
@@ -447,7 +456,9 @@ def test_agent_engine_uses_only_request_driven_reader(
   """On Agent Engine there must be exactly one metric reader: two exporters
   would double-report every point."""
   monkeypatch.delenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", raising=False)
-  monkeypatch.setattr("google.auth.default", lambda: ("", "project-id"))
+  monkeypatch.setattr(
+      "google.auth.default", lambda **kwargs: ("", "project-id")
+  )
   fake_state = mock.MagicMock(name="metrics_state")
   monkeypatch.setattr(
       "google.adk.telemetry.google_cloud._get_agent_engine_metrics_setup",
