@@ -114,12 +114,10 @@ class ReadFileTool(BaseTool):
         }
 
     try:
-      # TODO: Avoid loading the entire file into memory to prevent OOM on large files.
-      data_bytes = await self._environment.read_file(path)
-      # Slice data_bytes by line boundaries before decoding.
-      lines_bytes = data_bytes.splitlines(keepends=True)
-      total = len(lines_bytes)
       start = max(1, start_line or 1)
+      selected_bytes, total = await self._environment.read_file_lines(
+          path, start_line=start, end_line=end_line
+      )
       end = min(total, end_line or total)
       if start > total:
         return {
@@ -135,7 +133,6 @@ class ReadFileTool(BaseTool):
             'error': f'`start_line` ({start}) is after `end_line` ({end}).',
             'total_lines': total,
         }
-      selected_bytes = lines_bytes[start - 1 : end]
       lines = [
           line_bytes.decode('utf-8', errors='replace')
           for line_bytes in selected_bytes
