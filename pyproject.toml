@@ -122,8 +122,11 @@ optional-dependencies.all = [
   "opentelemetry-instrumentation-httpx>=0.54b0,<1",
   "opentelemetry-resourcedetector-gcp>=1.9.0a0,<2",
   "pandas>=2.2.3",
+  "pgvector>=0.3",
   "pillow>=10.3",
   "protobuf>=6",
+  "psycopg-pool>=3.2",
+  "psycopg[binary]>=3.1",
   "pyarrow>=14",
   "pymongo>=4.9,<5",
   "pypika>=0.50",
@@ -274,6 +277,11 @@ optional-dependencies.otel-gcp = [
   "opentelemetry-instrumentation-google-genai>=0.7b1,<1",
   "opentelemetry-instrumentation-grpc>=0.43b0,<1",
   "opentelemetry-instrumentation-httpx>=0.54b0,<1",
+]
+optional-dependencies.pgvector = [
+  "pgvector>=0.3",           # registers the pgvector type on the connection.
+  "psycopg[binary]>=3.1",    # async driver used by PgVectorMemoryService.
+  "psycopg-pool>=3.2",       # AsyncConnectionPool.
 ]
 optional-dependencies.redis = [
   "redis>=4.2", # 4.2 is where redis.asyncio landed, the only API used.
