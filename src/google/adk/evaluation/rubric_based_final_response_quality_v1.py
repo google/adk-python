@@ -284,7 +284,9 @@ class RubricBasedFinalResponseQualityV1Evaluator(RubricBasedEvaluator):
       _: Optional[Invocation],
   ) -> str:
     """Returns the autorater prompt."""
-    self.create_effective_rubrics_list(actual_invocation.rubrics)
+    self.create_effective_rubrics_list(
+        actual_invocation.rubrics, actual_invocation
+    )
     user_input = get_text_from_content(actual_invocation.user_content)
 
     include_intermediate = (
@@ -300,7 +302,7 @@ class RubricBasedFinalResponseQualityV1Evaluator(RubricBasedEvaluator):
 
     rubrics_text = "\n".join([
         f"*  [id: {r.rubric_id}] {r.rubric_content.text_property}"
-        for r in self.get_effective_rubrics_list()
+        for r in self.get_effective_rubrics_list(actual_invocation)
     ])
 
     developer_instructions = ""

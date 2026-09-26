@@ -25,6 +25,7 @@ from typing_extensions import override
 from ..models.llm_response import LlmResponse
 from ..utils.feature_decorator import experimental
 from .common import EvalBaseModel
+from .eval_case import Invocation
 from .eval_metrics import EvalMetric
 from .eval_metrics import RubricsBasedCriterion
 from .eval_rubrics import Rubric
@@ -372,6 +373,12 @@ class RubricBasedEvaluator(LlmAsJudge[RubricsBasedCriterion]):
 
     self._rubrics: list[Rubric] = self._criterion.rubrics or []
     self._effective_rubrics_list: Optional[list[Rubric]] = None
+    # Keyed by id(actual_invocation): with per-invocation rubrics, a later
+    # invocation's format_auto_rater_prompt() call would otherwise overwrite
+    # _effective_rubrics_list before an earlier invocation's response is
+    # converted (samples are formatted eagerly but converted after they all
+    # come back from asyncio.gather).
+    self._effective_rubrics_list_by_invocation: dict[int, list[Rubric]] = {}
 
     self._normalized_rubric_to_id_map = {
         _normalize_text(r.rubric_content.text_property): r.rubric_id
@@ -381,6 +388,7 @@ class RubricBasedEvaluator(LlmAsJudge[RubricsBasedCriterion]):
   def create_effective_rubrics_list(
       self,
       invocation_rubrics: Optional[list[Rubric]],
+      actual_invocation: Optional[Invocation] = None,
   ) -> None:
     rubrics_by_id = {}
 
@@ -403,12 +411,33 @@ class RubricBasedEvaluator(LlmAsJudge[RubricsBasedCriterion]):
         ]
       _add_rubrics(filtered_invocation_rubrics, "invocation")
 
-    self._effective_rubrics_list = list(rubrics_by_id.values())
-    if not self._effective_rubrics_list:
+    effective_rubrics_list = list(rubrics_by_id.values())
+    if not effective_rubrics_list:
       raise ValueError("Rubrics are required.")
 
-  def get_effective_rubrics_list(self) -> list[Rubric]:
-    """Returns the effective rubrics list."""
+    self._effective_rubrics_list = effective_rubrics_list
+    if actual_invocation is not None:
+      self._effective_rubrics_list_by_invocation[id(actual_invocation)] = (
+          effective_rubrics_list
+      )
+
+  def get_effective_rubrics_list(
+      self, actual_invocation: Optional[Invocation] = None
+  ) -> list[Rubric]:
+    """Returns the effective rubrics list.
+
+    Args:
+      actual_invocation: When given, returns the rubrics list computed for
+        this specific invocation, if one was recorded. Falls back to the
+        most recently computed list otherwise.
+    """
+    if actual_invocation is not None:
+      per_invocation_list = self._effective_rubrics_list_by_invocation.get(
+          id(actual_invocation)
+      )
+      if per_invocation_list is not None:
+        return per_invocation_list
+
     if self._effective_rubrics_list is None:
       raise ValueError(
           "Effective rubrics list not initialized. Call"
@@ -420,6 +449,7 @@ class RubricBasedEvaluator(LlmAsJudge[RubricsBasedCriterion]):
   def convert_auto_rater_response_to_score(
       self,
       auto_rater_response: LlmResponse,
+      actual_invocation: Optional[Invocation] = None,
   ) -> AutoRaterScore:
     """Returns an AutoRaterScore generated from AutoRater's response."""
     response_text = get_text_from_content(auto_rater_response.content)
@@ -442,7 +472,7 @@ class RubricBasedEvaluator(LlmAsJudge[RubricsBasedCriterion]):
 
     normalized_rubric_to_rubric_map = {}
     rubric_by_id = {}
-    for r in self.get_effective_rubrics_list():
+    for r in self.get_effective_rubrics_list(actual_invocation):
       normalized_rubric_to_rubric_map[
           _normalize_text(r.rubric_content.text_property)
       ] = r
