@@ -22,6 +22,7 @@ content isolation, output extraction, and both old/new workflow paths.
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import MagicMock
 
 from google.adk.agents.context import Context
 from google.adk.agents.llm.task._task_models import TaskResult
@@ -378,9 +379,13 @@ class TestBuildNode:
       agent_kwargs: dict[str, Any],
       expected_include_contents: str,
   ):
-    """Single-turn workflow nodes preserve explicit content inclusion."""
-    from unittest.mock import MagicMock
+    """Single-turn nodes get the right effective include_contents per run,
 
+    without permanently mutating the shared node object itself: a node is
+    reused across every future invocation, so an implicit 'none' default
+    applied by mutating it in place would stick for every later run,
+    single_turn or not, explicit or not.
+    """
     agent = LlmAgent(
         name='test_agent',
         model='gemini-2.5-flash',
@@ -388,17 +393,18 @@ class TestBuildNode:
         **agent_kwargs,
     )
     wrapper = build_node(agent)
+    original_include_contents = wrapper.include_contents
     seen_include_contents = []
 
-    async def mock_run_async(*args, **kwargs):
-      seen_include_contents.append(wrapper.include_contents)
+    async def mock_run_async(self, *args, **kwargs):
+      seen_include_contents.append(self.include_contents)
       yield Event(
           invocation_id='inv',
-          author=wrapper.name,
+          author=self.name,
           content=types.Content(parts=[types.Part(text='ok')]),
       )
 
-    object.__setattr__(wrapper, 'run_async', mock_run_async)
+    monkeypatch.setattr(LlmAgent, 'run_async', mock_run_async)
     monkeypatch.setattr(
         agent_wrapper,
         'prepare_llm_agent_context',
@@ -418,8 +424,11 @@ class TestBuildNode:
         event async for event in wrapper._run_impl(ctx=ctx, node_input='hi')
     ]
 
+    # The effective value used for this run is still correct...
     assert seen_include_contents == [expected_include_contents]
-    assert wrapper.include_contents == expected_include_contents
+    # ...but the shared node itself is never mutated, regardless of whether
+    # this run needed an implicit override.
+    assert wrapper.include_contents == original_include_contents
     assert events[0].content.parts[0].text == 'ok'
 
   def test_name_override(self):
