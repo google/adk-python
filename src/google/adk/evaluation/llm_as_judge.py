@@ -117,9 +117,18 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
 
   @abstractmethod
   def convert_auto_rater_response_to_score(
-      self, auto_rater_response: LlmResponse
+      self,
+      auto_rater_response: LlmResponse,
+      actual_invocation: Optional[Invocation] = None,
   ) -> AutoRaterScore:
-    """Parses auto_rater_response and returns the corresponding score, or None if the score cannot be determined."""
+    """Parses auto_rater_response and returns the corresponding score, or None if the score cannot be determined.
+
+    Args:
+      auto_rater_response: The auto-rater's response to parse.
+      actual_invocation: The invocation the response was sampled for. Needed
+        by implementations whose scoring criteria (e.g. rubrics) can vary per
+        invocation.
+    """
 
   @abstractmethod
   def aggregate_per_invocation_samples(
@@ -157,7 +166,7 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
       async for llm_response in agen:
         # Non-streaming call, so there is only one response content.
         auto_rater_score = self.convert_auto_rater_response_to_score(
-            llm_response
+            llm_response, actual
         )
         return PerInvocationResult(
             actual_invocation=actual,
