@@ -382,6 +382,90 @@ def test_rearrange_latest_response_missing_matching_call_raises_value_error():
     rearrange_events_for_latest_function_response(events)
 
 
+def test_rearrange_latest_response_reused_call_id_pairs_with_nearest_call():
+  """A reused call id pairs the latest response with the nearest preceding call.
+
+  Some model providers reuse function-call ids across turns. The latest
+  response should attribute to the closest matching call, not the oldest
+  one, so earlier, already-answered turns are left untouched.
+  """
+  call1 = _call_event("call_1", "lookup")
+  resp1 = _resp_event("call_1", "lookup", "looked up")
+  intervening_msg = Event(author="user", content=types.UserContent("q2"))
+  call2 = _call_event("call_1", "update")
+  placeholder = _resp_event("call_1", "update", {"placeholder": True})
+  final = _resp_event("call_1", "update", {"applied": True})
+  events = [call1, resp1, intervening_msg, call2, placeholder, final]
+
+  result = rearrange_events_for_latest_function_response(events)
+
+  assert result[:4] == [call1, resp1, intervening_msg, call2]
+  assert len(result) == 5
+  merged_responses = result[-1].get_function_responses()
+  assert len(merged_responses) == 1
+  assert merged_responses[0].response == {"applied": True}
+
+
+def test_rearrange_latest_response_reused_id_in_parallel_batch_pairs_with_nearest_call():
+  """A reused id beside another call in a batch pairs with the nearest call.
+
+  Without the fix, the search walks past the nearest matching call event to
+  an older call event that does not carry every id in the batch, and the
+  subset check raises instead of truncating.
+  """
+  call2 = Event(
+      author="test_agent",
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="call_1", name="update", args={}
+                  )
+              ),
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="call_2", name="list", args={}
+                  )
+              ),
+          ],
+      ),
+  )
+  paused = Event(
+      author="user",
+      content=types.Content(
+          role="user",
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      id="call_1", name="update", response={"placeholder": True}
+                  )
+              ),
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      id="call_2", name="list", response={"rows": 3}
+                  )
+              ),
+          ],
+      ),
+  )
+  events = [
+      _call_event("call_1", "lookup"),
+      _resp_event("call_1", "lookup", "looked up"),
+      call2,
+      paused,
+      _resp_event("call_1", "update", {"applied": True}),
+  ]
+
+  result = rearrange_events_for_latest_function_response(events)
+
+  assert result[:3] == events[:3]
+  assert [(r.id, r.response) for r in result[-1].get_function_responses()] == [
+      ("call_1", {"applied": True}),
+      ("call_2", {"rows": 3}),
+  ]
+
+
 def test_rearrange_history_reused_id_across_tools_pairs_correctly():
   """Reused call IDs across different tools pair each tool with its own response."""
   events = [

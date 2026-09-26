@@ -350,6 +350,7 @@ def rearrange_events_for_latest_function_response(
     event = events[idx]
     function_calls = event.get_function_calls()
     if function_calls:
+      matched = False
       for function_call in function_calls:
         if function_call.id in function_responses_ids:
           function_call_event_idx = idx
@@ -368,7 +369,14 @@ def rearrange_events_for_latest_function_response(
           # collect all function responses from the function call event to
           # the last response event
           function_responses_ids = function_call_ids
+          matched = True
           break
+      # A call id can be reused by a later call in the same session (some
+      # model providers do this). Stop at the nearest preceding match rather
+      # than continuing to walk past it, or a reused id attributes the
+      # response to a stale, already-answered call further back in history.
+      if matched:
+        break
 
   if function_call_event_idx == -1:
     logger.debug(
