@@ -50,6 +50,7 @@ from typing_extensions import Annotated
 
 from ..utils.variant_utils import get_google_llm_variant
 from ..utils.variant_utils import GoogleLLMVariant
+from ..utils._callable_utils import unwrap_callable
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -284,6 +285,9 @@ def get_callable_name(func: Callable[..., Any]) -> str:
   """Returns the name a callable is advertised and registered under.
 
   Callable objects carry no `__name__`, so they fall back to their class name.
+  `functools.partial` objects likewise carry no `__name__`, so they are
+  unwrapped (handling nested partials) to the underlying function instead of
+  all collapsing to `'partial'`.
   This is the single source of truth for both the declaration sent to the model
   and the key the tool is registered under: if the two disagree, the model is
   told about a tool it cannot invoke.
@@ -294,7 +298,10 @@ def get_callable_name(func: Callable[..., Any]) -> str:
   Returns:
     The name to use for the callable.
   """
-  return getattr(func, '__name__', None) or func.__class__.__name__
+  target = func
+  while isinstance(target, functools.partial):
+    target = target.func
+  return getattr(target, '__name__', None) or func.__class__.__name__
 
 
 def _flatten_optional_any_of(schema: dict[str, Any]) -> dict[str, Any]:
@@ -520,7 +527,31 @@ def build_function_declaration_with_json_schema(
     )
 
   # Handle Callable functions
-  description = inspect.cleandoc(func.__doc__) if func.__doc__ else None
+  # functools.partial instances expose the partial *type* docstring via
+  # __doc__, which would misdescribe the tool: describe the wrapped function
+  # instead. Callable instances documented only on __call__ fall back to it.
+  # See https://github.com/google/adk-python/issues/7190.
+  description_target = (
+      unwrap_callable(func) if isinstance(func, functools.partial) else func
+  )
+  description = (
+      inspect.cleandoc(description_target.__doc__)
+      if getattr(description_target, '__doc__', None)
+      else None
+  )
+  if (
+      not description
+      and not isinstance(func, (type, functools.partial))
+      and not inspect.isroutine(func)
+  ):
+    # Plain functions, builtins and methods expose a slot-wrapper __call__
+    # whose docstring ("Call self as a function.") would misdescribe the
+    # tool, so only callable *instances* documented on __call__ fall back
+    # to it. Partials are excluded for the same reason: their description
+    # comes from the wrapped function above.
+    call_method = getattr(func, '__call__', None)
+    if call_method is not None and getattr(call_method, '__doc__', None):
+      description = inspect.cleandoc(call_method.__doc__)
   func_name = get_callable_name(func)
   declaration = types.FunctionDeclaration(
       name=func_name,
