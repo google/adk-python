@@ -22,7 +22,6 @@ from google.adk.apps.app import EventsCompactionConfig
 from google.adk.apps.llm_event_summarizer import LlmEventSummarizer
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.context import _compaction as compaction
-from google.adk.flows.llm_flows.context import _contents as contents
 from google.adk.flows.llm_flows.single_flow import SingleFlow
 from google.adk.models.llm_request import LlmRequest
 from google.adk.sessions.base_session_service import BaseSessionService
@@ -39,17 +38,19 @@ def _create_event(
     invocation_id: str,
     text: str,
     prompt_token_count: int | None = None,
+    author: str = 'user',
 ) -> Event:
   usage_metadata = None
   if prompt_token_count is not None:
     usage_metadata = types.GenerateContentResponseUsageMetadata(
         prompt_token_count=prompt_token_count
     )
+  role = 'user' if author == 'user' else 'model'
   return Event(
       timestamp=timestamp,
       invocation_id=invocation_id,
-      author='user',
-      content=Content(role='user', parts=[Part(text=text)]),
+      author=author,
+      content=Content(role=role, parts=[Part(text=text)]),
       usage_metadata=usage_metadata,
   )
 
@@ -57,8 +58,12 @@ def _create_event(
 def test_single_flow_includes_compaction_before_contents():
   flow = SingleFlow()
 
-  compaction_index = flow.request_processors.index(compaction.request_processor)
-  contents_index = flow.request_processors.index(contents.request_processor)
+  compaction_index = flow.request_processors.index(
+      flow.get_request_processor('compaction')
+  )
+  contents_index = flow.request_processors.index(
+      flow.get_request_processor('contents')
+  )
 
   assert compaction_index < contents_index
 
@@ -104,6 +109,7 @@ async def test_compaction_request_processor_runs_token_compaction():
               invocation_id='inv3',
               text='e3',
               prompt_token_count=100,
+              author='agent',
           ),
       ],
   )
@@ -241,7 +247,13 @@ async def test_compaction_request_processor_can_compact_current_user_event():
       user_id='user',
       id='session',
       events=[
-          _create_event(timestamp=1.0, invocation_id='inv1', text='e1'),
+          _create_event(
+              timestamp=1.0,
+              invocation_id='inv1',
+              text='e1',
+              prompt_token_count=100,
+              author='agent',
+          ),
           Event(
               timestamp=2.0,
               invocation_id='current-inv',
@@ -249,9 +261,6 @@ async def test_compaction_request_processor_can_compact_current_user_event():
               content=Content(
                   role='user',
                   parts=[Part(text='latest user message')],
-              ),
-              usage_metadata=types.GenerateContentResponseUsageMetadata(
-                  prompt_token_count=100
               ),
           ),
       ],

@@ -829,3 +829,47 @@ async def test_chat_root_mixed_turn_with_long_running_tool_and_task_pauses(
   ]
   assert len(model_events) == 1
   assert "fc-lro-001" in model_events[0].long_running_tool_ids
+
+
+@pytest.mark.asyncio
+async def test_dynamic_run_node_isolates_peer_task_agents(
+    request: pytest.FixtureRequest,
+):
+  """Task agents invoked via bare ctx.run_node receive distinct node_path isolation scopes."""
+  alpha_model = testing_utils.MockModel.create(
+      responses=["ALPHA_SECRET_CONVERSATION", _finish_part({"result": "a_ok"})]
+  )
+  beta_model = testing_utils.MockModel.create(
+      responses=[_finish_part({"result": "b_ok"})]
+  )
+  alpha = LlmAgent(name="alpha", model=alpha_model, mode="task")
+  beta = LlmAgent(name="beta", model=beta_model, mode="task")
+
+  from google.adk.workflow import node as workflow_node
+  from google.adk.workflow._base_node import START
+  from google.adk.workflow._workflow import Workflow
+
+  @workflow_node(rerun_on_resume=True)
+  async def driver(ctx):
+    a_out = await ctx.run_node(alpha, node_input="start alpha")
+    b_out = await ctx.run_node(beta, node_input="start beta")
+    return {"a": a_out, "b": b_out}
+
+  wf = Workflow(name="wf", edges=[(START, driver)])
+  app = App(name=request.function.__name__, root_agent=wf)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  await runner.run_async(testing_utils.get_user_content("go"))
+
+  alpha_events = [e for e in runner.session.events if e.author == "alpha"]
+  beta_events = [e for e in runner.session.events if e.author == "beta"]
+  assert alpha_events
+  assert beta_events
+  assert {e.isolation_scope for e in alpha_events} == {"wf@1/driver@1/alpha@1"}
+  assert {e.isolation_scope for e in beta_events} == {"wf@1/driver@1/beta@1"}
+
+  beta_request = beta_model.requests[0]
+  rendered_beta_context = "\n".join(
+      p.text or "" for c in beta_request.contents or [] for p in c.parts or []
+  )
+  assert "ALPHA_SECRET_CONVERSATION" not in rendered_beta_context

@@ -101,7 +101,7 @@ from ..models.llm_response import LlmResponse
 from ..platform.thread import create_thread
 from ..tools.base_tool import BaseTool
 from ..tools.tool_context import ToolContext
-from ..utils._telemetry_context import _is_visual_builder
+from ..utils._telemetry_context import _get_telemetry_surface
 from ..version import __version__
 from .base_plugin import BasePlugin
 
@@ -341,7 +341,11 @@ def _register_thread_for_debugging(name: str) -> None:
 
 
 # Module-level registry of shared _LoopState instances hosted on _BG_LOOP.
-# Keyed by (table_key, credentials_key) where table_key is "project.dataset.table".
+# Keyed by (table_key, credentials_key) where table_key is
+# "project.dataset.table". When the plugin carries a construction-time
+# surface, credentials_key is itself wrapped as (credentials_key, surface) so
+# that plugins with different attribution never share a writer; an unlabeled
+# plugin keeps the bare credentials_key.
 _BG_LOOP_STATES: dict[tuple[str, Any], _LoopState] = {}
 _BG_LOOP_STATES_LOCK = threading.RLock()
 _BG_LOOP_STATE_FUTURES: dict[
@@ -2635,7 +2639,9 @@ class BatchProcessor:
     self._pending_finalize_streams: set[str] = set()
     self._finalize_lock = asyncio.Lock()
 
-    self._visual_builder = _is_visual_builder.get()
+    # Ambient default for direct construction; _build_loop_state overwrites
+    # this unconditionally (including clearing back to None on _BG_LOOP).
+    self._surface = _get_telemetry_surface()
 
     self._queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(
         maxsize=queue_max_size
@@ -3041,8 +3047,8 @@ class BatchProcessor:
       serialized_batch = arrow_batch.serialize().to_pybytes()
 
       trace_id_prefix = (
-          "google-adk-bq-logger-visual-builder"
-          if self._visual_builder
+          f"google-adk-bq-logger-{self._surface}"
+          if self._surface
           else "google-adk-bq-logger"
       )
 
@@ -4744,7 +4750,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self.table_id = table_id or self.config.table_id
     self.location = location
 
-    self._visual_builder = _is_visual_builder.get()
+    self._surface = _get_telemetry_surface()
 
     _validate_runtime_config(self.config)
 
@@ -4805,6 +4811,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         if self._custom_credentials or self.credentials_identifier
         else None
     )
+    if self._surface:
+      creds_key = (creds_key, self._surface)
     return (f"{self.project_id}.{self.dataset_id}.{self.table_id}", creds_key)
 
   def _use_dedicated_loop(self) -> bool:
@@ -5043,9 +5051,32 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         else None
     )
 
+    # Resolve the surface to stamp on this _LoopState:
+    # - Shared loop (loop is not _BG_LOOP): the state lives in the per-instance
+    #   self._loop_state_by_loop dict, so when __init__ captured nothing we may
+    #   safely fall back to the ambient ContextVars and pin that for the life
+    #   of this (plugin, loop) pair. This recovers api_server's per-request
+    #   _is_visual_builder.set(True), which runs after get_runner_async() has
+    #   already constructed the plugin (safe when each app gets its own plugin
+    #   instance, as with plugins.yaml or class-form --extra_plugins; a single
+    #   instance shared across apps via instance-form --extra_plugins pins the
+    #   first request's surface for all apps, matching the pre-existing
+    #   trace_id behavior).
+    # - Dedicated background loop (loop is _BG_LOOP): the state is published
+    #   into the process-global _BG_LOOP_STATES cache under _get_bg_loop_key(),
+    #   which encodes only the construction-time self._surface. Falling back to
+    #   an ambient request context here would cache a surface-specific state
+    #   under a surface-neutral key and cross-attribute rows from other plugin
+    #   instances sharing the same table and credentials.
+    effective_surface = (
+        self._surface
+        if loop is _BG_LOOP
+        else (self._surface or _get_telemetry_surface())
+    )
+
     user_agents = [f"google-adk-bq-logger/{__version__}"]
-    if self._visual_builder:
-      user_agents.append(f"google-adk-visual-builder/{__version__}")
+    if effective_surface:
+      user_agents.append(f"google-adk-{effective_surface}/{__version__}")
 
     client_info = _CLIENT_INFO_FACTORY(user_agent=" ".join(user_agents))
 
@@ -5087,6 +5118,13 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           ),
           loop=loop,
       )
+      # Assign unconditionally (including None on _BG_LOOP): BatchProcessor
+      # reads the ambient ContextVar in __init__, which (a) the caller may
+      # already have reset before this lazy build, and (b) on _BG_LOOP would
+      # taint the process-global _BG_LOOP_STATES entry cached under a
+      # surface-neutral key if guarded on a truthy effective_surface (see
+      # test_dedicated_bg_loop_ignores_post_construction_ambient_surface).
+      batch_processor._surface = effective_surface
     except BaseException:
       # The write client already exists but no _LoopState can own it yet.
       await self._close_write_transport(write_client)
@@ -6302,6 +6340,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state.setdefault("_schema_ready", False)
     state.setdefault("_loop_state_futures", {})
     state.setdefault("_builder_waiters", {})
+    # Migrate the legacy _visual_builder flag onto _surface. Handle an
+    # explicit "_surface": None as unset so the legacy flag is never dropped.
+    legacy_visual_builder = state.pop("_visual_builder", False)
+    if state.get("_surface") is None:
+      state["_surface"] = "visual-builder" if legacy_visual_builder else None
     state.setdefault(
         "_custom_credentials", state.get("_credentials") is not None
     )

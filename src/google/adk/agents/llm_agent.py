@@ -42,8 +42,8 @@ from ..code_executors.base_code_executor import BaseCodeExecutor
 from ..events.event import Event
 from ..flows.llm_flows.auto_flow import AutoFlow
 from ..flows.llm_flows.base_llm_flow import BaseLlmFlow
-from ..flows.llm_flows.functions import find_matching_function_call
 from ..flows.llm_flows.single_flow import SingleFlow
+from ..flows.llm_flows.tools._functions import find_matching_function_call
 from ..models.base_llm import BaseLlm
 from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
@@ -58,6 +58,7 @@ from ..utils._schema_utils import SchemaType
 from ..utils._schema_utils import validate_schema
 from ..utils.context_utils import Aclosing
 from ..utils.instructions_utils import InstructionProvider as InstructionProvider
+from ..workflow._base_node import BaseNode
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
 from .base_agent_config import BaseAgentConfig as BaseAgentConfig
@@ -143,6 +144,21 @@ OnToolErrorCallback: TypeAlias = Union[
 ToolUnion: TypeAlias = Union[Callable, BaseTool, BaseToolset]  # type: ignore[type-arg]
 
 
+def _wrap_base_node_as_tool(node: BaseNode) -> BaseTool:
+  """Wraps a BaseNode into a NodeTool while rejecting direct BaseAgent usage."""
+  from ..tools._node_tool import NodeTool
+
+  if isinstance(node, BaseAgent):
+    raise ValueError(
+        f"Agent '{node.name}' cannot be used directly as a tool. Agents"
+        ' should be invoked as sub-agents.'
+    )
+  return NodeTool(
+      node=node,
+      description=node.description,
+  )
+
+
 async def _convert_tool_union_to_tools(
     tool_union: ToolUnion,
     ctx: Optional[ReadonlyContext],
@@ -190,22 +206,7 @@ async def _convert_tool_union_to_tools(
   from ..workflow._base_node import BaseNode
 
   if isinstance(tool_union, BaseNode):
-    from ..tools._node_tool import NodeTool
-    from .base_agent import BaseAgent
-
-    if isinstance(tool_union, BaseAgent):
-      raise ValueError(
-          f"Agent '{tool_union.name}' cannot be used directly as a tool. Agents"
-          ' should be invoked as sub-agents.'
-      )
-
-    return [
-        NodeTool(
-            node=tool_union,
-            name=tool_union.name,
-            description=tool_union.description,
-        )
-    ]
+    return [_wrap_base_node_as_tool(tool_union)]
 
   if isinstance(tool_union, BaseTool):
     return [tool_union]
@@ -1255,27 +1256,13 @@ class LlmAgent(BaseAgent, abc.ABC):
   @classmethod
   def _pre_validate_tools(cls, data: Any) -> Any:
     if isinstance(data, dict) and 'tools' in data and data['tools']:
-      from google.adk.agents.base_agent import BaseAgent
-      from google.adk.tools._node_tool import NodeTool
       from google.adk.workflow._base_node import BaseNode
 
-      new_tools = []
-      for t in data['tools']:
-        if isinstance(t, BaseAgent):
-          raise ValueError(
-              f"Agent '{t.name}' cannot be used directly as a tool. Agents"
-              ' should be invoked as sub-agents.'
-          )
-        elif isinstance(t, BaseNode):
-          new_tools.append(NodeTool(node=t, description=t.description))
-        else:
-          new_tools.append(t)
-      data['tools'] = new_tools
+      data['tools'] = [
+          _wrap_base_node_as_tool(t) if isinstance(t, BaseNode) else t
+          for t in data['tools']
+      ]
     return data
-
-  @model_validator(mode='after')
-  def __model_validator_after(self) -> LlmAgent:
-    return self
 
   @field_validator('generate_content_config', mode='after')
   @classmethod

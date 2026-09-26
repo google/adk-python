@@ -25,7 +25,6 @@ from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.invocation_context import LlmCallsLimitExceededError
 from google.adk.agents.llm_agent import Agent
-from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.agents.run_config import StreamingMode
 from google.adk.apps.app import ResumabilityConfig
@@ -451,6 +450,52 @@ async def test_process_agent_tools_marks_streaming_tool_non_blocking_for_live():
 
   declaration = llm_request.config.tools[0].function_declarations[0]
   assert declaration.behavior is types.Behavior.NON_BLOCKING
+
+
+@pytest.mark.asyncio
+async def test_process_agent_tools_marks_behavior_non_blocking_tool_for_live():
+  """Live tools with behavior=NON_BLOCKING are marked NON_BLOCKING."""
+  from google.adk.tools.function_tool import FunctionTool
+
+  tool = FunctionTool(func=_scheduled_tool)
+  tool.behavior = types.Behavior.NON_BLOCKING
+  agent = Agent(name='test_agent', tools=[tool])
+
+  llm_request = await _preprocess(agent, is_live=True)
+
+  declaration = llm_request.config.tools[0].function_declarations[0]
+  assert declaration.behavior is types.Behavior.NON_BLOCKING
+
+
+@pytest.mark.asyncio
+async def test_process_agent_tools_sets_behavior_blocking_tool_for_live():
+  """Live tools with behavior=BLOCKING are marked BLOCKING."""
+  from google.adk.tools.function_tool import FunctionTool
+
+  tool = FunctionTool(func=_scheduled_tool)
+  tool.behavior = types.Behavior.BLOCKING
+  agent = Agent(name='test_agent', tools=[tool])
+
+  llm_request = await _preprocess(agent, is_live=True)
+
+  declaration = llm_request.config.tools[0].function_declarations[0]
+  assert declaration.behavior is types.Behavior.BLOCKING
+
+
+@pytest.mark.asyncio
+async def test_process_agent_tools_behavior_blocking_overrides_scheduling_for_live():
+  """Explicit behavior=BLOCKING overrides response_scheduling in live mode."""
+  from google.adk.tools.function_tool import FunctionTool
+
+  tool = FunctionTool(func=_scheduled_tool)
+  tool.behavior = types.Behavior.BLOCKING
+  tool.response_scheduling = types.FunctionResponseScheduling.WHEN_IDLE
+  agent = Agent(name='test_agent', tools=[tool])
+
+  llm_request = await _preprocess(agent, is_live=True)
+
+  declaration = llm_request.config.tools[0].function_declarations[0]
+  assert declaration.behavior is types.Behavior.BLOCKING
 
 
 @pytest.mark.asyncio
@@ -1893,7 +1938,7 @@ async def test_run_live_transfer_is_independent_of_response_order(
   with (
       mock.patch('google.adk.models.google_llm.Gemini.connect') as mock_connect,
       mock.patch(
-          'google.adk.flows.llm_flows.base_llm_flow.DEFAULT_TRANSFER_AGENT_DELAY',
+          'google.adk.flows.llm_flows._live_llm_flow.DEFAULT_TRANSFER_AGENT_DELAY',
           0,
       ),
   ):
@@ -1987,7 +2032,7 @@ async def test_run_live_task_completion_is_independent_of_response_order(
   with (
       mock.patch('google.adk.models.google_llm.Gemini.connect') as mock_connect,
       mock.patch(
-          'google.adk.flows.llm_flows.base_llm_flow.DEFAULT_TASK_COMPLETION_DELAY',
+          'google.adk.flows.llm_flows._live_llm_flow.DEFAULT_TASK_COMPLETION_DELAY',
           0,
       ),
   ):
@@ -2341,17 +2386,6 @@ async def test_run_live_respects_explicit_initial_history_in_client_content_fals
         )
 
 
-def _make_agent_tree():
-  root = Agent(name='root')
-  child1 = Agent(name='child1')
-  child2 = Agent(name='child2')
-
-  child1.parent_agent = root
-  child2.parent_agent = root
-  root.sub_agents = [child1, child2]
-  return root, child1, child2
-
-
 class _StubCodeExecutor(BaseCodeExecutor):
   """Returns a fixed result and counts how many times it ran."""
 
@@ -2456,185 +2490,256 @@ async def test_empty_stop_after_tool_call_surfaces_error_event():
 
 
 @pytest.mark.asyncio
-async def test_transfer_to_sibling_disallowed_raises_value_error():
-  """Transfer to sibling raises ValueError when disallow_transfer_to_peers is True."""
-  # Arrange
-  root, child1, child2 = _make_agent_tree()
-  caller = child1
-  caller.disallow_transfer_to_peers = True
-  ctx = await testing_utils.create_invocation_context(caller)
-  flow = BaseLlmFlow()
-
-  # Act & Assert
-  with pytest.raises(
-      ValueError, match='child1 is not allowed to transfer to agent child2'
-  ):
-    flow._get_agent_to_run(ctx, 'child2')
-
-
-@pytest.mark.asyncio
-async def test_transfer_to_sibling_allowed_returns_agent():
-  """Transfer to sibling returns the agent when disallow_transfer_to_peers is False."""
-  # Arrange
-  root, child1, child2 = _make_agent_tree()
-  caller = child1
-  caller.disallow_transfer_to_peers = False
-  ctx = await testing_utils.create_invocation_context(caller)
-  flow = BaseLlmFlow()
-
-  # Act
-  agent = flow._get_agent_to_run(ctx, 'child2')
-
-  # Assert
-  assert agent is not None
-  assert agent.name == 'child2'
-
-
-@pytest.mark.asyncio
-async def test_transfer_to_unknown_agent_raises_value_error():
-  """Transfer to unknown agent name raises ValueError."""
-  # Arrange
-  root, child1, child2 = _make_agent_tree()
-  caller = child1
-  ctx = await testing_utils.create_invocation_context(caller)
-  flow = BaseLlmFlow()
-
-  # Act & Assert
-  with pytest.raises(ValueError, match='not found in the agent tree'):
-    flow._get_agent_to_run(ctx, 'not_in_tree')
-
-
-@pytest.mark.asyncio
-async def test_transfer_to_self_allowed_when_peers_disallowed():
-  """Transfer to self is allowed even when disallow_transfer_to_peers is True."""
-  # Arrange
-  root, child1, child2 = _make_agent_tree()
-  caller = child1
-  caller.disallow_transfer_to_peers = True
-  ctx = await testing_utils.create_invocation_context(caller)
-  flow = BaseLlmFlow()
-
-  # Act
-  agent = flow._get_agent_to_run(ctx, 'child1')
-
-  # Assert
-  assert agent is not None
-  assert agent.name == 'child1'
-
-
-@pytest.mark.asyncio
-async def test_transfer_to_sibling_from_non_llm_agent_allowed():
-  """Transfer to sibling is allowed when the caller is not an LlmAgent."""
-  # Arrange
-  root = Agent(name='root')
-  child1 = LoopAgent(name='child1')
-  child2 = Agent(name='child2')
-
-  child1.parent_agent = root
-  child2.parent_agent = root
-  root.sub_agents = [child1, child2]
-
-  ctx = await testing_utils.create_invocation_context(child1)
-  flow = BaseLlmFlow()
-
-  # Act
-  agent = flow._get_agent_to_run(ctx, 'child2')
-
-  # Assert
-  assert agent is not None
-  assert agent.name == 'child2'
-
-
-@pytest.mark.asyncio
-async def test_transfer_to_unoffered_agent_raises_value_error():
-  """Transfer to an agent that is only reachable through the tree is rejected."""
-  # Arrange
-  _, child1, child2 = _make_agent_tree()
-  grandchild2 = Agent(name='grandchild2')
-  grandchild2.parent_agent = child2
-  child2.sub_agents = [grandchild2]
-  ctx = await testing_utils.create_invocation_context(child1)
-  flow = BaseLlmFlow()
-
-  # Act & Assert
-  with pytest.raises(
-      ValueError, match='child1 is not allowed to transfer to agent grandchild2'
-  ):
-    flow._get_agent_to_run(ctx, 'grandchild2')
-
-
-@pytest.mark.asyncio
-async def test_transfer_to_duplicate_name_returns_declared_target():
-  """Transfer resolves the declared target, not a same-named agent elsewhere."""
-  # Arrange
-  undeclared = Agent(name='shared_name')
-  other_branch = Agent(name='other_branch', sub_agents=[undeclared])
-  declared = Agent(name='shared_name')
-  caller = Agent(
-      name='caller',
-      sub_agents=[declared],
-      disallow_transfer_to_parent=True,
-      disallow_transfer_to_peers=True,
+async def test_thought_only_stop_after_tool_call_surfaces_error_event():
+  """Tests that a thought-only turn after a tool call surfaces an error event."""
+  function_call_part = types.Part.from_function_call(
+      name='increase_by_one', args={'x': 1}
   )
-  Agent(name='root', sub_agents=[other_branch, caller])
-  ctx = await testing_utils.create_invocation_context(caller)
-  flow = BaseLlmFlow()
 
-  # Act
-  agent = flow._get_agent_to_run(ctx, 'shared_name')
+  turn_1 = LlmResponse(
+      content=types.Content(role='model', parts=[function_call_part]),
+      finish_reason=types.FinishReason.STOP,
+  )
+  # A thought-only turn: STOP with non-empty parts, but all parts are thoughts.
+  turn_2 = LlmResponse(
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(
+                  text='I have processed the tool result...', thought=True
+              )
+          ],
+      ),
+      finish_reason=types.FinishReason.STOP,
+  )
 
-  # Assert
-  assert agent is declared
+  function_called = 0
+
+  def increase_by_one(x: int) -> int:
+    nonlocal function_called
+    function_called += 1
+    return x + 1
+
+  mock_model = testing_utils.MockModel.create(responses=[turn_1, turn_2])
+  agent = Agent(name='root_agent', model=mock_model, tools=[increase_by_one])
+  runner = testing_utils.InMemoryRunner(agent)
+  events = runner.run('test')
+
+  assert function_called == 1, 'Tool should still execute on turn 1'
+
+  function_call_events = [e for e in events if e.get_function_calls()]
+  function_response_events = [e for e in events if e.get_function_responses()]
+  assert len(function_call_events) == 1
+  assert len(function_response_events) == 1
+
+  error_events = [e for e in events if e.error_code]
+  assert len(error_events) == 1
+  err = error_events[0]
+  assert err.error_code == 'MODEL_RETURNED_NO_CONTENT'
+  assert err.error_message
+  assert events[-1] is err
 
 
 @pytest.mark.asyncio
-async def test_transfer_to_self_returns_caller_when_name_is_duplicated():
-  """Transfer to self returns the caller, not a same-named agent elsewhere."""
-  # Arrange
-  namesake = Agent(name='caller')
-  other_branch = Agent(name='other_branch', sub_agents=[namesake])
-  caller = Agent(name='caller')
-  Agent(name='root', sub_agents=[other_branch, caller])
-  ctx = await testing_utils.create_invocation_context(caller)
-  flow = BaseLlmFlow()
+async def test_whitespace_only_stop_after_tool_call_surfaces_error_event():
+  """Tests that a whitespace-only turn after a tool call surfaces an error event."""
+  function_call_part = types.Part.from_function_call(
+      name='increase_by_one', args={'x': 1}
+  )
 
-  # Act
-  agent = flow._get_agent_to_run(ctx, 'caller')
+  turn_1 = LlmResponse(
+      content=types.Content(role='model', parts=[function_call_part]),
+      finish_reason=types.FinishReason.STOP,
+  )
+  # A whitespace-only turn: STOP with text parts that strip to empty.
+  turn_2 = LlmResponse(
+      content=types.Content(
+          role='model',
+          parts=[types.Part.from_text(text='   \n\t  ')],
+      ),
+      finish_reason=types.FinishReason.STOP,
+  )
 
-  # Assert
-  assert agent is caller
+  function_called = 0
+
+  def increase_by_one(x: int) -> int:
+    nonlocal function_called
+    function_called += 1
+    return x + 1
+
+  mock_model = testing_utils.MockModel.create(responses=[turn_1, turn_2])
+  agent = Agent(name='root_agent', model=mock_model, tools=[increase_by_one])
+  runner = testing_utils.InMemoryRunner(agent)
+  events = runner.run('test')
+
+  assert function_called == 1, 'Tool should still execute on turn 1'
+
+  function_call_events = [e for e in events if e.get_function_calls()]
+  function_response_events = [e for e in events if e.get_function_responses()]
+  assert len(function_call_events) == 1
+  assert len(function_response_events) == 1
+
+  error_events = [e for e in events if e.error_code]
+  assert len(error_events) == 1
+  err = error_events[0]
+  assert err.error_code == 'MODEL_RETURNED_NO_CONTENT'
+  assert err.error_message
+  assert events[-1] is err
 
 
 @pytest.mark.asyncio
-async def test_transfer_to_parent_disallowed_raises_value_error():
-  """Transfer to parent raises ValueError when disallow_transfer_to_parent is True."""
-  # Arrange
-  _, child1, _ = _make_agent_tree()
-  child1.disallow_transfer_to_parent = True
-  ctx = await testing_utils.create_invocation_context(child1)
-  flow = BaseLlmFlow()
+async def test_thought_only_stop_in_sse_streaming_surfaces_error_event():
+  """Tests that a thought-only streaming turn under SSE surfaces an error event."""
+  partial_thought = LlmResponse(
+      content=types.Content(
+          role='model',
+          parts=[types.Part(text='Thinking step 1...', thought=True)],
+      ),
+      partial=True,
+  )
+  final_thought = LlmResponse(
+      content=types.Content(
+          role='model',
+          parts=[types.Part(text='Thinking step 1...', thought=True)],
+      ),
+      partial=False,
+      finish_reason=types.FinishReason.STOP,
+  )
 
-  # Act & Assert
-  with pytest.raises(
-      ValueError, match='child1 is not allowed to transfer to agent root'
-  ):
-    flow._get_agent_to_run(ctx, 'root')
+  class _ThoughtOnlyStreamModel(BaseLlm):
+    model: str = 'thought-stream-mock'
+
+    @classmethod
+    def supported_models(cls) -> list[str]:
+      return ['thought-stream-mock']
+
+    async def generate_content_async(
+        self, llm_request: LlmRequest, stream: bool = False
+    ):
+      yield partial_thought
+      yield final_thought
+
+  agent = Agent(name='root_agent', model=_ThoughtOnlyStreamModel())
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent,
+      user_content='test',
+      run_config=RunConfig(streaming_mode=StreamingMode.SSE),
+  )
+  events = [e async for e in agent.run_async(invocation_context)]
+
+  partial_events = [e for e in events if e.partial]
+  assert len(partial_events) == 1
+  assert partial_events[0].error_code is None
+
+  error_events = [e for e in events if e.error_code]
+  assert len(error_events) == 1
+  err = error_events[0]
+  assert err.error_code == 'MODEL_RETURNED_NO_CONTENT'
+  assert (
+      err.error_message
+      == 'The model returned no actionable content (finish_reason=STOP with'
+      ' thought-only or whitespace-only parts).'
+  )
+  assert events[-1] is err
 
 
 @pytest.mark.asyncio
-async def test_transfer_to_parent_allowed_returns_agent():
-  """Transfer to parent returns the agent when it is not disallowed."""
-  # Arrange
-  _, child1, _ = _make_agent_tree()
-  ctx = await testing_utils.create_invocation_context(child1)
-  flow = BaseLlmFlow()
+async def test_thought_before_tool_call_in_non_progressive_sse_does_not_error():
+  """With PROGRESSIVE_SSE_STREAMING off, the flushed thought chunk before a tool call is not an error."""
+  from google.adk.utils.streaming_utils import StreamingResponseAggregator
 
-  # Act
-  agent = flow._get_agent_to_run(ctx, 'root')
+  function_called = 0
 
-  # Assert
-  assert agent is not None
-  assert agent.name == 'root'
+  def increase_by_one(x: int) -> int:
+    nonlocal function_called
+    function_called += 1
+    return x + 1
+
+  class _NonProgressiveThoughtThenToolModel(BaseLlm):
+    model: str = 'non-progressive-thought-fc-mock'
+    calls: int = 0
+
+    @classmethod
+    def supported_models(cls) -> list[str]:
+      return ['non-progressive-thought-fc-mock']
+
+    async def generate_content_async(
+        self, llm_request: LlmRequest, stream: bool = False
+    ):
+      del llm_request, stream
+      self.calls += 1
+      aggregator = StreamingResponseAggregator()
+      if self.calls == 1:
+        raw_chunks = [
+            types.GenerateContentResponse(
+                candidates=[
+                    types.Candidate(
+                        content=types.Content(
+                            role='model',
+                            parts=[
+                                types.Part(
+                                    text='Let me call increase_by_one...',
+                                    thought=True,
+                                )
+                            ],
+                        )
+                    )
+                ]
+            ),
+            types.GenerateContentResponse(
+                candidates=[
+                    types.Candidate(
+                        content=types.Content(
+                            role='model',
+                            parts=[
+                                types.Part.from_function_call(
+                                    name='increase_by_one', args={'x': 1}
+                                )
+                            ],
+                        ),
+                        finish_reason=types.FinishReason.STOP,
+                    )
+                ]
+            ),
+        ]
+      else:
+        raw_chunks = [
+            types.GenerateContentResponse(
+                candidates=[
+                    types.Candidate(
+                        content=types.Content(
+                            role='model',
+                            parts=[types.Part.from_text(text='Result is 2.')],
+                        ),
+                        finish_reason=types.FinishReason.STOP,
+                    )
+                ]
+            )
+        ]
+
+      for raw in raw_chunks:
+        async for resp in aggregator.process_response(raw):
+          yield resp
+      if closed := aggregator.close():
+        yield closed
+
+  agent = Agent(
+      name='root_agent',
+      model=_NonProgressiveThoughtThenToolModel(),
+      tools=[increase_by_one],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent,
+      user_content='test',
+      run_config=RunConfig(streaming_mode=StreamingMode.SSE),
+  )
+
+  with temporary_feature_override(FeatureName.PROGRESSIVE_SSE_STREAMING, False):
+    events = [e async for e in agent.run_async(invocation_context)]
+
+  assert function_called == 1
+  assert [e for e in events if e.error_code] == []
+  assert events[-1].content.parts[0].text == 'Result is 2.'
 
 
 @pytest.mark.asyncio
@@ -2884,37 +2989,6 @@ async def test_resume_short_circuit_skips_partial_function_call():
   assert not any(e.actions and e.actions.transfer_to_agent for e in events)
 
 
-class _CfcFlowForTesting(BaseLlmFlow):
-  """BaseLlmFlow subclass that stubs run_live so the CFC branch can be driven."""
-
-  async def run_live(self, invocation_context):
-    yield Event(
-        author='root_agent',
-        content=types.Content(
-            role='model', parts=[types.Part.from_text(text='live_hello')]
-        ),
-        turn_complete=True,
-    )
-
-
-async def _drive_one_llm_call(flow, invocation_context):
-  """Runs `_call_llm_async` once, draining whatever it yields."""
-  model_response_event = Event(
-      id=Event.new_id(),
-      invocation_id=invocation_context.invocation_id,
-      author='root_agent',
-  )
-  async with Aclosing(
-      flow._call_llm_async(
-          invocation_context,
-          LlmRequest(model='mock'),
-          model_response_event,
-      )
-  ) as agen:
-    async for _ in agen:
-      pass
-
-
 @pytest.mark.asyncio
 async def test_preprocess_final_response_skips_llm_call():
   """A final response from preprocessing must finish the current step."""
@@ -3010,31 +3084,6 @@ async def test_preprocess_non_function_response_does_not_skip_llm_call():
 
 
 @pytest.mark.asyncio
-async def test_cfc_llm_calls_are_counted_against_max_llm_calls():
-  """support_cfc must not exempt a run from the max_llm_calls spend cap."""
-  agent = Agent(
-      name='root_agent', model=testing_utils.MockModel.create(responses=[])
-  )
-  flow = _CfcFlowForTesting()
-  invocation_context = await testing_utils.create_invocation_context(
-      agent=agent,
-      user_content='test',
-      run_config=RunConfig(
-          support_cfc=True,
-          streaming_mode=StreamingMode.SSE,
-          max_llm_calls=2,
-      ),
-  )
-
-  await _drive_one_llm_call(flow, invocation_context)
-  await _drive_one_llm_call(flow, invocation_context)
-  assert invocation_context._invocation_cost_manager._number_of_llm_calls == 2
-
-  with pytest.raises(LlmCallsLimitExceededError):
-    await _drive_one_llm_call(flow, invocation_context)
-
-
-@pytest.mark.asyncio
 async def test_cfc_run_async_does_not_duplicate_function_calls():
   """support_cfc=True in run_async must invoke tool functions exactly once."""
   call_count = 0
@@ -3094,28 +3143,6 @@ async def test_cfc_run_async_does_not_duplicate_function_calls():
   events = [e async for e in flow.run_async(invocation_context)]
   assert call_count == 1
   assert len(events) == 3
-
-
-@pytest.mark.asyncio
-async def test_llm_calls_are_counted_against_max_llm_calls():
-  """The cap still applies on the ordinary (non-CFC) path."""
-  agent = Agent(
-      name='root_agent',
-      model=testing_utils.MockModel.create(responses=['a', 'b', 'c']),
-  )
-  flow = BaseLlmFlowForTesting()
-  invocation_context = await testing_utils.create_invocation_context(
-      agent=agent,
-      user_content='test',
-      run_config=RunConfig(max_llm_calls=2),
-  )
-
-  await _drive_one_llm_call(flow, invocation_context)
-  await _drive_one_llm_call(flow, invocation_context)
-  assert invocation_context._invocation_cost_manager._number_of_llm_calls == 2
-
-  with pytest.raises(LlmCallsLimitExceededError):
-    await _drive_one_llm_call(flow, invocation_context)
 
 
 @pytest.mark.asyncio
@@ -3419,40 +3446,63 @@ async def test_eof_connection_ends_the_run_instead_of_spinning():
   assert receive_calls == 1
 
 
-class _SyncOnlyAgent(BaseAgent):
-  """An agent supplying the LlmAgent model surface without subclassing it.
-
-  `core._utils.as_llm_agent` documents that flows drive agents shaped
-  like this, so resolving a model must not require the async accessors.
-  """
-
-  @property
-  def canonical_model(self) -> BaseLlm:
-    return LLMRegistry.new_llm('gemini-2.5-flash')
-
-  @property
-  def canonical_live_model(self) -> BaseLlm:
-    return LLMRegistry.new_llm('gemini-2.5-flash')
-
-
 @pytest.mark.asyncio
-async def test_get_llm_reads_an_agent_that_has_only_the_sync_properties():
-  agent = _SyncOnlyAgent(name='sync_only')
+async def test_base_llm_flow_delegates_to_core_model_call():
+  """Tests that BaseLlmFlow delegates model call and resolution helpers to core._model_call."""
+  from google.adk.flows.llm_flows.core import _model_call
+
+  flow = BaseLlmFlowForTesting()
+  agent = Agent(name='test_agent', tools=[])
   invocation_context = await testing_utils.create_invocation_context(
       agent=agent
   )
-
-  llm = await BaseLlmFlow()._BaseLlmFlow__get_llm(invocation_context)
-
-  assert llm.model == 'gemini-2.5-flash'
-
-
-@pytest.mark.asyncio
-async def test_get_llm_rejects_an_agent_with_no_model_at_all():
-  agent = BaseAgent(name='no_model')
-  invocation_context = await testing_utils.create_invocation_context(
-      agent=agent
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
   )
+  llm_request = LlmRequest()
+  sentinel_response = LlmResponse(
+      content=types.Content(parts=[types.Part.from_text(text='sentinel')])
+  )
+  sentinel_llm = LLMRegistry.new_llm('gemini-2.5-flash')
 
-  with pytest.raises(TypeError, match='canonical_model'):
-    await BaseLlmFlow()._BaseLlmFlow__get_llm(invocation_context)
+  with mock.patch(
+      'google.adk.flows.llm_flows.base_llm_flow.resolve_llm',
+      new_callable=AsyncMock,
+      return_value=sentinel_llm,
+  ) as mock_resolve:
+    result = await flow._get_llm(invocation_context)
+    assert result is sentinel_llm
+    mock_resolve.assert_awaited_once_with(invocation_context)
+
+  async def mock_call_gen(*args, **kwargs):
+    del args, kwargs
+    yield sentinel_response
+
+  with mock.patch(
+      'google.adk.flows.llm_flows.base_llm_flow.call_llm_async',
+      side_effect=mock_call_gen,
+  ) as mock_call:
+    results = [
+        resp
+        async for resp in flow._call_llm_async(
+            invocation_context, llm_request, event
+        )
+    ]
+    assert results == [sentinel_response]
+    mock_call.assert_called_once_with(
+        flow, invocation_context, llm_request, event
+    )
+
+  empty_stop_response = LlmResponse(
+      finish_reason=types.FinishReason.STOP,
+      partial=False,
+  )
+  with mock.patch(
+      'google.adk.flows.llm_flows.base_llm_flow.apply_empty_response_policy'
+  ) as mock_apply:
+    async for _ in flow._postprocess_async(
+        invocation_context, llm_request, empty_stop_response, event
+    ):
+      pass
+    mock_apply.assert_called_once_with(invocation_context, empty_stop_response)

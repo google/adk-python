@@ -19,6 +19,10 @@ import warnings
 
 from google.adk.agents.common_configs import CodeConfig
 from google.adk.errors.not_found_error import NotFoundError
+from google.adk.evaluation._efficiency_evaluators import _InferenceCallCountV1Evaluator
+from google.adk.evaluation._efficiency_evaluators import _InvocationDurationV1Evaluator
+from google.adk.evaluation._efficiency_evaluators import _TokenUsageV1Evaluator
+from google.adk.evaluation._efficiency_evaluators import _ToolCallCountV1Evaluator
 from google.adk.evaluation.custom_metric_evaluator import _CustomMetricEvaluator
 from google.adk.evaluation.eval_config import CustomMetricConfig
 from google.adk.evaluation.eval_config import EvalConfig
@@ -43,9 +47,13 @@ from google.adk.evaluation.metric_evaluator_registry import RubricBasedToolUseV1
 from google.adk.evaluation.metric_evaluator_registry import SafetyEvaluatorV1MetricInfoProvider
 from google.adk.evaluation.metric_evaluator_registry import TrajectoryEvaluator
 from google.adk.evaluation.metric_evaluator_registry import TrajectoryEvaluatorMetricInfoProvider
+from google.adk.evaluation.metric_info_providers import InferenceCallCountV1MetricInfoProvider
+from google.adk.evaluation.metric_info_providers import InvocationDurationV1MetricInfoProvider
 from google.adk.evaluation.metric_info_providers import MultiTurnTaskSuccessV1MetricInfoProvider
 from google.adk.evaluation.metric_info_providers import MultiTurnToolUseQualityV1MetricInfoProvider
 from google.adk.evaluation.metric_info_providers import MultiTurnTrajectoryQualityV1MetricInfoProvider
+from google.adk.evaluation.metric_info_providers import TokenUsageV1MetricInfoProvider
+from google.adk.evaluation.metric_info_providers import ToolCallCountV1MetricInfoProvider
 from pydantic import ValidationError
 import pytest
 
@@ -144,6 +152,69 @@ class TestMetricEvaluatorRegistry:
         ),
         TrajectoryEvaluator,
     )
+
+  @pytest.mark.parametrize(
+      ("metric_name", "evaluator_type"),
+      [
+          (PrebuiltMetrics.TOOL_CALL_COUNT_V1.value, _ToolCallCountV1Evaluator),
+          (
+              PrebuiltMetrics.INFERENCE_CALL_COUNT_V1.value,
+              _InferenceCallCountV1Evaluator,
+          ),
+          (PrebuiltMetrics.TOKEN_USAGE_V1.value, _TokenUsageV1Evaluator),
+          (
+              PrebuiltMetrics.INVOCATION_DURATION_V1.value,
+              _InvocationDurationV1Evaluator,
+          ),
+      ],
+  )
+  def test_efficiency_metrics_are_registered(self, metric_name, evaluator_type):
+    """Each efficiency metric resolves to its evaluator in a new registry."""
+    registry = MetricEvaluatorRegistry()
+
+    registered = {
+        metric_info.metric_name
+        for metric_info in registry.get_registered_metrics()
+    }
+    assert metric_name in registered
+    # No threshold: these metrics report a value and reject one outright.
+    assert isinstance(
+        registry.get_evaluator(EvalMetric(metric_name=metric_name)),
+        evaluator_type,
+    )
+
+  @pytest.mark.parametrize(
+      "metric_name",
+      [
+          PrebuiltMetrics.TOOL_CALL_COUNT_V1.value,
+          PrebuiltMetrics.INFERENCE_CALL_COUNT_V1.value,
+          PrebuiltMetrics.TOKEN_USAGE_V1.value,
+          PrebuiltMetrics.INVOCATION_DURATION_V1.value,
+      ],
+  )
+  def test_efficiency_metrics_need_no_threshold(self, metric_name):
+    """Their MetricInfo says so, which is how consumers know not to ask."""
+    registry = MetricEvaluatorRegistry()
+
+    metric_info = next(
+        info
+        for info in registry.get_registered_metrics()
+        if info.metric_name == metric_name
+    )
+
+    assert not metric_info.requires_threshold
+
+  def test_quality_metrics_still_require_a_threshold(self):
+    """The default is unchanged for every metric that gates on one."""
+    registry = MetricEvaluatorRegistry()
+
+    metric_info = next(
+        info
+        for info in registry.get_registered_metrics()
+        if info.metric_name == PrebuiltMetrics.TOOL_TRAJECTORY_AVG_SCORE.value
+    )
+
+    assert metric_info.requires_threshold
 
   def test_registrations_are_not_shared_across_instances(self, registry):
     registry.register_evaluator(
@@ -439,7 +510,11 @@ class TestCustomFunctionPathResolution:
         },
     )
 
-    [eval_metric] = get_eval_metrics_from_config(eval_config)
+    [eval_metric] = [
+        metric
+        for metric in get_eval_metrics_from_config(eval_config)
+        if metric.metric_name == self._CUSTOM_METRIC_NAME
+    ]
     evaluator = registry.get_evaluator(eval_metric)
 
     assert evaluator._metric_function is math.sqrt
@@ -459,7 +534,11 @@ class TestCustomFunctionPathResolution:
         },
     )
 
-    [eval_metric] = get_eval_metrics_from_config(eval_config)
+    [eval_metric] = [
+        metric
+        for metric in get_eval_metrics_from_config(eval_config)
+        if metric.metric_name == self._CUSTOM_METRIC_NAME
+    ]
     evaluator = registry.get_evaluator(eval_metric)
 
     assert evaluator._metric_function is math.sqrt
@@ -505,7 +584,11 @@ class TestCustomFunctionPathResolution:
           _custom_metric_info(self._CUSTOM_METRIC_NAME), _CustomMetricEvaluator
       )
 
-      [eval_metric] = get_eval_metrics_from_config(eval_config)
+      [eval_metric] = [
+          metric
+          for metric in get_eval_metrics_from_config(eval_config)
+          if metric.metric_name == self._CUSTOM_METRIC_NAME
+      ]
       evaluator = DEFAULT_METRIC_EVALUATOR_REGISTRY.get_evaluator(eval_metric)
 
       assert evaluator._metric_function is math.sqrt
@@ -542,7 +625,11 @@ class TestCustomFunctionPathResolution:
             )
         },
     )
-    [trusted_metric] = get_eval_metrics_from_config(trusted_config)
+    [trusted_metric] = [
+        metric
+        for metric in get_eval_metrics_from_config(trusted_config)
+        if metric.metric_name == self._CUSTOM_METRIC_NAME
+    ]
     assert registry.get_evaluator(trusted_metric)._metric_function is math.sqrt
 
     with pytest.raises(NotFoundError):
@@ -712,6 +799,10 @@ class TestMetricInfoProviders:
             RubricBasedToolUseV1EvaluatorMetricInfoProvider(),
             PerTurnUserSimulatorQualityV1MetricInfoProvider(),
             RubricBasedMultiTurnTrajectoryMetricInfoProvider(),
+            ToolCallCountV1MetricInfoProvider(),
+            InferenceCallCountV1MetricInfoProvider(),
+            TokenUsageV1MetricInfoProvider(),
+            InvocationDurationV1MetricInfoProvider(),
         ]
     ]
 

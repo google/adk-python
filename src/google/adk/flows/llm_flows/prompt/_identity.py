@@ -30,6 +30,8 @@ from ..core._utils import as_llm_agent
 class _IdentityLlmRequestProcessor(BaseLlmRequestProcessor):
   """Gives the agent identity from the framework."""
 
+  name = 'identity'
+
   @override
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest

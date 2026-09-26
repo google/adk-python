@@ -42,6 +42,8 @@ class ContextCacheRequestProcessor(BaseLlmRequestProcessor):
   managers (e.g., GeminiContextCacheManager).
   """
 
+  name = 'context_cache'
+
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:

@@ -140,23 +140,15 @@ def check_interception(
 
   else:
     # Case 6: Cross-turn no events, or events contain no output, route, or interrupts.
-    # Rerun Workflow nodes, wait_for_output nodes, and rerun_on_resume nodes
-    # with no prior output so they can guide nested children or resume execution;
-    # otherwise fall through.
-    if (
-        isinstance(node, Workflow)
-        or node.wait_for_output
-        or node.rerun_on_resume
-    ) and recovered.output is None:
+    # Rerun wait_for_output nodes and rerun_on_resume nodes with no prior output
+    # so they can guide nested children or resume execution; otherwise fall through.
+    if node.wait_for_output or node.rerun_on_resume:
       should_run = True
       resume_inputs = recovered.resolved_responses
     else:
       # Allow fresh execution for crashed/timeout dynamic nodes;
       # static nodes with no outcome (e.g. return None) should be fast-forwarded.
-      if current_run is not None:
-        should_run = True
-      else:
-        should_run = False
+      should_run = current_run is not None
 
   return InterceptionResult(
       should_run=should_run,
@@ -164,7 +156,7 @@ def check_interception(
       route=route,
       interrupts=interrupts,
       resume_inputs=resume_inputs,
-      transfer_to_agent=recovered.transfer_to_agent if recovered else None,
+      transfer_to_agent=recovered.transfer_to_agent,
   )
 
 

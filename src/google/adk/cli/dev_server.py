@@ -16,7 +16,7 @@
 
 This module provides the DevServer class which extends ApiServer with development-only endpoints.
 All production endpoints are inherited from ApiServer.
-All dev-only endpoints (eval, debug, graph, test management) are added by DevServer.
+All dev-only endpoints (eval, debug, graph, test management, deploy) are added by DevServer.
 
 Use this for local development with `adk web`.
 For production deployments, use api_server.py instead.
@@ -78,6 +78,7 @@ from ..evaluation.eval_result import EvalSetResult
 from ..evaluation.eval_set import EvalSet
 from ..utils._telemetry_config import read_telemetry_consent
 from ..utils._telemetry_config import write_telemetry_consent
+from ._dev_deploy import register_dev_deploy_endpoints
 from .api_server import ApiServer
 
 NESTED_APP_SEPARATOR = "."
@@ -425,6 +426,7 @@ class DevServer(ApiServer):
   """
 
   _allow_special_agents: bool = True
+  _serves_debug_trace_endpoints: bool = True
 
   def _get_agent_dir(self, app_name: str) -> str:
     """Resolves the agent directory and validates the app name to prevent path traversal."""
@@ -1431,9 +1433,26 @@ class DevServer(ApiServer):
 
         # Right now we ignore the app_name as eval metrics are not tied to the
         # app_name, but they could be moving forward.
-        metrics_info = (
-            DEFAULT_METRIC_EVALUATOR_REGISTRY.get_registered_metrics()
-        )
+        # This endpoint feeds a surface that asks the user to pick metrics and
+        # set a threshold for each. Metrics that need no threshold are always
+        # on and have nothing for the user to choose, and they carry no value
+        # interval for a threshold control to bound itself by.
+        #
+        # Hiding them is a compatibility shim for the Dev UI bundle vendored in
+        # cli/browser, which dereferences `metricValueInfo.interval`
+        # unconditionally while building the threshold form and so takes the
+        # whole form down on a metric that has none.
+        # TODO: Drop this filter once that
+        # bundle understands `requires_threshold=False` and renders those
+        # metrics as an always-on, non-selectable section instead. The bundle
+        # ships from this repo, so its refresh and this removal land together.
+        metrics_info = [
+            metric_info
+            for metric_info in (
+                DEFAULT_METRIC_EVALUATOR_REGISTRY.get_registered_metrics()
+            )
+            if metric_info.requires_threshold
+        ]
         return ListMetricsInfoResponse(metrics_info=metrics_info)
       except ModuleNotFoundError as e:
         logger.exception("%s\n%s", MISSING_EVAL_DEPENDENCIES_MESSAGE, e)
@@ -1523,6 +1542,8 @@ class DevServer(ApiServer):
         return GetEventGraphResult(dot_src=dot_graph.source)
       else:
         return {}
+
+    register_dev_deploy_endpoints(app, get_agent_dir=self._get_agent_dir)
 
   def _navigate_to_node(self, app_info: dict, node_path: str) -> dict | None:
     """Navigate to a specific node in the agent hierarchy.

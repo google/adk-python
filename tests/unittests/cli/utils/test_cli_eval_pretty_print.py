@@ -21,6 +21,7 @@ from google.adk.evaluation.eval_metrics import EvalMetricResultDetails
 from google.adk.evaluation.eval_metrics import EvalMetricResultPerInvocation
 from google.adk.evaluation.eval_metrics import PrebuiltMetrics
 from google.adk.evaluation.eval_metrics import RubricsBasedCriterion
+from google.adk.evaluation.eval_metrics import TokenUsageDetails
 from google.adk.evaluation.eval_result import EvalCaseResult
 from google.adk.evaluation.eval_rubrics import RubricScore
 from google.adk.evaluation.evaluator import EvalStatus
@@ -70,3 +71,91 @@ def test_pretty_print_eval_result_with_empty_criterion_rubrics(capsys):
   captured = capsys.readouterr()
   assert "Rubric: invocation-rubric" in captured.out
   assert "The correct tool was used." in captured.out
+
+
+def test_pretty_print_eval_result_renders_token_breakdown(capsys):
+  """The per-type token counts are printed under the token usage score."""
+  metric_result = EvalMetricResult(
+      metric_name=PrebuiltMetrics.TOKEN_USAGE_V1.value,
+      score=1651.0,
+      eval_status=EvalStatus.INFORMATIONAL,
+      details=EvalMetricResultDetails(
+          token_usage_details=TokenUsageDetails(
+              total_tokens=1651.0,
+              input_tokens=1180.0,
+              prompt_tokens=1180.0,
+              tool_use_tokens=0.0,
+              output_tokens=471.0,
+              candidates_tokens=343.0,
+              reasoning_tokens=128.0,
+          )
+      ),
+  )
+  invocation = Invocation(
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text="User input here.")]
+      )
+  )
+  eval_result = EvalCaseResult(
+      eval_set_id="eval-set",
+      eval_id="eval-id",
+      final_eval_status=EvalStatus.PASSED,
+      overall_eval_metric_results=[metric_result],
+      eval_metric_result_per_invocation=[
+          EvalMetricResultPerInvocation(
+              actual_invocation=invocation,
+              eval_metric_results=[metric_result],
+          )
+      ],
+      session_id="session-id",
+  )
+
+  pretty_print_eval_result(eval_result)
+
+  captured = capsys.readouterr()
+  # Indentation is containment: every count sits under the one it is part of.
+  # A count the backend never reported (here `cached`) reads n/a, never 0.
+  assert (
+      "Token breakdown:\n"
+      "  total:            1651\n"
+      "    input:          1180\n"
+      "      prompt:       1180\n"
+      "        cached:     n/a\n"
+      "      tool use:     0\n"
+      "    output:         471\n"
+      "      candidates:   343\n"
+      "      reasoning:    128\n"
+  ) in captured.out
+
+
+def test_pretty_print_eval_result_without_token_breakdown(capsys):
+  """Metrics that carry no token details do not print the breakdown block."""
+  metric_result = EvalMetricResult(
+      metric_name=PrebuiltMetrics.TOOL_CALL_COUNT_V1.value,
+      score=2.0,
+      eval_status=EvalStatus.INFORMATIONAL,
+      details=EvalMetricResultDetails(),
+  )
+  invocation = Invocation(
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text="User input here.")]
+      )
+  )
+  eval_result = EvalCaseResult(
+      eval_set_id="eval-set",
+      eval_id="eval-id",
+      final_eval_status=EvalStatus.PASSED,
+      overall_eval_metric_results=[metric_result],
+      eval_metric_result_per_invocation=[
+          EvalMetricResultPerInvocation(
+              actual_invocation=invocation,
+              eval_metric_results=[metric_result],
+          )
+      ],
+      session_id="session-id",
+  )
+
+  pretty_print_eval_result(eval_result)
+
+  captured = capsys.readouterr()
+  assert "Token breakdown:" not in captured.out

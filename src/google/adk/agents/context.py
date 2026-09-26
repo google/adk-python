@@ -30,11 +30,14 @@ if TYPE_CHECKING:
   from google.genai import types
 
   from ..artifacts.base_artifact_service import ArtifactVersion
+  from ..artifacts.base_artifact_service import BaseArtifactService
   from ..auth.auth_credential import AuthCredential
   from ..auth.auth_tool import AuthConfig
+  from ..auth.credential_service.base_credential_service import BaseCredentialService
   from ..events.event import Event
   from ..events.event_actions import EventActions
   from ..events.ui_widget import UiWidget
+  from ..memory.base_memory_service import BaseMemoryService
   from ..memory.base_memory_service import SearchMemoryResponse
   from ..memory.memory_entry import MemoryEntry
   from ..sessions.session import Session
@@ -42,9 +45,9 @@ if TYPE_CHECKING:
   from ..telemetry.node_tracing import TelemetryContext
   from ..tools.tool_confirmation import ToolConfirmation
   from ..workflow._base_node import BaseNode
+  from ..workflow._dynamic_node_scheduler import DynamicNodeScheduler
   from ..workflow._graph import NodeLike
   from ..workflow._graph import RouteValue
-  from ..workflow._schedule_dynamic_node import ScheduleDynamicNode
   from .invocation_context import InvocationContext
 
 _MAX_PARENT_DEPTH = 50
@@ -52,7 +55,7 @@ _MAX_PARENT_DEPTH = 50
 
 def _derive_scheduler(
     parent_ctx: Context | None,
-) -> ScheduleDynamicNode | None:
+) -> DynamicNodeScheduler | None:
   """Derives the dynamic node scheduler from the parent context."""
   if parent_ctx:
     return parent_ctx._workflow_scheduler
@@ -116,7 +119,7 @@ class Context(ReadonlyContext):
   fields`` section are available.
   """
 
-  _workflow_scheduler: ScheduleDynamicNode | None = None
+  _workflow_scheduler: DynamicNodeScheduler | None = None
 
   def __init__(
       self,
@@ -191,10 +194,18 @@ class Context(ReadonlyContext):
     self._tool_confirmation = tool_confirmation
 
     # Workflow Execution
+    effective_node_path = node_path
+    if (
+        effective_node_path is None
+        and parent_ctx is None
+        and node is None
+        and isinstance(getattr(invocation_context, 'node_path', None), str)
+    ):
+      effective_node_path = invocation_context.node_path
     self._node_path, self._run_id = _derive_node_path(
         node.name if node else None,
         run_id,
-        node_path,
+        effective_node_path,
         parent_ctx.node_path if parent_ctx else None,
         node=node,
     )
@@ -208,11 +219,13 @@ class Context(ReadonlyContext):
     self._route_value: RouteValue | list[RouteValue] | None = None
     self._route_emitted: bool = False
     self._interrupt_ids: set[str] = set()
-    # scope tag inherited from parent ctx by default;
+    # scope tag inherited from parent ctx or invocation_context by default;
     # NodeRunner / Workflow may override before the node runs.
-    self._isolation_scope: str | None = (
-        parent_ctx.isolation_scope if parent_ctx else None
-    )
+    if parent_ctx is not None:
+      self._isolation_scope: str | None = parent_ctx.isolation_scope
+    else:
+      inv_iso = getattr(invocation_context, 'isolation_scope', None)
+      self._isolation_scope = inv_iso if isinstance(inv_iso, str) else None
 
     self._output_for_ancestors: list[str]
     if use_as_output and parent_ctx:
@@ -407,12 +420,13 @@ class Context(ReadonlyContext):
   def get_invocation_context(self) -> InvocationContext:
     """Returns a copy of the invocation context with the proxy session."""
     ctx = self._invocation_context
-    ctx_with_proxy = ctx.model_copy(
-        update={
-            'session': self.session,
-            'isolation_scope': self.isolation_scope,
-        }
-    )
+    update: dict[str, Any] = {
+        'session': self.session,
+        'isolation_scope': self.isolation_scope,
+    }
+    if self.node_path:
+      update['node_path'] = self.node_path
+    ctx_with_proxy = ctx.model_copy(update=update)
     return ctx_with_proxy
 
   async def run_node(
@@ -496,9 +510,9 @@ class Context(ReadonlyContext):
       return_ctx: If True, returns the child's Context instead of its output.
     """
 
-    from ..workflow import _dynamic_node_executor
+    from ..workflow import _dynamic_node_scheduler
 
-    return await _dynamic_node_executor.run_node_internal(
+    return await _dynamic_node_scheduler.run_node_internal(
         self,
         node,
         node_input=node_input,
@@ -517,6 +531,13 @@ class Context(ReadonlyContext):
   # Artifact methods
   # ============================================================================
 
+  def _require_artifact_service(self) -> BaseArtifactService:
+    """Returns the artifact service, or raises if none is configured."""
+    service = self._invocation_context.artifact_service
+    if service is None:
+      raise ValueError('Artifact service is not initialized.')
+    return service
+
   async def load_artifact(
       self, filename: str, version: int | None = None
   ) -> types.Part | None:
@@ -530,9 +551,7 @@ class Context(ReadonlyContext):
     Returns:
       The artifact.
     """
-    if self._invocation_context.artifact_service is None:
-      raise ValueError('Artifact service is not initialized.')
-    return await self._invocation_context.artifact_service.load_artifact(
+    return await self._require_artifact_service().load_artifact(
         app_name=self._invocation_context.app_name,
         user_id=self._invocation_context.user_id,
         session_id=self._invocation_context.session.id,
@@ -556,9 +575,7 @@ class Context(ReadonlyContext):
     Returns:
      The version of the artifact.
     """
-    if self._invocation_context.artifact_service is None:
-      raise ValueError('Artifact service is not initialized.')
-    version = await self._invocation_context.artifact_service.save_artifact(
+    version = await self._require_artifact_service().save_artifact(
         app_name=self._invocation_context.app_name,
         user_id=self._invocation_context.user_id,
         session_id=self._invocation_context.session.id,
@@ -582,9 +599,7 @@ class Context(ReadonlyContext):
     Returns:
       The artifact version info.
     """
-    if self._invocation_context.artifact_service is None:
-      raise ValueError('Artifact service is not initialized.')
-    return await self._invocation_context.artifact_service.get_artifact_version(
+    return await self._require_artifact_service().get_artifact_version(
         app_name=self._invocation_context.app_name,
         user_id=self._invocation_context.user_id,
         session_id=self._invocation_context.session.id,
@@ -594,9 +609,7 @@ class Context(ReadonlyContext):
 
   async def list_artifacts(self) -> list[str]:
     """Lists the filenames of the artifacts attached to the current session."""
-    if self._invocation_context.artifact_service is None:
-      raise ValueError('Artifact service is not initialized.')
-    return await self._invocation_context.artifact_service.list_artifact_keys(
+    return await self._require_artifact_service().list_artifact_keys(
         app_name=self._invocation_context.app_name,
         user_id=self._invocation_context.user_id,
         session_id=self._invocation_context.session.id,
@@ -606,17 +619,20 @@ class Context(ReadonlyContext):
   # Credential methods
   # ============================================================================
 
+  def _require_credential_service(self) -> BaseCredentialService:
+    """Returns the credential service, or raises if none is configured."""
+    service = self._invocation_context.credential_service
+    if service is None:
+      raise ValueError('Credential service is not initialized.')
+    return service
+
   async def save_credential(self, auth_config: AuthConfig) -> None:
     """Saves a credential to the credential service.
 
     Args:
       auth_config: The authentication configuration containing the credential.
     """
-    if self._invocation_context.credential_service is None:
-      raise ValueError('Credential service is not initialized.')
-    await self._invocation_context.credential_service.save_credential(
-        auth_config, self
-    )
+    await self._require_credential_service().save_credential(auth_config, self)
 
   async def load_credential(
       self, auth_config: AuthConfig
@@ -629,9 +645,7 @@ class Context(ReadonlyContext):
     Returns:
       The loaded credential, or None if not found.
     """
-    if self._invocation_context.credential_service is None:
-      raise ValueError('Credential service is not initialized.')
-    return await self._invocation_context.credential_service.load_credential(
+    return await self._require_credential_service().load_credential(
         auth_config, self
     )
 
@@ -716,6 +730,18 @@ class Context(ReadonlyContext):
   # Memory methods
   # ============================================================================
 
+  def _require_memory_service(self, error_message: str) -> BaseMemoryService:
+    """Returns the memory service, or raises ``error_message`` if unavailable.
+
+    Args:
+      error_message: Message for the raised error. Each caller passes its own so
+        the wording stays specific to the operation that needed the service.
+    """
+    service = self._invocation_context.memory_service
+    if service is None:
+      raise ValueError(error_message)
+    return service
+
   async def add_session_to_memory(self) -> None:
     """Triggers memory generation for the current session.
 
@@ -732,13 +758,10 @@ class Context(ReadonlyContext):
           await ctx.add_session_to_memory()
       ```
     """
-    if self._invocation_context.memory_service is None:
-      raise ValueError(
-          'Cannot add session to memory: memory service is not available.'
-      )
-    await self._invocation_context.memory_service.add_session_to_memory(
-        self._invocation_context.session
+    service = self._require_memory_service(
+        'Cannot add session to memory: memory service is not available.'
     )
+    await service.add_session_to_memory(self._invocation_context.session)
 
   async def add_events_to_memory(
       self,
@@ -758,11 +781,10 @@ class Context(ReadonlyContext):
     Raises:
       ValueError: If memory service is not available.
     """
-    if self._invocation_context.memory_service is None:
-      raise ValueError(
-          'Cannot add events to memory: memory service is not available.'
-      )
-    await self._invocation_context.memory_service.add_events_to_memory(
+    service = self._require_memory_service(
+        'Cannot add events to memory: memory service is not available.'
+    )
+    await service.add_events_to_memory(
         app_name=self._invocation_context.session.app_name,
         user_id=self._invocation_context.session.user_id,
         session_id=self._invocation_context.session.id,
@@ -788,9 +810,10 @@ class Context(ReadonlyContext):
     Raises:
       ValueError: If memory service is not available.
     """
-    if self._invocation_context.memory_service is None:
-      raise ValueError('Cannot add memory: memory service is not available.')
-    await self._invocation_context.memory_service.add_memory(
+    service = self._require_memory_service(
+        'Cannot add memory: memory service is not available.'
+    )
+    await service.add_memory(
         app_name=self._invocation_context.session.app_name,
         user_id=self._invocation_context.session.user_id,
         memories=memories,
@@ -809,9 +832,8 @@ class Context(ReadonlyContext):
     Raises:
       ValueError: If memory service is not available.
     """
-    if self._invocation_context.memory_service is None:
-      raise ValueError('Memory service is not available.')
-    return await self._invocation_context.memory_service.search_memory(
+    service = self._require_memory_service('Memory service is not available.')
+    return await service.search_memory(
         app_name=self._invocation_context.app_name,
         user_id=self._invocation_context.user_id,
         query=query,
@@ -859,9 +881,9 @@ class Context(ReadonlyContext):
       override_isolation_scope: str | None = None,
       resume_inputs: dict[str, Any] | None = None,
   ) -> Context:
-    from ..workflow import _dynamic_node_executor
+    from ..workflow import _dynamic_node_scheduler
 
-    return await _dynamic_node_executor.run_node_standalone(
+    return await _dynamic_node_scheduler.run_node_standalone(
         self,
         node,
         node_input=node_input,

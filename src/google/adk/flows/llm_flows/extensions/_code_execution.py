@@ -48,6 +48,7 @@ from ....utils.context_utils import Aclosing
 from .._base_llm_processor import BaseLlmRequestProcessor
 from .._base_llm_processor import BaseLlmResponseProcessor
 from ..core._utils import as_llm_agent
+from ._planning import response_rewriting_planner
 
 if TYPE_CHECKING:
   from ....models.llm_request import LlmRequest
@@ -142,18 +143,34 @@ Total columns: {df.shape[1]}
 '''
 
 
+def _resolve_code_executor(
+    invocation_context: InvocationContext, agent: object
+) -> Optional[BaseCodeExecutor]:
+  """Resolves the active code executor for an invocation without mutating the agent."""
+  if not hasattr(agent, 'code_executor'):
+    return None
+  code_executor = getattr(agent, 'code_executor', None)
+  if (
+      invocation_context.run_config
+      and invocation_context.run_config.support_cfc
+      and getattr(agent, 'parent_agent', None) is None
+      and not isinstance(code_executor, BuiltInCodeExecutor)
+  ):
+    return BuiltInCodeExecutor()
+  return code_executor
+
+
 class _CodeExecutionRequestProcessor(BaseLlmRequestProcessor):  # type: ignore[misc]
   """Processes code execution requests."""
+
+  name = 'code_execution'
 
   @override
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
     agent = as_llm_agent(invocation_context)
-    if not hasattr(agent, 'code_executor'):
-      return
-
-    code_executor = agent.code_executor
+    code_executor = _resolve_code_executor(invocation_context, agent)
     if not code_executor:
       return
 
@@ -182,6 +199,8 @@ request_processor = _CodeExecutionRequestProcessor()
 class _CodeExecutionResponseProcessor(BaseLlmResponseProcessor):  # type: ignore[misc]
   """Processes code execution responses."""
 
+  name = 'code_execution'
+
   @override
   async def run_async(
       self, invocation_context: InvocationContext, llm_response: LlmResponse
@@ -206,10 +225,7 @@ async def _run_pre_processor(
 ) -> AsyncGenerator[Event, None]:
   """Pre-process the user message by adding the user message to the Colab notebook."""
   agent = as_llm_agent(invocation_context)
-  if not hasattr(agent, 'code_executor'):
-    return
-
-  code_executor = agent.code_executor
+  code_executor = _resolve_code_executor(invocation_context, agent)
 
   if not code_executor or not isinstance(code_executor, BaseCodeExecutor):
     return
@@ -321,7 +337,7 @@ async def _run_post_processor(
 ) -> AsyncGenerator[Event, None]:
   """Post-process the model response by extracting and executing the first code block."""
   agent = as_llm_agent(invocation_context)
-  code_executor = agent.code_executor
+  code_executor = _resolve_code_executor(invocation_context, agent)
 
   if not code_executor or not isinstance(code_executor, BaseCodeExecutor):
     return
@@ -386,12 +402,22 @@ async def _run_post_processor(
   # [Step 1] Extract code from the model predict response and truncate the
   # content to the part with the first code block.
   response_content = llm_response.content
+  # A rewriting planner marks its own code-bearing action text as a thought, so
+  # under one only a thought the model itself signed counts as reasoning.
+  response_content, thought_parts = _split_thoughts(
+      response_content,
+      signed_only=response_rewriting_planner(invocation_context) is not None,
+  )
   code_str = CodeExecutionUtils.extract_code_and_truncate_content(
       response_content, code_executor.code_block_delimiters
   )
   # Terminal state: no code to execute.
   if not code_str:
     return
+
+  # Not code to run, but the model expects its own signatures back.
+  if thought_parts:
+    response_content.parts = thought_parts + (response_content.parts or [])
 
   # [Step 2] Executes the code and emit 2 Events for code and execution result.
   yield Event(
@@ -427,6 +453,30 @@ async def _run_post_processor(
   # [Step 3] Skip processing the original model response
   # to continue code generation loop.
   llm_response.content = None
+
+
+def _split_thoughts(
+    content: types.Content,
+    *,
+    signed_only: bool = False,
+) -> tuple[types.Content, list[types.Part]]:
+  """Returns the content without the model's private reasoning, and those parts.
+
+  Args:
+    content: The model response content.
+    signed_only: Only count a thought the model signed. A planner marks its own
+      parts as a thought but cannot produce a thought signature.
+  """
+  kept: list[types.Part] = []
+  thoughts: list[types.Part] = []
+  for part in content.parts or []:
+    if part.thought and (part.thought_signature or not signed_only):
+      thoughts.append(part)
+    else:
+      kept.append(part)
+  if not thoughts:
+    return content, []
+  return content.model_copy(update={'parts': kept}), thoughts
 
 
 def _extract_and_replace_inline_files(

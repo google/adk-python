@@ -336,14 +336,25 @@ class RecordingsPlugin(BasePlugin):
           state.records,
           recordings_file,
           sort_keys=False,
+          exclude={
+              "recordings": {
+                  "__all__": {
+                      "llm_recording": {
+                          "llm_request": {
+                              # Excluded whole: `headers` commonly holds an
+                              # Authorization bearer token.
+                              "config": {"http_options": True}
+                          }
+                      }
+                  }
+              }
+          },
       )
       logger.info(
           "Saved %d recordings to %s",
           len(state.records.recordings),
           recordings_file,
       )
-    except Exception as e:
-      logger.error("Failed to save interactions: %s", e)
     finally:
       # Cleanup per-invocation recording state
       self._invocation_states.pop(ctx.invocation_id, None)

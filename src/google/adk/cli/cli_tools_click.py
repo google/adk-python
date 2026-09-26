@@ -922,6 +922,7 @@ def adk_services_options(*, default_use_local_storage: bool = True):
               sessions. <agent_engine> can either be the full qualified resource
               name 'projects/abc/locations/us-central1/reasoningEngines/123' or
               the resource id '123'.
+            - Use 'sqlite:///<relative_path>' / 'sqlite:////<absolute_path>' to connect to SQLite memory service.
             - Use 'memory://' to force the in-memory memory service."""),
         default=None,
     )
@@ -2986,6 +2987,7 @@ def cli_deploy_agent_engine(
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
+    click.get_current_context().exit(1)
 
 
 @deploy.command("gke")
@@ -3197,3 +3199,4 @@ def cli_deploy_gke(
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
+    click.get_current_context().exit(1)
