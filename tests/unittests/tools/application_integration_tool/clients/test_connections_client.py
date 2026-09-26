@@ -360,6 +360,90 @@ class TestConnectionsClient:
       with pytest.raises(ValueError, match="Request error"):
         client.get_entity_schema_and_operations("entity1")
 
+  def test_get_entity_schema_and_operations_failed_operation(
+      self, project, location, connection_name
+  ):
+    """A failed operation must not read as an empty schema with no tools."""
+    credentials = {"email": "test@example.com"}
+    client = ConnectionsClient(project, location, connection_name, credentials)
+    mock_execute_response_initial = mock.MagicMock()
+    mock_execute_response_initial.json.return_value = {
+        "name": "operations/test_op"
+    }
+    mock_execute_response_poll_failed = mock.MagicMock()
+    mock_execute_response_poll_failed.json.return_value = {
+        "done": True,
+        "error": {"code": 5, "message": "Entity type 'entity1' not found."},
+    }
+
+    with mock.patch.object(
+        client,
+        "_execute_api_call",
+        side_effect=[
+            mock_execute_response_initial,
+            mock_execute_response_poll_failed,
+        ],
+    ):
+      with pytest.raises(
+          ValueError,
+          match=(
+              "Operation operations/test_op failed: Entity type 'entity1' not"
+              " found."
+          ),
+      ):
+        client.get_entity_schema_and_operations("entity1")
+
+  def test_poll_operation_times_out(self, project, location, connection_name):
+    credentials = {"email": "test@example.com"}
+    client = ConnectionsClient(project, location, connection_name, credentials)
+    mock_execute_response_pending = mock.MagicMock()
+    mock_execute_response_pending.json.return_value = {"done": False}
+
+    with (
+        mock.patch.object(
+            client,
+            "_execute_api_call",
+            return_value=mock_execute_response_pending,
+        ),
+        mock.patch(
+            "google.adk.tools.application_integration_tool.clients.connections_client.time"
+        ) as mock_time,
+    ):
+      mock_time.monotonic.side_effect = [0, 1, 301]
+      with pytest.raises(
+          TimeoutError,
+          match="Operation operations/test_op did not finish within 300",
+      ):
+        client._poll_operation("operations/test_op")
+      assert client._execute_api_call.call_count == 2
+      mock_time.sleep.assert_called_once_with(1)
+
+  def test_poll_operation_does_not_sleep_once_done(
+      self, project, location, connection_name
+  ):
+    credentials = {"email": "test@example.com"}
+    client = ConnectionsClient(project, location, connection_name, credentials)
+    mock_execute_response_done = mock.MagicMock()
+    mock_execute_response_done.json.return_value = {
+        "done": True,
+        "response": {"jsonSchema": {}},
+    }
+
+    with (
+        mock.patch.object(
+            client, "_execute_api_call", return_value=mock_execute_response_done
+        ),
+        mock.patch(
+            "google.adk.tools.application_integration_tool.clients.connections_client.time"
+        ) as mock_time,
+    ):
+      mock_time.monotonic.return_value = 0
+      assert client._poll_operation("operations/test_op") == {
+          "done": True,
+          "response": {"jsonSchema": {}},
+      }
+      mock_time.sleep.assert_not_called()
+
   def test_get_action_schema_success(
       self, project, location, connection_name, mock_credentials
   ):
