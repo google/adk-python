@@ -609,6 +609,11 @@ class RestApiTool(BaseTool):
     # Got all parameters. Call the API.
     try:
       request_params = self._prepare_request_params(api_params, api_args)
+    except KeyError as e:
+      missing_param = e.args[0] if e.args else str(e)
+      return self._format_error_response(
+          f"Missing required path parameter '{missing_param}'."
+      )
     except InputValidationError as e:
       return self._format_error_response(str(e))
     if self._ssl_verify is not None:
