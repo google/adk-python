@@ -21,6 +21,7 @@ from datetime import timezone
 import logging
 import os
 import pickle
+import sqlite3
 import time
 from unittest import mock
 
@@ -874,3 +875,70 @@ def test_v1_storage_session_update_timestamp_tz() -> None:
 
 def test_v0_storage_session_update_timestamp_tz() -> None:
   _assert_update_timestamp_tz_is_utc_timestamp(v0)
+
+
+def test_sqlite_migration_reports_only_migrated_events(
+    caplog, tmp_path
+) -> None:
+  """A row that fails to convert is skipped, so the count must not claim it."""
+  source_db_path = tmp_path / "source_sqlite.db"
+  dest_db_path = tmp_path / "dest_sqlite.db"
+  source_db_url = f"sqlite:///{source_db_path}"
+
+  source_engine = create_engine(source_db_url)
+  v0.Base.metadata.create_all(source_engine)
+  SourceSession = sessionmaker(bind=source_engine)
+  source_session = SourceSession()
+
+  now = datetime.now(timezone.utc)
+  source_session.add(
+      v0.StorageSession(
+          app_name="app1",
+          user_id="user1",
+          id="session1",
+          state={},
+          create_time=now,
+          update_time=now,
+      )
+  )
+  for event_id, invocation_id in (("event1", "invoke1"), ("event2", "invoke2")):
+    source_session.add(
+        v0.StorageEvent(
+            id=event_id,
+            app_name="app1",
+            user_id="user1",
+            session_id="session1",
+            invocation_id=invocation_id,
+            author="user",
+            actions=EventActions(state_delta={}),
+            timestamp=now,
+        )
+    )
+  source_session.commit()
+  source_session.close()
+
+  original_to_event = v0.StorageEvent.to_event
+
+  def to_event(self):
+    if self.id == "event2":
+      raise ValueError("unreadable event payload")
+    return original_to_event(self)
+
+  with mock.patch.object(v0.StorageEvent, "to_event", to_event):
+    with caplog.at_level(logging.INFO):
+      mfss.migrate(source_db_url, str(dest_db_path))
+
+  # Only the convertible row lands in the destination.
+  dest_conn = sqlite3.connect(dest_db_path)
+  try:
+    migrated_ids = [
+        row[0] for row in dest_conn.execute("SELECT id FROM events").fetchall()
+    ]
+  finally:
+    dest_conn.close()
+  assert migrated_ids == ["event1"]
+
+  # The summary counts migrated rows, not source rows, and names the skipped one.
+  assert "Migrated 1 events." in caplog.text
+  assert "Migrated 2 events." not in caplog.text
+  assert "event2" in caplog.text
