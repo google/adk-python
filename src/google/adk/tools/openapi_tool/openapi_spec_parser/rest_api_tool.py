@@ -451,7 +451,7 @@ class RestApiTool(BaseTool):
         )
       elif param_location == "query":
         if v is not None:
-          query_params[original_k] = v
+          query_params.update(_serialize_query_param(param_obj, v))
       elif param_location == "header":
         header_params[original_k] = v
       elif param_location == "cookie":
@@ -755,6 +755,44 @@ class RestApiTool(BaseTool):
         f' endpoint="{self.endpoint}", operation="{self.operation}",'
         f' auth_scheme="{self.auth_scheme}")'
     )
+
+
+def _serialize_query_param(param: ApiParameter, value: Any) -> Dict[str, Any]:
+  """Applies a query parameter's OpenAPI `style` and `explode` to its value.
+
+  httpx already repeats the key for a list, which is the default (style=form,
+  explode=true) for arrays, but it sends a dict as its Python repr. Objects are
+  therefore expanded as the spec describes, and non-exploded or delimited
+  arrays are joined.
+
+  Args:
+    param: The query parameter, carrying the spec's `style` and `explode`.
+    value: The value the model supplied for it.
+
+  Returns:
+    The query entries to send, keyed by query parameter name.
+  """
+
+  def to_str(item: Any) -> str:
+    if isinstance(item, bool):
+      return "true" if item else "false"
+    return str(item)
+
+  name = param.original_name
+  style = param.style or "form"
+  explode = param.explode if param.explode is not None else style == "form"
+  if isinstance(value, dict):
+    if style == "deepObject":
+      return {f"{name}[{key}]": item for key, item in value.items()}
+    if explode:
+      return dict(value)
+    return {
+        name: ",".join(f"{key},{to_str(item)}" for key, item in value.items())
+    }
+  if isinstance(value, list) and not explode:
+    separator = {"spaceDelimited": " ", "pipeDelimited": "|"}.get(style, ",")
+    return {name: separator.join(to_str(item) for item in value)}
+  return {name: value}
 
 
 async def _request(

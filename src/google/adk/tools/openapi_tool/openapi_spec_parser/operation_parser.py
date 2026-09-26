@@ -150,6 +150,8 @@ class OperationParser:
               description=description,
               required=required,
               py_name=self._get_py_name(original_name),
+              style=param.style,
+              explode=param.explode,
           )
       )
 
