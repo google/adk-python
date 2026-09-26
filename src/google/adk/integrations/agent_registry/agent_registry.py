@@ -20,6 +20,7 @@ from enum import Enum
 import logging
 import os
 import re
+import threading
 from typing import Any
 from typing import Callable
 from typing import Dict
@@ -32,6 +33,7 @@ from urllib.parse import urlparse
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_schemes import AuthScheme
+from google.adk.auth.auth_tool import AuthConfig
 from google.adk.integrations.agent_identity.gcp_auth_provider_scheme import GcpAuthProviderScheme
 from google.adk.telemetry.tracing import GCP_MCP_SERVER_DESTINATION_ID
 from google.adk.tools.base_tool import BaseTool
@@ -73,11 +75,21 @@ _TRANSPORT_MAPPING = {
     "GRPC": _compat.TP_GRPC,
 }
 
+# The runtime binding lookup blocks the event loop, so it must not wait long.
+_REBIND_TIMEOUT_SECONDS = 10.0
+_RUNTIME_REFERENCE_ATTRIBUTE = (
+    "agentregistry.googleapis.com/system/RuntimeReference"
+)
+
 
 # An MCPToolset for a single registered MCP server. Adds the special
 # gcp.mcp.server.destination.id custom_metadata key on each returned tool. This special key is
 # added to execute_tool spans in google.adk.telemetry.tracing
 class AgentRegistrySingleMcpToolset(McpToolset):
+
+  # Set when the auth scheme came from a binding. The class default also covers
+  # toolsets pickled by versions that did not have it.
+  _binding_registry: AgentRegistry | None = None
 
   def __init__(
       self,
@@ -95,6 +107,7 @@ class AgentRegistrySingleMcpToolset(McpToolset):
       ) = None,
       auth_scheme: AuthScheme | None = None,
       auth_credential: AuthCredential | None = None,
+      binding_registry: AgentRegistry | None = None,
   ):
     super().__init__(
         connection_params=connection_params,
@@ -104,6 +117,101 @@ class AgentRegistrySingleMcpToolset(McpToolset):
         auth_credential=auth_credential,
     )
     self.destination_resource_id = destination_resource_id
+    self._binding_registry = binding_registry
+    self._rebind_lock = threading.Lock()
+
+  def __getstate__(self) -> Dict[str, Any]:
+    state: Dict[str, Any] = super().__getstate__()  # type: ignore[no-untyped-call]
+    state.pop("_rebind_lock", None)
+    return state
+
+  def __setstate__(self, state: Dict[str, Any]) -> None:
+    super().__setstate__(state)  # type: ignore[no-untyped-call]
+    self._rebind_lock = threading.Lock()
+
+  @override
+  def get_auth_config(self) -> AuthConfig | None:
+    if self._binding_registry and os.environ.get(
+        "GOOGLE_CLOUD_AGENT_ENGINE_ID"
+    ):
+      # Agent Engine serves requests on several threads. Until the first one
+      # has rebound, the others wait here rather than use the old scheme.
+      with self._rebind_lock:
+        if self._binding_registry:
+          self._rebind_for_deployment(self._binding_registry)
+          self._binding_registry = None
+    return super().get_auth_config()
+
+  def _rebind_for_deployment(self, registry: AgentRegistry) -> None:
+    """Re-resolves the binding for the Agent Engine deployment.
+
+    The toolset is usually built on the machine that deploys the agent, so its
+    binding was chosen before there was a deployment to scope the lookup to.
+
+    Args:
+      registry: The registry the binding was first resolved with.
+    """
+    resource_id = self.destination_resource_id
+    try:
+      source_identifier = (
+          registry._get_deployed_agent_id()  # pylint: disable=protected-access
+          if resource_id
+          else None
+      )
+    except Exception as e:  # pylint: disable=broad-except
+      logger.warning(
+          "Failed to look up this Agent Engine deployment in Agent Registry;"
+          " keeping the auth provider chosen at deploy time for %s: %s",
+          resource_id,
+          e,
+      )
+      return
+    if not resource_id or not source_identifier:
+      logger.warning(
+          "Could not find this Agent Engine deployment in Agent Registry;"
+          " keeping the auth provider chosen at deploy time for %s.",
+          resource_id,
+      )
+      return
+    continue_uri = (
+        self._auth_scheme.continue_uri
+        if isinstance(self._auth_scheme, GcpAuthProviderScheme)
+        else None
+    )
+    try:
+      auth_scheme = registry._fetch_available_auth_scheme(  # pylint: disable=protected-access
+          resource_id, source_identifier, continue_uri=continue_uri
+      )
+    except Exception as e:  # pylint: disable=broad-except
+      logger.warning(
+          "Failed to fetch the bindings available to %s; keeping the auth"
+          " provider chosen at deploy time for %s: %s",
+          source_identifier,
+          resource_id,
+          e,
+      )
+      return
+    if auth_scheme is None:
+      # Deleting a binding has to revoke it, not fall back to it.
+      logger.warning(
+          "Agent Registry has no binding for %s available to %s; calling it"
+          " without an auth provider.",
+          resource_id,
+          source_identifier,
+      )
+      self._auth_scheme = None
+      self._auth_config = None
+      return
+    logger.info(
+        "Using auth provider %s for %s, from the bindings available to %s.",
+        auth_scheme.name,
+        resource_id,
+        source_identifier,
+    )
+    self._auth_scheme = auth_scheme
+    self._auth_config = AuthConfig(
+        auth_scheme=auth_scheme, raw_auth_credential=self._auth_credential
+    )
 
   @override
   async def get_tools(
@@ -172,6 +280,43 @@ def _is_google_api(url: str) -> bool:
   )
 
 
+def _update_time_key(binding: Dict[str, Any]) -> tuple[str, str]:
+  """Returns a sort key for a binding's `updateTime`, which is always in UTC."""
+  # The fraction has 0, 3, 6 or 9 digits, so pad it before comparing.
+  seconds, _, fraction = (
+      binding.get("updateTime", "").removesuffix("Z").partition(".")
+  )
+  return seconds, fraction.ljust(9, "0")
+
+
+def _select_auth_provider(
+    bindings: List[Dict[str, Any]], resource_name: str
+) -> str | None:
+  """Returns the auth provider of the most recently updated binding.
+
+  Args:
+    bindings: Bindings targeting the resource with an auth provider.
+    resource_name: The resource name, only used for logging.
+  """
+  if not bindings:
+    return None
+  newest = max(bindings, key=_update_time_key)
+  chosen: str = newest["authProviderBinding"]["authProvider"]
+  auth_providers = sorted(
+      {b["authProviderBinding"]["authProvider"] for b in bindings}
+  )
+  if len(auth_providers) > 1:
+    logger.warning(
+        "%s is bound to %d auth providers (%s); using %s, from the most"
+        " recently updated binding.",
+        resource_name,
+        len(auth_providers),
+        ", ".join(auth_providers),
+        chosen,
+    )
+  return chosen
+
+
 class AgentRegistry:
   """Client for interacting with the Google Cloud Agent Registry service.
 
@@ -181,6 +326,9 @@ class AgentRegistry:
   `get_remote_a2a_agent` that automatically resolve connection details and
   handle authentication to produce ready-to-use ADK components.
   """
+
+  # The class default also covers registries pickled by older versions.
+  _deployed_agent_id: str | None = None
 
   def __init__(
       self,
@@ -205,17 +353,19 @@ class AgentRegistry:
 
     self._base_path = f"projects/{self.project_id}/locations/{self.location}"
     self._header_provider = header_provider
+    self._connect_lock = threading.Lock()
+    self._connect()
+
+  def _connect(self) -> None:
+    """Loads default credentials and configures the session that uses them."""
     try:
-      self._credentials, _ = google.auth.default()
+      credentials, _ = google.auth.default()
     except google.auth.exceptions.DefaultCredentialsError as e:
       raise RuntimeError(
           f"Failed to get default Google Cloud credentials: {e}"
       ) from e
 
-    # Instantiate and configure AuthorizedSession once during initialization.
-    self._session = requests_auth.AuthorizedSession(
-        credentials=self._credentials
-    )
+    session = requests_auth.AuthorizedSession(credentials=credentials)
     use_client_cert = _use_client_cert_effective()
     client_cert_source = None
     if use_client_cert:
@@ -224,16 +374,42 @@ class AgentRegistry:
           if mtls.has_default_client_cert_source()
           else None
       )
-      self._session.configure_mtls_channel(client_cert_source)
+      session.configure_mtls_channel(client_cert_source)
     self._use_mtls = _should_use_mtls_endpoint(client_cert_source)
     self._base_url = (
         AGENT_REGISTRY_MTLS_BASE_URL
         if self._use_mtls
         else AGENT_REGISTRY_BASE_URL
     )
+    self._credentials = credentials
+    # Set last: other threads treat a non-None session as fully connected.
+    self._session = session
+
+  def _ensure_connected(self) -> None:
+    if self._session is not None:
+      return
+    with self._connect_lock:
+      if self._session is None:
+        self._connect()
+
+  def __getstate__(self) -> Dict[str, Any]:
+    state = self.__dict__.copy()
+    # Toolsets built here are pickled when an agent is deployed. Carrying the
+    # credentials along would ship the deployer's default credentials, refresh
+    # token included, into the deployed agent, which would then call Google
+    # APIs as the deployer. The copy loads its own on first use instead.
+    state["_credentials"] = None
+    state["_session"] = None
+    del state["_connect_lock"]
+    return state
+
+  def __setstate__(self, state: Dict[str, Any]) -> None:
+    self.__dict__.update(state)
+    self._connect_lock = threading.Lock()
 
   def _get_auth_headers(self) -> Dict[str, str]:
     """Refreshes credentials and returns authorization headers."""
+    self._ensure_connected()
     try:
       request = google.auth.transport.requests.Request()
       self._credentials.refresh(request)
@@ -253,8 +429,10 @@ class AgentRegistry:
       method: str = "GET",
       params: Dict[str, Any] | None = None,
       json_data: Dict[str, Any] | None = None,
+      timeout: float | None = None,
   ) -> Dict[str, Any]:
     """Helper function to make requests to the Agent Registry API."""
+    self._ensure_connected()
     if path.startswith("projects/"):
       url = f"{self._base_url}/{path}"
     else:
@@ -270,7 +448,11 @@ class AgentRegistry:
       if method == "POST":
         response = self._session.post(url, headers=headers, json=json_data)
       else:
-        response = self._session.get(url, headers=headers, params=params)
+        # Without a timeout, AuthorizedSession applies its own default.
+        kwargs = {"timeout": timeout} if timeout else {}
+        response = self._session.get(
+            url, headers=headers, params=params, **kwargs
+        )
       response.raise_for_status()
       data: Dict[str, Any] = response.json()
       return data
@@ -362,19 +544,127 @@ class AgentRegistry:
     if not resource_id:
       return None
     try:
-      bindings_data = self._make_request("bindings")
-      for b in bindings_data.get("bindings", []):
-        target_id = b.get("target", {}).get("identifier", "")
-        if not target_id.endswith(resource_id):
-          continue
-        auth_provider = b.get("authProviderBinding", {}).get("authProvider")
-        if auth_provider:
-          return GcpAuthProviderScheme(
-              name=auth_provider, continue_uri=continue_uri
-          )
+      auth_provider = _select_auth_provider(
+          self._list_auth_provider_bindings("bindings", resource_id),
+          resource_name,
+      )
     except Exception as e:  # pylint: disable=broad-except
       logger.warning("Failed to fetch bindings for %s: %s", resource_name, e)
+      return None
+    if not auth_provider:
+      return None
+    return GcpAuthProviderScheme(name=auth_provider, continue_uri=continue_uri)
+
+  def _get_deployed_agent_id(self) -> str | None:
+    """Returns the Agent Registry ID of the Agent Engine deployment, if found.
+
+    Raises:
+      RuntimeError: If the agents could not be listed.
+    """
+    if self._deployed_agent_id:
+      return self._deployed_agent_id
+    engine_id = os.environ.get("GOOGLE_CLOUD_AGENT_ENGINE_ID")
+    location = os.environ.get("GOOGLE_CLOUD_AGENT_ENGINE_LOCATION")
+    if not engine_id or not location:
+      return None
+    runtime_path = f"/locations/{location}/reasoningEngines/{engine_id}"
+    data = self._make_request(
+        "agents",
+        params={
+            "filter": (
+                f'attributes."{_RUNTIME_REFERENCE_ATTRIBUTE}".uri:'
+                f'"{runtime_path}"'
+            )
+        },
+        timeout=_REBIND_TIMEOUT_SECONDS,
+    )
+    for agent in data.get("agents", []):
+      uri = (
+          agent.get("attributes", {})
+          .get(_RUNTIME_REFERENCE_ATTRIBUTE, {})
+          .get("uri", "")
+      )
+      # The filter matches substrings, so engine 12 would also match 123.
+      if uri.endswith(runtime_path) and agent.get("agentId"):
+        self._deployed_agent_id = agent["agentId"]
+        return self._deployed_agent_id
     return None
+
+  def _fetch_available_auth_scheme(
+      self,
+      resource_id: str,
+      source_identifier: str,
+      *,
+      continue_uri: str | None = None,
+  ) -> GcpAuthProviderScheme | None:
+    """Resolves the auth scheme a deployed agent may use for a resource.
+
+    Unlike ListBindings, FetchAvailableBindings only returns bindings made for
+    this agent or for no agent in particular, and drops those whose auth
+    provider the caller cannot retrieve credentials from.
+
+    Args:
+      resource_id: The stable identifier of the target resource.
+      source_identifier: The deployed agent's Agent Registry identifier.
+      continue_uri: Optional continue URI to override what is in the auth
+        provider.
+
+    Returns:
+      The scheme, or None if no binding is available to the agent.
+
+    Raises:
+      RuntimeError: If the bindings could not be read.
+    """
+    bindings = self._list_auth_provider_bindings(
+        "bindings:fetchAvailable",
+        resource_id,
+        params={
+            "sourceIdentifier": source_identifier,
+            "targetIdentifier": resource_id,
+        },
+        timeout=_REBIND_TIMEOUT_SECONDS,
+    )
+    own_bindings = [
+        b
+        for b in bindings
+        if b.get("source", {}).get("identifier") == source_identifier
+    ]
+    auth_provider = _select_auth_provider(own_bindings or bindings, resource_id)
+    if not auth_provider:
+      return None
+    return GcpAuthProviderScheme(name=auth_provider, continue_uri=continue_uri)
+
+  def _list_auth_provider_bindings(
+      self,
+      path: str,
+      resource_id: str,
+      params: Dict[str, str] | None = None,
+      timeout: float | None = None,
+  ) -> List[Dict[str, Any]]:
+    """Returns every binding at `path` targeting `resource_id` with an auth provider.
+
+    Args:
+      path: The bindings method to call.
+      resource_id: The stable identifier of the target resource.
+      params: Query parameters for every page.
+      timeout: Seconds to wait for each page.
+
+    Raises:
+      RuntimeError: If a request fails.
+    """
+    params = dict(params or {})
+    bindings = []
+    while True:
+      data = self._make_request(path, params=params, timeout=timeout)
+      for b in data.get("bindings", []):
+        target_id = b.get("target", {}).get("identifier", "")
+        auth_provider = b.get("authProviderBinding", {}).get("authProvider")
+        if target_id.endswith(resource_id) and auth_provider:
+          bindings.append(b)
+      page_token = data.get("nextPageToken")
+      if not page_token:
+        return bindings
+      params["pageToken"] = page_token
 
   def _clean_name(self, name: str) -> str:
     """Cleans a string to be a valid Python identifier for agent names."""
@@ -469,10 +759,15 @@ class AgentRegistry:
           f"MCP Server endpoint URI not found for: {mcp_server_name}"
       )
 
+    binding_registry = None
     if not auth_scheme:
       auth_scheme = self._resolve_auth_provider_scheme(
           mcp_server_id, mcp_server_name, continue_uri=continue_uri
       )
+      # Without a binding, combined_header_provider sends default credentials
+      # to Google API endpoints, so only a binding's scheme is re-resolved.
+      if auth_scheme:
+        binding_registry = self
 
     connection_params = StreamableHTTPConnectionParams(
         url=endpoint_uri,
@@ -497,6 +792,7 @@ class AgentRegistry:
         header_provider=combined_header_provider,
         auth_scheme=auth_scheme,
         auth_credential=auth_credential,
+        binding_registry=binding_registry,
     )
 
   # --- Endpoint Methods ---

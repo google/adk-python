@@ -25,23 +25,163 @@ allowing us to delegate schema generation complexity to Pydantic.
 from __future__ import annotations
 
 import collections.abc
+import functools
 import inspect
 import logging
+import sys
+from types import UnionType
 from typing import Any
 from typing import Callable
+from typing import cast
+from typing import ForwardRef
 from typing import get_args
 from typing import get_origin
 from typing import get_type_hints
+from typing import Literal
 from typing import Optional
 from typing import Type
+from typing import Union
 
 from google.genai import types
 import pydantic
 from pydantic import create_model
 from pydantic import fields as pydantic_fields
+from typing_extensions import Annotated
 
 from ..utils.variant_utils import get_google_llm_variant
 from ..utils.variant_utils import GoogleLLMVariant
+
+logger = logging.getLogger('google_adk.' + __name__)
+
+
+def _is_union_type(origin: Any) -> bool:
+  """Returns True if origin is Union or UnionType."""
+  return origin is Union or origin is UnionType
+
+
+def _is_optional_type(tp: Any) -> bool:
+  """Returns True if tp is Optional or a Union containing NoneType."""
+  origin = get_origin(tp)
+  if _is_union_type(origin):
+    return type(None) in get_args(tp)
+  return tp is type(None)
+
+
+def _collapse_redundant_outer_optional(tp: Any) -> Any:
+  """Collapses redundant outer Optional added by Python 3.10 get_type_hints.
+
+  On Python 3.10, get_type_hints(func, include_extras=True) wraps parameter
+  annotations in Optional[...] when default is None, even if the inner
+  Annotated type is already Optional (e.g. Annotated[Optional[T], Field(...)]).
+  This causes Pydantic to generate doubly-nested anyOf schemas. We unwrap the
+  outer Optional when the inner Annotated type is already optional.
+  """
+  origin = get_origin(tp)
+  if _is_union_type(origin):
+    args = get_args(tp)
+    if type(None) in args:
+      non_none = [a for a in args if a is not type(None)]
+      if len(non_none) == 1 and get_origin(non_none[0]) is Annotated:
+        inner_type = get_args(non_none[0])[0]
+        if _is_optional_type(inner_type):
+          return non_none[0]
+  return tp
+
+
+def _get_callable_globals(func: Callable[..., Any]) -> dict[str, Any]:
+  """Extracts the globals dictionary from a callable."""
+  while True:
+    if isinstance(func, functools.partial):
+      func = func.func
+    elif hasattr(func, '__wrapped__'):
+      func = inspect.unwrap(func)
+      if isinstance(func, functools.partial):
+        func = func.func
+      else:
+        break
+    else:
+      break
+  if hasattr(func, '__globals__'):
+    return func.__globals__
+  if hasattr(func, '__call__') and hasattr(func.__call__, '__globals__'):
+    return cast(dict[str, Any], func.__call__.__globals__)
+  module_name = getattr(func, '__module__', None)
+  if module_name and module_name in sys.modules:
+    return cast(
+        dict[str, Any], getattr(sys.modules[module_name], '__dict__', {})
+    )
+  return {}
+
+
+def _resolve_annotation(ann: Any, globalns: dict[str, Any]) -> Any:
+  """Resolves string, ForwardRef, and generic type annotations in globalns.
+
+  Paired with `_is_unresolvable`; both functions must cover the same type
+  shapes (Annotated, containers/generics, ForwardRef, str).
+  """
+  while isinstance(ann, str):
+    if globalns:
+      try:
+        resolved = eval(ann, globalns)
+        if resolved == ann:
+          break
+        ann = resolved
+      except Exception:
+        break
+    else:
+      break
+
+  if isinstance(ann, ForwardRef):
+    if globalns:
+      try:
+        resolved = eval(ann.__forward_arg__, globalns)
+        return _resolve_annotation(resolved, globalns)
+      except Exception:
+        return ann
+    return ann
+
+  origin = get_origin(ann)
+  if origin is not None:
+    if origin is Literal:
+      return ann
+    args = get_args(ann)
+    if not args:
+      return ann
+    if origin is Annotated:
+      resolved_inner = _resolve_annotation(args[0], globalns)
+      if resolved_inner is not args[0]:
+        return Annotated[(resolved_inner, *args[1:])]
+      return ann
+    resolved_args = tuple(_resolve_annotation(arg, globalns) for arg in args)
+    if resolved_args != args:
+      try:
+        if _is_union_type(origin):
+          return Union[resolved_args]
+        if len(resolved_args) == 1:
+          return origin[resolved_args[0]]
+        return origin[resolved_args]
+      except Exception:
+        return ann
+  return ann
+
+
+def _is_unresolvable(ann: Any) -> bool:
+  """Returns True if ann contains an unresolvable string or ForwardRef.
+
+  Paired with `_resolve_annotation`; both functions must cover the same type
+  shapes (Annotated, containers/generics, ForwardRef, str).
+  """
+  if isinstance(ann, (str, ForwardRef)):
+    return True
+  origin = get_origin(ann)
+  if origin is not None:
+    if origin is Literal:
+      return False
+    args = get_args(ann)
+    if origin is Annotated:
+      return bool(args and _is_unresolvable(args[0]))
+    return any(_is_unresolvable(arg) for arg in args)
+  return False
 
 
 def _get_function_fields(
@@ -66,10 +206,14 @@ def _get_function_fields(
 
   # Get type hints with forward reference resolution
   try:
-    type_hints = get_type_hints(func)
-  except TypeError:
-    # Can happen with mock objects or complex annotations
+    type_hints = get_type_hints(func, include_extras=True)
+  except (TypeError, NameError, AttributeError):
+    # TypeError can happen with mock objects or complex annotations. NameError
+    # / AttributeError happen when an annotation is an unresolvable forward
+    # reference at runtime. Fall back to resolving individual annotations below.
     type_hints = {}
+
+  func_globals = _get_callable_globals(func)
 
   for name, param in sig.parameters.items():
     if name in ignore_params:
@@ -90,12 +234,48 @@ def _get_function_fields(
     else:
       ann = Any
 
+    if _is_unresolvable(ann):
+      ann = _resolve_annotation(ann, func_globals)
+
+    if _is_unresolvable(ann):
+      logger.warning(
+          'Parameter %r of %r has unresolvable type annotation %r; dropping'
+          ' parameter schema.',
+          name,
+          get_callable_name(func),
+          ann,
+      )
+      return {}
+
+    ann = _collapse_redundant_outer_optional(ann)
+
     if param.default is inspect._empty:
       default = pydantic_fields.PydanticUndefined
     else:
       default = param.default
 
-    fields[name] = (ann, default)
+    if get_origin(ann) is Annotated:
+      try:
+        field_info = pydantic_fields.FieldInfo.from_annotation(ann)
+        field_info.alias = None
+        field_info.validation_alias = None
+        field_info.serialization_alias = None
+        field_info.default = default
+        field_info.default_factory = None
+        ann_type = (
+            field_info.annotation if field_info.annotation is not None else Any
+        )
+        fields[name] = (ann_type, field_info)
+      except Exception:
+        logger.warning(
+            'Failed to strip alias from Annotated parameter %r; falling back'
+            ' to raw annotation',
+            name,
+            exc_info=True,
+        )
+        fields[name] = (ann, default)
+    else:
+      fields[name] = (ann, default)
 
   return fields
 
@@ -231,13 +411,19 @@ def _build_response_json_schema(
   if return_annotation is inspect._empty:
     return None
 
-  # Handle string annotations (forward references)
-  if isinstance(return_annotation, str):
-    try:
-      type_hints = get_type_hints(func)
-      return_annotation = type_hints.get('return', return_annotation)
-    except TypeError:
-      pass
+  try:
+    type_hints = get_type_hints(func, include_extras=True)
+    return_annotation = type_hints.get('return', return_annotation)
+  except (TypeError, NameError, AttributeError):
+    func_globals = _get_callable_globals(func)
+    return_annotation = _resolve_annotation(return_annotation, func_globals)
+
+  if _is_unresolvable(return_annotation):
+    func_globals = _get_callable_globals(func)
+    return_annotation = _resolve_annotation(return_annotation, func_globals)
+
+  if _is_unresolvable(return_annotation):
+    return None
 
   # Handle AsyncGenerator and Generator return types (streaming tools)
   # AsyncGenerator[YieldType, SendType] -> use YieldType as response schema

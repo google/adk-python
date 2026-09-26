@@ -161,6 +161,12 @@ _ENTRY_POINT_PACKAGE_ALLOWLIST = frozenset({
                 'uvicorn',
             ),
         ),
+        (
+            # Only the catalog search tool talks to Dataplex, so the toolset
+            # has to import without google-cloud-dataplex installed.
+            'google.adk.integrations.bigquery.bigquery_toolset',
+            ('google.cloud.dataplex_v1',),
+        ),
     ],
     ids=(
         'root',
@@ -169,6 +175,7 @@ _ENTRY_POINT_PACKAGE_ALLOWLIST = frozenset({
         'built_in_code_executor',
         'workflow',
         'cli_commands',
+        'bigquery_toolset',
     ),
 )
 def test_package_import_defers_unrelated_runtime(

@@ -168,8 +168,11 @@ _DUMMY_ENV = {
     "GEMINI_API_KEY": "dummy-key",
     "GOOGLE_CLOUD_PROJECT": "dummy-project",
     "GOOGLE_CLOUD_LOCATION": "us-central1",
+    "GOOGLE_CLOUD_AGENT_ENGINE_ID": "dummy-agent-engine",
     "OPENAI_API_KEY": "dummy-key",
     "ANTHROPIC_API_KEY": "dummy-key",
+    "AZURE_API_KEY": "dummy-key",
+    "AZURE_RESOURCE_NAME": "dummy-resource",
     "GITHUB_TOKEN": "dummy-token",
     "VERTEXAI_DATASTORE_ID": "dummy-datastore",
 }
@@ -271,6 +274,15 @@ def test_sample_loads(sample_dir: Path, monkeypatch):
   assert getattr(
       root_agent, "name", None
   ), f"{sample_dir} root agent has no name"
+
+
+def test_knowledge_agent_requires_datastore_env(monkeypatch):
+  """The knowledge agent takes its data store from the environment."""
+  for key, value in _DUMMY_ENV.items():
+    monkeypatch.setenv(key, value)
+  monkeypatch.delenv("VERTEXAI_DATASTORE_ID")
+  with pytest.raises(ValueError, match="VERTEXAI_DATASTORE_ID"):
+    _load_root_agent(SAMPLES_DIR / "adk_team" / "adk_knowledge_agent")
 
 
 @contextlib.contextmanager

@@ -20,18 +20,25 @@ Please do not rely on the implementation details.
 
 from __future__ import annotations
 
+import inspect
 import json
+import logging
 import re
+from types import UnionType
 from typing import Any
 from typing import get_args
 from typing import get_origin
 from typing import Optional
+from typing import Union
 
 from google.genai import types
 from pydantic import BaseModel
 from pydantic import TypeAdapter
+from typing_extensions import Annotated
 
 from . import _json_utils
+
+logger = logging.getLogger("google_adk." + __name__)
 
 # Use SchemaUnion from google.genai.types to support all schema types
 # that the underlying API supports.
@@ -55,11 +62,13 @@ def is_basemodel_schema(schema: SchemaType) -> bool:
   Returns:
     True if schema is a BaseModel class, False otherwise.
   """
+  if get_origin(schema) is Annotated:
+    schema = get_args(schema)[0]
   return isinstance(schema, type) and issubclass(schema, BaseModel)
 
 
 def is_list_of_basemodel(schema: SchemaType) -> bool:
-  """Check if the schema is a list of BaseModel type.
+  """Check if a schema represents a list of BaseModel objects.
 
   Args:
     schema: The schema to check.
@@ -67,6 +76,9 @@ def is_list_of_basemodel(schema: SchemaType) -> bool:
   Returns:
     True if schema is list[SomeBaseModel], False otherwise.
   """
+  if get_origin(schema) is Annotated:
+    schema = get_args(schema)[0]
+
   origin = get_origin(schema)
   if origin is not list:
     return False
@@ -76,6 +88,8 @@ def is_list_of_basemodel(schema: SchemaType) -> bool:
     return False
 
   inner_type = args[0]
+  if get_origin(inner_type) is Annotated:
+    inner_type = get_args(inner_type)[0]
   return isinstance(inner_type, type) and issubclass(inner_type, BaseModel)
 
 
@@ -91,8 +105,14 @@ def get_list_inner_type(schema: SchemaType) -> Optional[type[BaseModel]]:
   if not is_list_of_basemodel(schema):
     return None
 
+  if get_origin(schema) is Annotated:
+    schema = get_args(schema)[0]
+
   args = get_args(schema)
-  return args[0]
+  inner_type = args[0]
+  if get_origin(inner_type) is Annotated:
+    inner_type = get_args(inner_type)[0]
+  return inner_type
 
 
 def schema_to_json_schema(schema: SchemaType) -> dict[str, Any]:
@@ -180,6 +200,12 @@ def lowercase_schema_types(value: object) -> None:
       lowercase_schema_types(child_list)
 
 
+# Anchored, linear-time removal of an optional leading language tag
+# (e.g. the "json" in ```json). No overlapping whitespace quantifiers,
+# so it cannot backtrack catastrophically.
+_FENCE_LANG_RE = re.compile(r"^[A-Za-z0-9_]*[ \t]*\n?")
+
+
 def _strip_json_code_fence(json_text: str) -> str:
   """Removes a markdown code fence wrapping the entire JSON payload, if present.
 
@@ -189,8 +215,20 @@ def _strip_json_code_fence(json_text: str) -> str:
   never starts with a fence, so this is a no-op on valid input.
   """
   stripped = json_text.strip()
-  match = re.fullmatch(r"```\w*\s*(.*?)\s*```", stripped, re.DOTALL)
-  return match.group(1).strip() if match else json_text
+  # NOTE: do NOT use a single regex such as r"```\w*\s*(.*?)\s*```" here.
+  # Its overlapping whitespace quantifiers (leading \s*, the DOTALL-lazy
+  # (.*?), and the trailing \s*) make re.fullmatch backtrack in O(n^3) on an
+  # unclosed fence whose body is whitespace -- a ReDoS reachable from
+  # (attacker-influenced) model output. Use O(n) string operations instead.
+  if (
+      len(stripped) >= 6
+      and stripped.startswith("```")
+      and stripped.endswith("```")
+  ):
+    inner = stripped[3:-3]
+    inner = _FENCE_LANG_RE.sub("", inner, count=1)
+    return inner.strip()
+  return json_text
 
 
 def validate_schema(schema: SchemaType, json_text: str) -> Any:
@@ -221,6 +259,28 @@ def validate_schema(schema: SchemaType, json_text: str) -> Any:
     return _json_utils.safe_json_loads(json_text, context="schema value")
 
 
+def annotation_expects_str(annotated_type: Any) -> bool:
+  """Returns True if the annotation is or contains ``str``."""
+  if annotated_type is str:
+    return True
+  if get_origin(annotated_type) in (Union, UnionType):
+    return any(annotation_expects_str(a) for a in get_args(annotated_type))
+  return False
+
+
+def annotation_accepts_content(annotated_type: Any) -> bool:
+  """Returns True if the annotation accepts ``types.Content`` as-is."""
+  if annotated_type in (Any, object, types.Content):
+    return True
+  if isinstance(annotated_type, type) and issubclass(
+      annotated_type, types.Content
+  ):
+    return True
+  if get_origin(annotated_type) in (Union, UnionType):
+    return any(annotation_accepts_content(a) for a in get_args(annotated_type))
+  return False
+
+
 def validate_node_data(
     schema: Optional[SchemaType],
     data: Any,
@@ -248,9 +308,7 @@ def validate_node_data(
     return _to_serializable(validated)
 
   # If schema expects Content, do not unwrap
-  if isinstance(schema, type) and issubclass(schema, types.Content):
-    return _validate_python_object(data)
-  if schema is types.Content:
+  if annotation_accepts_content(schema):
     return _validate_python_object(data)
 
   if isinstance(data, types.Content):
@@ -294,3 +352,158 @@ def validate_node_data(
 
   # For any other Python object (dict, BaseModel instance, etc.)
   return _validate_python_object(data)
+
+
+def preprocess_args(
+    args: dict[str, Any],
+    signature: inspect.Signature | None,
+    type_hints: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+  """Preprocess and convert incoming argument dictionary before invocation.
+
+  Converts dictionary values to Pydantic model instances where the function
+  signature expects a BaseModel subclass or Optional[BaseModel].
+
+  Args:
+    args: The incoming argument dictionary to preprocess.
+    signature: The inspected Signature of the target callable, or None if
+      unintrospectable.
+    type_hints: Optional cached type hints dictionary for the callable.
+
+  Returns:
+    A copy of args with applicable values converted to Pydantic model instances.
+  """
+  converted_args = args.copy()
+  if signature is None:
+    return converted_args
+
+  if type_hints is None:
+    type_hints = {}
+
+  for param_name, param in signature.parameters.items():
+    if param_name in args:
+      target_type = type_hints.get(param_name, param.annotation)
+      if get_origin(target_type) is Annotated:
+        # On the resolved path, get_type_hints strips Annotated. This branch only
+        # fires on the fallback (e.g. unresolvable forward refs / NameError) where
+        # target_type comes from param.annotation. Strip Annotated to get the raw type.
+        target_type = get_args(target_type)[0]
+      if target_type != inspect.Parameter.empty:
+        origin = get_origin(target_type)
+        if origin is Union or origin is UnionType:
+          union_args = get_args(target_type)
+          # Find the non-None type in Optional[T] (which is Union[T, None]).
+          # Handle Optional[Annotated[...]]
+          non_none_types = [
+              get_args(arg)[0] if get_origin(arg) is Annotated else arg
+              for arg in union_args
+              if arg is not type(None)
+          ]
+          if len(non_none_types) == 1:
+            target_type = non_none_types[0]
+            origin = get_origin(target_type)
+          elif len(non_none_types) > 1 and all(
+              inspect.isclass(t) and issubclass(t, BaseModel)
+              for t in non_none_types
+          ):
+            if args[param_name] is None or isinstance(
+                args[param_name], tuple(non_none_types)
+            ):
+              continue
+            try:
+              converted_args[param_name] = TypeAdapter(
+                  target_type
+              ).validate_python(args[param_name])
+            except Exception as e:
+              logger.warning(
+                  "Failed to convert argument '%s' to %s: %s",
+                  param_name,
+                  target_type,
+                  e,
+              )
+            continue
+
+        # Some session stores persist call args as a proto `Struct`, whose
+        # only number type is double, so an int comes back as a float.
+        if target_type is int and type(args[param_name]) is float:
+          if args[param_name].is_integer():
+            converted_args[param_name] = int(args[param_name])
+          else:
+            logger.warning(
+                "Argument '%s' is typed int but got non-integral %r; passing it"
+                " through unchanged.",
+                param_name,
+                args[param_name],
+            )
+          continue
+
+        # The same round-trip turns every element of a list[int] argument
+        # into a float, so coerce integral elements back as well. Only
+        # concrete list[int] is coerced here; other int containers are not.
+        # TODO: Consolidate ad-hoc container coercion once
+        # FUNCTION_TOOL_ARG_VALIDATION graduates.
+        if (
+            get_origin(target_type) is list
+            and get_args(target_type)[:1] == (int,)
+            and isinstance(args[param_name], list)
+        ):
+          coerced_items = []
+          non_integral_items = []
+          for item in args[param_name]:
+            if type(item) is float:
+              if item.is_integer():
+                item = int(item)
+              else:
+                non_integral_items.append(item)
+            coerced_items.append(item)
+          if non_integral_items:
+            logger.warning(
+                "Argument '%s' is typed list[int] but contains non-integral"
+                " %r; passing through unchanged.",
+                param_name,
+                non_integral_items,
+            )
+          converted_args[param_name] = coerced_items
+          continue
+
+        if inspect.isclass(target_type) and issubclass(target_type, BaseModel):
+          if args[param_name] is None:
+            continue
+          if not isinstance(args[param_name], target_type):
+            try:
+              converted_args[param_name] = target_type.model_validate(
+                  args[param_name]
+              )
+            except Exception as e:
+              logger.warning(
+                  "Failed to convert argument '%s' to Pydantic model %s: %s",
+                  param_name,
+                  target_type,
+                  e,
+              )
+            continue
+
+        # Handle list of BaseModel subclasses
+        if is_list_of_basemodel(target_type) and isinstance(
+            args[param_name], list
+        ):
+          item_type = get_list_inner_type(target_type)
+          if item_type is not None:
+            converted_list = []
+            for item in args[param_name]:
+              if isinstance(item, dict):
+                try:
+                  converted_list.append(item_type.model_validate(item))
+                except Exception as e:
+                  logger.warning(
+                      "Failed to convert item in '%s' to %s: %s",
+                      param_name,
+                      item_type,
+                      e,
+                  )
+                  converted_list.append(item)
+              else:
+                converted_list.append(item)
+            converted_args[param_name] = converted_list
+
+  return converted_args

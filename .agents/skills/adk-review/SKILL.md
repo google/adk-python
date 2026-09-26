@@ -79,6 +79,14 @@ Confirm the changed files pass `pre-commit run --files {paths}`.
   (human-in-the-loop steps and checkpoints). See the `adk-architecture` skill.
 - **Concurrency and lifetime**: no race conditions; plugins, exporters, and
   connections are closed on every path, including the error path.
+- **Database and runtime DDL safety**: runtime startup paths (e.g.,
+  `DatabaseSessionService.prepare_tables()` and
+  `_ensure_schema_indexes_exist()`) must never execute destructive DDL such as
+  `DROP INDEX` (which takes `ACCESS EXCLUSIVE` locks and breaks rolling
+  deployments/rollbacks). Any additive runtime DDL must account for
+  multi-container startup races (process-local `asyncio.Lock` does not prevent
+  cross-container TOCTOU races on `checkfirst=True`) by wrapping creation in a
+  `SAVEPOINT` (`connection.begin_nested()`) and tolerating concurrent creation.
 
 ### 5. Documentation impact
 

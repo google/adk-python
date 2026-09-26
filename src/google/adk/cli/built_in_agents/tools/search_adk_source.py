@@ -111,6 +111,11 @@ async def search_adk_source(
     # Find all Python files to search
     files_to_search: List[Any] = []
     for pattern in file_patterns:
+      if ".." in Path(pattern).parts:
+        result["errors"].append(
+            f"File pattern must stay within the ADK source directory: {pattern}"
+        )
+        continue
       files_to_search.extend(adk_src_dir.rglob(pattern))
 
     result["files_searched"] = len(files_to_search)

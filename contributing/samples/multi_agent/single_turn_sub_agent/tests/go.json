@@ -26,7 +26,6 @@
         ],
         "role": "model"
       },
-      "finishReason": "STOP",
       "id": "e-2",
       "invocationId": "i-1",
       "nodeInfo": {
@@ -44,7 +43,7 @@
         "role": "user"
       },
       "id": "e-3",
-      "invocationId": "i-2",
+      "invocationId": "i-1",
       "nodeInfo": {
         "path": ""
       }
@@ -59,9 +58,8 @@
         ],
         "role": "model"
       },
-      "finishReason": "STOP",
       "id": "e-4",
-      "invocationId": "i-2",
+      "invocationId": "i-1",
       "nodeInfo": {
         "path": "root_agent@1"
       }
@@ -77,7 +75,7 @@
         "role": "user"
       },
       "id": "e-5",
-      "invocationId": "i-3",
+      "invocationId": "i-1",
       "nodeInfo": {
         "path": ""
       }
@@ -100,9 +98,8 @@
         ],
         "role": "model"
       },
-      "finishReason": "STOP",
       "id": "e-6",
-      "invocationId": "i-3",
+      "invocationId": "i-1",
       "longRunningToolIds": [],
       "nodeInfo": {
         "path": "root_agent@1"
@@ -134,9 +131,8 @@
         ],
         "role": "model"
       },
-      "finishReason": "STOP",
       "id": "e-7",
-      "invocationId": "i-3",
+      "invocationId": "i-1",
       "longRunningToolIds": [],
       "nodeInfo": {
         "path": "root_agent@1/phone_recommender@1"
@@ -169,7 +165,7 @@
         "role": "user"
       },
       "id": "e-8",
-      "invocationId": "i-3",
+      "invocationId": "i-1",
       "nodeInfo": {
         "path": "root_agent@1/phone_recommender@1"
       }
@@ -209,9 +205,8 @@
         ],
         "role": "model"
       },
-      "finishReason": "STOP",
       "id": "e-9",
-      "invocationId": "i-3",
+      "invocationId": "i-1",
       "longRunningToolIds": [],
       "nodeInfo": {
         "path": "root_agent@1/phone_recommender@1"
@@ -253,7 +248,7 @@
         "role": "user"
       },
       "id": "e-10",
-      "invocationId": "i-3",
+      "invocationId": "i-1",
       "nodeInfo": {
         "path": "root_agent@1/phone_recommender@1"
       }
@@ -277,9 +272,8 @@
         ],
         "role": "model"
       },
-      "finishReason": "STOP",
       "id": "e-11",
-      "invocationId": "i-3",
+      "invocationId": "i-1",
       "longRunningToolIds": [],
       "nodeInfo": {
         "path": "root_agent@1/phone_recommender@1"
@@ -312,7 +306,7 @@
         "role": "user"
       },
       "id": "e-12",
-      "invocationId": "i-3",
+      "invocationId": "i-1",
       "nodeInfo": {
         "path": "root_agent@1/phone_recommender@1"
       }
@@ -329,13 +323,17 @@
         "role": "model"
       },
       "id": "e-13",
-      "invocationId": "i-3",
+      "invocationId": "i-1",
       "nodeInfo": {
-        "messageAsOutput": true,
         "outputFor": [
           "root_agent@1/phone_recommender@1"
         ],
         "path": "root_agent@1/phone_recommender@1"
+      },
+      "output": {
+        "model_name": "Pixel 10 Pro XL",
+        "price": 799.0,
+        "reason": "The Pixel 10 Pro XL fits your budget of $1000 and matches your preference for a large screen, which is ideal for gaming. At $799, it offers the best balance of performance and display size within your requirements."
       }
     },
     {
@@ -357,7 +355,7 @@
         "role": "user"
       },
       "id": "e-14",
-      "invocationId": "i-3",
+      "invocationId": "i-1",
       "nodeInfo": {
         "path": "root_agent@1"
       }
@@ -372,9 +370,8 @@
         ],
         "role": "model"
       },
-      "finishReason": "STOP",
       "id": "e-15",
-      "invocationId": "i-3",
+      "invocationId": "i-1",
       "nodeInfo": {
         "path": "root_agent@1"
       }

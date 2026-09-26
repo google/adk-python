@@ -30,6 +30,7 @@ conversation history.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import dataclasses
 import json
@@ -101,12 +102,56 @@ if TYPE_CHECKING:
   from ..tools._remote_mcp_server import RemoteMcpServer
 
 from ..utils._google_client_headers import merge_tracking_headers
+from ._service_tier import ServiceTier
 from .llm_request import LlmRequest
 from .llm_response import LlmResponse
 
 logger = logging.getLogger('google_adk.' + __name__)
 
 _NEW_LINE = '\n'
+
+# Statuses that mean the API accepted the work but has not produced a result
+# yet. A deferred request sits in 'queued' until off-peak capacity frees up.
+# Every other status the API reports -- 'completed', 'requires_action',
+# 'failed', 'cancelled', 'incomplete', 'budget_exceeded' -- ends this call.
+# 'requires_action' in particular is not pending: the model is done and is
+# waiting on tool results that only the caller can supply.
+_PENDING_INTERACTION_STATUSES = frozenset({'queued', 'in_progress'})
+
+# Poll schedule for a pending interaction. Starts short so a brief queue wait
+# is not padded much, then backs off so a long one costs few requests.
+_POLL_INITIAL_DELAY_SECONDS = 5.0
+_POLL_MAX_DELAY_SECONDS = 30.0
+
+# Consecutive failed reads to absorb before giving up on a pending
+# interaction. A failed poll is not like a failed create: the work is already
+# accepted and running, and nothing on the client can resume it once the id is
+# lost, so one blip would forfeit a job that keeps running and billing. The
+# count resets on every successful read, so this tolerates repeated blips
+# across a long wait while still surfacing an endpoint that is truly down.
+_POLL_MAX_CONSECUTIVE_ERRORS = 5
+
+# Sampling knobs the interactions API applies, but that the installed
+# google-genai release does not declare on its request model. That model
+# discards keys it has no field for while serializing, so these never reach the
+# API and sending them is indistinguishable from never setting them.
+_UNDECLARED_SAMPLING_PARAMS = (
+    'temperature',
+    'top_p',
+    'top_k',
+)
+
+# Sampling knobs the interactions API itself rejects as unknown parameters.
+# No release of the client can carry these, so the caller has to stop setting
+# them or stop using the interactions API.
+_UNSUPPORTED_SAMPLING_PARAMS = (
+    'presence_penalty',
+    'frequency_penalty',
+)
+
+# Sampling knobs already reported as dropped, so each warning below is emitted
+# once per process instead of once per model turn.
+_WARNED_SAMPLING_PARAMS: set[str] = set()
 
 
 def _extract_stream_interaction_id(
@@ -795,6 +840,12 @@ class _StreamState:
   """
 
   parts: list[types.Part] = dataclasses.field(default_factory=list)
+  # Maps a function-call step's ``index`` to the part started at that step, so
+  # interleaved calls route their argument deltas and stops to the matching
+  # step instead of always landing on the most recently started call.
+  fc_parts_by_index: dict[int, types.Part] = dataclasses.field(
+      default_factory=dict
+  )
   web_search_queries: list[str] = dataclasses.field(default_factory=list)
   grounding_chunks: list[types.GroundingChunk] = dataclasses.field(
       default_factory=list
@@ -861,23 +912,55 @@ def _handle_media(
   return _partial_part_response(part, interaction_id)
 
 
+def _resolve_streaming_function_call_part(
+    index: int | None, state: _StreamState
+) -> types.Part | None:
+  """Resolve the function-call part a streaming event applies to.
+
+  Streaming events carry the ``index`` of the step they belong to. When that
+  index maps to a known function-call part we use it directly, so argument
+  deltas and step stops for interleaved calls route to the correct step instead
+  of always landing on the most recently started call. Events without an index
+  (or from builds that don't track one) fall back to the last started function
+  call to preserve the previous behavior.
+  """
+  if index is not None:
+    return state.fc_parts_by_index.get(index)
+  if state.parts and state.parts[-1].function_call:
+    return state.parts[-1]
+  return None
+
+
 def _handle_arguments_delta(
-    delta: ArgumentsDelta, state: _StreamState, interaction_id: str | None
+    delta: ArgumentsDelta,
+    state: _StreamState,
+    interaction_id: str | None,
+    index: int | None = None,
 ) -> LlmResponse | None:
-  if not state.parts:
-    return None
-  last_part = state.parts[-1]
-  if not last_part.function_call:
+  target_part = _resolve_streaming_function_call_part(index, state)
+  if target_part is None or not target_part.function_call:
+    logger.warning(
+        'Interactions streaming converter dropped an arguments delta: step'
+        ' index %r has no function-call part; skipping.',
+        index,
+    )
     return None
   delta_args = delta.arguments
-  if delta_args is None or last_part.function_call.partial_args is None:
+  if delta_args is None:
     return None
-  last_part.function_call.partial_args.append(
+  if target_part.function_call.partial_args is None:
+    logger.warning(
+        'Interactions streaming converter dropped an arguments delta: step'
+        ' index %r was already finalized; skipping.',
+        index,
+    )
+    return None
+  target_part.function_call.partial_args.append(
       types.PartialArg(string_value=delta_args)
   )
   chunk_part = types.Part(
       function_call=types.FunctionCall(
-          name=last_part.function_call.name,
+          name=target_part.function_call.name,
           partial_args=[types.PartialArg(string_value=delta_args)],
       )
   )
@@ -1104,6 +1187,8 @@ def convert_interaction_event_to_llm_response(
       )
       part = types.Part(function_call=fc)
       state.parts.append(part)
+      if event.index is not None:
+        state.fc_parts_by_index[event.index] = part
 
       return LlmResponse(
           content=types.Content(role='model', parts=[part]),
@@ -1127,7 +1212,7 @@ def convert_interaction_event_to_llm_response(
     elif isinstance(delta, (ImageDelta, AudioDelta, VideoDelta, DocumentDelta)):
       return _handle_media(delta, state, interaction_id)
     elif isinstance(delta, ArgumentsDelta):
-      return _handle_arguments_delta(delta, state, interaction_id)
+      return _handle_arguments_delta(delta, state, interaction_id, event.index)
     elif isinstance(delta, CodeExecutionCallDelta):
       return _handle_code_execution_call(delta, state, interaction_id)
     elif isinstance(delta, CodeExecutionResultDelta):
@@ -1144,8 +1229,9 @@ def convert_interaction_event_to_llm_response(
       return _handle_unknown_delta(delta, state, interaction_id)
 
   elif isinstance(event, StepStop):
-    if state.parts and state.parts[-1].function_call:
-      fc = state.parts[-1].function_call
+    target_part = _resolve_streaming_function_call_part(event.index, state)
+    if target_part is not None and target_part.function_call:
+      fc = target_part.function_call
       if fc.partial_args is not None:
         arg_str = ''.join(pa.string_value or '' for pa in fc.partial_args)
 
@@ -1219,10 +1305,27 @@ def convert_interaction_event_to_llm_response(
   return None
 
 
+def _unwarned_params_set_on(
+    config: types.GenerateContentConfig, names: tuple[str, ...]
+) -> list[str]:
+  """Return the names the caller set that have not been warned about yet."""
+  return [
+      name
+      for name in names
+      if getattr(config, name) is not None
+      and name not in _WARNED_SAMPLING_PARAMS
+  ]
+
+
 def build_generation_config(
     config: types.GenerateContentConfig,
 ) -> GenerationConfigParam:
   """Build generation config dict for interactions API.
+
+  Only the parameters that reach the interactions API are carried over. A
+  sampling parameter that would be discarded before the request is sent is
+  logged as ignored, once per parameter per process, naming whether the client
+  or the API is the one that cannot carry it.
 
   Args:
     config: The GenerateContentConfig to extract parameters from.
@@ -1231,20 +1334,33 @@ def build_generation_config(
     A dictionary containing generation configuration parameters.
   """
   generation_config: GenerationConfigParam = {}
-  if config.temperature is not None:
-    generation_config['temperature'] = config.temperature
-  if config.top_p is not None:
-    generation_config['top_p'] = config.top_p
-  if config.top_k is not None:
-    generation_config['top_k'] = config.top_k
   if config.max_output_tokens is not None:
     generation_config['max_output_tokens'] = config.max_output_tokens
   if config.stop_sequences:
     generation_config['stop_sequences'] = config.stop_sequences
-  if config.presence_penalty is not None:
-    generation_config['presence_penalty'] = config.presence_penalty
-  if config.frequency_penalty is not None:
-    generation_config['frequency_penalty'] = config.frequency_penalty
+  if config.seed is not None:
+    generation_config['seed'] = config.seed
+
+  undeclared = _unwarned_params_set_on(config, _UNDECLARED_SAMPLING_PARAMS)
+  if undeclared:
+    _WARNED_SAMPLING_PARAMS.update(undeclared)
+    logger.warning(
+        'The installed google-genai has no field for %s on the interactions'
+        ' request, so they are dropped before the request is sent even though'
+        ' the API itself applies them. Applying them needs a google-genai'
+        ' release that declares those fields.',
+        ', '.join(undeclared),
+    )
+
+  unsupported = _unwarned_params_set_on(config, _UNSUPPORTED_SAMPLING_PARAMS)
+  if unsupported:
+    _WARNED_SAMPLING_PARAMS.update(unsupported)
+    logger.warning(
+        'The interactions API has no equivalent for %s, so the model decodes'
+        ' with its own defaults instead. Unset them, or turn off'
+        ' use_interactions_api to have them applied.',
+        ', '.join(unsupported),
+    )
   return generation_config
 
 
@@ -1532,6 +1648,79 @@ def _get_latest_user_contents(
   return latest_user_contents
 
 
+async def _wait_for_interaction(
+    api_client: Client,
+    interaction: Interaction,
+    *,
+    extra_headers: dict[str, str] | None = None,
+) -> Interaction:
+  """Re-read a pending interaction until the API reports a final status.
+
+  ``interactions.create`` returns once the work is accepted, not once it is
+  done, so a deferred request comes back ``queued`` carrying an id and no
+  output. Polling here keeps that off the callers: the generator still yields
+  one response per turn, and it holds the finished result.
+
+  There is no client-side deadline. The server already bounds the wait with
+  the interaction's own completion timeout (24 hours by default) and reports
+  the outcome as a final status, and nothing on the client can resume a queued
+  interaction, so giving up early would abandon work that runs anyway. A
+  caller that needs to stop sooner can cancel the surrounding task: the sleep
+  between polls is a cancellation point.
+
+  Args:
+    api_client: The Google GenAI client.
+    interaction: The pending interaction returned by ``interactions.create``.
+    extra_headers: Optional per-request HTTP headers forwarded to each poll.
+
+  Returns:
+    The interaction as of the first read that reported a final status.
+  """
+  logger.info(
+      'Interaction %s is %s; waiting for the result.',
+      interaction.id,
+      interaction.status,
+  )
+  interaction_id = interaction.id
+  delay = _POLL_INITIAL_DELAY_SECONDS
+  consecutive_errors = 0
+  while interaction.status in _PENDING_INTERACTION_STATUSES:
+    await asyncio.sleep(delay)
+    delay = min(delay * 2, _POLL_MAX_DELAY_SECONDS)
+    try:
+      interaction = await api_client.aio.interactions.get(
+          interaction_id, stream=False, extra_headers=extra_headers
+      )
+    except Exception as e:  # pylint: disable=broad-except
+      # Absorb a failed read rather than abandoning accepted work. Cancelling
+      # the surrounding task still stops the wait: CancelledError derives from
+      # BaseException, so it is not caught here.
+      consecutive_errors += 1
+      if consecutive_errors >= _POLL_MAX_CONSECUTIVE_ERRORS:
+        logger.error(
+            'Giving up on interaction %s after %d consecutive failed reads.',
+            interaction_id,
+            consecutive_errors,
+        )
+        raise
+      logger.warning(
+          'Failed to read interaction %s (%d/%d consecutive); retrying: %s',
+          interaction_id,
+          consecutive_errors,
+          _POLL_MAX_CONSECUTIVE_ERRORS,
+          e,
+      )
+      continue
+    consecutive_errors = 0
+    logger.debug('Interaction %s is %s.', interaction_id, interaction.status)
+
+  logger.info(
+      'Interaction %s reached status %s.', interaction.id, interaction.status
+  )
+  logger.debug(build_interactions_response_log(interaction))
+  return interaction
+
+
 async def _create_interactions(
     api_client: Client,
     *,
@@ -1544,6 +1733,10 @@ async def _create_interactions(
   This is the shared transport + conversion loop. The caller assembles
   ``create_kwargs`` (``model`` or ``agent``, ``input``, ``tools``, etc.); this
   helper owns issuing the call and mapping the stream to ``LlmResponse``s.
+
+  A non-streaming create that comes back still pending -- a deferred request
+  returns ``queued`` as soon as it is accepted -- is polled to completion
+  before anything is yielded, so every caller sees a finished result.
 
   Args:
     api_client: The Google GenAI client.
@@ -1586,6 +1779,10 @@ async def _create_interactions(
     )
     logger.info('Interaction response received.')
     logger.debug(build_interactions_response_log(interaction))
+    if interaction.status in _PENDING_INTERACTION_STATUSES:
+      interaction = await _wait_for_interaction(
+          api_client, interaction, extra_headers=extra_headers
+      )
     llm_response = convert_interaction_to_llm_response(interaction)
     llm_response.environment_id = interaction.environment_id
     yield llm_response
@@ -1595,6 +1792,8 @@ async def generate_content_via_interactions(
     api_client: Client,
     llm_request: LlmRequest,
     stream: bool,
+    *,
+    service_tier: ServiceTier | str | None = None,
 ) -> AsyncGenerator[LlmResponse, None]:
   """Generate content using the interactions API.
 
@@ -1609,10 +1808,22 @@ async def generate_content_via_interactions(
     api_client: The Google GenAI client.
     llm_request: The LLM request to send.
     stream: Whether to stream the response.
+    service_tier: Optional serving tier. ``deferred`` queues the request to run
+      on off-peak capacity and cannot be combined with streaming.
 
   Yields:
     LlmResponse objects converted from interaction responses.
+
+  Raises:
+    ValueError: If ``deferred`` is combined with streaming.
   """
+  if service_tier == ServiceTier.DEFERRED and stream:
+    raise ValueError(
+        "service_tier='deferred' cannot be used with streaming. A deferred"
+        ' request is queued to run on off-peak capacity and returns an'
+        ' interaction id instead of a result, so there is nothing to stream.'
+        ' Use StreamingMode.NONE.'
+    )
 
   # When previous_interaction_id is set, only send the latest continuous
   # user messages (the current turn) instead of full conversation history
@@ -1662,6 +1873,14 @@ async def generate_content_via_interactions(
       'generation_config': generation_config if generation_config else None,
       'previous_interaction_id': previous_interaction_id,
   }
+
+  if service_tier:
+    create_kwargs['service_tier'] = service_tier
+    if service_tier == ServiceTier.DEFERRED:
+      # The API rejects deferred without this. 'store' is deliberately left
+      # unset: it already defaults on for a background call, and sending
+      # store=False is rejected outright.
+      create_kwargs['background'] = True
 
   # Re-merge tracking headers into any request-time headers (idempotent) so the
   # interactions path forwards user-supplied headers instead of dropping them.

@@ -20,13 +20,23 @@ from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
-from google.adk.integrations.vmaas.sandbox_computer import _STATE_KEY_ACCESS_TOKEN
 from google.adk.integrations.vmaas.sandbox_computer import _STATE_KEY_AGENT_ENGINE_NAME
 from google.adk.integrations.vmaas.sandbox_computer import _STATE_KEY_SANDBOX_NAME
-from google.adk.integrations.vmaas.sandbox_computer import _STATE_KEY_TOKEN_EXPIRY
 from google.adk.integrations.vmaas.sandbox_computer import AgentEngineSandboxComputer
+from google.adk.sessions import Session
+from google.adk.sessions.state import State
 from google.adk.tools.computer_use.base_computer import ComputerEnvironment
 from google.adk.tools.computer_use.base_computer import ComputerState
+
+
+def _tool_context(session_id="session1", state=None):
+  """Returns a tool context for a session, with the given session state."""
+  tool_context = MagicMock()
+  tool_context.session = Session(
+      id=session_id, app_name="test_app", user_id="test_user"
+  )
+  tool_context.state = state if state is not None else {}
+  return tool_context
 
 
 class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
@@ -253,18 +263,62 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(result_name, sandbox_name)
     self.assertEqual(result_sandbox, mock_sandbox)
 
+  @patch("google.adk.integrations.vmaas.sandbox_computer.asyncio.to_thread")
+  @patch.object(AgentEngineSandboxComputer, "_get_client")
+  async def test_get_sandbox_ignores_sandbox_name_in_session_state(
+      self, mock_get_client, mock_to_thread
+  ):
+    """Test _get_sandbox does not use a sandbox name found in session state."""
+    agent_engine_name = (
+        "projects/test/locations/us-central1/reasoningEngines/123"
+    )
+    created_sandbox_name = f"{agent_engine_name}/sandboxEnvironments/created"
+    other_sandbox_name = (
+        "projects/other/locations/us-central1/reasoningEngines/456"
+        "/sandboxEnvironments/789"
+    )
+
+    operation = MagicMock()
+    operation.response.name = created_sandbox_name
+    mock_to_thread.return_value = operation
+    mock_get_client.return_value = MagicMock()
+
+    computer = AgentEngineSandboxComputer(project_id=self.project_id)
+    await computer.prepare(
+        _tool_context(state={_STATE_KEY_SANDBOX_NAME: other_sandbox_name})
+    )
+
+    result_name, _ = await computer._get_sandbox()
+
+    self.assertEqual(result_name, created_sandbox_name)
+
+  async def test_prepare_keeps_resources_of_each_session_apart(self):
+    """Test prepare binds the resources of the invocation's own session."""
+    computer = AgentEngineSandboxComputer()
+    first_context = _tool_context(session_id="session1")
+    second_context = _tool_context(session_id="session2")
+
+    await computer.prepare(first_context)
+    computer._session_state[_STATE_KEY_SANDBOX_NAME] = "sandbox1"
+    await computer.prepare(second_context)
+
+    self.assertEqual(computer._session_state, {})
+
+    await computer.prepare(first_context)
+
+    self.assertEqual(
+        computer._session_state[_STATE_KEY_SANDBOX_NAME], "sandbox1"
+    )
+
   async def test_get_access_token_cached(self):
     """Test _get_access_token uses cached token."""
     sandbox_name = "projects/test/sandboxEnvironments/123"
     cached_token = "cached_token_123"
-    # Set expiry far in the future
-    token_expiry = time.time() + 3600
 
     computer = AgentEngineSandboxComputer()
-    computer._session_state = {
-        _STATE_KEY_ACCESS_TOKEN: cached_token,
-        _STATE_KEY_TOKEN_EXPIRY: token_expiry,
-    }
+    computer._access_token = cached_token
+    # Set expiry far in the future
+    computer._token_expiry = time.time() + 3600
 
     result = await computer._get_access_token(sandbox_name)
 
@@ -278,8 +332,6 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
     """Test _get_access_token generates new token when expired."""
     sandbox_name = "projects/test/sandboxEnvironments/123"
     new_token = "new_token_456"
-    # Set expiry in the past
-    token_expiry = time.time() - 100
 
     mock_to_thread.return_value = new_token
     mock_client = MagicMock()
@@ -288,17 +340,43 @@ class TestAgentEngineSandboxComputer(unittest.IsolatedAsyncioTestCase):
     computer = AgentEngineSandboxComputer(
         service_account_email=self.service_account
     )
-    computer._session_state = {
-        _STATE_KEY_ACCESS_TOKEN: "old_token",
-        _STATE_KEY_TOKEN_EXPIRY: token_expiry,
-    }
+    computer._access_token = "old_token"
+    # Set expiry in the past
+    computer._token_expiry = time.time() - 100
 
     result = await computer._get_access_token(sandbox_name)
 
     self.assertEqual(result, new_token)
-    self.assertEqual(
-        computer._session_state[_STATE_KEY_ACCESS_TOKEN], new_token
+    self.assertEqual(computer._access_token, new_token)
+
+  @patch("google.adk.integrations.vmaas.sandbox_computer.asyncio.to_thread")
+  @patch.object(AgentEngineSandboxComputer, "_get_client")
+  async def test_get_access_token_stays_out_of_session_state(
+      self, mock_get_client, mock_to_thread
+  ):
+    """Test the access token is kept out of session state."""
+    sandbox_name = "projects/test/sandboxEnvironments/123"
+    new_token = "new_token_456"
+
+    mock_to_thread.return_value = new_token
+    mock_get_client.return_value = MagicMock()
+
+    delta = {}
+    state = State(value={}, delta=delta)
+    computer = AgentEngineSandboxComputer(
+        service_account_email=self.service_account
     )
+    computer._session_state = state
+
+    result = await computer._get_access_token(sandbox_name)
+
+    self.assertEqual(result, new_token)
+    # The token is a bearer credential for the service account. Session state
+    # is persisted and emitted in the event state delta, so neither the token
+    # nor its expiry may be written there.
+    self.assertFalse(state.has_delta())
+    self.assertEqual(delta, {})
+    self.assertEqual(state.to_dict(), {})
 
   @patch.object(AgentEngineSandboxComputer, "_get_sandbox_client")
   async def test_click_at(self, mock_get_client):

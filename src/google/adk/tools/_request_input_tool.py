@@ -18,7 +18,7 @@ import logging
 from typing import Any
 from typing import Optional
 
-from google.adk.flows.llm_flows.functions import REQUEST_INPUT_FUNCTION_CALL_NAME
+from google.adk.flows.llm_flows.tools._functions import REQUEST_INPUT_FUNCTION_CALL_NAME
 
 from .long_running_tool import LongRunningFunctionTool
 

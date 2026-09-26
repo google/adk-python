@@ -16,7 +16,7 @@
 
 This module provides the DevServer class which extends ApiServer with development-only endpoints.
 All production endpoints are inherited from ApiServer.
-All dev-only endpoints (eval, debug, graph, test management) are added by DevServer.
+All dev-only endpoints (eval, debug, graph, test management, deploy) are added by DevServer.
 
 Use this for local development with `adk web`.
 For production deployments, use api_server.py instead.
@@ -78,6 +78,7 @@ from ..evaluation.eval_result import EvalSetResult
 from ..evaluation.eval_set import EvalSet
 from ..utils._telemetry_config import read_telemetry_consent
 from ..utils._telemetry_config import write_telemetry_consent
+from ._dev_deploy import register_dev_deploy_endpoints
 from .api_server import ApiServer
 
 NESTED_APP_SEPARATOR = "."
@@ -425,6 +426,7 @@ class DevServer(ApiServer):
   """
 
   _allow_special_agents: bool = True
+  _serves_debug_trace_endpoints: bool = True
 
   def _get_agent_dir(self, app_name: str) -> str:
     """Resolves the agent directory and validates the app name to prevent path traversal."""
@@ -459,6 +461,48 @@ class DevServer(ApiServer):
       )
 
     return str(resolved_path)
+
+  def _get_test_file_path(self, *, app_name: str, test_name: str) -> str:
+    """Resolves a test file to a path inside the app's own tests directory.
+
+    Every endpoint that turns a caller-supplied test name into a path goes
+    through here, so that none of them can be steered elsewhere on disk.
+
+    Raises:
+      HTTPException: if the app name is invalid, or the test name is anything
+        other than a plain file name sitting directly in that directory.
+    """
+    tests_dir = Path(self._get_agent_dir(app_name)) / "tests"
+    invalid_test_name = HTTPException(
+        status_code=400,
+        detail=(
+            f"Invalid test name: {test_name!r}. A test name must be the name"
+            " of a file directly inside the app's tests directory, not a path."
+        ),
+    )
+
+    # A bare file name only. Backslash is rejected because it separates path
+    # components on Windows, where the route's single-segment match lets it
+    # through.
+    if not test_name or Path(test_name).name != test_name or "\\" in test_name:
+      raise invalid_test_name
+
+    if not test_name.endswith(".json"):
+      test_name += ".json"
+
+    # Resolve before testing containment, so a symlinked test file cannot
+    # point outside either. A name the filesystem cannot resolve at all is
+    # refused rather than allowed through unchecked.
+    try:
+      test_file_path = (tests_dir / test_name).resolve()
+      resolved_tests_dir = tests_dir.resolve()
+    except (OSError, ValueError) as exc:
+      raise invalid_test_name from exc
+
+    if test_file_path.parent != resolved_tests_dir:
+      raise invalid_test_name
+
+    return str(test_file_path)
 
   def _register_dev_endpoints(
       self,
@@ -909,14 +953,10 @@ class DevServer(ApiServer):
         app_name: str, test_name: Optional[str] = None
     ) -> dict[str, str]:
       """Rebuilds tests for the app."""
-      agent_dir = self._get_agent_dir(app_name)
-
       if test_name:
-        if not test_name.endswith(".json"):
-          test_name += ".json"
-        path = os.path.join(agent_dir, "tests", test_name)
+        path = self._get_test_file_path(app_name=app_name, test_name=test_name)
       else:
-        path = agent_dir
+        path = self._get_agent_dir(app_name)
 
       from .agent_test_runner import rebuild_tests
 
@@ -939,16 +979,10 @@ class DevServer(ApiServer):
         app_name: str, test_name: str, req: CreateTestRequest
     ) -> dict[str, str]:
       """Creates or updates a test file from session data."""
-      # Sanitize test_name to prevent directory traversal
-      test_name = os.path.basename(test_name)
-      agent_dir = self._get_agent_dir(app_name)
-      tests_dir = os.path.join(agent_dir, "tests")
-      os.makedirs(tests_dir, exist_ok=True)
-
-      if not test_name.endswith(".json"):
-        test_name += ".json"
-
-      test_file_path = os.path.join(tests_dir, test_name)
+      test_file_path = self._get_test_file_path(
+          app_name=app_name, test_name=test_name
+      )
+      os.makedirs(os.path.dirname(test_file_path), exist_ok=True)
 
       with open(test_file_path, "w", encoding="utf-8") as f:
         json.dump(
@@ -956,18 +990,14 @@ class DevServer(ApiServer):
         )
         f.write("\n")
 
-      return {"status": "success", "file": test_name}
+      return {"status": "success", "file": os.path.basename(test_file_path)}
 
     @app.delete("/dev/apps/{app_name}/tests/{test_name}")
     async def delete_test(app_name: str, test_name: str) -> dict[str, str]:
       """Deletes a specific test file."""
-      agent_dir = self._get_agent_dir(app_name)
-      tests_dir = os.path.join(agent_dir, "tests")
-
-      if not test_name.endswith(".json"):
-        test_name += ".json"
-
-      test_file_path = os.path.join(tests_dir, test_name)
+      test_file_path = self._get_test_file_path(
+          app_name=app_name, test_name=test_name
+      )
 
       if not os.path.exists(test_file_path):
         raise HTTPException(status_code=404, detail="Test file not found")
@@ -978,13 +1008,9 @@ class DevServer(ApiServer):
     @app.get("/dev/apps/{app_name}/tests/{test_name}")
     async def get_test_content(app_name: str, test_name: str) -> dict[str, Any]:
       """Fetches the content of a specific test file."""
-      agent_dir = self._get_agent_dir(app_name)
-      tests_dir = os.path.join(agent_dir, "tests")
-
-      if not test_name.endswith(".json"):
-        test_name += ".json"
-
-      test_file_path = os.path.join(tests_dir, test_name)
+      test_file_path = self._get_test_file_path(
+          app_name=app_name, test_name=test_name
+      )
 
       if not os.path.exists(test_file_path):
         raise HTTPException(status_code=404, detail="Test file not found")
@@ -1407,9 +1433,26 @@ class DevServer(ApiServer):
 
         # Right now we ignore the app_name as eval metrics are not tied to the
         # app_name, but they could be moving forward.
-        metrics_info = (
-            DEFAULT_METRIC_EVALUATOR_REGISTRY.get_registered_metrics()
-        )
+        # This endpoint feeds a surface that asks the user to pick metrics and
+        # set a threshold for each. Metrics that need no threshold are always
+        # on and have nothing for the user to choose, and they carry no value
+        # interval for a threshold control to bound itself by.
+        #
+        # Hiding them is a compatibility shim for the Dev UI bundle vendored in
+        # cli/browser, which dereferences `metricValueInfo.interval`
+        # unconditionally while building the threshold form and so takes the
+        # whole form down on a metric that has none.
+        # TODO: Drop this filter once that
+        # bundle understands `requires_threshold=False` and renders those
+        # metrics as an always-on, non-selectable section instead. The bundle
+        # ships from this repo, so its refresh and this removal land together.
+        metrics_info = [
+            metric_info
+            for metric_info in (
+                DEFAULT_METRIC_EVALUATOR_REGISTRY.get_registered_metrics()
+            )
+            if metric_info.requires_threshold
+        ]
         return ListMetricsInfoResponse(metrics_info=metrics_info)
       except ModuleNotFoundError as e:
         logger.exception("%s\n%s", MISSING_EVAL_DEPENDENCIES_MESSAGE, e)
@@ -1499,6 +1542,8 @@ class DevServer(ApiServer):
         return GetEventGraphResult(dot_src=dot_graph.source)
       else:
         return {}
+
+    register_dev_deploy_endpoints(app, get_agent_dir=self._get_agent_dir)
 
   def _navigate_to_node(self, app_info: dict, node_path: str) -> dict | None:
     """Navigate to a specific node in the agent hierarchy.

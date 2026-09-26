@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
+import time
 from unittest.mock import Mock
 
 from google.adk.agents.base_agent import BaseAgent
@@ -22,6 +24,7 @@ from google.adk.agents.run_config import RunConfig
 from google.adk.apps import ResumabilityConfig
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
+from google.adk.platform.thread import create_thread
 from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.session import Session
 from google.genai.types import Content
@@ -128,6 +131,343 @@ class TestInvocationContext:
         current_branch=True,
     )
     assert not events
+
+  def test_abort_without_external_signal_trips_internal_signal(self):
+    """Calling abort() without an explicit signal sets is_aborted and trips internal signal."""
+    ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_1',
+        session=Mock(spec=Session, events=[]),
+    )
+    assert ctx.is_aborted is False
+    assert ctx._abort_signal.is_set() is False
+
+    ctx.abort()
+
+    assert ctx.is_aborted is True
+    assert ctx._abort_signal.is_set() is True
+
+  async def test_abort_same_tick_immediacy(self):
+    """Calling abort() on the event loop thread sets is_aborted and trips signal on the same tick."""
+    abort_signal = asyncio.Event()
+    ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_1',
+        session=Mock(spec=Session, events=[]),
+    )
+    ctx._attach_abort_signal(abort_signal)
+    assert ctx.is_aborted is False
+    assert abort_signal.is_set() is False
+
+    ctx.abort()
+
+    assert ctx.is_aborted is True
+    assert abort_signal.is_set() is True
+
+  async def test_abort_cross_thread_wakeup(self):
+    """Calling abort() from a worker thread wakes a coroutine awaiting the attached signal."""
+    abort_signal = asyncio.Event()
+    ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_1',
+        session=Mock(spec=Session, events=[]),
+    )
+    ctx._attach_abort_signal(abort_signal)
+
+    woke = asyncio.Event()
+
+    async def parked_waiter():
+      await abort_signal.wait()
+      woke.set()
+
+    waiter_task = asyncio.create_task(parked_waiter())
+    await asyncio.sleep(0.05)
+
+    def foreign_worker():
+      time.sleep(0.05)
+      ctx.abort()
+
+    worker_thread = create_thread(target=foreign_worker)
+    worker_thread.start()
+
+    await asyncio.wait_for(woke.wait(), timeout=2.0)
+    worker_thread.join()
+    await waiter_task
+
+    assert ctx.is_aborted is True
+    assert abort_signal.is_set() is True
+
+  async def test_abort_initialized_outside_loop_cross_thread_wakeup(self):
+    """Attaching an abort signal inside a running loop enables cross-thread wakeup even if context was created synchronously."""
+    loop_holder = []
+
+    def create_ctx_sync():
+      loop_holder.append(
+          InvocationContext(
+              session_service=Mock(spec=BaseSessionService),
+              agent=Mock(spec=BaseAgent),
+              invocation_id='inv_outside_loop',
+              session=Mock(spec=Session, events=[]),
+          )
+      )
+
+    init_thread = create_thread(target=create_ctx_sync)
+    init_thread.start()
+    init_thread.join()
+    ctx = loop_holder[0]
+
+    abort_signal = asyncio.Event()
+    ctx._attach_abort_signal(abort_signal)
+
+    woke = asyncio.Event()
+
+    async def parked_waiter():
+      await abort_signal.wait()
+      woke.set()
+
+    waiter_task = asyncio.create_task(parked_waiter())
+    await asyncio.sleep(0.05)
+
+    def foreign_worker():
+      time.sleep(0.05)
+      ctx.abort()
+
+    worker_thread = create_thread(target=foreign_worker)
+    worker_thread.start()
+
+    await asyncio.wait_for(woke.wait(), timeout=2.0)
+    worker_thread.join()
+    await waiter_task
+
+    assert ctx.is_aborted is True
+    assert abort_signal.is_set() is True
+
+  async def test_abort_signal_captures_loop_and_wakes_on_cross_thread_abort(
+      self,
+  ):
+    """Awaiting _abort_signal.wait() captures the running loop and wakes when abort() is called from another thread."""
+    ctx_holder = []
+
+    def create_ctx_sync():
+      ctx_holder.append(
+          InvocationContext(
+              session_service=Mock(spec=BaseSessionService),
+              agent=Mock(spec=BaseAgent),
+              invocation_id='inv_abort_signal_wait',
+              session=Mock(spec=Session, events=[]),
+          )
+      )
+
+    init_thread = create_thread(target=create_ctx_sync)
+    init_thread.start()
+    init_thread.join()
+    ctx = ctx_holder[0]
+    assert ctx._abort_state.loop is None
+
+    woke = asyncio.Event()
+
+    async def parked_waiter():
+      await ctx._abort_signal.wait()
+      woke.set()
+
+    waiter_task = asyncio.create_task(parked_waiter())
+    await asyncio.sleep(0.05)
+
+    def foreign_worker():
+      time.sleep(0.05)
+      ctx.abort()
+
+    worker_thread = create_thread(target=foreign_worker)
+    worker_thread.start()
+
+    await asyncio.wait_for(woke.wait(), timeout=2.0)
+    worker_thread.join()
+    await waiter_task
+
+    assert ctx.is_aborted is True
+
+  def test_abort_with_closed_loop_falls_back_to_direct_set(self):
+    """Calling abort() after its event loop closes still sets is_aborted without raising RuntimeError."""
+    loop = asyncio.new_event_loop()
+
+    async def init_on_loop():
+      ctx = InvocationContext(
+          session_service=Mock(spec=BaseSessionService),
+          agent=Mock(spec=BaseAgent),
+          invocation_id='inv_closed_loop',
+          session=Mock(spec=Session, events=[]),
+      )
+      ctx._attach_abort_signal(asyncio.Event())
+      return ctx
+
+    ctx = loop.run_until_complete(init_on_loop())
+    loop.close()
+
+    ctx.abort()
+
+    assert ctx.is_aborted is True
+    assert ctx._abort_signal.is_set() is True
+
+  def test_abort_signal_not_in_model_fields(self):
+    """The abort signal is private and excluded from Pydantic model fields."""
+    ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_priv_attr',
+        session=Mock(spec=Session, events=[]),
+    )
+    assert 'abort_signal' not in InvocationContext.model_fields
+    assert '_abort_signal' not in InvocationContext.model_fields
+    assert not hasattr(ctx, 'abort_signal')
+    assert isinstance(ctx._abort_signal, asyncio.Event)
+    assert ctx._abort_signal.is_set() is False
+
+  def test_attach_abort_signal(self):
+    """Attaching a caller-owned abort signal shares it across model_copy() instances."""
+    custom_signal = asyncio.Event()
+    ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_signal',
+        session=Mock(spec=Session, events=[]),
+    )
+    ctx._attach_abort_signal(custom_signal)
+
+    assert ctx._abort_signal is custom_signal
+    assert ctx.model_copy()._abort_signal is custom_signal
+
+  def test_abort_signal_propagates_across_model_copy(self):
+    """Calling abort() on a copied context immediately sets is_aborted on the parent context."""
+    ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_parent',
+        session=Mock(spec=Session, events=[]),
+    )
+    copied = ctx.model_copy()
+    assert ctx.is_aborted is False
+    assert copied.is_aborted is False
+
+    copied.abort()
+
+    assert copied.is_aborted is True
+    assert ctx.is_aborted is True
+    assert ctx._abort_signal.is_set() is True
+
+  def test_abort_state_deepcopy_shares_instance(self):
+    """Deepcopying InvocationContext preserves shared _abort_state instance."""
+    ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_deep',
+        session=Mock(spec=Session, events=[]),
+    )
+    copied = ctx.model_copy(deep=True)
+    assert copied._abort_state is ctx._abort_state
+
+    copied.abort()
+    assert copied.is_aborted is True
+    assert ctx.is_aborted is True
+
+  async def test_model_copy_deep_with_running_async_generator(self):
+    """Calling model_copy(deep=True) inside a running event loop with active async generators does not raise."""
+    ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_deep_running_loop',
+        session=Mock(spec=Session, events=[]),
+    )
+
+    async def sample_generator():
+      yield 1
+
+    gen = sample_generator()
+    try:
+      copied = ctx.model_copy(deep=True)
+      assert copied._abort_state is ctx._abort_state
+    finally:
+      await gen.aclose()
+
+  async def test_abort_signal_on_model_copy_wakes_when_parent_aborts_from_thread(
+      self,
+  ):
+    """A coroutine awaiting _abort_signal.wait() on a copied context wakes when the parent aborts from a worker thread."""
+    ctx_holder = []
+
+    def create_ctx_sync():
+      ctx_holder.append(
+          InvocationContext(
+              session_service=Mock(spec=BaseSessionService),
+              agent=Mock(spec=BaseAgent),
+              invocation_id='inv_parent',
+              session=Mock(spec=Session, events=[]),
+          )
+      )
+
+    init_thread = create_thread(target=create_ctx_sync)
+    init_thread.start()
+    init_thread.join()
+    ctx = ctx_holder[0]
+    copied = ctx.model_copy()
+
+    woke = asyncio.Event()
+
+    async def parked_waiter():
+      await copied._abort_signal.wait()
+      woke.set()
+
+    waiter_task = asyncio.create_task(parked_waiter())
+    await asyncio.sleep(0.05)
+
+    def foreign_worker():
+      time.sleep(0.05)
+      ctx.abort()
+
+    worker_thread = create_thread(target=foreign_worker)
+    worker_thread.start()
+
+    await asyncio.wait_for(woke.wait(), timeout=2.0)
+    worker_thread.join()
+    await waiter_task
+
+    assert copied.is_aborted is True
+    assert ctx.is_aborted is True
+
+  def test_abort_foreign_thread_sets_is_aborted_immediately(self):
+    """Calling abort() from a worker thread sets is_aborted synchronously before the loop processes callbacks."""
+    loop = Mock(spec=asyncio.AbstractEventLoop)
+    loop.call_soon_threadsafe = Mock()
+
+    ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_foreign',
+        session=Mock(spec=Session, events=[]),
+    )
+    ctx._abort_state.loop = loop
+
+    worker_exc = None
+
+    def foreign_worker():
+      nonlocal worker_exc
+      try:
+        ctx.abort()
+        assert ctx.is_aborted is True
+      except BaseException as e:
+        worker_exc = e
+
+    worker = create_thread(target=foreign_worker)
+    worker.start()
+    worker.join()
+
+    if worker_exc is not None:
+      raise worker_exc
+
+    assert ctx.is_aborted is True
+    loop.call_soon_threadsafe.assert_called_once()
 
 
 class TestInvocationContextInitialization:
@@ -528,212 +868,6 @@ class TestInvocationContextWithAppResumablity:
     assert 'sub_agent_2' not in invocation_context.end_of_agents
     assert 'sub_sub_agent_1' not in invocation_context.agent_states
     assert 'sub_sub_agent_1' not in invocation_context.end_of_agents
-
-
-class TestFindMatchingFunctionCall:
-  """Test suite for find_matching_function_call."""
-
-  @pytest.fixture
-  def test_invocation_context(self):
-    """Create a mock invocation context for testing."""
-
-    def _create_invocation_context(events):
-      return InvocationContext(
-          session_service=Mock(spec=BaseSessionService),
-          agent=Mock(spec=BaseAgent, name='agent'),
-          invocation_id='inv_1',
-          session=Mock(spec=Session, events=events),
-      )
-
-    return _create_invocation_context
-
-  def test_find_matching_function_call_found(self, test_invocation_context):
-    """Tests that a matching function call is found."""
-    fc = Part.from_function_call(name='some_tool', args={})
-    fc.function_call.id = 'test_function_call_id'
-    fc_event = Event(
-        invocation_id='inv_1',
-        author='agent',
-        content=testing_utils.ModelContent([fc]),
-    )
-    fr = Part.from_function_response(
-        name='some_tool', response={'result': 'ok'}
-    )
-    fr.function_response.id = 'test_function_call_id'
-    fr_event = Event(
-        invocation_id='inv_1',
-        author='agent',
-        content=Content(role='user', parts=[fr]),
-    )
-    invocation_context = test_invocation_context([fc_event, fr_event])
-    matching_fc_event = invocation_context._find_matching_function_call(
-        fr_event
-    )
-    assert testing_utils.simplify_content(
-        matching_fc_event.content
-    ) == testing_utils.simplify_content(fc_event.content)
-
-  def test_find_matching_function_call_not_found(self, test_invocation_context):
-    """Tests that no matching function call is returned if id doesn't match."""
-    fc = Part.from_function_call(name='some_tool', args={})
-    fc.function_call.id = 'another_function_call_id'
-    fc_event = Event(
-        invocation_id='inv_1',
-        author='agent',
-        content=testing_utils.ModelContent([fc]),
-    )
-    fr = Part.from_function_response(
-        name='some_tool', response={'result': 'ok'}
-    )
-    fr.function_response.id = 'test_function_call_id'
-    fr_event = Event(
-        invocation_id='inv_1',
-        author='agent',
-        content=Content(role='user', parts=[fr]),
-    )
-    invocation_context = test_invocation_context([fc_event, fr_event])
-    match = invocation_context._find_matching_function_call(fr_event)
-    assert match is None
-
-  def test_find_matching_function_call_no_call_events(
-      self, test_invocation_context
-  ):
-    """Tests that no matching function call is returned if there are no call events."""
-    fr = Part.from_function_response(
-        name='some_tool', response={'result': 'ok'}
-    )
-    fr.function_response.id = 'test_function_call_id'
-    fr_event = Event(
-        invocation_id='inv_1',
-        author='agent',
-        content=Content(role='user', parts=[fr]),
-    )
-    invocation_context = test_invocation_context([fr_event])
-    match = invocation_context._find_matching_function_call(fr_event)
-    assert match is None
-
-  def test_find_matching_function_call_no_response_in_event(
-      self, test_invocation_context
-  ):
-    """Tests result is None if function_response_event has no function response."""
-    fr_event_no_fr = Event(
-        author='agent',
-        content=Content(role='user', parts=[Part(text='user message')]),
-    )
-    fc = Part.from_function_call(name='some_tool', args={})
-    fc.function_call.id = 'test_function_call_id'
-    fc_event = Event(
-        invocation_id='inv_1',
-        author='agent',
-        content=testing_utils.ModelContent([fc]),
-    )
-    fr = Part.from_function_response(
-        name='some_tool', response={'result': 'ok'}
-    )
-    fr.function_response.id = 'test_function_call_id'
-    fr_event = Event(
-        invocation_id='inv_1',
-        author='agent',
-        content=Content(role='user', parts=[Part(text='user message')]),
-    )
-    invocation_context = test_invocation_context([fc_event, fr_event])
-    match = invocation_context._find_matching_function_call(fr_event_no_fr)
-    assert match is None
-
-  def test_stamp_event_branch_context_preserves_isolation_scope(
-      self, test_invocation_context
-  ):
-    """Tests stamp_event_branch_context does not overwrite existing isolation_scope with None."""
-    fc = Part.from_function_call(name='some_tool', args={})
-    fc.function_call.id = 'test_function_call_id'
-    fc_event = Event(
-        invocation_id='inv_1',
-        author='agent',
-        branch='root@1',
-        isolation_scope=None,  # Coordinator FC has None scope
-        content=testing_utils.ModelContent([fc]),
-    )
-    fr = Part.from_function_response(
-        name='some_tool', response={'result': 'ok'}
-    )
-    fr.function_response.id = 'test_function_call_id'
-    fr_event = Event(
-        invocation_id='inv_1',
-        author='agent',
-        isolation_scope='task_123',  # Pre-populated active task scope
-        content=Content(role='user', parts=[fr]),
-    )
-    invocation_context = test_invocation_context([fc_event, fr_event])
-
-    invocation_context.stamp_event_branch_context(fr_event)
-    assert fr_event.branch == 'root@1'
-    assert fr_event.isolation_scope == 'task_123'
-
-  def test_stamp_event_branch_context_does_not_overwrite_existing_scope(
-      self, test_invocation_context
-  ):
-    """Tests stamp_event_branch_context does not overwrite existing isolation_scope if set."""
-    fc = Part.from_function_call(name='some_tool', args={})
-    fc.function_call.id = 'test_function_call_id'
-    fc_event = Event(
-        invocation_id='inv_1',
-        author='agent',
-        branch='root@1',
-        isolation_scope='task_456',  # Function call has isolation scope
-        content=testing_utils.ModelContent([fc]),
-    )
-    fr = Part.from_function_response(
-        name='some_tool', response={'result': 'ok'}
-    )
-    fr.function_response.id = 'test_function_call_id'
-    fr_event = Event(
-        invocation_id='inv_1',
-        author='agent',
-        isolation_scope='task_123',  # Pre-populated active task scope
-        content=Content(role='user', parts=[fr]),
-    )
-    invocation_context = test_invocation_context([fc_event, fr_event])
-
-    invocation_context.stamp_event_branch_context(fr_event)
-    assert fr_event.branch == 'root@1'
-    assert fr_event.isolation_scope == 'task_123'
-
-  def test_find_matching_function_call_when_response_is_not_last_event(
-      self, test_invocation_context
-  ):
-    """Tests that matching function call is found even when response is not the last event in history."""
-    fc = Part.from_function_call(name='some_tool', args={})
-    fc.function_call.id = 'test_function_call_id'
-    fc_event = Event(
-        invocation_id='inv_1',
-        author='agent',
-        content=testing_utils.ModelContent([fc]),
-    )
-    fr = Part.from_function_response(
-        name='some_tool', response={'result': 'ok'}
-    )
-    fr.function_response.id = 'test_function_call_id'
-    fr_event = Event(
-        invocation_id='inv_1',
-        author='agent',
-        content=Content(role='user', parts=[fr]),
-    )
-    # Add a subsequent event to the history so that fr_event is NOT the last one
-    subsequent_event = Event(
-        invocation_id='inv_1',
-        author='user',
-        content=Content(role='user', parts=[Part(text='next user message')]),
-    )
-    invocation_context = test_invocation_context(
-        [fc_event, fr_event, subsequent_event]
-    )
-
-    matching_fc_event = invocation_context._find_matching_function_call(
-        fr_event
-    )
-    assert testing_utils.simplify_content(
-        matching_fc_event.content
-    ) == testing_utils.simplify_content(fc_event.content)
 
 
 class TestIncrementLlmCallCount:

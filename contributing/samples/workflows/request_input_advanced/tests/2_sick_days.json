@@ -35,15 +35,17 @@
         ],
         "role": "model"
       },
-      "finishReason": "STOP",
       "id": "e-2",
       "invocationId": "i-1",
       "nodeInfo": {
-        "messageAsOutput": true,
         "outputFor": [
           "request_input_advanced@1/process_request@1"
         ],
         "path": "request_input_advanced@1/process_request@1"
+      },
+      "output": {
+        "days": 2,
+        "reason": "sick"
       }
     },
     {

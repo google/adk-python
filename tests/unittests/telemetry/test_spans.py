@@ -48,6 +48,8 @@ from google.adk.telemetry.tracing import _use_extra_generate_content_attributes
 from google.adk.telemetry.tracing import ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS
 from google.adk.telemetry.tracing import GCP_MCP_SERVER_DESTINATION_ID
 from google.adk.telemetry.tracing import GenerateContentSpan
+from google.adk.telemetry.tracing import MCP_PROTOCOL_VERSION
+from google.adk.telemetry.tracing import MCP_SESSION_ID
 from google.adk.telemetry.tracing import resolve_error_type
 from google.adk.telemetry.tracing import safe_json_serialize
 from google.adk.telemetry.tracing import trace_agent_invocation
@@ -63,8 +65,6 @@ from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import errors as genai_errors
 from google.genai import types
-from mcp import ClientSession as McpClientSession
-from mcp import ListToolsResult as McpListToolsResult
 from mcp import Tool as McpTool
 from opentelemetry._logs import LogRecord
 from opentelemetry._logs import SeverityNumber
@@ -79,8 +79,6 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_SYSTEM_INSTRUCTIONS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_INPUT_TOKENS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_OUTPUT_TOKENS
-from opentelemetry.semconv._incubating.attributes.mcp_attributes import MCP_PROTOCOL_VERSION
-from opentelemetry.semconv._incubating.attributes.mcp_attributes import MCP_SESSION_ID
 from opentelemetry.semconv._incubating.attributes.user_attributes import USER_ID
 from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
 from opentelemetry.semconv.attributes.http_attributes import HTTP_REQUEST_METHOD
@@ -900,6 +898,16 @@ def test_trace_mcp_http_exchange_emits_debug_log_record(
   }
 
 
+def test_mcp_attribute_names_match_semconv():
+  """The names are spelled out locally, so nothing else would catch drift."""
+  mcp_attributes = pytest.importorskip(
+      'opentelemetry.semconv._incubating.attributes.mcp_attributes'
+  )
+
+  assert MCP_SESSION_ID == mcp_attributes.MCP_SESSION_ID
+  assert MCP_PROTOCOL_VERSION == mcp_attributes.MCP_PROTOCOL_VERSION
+
+
 @mock.patch('google.adk.telemetry.tracing.otel_logger')
 def test_trace_mcp_http_exchange_elides_bodies_by_default(
     mock_otel_logger, monkeypatch
@@ -1044,7 +1052,14 @@ def test_trace_merged_tool_calls_sets_correct_attributes(
       function_response_event=mock_event_fixture,
   )
 
-  expected_event_json = mock_event_fixture.model_dump_json(exclude_none=True)
+  expected_responses_json = json.dumps(
+      [{
+          'id': 'tool_call_id_003',
+          'name': 'test_function_1',
+          'response': {'data': 'merged_details'},
+      }],
+      ensure_ascii=False,
+  )
   expected_calls = [
       mock.call('gen_ai.operation.name', 'execute_tool'),
       mock.call('gen_ai.tool.name', '(merged tools)'),
@@ -1052,7 +1067,7 @@ def test_trace_merged_tool_calls_sets_correct_attributes(
       mock.call('gen_ai.tool.call.id', test_response_event_id),
       mock.call('gcp.vertex.agent.tool_call_args', 'N/A'),
       mock.call('gcp.vertex.agent.event_id', test_response_event_id),
-      mock.call('gcp.vertex.agent.tool_response', expected_event_json),
+      mock.call('gcp.vertex.agent.tool_response', expected_responses_json),
       mock.call('gcp.vertex.agent.llm_request', '{}'),
       mock.call('gcp.vertex.agent.llm_response', '{}'),
   ]
@@ -1061,7 +1076,7 @@ def test_trace_merged_tool_calls_sets_correct_attributes(
   mock_span_fixture.set_attribute.assert_has_calls(
       expected_calls, any_order=True
   )
-  # The merged response must be the real serialized event, not the
+  # The merged response must be the real serialized responses, not the
   # "<not serializable>" fallback.
   recorded_response = next(
       call_obj.args[1]
@@ -1069,7 +1084,52 @@ def test_trace_merged_tool_calls_sets_correct_attributes(
       if call_obj.args[0] == 'gcp.vertex.agent.tool_response'
   )
   parsed = json.loads(recorded_response)
-  assert parsed['id'] == 'test_event_id'
+  assert parsed[0]['id'] == 'tool_call_id_003'
+  assert 'merged_details' in recorded_response
+
+
+def test_trace_merged_tool_calls_omits_event_actions(
+    monkeypatch, mock_span_fixture, mock_event_fixture
+):
+  """Only the responses are recorded, not the state a tool wrote."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  mock_event_fixture.content = types.Content(
+      role='user',
+      parts=[
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id='tool_call_id_005',
+                  name='test_function_1',
+                  response={'data': 'merged_details'},
+              )
+          ),
+      ],
+  )
+  # Shape the openapi tool auth handler stores an exchanged credential in.
+  mock_event_fixture.actions.state_delta = {
+      'oauth2_existing_exchanged_credential': {
+          'oauth2': {
+              'access_token': 'access-token-value',
+              'refresh_token': 'refresh-token-value',
+          }
+      }
+  }
+
+  trace_merged_tool_calls(
+      response_event_id='merged_evt_id_003',
+      function_response_event=mock_event_fixture,
+  )
+
+  recorded_response = next(
+      call_obj.args[1]
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
+      if call_obj.args[0] == 'gcp.vertex.agent.tool_response'
+  )
+  assert 'access-token-value' not in recorded_response
+  assert 'refresh-token-value' not in recorded_response
   assert 'merged_details' in recorded_response
 
 

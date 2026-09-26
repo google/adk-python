@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from fastapi.openapi.models import OAuthFlows
 from fastapi.openapi.models import SecurityBase
 
 from .auth_credential import AuthCredential
@@ -23,6 +24,8 @@ from .auth_schemes import AuthSchemeType
 from .auth_schemes import OpenIdConnectWithConfig
 from .auth_tool import AuthConfig
 from .exchanger.oauth2_credential_exchanger import OAuth2CredentialExchanger
+from .oauth2_credential_util import _credential_without_client_secret
+from .oauth2_credential_util import _with_configured_client
 
 if TYPE_CHECKING:
   from ..sessions.state import State
@@ -45,18 +48,6 @@ def _normalize_oauth_scopes(
   if isinstance(scopes, dict):
     return list(scopes.keys())
   return list(scopes)
-
-
-def _credential_without_client_secret(
-    credential: AuthCredential | None,
-) -> AuthCredential | None:
-  """Returns a copy of credential with the OAuth2 client secret removed."""
-  if credential is None:
-    return None
-  redacted = credential.model_copy(deep=True)
-  if redacted.oauth2 is not None:
-    redacted.oauth2.client_secret = None
-  return redacted
 
 
 def _without_client_secret(auth_config: AuthConfig) -> AuthConfig:
@@ -102,8 +93,9 @@ class AuthHandler:
 
     temp_credential_key = "temp:" + credential_key
 
-    self.auth_config.exchanged_auth_credential = self._with_configured_client(
-        self.auth_config.exchanged_auth_credential
+    self.auth_config.exchanged_auth_credential = _with_configured_client(
+        credential=self.auth_config.exchanged_auth_credential,
+        raw_credential=self.auth_config.raw_auth_credential,
     )
     credential = self.auth_config.exchanged_auth_credential
     if self._is_exchangeable(credential):
@@ -115,28 +107,6 @@ class AuthHandler:
   def _validate(self) -> None:
     if not self.auth_config.auth_scheme:
       raise ValueError("auth_scheme is empty.")
-
-  def _with_configured_client(
-      self, credential: AuthCredential | None
-  ) -> AuthCredential | None:
-    """Returns credential with the configured OAuth2 client identity restored.
-
-    The credential comes back from the client, which must not be able to
-    choose which OAuth2 client the token is exchanged for. The original is
-    left untouched, so the copy held in session state keeps no secret.
-    """
-    raw_credential = self.auth_config.raw_auth_credential
-    if (
-        credential is None
-        or credential.oauth2 is None
-        or raw_credential is None
-        or raw_credential.oauth2 is None
-    ):
-      return credential
-    restored = credential.model_copy(deep=True)
-    restored.oauth2.client_id = raw_credential.oauth2.client_id
-    restored.oauth2.client_secret = raw_credential.oauth2.client_secret
-    return restored
 
   def _is_exchangeable(self, credential: AuthCredential | None) -> bool:
     """Returns whether credential still needs, and can do, a token exchange."""
@@ -196,7 +166,10 @@ class AuthHandler:
       return None
 
     key, credential = stored
-    credential = self._with_configured_client(credential)
+    credential = _with_configured_client(
+        credential=credential,
+        raw_credential=self.auth_config.raw_auth_credential,
+    )
     if not self._is_exchangeable(credential):
       return credential
 
@@ -311,15 +284,18 @@ class AuthHandler:
 
   def generate_auth_uri(
       self,
-  ) -> AuthCredential:
+  ) -> AuthCredential | None:
     """Generates a response containing the auth uri for user to sign in.
 
     Returns:
-        An AuthCredential object containing the auth URI and state.
+        An AuthCredential object containing the auth URI and state, or None if
+        authlib is unavailable and no raw credential was configured.
 
     Raises:
-        ValueError: If the authorization endpoint is not configured in the auth
-            scheme.
+        ValueError: If the raw credential carries no oauth2 section, if the
+            auth scheme is not one that carries an authorization endpoint, or
+            if the credential asks for a code_challenge_method other than
+            S256.
     """
     if not AUTHLIB_AVAILABLE:
       return (
@@ -333,32 +309,49 @@ class AuthHandler:
     if not auth_credential or not auth_credential.oauth2:
       raise ValueError("raw_auth_credential or oauth2 is empty")
 
+    authorization_endpoint: str | None
     if isinstance(auth_scheme, OpenIdConnectWithConfig):
       authorization_endpoint = auth_scheme.authorization_endpoint
       scopes = _normalize_oauth_scopes(auth_scheme.scopes)
     else:
+      # `flows` is declared only on OAuth2, but a CustomAuthScheme subclass may
+      # also carry one to join the OAuth2 consent flow, so read it off the
+      # scheme rather than requiring an OAuth2 instance. Reaching the raise
+      # below used to be an AttributeError inside the expression that follows.
+      flows = getattr(auth_scheme, "flows", None)
+      if not isinstance(flows, OAuthFlows):
+        raise ValueError(
+            "Cannot generate an auth uri for auth scheme"
+            f" {type(auth_scheme).__name__}: it carries no OAuth2 flows."
+        )
       authorization_endpoint = (
-          auth_scheme.flows.implicit
-          and auth_scheme.flows.implicit.authorizationUrl
-          or auth_scheme.flows.authorizationCode
-          and auth_scheme.flows.authorizationCode.authorizationUrl
-          or auth_scheme.flows.clientCredentials
-          and auth_scheme.flows.clientCredentials.tokenUrl
-          or auth_scheme.flows.password
-          and auth_scheme.flows.password.tokenUrl
+          (flows.implicit.authorizationUrl if flows.implicit else None)
+          or (
+              flows.authorizationCode.authorizationUrl
+              if flows.authorizationCode
+              else None
+          )
+          or (
+              flows.clientCredentials.tokenUrl
+              if flows.clientCredentials
+              else None
+          )
+          or (flows.password.tokenUrl if flows.password else None)
       )
-      if auth_scheme.flows.implicit:
-        scopes = _normalize_oauth_scopes(auth_scheme.flows.implicit.scopes)
-      elif auth_scheme.flows.authorizationCode:
-        scopes = _normalize_oauth_scopes(
-            auth_scheme.flows.authorizationCode.scopes
+      if not authorization_endpoint:
+        raise ValueError(
+            "Cannot generate an auth uri for auth scheme"
+            f" {type(auth_scheme).__name__}: no flow declares an"
+            " authorization endpoint."
         )
-      elif auth_scheme.flows.clientCredentials:
-        scopes = _normalize_oauth_scopes(
-            auth_scheme.flows.clientCredentials.scopes
-        )
-      elif auth_scheme.flows.password:
-        scopes = _normalize_oauth_scopes(auth_scheme.flows.password.scopes)
+      if flows.implicit:
+        scopes = _normalize_oauth_scopes(flows.implicit.scopes)
+      elif flows.authorizationCode:
+        scopes = _normalize_oauth_scopes(flows.authorizationCode.scopes)
+      elif flows.clientCredentials:
+        scopes = _normalize_oauth_scopes(flows.clientCredentials.scopes)
+      elif flows.password:
+        scopes = _normalize_oauth_scopes(flows.password.scopes)
       else:
         scopes = []
 

@@ -1699,44 +1699,6 @@ class TestParameterBindingNodeInput:
     assert copied.input_schema is not None
     assert 'x' in copied.input_schema['properties']
 
-  def test_type_hints_cache(self):
-    """Verifies that type hints are cached and robustly unwrapped."""
-    from google.adk.workflow._function_node import _get_type_hints_cached
-    from google.adk.workflow._function_node import _get_type_hints_for_unwrapped
-
-    def my_func(x: int, y: str) -> bool:
-      return True
-
-    # Clear cache first to have predictable results
-    _get_type_hints_for_unwrapped.cache_clear()
-
-    hints1 = _get_type_hints_cached(my_func)
-    assert hints1 == {'x': int, 'y': str, 'return': bool}
-
-    # Call again, should hit cache
-    hints2 = _get_type_hints_cached(my_func)
-    assert hints2 == {'x': int, 'y': str, 'return': bool}
-    assert _get_type_hints_for_unwrapped.cache_info().hits == 1
-
-    # Test partial
-    import functools
-
-    partial_func = functools.partial(my_func, x=1)
-    hints3 = _get_type_hints_cached(partial_func)
-    # Partial should unwrap to my_func and hit cache!
-    assert hints3 == {'x': int, 'y': str, 'return': bool}
-    assert _get_type_hints_for_unwrapped.cache_info().hits == 2
-
-    # Test callable object
-    class MyCallable:
-
-      def __call__(self, z: float) -> None:
-        pass
-
-    obj = MyCallable()
-    hints4 = _get_type_hints_cached(obj)
-    assert hints4 == {'z': float, 'return': type(None)}
-
 
 @pytest.mark.asyncio
 async def test_function_node_wrapped_partial(request: pytest.FixtureRequest):
@@ -1782,3 +1744,74 @@ async def test_function_node_wrapped_partial(request: pytest.FixtureRequest):
           {'output': 'Hello from AsyncCoro'},
       ),
   ]
+
+
+def test_function_node_undocumented_description_is_empty():
+  """Undocumented function gets empty string description on FunctionNode."""
+
+  def undocumented_fn():
+    pass
+
+  def documented_fn():
+    """Some documentation."""
+    pass
+
+  undoc_node = FunctionNode(func=undocumented_fn)
+  doc_node = FunctionNode(func=documented_fn)
+
+  assert undoc_node.description == ''
+  assert doc_node.description == 'Some documentation.'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('allow_int', [False, True])
+async def test_function_node_pipe_union_str_coerces_content(
+    request: pytest.FixtureRequest,
+    allow_int: bool,
+) -> None:
+  """FunctionNode with pipe union containing str coerces Content to str."""
+  if allow_int:
+
+    def process_fn(node_input: str | int) -> str:
+      return f'val:{node_input}'
+
+  else:
+
+    def process_fn(node_input: str | None) -> str:
+      return f'val:{node_input}'
+
+  wf = Workflow(name='pipe_wf', edges=[(START, process_fn)])
+  app = App(name=request.function.__name__, root_agent=wf)
+  runner = testing_utils.InMemoryRunner(app=app)
+  events = await runner.run_async(testing_utils.get_user_content('hello pipe'))
+  outputs = [e.output for e in events if e.node_info and e.output is not None]
+  assert outputs == ['val:hello pipe']
+
+
+@pytest.mark.asyncio
+async def test_function_node_directly_after_start_coerces_json_content(
+    request: pytest.FixtureRequest,
+) -> None:
+  """FunctionNode after START coerces JSON Content into list[BaseModel]."""
+
+  class _Item(BaseModel):
+    id: int
+
+  def process_items(node_input: list[_Item]) -> list[int]:
+    return [item.id * 10 for item in node_input]
+
+  agent = Workflow(name='fn_json_coercion', edges=[(START, process_items)])
+  app = App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(
+      testing_utils.get_user_content('[{"id": 1}, {"id": 2}]')
+  )
+  outputs = [
+      e.output
+      for e in events
+      if e.node_info
+      and e.node_info.path == 'fn_json_coercion@1/process_items@1'
+      and e.output is not None
+  ]
+  assert outputs == [[10, 20]]

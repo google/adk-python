@@ -16,8 +16,6 @@
 
 from __future__ import annotations
 
-"""Utilities for ADK workflows."""
-
 from collections.abc import Mapping
 from typing import Any
 from typing import TYPE_CHECKING
@@ -32,6 +30,7 @@ from ...auth.auth_tool import AuthToolArguments
 from ...events.event import Event
 from ...events.request_input import RequestInput
 from ...utils._schema_utils import schema_to_json_schema
+from .._errors import WorkflowDataError
 
 if TYPE_CHECKING:
   from ...auth.auth_credential import AuthCredential
@@ -39,9 +38,6 @@ if TYPE_CHECKING:
 
 REQUEST_INPUT_FUNCTION_CALL_NAME = 'adk_request_input'
 REQUEST_CREDENTIAL_FUNCTION_CALL_NAME = 'adk_request_credential'
-
-_RESULT_KEY = 'result'
-"""Key used to wrap non-dict values in a FunctionResponse dict."""
 
 
 def create_request_input_event(request_input: RequestInput) -> Event:
@@ -163,27 +159,6 @@ def _build_auth_message(auth_config: AuthConfig) -> str:
   return 'Please provide your authentication credentials.'
 
 
-def _without_client_secret(auth_config: AuthConfig) -> AuthConfig:
-  """Returns a copy of the auth config with the OAuth client secret removed.
-
-  The auth request is handed to the caller, which needs the authorization uri
-  and the state to complete the flow but never the developer's client secret.
-  The secret stays on this side and is supplied again when the response comes
-  back.
-
-  Args:
-    auth_config: The auth configuration for the node.
-  """
-  without_secret = auth_config.model_copy(deep=True)
-  for credential in (
-      without_secret.raw_auth_credential,
-      without_secret.exchanged_auth_credential,
-  ):
-    if credential and credential.oauth2:
-      credential.oauth2.client_secret = None
-  return without_secret
-
-
 def create_auth_request_event(
     auth_config: AuthConfig,
     interrupt_id: str,
@@ -211,7 +186,7 @@ def create_auth_request_event(
     state[_oauth_state_key(interrupt_id)] = generated_credential.oauth2.state
   args = AuthToolArguments(
       function_call_id=interrupt_id,
-      auth_config=_without_client_secret(auth_request),
+      auth_config=auth_request,
   ).model_dump(mode='json', exclude_none=True, by_alias=True)
 
   # Add message so the UI / CLI knows what to display.
@@ -288,8 +263,8 @@ async def process_auth_resume(
     interrupt_id: The interrupt ID of the auth request being resumed.
 
   Raises:
-    ValueError: If the response does not carry back the OAuth state that was
-      generated for this auth request.
+    WorkflowDataError: If the response does not carry back the OAuth state that
+      was generated for this auth request.
   """
   try:
     exchanged_credential = AuthConfig.model_validate(
@@ -304,7 +279,7 @@ async def process_auth_resume(
   if generated_state is not None:
     oauth2 = exchanged_credential.oauth2 if exchanged_credential else None
     if not oauth2 or oauth2.state != generated_state:
-      raise ValueError(
+      raise WorkflowDataError(
           'The auth response does not carry back the state generated for this'
           ' auth request. Return the auth config from the credential request'
           ' with the authorization result filled in.'
@@ -312,22 +287,6 @@ async def process_auth_resume(
 
   resumed_config = auth_config.model_copy(deep=True)
   resumed_config.exchanged_auth_credential = exchanged_credential
-
-  # The client secret is never handed out with the request, so the response
-  # cannot carry it back; the node's own credential supplies it for the token
-  # exchange.
-  raw_oauth2 = (
-      resumed_config.raw_auth_credential.oauth2
-      if resumed_config.raw_auth_credential
-      else None
-  )
-  exchanged_oauth2 = (
-      resumed_config.exchanged_auth_credential.oauth2
-      if resumed_config.exchanged_auth_credential
-      else None
-  )
-  if raw_oauth2 and raw_oauth2.client_secret and exchanged_oauth2:
-    exchanged_oauth2.client_secret = raw_oauth2.client_secret
 
   await AuthHandler(auth_config=resumed_config).parse_and_store_auth_response(
       state=state

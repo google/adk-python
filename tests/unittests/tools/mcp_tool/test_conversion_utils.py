@@ -25,6 +25,8 @@ from google.genai import types
 import mcp.types as mcp_types
 import pytest
 
+from ._sdk_compat import field
+
 
 class TestAdkToMcpToolType:
   """Tests for adk_to_mcp_tool_type function."""
@@ -41,7 +43,7 @@ class TestAdkToMcpToolType:
     assert isinstance(result, mcp_types.Tool)
     assert result.name == "test_tool"
     assert result.description == "Test tool"
-    assert result.inputSchema == {}
+    assert field(result, "inputSchema") == {}
 
   def test_tool_with_parameters_schema(self):
     """Test conversion when tool has parameters Schema object."""
@@ -74,14 +76,17 @@ class TestAdkToMcpToolType:
     assert isinstance(result, mcp_types.Tool)
     assert result.name == "get_weather"
     assert result.description == "Gets weather information"
-    assert "type" in result.inputSchema
-    assert result.inputSchema["type"] == "object"
-    assert "properties" in result.inputSchema
-    assert "location" in result.inputSchema["properties"]
-    assert "units" in result.inputSchema["properties"]
-    assert result.inputSchema["properties"]["location"]["type"] == "string"
-    assert "required" in result.inputSchema
-    assert "location" in result.inputSchema["required"]
+    assert "type" in field(result, "inputSchema")
+    assert field(result, "inputSchema")["type"] == "object"
+    assert "properties" in field(result, "inputSchema")
+    assert "location" in field(result, "inputSchema")["properties"]
+    assert "units" in field(result, "inputSchema")["properties"]
+    assert (
+        field(result, "inputSchema")["properties"]["location"]["type"]
+        == "string"
+    )
+    assert "required" in field(result, "inputSchema")
+    assert "location" in field(result, "inputSchema")["required"]
 
   def test_tool_with_parameters_json_schema(self):
     """Test conversion when tool has parameters_json_schema."""
@@ -117,7 +122,7 @@ class TestAdkToMcpToolType:
     assert result.name == "search_database"
     assert result.description == "Searches a database"
     # Should use the JSON schema directly
-    assert result.inputSchema == json_schema
+    assert field(result, "inputSchema") == json_schema
 
   def test_tool_with_no_parameters(self):
     """Test conversion when tool has declaration but no parameters."""
@@ -136,7 +141,7 @@ class TestAdkToMcpToolType:
     assert isinstance(result, mcp_types.Tool)
     assert result.name == "get_current_time"
     assert result.description == "Gets the current time"
-    assert not result.inputSchema
+    assert not field(result, "inputSchema")
 
   def test_tool_prefers_json_schema_over_parameters(self):
     """Test that parameters_json_schema is preferred over parameters."""
@@ -168,9 +173,9 @@ class TestAdkToMcpToolType:
     result = adk_to_mcp_tool_type(mock_tool)
 
     # Should use parameters_json_schema, not parameters
-    assert result.inputSchema == json_schema
-    assert "json_param" in result.inputSchema["properties"]
-    assert "schema_param" not in result.inputSchema["properties"]
+    assert field(result, "inputSchema") == json_schema
+    assert "json_param" in field(result, "inputSchema")["properties"]
+    assert "schema_param" not in field(result, "inputSchema")["properties"]
 
   def test_tool_with_complex_nested_schema(self):
     """Test conversion with complex nested parameters_json_schema."""
@@ -208,7 +213,7 @@ class TestAdkToMcpToolType:
     result = adk_to_mcp_tool_type(mock_tool)
 
     assert isinstance(result, mcp_types.Tool)
-    assert result.inputSchema == json_schema
+    assert field(result, "inputSchema") == json_schema
 
 
 class TestGeminiToJsonSchema:

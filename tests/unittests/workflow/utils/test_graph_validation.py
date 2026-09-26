@@ -18,6 +18,7 @@ import logging
 
 from google.adk.workflow import Edge
 from google.adk.workflow import START
+from google.adk.workflow._errors import GraphValidationError
 from google.adk.workflow._graph import DEFAULT_ROUTE
 from google.adk.workflow._graph import Graph
 from google.adk.workflow.utils._graph_validation import validate_graph
@@ -91,14 +92,16 @@ def test_disconnected_routed_subgraph_is_unreachable() -> None:
     [
         (None, None),
         ('route1', 'route1'),
-        ('route1', 'route2'),
         ('route1', None),
+        (None, 'route1'),
+        (['route1', 'route2'], 'route2'),
+        (['route1', 'route2'], ['route2', 'route3']),
     ],
 )
 def test_duplicate_edges_fail_validation(
-    routes: tuple[str | None, str | None],
+    routes: tuple[str | list[str] | None, str | list[str] | None],
 ) -> None:
-  """Tests that duplicate edges fail validation, regardless of routes."""
+  """Tests that duplicate edges (overlapping or unconditional) fail validation."""
   node_a = TestingNode(name='NodeA')
   node_b = TestingNode(name='NodeB')
   graph = Graph(
@@ -141,6 +144,39 @@ def test_routed_start_edge_fails_validation() -> None:
     validate_graph(graph.nodes, graph.edges)
 
 
+@pytest.mark.parametrize(
+    'routes',
+    [
+        ('route1', 'route2'),
+        (['route1', 'route2'], 'route3'),
+        (['route1', 'route2'], ['route3', 'route4']),
+    ],
+)
+def test_disjoint_routed_edges_pass_validation(
+    routes: tuple[str | list[str] | None, str | list[str] | None],
+) -> None:
+  """Tests that edges to same target with disjoint routes pass validation."""
+  node_a = TestingNode(name='NodeA')
+  node_b = TestingNode(name='NodeB')
+  graph = Graph(
+      edges=[
+          Edge(from_node=START, to_node=node_a),
+          Edge(
+              from_node=node_a,
+              to_node=node_b,
+              route=routes[0],
+          ),
+          Edge(
+              from_node=node_a,
+              to_node=node_b,
+              route=routes[1],
+          ),
+      ],
+  )
+  # Should not raise
+  validate_graph(graph.nodes, graph.edges)
+
+
 def test_start_node_with_incoming_edge() -> None:
   """Tests graph with incoming edge to START node fails validation."""
   node_a = TestingNode(name='NodeA')
@@ -159,8 +195,8 @@ def test_start_node_with_incoming_edge() -> None:
     validate_graph(graph.nodes, graph.edges)
 
 
-def test_multiple_default_routes_fail_validation() -> None:
-  """Tests that multiple DEFAULT_ROUTE edges from a node fail validation."""
+def test_multiple_default_routes_pass_validation() -> None:
+  """Tests that a node may fan out over several DEFAULT_ROUTE edges."""
   node_a = TestingNode(name='NodeA')
   node_b = TestingNode(name='NodeB')
   node_c = TestingNode(name='NodeC')
@@ -171,11 +207,28 @@ def test_multiple_default_routes_fail_validation() -> None:
           Edge(from_node=node_a, to_node=node_c, route=DEFAULT_ROUTE),
       ],
   )
+  validate_graph(graph.nodes, graph.edges)  # Should not raise
+
+
+def test_default_route_combined_with_other_routes_fails_validation() -> None:
+  """Tests that DEFAULT_ROUTE in a route list still fails validation."""
+  node_a = TestingNode(name='NodeA')
+  node_b = TestingNode(name='NodeB')
+  graph = Graph(
+      edges=[
+          Edge(from_node=START, to_node=node_a),
+          Edge(
+              from_node=node_a,
+              to_node=node_b,
+              route=['another_route', DEFAULT_ROUTE],
+          ),
+      ],
+  )
   with pytest.raises(
       ValueError,
       match=(
-          r'Graph validation failed\. Multiple DEFAULT_ROUTE edges found from'
-          r' node NodeA to NodeB and NodeC'
+          r'Graph validation failed\. DEFAULT_ROUTE cannot be combined with'
+          r' other routes in a list'
       ),
   ):
     validate_graph(graph.nodes, graph.edges)
@@ -388,3 +441,15 @@ def test_chat_agent_wiring_validation_only_runs_on_llm_agent() -> None:
   validate_graph(
       graph.nodes, graph.edges
   )  # Should not raise because node_b is a TestingNode, not LlmAgent
+
+
+def test_validation_failures_are_graph_validation_errors() -> None:
+  """The specific type is catchable, and still catchable as a ValueError."""
+  node_a = TestingNode(name='NodeA')
+  node_b = TestingNode(name='NodeB')
+  graph = Graph(edges=[Edge(from_node=node_a, to_node=node_b)])  # no START
+
+  with pytest.raises(GraphValidationError):
+    validate_graph(graph.nodes, graph.edges)
+  with pytest.raises(ValueError):
+    validate_graph(graph.nodes, graph.edges)

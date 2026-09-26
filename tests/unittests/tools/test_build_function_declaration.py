@@ -14,6 +14,7 @@
 
 from enum import Enum
 from enum import IntEnum
+from typing import Annotated
 from typing import Any
 
 from google.adk.features import FeatureName
@@ -26,6 +27,7 @@ from google.genai import types
 # TODO: crewai requires python 3.10 as minimum
 # from crewai_tools import FileReadTool
 from pydantic import BaseModel
+from pydantic import Field
 import pytest
 
 
@@ -104,7 +106,7 @@ class TestBuildFunctionDeclarationLegacy:
       return {'result': input_str}
 
     function_decl = _automatic_function_calling_util.build_function_declaration(
-        func=simple_function
+        func=simple_function, variant=GoogleLLMVariant.VERTEX_AI
     )
 
     assert function_decl.name == 'simple_function'
@@ -122,7 +124,7 @@ class TestBuildFunctionDeclarationLegacy:
       return {'result': input_str}
 
     function_decl = _automatic_function_calling_util.build_function_declaration(
-        func=simple_function
+        func=simple_function, variant=GoogleLLMVariant.VERTEX_AI
     )
 
     assert function_decl.name == 'simple_function'
@@ -140,7 +142,7 @@ class TestBuildFunctionDeclarationLegacy:
       return {'result': input_str}
 
     function_decl = _automatic_function_calling_util.build_function_declaration(
-        func=simple_function
+        func=simple_function, variant=GoogleLLMVariant.VERTEX_AI
     )
 
     assert function_decl.name == 'simple_function'
@@ -152,6 +154,34 @@ class TestBuildFunctionDeclarationLegacy:
         ].additional_properties.type
         is None
     )
+
+  def test_dict_input_omits_additional_properties_on_google_ai(self):
+    """Google AI rejects a declaration that carries additional_properties."""
+
+    def simple_function(input_str: dict[str, str]) -> str:
+      return str(input_str)
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=simple_function, variant=GoogleLLMVariant.GEMINI_API
+    )
+
+    schema = function_decl.parameters.properties['input_str']
+    assert schema.type == 'OBJECT'
+    assert schema.additional_properties is None
+
+  def test_list_of_dict_input_omits_additional_properties_on_google_ai(self):
+    """The dict nested inside a list is declared the same way."""
+
+    def simple_function(fruits: list[dict[str, str]]) -> str:
+      return str(fruits)
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=simple_function, variant=GoogleLLMVariant.GEMINI_API
+    )
+
+    schema = function_decl.parameters.properties['fruits'].items
+    assert schema.type == 'OBJECT'
+    assert schema.additional_properties is None
 
   def test_untyped_dict_input(self):
     def simple_function(input_str: dict) -> str:
@@ -176,7 +206,7 @@ class TestBuildFunctionDeclarationLegacy:
       return str(fruits)
 
     function_decl = _automatic_function_calling_util.build_function_declaration(
-        func=simple_function
+        func=simple_function, variant=GoogleLLMVariant.VERTEX_AI
     )
 
     assert function_decl.name == 'simple_function'
@@ -390,7 +420,7 @@ class TestBuildFunctionDeclarationLegacy:
       return {'result': input_str}
 
     function_decl = _automatic_function_calling_util.build_function_declaration(
-        func=simple_function
+        func=simple_function, variant=GoogleLLMVariant.VERTEX_AI
     )
 
     assert function_decl.name == 'simple_function'
@@ -670,6 +700,22 @@ class TestBuildFunctionDeclarationLegacy:
     assert function_decl.name == 'Calc'
     assert function_decl.response is not None
 
+  def test_annotated_field_metadata_preserved(self):
+    """Test Annotated[T, Field(...)] metadata reaches the schema."""
+
+    def legacy_annotated_function(
+        count: Annotated[int, Field(description='How many widgets', ge=1)],
+    ) -> str:
+      return str(count)
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=legacy_annotated_function
+    )
+
+    count_schema = function_decl.parameters.properties['count']
+    assert count_schema.description == 'How many widgets'
+    assert count_schema.minimum == 1
+
 
 class TestBuildFunctionDeclarationWithJsonSchema:
   """Tests for build_function_declaration when JSON_SCHEMA_FOR_FUNC_DECL is enabled."""
@@ -939,6 +985,22 @@ class TestBuildFunctionDeclarationWithJsonSchema:
     schema = decl.parameters_json_schema
     assert schema['properties']['name']['default'] == 'World'
     assert 'name' not in schema.get('required', [])
+
+  def test_annotated_field_metadata_preserved(self):
+    """Test Annotated[T, Field(...)] metadata reaches the schema."""
+
+    def json_schema_annotated_function(
+        count: Annotated[int, Field(description='How many widgets', ge=1)],
+    ) -> str:
+      return str(count)
+
+    function_decl = _automatic_function_calling_util.build_function_declaration(
+        func=json_schema_annotated_function
+    )
+
+    count_schema = function_decl.parameters_json_schema['properties']['count']
+    assert count_schema['description'] == 'How many widgets'
+    assert count_schema['minimum'] == 1
 
 
 class TestBuildFunctionDeclarationFromSchemaDict:

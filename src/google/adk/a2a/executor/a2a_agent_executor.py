@@ -289,11 +289,15 @@ class A2aAgentExecutor(AgentExecutor):
           metadata=final_metadata,
       )
     else:
+      final_state = task_result_aggregator.task_state
+      # A run that ends without failing or pausing has completed.
+      if final_state == _compat.TS_WORKING:
+        final_state = _compat.TS_COMPLETED
       final_event = _compat.make_task_status_update_event(
           task_id=task_id,
           context_id=context_id,
           status=_compat.make_task_status(
-              task_result_aggregator.task_state,
+              final_state,
               message=task_result_aggregator.task_status_message,
           ),
           final=True,
