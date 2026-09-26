@@ -144,6 +144,8 @@ class DiscoveryEngineSearchTool(FunctionTool):
       *,
       search_result_mode: Optional[SearchResultMode] = None,
       location: Optional[str] = None,
+      name: Optional[str] = None,
+      description: Optional[str] = None,
   ):
     """Initializes the DiscoveryEngineSearchTool.
 
@@ -164,8 +166,16 @@ class DiscoveryEngineSearchTool(FunctionTool):
       location: Optional endpoint location override.
         Examples: "global", "us", "eu". If not specified, location is inferred
           from `data_store_id` or `search_engine_id` and defaults to "global".
+      name: Optional custom name for the tool. Defaults to
+        "discovery_engine_search".
+      description: Optional custom description for the tool. Defaults to
+        the docstring of discovery_engine_search.
     """
     super().__init__(self.discovery_engine_search)
+    if name:
+      self.name = name
+    if description:
+      self.description = description
     if (data_store_id is None and search_engine_id is None) or (
         data_store_id is not None and search_engine_id is not None
     ):
