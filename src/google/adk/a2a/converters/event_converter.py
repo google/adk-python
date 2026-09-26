@@ -483,6 +483,29 @@ def _create_error_status_event(
   )
 
 
+def is_long_running_part(p: Any) -> bool:
+  """Returns True if the A2A part is a long-running function call."""
+  m = _compat.part_metadata(p)
+  if not m:
+    return False
+  return (
+      m.get(_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY))
+      == A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
+      and m.get(
+          _get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY)
+      )
+      is True
+  )
+
+
+def is_euc_part(p: Any) -> bool:
+  """Returns True if the A2A part is a long-running EUC request call."""
+  if not is_long_running_part(p):
+    return False
+  data = _compat.data_part_dict(p) if _compat.is_data_part(p) else {}
+  return data.get("name") == REQUEST_EUC_FUNCTION_CALL_NAME
+
+
 def _create_status_update_event(
     message: Message,
     invocation_context: InvocationContext,
@@ -504,37 +527,9 @@ def _create_status_update_event(
   """
   status = _compat.make_task_status(_compat.TS_WORKING, message=message)
 
-  def is_euc_call(p: Any) -> bool:
-    m = _compat.part_metadata(p)
-    if not m:
-      return False
-    data = _compat.data_part_dict(p) if _compat.is_data_part(p) else {}
-    return (
-        m.get(_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY))
-        == A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
-        and m.get(
-            _get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY)
-        )
-        is True
-        and data.get("name") == REQUEST_EUC_FUNCTION_CALL_NAME
-    )
-
-  def is_long_running_call(p: Any) -> bool:
-    m = _compat.part_metadata(p)
-    if not m:
-      return False
-    return (
-        m.get(_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY))
-        == A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
-        and m.get(
-            _get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY)
-        )
-        is True
-    )
-
-  if any(is_euc_call(part) for part in message.parts):
+  if any(is_euc_part(part) for part in message.parts):
     status.state = _compat.TS_AUTH_REQUIRED
-  elif any(is_long_running_call(part) for part in message.parts):
+  elif any(is_long_running_part(part) for part in message.parts):
     status.state = _compat.TS_INPUT_REQUIRED
 
   return _compat.make_task_status_update_event(

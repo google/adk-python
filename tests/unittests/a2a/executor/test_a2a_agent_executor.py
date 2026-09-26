@@ -34,6 +34,7 @@ from google.adk.events.event import Event
 from google.adk.runners import RunConfig
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.tools.function_tool import FunctionTool
 from google.genai import types
 from google.genai.types import Content
 from google.genai.types import Part
@@ -1476,3 +1477,75 @@ class TestA2aAgentExecutor:
     else:
       assert part_dict.name == "finish_task"
       assert part_dict.response == {"result": "Task completed."}
+
+  @pytest.mark.asyncio
+  async def test_handle_request_sends_long_running_call_once(self) -> None:
+    """A require_confirmation call must reach the queue exactly once.
+
+    Regression test for https://github.com/google/adk-python/issues/7247:
+    the legacy executor streamed the adk_request_confirmation call as a
+    masked WORKING update and then repeated it in the terminal
+    INPUT_REQUIRED event, so callers observed it twice.
+    """
+
+    def gated_tool() -> dict:
+      return {"status": "ok"}
+
+    context = Mock(spec=RequestContext)
+    context.task_id = "task-004"
+    context.context_id = "ctx-004"
+    context.current_task = None
+    context.call_context = None
+    context.metadata = None
+    context.requested_extensions = []
+    context.message = Message(
+        message_id="msg-004",
+        role=_compat.ROLE_USER,
+        parts=[_compat.make_text_part("do the gated thing")],
+    )
+
+    session_service = InMemorySessionService()
+    agent = LlmAgent(
+        name="gated_agent",
+        model=testing_utils.MockModel.create(
+            responses=[Part.from_function_call(name="gated_tool", args={})]
+        ),
+        tools=[FunctionTool(func=gated_tool, require_confirmation=True)],
+    )
+    runner = Runner(
+        app_name="test-app", agent=agent, session_service=session_service
+    )
+
+    executor = A2aAgentExecutor(runner=runner)
+
+    event_queue = Mock(spec=EventQueue)
+    enqueued_events = []
+
+    async def mock_enqueue_event(event):
+      enqueued_events.append(event)
+
+    event_queue.enqueue_event = AsyncMock(side_effect=mock_enqueue_event)
+
+    await executor.execute(context, event_queue)
+
+    def _confirmation_call_occurrences(events):
+      occurrences = 0
+      for e in events:
+        message = getattr(getattr(e, "status", None), "message", None)
+        if message is None:
+          continue
+        for part in message.parts:
+          if not _compat.is_data_part(part):
+            continue
+          if (
+              _compat.data_part_dict(part).get("name")
+              == "adk_request_confirmation"
+          ):
+            occurrences += 1
+      return occurrences
+
+    assert _confirmation_call_occurrences(enqueued_events) == 1
+
+    final_events = _final_events(event_queue.enqueue_event.call_args_list)
+    assert len(final_events) >= 1
+    assert final_events[-1].status.state == _compat.TS_INPUT_REQUIRED
