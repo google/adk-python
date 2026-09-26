@@ -729,6 +729,7 @@ class TestMCPTool:
           "adk_request_credential",
           "adk_request_confirmation",
           "adk_request_input",
+          "set_model_response",
           "transfer_to_agent",
       ],
   )
