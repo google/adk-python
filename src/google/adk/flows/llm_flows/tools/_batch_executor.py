@@ -190,7 +190,9 @@ async def _gather_or_cancel(tasks: list[asyncio.Task[_T]]) -> list[_T]:
   """Awaits every task, cancelling the rest as soon as one of them fails."""
   try:
     return list(await asyncio.gather(*tasks))
-  except Exception:
+  except (Exception, asyncio.CancelledError):
+    # CancelledError is BaseException, so Exception alone would leave
+    # siblings running after a child-originated cancellation.
     for t in tasks:
       if not t.done():
         t.cancel()

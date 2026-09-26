@@ -185,6 +185,77 @@ async def test_gather_or_cancel_cancels_siblings_on_failure() -> None:
   assert cancelled
 
 
+@pytest.mark.asyncio
+async def test_gather_or_cancel_cancels_siblings_on_cancelled_error() -> None:
+  """A child-raised CancelledError cancels unfinished sibling tasks."""
+  started = asyncio.Event()
+  sibling_cancelled = False
+  sibling_finished = False
+
+  async def failing_worker() -> None:
+    await started.wait()
+    raise asyncio.CancelledError()
+
+  async def slow_worker() -> None:
+    nonlocal sibling_cancelled, sibling_finished
+    started.set()
+    try:
+      await asyncio.sleep(10)
+      sibling_finished = True
+    except asyncio.CancelledError:
+      sibling_cancelled = True
+      raise
+
+  tasks = [
+      asyncio.create_task(failing_worker()),
+      asyncio.create_task(slow_worker()),
+  ]
+  with pytest.raises(asyncio.CancelledError):
+    await _batch_tool_executor._gather_or_cancel(tasks)
+
+  assert sibling_cancelled
+  assert not sibling_finished
+  assert all(t.done() for t in tasks)
+
+
+@pytest.mark.asyncio
+async def test_gather_or_cancel_cancels_siblings_when_child_cancels_itself() -> (
+    None
+):
+  """A child that cancels its own task still tears down unfinished siblings."""
+  started = asyncio.Event()
+  sibling_cancelled = False
+  sibling_finished = False
+
+  async def self_cancelling_worker() -> None:
+    await started.wait()
+    task = asyncio.current_task()
+    assert task is not None
+    task.cancel()
+    await asyncio.sleep(0)
+
+  async def slow_worker() -> None:
+    nonlocal sibling_cancelled, sibling_finished
+    started.set()
+    try:
+      await asyncio.sleep(10)
+      sibling_finished = True
+    except asyncio.CancelledError:
+      sibling_cancelled = True
+      raise
+
+  tasks = [
+      asyncio.create_task(self_cancelling_worker()),
+      asyncio.create_task(slow_worker()),
+  ]
+  with pytest.raises(asyncio.CancelledError):
+    await _batch_tool_executor._gather_or_cancel(tasks)
+
+  assert sibling_cancelled
+  assert not sibling_finished
+  assert all(t.done() for t in tasks)
+
+
 _probe: contextvars.ContextVar[str] = contextvars.ContextVar(
     'probe', default='unset'
 )
