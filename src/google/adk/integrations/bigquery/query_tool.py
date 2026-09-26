@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import collections
 import functools
 import json
@@ -928,7 +929,7 @@ def get_execute_sql(
   return _EXECUTE_SQL_WRITE_MODE
 
 
-def forecast(
+async def forecast(
     project_id: str,
     history_data: str,
     timestamp_col: str,
@@ -1127,7 +1128,8 @@ def forecast(
     confidence_level => {confidence_level}
   )
   """
-  return _execute_sql(
+  return await asyncio.to_thread(
+      _execute_sql,
       project_id=project_id,
       query=query,
       credentials=credentials,
@@ -1137,7 +1139,7 @@ def forecast(
   )
 
 
-def analyze_contribution(
+async def analyze_contribution(
     project_id: str,
     input_data: str,
     contribution_metric: str,
@@ -1341,7 +1343,8 @@ def analyze_contribution(
           update={"write_mode": WriteMode.PROTECTED}
       )
 
-    result = _execute_sql(
+    result = await asyncio.to_thread(
+        _execute_sql,
         project_id=project_id,
         query=create_model_query,
         credentials=credentials,
@@ -1352,7 +1355,8 @@ def analyze_contribution(
     if result["status"] != "SUCCESS":
       return result
 
-    result = _execute_sql(
+    result = await asyncio.to_thread(
+        _execute_sql,
         project_id=project_id,
         query=get_insights_query,
         credentials=credentials,
@@ -1369,7 +1373,7 @@ def analyze_contribution(
   return result
 
 
-def detect_anomalies(
+async def detect_anomalies(
     project_id: str,
     history_data: str,
     times_series_timestamp_col: str,
@@ -1634,7 +1638,8 @@ def detect_anomalies(
           update={"write_mode": WriteMode.PROTECTED}
       )
 
-    result = _execute_sql(
+    result = await asyncio.to_thread(
+        _execute_sql,
         project_id=project_id,
         query=create_model_query,
         credentials=credentials,
@@ -1645,7 +1650,8 @@ def detect_anomalies(
     if result["status"] != "SUCCESS":
       return result
 
-    result = _execute_sql(
+    result = await asyncio.to_thread(
+        _execute_sql,
         project_id=project_id,
         query=anomaly_detection_query,
         credentials=credentials,
