@@ -76,6 +76,24 @@ def snake_to_lower_camel(snake_case_string: str):
   ])
 
 
+def _to_param_string(value: Any) -> Any:
+  """Serializes a header or cookie parameter value for httpx.
+
+  httpx serializes query values itself but rejects anything other than a string
+  for a header or cookie, so an integer or boolean parameter declared by the
+  spec would fail the whole tool call. Numbers are stringified, booleans use
+  their JSON spelling and arrays are comma-joined, matching OpenAPI's default
+  serialization. Other values, such as strings, are returned unchanged.
+  """
+  if isinstance(value, bool):
+    return "true" if value else "false"
+  if isinstance(value, (int, float)):
+    return str(value)
+  if isinstance(value, list):
+    return ",".join(str(_to_param_string(item)) for item in value)
+  return value
+
+
 HttpxClientFactory = Callable[[], httpx.AsyncClient]
 """Type alias for a zero-argument factory returning an ``httpx.AsyncClient``.
 
@@ -453,9 +471,9 @@ class RestApiTool(BaseTool):
         if v is not None:
           query_params[original_k] = v
       elif param_location == "header":
-        header_params[original_k] = v
+        header_params[original_k] = _to_param_string(v)
       elif param_location == "cookie":
-        cookie_params[original_k] = v
+        cookie_params[original_k] = _to_param_string(v)
 
     # Construct URL
     base_url = self.endpoint.base_url or ""

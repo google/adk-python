@@ -2038,6 +2038,59 @@ class TestRestApiTool:
 
     assert request_params["cookies"]["session_id"] == "cookie_value"
 
+  @pytest.mark.parametrize(
+      "value, expected",
+      [
+          (50, "50"),
+          (1.5, "1.5"),
+          (True, "true"),
+          (False, "false"),
+          (["a", "b", 3], "a,b,3"),
+          ("already-a-string", "already-a-string"),
+      ],
+  )
+  def test_prepare_request_params_serializes_header_and_cookie_values(
+      self,
+      sample_endpoint,
+      sample_operation,
+      value,
+      expected,
+  ):
+    """httpx rejects non-string header and cookie values."""
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+    )
+    params = [
+        ApiParameter(
+            original_name="X-Page-Size",
+            py_name="x_page_size",
+            param_location="header",
+            param_schema=OpenAPISchema(type="integer"),
+        ),
+        ApiParameter(
+            original_name="page_size",
+            py_name="page_size",
+            param_location="cookie",
+            param_schema=OpenAPISchema(type="integer"),
+        ),
+    ]
+    kwargs = {"x_page_size": value, "page_size": value}
+
+    request_params = tool._prepare_request_params(params, kwargs)
+
+    assert request_params["headers"]["X-Page-Size"] == expected
+    assert request_params["cookies"]["page_size"] == expected
+    # The values must be accepted by httpx when the request is built.
+    httpx.Request(
+        request_params["method"],
+        request_params["url"],
+        headers=request_params["headers"],
+        cookies=request_params["cookies"],
+    )
+
   def test_prepare_request_params_quota_project_id(
       self,
       sample_endpoint,
