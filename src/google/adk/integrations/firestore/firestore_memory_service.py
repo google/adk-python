@@ -15,6 +15,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
+from collections.abc import Sequence
+import hashlib
 import logging
 import re
 from typing import Optional
@@ -32,12 +35,25 @@ from ._stop_words import DEFAULT_STOP_WORDS
 if TYPE_CHECKING:
   from google.cloud import firestore
 
+  from ...events.event import Event
   from ...sessions.session import Session
 
 logger = logging.getLogger("google_adk." + __name__)
 
 DEFAULT_EVENTS_COLLECTION = "events"
 DEFAULT_MEMORIES_COLLECTION = "memories"
+
+
+def _memory_doc_id(
+    *, app_name: str, user_id: str, session_id: Optional[str], event_id: str
+) -> str:
+  """Returns a stable memory document ID for an event.
+
+  Hashed because app names and user IDs may contain characters that are not
+  allowed in document IDs, such as "/".
+  """
+  key = "\x00".join((app_name, user_id, session_id or "", event_id))
+  return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
 class FirestoreMemoryService(BaseMemoryService):  # type: ignore[misc]
@@ -82,10 +98,50 @@ class FirestoreMemoryService(BaseMemoryService):  # type: ignore[misc]
   @override
   async def add_session_to_memory(self, session: Session) -> None:
     """Extracts keywords from session events and stores them in the memories collection."""
+    await self._write_memories(
+        app_name=session.app_name,
+        user_id=session.user_id,
+        session_id=session.id,
+        events=session.events,
+    )
+
+  @override
+  async def add_events_to_memory(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      events: Sequence[Event],
+      session_id: Optional[str] = None,
+      custom_metadata: Optional[Mapping[str, object]] = None,
+  ) -> None:
+    """Adds events, such as the latest turn, to the memories collection.
+
+    Re-adding an event with the same session ID overwrites its entry. The
+    session ID is part of that entry's ID, so an event added without one and
+    later added with one is stored twice; `search_memory` returns one copy.
+    """
+    _ = custom_metadata
+    await self._write_memories(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        events=events,
+    )
+
+  async def _write_memories(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: Optional[str],
+      events: Sequence[Event],
+  ) -> None:
+    """Writes one memory document per event that has text keywords."""
     batch = self.client.batch()
     count = 0
 
-    for event in session.events:
+    for event in events:
       if not event.content or not event.content.parts:
         continue
 
@@ -97,12 +153,20 @@ class FirestoreMemoryService(BaseMemoryService):  # type: ignore[misc]
       if not keywords:
         continue
 
-      doc_ref = self.client.collection(self.memories_collection).document()
+      doc_ref = self.client.collection(self.memories_collection).document(
+          _memory_doc_id(
+              app_name=app_name,
+              user_id=user_id,
+              session_id=session_id,
+              event_id=event.id,
+          )
+      )
       batch.set(
           doc_ref,
           {
-              "appName": session.app_name,
-              "userId": session.user_id,
+              "appName": app_name,
+              "userId": user_id,
+              "sessionId": session_id,
               "keywords": list(keywords),
               "author": event.author,
               "content": event.content.model_dump(
