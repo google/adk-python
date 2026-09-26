@@ -255,3 +255,82 @@ async def test_before_model_callback_formats_list_system_instruction(
   out = capsys.readouterr().out
   assert 'Stay concise.' in out
   assert 'Cite sources.' in out
+
+
+@pytest.mark.parametrize(
+    ('limit', 'as_content', 'expected'),
+    [
+        (0, False, '...'),
+        (0, True, '...'),
+        (250, False, 'a' * 250),
+        (250, True, "text: '" + 'a' * 243 + '...'),
+        (500, False, 'a' * 250),
+        (500, True, "text: '" + 'a' * 250 + "'"),
+        (None, False, 'a' * 250),
+        (None, True, "text: '" + 'a' * 250 + "'"),
+    ],
+)
+async def test_system_instruction_respects_content_limit(
+    limit, as_content, expected, callback_context, capsys
+):
+  """The configured limit applies to string and Content instructions."""
+  text = 'a' * 250
+  instruction = (
+      types.Content(parts=[types.Part(text=text)]) if as_content else text
+  )
+  plugin = LoggingPlugin(max_content_length=limit)
+  request = LlmRequest(
+      config=types.GenerateContentConfig(system_instruction=instruction)
+  )
+
+  await plugin.before_model_callback(
+      callback_context=callback_context, llm_request=request
+  )
+
+  assert f"System Instruction: '{expected}'" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ('limit', 'expected'),
+    [(0, '...'), (250, 'a' * 250), (500, 'a' * 250), (None, 'a' * 250)],
+)
+async def test_event_respects_content_limit(limit, expected, capsys):
+  """Events use the configured text limit, including unlimited output."""
+  plugin = LoggingPlugin(max_content_length=limit)
+  event = Event(
+      author='test-agent',
+      content=types.Content(parts=[types.Part(text='a' * 250)]),
+  )
+
+  await plugin.on_event_callback(invocation_context=None, event=event)
+
+  assert f"Content: text: '{expected}'" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ('limit', 'expected'),
+    [
+        (0, '...}'),
+        (400, "{'payload': '" + 'a' * 387 + '...}'),
+        (500, str({'payload': 'a' * 400})),
+        (None, str({'payload': 'a' * 400})),
+    ],
+)
+@pytest.mark.parametrize('after', [False, True])
+async def test_tool_logging_respects_args_limit(
+    limit, expected, after, tool_context, capsys
+):
+  """Tool arguments and results both use the configured dictionary limit."""
+  plugin = LoggingPlugin(max_args_length=limit)
+  payload = {'payload': 'a' * 400}
+  kwargs = dict(
+      tool=_tool('my_tool'), tool_args=payload, tool_context=tool_context
+  )
+
+  if after:
+    await plugin.after_tool_callback(**kwargs, result=payload)
+  else:
+    await plugin.before_tool_callback(**kwargs)
+
+  label = 'Result' if after else 'Arguments'
+  assert f'{label}: {expected}' in capsys.readouterr().out
