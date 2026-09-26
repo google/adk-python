@@ -1987,6 +1987,60 @@ def test_patch_session_not_found(test_app, test_session_info):
   logger.info("Patch session not found test passed")
 
 
+def test_rewind_session(test_app, create_test_session, monkeypatch):
+  """Test rewinding a session to before a given invocation."""
+  info = create_test_session
+  captured: dict[str, Any] = {}
+
+  async def rewind_async_capture(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      rewind_before_invocation_id: str,
+      run_config: Optional[RunConfig] = None,
+  ):
+    del self, run_config
+    captured["user_id"] = user_id
+    captured["session_id"] = session_id
+    captured["rewind_before_invocation_id"] = rewind_before_invocation_id
+
+  monkeypatch.setattr(Runner, "rewind_async", rewind_async_capture)
+
+  url = f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/{info['session_id']}/rewind"
+  response = test_app.post(
+      url, json={"rewind_before_invocation_id": "some-invocation-id"}
+  )
+
+  assert response.status_code == 200
+  assert captured["user_id"] == info["user_id"]
+  assert captured["session_id"] == info["session_id"]
+  assert captured["rewind_before_invocation_id"] == "some-invocation-id"
+  data = response.json()
+  assert data["id"] == info["session_id"]
+
+
+def test_rewind_session_invocation_not_found(
+    test_app, create_test_session, monkeypatch
+):
+  """Test rewinding to an unknown invocation ID returns 404."""
+  info = create_test_session
+
+  async def rewind_async_raise(self, **kwargs):
+    del self, kwargs
+    raise ValueError("Invocation ID not found: missing-invocation-id")
+
+  monkeypatch.setattr(Runner, "rewind_async", rewind_async_raise)
+
+  url = f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/{info['session_id']}/rewind"
+  response = test_app.post(
+      url, json={"rewind_before_invocation_id": "missing-invocation-id"}
+  )
+
+  assert response.status_code == 404
+  assert "missing-invocation-id" in response.json()["detail"]
+
+
 def test_agent_run(test_app, create_test_session):
   """Test running an agent with a message."""
   info = create_test_session

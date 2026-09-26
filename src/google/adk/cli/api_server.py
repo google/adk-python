@@ -666,6 +666,13 @@ class UpdateSessionRequest(common.BaseModel):
   """The state changes to apply to the session."""
 
 
+class RewindSessionRequest(common.BaseModel):
+  """Request to rewind a session to before a given invocation."""
+
+  rewind_before_invocation_id: str
+  """The invocation ID to rewind the session to before."""
+
+
 class FinalizeAgentIdentityCredentialsRequest(common.BaseModel):
   """Request to finalize a 3LO consent for an Agent Identity connector."""
 
@@ -1652,6 +1659,47 @@ class ApiServer:
           session=session, event=state_update_event
       )
 
+      return session
+
+    @app.post(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/rewind",
+        response_model_exclude_none=True,
+    )
+    async def rewind_session(
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        req: RewindSessionRequest,
+    ) -> Session:
+      """Rewinds a session to before the specified invocation.
+
+      Args:
+          app_name: The name of the application.
+          user_id: The ID of the user.
+          session_id: The ID of the session to rewind.
+          req: The rewind request identifying the invocation to rewind to.
+
+      Returns:
+          The rewound session.
+
+      Raises:
+          HTTPException: If the session or invocation is not found.
+      """
+      runner = await self.get_runner_async(app_name)
+      try:
+        await runner.rewind_async(
+            user_id=user_id,
+            session_id=session_id,
+            rewind_before_invocation_id=req.rewind_before_invocation_id,
+        )
+      except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve)) from ve
+
+      session = await self.session_service.get_session(
+          app_name=app_name, user_id=user_id, session_id=session_id
+      )
+      if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
       return session
 
     @app.get(
