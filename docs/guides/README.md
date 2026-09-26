@@ -74,6 +74,9 @@ This directory contains specific developer guides for the ADK Python implementat
 * [Model Armor](integrations/model_armor/index.md) - Screening user input and model output with Google Cloud Model Armor.
 * [MongoDbToolset](integrations/mongodb/mongodb_toolset/index.md) - Vector and hybrid search over a MongoDB database, with the query text embedded on the way through.
 * [RedisSessionService](integrations/redis/redis_session_service/index.md) - Sharing sessions across processes through Redis, including the expiry every other backend lacks.
+* [TypeSafe agent callbacks](integrations/typesafe/callbacks/index.md) - Routing to a model or blocking a risky tool call automatically, based on a TypeSafe judgment.
+* [TypesafeClassifier](integrations/typesafe/typesafe_classifier/index.md) - Running typed Noul/Choice/Score judgments against TypeSafe AI's Jev model.
+* [TypesafeClassifierTool](integrations/typesafe/typesafe_classifier_tool/index.md) - Exposing one fixed TypeSafe question as a callable agent tool.
 
 ### Labs
 * [AntigravityAgent](labs/antigravity/index.md) - Runs a Google Antigravity SDK agent as an ADK agent node.
