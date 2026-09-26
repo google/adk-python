@@ -20,6 +20,7 @@ __all__ = [
     "A2aCardRequestConfig",
     "A2AClientError",
     "A2aRemoteAgentConfig",
+    "ADK_A2A_ALLOW_INSECURE_HTTP",
     "AgentCardResolutionError",
     "CardRequestInterceptor",
     "ParametersConfig",
@@ -33,6 +34,7 @@ def __getattr__(name: str) -> object:
       "A2aCardRequestConfig",
       "A2AClientError",
       "A2aRemoteAgentConfig",
+      "ADK_A2A_ALLOW_INSECURE_HTTP",
       "AgentCardResolutionError",
       "CardRequestInterceptor",
       "ParametersConfig",
@@ -45,6 +47,7 @@ def __getattr__(name: str) -> object:
       from ._remote_a2a_agent import RemoteA2aAgent
       from .config import A2aCardRequestConfig
       from .config import A2aRemoteAgentConfig
+      from .config import ADK_A2A_ALLOW_INSECURE_HTTP
       from .config import CardRequestInterceptor
       from .config import ParametersConfig
       from .config import RequestInterceptor
@@ -55,6 +58,8 @@ def __getattr__(name: str) -> object:
         return A2AClientError
       elif name == "A2aRemoteAgentConfig":
         return A2aRemoteAgentConfig
+      elif name == "ADK_A2A_ALLOW_INSECURE_HTTP":
+        return ADK_A2A_ALLOW_INSECURE_HTTP
       elif name == "AgentCardResolutionError":
         return AgentCardResolutionError
       elif name == "CardRequestInterceptor":

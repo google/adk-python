@@ -69,6 +69,7 @@ from ...flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from ...flows.llm_flows.tools._functions import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ...sessions.session import Session
 from ...utils.context_utils import Aclosing
+from ...utils.env_utils import is_env_enabled
 from ..converters.event_converter import convert_a2a_message_to_event
 from ..converters.event_converter import convert_a2a_task_to_event
 from ..converters.event_converter import convert_event_to_a2a_message
@@ -84,6 +85,7 @@ from ..logs.log_utils import build_a2a_request_log
 from ..logs.log_utils import build_a2a_response_log
 from .config import A2aCardRequestConfig
 from .config import A2aRemoteAgentConfig
+from .config import ADK_A2A_ALLOW_INSECURE_HTTP
 from .config import CardRequestInterceptor
 from .config import ParametersConfig
 from .config import RequestInterceptor
@@ -95,6 +97,7 @@ from .utils import execute_before_request_interceptors
 
 __all__ = [
     "A2AClientError",
+    "ADK_A2A_ALLOW_INSECURE_HTTP",
     "AGENT_CARD_WELL_KNOWN_PATH",
     "AgentCardResolutionError",
     "RemoteA2aAgent",
@@ -684,6 +687,7 @@ class RemoteA2aAgent(BaseAgent):
       auth_scheme: Optional[AuthScheme] = None,
       auth_credential: Optional[AuthCredential] = None,
       credential_key: Optional[str] = None,
+      allow_insecure_http: bool = False,
       **kwargs: Any,
   ) -> None:
     """Initialize RemoteA2aAgent.
@@ -718,6 +722,10 @@ class RemoteA2aAgent(BaseAgent):
         `auth_scheme` is None.
       credential_key: Optional key under which the resolved credential is
         cached. Defaults to a digest of the scheme and the credential.
+      allow_insecure_http: If True, allow plaintext HTTP for agent card
+        resolution and RPC targets (e.g. within a service mesh with mTLS).
+        Defaults to False. Can also be enabled via config or the
+        ``ADK_A2A_ALLOW_INSECURE_HTTP=1`` environment variable.
       **kwargs: Additional arguments passed to BaseAgent
 
     Raises:
@@ -746,7 +754,10 @@ class RemoteA2aAgent(BaseAgent):
     self._a2a_request_meta_provider = a2a_request_meta_provider
     self._full_history_when_stateless_param = full_history_when_stateless
     self._context_builder = context_builder
+    self._allow_insecure_http_param = allow_insecure_http
     self._config = config or A2aRemoteAgentConfig()
+    if allow_insecure_http:
+      self._config.allow_insecure_http = True
 
     if not use_legacy:
       if self._config.request_interceptors is None:
@@ -821,6 +832,23 @@ class RemoteA2aAgent(BaseAgent):
   @_full_history_when_stateless.setter
   def _full_history_when_stateless(self, value: bool) -> None:
     self._full_history_when_stateless_param = value
+
+  @property
+  def _allow_insecure_http(self) -> bool:
+    return (
+        self._allow_insecure_http_param
+        or self._config.allow_insecure_http
+        or is_env_enabled(ADK_A2A_ALLOW_INSECURE_HTTP)
+    )
+
+  @_allow_insecure_http.setter
+  def _allow_insecure_http(self, value: bool) -> None:
+    self._allow_insecure_http_param = value
+    self._config.allow_insecure_http = value
+
+  @property
+  def allow_insecure_http(self) -> bool:
+    return self._allow_insecure_http
 
   async def _resolve_auth_credential(
       self, ctx: InvocationContext
@@ -960,11 +988,16 @@ class RemoteA2aAgent(BaseAgent):
       # The card request interceptors attach the credential resolved for this
       # invocation, so the scheme is checked before the fetch rather than with
       # the card's RPC targets afterwards -- by then the credential has already
-      # gone out on the wire. Plain http stays allowed on a loopback host, the
-      # same carve-out `_validate_card_rpc_targets` applies.
+      # gone out on the wire. Plain http stays allowed on a loopback host, or
+      # when allow_insecure_http is True.
       parsed_source = urlparse(agent_card_source)
-      if parsed_source.scheme.lower() != "https" and not _is_loopback_host(
-          parsed_source.hostname
+      scheme = parsed_source.scheme.lower()
+      if scheme != "https" and not (
+          scheme == "http"
+          and (
+              self._allow_insecure_http
+              or _is_loopback_host(parsed_source.hostname)
+          )
       ):
         raise AgentCardResolutionError(
             "Agent card URL must use https, or http on a loopback host:"
@@ -999,9 +1032,9 @@ class RemoteA2aAgent(BaseAgent):
 
     Every URL the card offers is checked, not only the one this ADK version
     would select, because the client factory negotiates the endpoint across
-    the card's whole interface list. Each must be https and share the origin
-    the card was fetched from; plain http stays allowed on a loopback host,
-    the local-development shape the A2A helpers emit.
+    the card's whole interface list. Each must be https (or http if
+    allow_insecure_http is True or on a loopback host) and share the origin
+    the card was fetched from.
 
     A card passed in directly or read from a local file did not come off the
     network here, so its target is left to the caller.
@@ -1019,8 +1052,13 @@ class RemoteA2aAgent(BaseAgent):
 
     for card_url in _compat.agent_card_rpc_urls(agent_card):
       parsed_card = urlparse(card_url)
-      if parsed_card.scheme.lower() != "https" and not _is_loopback_host(
-          parsed_card.hostname
+      card_scheme = parsed_card.scheme.lower()
+      if card_scheme != "https" and not (
+          card_scheme == "http"
+          and (
+              self._allow_insecure_http
+              or _is_loopback_host(parsed_card.hostname)
+          )
       ):
         raise AgentCardResolutionError(
             "Agent card RPC URL must use https, or http on a loopback host:"

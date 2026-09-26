@@ -14,6 +14,7 @@
 
 import copy
 import json
+import os
 from pathlib import Path
 import tempfile
 import threading
@@ -44,6 +45,7 @@ from google.adk.a2a.agent import ParametersConfig
 from google.adk.a2a.agent import RequestInterceptor
 import google.adk.a2a.agent._remote_a2a_agent as remote_a2a_agent
 from google.adk.a2a.agent.config import A2aRemoteAgentConfig
+from google.adk.a2a.agent.config import ADK_A2A_ALLOW_INSECURE_HTTP
 from google.adk.a2a.agent.utils import execute_after_request_interceptors
 from google.adk.a2a.agent.utils import execute_before_card_request_interceptors
 from google.adk.a2a.agent.utils import execute_before_request_interceptors
@@ -385,6 +387,54 @@ class TestRemoteA2aAgentInit:
 
     assert agent._timeout == 300.0
 
+  def test_init_allow_insecure_http_default(self):
+    agent = RemoteA2aAgent(
+        name="test_agent", agent_card=create_test_agent_card()
+    )
+    assert agent.allow_insecure_http is False
+    assert agent._config.allow_insecure_http is False
+
+  def test_init_allow_insecure_http_param(self):
+    """Test allow_insecure_http can be explicitly enabled via parameter."""
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=create_test_agent_card(),
+        allow_insecure_http=True,
+    )
+    assert agent.allow_insecure_http is True
+    assert agent._config.allow_insecure_http is True
+
+  def test_init_allow_insecure_http_from_config(self):
+    config = A2aRemoteAgentConfig(allow_insecure_http=True)
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=create_test_agent_card(),
+        config=config,
+    )
+    assert agent.allow_insecure_http is True
+    assert agent._config.allow_insecure_http is True
+
+  def test_init_allow_insecure_http_from_env_var(self):
+
+    with patch.dict(os.environ, {ADK_A2A_ALLOW_INSECURE_HTTP: "1"}):
+      agent = RemoteA2aAgent(
+          name="test_agent", agent_card=create_test_agent_card()
+      )
+      assert agent.allow_insecure_http is True
+      assert agent._config.allow_insecure_http is True
+
+  def test_a2a_remote_agent_config_allow_insecure_http_env_var(self):
+
+    assert A2aRemoteAgentConfig().allow_insecure_http is False
+
+    with patch.dict(os.environ, {ADK_A2A_ALLOW_INSECURE_HTTP: "1"}):
+      assert A2aRemoteAgentConfig().allow_insecure_http is True
+
+      assert (
+          A2aRemoteAgentConfig(allow_insecure_http=False).allow_insecure_http
+          is False
+      )
+
 
 class TestRemoteA2aAgentResolution:
   """Test agent card resolution functionality."""
@@ -596,6 +646,68 @@ class TestRemoteA2aAgentResolution:
         mock_resolver_class.return_value = mock_resolver
 
         assert await agent._resolve_agent_card(Mock()) == self.agent_card
+
+  @pytest.mark.asyncio
+  async def test_resolve_agent_card_allows_non_loopback_http_when_opted_in(
+      self,
+  ):
+    """Plain http is allowed for non-loopback host when allow_insecure_http=True."""
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card="http://mesh-service.internal:8080/agent.json",
+        allow_insecure_http=True,
+    )
+
+    with patch.object(agent, "_ensure_httpx_client") as mock_ensure_client:
+      mock_ensure_client.return_value = AsyncMock()
+      with patch(
+          "google.adk.a2a.agent._remote_a2a_agent.A2ACardResolver"
+      ) as mock_resolver_class:
+        mock_resolver = AsyncMock()
+        mock_resolver.get_agent_card.return_value = self.agent_card
+        mock_resolver_class.return_value = mock_resolver
+
+        assert await agent._resolve_agent_card(Mock()) == self.agent_card
+
+  @pytest.mark.asyncio
+  async def test_resolve_agent_card_allows_non_loopback_http_via_config(self):
+    """Plain http is allowed when config.allow_insecure_http is True."""
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card="http://mesh-service.internal:8080/agent.json",
+        config=A2aRemoteAgentConfig(allow_insecure_http=True),
+    )
+
+    with patch.object(agent, "_ensure_httpx_client") as mock_ensure_client:
+      mock_ensure_client.return_value = AsyncMock()
+      with patch(
+          "google.adk.a2a.agent._remote_a2a_agent.A2ACardResolver"
+      ) as mock_resolver_class:
+        mock_resolver = AsyncMock()
+        mock_resolver.get_agent_card.return_value = self.agent_card
+        mock_resolver_class.return_value = mock_resolver
+
+        assert await agent._resolve_agent_card(Mock()) == self.agent_card
+
+  @pytest.mark.asyncio
+  async def test_resolve_agent_card_allows_non_loopback_http_via_env_var(self):
+    """Plain http is allowed when ADK_A2A_ALLOW_INSECURE_HTTP=1."""
+    with patch.dict(os.environ, {ADK_A2A_ALLOW_INSECURE_HTTP: "1"}):
+      agent = RemoteA2aAgent(
+          name="test_agent",
+          agent_card="http://mesh-service.internal:8080/agent.json",
+      )
+
+      with patch.object(agent, "_ensure_httpx_client") as mock_ensure_client:
+        mock_ensure_client.return_value = AsyncMock()
+        with patch(
+            "google.adk.a2a.agent._remote_a2a_agent.A2ACardResolver"
+        ) as mock_resolver_class:
+          mock_resolver = AsyncMock()
+          mock_resolver.get_agent_card.return_value = self.agent_card
+          mock_resolver_class.return_value = mock_resolver
+
+          assert await agent._resolve_agent_card(Mock()) == self.agent_card
 
   @pytest.mark.asyncio
   async def test_card_request_interceptors_injects_headers(self):
@@ -1036,6 +1148,84 @@ class TestRemoteA2aAgentResolution:
     await agent._validate_agent_card(
         create_test_agent_card(url="http://localhost:8000/a2a")
     )
+
+  @pytest.mark.asyncio
+  async def test_validate_agent_card_rejects_insecure_http_rpc_target_by_default(
+      self,
+  ):
+    """Card with non-loopback HTTP RPC URL is rejected by default."""
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card="http://mesh-service.internal:8080/agent.json",
+    )
+
+    with pytest.raises(AgentCardResolutionError, match="must use https"):
+      agent._validate_card_rpc_targets(
+          create_test_agent_card(url="http://mesh-service.internal:8080/rpc")
+      )
+
+  @pytest.mark.asyncio
+  async def test_validate_agent_card_allows_insecure_http_rpc_target_when_opted_in(
+      self,
+  ):
+    """Non-loopback HTTP RPC target succeeds when allow_insecure_http=True."""
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card="http://mesh-service.internal:8080/agent.json",
+        allow_insecure_http=True,
+    )
+
+    await agent._validate_agent_card(
+        create_test_agent_card(url="http://mesh-service.internal:8080/rpc")
+    )
+
+  @pytest.mark.asyncio
+  async def test_validate_agent_card_allows_insecure_http_rpc_target_via_config(
+      self,
+  ):
+    """Non-loopback HTTP RPC target succeeds when config.allow_insecure_http=True."""
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card="http://mesh-service.internal:8080/agent.json",
+        config=A2aRemoteAgentConfig(allow_insecure_http=True),
+    )
+
+    await agent._validate_agent_card(
+        create_test_agent_card(url="http://mesh-service.internal:8080/rpc")
+    )
+
+  @pytest.mark.asyncio
+  async def test_validate_agent_card_allows_insecure_http_rpc_target_via_env_var(
+      self,
+  ):
+    """Non-loopback HTTP RPC target succeeds when ADK_A2A_ALLOW_INSECURE_HTTP=1."""
+    with patch.dict(os.environ, {ADK_A2A_ALLOW_INSECURE_HTTP: "1"}):
+      agent = RemoteA2aAgent(
+          name="test_agent",
+          agent_card="http://mesh-service.internal:8080/agent.json",
+      )
+
+      await agent._validate_agent_card(
+          create_test_agent_card(url="http://mesh-service.internal:8080/rpc")
+      )
+
+  @pytest.mark.asyncio
+  async def test_validate_agent_card_insecure_http_still_enforces_same_origin(
+      self,
+  ):
+    """Even with allow_insecure_http=True, off-origin RPC target is rejected."""
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card="http://mesh-service.internal:8080/agent.json",
+        allow_insecure_http=True,
+    )
+
+    with pytest.raises(
+        AgentCardResolutionError, match="must have the same origin"
+    ):
+      await agent._validate_agent_card(
+          create_test_agent_card(url="http://other-service.internal:8080/rpc")
+      )
 
   @pytest.mark.asyncio
   async def test_validate_agent_card_file_source_is_not_origin_checked(self):
