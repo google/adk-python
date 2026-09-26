@@ -390,10 +390,10 @@ def get_eval_sets_manager(
   except ModuleNotFoundError as mnf:
     raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
 
-  if eval_storage_uri:
+  eval_storage = evals.resolve_eval_storage(eval_storage_uri, agents_dir)
+  if eval_storage.gcs_uri:
     gcs_eval_managers = evals.create_gcs_eval_managers_from_uri(
-        eval_storage_uri
+        eval_storage.gcs_uri
     )
     return gcs_eval_managers.eval_sets_manager
-  else:
-    return LocalEvalSetsManager(agents_dir=agents_dir)
+  return LocalEvalSetsManager(agents_dir=eval_storage.local_dir)
