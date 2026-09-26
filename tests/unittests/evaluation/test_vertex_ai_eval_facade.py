@@ -36,6 +36,22 @@ import pytest
 vertexai_types = vertexai.types
 
 
+def test_get_text_excludes_thought_parts(mocker):
+  """Tests _get_text excludes thought parts from the extracted text."""
+  mocker.patch("google.adk.dependencies.vertexai.vertexai.Client")
+  evaluator = _SingleTurnVertexAiEvalFacade(
+      threshold=0.8, metric_name=vertexai_types.PrebuiltMetric.COHERENCE
+  )
+  content = genai_types.Content(
+      parts=[
+          genai_types.Part(text="Consider the options.", thought=True),
+          genai_types.Part(text="Paris"),
+      ]
+  )
+
+  assert evaluator._get_text(content) == "Paris"
+
+
 class TestSingleTurnVertexAiEvalFacade:
   """A class to help organize "patch" that are applicable to all tests."""
 

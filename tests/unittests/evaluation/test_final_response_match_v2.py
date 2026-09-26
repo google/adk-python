@@ -268,6 +268,54 @@ def test_format_auto_rater_prompt_includes_intermediate_when_enabled():
   assert "reference intro\nreference final" in prompt
 
 
+def test_format_auto_rater_prompt_excludes_thought_parts():
+  evaluator = _create_test_evaluator_gemini(threshold=0.8)
+  actual_invocation, expected_invocation = _create_test_invocations(
+      "candidate text", "reference text"
+  )
+  actual_invocation.final_response.parts.insert(
+      0, genai_types.Part(text="Considering the response.", thought=True)
+  )
+  expected_invocation.final_response.parts.insert(
+      0, genai_types.Part(text="Considering the reference.", thought=True)
+  )
+
+  prompt = evaluator.format_auto_rater_prompt(
+      actual_invocation, expected_invocation
+  )
+
+  assert "Considering the response." not in prompt
+  assert "Considering the reference." not in prompt
+  assert "candidate text" in prompt
+  assert "reference text" in prompt
+
+
+def test_convert_auto_rater_response_to_score_ignores_judge_thought():
+  """The judge model's own thought text must not break verdict parsing."""
+  evaluator = _create_test_evaluator_gemini(threshold=0.8)
+  auto_rater_response = """```json
+{
+  "is_the_agent_response_valid": "valid",
+  "reasoning": "The response is valid."
+}
+```"""
+  llm_response = LlmResponse(
+      content=genai_types.Content(
+          parts=[
+              genai_types.Part(
+                  text="Let me evaluate this response.", thought=True
+              ),
+              genai_types.Part(text=auto_rater_response),
+          ],
+          role="model",
+      )
+  )
+  auto_rater_score = evaluator.convert_auto_rater_response_to_score(
+      llm_response
+  )
+  assert auto_rater_score == AutoRaterScore(score=1.0)
+
+
 def test_convert_auto_rater_response_to_score_valid():
   evaluator = _create_test_evaluator_gemini(threshold=0.8)
   auto_rater_response = """```json
