@@ -308,10 +308,12 @@ class SqliteSessionService(BaseSessionService):
         query_parts.append("AND timestamp >= ?")
         params.append(config.after_timestamp)
 
-      # Break timestamp ties on id so tied events come back in the same order
-      # on every read; otherwise a replayed conversation shuffles and
-      # `num_recent_events` truncates at an arbitrary point in the tie.
-      query_parts.append("ORDER BY timestamp DESC, id DESC")
+      # Break timestamp ties on rowid, which reflects insertion order, rather
+      # than on the event's random id. Ordering by id would come back in an
+      # order unrelated to how the events were appended, which reshuffles a
+      # replayed conversation and, for `Workflow`, breaks resume by handing
+      # `ReplayManager` a completion order it can never reproduce.
+      query_parts.append("ORDER BY timestamp DESC, rowid DESC")
 
       if config and config.num_recent_events is not None:
         query_parts.append("LIMIT ?")
