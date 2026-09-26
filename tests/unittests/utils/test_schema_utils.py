@@ -32,6 +32,7 @@ from google.adk.utils._schema_utils import schema_to_json_schema
 from google.adk.utils._schema_utils import validate_node_data
 from google.adk.utils._schema_utils import validate_schema
 from google.genai import types
+import jsonschema
 from pydantic import BaseModel
 from pydantic import Field
 from pydantic import ValidationError
@@ -214,6 +215,79 @@ class TestValidateSchema:
     json_text = '{"key1": 1, "key2": 2}'
     result = validate_schema(dict[str, int], json_text)
     assert result == {"key1": 1, "key2": 2}
+
+  def test_list_of_str_schema_rejects_wrong_element_type(self):
+    """Test that list[str] rejects a value with non-str elements."""
+    with pytest.raises(ValidationError):
+      validate_schema(list[str], "[1, 2, 3]")
+
+  def test_dict_schema_rejects_wrong_value_type(self):
+    """Test that dict[str, int] rejects a value with non-int values."""
+    with pytest.raises(ValidationError):
+      validate_schema(dict[str, int], '{"a": "x"}')
+
+  def test_raw_json_schema_dict_validates(self):
+    """Test that a raw JSON Schema dict validates the parsed value."""
+    schema = {
+        "type": "object",
+        "properties": {"a": {"type": "string"}},
+        "required": ["a"],
+    }
+    assert validate_schema(schema, '{"a": "ok"}') == {"a": "ok"}
+
+  def test_raw_json_schema_dict_rejects_invalid_value(self):
+    """Test that a raw JSON Schema dict rejects a non-conforming value."""
+    schema = {
+        "type": "object",
+        "properties": {"a": {"type": "string"}},
+        "required": ["a"],
+    }
+    with pytest.raises(jsonschema.ValidationError):
+      validate_schema(schema, '{"a": 1}')
+
+  def test_types_schema_validates(self):
+    """Test that a types.Schema validates the parsed value."""
+    schema = types.Schema(
+        type="OBJECT",
+        properties={"a": types.Schema(type="STRING")},
+        required=["a"],
+    )
+    assert validate_schema(schema, '{"a": "ok"}') == {"a": "ok"}
+
+  def test_types_schema_rejects_invalid_value(self):
+    """Test that a types.Schema rejects a non-conforming value."""
+    schema = types.Schema(
+        type="OBJECT",
+        properties={"a": types.Schema(type="STRING")},
+        required=["a"],
+    )
+    with pytest.raises(jsonschema.ValidationError):
+      validate_schema(schema, '{"a": 1}')
+
+  def test_types_schema_any_of_rejects_invalid_value(self):
+    """Test that types.Schema's any_of (aliased to anyOf) is enforced."""
+    schema = types.Schema(
+        type="OBJECT",
+        properties={
+            "a": types.Schema(
+                any_of=[types.Schema(type="STRING"), types.Schema(type="NUMBER")]
+            )
+        },
+        required=["a"],
+    )
+    with pytest.raises(jsonschema.ValidationError):
+      validate_schema(schema, '{"a": true}')
+
+  def test_types_schema_additional_properties_rejects_extra_field(self):
+    """Test that types.Schema's additional_properties (aliased) is enforced."""
+    schema = types.Schema(
+        type="OBJECT",
+        properties={"a": types.Schema(type="STRING")},
+        required=["a"],
+        additional_properties=False,
+    )
+    with pytest.raises(jsonschema.ValidationError):
+      validate_schema(schema, '{"a": "ok", "unexpected_extra_field": 123}')
 
   def test_json_code_fence_is_stripped(self):
     """Test that a ```json fenced payload is unwrapped before validation."""
