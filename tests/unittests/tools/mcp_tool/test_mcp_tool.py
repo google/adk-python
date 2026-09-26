@@ -730,6 +730,7 @@ class TestMCPTool:
           "adk_request_confirmation",
           "adk_request_input",
           "transfer_to_agent",
+          "set_model_response",
       ],
   )
   def test_init_reserved_name(self, reserved_name):
