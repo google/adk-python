@@ -48,7 +48,29 @@ _GCS_DISPLAY_NAME_METADATA_KEY = "adkDisplayName"
 _GCS_IS_TEXT_METADATA_KEY = "adkIsText"
 _GCS_FILE_URI_METADATA_KEY = "adkFileUri"
 _GCS_FILE_MIME_TYPE_METADATA_KEY = "adkFileMimeType"
+# Keys this service writes into a blob's metadata for its own bookkeeping. They
+# are not part of what the caller passed as custom_metadata, so they are hidden
+# again when an ArtifactVersion is built. Handing them back would also let a
+# caller that round-trips custom_metadata store a stale marker, for example
+# reviving adkIsText on an artifact that is no longer text.
+_INTERNAL_METADATA_KEYS = frozenset({
+    _GCS_DISPLAY_NAME_METADATA_KEY,
+    _GCS_IS_TEXT_METADATA_KEY,
+    _GCS_FILE_URI_METADATA_KEY,
+    _GCS_FILE_MIME_TYPE_METADATA_KEY,
+})
 _MAX_SAVE_VERSION_ATTEMPTS = 10
+
+
+def _user_metadata(blob_metadata: Optional[dict[str, str]]) -> dict[str, str]:
+  """Returns only the metadata the caller supplied on save."""
+  if not blob_metadata:
+    return {}
+  return {
+      key: value
+      for key, value in blob_metadata.items()
+      if key not in _INTERNAL_METADATA_KEYS
+  }
 
 
 def _parse_version(blob_name: str, prefix: str) -> Optional[int]:
@@ -559,7 +581,7 @@ class GcsArtifactService(BaseArtifactService):
         canonical_uri=canonical_uri,
         create_time=blob.time_created.timestamp(),
         mime_type=blob.content_type,
-        custom_metadata=blob.metadata if blob.metadata else {},
+        custom_metadata=_user_metadata(blob.metadata),
     )
 
   def _list_artifact_versions_sync(
@@ -586,7 +608,7 @@ class GcsArtifactService(BaseArtifactService):
           canonical_uri=canonical_uri,
           create_time=blob.time_created.timestamp(),
           mime_type=blob.content_type,
-          custom_metadata=blob.metadata if blob.metadata else {},
+          custom_metadata=_user_metadata(blob.metadata),
       )
       artifact_versions.append(av)
 
