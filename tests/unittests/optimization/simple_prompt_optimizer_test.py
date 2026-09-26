@@ -102,3 +102,22 @@ async def test_simple_prompt_optimizer(
   # 1 initial, 2 iterations, 1 final validation
   assert mock_sampler.sample_and_score.call_count == 4
   assert mock_llm_class.return_value.generate_content_async.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_optimize_rejects_an_empty_training_selection():
+  """An empty training selection must fail loudly, not score 0.0 (#7168).
+
+  Reachable only since #7170 stopped `[]` meaning "every case". Both scoring
+  helpers return 0.0 for an empty result set instead of dividing by zero, so
+  without this guard a misconfigured run completes and reports a bad score.
+  """
+  sampler = mock.MagicMock()
+  sampler.get_train_example_ids.return_value = []
+
+  optimizer = SimplePromptOptimizer(
+      SimplePromptOptimizerConfig(num_iterations=1, batch_size=4)
+  )
+
+  with pytest.raises(ValueError, match="No training examples"):
+    await optimizer.optimize(mock.MagicMock(), sampler)
