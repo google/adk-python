@@ -45,6 +45,7 @@ from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .evaluator import PerInvocationResult
 from .llm_as_judge_utils import get_eval_status
+from .llm_as_judge_utils import get_grounding_metadata_as_json_str
 from .llm_as_judge_utils import get_text_from_content
 from .llm_as_judge_utils import get_tool_declarations_as_json_str
 
@@ -126,7 +127,8 @@ Your task is to analyze sentence by sentence and classify each sentence accordin
 3. **For each label, provide a short rationale explaining your decision.** The rationale should be separate from the excerpt.
 4. **Be very strict with your `supported`, `contradictory` and `disputed` decisions.** Unless you can find straightforward, indisputable evidence excepts *in the context* that a sentence is `supported`, `contradictory` or `disputed`, consider it `unsupported`.  You should not employ world knowledge unless it is truly trivial.
 5. "tool_outputs" blocks contain code execution results of the "tool_code" blocks immediately above them. If any sentence is based on "tool_outputs" results, first analyze if the corresponding "tool_code" is supported and if the results are error-free. Only if the "tool_code" block is supported, you can treat code execution results as correct.
-6. If you need to cite multiple supporting excerpts, simply concatenate them. Excerpt could be summary from the context if it is too long.
+6. "Grounding metadata" is trusted evidence from model-internal tools (e.g. search) whose results may not otherwise appear in "tool_outputs". A sentence entailed by "Grounding metadata" should be treated as `supported`.
+7. If you need to cite multiple supporting excerpts, simply concatenate them. Excerpt could be summary from the context if it is too long.
 
 **Input Format:**
 
@@ -447,6 +449,10 @@ class HallucinationsV1Evaluator(Evaluator):
     )
     context_parts.append("Tool definitions:")
     context_parts.append(f"{tool_declarations}\n")
+    context_parts.append("Grounding metadata:")
+    context_parts.append(
+        f"{get_grounding_metadata_as_json_str(InvocationEvents(invocation_events=events))}\n"
+    )
 
     for event in events:
       if not event.content or not event.content.parts:
