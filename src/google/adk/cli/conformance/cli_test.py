@@ -103,10 +103,10 @@ class ConformanceTestRunner:
         else:
           raise ValueError(f"Unsupported streaming mode: {self.streaming_mode}")
 
-        # Skip if recordings missing in replay mode
-        if self.mode == "replay" and not recordings_file.exists():
+        # Skip if recordings missing in replay or live mode (need baseline for comparison)
+        if not recordings_file.exists():
           click.secho(
-              f"Skipping {category}/{name}: no recordings",
+              f"Skipping {category}/{name}: no recordings found for comparison",
               fg="yellow",
               err=True,
           )
@@ -129,7 +129,7 @@ class ConformanceTestRunner:
       session_id: str,
       test_case: TestCase,
   ) -> None:
-    """Run all user messages for a test case."""
+    """Run all user messages for a test case in replay mode."""
     function_call_name_to_id_map = {}
     for user_message_index, user_message in enumerate(
         test_case.test_spec.user_messages
@@ -178,7 +178,7 @@ class ConformanceTestRunner:
           state_delta=user_message.state_delta,
       )
 
-      # Run the agent but don't collect events here
+      # Run the agent in replay mode
       async for event in self.client.run_agent(
           request,
           mode="replay",
@@ -289,6 +289,114 @@ class ConformanceTestRunner:
           description=test_case.test_spec.description,
       )
 
+  async def _run_user_messages_live(
+      self,
+      session_id: str,
+      test_case: TestCase,
+  ) -> None:
+    """Run all user messages for a test case in live mode."""
+    function_call_name_to_id_map = {}
+    for user_message_index, user_message in enumerate(
+        test_case.test_spec.user_messages
+    ):
+      # Create content from UserMessage object
+      if user_message.content is not None:
+        content = user_message.content.model_copy(deep=True)
+
+        # If the user provides a function response, it means this is for
+        # long-running tool. Replace the function call ID with the actual
+        # function call ID. This is needed because the function call ID is not
+        # known when writing the test case.
+        if content.parts:
+          for part in content.parts:
+            if part.function_response:
+              name = part.function_response.name
+              if not name:
+                raise ValueError(
+                    "FunctionResponse part is missing a 'name' field."
+                )
+              if (
+                  name not in function_call_name_to_id_map
+                  or not function_call_name_to_id_map[name]
+              ):
+                raise ValueError(
+                    "Function response for"
+                    f" {name} does not match any pending function call."
+                )
+              part.function_response.id = function_call_name_to_id_map[
+                  name
+              ].pop(0)
+      elif user_message.text is not None:
+        content = types.UserContent(parts=[types.Part(text=user_message.text)])
+      else:
+        raise ValueError(
+            f"UserMessage at index {user_message_index} has neither text nor"
+            " content"
+        )
+
+      request = RunAgentRequest(
+          app_name=test_case.test_spec.agent,
+          user_id=self.user_id,
+          session_id=session_id,
+          new_message=content,
+          streaming=self.streaming_mode == StreamingMode.SSE,
+          state_delta=user_message.state_delta,
+      )
+
+      # Run the agent with live model calls (no mode parameter)
+      async for event in self.client.run_agent(request):
+        if getattr(event, "partial", False):
+          continue
+        if event.content and event.content.parts:
+          for part in event.content.parts:
+            if part.function_call:
+              function_call_name_to_id_map.setdefault(
+                  part.function_call.name, []
+              ).append(part.function_call.id)
+
+  async def _run_test_case_live(self, test_case: TestCase) -> _TestResult:
+    """Run a single test case in live mode."""
+    try:
+      # Create session
+      session = await self.client.create_session(
+          app_name=test_case.test_spec.agent,
+          user_id=self.user_id,
+          state=test_case.test_spec.initial_state,
+      )
+
+      # Run each user message with live model calls
+      try:
+        await self._run_user_messages_live(session.id, test_case)
+      except Exception as e:
+        return _TestResult(
+            category=test_case.category,
+            name=test_case.name,
+            success=False,
+            error_message=f"Live execution failed: {e}",
+            description=test_case.test_spec.description,
+        )
+
+      # Validate results against existing recordings
+      result = await self._validate_test_results(session.id, test_case)
+
+      # Clean up session
+      await self.client.delete_session(
+          app_name=test_case.test_spec.agent,
+          user_id=self.user_id,
+          session_id=session.id,
+      )
+
+      return result
+
+    except Exception as e:
+      return _TestResult(
+          category=test_case.category,
+          name=test_case.name,
+          success=False,
+          error_message=f"Test setup failed: {e}",
+          description=test_case.test_spec.description,
+      )
+
   async def run_all_tests(self) -> _ConformanceTestSummary:
     """Run all discovered test cases."""
     test_cases = self._discover_test_cases()
@@ -311,13 +419,14 @@ Found {len(test_cases)} test cases to run in {self.mode} mode for streaming mode
       click.echo(f"Running {test_case.category}/{test_case.name}...", nl=False)
       if self.mode == "replay":
         result = await self._run_test_case_replay(test_case)
+      elif self.mode == "live":
+        result = await self._run_test_case_live(test_case)
       else:
-        # TODO: Implement live mode
         result = _TestResult(
             category=test_case.category,
             name=test_case.name,
             success=False,
-            error_message="Live mode is not implemented yet",
+            error_message=f"Unsupported mode: {self.mode}",
             description=test_case.test_spec.description,
         )
       results.append(result)

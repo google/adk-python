@@ -646,7 +646,7 @@ def cli_conformance_record(
     show_default=True,
     help=(
         "Test mode: 'replay' verifies against recorded interactions, 'live'"
-        " runs evaluation-based verification."
+        " runs against live model responses."
     ),
 )
 @click.option(
@@ -683,7 +683,7 @@ def cli_conformance_test(
   """Run conformance tests to verify agent behavior consistency.
 
   Validates that agents produce consistent outputs by comparing against recorded
-  interactions or evaluating live execution results.
+  interactions or checking against live model responses.
 
   PATHS can be any number of folder paths. Each folder can either:
   - Contain a spec.yaml file directly (single test case)
@@ -691,12 +691,15 @@ def cli_conformance_test(
 
   If no paths are provided, defaults to searching for the 'tests' folder.
 
-  TEST MODES:
+  MODE DIFFERENCES:
 
-  \b
-  replay  : Verifies agent interactions match previously recorded behaviors
-            exactly. Compares LLM requests/responses and tool calls/results.
-  live    : Runs evaluation-based verification (not yet implemented)
+  Use 'adk conformance test --mode=replay' for fast, deterministic verification
+  against previously recorded interactions. This is ideal for CI/CD pipelines
+  and ensuring changes don't break existing behavior.
+
+  Use 'adk conformance test --mode=live' to verify against live model responses
+  and catch regressions when model behavior may have changed. This runs actual
+  model calls but still compares against recorded baselines.
 
   DIRECTORY STRUCTURE:
 
@@ -706,10 +709,13 @@ def cli_conformance_test(
   category/
     test_name/
       spec.yaml                     # Test specification
-      generated-recordings.yaml     # Recorded interactions (replay mode)
-      generated-session.yaml        # Session data (replay mode)
-      generated-recordings-sse.yaml # Recorded SSE interactions (replay mode)
-      generated-session-sse.yaml    # SSE Session data (replay mode)
+      generated-recordings.yaml     # Recorded interactions (required for both modes)
+      generated-session.yaml        # Session data (required for both modes)
+      generated-recordings-sse.yaml # Recorded SSE interactions (SSE mode)
+      generated-session-sse.yaml    # SSE Session data (SSE mode)
+
+  NOTE: Both replay and live modes require existing recordings. Use
+  'adk conformance record' to generate baseline recordings first.
 
   REPORT GENERATION:
 
@@ -731,7 +737,7 @@ def cli_conformance_test(
   adk conformance test tests/core/description_001
 
   \b
-  # Run in live mode (when available)
+  # Run in live mode to check against live model responses
   adk conformance test --mode=live tests/core
 
   \b
