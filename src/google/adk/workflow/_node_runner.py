@@ -239,11 +239,14 @@ class NodeRunner:
     )
 
     if ic.session and ic.session.events:
+      from ..events._rewind_events import _apply_rewinds
+
+      live_events = _apply_rewinds(ic.session.events)
       node_path = ctx.node_path
       node_path_builder = _NodePathBuilder.from_string(node_path)
       has_prior_node_events = bool(self._prior_interrupt_ids)
       if not has_prior_node_events:
-        for ev in ic.session.events:
+        for ev in live_events:
           if ic.invocation_id and ev.invocation_id != ic.invocation_id:
             continue
           if ev.node_info is not None and ev.node_info.path:
@@ -257,7 +260,7 @@ class NodeRunner:
         from .utils._rehydration_utils import _reconstruct_node_states
 
         states = _reconstruct_node_states(
-            events=ic.session.events,
+            events=live_events,
             base_path=node_path,
             invocation_id=ic.invocation_id,
         )

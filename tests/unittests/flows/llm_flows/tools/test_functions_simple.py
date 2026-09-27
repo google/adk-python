@@ -2224,6 +2224,8 @@ async def test_non_blocking_tool_handled_asynchronously():
       agent=agent, user_content=''
   )
   invocation_context.live_request_queue = LiveRequestQueue()
+  invocation_context._event_queue = asyncio.Queue()
+  invocation_context._enqueue_event = mock.AsyncMock()
 
   function_call = types.FunctionCall(
       name=tool.name, args={}, id='fc_non_blocking'
@@ -2255,6 +2257,7 @@ async def test_non_blocking_tool_handled_asynchronously():
   assert (
       function_response.scheduling == types.FunctionResponseScheduling.WHEN_IDLE
   )
+  invocation_context._enqueue_event.assert_awaited_once()
   # Give event loop a tick for finally block to clean up the completed task
   await asyncio.sleep(0)
   assert task_key not in invocation_context.active_non_blocking_tool_tasks
@@ -2276,6 +2279,8 @@ async def test_non_blocking_tool_exception_handling_and_cleanup():
       agent=agent, user_content=''
   )
   invocation_context.live_request_queue = LiveRequestQueue()
+  invocation_context._event_queue = asyncio.Queue()
+  invocation_context._enqueue_event = mock.AsyncMock()
 
   function_call = types.FunctionCall(
       name=tool.name, args={}, id='fc_failing_non_blocking'
@@ -2326,6 +2331,8 @@ async def test_parallel_non_blocking_tools():
       agent=agent, user_content=''
   )
   invocation_context.live_request_queue = LiveRequestQueue()
+  invocation_context._event_queue = asyncio.Queue()
+  invocation_context._enqueue_event = mock.AsyncMock()
 
   fc1 = types.FunctionCall(name=tool1.name, args={}, id='fc_1')
   fc2 = types.FunctionCall(name=tool2.name, args={}, id='fc_2')
@@ -2359,6 +2366,7 @@ async def test_parallel_non_blocking_tools():
   }
   assert responses['fc_1'].response == {'result': 'done_1'}
   assert responses['fc_2'].response == {'result': 'done_2'}
+  assert invocation_context._enqueue_event.await_count == 2
 
   await asyncio.sleep(0)
   assert len(invocation_context.active_non_blocking_tool_tasks) == 0

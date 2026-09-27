@@ -15,7 +15,6 @@
 """Tests ensuring backward-compatibility shims for context modules export expected symbols."""
 
 from google.adk.flows import llm_flows
-from google.adk.flows.llm_flows import _content_compaction as shim_content_compaction
 from google.adk.flows.llm_flows import compaction as shim_compaction
 from google.adk.flows.llm_flows import contents as shim_contents
 from google.adk.flows.llm_flows import context_cache_processor as shim_cache
@@ -120,18 +119,6 @@ def test_compaction_shim_exports():
   assert (
       shim_compaction.CompactionRequestProcessor
       is ctx_compaction.CompactionRequestProcessor
-  )
-
-
-def test_content_compaction_shim_exports():
-  """All symbols in _content_compaction shim match context._compaction."""
-  assert (
-      shim_content_compaction._process_compaction_events
-      is ctx_compaction._process_compaction_events
-  )
-  assert (
-      shim_content_compaction._recover_compacted_function_calls
-      is ctx_compaction._recover_compacted_function_calls
   )
 
 

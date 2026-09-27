@@ -364,9 +364,9 @@ class StreamingResponseAggregator:
       # Generate ID on first chunk if not provided by LLM
       if not fc.id and not self._current_fc_id:
         # Lazy import to avoid circular dependency
-        from ..flows.llm_flows.functions import generate_client_function_call_id
+        from ..flows.llm_flows.tools._functions import _new_client_function_call_id
 
-        fc.id = generate_client_function_call_id()
+        fc.id = _new_client_function_call_id()
 
       # Save thought_signature from the part (first chunk should have it)
       if part.thought_signature and not self._current_thought_signature:
@@ -379,9 +379,9 @@ class StreamingResponseAggregator:
         # Generate ID if not provided by LLM
         if not fc.id:
           # Lazy import to avoid circular dependency
-          from ..flows.llm_flows.functions import generate_client_function_call_id
+          from ..flows.llm_flows.tools._functions import _new_client_function_call_id
 
-          fc.id = generate_client_function_call_id()
+          fc.id = _new_client_function_call_id()
         # Flush any buffered text first, then add the FC part
         self._flush_text_buffer_to_sequence()
         self._parts_sequence.append(part)
@@ -495,31 +495,19 @@ class StreamingResponseAggregator:
   def _deduplicate_function_calls(
       self, parts: list[types.Part]
   ) -> list[types.Part]:
-    """Deduplicate function call parts.
+    """Drops function call parts that repeat a model-provided ID.
 
-    If a function call has a model-provided ID (not starting with 'adk-'), it
-    is deduplicated by ID. Otherwise, it is deduplicated by name and args
-    signature.
+    Calls without a model-provided ID are all kept: two identical calls in one
+    turn are two calls, as they are without streaming.
     """
-    import json
-
     seen_fc_ids: set[str] = set()
-    seen_fc_signatures: set[tuple[str, str]] = set()
     deduped_parts: list[types.Part] = []
     for part in parts:
-      if part.function_call:
-        fc = part.function_call
-        is_client_id = fc.id and fc.id.startswith('adk-')
-        if fc.id and not is_client_id:
-          if fc.id in seen_fc_ids:
-            continue
-          seen_fc_ids.add(fc.id)
-        else:
-          args_str = json.dumps(fc.args, sort_keys=True) if fc.args else '{}'
-          sig = (fc.name or '', args_str)
-          if sig in seen_fc_signatures:
-            continue
-          seen_fc_signatures.add(sig)
+      fc = part.function_call
+      if fc and fc.id and not fc.id.startswith('adk-'):
+        if fc.id in seen_fc_ids:
+          continue
+        seen_fc_ids.add(fc.id)
       deduped_parts.append(part)
     return deduped_parts
 

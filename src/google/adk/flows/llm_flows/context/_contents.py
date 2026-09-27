@@ -69,7 +69,7 @@ def _id_pairing_model_types() -> tuple[type[BaseLlm], ...]:
   except (ImportError, OSError):
     pass
   try:
-    from ....labs.openai import OpenAIResponsesLlm
+    from ....integrations.openai._openai_responses_llm import OpenAIResponsesLlm
 
     model_types.append(OpenAIResponsesLlm)
   except (ImportError, OSError):
@@ -79,6 +79,8 @@ def _id_pairing_model_types() -> tuple[type[BaseLlm], ...]:
 
 class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
   """Builds the contents for the LLM request."""
+
+  name = 'contents'
 
   @override
   async def run_async(

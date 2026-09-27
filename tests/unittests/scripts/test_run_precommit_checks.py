@@ -127,3 +127,7 @@ def test_check_new_py_prefix_skips_when_indeterminate(
 )
 def test_required_tool(hook_id: str, expected: str | None) -> None:
   assert precommit.required_tool(_hook(hook_id)) == expected
+
+
+def test_default_targets_includes_docs() -> None:
+  assert 'docs' in precommit._DEFAULT_TARGETS

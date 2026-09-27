@@ -190,6 +190,26 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       session_id: Optional[str] = None,
       version: Optional[int] = None,
   ) -> Optional[types.Part]:
+    return await self._load_artifact(
+        app_name=app_name,
+        user_id=user_id,
+        filename=filename,
+        session_id=session_id,
+        version=version,
+        remaining_depth=artifact_util._MAX_ARTIFACT_REFERENCE_DEPTH,
+    )
+
+  async def _load_artifact(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      filename: str,
+      session_id: Optional[str],
+      version: Optional[int],
+      remaining_depth: int,
+  ) -> Optional[types.Part]:
+    """Loads an artifact, following at most `remaining_depth` references."""
     path = self._artifact_path(app_name, user_id, filename, session_id)
     versions = self.artifacts.get(path)
     if not versions:
@@ -210,25 +230,20 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     if artifact_util.is_artifact_ref(artifact_data):
       file_data = artifact_data.file_data
       assert file_data is not None
-      parsed_uri = artifact_util.parse_artifact_uri(
-          cast(str, file_data.file_uri)
-      )
-      if not parsed_uri:
-        raise InputValidationError(
-            f"Invalid artifact reference URI: {file_data.file_uri}"
-        )
-      artifact_util.validate_artifact_reference_scope(
+      parsed_uri = artifact_util.resolve_artifact_reference(
+          file_uri=cast(str, file_data.file_uri),
           app_name=app_name,
           user_id=user_id,
           session_id=session_id,
-          parsed_uri=parsed_uri,
+          remaining_depth=remaining_depth,
       )
-      return await self.load_artifact(
+      return await self._load_artifact(
           app_name=parsed_uri.app_name,
           user_id=parsed_uri.user_id,
           filename=parsed_uri.filename,
           session_id=parsed_uri.session_id,
           version=parsed_uri.version,
+          remaining_depth=remaining_depth - 1,
       )
 
     if artifact_data == types.Part() or artifact_data == _REWIND_TOMBSTONE:

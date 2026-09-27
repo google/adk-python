@@ -1246,3 +1246,90 @@ async def test_monkeypatched_check_require_confirmation(mock_tool_context):
     assert "requires confirmation" in result.get("error", "").lower()
   finally:
     FunctionTool.check_require_confirmation = original_method
+
+
+@pytest.mark.asyncio
+async def test_run_async_coerces_integral_floats_in_list_int_param(
+    mock_tool_context,
+):
+  """Integral floats inside a list[int] argument are coerced back to int."""
+
+  async def tool_with_list_int(component_ids: list[int]):
+    return {"types": [type(i).__name__ for i in component_ids]}
+
+  tool = FunctionTool(tool_with_list_int)
+  result = await tool.run_async(
+      args={"component_ids": [1396683.0, 7.0]},
+      tool_context=mock_tool_context,
+  )
+  assert result == {"types": ["int", "int"]}
+
+
+@pytest.mark.asyncio
+async def test_run_async_coerces_integral_floats_in_optional_list_int_param(
+    mock_tool_context,
+):
+  """Optional[list[int]] is unwrapped before the check, so it is coerced too."""
+
+  async def tool_with_optional_list_int(
+      component_ids: Optional[list[int]] = None,
+  ):
+    return {"types": [type(i).__name__ for i in component_ids]}
+
+  tool = FunctionTool(tool_with_optional_list_int)
+  result = await tool.run_async(
+      args={"component_ids": [7.0]},
+      tool_context=mock_tool_context,
+  )
+  assert result == {"types": ["int"]}
+
+
+@pytest.mark.asyncio
+async def test_run_async_passes_through_non_integral_float_in_list_int_param(
+    mock_tool_context,
+    caplog,
+):
+  """A list element that is not a whole number is not silently truncated."""
+
+  async def tool_with_list_int(component_ids: list[int]):
+    return {"got": component_ids}
+
+  tool = FunctionTool(tool_with_list_int)
+  with caplog.at_level("WARNING"):
+    result = await tool.run_async(
+        args={"component_ids": [1.5, 2.0]},
+        tool_context=mock_tool_context,
+    )
+  assert result == {"got": [1.5, 2]}
+  assert "Argument 'component_ids' is typed list[int]" in caplog.text
+  assert "1.5" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_run_async_leaves_list_float_param_alone(mock_tool_context):
+  """A list[float] parameter keeps its floats, so the coercion is int-only."""
+
+  async def tool_with_list_float(ratios: list[float]):
+    return {"types": [type(r).__name__ for r in ratios]}
+
+  tool = FunctionTool(tool_with_list_float)
+  result = await tool.run_async(
+      args={"ratios": [2.0]},
+      tool_context=mock_tool_context,
+  )
+  assert result == {"types": ["float"]}
+
+
+@pytest.mark.asyncio
+async def test_run_async_leaves_untyped_list_param_alone(mock_tool_context):
+  """A bare list annotation carries no element type, so nothing is coerced."""
+
+  async def tool_with_bare_list(values: list):
+    return {"types": [type(v).__name__ for v in values]}
+
+  tool = FunctionTool(tool_with_bare_list)
+  result = await tool.run_async(
+      args={"values": [2.0]},
+      tool_context=mock_tool_context,
+  )
+  assert result == {"types": ["float"]}

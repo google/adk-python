@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 import json
 import os
 from pathlib import Path
@@ -323,6 +324,22 @@ def _extract_user_content(event: dict) -> Optional[types.Content]:
   if real_parts:
     return types.Content(role="user", parts=real_parts)
   return None
+
+
+def _has_unmapped_function_response(
+    content: types.Content,
+    mapped_function_call_ids: Collection[str],
+) -> bool:
+  """Returns whether replaying content would submit an orphaned response."""
+  return bool(
+      content.parts
+      and any(
+          part.function_response
+          and part.function_response.id
+          and part.function_response.id not in mapped_function_call_ids
+          for part in content.parts
+      )
+  )
 
 
 def _remap_node_path(path: str, id_map: dict[str, str]) -> str:
@@ -672,6 +689,9 @@ def test_agent_replay(agent_dir, test_file, monkeypatch):
       if event.get("author") == "user":
         content = _extract_user_content(event)
         if content:
+          has_unmapped_function_response = _has_unmapped_function_response(
+              content, orig_to_new_id
+          )
           # Update function response IDs if mapped
           if content.parts:
             for part in content.parts:
@@ -690,6 +710,8 @@ def test_agent_replay(agent_dir, test_file, monkeypatch):
                   branch=event.get("branch"),
               )
           )
+          if has_unmapped_function_response:
+            continue
           next_run_events = runner.run(content)
 
           # Post-process events to inject deterministic function IDs
