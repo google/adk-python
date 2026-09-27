@@ -169,8 +169,7 @@ raises `ValueError` naming the offending node or edge.
 4. Every node is reachable from `START`, and `START` has no incoming edges.
 5. No two edges share both a source and a target — routes are not part of edge
    identity.
-6. At most one `__DEFAULT__` route per node, and `__DEFAULT__` never appears
-   inside a list of routes.
+6.  A `route` list on one edge never mixes `__DEFAULT__` with named routes.
 7. No unconditional cycle — a cycle needs at least one routed edge.
 8. Where a source declares `output_schema` and its target declares
    `input_schema`, the two must be the same schema.

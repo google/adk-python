@@ -163,6 +163,8 @@ def _resolve_code_executor(
 class _CodeExecutionRequestProcessor(BaseLlmRequestProcessor):  # type: ignore[misc]
   """Processes code execution requests."""
 
+  name = 'code_execution'
+
   @override
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
@@ -196,6 +198,8 @@ request_processor = _CodeExecutionRequestProcessor()
 
 class _CodeExecutionResponseProcessor(BaseLlmResponseProcessor):  # type: ignore[misc]
   """Processes code execution responses."""
+
+  name = 'code_execution'
 
   @override
   async def run_async(

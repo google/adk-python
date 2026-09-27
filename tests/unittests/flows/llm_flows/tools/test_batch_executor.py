@@ -240,3 +240,64 @@ async def test_start_execute_task_keeps_parallel_calls_isolated() -> None:
   ])
 
   assert results == ['call-0', 'call-1', 'call-2']
+
+
+@pytest.mark.parametrize(
+    'has_event_queue,expect_enqueue,expect_session_append',
+    [
+        (True, True, False),
+        (False, False, True),
+    ],
+)
+@pytest.mark.asyncio
+async def test_launch_non_blocking_call_live(
+    has_event_queue: bool,
+    expect_enqueue: bool,
+    expect_session_append: bool,
+) -> None:
+  function_call = types.FunctionCall(name='my_tool', id='call_123')
+  tool = BaseTool(name='my_tool', description='')
+  event = Event(invocation_id='inv-1', content=types.Content())
+
+  mock_session = mock.MagicMock()
+  mock_session_service = mock.MagicMock(append_event=mock.AsyncMock())
+  mock_ic = mock.MagicMock(
+      _event_queue=asyncio.Queue() if has_event_queue else None,
+      session=mock_session,
+      session_service=mock_session_service,
+      active_non_blocking_tool_tasks={},
+      _enqueue_event=mock.AsyncMock(),
+  )
+
+  with (
+      mock.patch.object(
+          _batch_tool_executor, '_prepare_single', new_callable=mock.AsyncMock
+      ),
+      mock.patch.object(
+          _batch_tool_executor,
+          '_execute_single_prepared_call_live',
+          new_callable=mock.AsyncMock,
+          return_value=event,
+      ),
+  ):
+    await _batch_tool_executor._launch_non_blocking_call_live(
+        invocation_context=mock_ic,
+        function_call=function_call,
+        tool=tool,
+        tools_dict={'my_tool': tool},
+        agent=mock.MagicMock(),
+        active_tools_lock=asyncio.Lock(),
+        live_session_id='live_session_123',
+    )
+
+    task_key = 'my_tool_call_123'
+    assert task_key in mock_ic.active_non_blocking_tool_tasks
+    await mock_ic.active_non_blocking_tool_tasks[task_key]
+
+  assert event.live_session_id == 'live_session_123'
+  assert mock_ic._enqueue_event.await_count == (1 if expect_enqueue else 0)
+  assert mock_session_service.append_event.await_count == (
+      1 if expect_session_append else 0
+  )
+  mock_ic.live_request_queue.send_content.assert_called_once_with(event.content)
+  assert task_key not in mock_ic.active_non_blocking_tool_tasks

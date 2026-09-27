@@ -42,8 +42,8 @@ from ..code_executors.base_code_executor import BaseCodeExecutor
 from ..events.event import Event
 from ..flows.llm_flows.auto_flow import AutoFlow
 from ..flows.llm_flows.base_llm_flow import BaseLlmFlow
-from ..flows.llm_flows.functions import find_matching_function_call
 from ..flows.llm_flows.single_flow import SingleFlow
+from ..flows.llm_flows.tools._functions import find_matching_function_call
 from ..models.base_llm import BaseLlm
 from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse

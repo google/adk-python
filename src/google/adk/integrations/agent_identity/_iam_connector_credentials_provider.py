@@ -26,7 +26,7 @@ from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import HttpAuth
 from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.auth.auth_credential import OAuth2Auth
-from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from google.adk.flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from google.api_core.client_options import ClientOptions
 from google.api_core.exceptions import GoogleAPIError
 from google.auth.exceptions import GoogleAuthError

@@ -165,10 +165,13 @@ A built-in development UI to help you test, evaluate, debug, and showcase your a
 
 ### Evaluate Agents
 
+Run the bundled evaluation sample from the repo root:
+
 ```bash
 adk eval \
-    samples_for_testing/hello_world \
-    samples_for_testing/hello_world/hello_world_eval_set_001.evalset.json
+    contributing/samples/evaluation/home_automation_agent \
+    contributing/samples/evaluation/basic_criteria/home_automation.evalset.json \
+    --config_file_path contributing/samples/evaluation/basic_criteria/eval_config.json
 ```
 
 ### 🚀 Deployment Options

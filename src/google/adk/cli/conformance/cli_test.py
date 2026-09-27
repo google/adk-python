@@ -344,10 +344,12 @@ async def run_conformance_test(
   _print_test_header(mode)
 
   test_summaries: list[_ConformanceTestSummary] = []
+  selected_streaming_mode: Optional[StreamingMode] = None
   async with AdkWebServerClient() as client:
     modes_to_run = _SUPPORTED_STREAMING_MODES
     if streaming_mode and streaming_mode in _SUPPORTED_STREAMING_MODES:
       modes_to_run = [streaming_mode]
+      selected_streaming_mode = streaming_mode
     for current_streaming_mode in modes_to_run:
       runner = ConformanceTestRunner(
           test_paths, client, mode, streaming_mode=current_streaming_mode
@@ -358,7 +360,7 @@ async def run_conformance_test(
       version_data = await client.get_version_data()
       generate_markdown_report(version_data, test_summaries, report_dir)
 
-  _print_test_summary(test_summaries)
+  _print_test_summary(test_summaries, selected_streaming_mode)
 
 
 def _print_test_header(mode: str) -> None:
@@ -386,8 +388,33 @@ def _print_test_result_details(result: _TestResult) -> None:
     click.secho(indented_message, fg="red", err=True)
 
 
-def _print_test_summary(summaries: list[_ConformanceTestSummary]) -> None:
-  """Print the conformance test summary results."""
+def _print_test_summary(
+    summaries: list[_ConformanceTestSummary],
+    selected_streaming_mode: Optional[StreamingMode] = None,
+) -> None:
+  """Print the conformance test summary results.
+
+  Args:
+    summaries: One summary per streaming mode that was run.
+    selected_streaming_mode: The streaming mode the user asked for, if any.
+      Recordings are made one streaming mode at a time, so a mode with no test
+      cases is only a failure when the user asked for that mode, or when no
+      mode ran anything.
+
+  Raises:
+    click.ClickException: If any streaming mode failed tests, if the requested
+      streaming mode ran no test, or if no streaming mode ran any test, so that
+      the command exits with a non-zero status.
+  """
+  failures: list[str] = []
+
+  if not summaries:
+    failures.append("No conformance tests were run")
+
+  fail_when_mode_is_empty = selected_streaming_mode is not None or not any(
+      summary.total_tests for summary in summaries
+  )
+
   for summary in summaries:
     click.echo("\n" + "=" * 50)
     click.echo(
@@ -397,7 +424,12 @@ def _print_test_summary(summaries: list[_ConformanceTestSummary]) -> None:
 
     if summary.total_tests == 0:
       click.secho("No tests were run.", fg="yellow")
-      return
+      if fail_when_mode_is_empty:
+        failures.append(
+            "No test cases were found for streaming mode"
+            f" {summary.streaming_mode}"
+        )
+      continue
 
     click.echo(f"Total tests: {summary.total_tests}")
     click.secho(f"Passed: {summary.passed_tests}", fg="green")
@@ -416,8 +448,14 @@ def _print_test_summary(summaries: list[_ConformanceTestSummary]) -> None:
       for result in failed_tests:
         _print_test_result_details(result)
 
-    # Exit with error code if any tests failed
     if summary.failed_tests > 0:
-      raise click.ClickException(f"{summary.failed_tests} test(s) failed")
+      failures.append(
+          f"{summary.failed_tests} test(s) failed for streaming mode"
+          f" {summary.streaming_mode}"
+      )
     else:
       click.secho("\nAll tests passed! 🎉", fg="green")
+
+  # Exit with an error code if any streaming mode failed.
+  if failures:
+    raise click.ClickException("\n".join(failures))

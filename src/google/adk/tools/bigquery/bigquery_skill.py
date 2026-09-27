@@ -12,32 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Pre-packaged BigQuery skill for use with SkillToolset."""
-
 from __future__ import annotations
 
-import pathlib
+import warnings
 
-from ...skills import load_skill_from_dir
-from ...skills import Skill
+from google.adk.integrations.bigquery._bigquery_skill import *
 
-_SKILL_DIR = pathlib.Path(__file__).parent / "skills" / "bigquery-ai-ml"
-
-
-def get_bigquery_skill() -> Skill:
-  """Returns the pre-packaged BigQuery data analysis skill.
-
-  This skill follows the agentskills.io specification and
-  provides curated instructions for BigQuery data analysis.
-  Use it with SkillToolset alongside BigQueryToolset:
-
-    from google.adk.tools.bigquery import BigQueryToolset
-    from google.adk.tools.bigquery.bigquery_skill import get_bigquery_skill
-    from google.adk.tools.skill_toolset import SkillToolset
-
-    bq_skill = get_bigquery_skill()
-    toolset = SkillToolset(skills=[bq_skill])
-    bigquery_toolset = BigQueryToolset(...)
-    agent = LlmAgent(tools=[bigquery_toolset, toolset])
-  """
-  return load_skill_from_dir(_SKILL_DIR)
+warnings.warn(
+    "google.adk.tools.bigquery.bigquery_skill is moved to"
+    " google.adk.integrations.bigquery",
+    DeprecationWarning,
+    stacklevel=2,
+)
