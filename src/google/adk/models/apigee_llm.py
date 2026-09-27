@@ -40,6 +40,7 @@ from typing_extensions import override
 
 from ..utils import _json_utils
 from ..utils import streaming_utils
+from ..utils._event_loop_cache import PerLoopCachedProperty
 from ..utils.env_utils import is_enterprise_mode_enabled
 from .google_llm import Gemini
 from .llm_response import LlmResponse
@@ -279,7 +280,7 @@ class ApigeeLlm(Gemini):
           await self._adapt_computer_use_tool(llm_request)
     self._maybe_append_user_content(llm_request)
 
-  @cached_property
+  @PerLoopCachedProperty
   def api_client(self) -> Client:
     """Provides the api client.
 

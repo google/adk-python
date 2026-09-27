@@ -69,7 +69,7 @@ def _id_pairing_model_types() -> tuple[type[BaseLlm], ...]:
   except (ImportError, OSError):
     pass
   try:
-    from ....labs.openai import OpenAIResponsesLlm
+    from ....integrations.openai._openai_responses_llm import OpenAIResponsesLlm
 
     model_types.append(OpenAIResponsesLlm)
   except (ImportError, OSError):

@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 from typing import List
 from typing import Optional
@@ -82,10 +83,19 @@ async def cleanup_unused_files(
       result["errors"].append(f"Root directory does not exist: {root_path}")
       return result
 
-    # Find all files matching patterns
+    # Find all files matching patterns. A glob pattern can reach outside the
+    # root directory through a parent-directory component or a symlink, so
+    # matches that land outside the root are dropped.
     all_files: list[Any] = []
     for pattern in file_patterns:
-      all_files.extend(root_path.rglob(pattern))
+      if ".." in Path(pattern).parts:
+        result["errors"].append(
+            f"File pattern must stay within the root directory: {pattern}"
+        )
+        continue
+      for candidate in root_path.rglob(pattern):
+        if candidate.resolve().is_relative_to(root_path):
+          all_files.append(candidate)
 
     # Filter out excluded patterns
     for exclude_pattern in exclude_patterns:

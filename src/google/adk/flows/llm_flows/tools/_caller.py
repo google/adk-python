@@ -1005,23 +1005,23 @@ async def _process_function_live_helper(
 
     if task:
       task.cancel()
-      try:
-        # Wait for the task to be cancelled
-        await asyncio.wait_for(task, timeout=1.0)
-      except (asyncio.CancelledError, asyncio.TimeoutError):
-        # Log the specific condition
-        if task.cancelled():
-          logging.info('Task %s was cancelled successfully', function_name)
-        elif task.done():
-          logging.info('Task %s completed during cancellation', function_name)
-        else:
-          logging.warning(
-              'Task %s might still be running after cancellation timeout',
-              function_name,
-          )
-          function_response = {
-              'status': f'The task is not cancelled yet for {function_name}.'
-          }
+      # Wait for the task to be cancelled
+      await asyncio.wait([task], timeout=1.0)
+      # Log the specific condition
+      if task.cancelled():
+        logging.info('Task %s was cancelled successfully', function_name)
+      elif task.done():
+        if exc := task.exception():
+          raise exc
+        logging.info('Task %s completed during cancellation', function_name)
+      else:
+        logging.warning(
+            'Task %s might still be running after cancellation timeout',
+            function_name,
+        )
+        function_response = {
+            'status': f'The task is not cancelled yet for {function_name}.'
+        }
       if not function_response:
         # Clean up the reference under lock
         async with active_tools_lock:

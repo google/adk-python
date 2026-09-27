@@ -35,7 +35,6 @@ from ..events._node_path_builder import _NodePathBuilder
 from ._base_node import BaseNode
 from ._errors import DynamicNodeFailError
 from ._errors import NodeInterruptedError
-from ._errors import WorkflowConfigurationError
 from ._errors import WorkflowInvariantError
 from ._graph import NodeLike
 from ._node_runner import NodeRunner
@@ -74,6 +73,9 @@ class DynamicNodeRun:
 
   recovered_state: _ChildScanState | None = None
   """The raw scan state from events, used for replay interception."""
+
+  is_static: bool = False
+  """Whether this run was scheduled as a static graph node."""
 
 
 @dataclass(kw_only=True)
@@ -434,23 +436,10 @@ class DynamicNodeScheduler:
       logger.debug('node %s schedule: Awaiting existing task.', node_path)
       return await run.task, True
 
-    if run.recovered_state:
-      recovered = run.recovered_state
-      unresolved = recovered.interrupt_ids - recovered.resolved_ids
-      if recovered.interrupt_ids and not unresolved:
-        if curr_node.wait_for_output and not curr_node.rerun_on_resume:
-          raise WorkflowConfigurationError(
-              f'Node {node_path} is waiting for output but was called again'
-              ' with rerun_on_resume=False. This would cause it to'
-              ' auto-complete with empty output, which is likely a'
-              ' configuration error. Consider setting rerun_on_resume=True.'
-          )
-
-    # Delegate replay and same-turn interception check to ReplayInterceptor.
     result = check_interception(
         node=curr_node,
         recovered=run.recovered_state,
-        current_run=run,
+        current_run=None if run.is_static else run,
     )
 
     if not result.should_run:
@@ -467,13 +456,24 @@ class DynamicNodeScheduler:
         run.output = result.output
         run.transfer_to_agent = result.transfer_to_agent
 
-      # Create a high-fidelity mock context with cached results.
+      if run.is_static:
+        ancestor_path = (
+            curr_parent_ctx.node_path
+            if (use_as_output and curr_parent_ctx)
+            else None
+        )
+        ancestors = ([ancestor_path] if ancestor_path else []) + list(
+            (curr_parent_ctx._output_for_ancestors if curr_parent_ctx else None)
+            or []
+        )
+      else:
+        ancestors = []
       mock_ctx = create_mock_context(
           parent_ctx=curr_parent_ctx,
           node=curr_node,
           run_id=curr_run_id,
           result=result,
-          ancestors=[],
+          ancestors=ancestors,
           node_path=node_path,
           branch=(run.recovered_state.branch if run.recovered_state else None),
       )

@@ -277,9 +277,9 @@ async def test_base_llm_flow_forwarding_shims():
   assert events[0].live_session_resumption_update == update
 
 
-async def test_stop_background_tool_tasks_uses_base_llm_flow_timeout():
-  """stop_background_tool_tasks uses _TOOL_SHUTDOWN_TIMEOUT_SECONDS from base_llm_flow."""
-  from google.adk.flows.llm_flows import base_llm_flow
+async def test_stop_background_tool_tasks_uses_timeout():
+  """stop_background_tool_tasks uses _TOOL_SHUTDOWN_TIMEOUT_SECONDS."""
+  from google.adk.live import _flow_utils
 
   flow = _TestBaseLlmFlow()
   context = _create_test_context()
@@ -291,7 +291,7 @@ async def test_stop_background_tool_tasks_uses_base_llm_flow_timeout():
   context.active_non_blocking_tool_tasks = {'t': task}
 
   with (
-      mock.patch.object(base_llm_flow, '_TOOL_SHUTDOWN_TIMEOUT_SECONDS', 0.01),
+      mock.patch.object(_flow_utils, '_TOOL_SHUTDOWN_TIMEOUT_SECONDS', 0.01),
       mock.patch('asyncio.wait', wraps=asyncio.wait) as mock_wait,
   ):
     await _live_llm_flow.stop_background_tool_tasks(flow, context)
@@ -299,16 +299,16 @@ async def test_stop_background_tool_tasks_uses_base_llm_flow_timeout():
   assert mock_wait.call_args.kwargs['timeout'] == 0.01
 
 
-async def test_handle_control_event_flush_logs_stats_when_enabled_on_base_llm_flow():
-  """handle_control_event_flush queries DEFAULT_ENABLE_CACHE_STATISTICS on base_llm_flow."""
-  from google.adk.flows.llm_flows import base_llm_flow
+async def test_handle_control_event_flush_logs_stats_when_enabled():
+  """handle_control_event_flush queries DEFAULT_ENABLE_CACHE_STATISTICS."""
+  from google.adk.live import _flow_utils
 
   flow = _TestBaseLlmFlow()
   context = _create_test_context()
   response = LlmResponse(turn_complete=True)
 
   with (
-      mock.patch.object(base_llm_flow, 'DEFAULT_ENABLE_CACHE_STATISTICS', True),
+      mock.patch.object(_flow_utils, 'DEFAULT_ENABLE_CACHE_STATISTICS', True),
       mock.patch.object(
           flow.audio_cache_manager, 'get_cache_stats'
       ) as mock_get_stats,

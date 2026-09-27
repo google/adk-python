@@ -25,6 +25,7 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.genai import types
@@ -495,3 +496,78 @@ def test_restore_branch_from_history():
 
   _agent_router.restore_branch_from_history(ic, sub1, root=root)
   assert ic.branch == "root@1.sub_agent1@1"
+
+
+def test_restore_branch_from_history_skips_rewound_events():
+  """restore_branch_from_history ignores branches authored in rewound invocations."""
+  session_service = InMemorySessionService()
+  session = Session(
+      id="s1",
+      app_name="app",
+      user_id="u1",
+      events=[
+          Event(
+              author="sub_agent1",
+              branch="root@1.sub_agent1@1",
+              invocation_id="inv_1",
+          ),
+          Event(
+              author="sub_agent1",
+              branch="root@1.sub_agent1@2",
+              invocation_id="inv_2",
+          ),
+          Event(
+              author="user",
+              invocation_id="inv_3",
+              actions=EventActions(rewind_before_invocation_id="inv_2"),
+          ),
+      ],
+  )
+  root, sub1, _, _ = _make_agent_tree()
+
+  ic = InvocationContext(
+      session_service=session_service,
+      invocation_id="inv_3",
+      agent=sub1,
+      session=session,
+      run_config=RunConfig(),
+  )
+  ic.branch = None
+
+  _agent_router.restore_branch_from_history(ic, sub1, root=root)
+  assert ic.branch == "root@1.sub_agent1@1"
+
+
+def test_restore_branch_from_history_all_rewound_leaves_branch_none():
+  """restore_branch_from_history leaves branch as None if all matches are rewound."""
+  session_service = InMemorySessionService()
+  session = Session(
+      id="s1",
+      app_name="app",
+      user_id="u1",
+      events=[
+          Event(
+              author="sub_agent1",
+              branch="root@1.sub_agent1@1",
+              invocation_id="inv_1",
+          ),
+          Event(
+              author="user",
+              invocation_id="inv_2",
+              actions=EventActions(rewind_before_invocation_id="inv_1"),
+          ),
+      ],
+  )
+  root, sub1, _, _ = _make_agent_tree()
+
+  ic = InvocationContext(
+      session_service=session_service,
+      invocation_id="inv_2",
+      agent=sub1,
+      session=session,
+      run_config=RunConfig(),
+  )
+  ic.branch = None
+
+  _agent_router.restore_branch_from_history(ic, sub1, root=root)
+  assert ic.branch is None

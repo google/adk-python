@@ -64,6 +64,15 @@ repos:
         # This script documents and matches the very patterns it forbids, so
         # it must not scan itself or other dev-only tooling.
         exclude: ^scripts/
+      - id: check-docs
+        name: Check documentation links and guide index
+        description: Verifies that relative links in docs/ and contributing/ resolve, and that every guide is listed in the guides index.
+        entry: scripts/check_docs.py
+        language: script
+        # Deleting or renaming a guide breaks the index without editing any
+        # file this hook would be handed, so it reads the tree itself.
+        always_run: true
+        pass_filenames: false
       - id: update-constraints
         name: update-constraints
         # --check reuses the resolution date recorded in each constraints file.

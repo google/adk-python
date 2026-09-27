@@ -231,6 +231,7 @@ async def test_clone_with_updated_skills_keeps_filter_and_prefix(
   """The clone exposes the same tools, under the same names, as the original."""
   mock_skill2 = mock.create_autospec(models.Skill, instance=True)
   mock_skill2.name = "skill2"
+  mock_skill2.resources = models.Resources()
 
   toolset = skill_toolset.SkillToolset(
       [mock_skill1],
@@ -262,7 +263,7 @@ async def test_clone_with_updated_skills_keeps_discovery_mode(
       discovery_mode=skill_toolset.SkillDiscoveryMode.EAGER,
   )
 
-  new_toolset = toolset.clone_with_updated_skills([mock_skill2])
+  new_toolset = toolset.clone_with_updated_skills([mock_skill1, mock_skill2])
 
   original_names = [
       t.name for t in await toolset.get_tools(tool_context_instance)
@@ -1110,6 +1111,7 @@ async def test_execute_script_shell_success(mock_skill1):
   assert "encoding='utf-8'" in code_input.code
   assert "errors='replace'" in code_input.code
   assert "__shell_result__" in code_input.code
+  assert "print('\\n' + _json.dumps(" in code_input.code
 
 
 @pytest.mark.asyncio
@@ -2059,6 +2061,89 @@ async def test_shell_json_envelope_parsed(mock_skill1):
   assert result["status"] == "success"
   assert result["stdout"] == "hello from shell\n"
   assert result["stderr"] == ""
+
+
+@pytest.mark.asyncio
+async def test_shell_json_envelope_parsed_with_garbage(mock_skill1):
+  """Shell JSON envelope is correctly unpacked even with garbage in stdout."""
+
+  envelope = json.dumps({
+      "__shell_result__": True,
+      "stdout": "hello from shell\n",
+      "stderr": "",
+      "returncode": 0,
+  })
+  earlier_decoy = json.dumps({
+      "__shell_result__": True,
+      "stdout": "stale earlier output\n",
+      "stderr": "",
+      "returncode": 0,
+  })
+  stdout_with_garbage = (
+      "Python warning: some library loaded\n"
+      + earlier_decoy
+      + '\n{"level": "warning", "msg": "not the envelope"}\n'
+      + envelope
+      + '\n{"level": "warning", "msg": "trailing decoy"}\n'
+      + "Some other trailing garbage"
+  )
+  executor = _make_mock_executor(stdout=stdout_with_garbage)
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "setup.sh"},
+      tool_context=ctx,
+  )
+  assert result["status"] == "success"
+  assert result["stdout"] == "hello from shell\n"
+  assert result["stderr"] == ""
+
+
+@pytest.mark.asyncio
+async def test_shell_json_envelope_nonzero_returncode_with_garbage(mock_skill1):
+  """Non-zero returncode in shell envelope with stdout garbage sets stderr."""
+
+  envelope = json.dumps({
+      "__shell_result__": True,
+      "stdout": "partial output\n",
+      "stderr": "",
+      "returncode": 2,
+  })
+  stdout_with_garbage = (
+      "Python warning: some library loaded\n"
+      + '{"level": "warning", "msg": "not the envelope"}\n'
+      + envelope
+      + '\n{"level": "warning", "msg": "trailing decoy"}\n'
+      + "Some other trailing garbage"
+  )
+  executor = _make_mock_executor(stdout=stdout_with_garbage)
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "setup.sh"},
+      tool_context=ctx,
+  )
+  assert result["status"] == "error"
+  assert result["stdout"] == "partial output\n"
+  assert "Exit code 2" in result["stderr"]
+
+
+@pytest.mark.asyncio
+async def test_shell_json_envelope_missing_logs_warning(mock_skill1, caplog):
+  """A warning is logged when a shell script emits stdout but no envelope."""
+  executor = _make_mock_executor(stdout="some non-json output\n")
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  with caplog.at_level(logging.WARNING):
+    await tool.run_async(
+        args={"skill_name": "skill1", "file_path": "setup.sh"},
+        tool_context=ctx,
+    )
+  assert "No shell execution envelope found in stdout" in caplog.text
+  assert "from skill 'skill1'" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -3408,6 +3493,116 @@ async def test_get_tools_keeps_run_skill_script_without_context(mock_skill1):
 
 
 @pytest.mark.asyncio
+async def test_get_tools_hides_run_skill_script_when_no_skill_has_scripts(
+    mock_skill2,
+):
+  """Every call would return SCRIPT_NOT_FOUND, so drop the tool."""
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill2], code_executor=_make_mock_executor()
+  )
+
+  tools = await toolset.get_tools(
+      _make_readonly_context(mock.MagicMock(spec=[]))
+  )
+
+  assert not any(isinstance(t, skill_toolset.RunSkillScriptTool) for t in tools)
+
+
+@pytest.mark.asyncio
+async def test_get_tools_keeps_run_skill_script_when_one_skill_has_scripts(
+    mock_skill1, mock_skill2
+):
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill2, mock_skill1], code_executor=_make_mock_executor()
+  )
+
+  tools = await toolset.get_tools(
+      _make_readonly_context(mock.MagicMock(spec=[]))
+  )
+
+  assert any(isinstance(t, skill_toolset.RunSkillScriptTool) for t in tools)
+
+
+@pytest.mark.asyncio
+async def test_get_tools_keeps_run_skill_script_with_registry(mock_skill2):
+  """A registry skill's scripts are unknown until it is fetched."""
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill2],
+      registry=mock.create_autospec(skill_toolset.SkillRegistry, instance=True),
+      code_executor=_make_mock_executor(),
+  )
+
+  tools = await toolset.get_tools(
+      _make_readonly_context(mock.MagicMock(spec=[]))
+  )
+
+  assert any(isinstance(t, skill_toolset.RunSkillScriptTool) for t in tools)
+
+
+_CONTEXTS_WITHOUT_SESSION = {
+    "no_context": lambda: None,
+    "no_invocation_context": lambda: mock.create_autospec(
+        ReadonlyContext, instance=True, spec_set=True
+    ),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "make_context",
+    _CONTEXTS_WITHOUT_SESSION.values(),
+    ids=_CONTEXTS_WITHOUT_SESSION.keys(),
+)
+async def test_get_tools_keeps_run_skill_script_without_session(
+    mock_skill2, make_context
+):
+  """A subclass may need session state to list its skills, so keep the tool."""
+  toolset = skill_toolset.SkillToolset([mock_skill2])
+
+  tools = await toolset.get_tools(make_context())
+
+  assert any(isinstance(t, skill_toolset.RunSkillScriptTool) for t in tools)
+
+
+@pytest.mark.asyncio
+async def test_get_tools_checks_scripts_of_listed_skills(
+    mock_skill1, mock_skill2
+):
+  """Subclasses that rescan or filter skills override `_list_skills`."""
+
+  class _RescanningToolset(skill_toolset.SkillToolset):
+
+    def _list_skills(self):
+      return [mock_skill1]
+
+  toolset = _RescanningToolset(
+      [mock_skill2], code_executor=_make_mock_executor()
+  )
+
+  tools = await toolset.get_tools(
+      _make_readonly_context(mock.MagicMock(spec=[]))
+  )
+
+  assert any(isinstance(t, skill_toolset.RunSkillScriptTool) for t in tools)
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_drops_script_guidance_without_scripts(
+    mock_skill2,
+):
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill2], code_executor=_make_mock_executor()
+  )
+  ctx = _make_tool_context_with_agent(agent=mock.MagicMock(spec=[]))
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(tool_context=ctx, llm_request=llm_req)
+
+  instruction = llm_req.append_instructions.call_args[0][0][0]
+  assert "run_skill_script" not in instruction
+
+
+@pytest.mark.asyncio
 async def test_process_llm_request_drops_script_guidance_without_backend(
     mock_skill1,
 ):
@@ -4241,6 +4436,7 @@ def _lifecycle_skill(name, additional_tools=None):
   skill.name = name
   skill.instructions = f"instructions for {name}"
   skill.frontmatter = frontmatter
+  skill.resources = models.Resources()
   skill._uri = None
   return skill
 
@@ -4872,3 +5068,354 @@ def test_clone_keeps_tracking_ephemeral_skills(mock_skill1):
   assert toolset.clone_with_updated_skills(
       [mock_skill1]
   )._tracks_ephemeral_skills
+
+
+# Revalidating skills that changed after they were loaded
+
+
+def _real_skill(name="a", instructions="v1", references=None, scripts=None):
+  """A real Skill, so the digest runs over real content."""
+  return models.Skill(
+      frontmatter=models.Frontmatter(name=name, description="d"),
+      instructions=instructions,
+      resources=models.Resources(
+          references=references or {},
+          scripts={
+              path: models.Script(src=src)
+              for path, src in (scripts or {}).items()
+          },
+      ),
+  )
+
+
+def _revalidating_toolset(skill, **kwargs):
+  return skill_toolset.SkillToolset(
+      [skill],
+      lifecycle_config=skill_toolset.SkillLifecycleConfig(
+          revalidate_skills=True
+      ),
+      **kwargs,
+  )
+
+
+async def _instructions_for(toolset, ctx):
+  """The instruction blocks process_llm_request appends."""
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+  llm_req.contents = []
+  await toolset.process_llm_request(tool_context=ctx, llm_request=llm_req)
+  return llm_req.append_instructions.call_args[0][0]
+
+
+def test_content_hash_is_the_same_for_the_same_content():
+  assert skill_toolset._skill_content_hash(
+      _real_skill()
+  ) == skill_toolset._skill_content_hash(_real_skill())
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"instructions": "v2"},
+        {"references": {"r.md": "reference body"}},
+        {"scripts": {"s.py": "print(1)"}},
+        {"name": "b"},
+    ],
+    ids=["instructions", "reference", "script", "name"],
+)
+def test_content_hash_covers_everything_a_skill_says(changed):
+  """Not just SKILL.md: a reference or a script can carry the real steps."""
+  assert skill_toolset._skill_content_hash(
+      _real_skill()
+  ) != skill_toolset._skill_content_hash(_real_skill(**changed))
+
+
+def test_content_hash_distinguishes_content_moved_between_files():
+  """Concatenating the payloads alone would hash these two the same."""
+  one = _real_skill(references={"a.md": "body", "b.md": ""})
+  other = _real_skill(references={"a.md": "", "b.md": "body"})
+
+  assert skill_toolset._skill_content_hash(
+      one
+  ) != skill_toolset._skill_content_hash(other)
+
+
+@pytest.mark.asyncio
+async def test_a_changed_skill_is_restated(lifecycle_context):
+  """The transcript still holds v1, so v2 has to be said out loud."""
+  toolset = _revalidating_toolset(_real_skill(instructions="v1"))
+  await _load(skill_toolset.LoadSkillTool(toolset), lifecycle_context, "a")
+
+  toolset._skills["a"] = _real_skill(instructions="v2")
+  instructions = await _instructions_for(toolset, lifecycle_context)
+
+  restated = [i for i in instructions if "has changed since it was loaded" in i]
+  assert len(restated) == 1
+  assert "v2" in restated[0]
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_skill_is_left_alone(lifecycle_context):
+  """Re-stating an unchanged skill would cost tokens and buy nothing."""
+  toolset = _revalidating_toolset(_real_skill())
+  await _load(skill_toolset.LoadSkillTool(toolset), lifecycle_context, "a")
+
+  instructions = await _instructions_for(toolset, lifecycle_context)
+
+  assert not [i for i in instructions if "has changed" in i]
+
+
+@pytest.mark.asyncio
+async def test_nothing_is_revalidated_by_default(lifecycle_context):
+  """Off by default: it costs a lookup per active skill per turn."""
+  toolset = skill_toolset.SkillToolset([_real_skill(instructions="v1")])
+  await _load(skill_toolset.LoadSkillTool(toolset), lifecycle_context, "a")
+  toolset._skills["a"] = _real_skill(instructions="v2")
+
+  assert _META_KEY not in lifecycle_context.state
+  assert not [
+      i
+      for i in await _instructions_for(toolset, lifecycle_context)
+      if "has changed" in i
+  ]
+
+
+@pytest.mark.asyncio
+async def test_loading_the_new_version_ends_the_restating(lifecycle_context):
+  """Reloading is how the model acknowledges the change."""
+  toolset = _revalidating_toolset(_real_skill(instructions="v1"))
+  tool = skill_toolset.LoadSkillTool(toolset)
+  await _load(tool, lifecycle_context, "a")
+  toolset._skills["a"] = _real_skill(instructions="v2")
+
+  await _load(tool, lifecycle_context, "a")
+
+  assert not [
+      i
+      for i in await _instructions_for(toolset, lifecycle_context)
+      if "has changed" in i
+  ]
+
+
+def _registry_toolset(mock_registry):
+  return skill_toolset.SkillToolset(
+      registry=mock_registry,
+      lifecycle_config=skill_toolset.SkillLifecycleConfig(
+          revalidate_skills=True
+      ),
+  )
+
+
+@pytest.mark.asyncio
+async def test_a_changed_registry_skill_is_restated(
+    lifecycle_context, mock_registry
+):
+  """The registry is where a skill realistically changes under a session."""
+  mock_registry.get_skill.return_value = _real_skill(instructions="v1")
+  toolset = _registry_toolset(mock_registry)
+  await _load(skill_toolset.LoadSkillTool(toolset), lifecycle_context, "a")
+
+  mock_registry.get_skill.return_value = _real_skill(instructions="v2")
+  lifecycle_context.invocation_id = "next_invocation"
+  instructions = await _instructions_for(toolset, lifecycle_context)
+
+  (restated,) = [
+      i for i in instructions if "has changed since it was loaded" in i
+  ]
+  assert "v2" in restated
+
+
+@pytest.mark.asyncio
+async def test_the_registry_is_asked_for_every_skill_at_once(
+    lifecycle_context, mock_registry
+):
+  """In series, a turn's first request waits out one round trip per skill."""
+  order = []
+
+  async def _get_skill(*, name):
+    order.append(("start", name))
+    await asyncio.sleep(0)
+    order.append(("end", name))
+    return _real_skill(name=name)
+
+  mock_registry.get_skill.side_effect = _get_skill
+  toolset = _registry_toolset(mock_registry)
+  tool = skill_toolset.LoadSkillTool(toolset)
+  await _load(tool, lifecycle_context, "a")
+  await _load(tool, lifecycle_context, "b")
+  lifecycle_context.invocation_id = "next_invocation"
+  order.clear()
+
+  await _instructions_for(toolset, lifecycle_context)
+
+  assert order == [("start", "a"), ("start", "b"), ("end", "a"), ("end", "b")]
+
+
+@pytest.mark.asyncio
+async def test_a_rebuilt_toolset_sees_a_changed_local_skill(lifecycle_context):
+  """A local skill is one object per toolset, but callers rebuild the toolset.
+
+  Merging in another source's skills, or swapping in optimized ones, hands
+  `SkillToolset` a fresh set of definitions while the session -- and the digest
+  in its state -- carries on.
+  """
+  toolset = _revalidating_toolset(_real_skill(instructions="v1"))
+  await _load(skill_toolset.LoadSkillTool(toolset), lifecycle_context, "a")
+
+  rebuilt = toolset.clone_with_updated_skills([_real_skill(instructions="v2")])
+  instructions = await _instructions_for(rebuilt, lifecycle_context)
+
+  (restated,) = [
+      i for i in instructions if "has changed since it was loaded" in i
+  ]
+  assert "v2" in restated
+
+
+@pytest.mark.asyncio
+async def test_an_unreachable_registry_does_not_fail_the_turn(
+    lifecycle_context, mock_registry, caplog
+):
+  """The skill keeps the instructions it has rather than the turn dying."""
+  mock_registry.get_skill.return_value = _real_skill()
+  toolset = _registry_toolset(mock_registry)
+  await _load(skill_toolset.LoadSkillTool(toolset), lifecycle_context, "a")
+  mock_registry.get_skill.side_effect = RuntimeError("registry down")
+  lifecycle_context.invocation_id = "next_invocation"
+
+  with caplog.at_level(logging.WARNING):
+    instructions = await _instructions_for(toolset, lifecycle_context)
+
+  assert "Could not revalidate skill 'a'" in caplog.text
+  assert not [i for i in instructions if "has changed" in i]
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_revalidation_is_not_swallowed(
+    lifecycle_context, mock_registry
+):
+  """Cancelling the request must cancel it, not read as an unreachable registry."""
+  mock_registry.get_skill.return_value = _real_skill()
+  toolset = _registry_toolset(mock_registry)
+  await _load(skill_toolset.LoadSkillTool(toolset), lifecycle_context, "a")
+  mock_registry.get_skill.side_effect = asyncio.CancelledError()
+  lifecycle_context.invocation_id = "next_invocation"
+
+  with pytest.raises(asyncio.CancelledError):
+    await _instructions_for(toolset, lifecycle_context)
+
+
+@pytest.mark.asyncio
+async def test_a_changed_skill_is_rewritten_into_the_environment(
+    lifecycle_context,
+):
+  """Its scripts were copied into the sandbox and would still be the old ones."""
+  mock_env = mock.create_autospec(BaseEnvironment, instance=True)
+  type(mock_env).working_dir = mock.PropertyMock(return_value=Path("."))
+  toolset = _revalidating_toolset(
+      _real_skill(scripts={"s.py": "print(1)"}), environment=mock_env
+  )
+  await _load(skill_toolset.LoadSkillTool(toolset), lifecycle_context, "a")
+  mock_env.write_file.reset_mock()
+
+  toolset._skills["a"] = _real_skill(scripts={"s.py": "print(2)"})
+  await _instructions_for(toolset, lifecycle_context)
+
+  mock_env.write_file.assert_awaited_once_with(
+      PurePosixPath("skills/a/scripts/s.py"), "print(2)"
+  )
+
+
+@pytest.mark.asyncio
+async def test_the_environment_is_rewritten_once_per_version(
+    lifecycle_context,
+):
+  """A stale skill is re-stated every request; the files only change once."""
+  mock_env = mock.create_autospec(BaseEnvironment, instance=True)
+  type(mock_env).working_dir = mock.PropertyMock(return_value=Path("."))
+  toolset = _revalidating_toolset(
+      _real_skill(scripts={"s.py": "print(1)"}), environment=mock_env
+  )
+  await _load(skill_toolset.LoadSkillTool(toolset), lifecycle_context, "a")
+  toolset._skills["a"] = _real_skill(scripts={"s.py": "print(2)"})
+  mock_env.write_file.reset_mock()
+
+  await _instructions_for(toolset, lifecycle_context)
+  await _instructions_for(toolset, lifecycle_context)
+
+  assert mock_env.write_file.await_count == 1
+
+
+def test_clone_keeps_revalidating(mock_skill1):
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1],
+      lifecycle_config=skill_toolset.SkillLifecycleConfig(
+          revalidate_skills=True
+      ),
+  )
+
+  assert toolset.clone_with_updated_skills([mock_skill1])._revalidate_skills
+
+
+@pytest.mark.asyncio
+async def test_disabling_the_config_also_stops_revalidation(
+    lifecycle_context,
+):
+  """`enabled=False` is the one switch back to the pre-lifecycle behavior."""
+  toolset = skill_toolset.SkillToolset(
+      [_real_skill(instructions="v1")],
+      lifecycle_config=skill_toolset.SkillLifecycleConfig(
+          enabled=False, revalidate_skills=True
+      ),
+  )
+  await _load(skill_toolset.LoadSkillTool(toolset), lifecycle_context, "a")
+  toolset._skills["a"] = _real_skill(instructions="v2")
+
+  assert _META_KEY not in lifecycle_context.state
+  assert not [
+      i
+      for i in await _instructions_for(toolset, lifecycle_context)
+      if "has changed" in i
+  ]
+
+
+@pytest.mark.asyncio
+async def test_restating_names_the_tool_as_the_model_sees_it(
+    lifecycle_context,
+):
+  """The model only knows the prefixed name; the bare one means nothing."""
+  toolset = _revalidating_toolset(
+      _real_skill(instructions="v1"), tool_name_prefix="acme"
+  )
+  await _load(skill_toolset.LoadSkillTool(toolset), lifecycle_context, "a")
+  toolset._skills["a"] = _real_skill(instructions="v2")
+
+  instructions = await _instructions_for(toolset, lifecycle_context)
+
+  (restated,) = [i for i in instructions if "has changed" in i]
+  assert "`acme_load_skill`" in restated
+
+
+@pytest.mark.asyncio
+async def test_reactivating_without_the_definition_keeps_the_digest(
+    lifecycle_context,
+):
+  """`load_skill()` on an active skill skips the registry, so it has no skill.
+
+  Overwriting the record with what it can see would silently stop the skill
+  being revalidated at all.
+  """
+  toolset = skill_toolset.SkillToolset(
+      [_real_skill(instructions="v1")],
+      lifecycle_config=skill_toolset.SkillLifecycleConfig(
+          default_mode=_EPHEMERAL, revalidate_skills=True
+      ),
+  )
+  await _load(skill_toolset.LoadSkillTool(toolset), lifecycle_context, "a")
+
+  assert await toolset.load_skill(lifecycle_context, "a") is False
+
+  toolset._skills["a"] = _real_skill(instructions="v2")
+  assert [
+      i
+      for i in await _instructions_for(toolset, lifecycle_context)
+      if "has changed" in i
+  ]

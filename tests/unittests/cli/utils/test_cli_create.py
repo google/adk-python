@@ -326,11 +326,19 @@ def test_prompt_for_model_gemini(monkeypatch: pytest.MonkeyPatch) -> None:
   assert cli_create._prompt_for_model() == "gemini-3.5-flash"
 
 
+def test_prompt_for_model_gemini_38_flash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Selecting option '2' should return the gemini-3.8-flash model string."""
+  monkeypatch.setattr(click, "prompt", lambda *a, **k: "2")
+  assert cli_create._prompt_for_model() == "gemini-3.8-flash"
+
+
 def test_prompt_for_model_other(monkeypatch: pytest.MonkeyPatch) -> None:
-  """Selecting option '2' should return placeholder and call secho."""
+  """Selecting option '3' should return placeholder and call secho."""
   called: Dict[str, bool] = {}
 
-  monkeypatch.setattr(click, "prompt", lambda *a, **k: "2")
+  monkeypatch.setattr(click, "prompt", lambda *a, **k: "3")
 
   def _fake_secho(*_a: Any, **_k: Any) -> None:
     called["secho"] = True

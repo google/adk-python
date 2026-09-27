@@ -1450,3 +1450,75 @@ async def test_tool_answering_the_hook_with_a_non_bool_is_run():
   tool.run_async.assert_awaited_once()
   assert event is not None
   assert event.get_function_responses()[0].response == {"status": "ran"}
+
+
+@pytest.mark.asyncio
+async def test_request_confirmation_processor_skips_events_authored_by_other_agent():
+  """Test that confirmation requests authored by another agent are skipped."""
+  agent = LlmAgent(name="current_agent", tools=[mock_tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  llm_request = LlmRequest()
+
+  # A confirmation request authored by another agent (e.g., sub-agent or remote agent),
+  # with no prior function call from current_agent in history.
+  other_agent_name = "other_agent"
+  tool_confirmation = ToolConfirmation(confirmed=False, hint="other hint")
+  tool_confirmation_args = {
+      "originalFunctionCall": {
+          "id": "remote_fc_123",
+          "name": "remote_tool",
+          "args": {"key": "value"},
+      },
+      "toolConfirmation": tool_confirmation.model_dump(
+          by_alias=True, exclude_none=True
+      ),
+  }
+
+  invocation_context.session.events.append(
+      Event(
+          author=other_agent_name,
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                          args=tool_confirmation_args,
+                          id="remote_confirm_123",
+                      )
+                  )
+              ]
+          ),
+      )
+  )
+
+  # User confirms the request
+  user_confirmation = ToolConfirmation(confirmed=True)
+  invocation_context.session.events.append(
+      Event(
+          author="user",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                          id="remote_confirm_123",
+                          response={
+                              "response": user_confirmation.model_dump_json()
+                          },
+                      )
+                  )
+              ]
+          ),
+      )
+  )
+
+  events = []
+  async for event in request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    events.append(event)
+
+  # Current agent should skip the other agent's confirmation request without error.
+  assert not events
