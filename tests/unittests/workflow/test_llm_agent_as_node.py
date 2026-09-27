@@ -38,6 +38,7 @@ from google.adk.tools.agent_tool import _TaskAgentTool
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
 from google.adk.workflow import _llm_agent_wrapper as agent_wrapper
+from google.adk.workflow import node
 from google.adk.workflow import START
 from google.adk.workflow._llm_agent_wrapper import process_llm_agent_output
 from google.adk.workflow._workflow import Workflow
@@ -1905,3 +1906,157 @@ def test_process_llm_agent_output_blank_schema_response_writes_no_state():
 
   assert event.output is None
   assert ctx.actions.state_delta == {}
+
+
+@pytest.mark.asyncio
+async def test_single_turn_node_input_does_not_leak_across_sequential_tools(
+    request: pytest.FixtureRequest,
+):
+  """Single-turn node_input must not leak into root agent across tool turns."""
+  from . import testing_utils
+
+  fake_pdf = b'%PDF-1.4-FAKE-BYTES'
+  worker_model = testing_utils.MockModel.create(
+      responses=['worker-summary-a', 'worker-summary-b']
+  )
+  worker = LlmAgent(
+      name='worker',
+      model=worker_model,
+      instruction='Summarize the attached document.',
+      mode='single_turn',
+  )
+
+  @node(name='run_worker', rerun_on_resume=True)
+  async def run_worker(ctx: Context, node_input: str) -> Any:
+    return await ctx.run_node(
+        worker,
+        node_input=types.Content(
+            role='user',
+            parts=[
+                types.Part.from_text(text=f'INTERNAL-{node_input}'),
+                types.Part.from_bytes(
+                    data=fake_pdf, mime_type='application/pdf'
+                ),
+            ],
+        ),
+    )
+
+  wf = Workflow(
+      name='doc_wf',
+      edges=[(START, run_worker)],
+  )
+
+  async def the_tool(label: str, tool_context: Context) -> dict[str, Any]:
+    out = await tool_context.run_node(
+        wf, node_input=label, run_id=f'run-{label}'
+    )
+    return {'summary': f'done:{label}:{out}'}
+
+  fc_a = types.Part.from_function_call(name='the_tool', args={'label': 'a'})
+  fc_b = types.Part.from_function_call(name='the_tool', args={'label': 'b'})
+  root_model = testing_utils.MockModel.create(
+      responses=[fc_a, fc_b, 'All tools completed.']
+  )
+  root_agent = LlmAgent(
+      name='root_agent',
+      model=root_model,
+      instruction='Call the_tool twice sequentially.',
+      tools=[the_tool],
+  )
+
+  runner = testing_utils.InMemoryRunner(root_agent)
+  await runner.run_async(testing_utils.get_user_content('run both tools'))
+
+  # Worker received both inputs (text + inline PDF bytes).
+  assert len(worker_model.requests) == 2
+  for expected_label, req in zip(['a', 'b'], worker_model.requests):
+    worker_texts = [
+        p.text
+        for c in req.contents
+        for p in c.parts or []
+        if p.text is not None
+    ]
+    worker_blobs = [
+        p.inline_data.data
+        for c in req.contents
+        for p in c.parts or []
+        if p.inline_data is not None
+    ]
+    assert any(f'INTERNAL-{expected_label}' in t for t in worker_texts)
+    assert fake_pdf in worker_blobs
+
+  # Root agent made 3 LLM calls (initial -> after tool a -> after tool b).
+  # None of its requests should contain the worker's text or inline PDF.
+  assert len(root_model.requests) == 3
+  for req in root_model.requests:
+    root_texts = [
+        p.text
+        for c in req.contents
+        for p in c.parts or []
+        if p.text is not None
+    ]
+    root_blobs = [
+        p.inline_data
+        for c in req.contents
+        for p in c.parts or []
+        if p.inline_data is not None
+    ]
+    assert not any('INTERNAL-' in t for t in root_texts)
+    assert not root_blobs
+
+
+@pytest.mark.asyncio
+async def test_parallel_single_turn_nodes_only_see_own_node_input(
+    request: pytest.FixtureRequest,
+):
+  """Concurrent single_turn nodes sharing session.events see only own input."""
+  import asyncio
+
+  from . import testing_utils
+
+  model_a = testing_utils.MockModel.create(responses=['out-a'])
+  model_b = testing_utils.MockModel.create(responses=['out-b'])
+  worker_a = LlmAgent(
+      name='worker_a',
+      model=model_a,
+      instruction='Worker A.',
+      mode='single_turn',
+  )
+  worker_b = LlmAgent(
+      name='worker_b',
+      model=model_b,
+      instruction='Worker B.',
+      mode='single_turn',
+  )
+
+  @node(rerun_on_resume=True)
+  async def fanout(ctx: Context) -> dict[str, Any]:
+    res_a, res_b = await asyncio.gather(
+        ctx.run_node(worker_a, node_input='SECRET_FOR_A'),
+        ctx.run_node(worker_b, node_input='SECRET_FOR_B'),
+    )
+    return {'a': res_a, 'b': res_b}
+
+  wf = Workflow(name='parallel_wf', edges=[(START, fanout)])
+  runner = _new_workflow_runner(wf, request.function.__name__)
+  await runner.run_async(testing_utils.get_user_content('start'))
+
+  assert len(model_a.requests) == 1
+  texts_a = [
+      p.text
+      for c in model_a.requests[0].contents
+      for p in c.parts or []
+      if p.text
+  ]
+  assert any('SECRET_FOR_A' in t for t in texts_a)
+  assert not any('SECRET_FOR_B' in t for t in texts_a)
+
+  assert len(model_b.requests) == 1
+  texts_b = [
+      p.text
+      for c in model_b.requests[0].contents
+      for p in c.parts or []
+      if p.text
+  ]
+  assert any('SECRET_FOR_B' in t for t in texts_b)
+  assert not any('SECRET_FOR_A' in t for t in texts_b)
