@@ -537,16 +537,21 @@ def trace_merged_tool_calls(
   span.set_attribute("gcp.vertex.agent.tool_call_args", "N/A")
   span.set_attribute("gcp.vertex.agent.event_id", response_event_id)
   if telemetry_config.should_add_content_to_legacy_spans:
+    # Only the responses: actions carry session state, credentials included.
+    content = function_response_event.content
+    parts = (content.parts or []) if content else []
     try:
-      function_response_event_json = function_response_event.model_dump_json(
-          exclude_none=True
-      )
+      tool_response_json = safe_json_serialize([
+          part.function_response.model_dump(exclude_none=True, mode="json")
+          for part in parts
+          if part.function_response is not None
+      ])
     except Exception:  # pylint: disable=broad-exception-caught
-      function_response_event_json = "<not serializable>"
+      tool_response_json = "<not serializable>"
 
     span.set_attribute(
         "gcp.vertex.agent.tool_response",
-        function_response_event_json,
+        tool_response_json,
     )
   else:
     span.set_attribute("gcp.vertex.agent.tool_response", "{}")

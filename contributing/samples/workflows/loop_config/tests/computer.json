@@ -72,11 +72,14 @@
       "id": "e-4",
       "invocationId": "i-1",
       "nodeInfo": {
-        "messageAsOutput": true,
         "outputFor": [
           "root_agent@1/evaluate_headline@1"
         ],
         "path": "root_agent@1/evaluate_headline@1"
+      },
+      "output": {
+        "feedback": "This headline is clearly tech-related as it directly discusses computers.",
+        "grade": "tech-related"
       }
     },
     {

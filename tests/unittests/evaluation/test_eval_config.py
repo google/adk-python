@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from google.adk.evaluation.eval_config import _DEFAULT_EFFICIENCY_METRICS
 from google.adk.evaluation.eval_config import _DEFAULT_EVAL_CONFIG
 from google.adk.evaluation.eval_config import EvalConfig
 from google.adk.evaluation.eval_config import get_eval_metrics_from_config
@@ -81,7 +82,9 @@ def test_get_eval_metrics_from_config():
   )
   eval_metrics = get_eval_metrics_from_config(eval_config)
 
-  assert len(eval_metrics) == 4
+  # The configured metrics come first, in declaration order, followed by the
+  # auto-appended informational efficiency metrics.
+  assert len(eval_metrics) == 4 + len(_DEFAULT_EFFICIENCY_METRICS)
   assert eval_metrics[0].metric_name == "tool_trajectory_avg_score"
   assert eval_metrics[0].threshold == 1.0
   assert eval_metrics[0].criterion.threshold == 1.0
@@ -104,6 +107,9 @@ def test_get_eval_metrics_from_config():
   )
   assert len(eval_metrics[3].criterion.rubrics) == 1
   assert eval_metrics[3].criterion.rubrics[0] == rubric_1
+  assert [m.metric_name for m in eval_metrics[4:]] == list(
+      _DEFAULT_EFFICIENCY_METRICS
+  )
 
 
 def test_get_eval_metrics_from_config_with_custom_metrics():
@@ -125,7 +131,9 @@ def test_get_eval_metrics_from_config_with_custom_metrics():
   )
   eval_metrics = get_eval_metrics_from_config(eval_config)
 
-  assert len(eval_metrics) == 2
+  # The 2 configured custom metrics come first, then the auto-appended
+  # informational efficiency metrics (which carry no custom function path).
+  assert len(eval_metrics) == 2 + len(_DEFAULT_EFFICIENCY_METRICS)
   assert eval_metrics[0].metric_name == "custom_metric_1"
   assert eval_metrics[0].threshold == 1.0
   assert eval_metrics[0].criterion.threshold == 1.0
@@ -134,12 +142,58 @@ def test_get_eval_metrics_from_config_with_custom_metrics():
   assert eval_metrics[1].threshold == 0.5
   assert eval_metrics[1].criterion.threshold == 0.5
   assert eval_metrics[1].custom_function_path == "path/to/custom/metric_2"
+  assert [m.metric_name for m in eval_metrics[2:]] == list(
+      _DEFAULT_EFFICIENCY_METRICS
+  )
+  assert all(m.custom_function_path is None for m in eval_metrics[2:])
 
 
 def test_get_eval_metrics_from_config_empty_criteria():
   eval_config = EvalConfig(criteria={})
   eval_metrics = get_eval_metrics_from_config(eval_config)
-  assert not eval_metrics
+  # Even with no criteria, the informational efficiency metrics are reported.
+  assert [m.metric_name for m in eval_metrics] == list(
+      _DEFAULT_EFFICIENCY_METRICS
+  )
+
+
+def test_efficiency_metrics_are_appended_and_informational():
+  """The efficiency metrics are always added, with no threshold or criterion."""
+  eval_metrics = get_eval_metrics_from_config(
+      EvalConfig(criteria={"response_match_score": 0.8})
+  )
+
+  names = [m.metric_name for m in eval_metrics]
+  for metric_name in _DEFAULT_EFFICIENCY_METRICS:
+    assert metric_name in names
+
+  efficiency_metrics = [
+      m for m in eval_metrics if m.metric_name in _DEFAULT_EFFICIENCY_METRICS
+  ]
+  # Informational: no threshold or criterion is attached, so they never gate
+  # pass/fail.
+  assert all(m.threshold is None for m in efficiency_metrics)
+  assert all(m.criterion is None for m in efficiency_metrics)
+
+
+def test_named_efficiency_metric_is_not_duplicated():
+  """Naming an always-on metric in the config does not add a second copy.
+
+  The threshold is what makes the entry parse; the metric rejects one later,
+  at evaluator construction, which is not what this test covers.
+  """
+  eval_config = EvalConfig(criteria={"token_usage_v1": 1.0})
+
+  eval_metrics = get_eval_metrics_from_config(eval_config)
+
+  token_usage_metrics = [
+      m for m in eval_metrics if m.metric_name == "token_usage_v1"
+  ]
+  assert len(token_usage_metrics) == 1
+  # The other efficiency metrics are still auto-appended.
+  names = [m.metric_name for m in eval_metrics]
+  for metric_name in _DEFAULT_EFFICIENCY_METRICS:
+    assert metric_name in names
 
 
 def test_eval_metric_dump_preserves_concrete_criterion_fields():
@@ -176,6 +230,18 @@ def test_eval_metric_criterion_survives_json_round_trip():
   )
 
   assert criterion.judge_model_options.judge_model == "my-judge"
+
+
+@pytest.mark.parametrize("num_samples", [0, -1])
+def test_judge_model_options_rejects_non_positive_num_samples(num_samples):
+  """num_samples <= 0 must be rejected, matching parallelism_limit's own ge=1.
+
+  A non-positive judge sample count is never a legitimate value -- it causes
+  LlmAsJudge.evaluate_invocations to silently drop the invocation from the
+  aggregated result with no error and no NOT_EVALUATED marker.
+  """
+  with pytest.raises(ValidationError, match="greater than or equal to 1"):
+    JudgeModelOptions(num_samples=num_samples)
 
 
 def test_eval_config_dump_preserves_concrete_criterion_fields():

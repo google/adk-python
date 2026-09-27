@@ -124,6 +124,12 @@ async def _resolve_confirmation_targets(
         dynamically_requested_fc_ids.add(fr.id)
 
   for event in events:
+    # If this confirmation request was authored by another agent, skip it to let that
+    # agent's processor handle it.
+    agent = invocation_context.agent
+    if agent and event.author and event.author != agent.name:
+      continue
+
     event_function_calls = event.get_function_calls()
     if not event_function_calls:
       continue
@@ -252,6 +258,8 @@ def _map_confirmation_to_original_fc_ids(
 
 class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
   """Handles tool confirmation information to build the LLM request."""
+
+  name = "request_confirmation"
 
   @override
   async def run_async(

@@ -14,12 +14,16 @@
 
 """Tests for the interactions processor."""
 
+import logging
 from unittest.mock import MagicMock
 
+from google.adk.agents.run_config import RunConfig
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.context import _contents as contents
 from google.adk.flows.llm_flows.context import _interactions as interactions_processor
 from google.adk.flows.llm_flows.single_flow import SingleFlow
+from google.adk.models.google_llm import Gemini
+from google.adk.models.llm_request import LlmRequest
 from google.genai import types
 
 
@@ -291,3 +295,134 @@ def test_find_previous_interaction_state_returns_both_ids():
   )
 
   assert state == ("int_2", "env_2")
+
+
+def _tier_context(
+    *,
+    use_interactions_api: bool,
+    service_tier: str | None,
+    invocation_id: str = "inv-1",
+) -> MagicMock:
+  """Build an invocation context for the service-tier tests."""
+  invocation_context = MagicMock()
+  invocation_context.invocation_id = invocation_id
+  invocation_context.branch = None
+  invocation_context.session.events = []
+  invocation_context.agent.name = "test_agent"
+  invocation_context.agent.canonical_model = Gemini(
+      model="gemini-2.5-flash", use_interactions_api=use_interactions_api
+  )
+  invocation_context.run_config = RunConfig(service_tier=service_tier)
+  return invocation_context
+
+
+async def _run(processor, invocation_context, llm_request) -> None:
+  """Drain the processor, which yields no events."""
+  assert not [
+      event
+      async for event in processor.run_async(invocation_context, llm_request)
+  ]
+
+
+class TestServiceTierFromRunConfig:
+  """Tests for carrying RunConfig.service_tier onto the LlmRequest.
+
+  The tier is a per-request field on the interactions API, so the run picks it
+  rather than the model being configured for it once and for all.
+  """
+
+  async def test_copies_tier_onto_the_request(self):
+    """A tier on the run reaches the model via the request."""
+    processor = interactions_processor.InteractionsRequestProcessor()
+    invocation_context = _tier_context(
+        use_interactions_api=True, service_tier="deferred"
+    )
+    llm_request = LlmRequest()
+
+    await _run(processor, invocation_context, llm_request)
+
+    assert llm_request.service_tier == "deferred"
+
+  async def test_no_tier_leaves_the_request_unset(self):
+    """A run that asks for no tier leaves the model's default in place."""
+    processor = interactions_processor.InteractionsRequestProcessor()
+    invocation_context = _tier_context(
+        use_interactions_api=True, service_tier=None
+    )
+    llm_request = LlmRequest()
+
+    await _run(processor, invocation_context, llm_request)
+
+    assert llm_request.service_tier is None
+
+  async def test_does_not_copy_for_a_non_interactions_model(self):
+    """Only the interactions path has a serving tier."""
+    processor = interactions_processor.InteractionsRequestProcessor()
+    invocation_context = _tier_context(
+        use_interactions_api=False, service_tier="deferred"
+    )
+    llm_request = LlmRequest()
+
+    await _run(processor, invocation_context, llm_request)
+
+    assert llm_request.service_tier is None
+
+
+class TestUnusableServiceTierWarning:
+  """Tests for the warning when a run's tier cannot be applied."""
+
+  async def test_warns_once_per_run_not_once_per_turn(self, caplog):
+    """The processor runs per model call, so the warning must not repeat.
+
+    Args:
+      caplog: pytest fixture capturing log records.
+    """
+    caplog.set_level(logging.WARNING)
+    processor = interactions_processor.InteractionsRequestProcessor()
+
+    for _ in range(3):
+      invocation_context = _tier_context(
+          use_interactions_api=False,
+          service_tier="deferred",
+          invocation_id="inv-same",
+      )
+      await _run(processor, invocation_context, LlmRequest())
+
+    warnings = [r for r in caplog.records if "service_tier" in r.getMessage()]
+    assert len(warnings) == 1
+
+  async def test_warns_again_for_a_different_run(self, caplog):
+    """A separate invocation is worth telling the caller about again.
+
+    Args:
+      caplog: pytest fixture capturing log records.
+    """
+    caplog.set_level(logging.WARNING)
+    processor = interactions_processor.InteractionsRequestProcessor()
+
+    for invocation_id in ("inv-1", "inv-2"):
+      invocation_context = _tier_context(
+          use_interactions_api=False,
+          service_tier="deferred",
+          invocation_id=invocation_id,
+      )
+      await _run(processor, invocation_context, LlmRequest())
+
+    warnings = [r for r in caplog.records if "service_tier" in r.getMessage()]
+    assert len(warnings) == 2
+
+  async def test_does_not_warn_without_a_tier(self, caplog):
+    """No tier asked for, nothing to warn about.
+
+    Args:
+      caplog: pytest fixture capturing log records.
+    """
+    caplog.set_level(logging.WARNING)
+    processor = interactions_processor.InteractionsRequestProcessor()
+    invocation_context = _tier_context(
+        use_interactions_api=False, service_tier=None
+    )
+
+    await _run(processor, invocation_context, LlmRequest())
+
+    assert not [r for r in caplog.records if "service_tier" in r.getMessage()]

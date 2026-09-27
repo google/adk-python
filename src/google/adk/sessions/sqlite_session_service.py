@@ -516,8 +516,7 @@ class SqliteSessionService(BaseSessionService):
       session.last_update_time = event_timestamp
 
     # Also update the in-memory session
-    await super().append_event(session=session, event=event)
-    return event
+    return self._commit_event_to_session(session, event)
 
   @asynccontextmanager
   async def _get_db_connection(self) -> AsyncIterator[aiosqlite.Connection]:

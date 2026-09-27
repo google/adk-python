@@ -195,8 +195,8 @@ def test_start_node_with_incoming_edge() -> None:
     validate_graph(graph.nodes, graph.edges)
 
 
-def test_multiple_default_routes_fail_validation() -> None:
-  """Tests that multiple DEFAULT_ROUTE edges from a node fail validation."""
+def test_multiple_default_routes_pass_validation() -> None:
+  """Tests that a node may fan out over several DEFAULT_ROUTE edges."""
   node_a = TestingNode(name='NodeA')
   node_b = TestingNode(name='NodeB')
   node_c = TestingNode(name='NodeC')
@@ -207,11 +207,28 @@ def test_multiple_default_routes_fail_validation() -> None:
           Edge(from_node=node_a, to_node=node_c, route=DEFAULT_ROUTE),
       ],
   )
+  validate_graph(graph.nodes, graph.edges)  # Should not raise
+
+
+def test_default_route_combined_with_other_routes_fails_validation() -> None:
+  """Tests that DEFAULT_ROUTE in a route list still fails validation."""
+  node_a = TestingNode(name='NodeA')
+  node_b = TestingNode(name='NodeB')
+  graph = Graph(
+      edges=[
+          Edge(from_node=START, to_node=node_a),
+          Edge(
+              from_node=node_a,
+              to_node=node_b,
+              route=['another_route', DEFAULT_ROUTE],
+          ),
+      ],
+  )
   with pytest.raises(
       ValueError,
       match=(
-          r'Graph validation failed\. Multiple DEFAULT_ROUTE edges found from'
-          r' node NodeA to NodeB and NodeC'
+          r'Graph validation failed\. DEFAULT_ROUTE cannot be combined with'
+          r' other routes in a list'
       ),
   ):
     validate_graph(graph.nodes, graph.edges)

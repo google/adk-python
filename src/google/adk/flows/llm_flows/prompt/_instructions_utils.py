@@ -40,7 +40,7 @@ InstructionProvider: TypeAlias = Callable[
     [ReadonlyContext], Union[str, Awaitable[str]]
 ]
 
-_TEMPLATE_VAR_PATTERN = re.compile(r'{+[^{}]*}+')
+_TEMPLATE_VAR_PATTERN = re.compile(r'(?<![\$\{\\]){+[^{}]*}+')
 
 
 async def inject_session_state(

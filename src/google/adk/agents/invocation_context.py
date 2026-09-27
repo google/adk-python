@@ -104,6 +104,11 @@ class _AbortState:
     self.loop = loop
     self.aborted = False
 
+  def __deepcopy__(self, memo: dict[int, Any] | None) -> _AbortState:
+    # Preserve single-instance sharing across deepcopies and avoid traversing
+    # active asyncio event loops or coroutines.
+    return self
+
 
 class InvocationContext(BaseModel):
   """An invocation context represents the data of a single invocation of an agent.

@@ -56,6 +56,8 @@ from mcp.types import Resource
 from mcp.types import TextResourceContents
 import pytest
 
+from ._sdk_compat import make_mcp_error
+
 
 class MockMCPTool:
   """Mock MCP Tool for testing."""
@@ -566,6 +568,58 @@ class TestMcpToolset:
         ConnectionError, match="Failed to get tools from MCP server."
     ):
       await toolset.get_tools()
+
+    self.mock_session_manager._discard_session.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_get_tools_discards_a_session_the_server_dropped(self):
+    """The server reporting the session gone takes it out of the pool."""
+    remote_params = StreamableHTTPConnectionParams(url="http://example.com/mcp")
+    toolset = McpToolset(connection_params=remote_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    self.mock_session.list_tools = AsyncMock(
+        side_effect=make_mcp_error(32600, "Session terminated")
+    )
+
+    with pytest.raises(ConnectionError, match="Failed to get tools"):
+      await toolset.get_tools()
+
+    self.mock_session_manager._discard_session.assert_called_with(
+        None, session=self.mock_session
+    )
+
+  @pytest.mark.asyncio
+  async def test_get_tools_keeps_the_session_on_a_transport_failure(self):
+    """A dropped socket is not the server saying it forgot the session."""
+    remote_params = StreamableHTTPConnectionParams(url="http://example.com/mcp")
+    toolset = McpToolset(connection_params=remote_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    self.mock_session.list_tools = AsyncMock(
+        side_effect=ConnectionError("connection dropped")
+    )
+
+    with pytest.raises(ConnectionError, match="Failed to get tools"):
+      await toolset.get_tools()
+
+    self.mock_session_manager._discard_session.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_get_tools_keeps_the_session_on_a_timeout(self):
+    """A slow server is still holding the session, so it is not discarded."""
+    remote_params = StreamableHTTPConnectionParams(url="http://example.com/mcp")
+    toolset = McpToolset(connection_params=remote_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    self.mock_session.list_tools = AsyncMock(
+        side_effect=TimeoutError("request timed out")
+    )
+
+    with pytest.raises(ConnectionError, match="Failed to get tools"):
+      await toolset.get_tools()
+
+    self.mock_session_manager._discard_session.assert_not_called()
 
   @pytest.mark.asyncio
   async def test_get_tools_retry_decorator(self):

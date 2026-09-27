@@ -55,6 +55,7 @@ from ..load_mcp_resource_tool import LoadMcpResourceTool
 from ..tool_configs import BaseToolConfig
 from ..tool_configs import ToolArgsConfig
 from .mcp_session_manager import _http_debug_var
+from .mcp_session_manager import _is_session_terminated_error
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_errors
 from .mcp_session_manager import SseConnectionParams
@@ -417,6 +418,13 @@ class McpToolset(BaseToolset):
         logger.exception(
             f"Exception during MCP session execution: {error_message}: {e}"
         )
+        # Drop the session the server has forgotten, so the retry from
+        # @retry_on_errors builds a fresh one instead of being handed the
+        # same dead session back.
+        if _is_session_terminated_error(e):
+          self._mcp_session_manager._discard_session(  # pylint: disable=protected-access
+              session_headers, session=session
+          )
         raise ConnectionError(f"{error_message}: {e}") from e
       finally:
         self._mcp_session_manager._end_session_use(session_headers)  # pylint: disable=protected-access

@@ -143,7 +143,7 @@ class Graph(BaseModel):
     """Determines the next nodes to transition to PENDING state based on routes."""
     next_pending_nodes: list[str] = []
     matched_specific_route = False
-    default_route_node: str | None = None
+    default_route_nodes: list[str] = []
     has_routing_edges = False
 
     for edge in self.edges:
@@ -155,7 +155,7 @@ class Graph(BaseModel):
 
         has_routing_edges = True
         if edge.route == DEFAULT_ROUTE:
-          default_route_node = edge.to_node.name
+          default_route_nodes.append(edge.to_node.name)
           continue
 
         # Normalize edge routes to a set for matching.
@@ -174,8 +174,8 @@ class Graph(BaseModel):
           next_pending_nodes.append(edge.to_node.name)
           matched_specific_route = True
 
-    if not matched_specific_route and default_route_node:
-      next_pending_nodes.append(default_route_node)
+    if not matched_specific_route:
+      next_pending_nodes.extend(default_route_nodes)
 
     if has_routing_edges and not next_pending_nodes:
       logger.warning(

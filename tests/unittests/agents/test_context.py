@@ -744,6 +744,95 @@ class TestContextGetInvocationContext:
     )
     assert result is mock_copy
 
+  def test_get_invocation_context_propagates_node_path_and_round_trips(
+      self, mock_invocation_context
+  ):
+    """Test that get_invocation_context propagates node_path and Context inherits both from InvocationContext."""
+    context = Context(mock_invocation_context, node_path="wf.step1")
+    context.isolation_scope = "task:fc-1"
+
+    mock_copy = MagicMock()
+    mock_copy.isolation_scope = "task:fc-1"
+    mock_copy.node_path = "wf.step1"
+    mock_invocation_context.model_copy.return_value = mock_copy
+
+    result = context.get_invocation_context()
+
+    mock_invocation_context.model_copy.assert_called_once_with(
+        update={
+            "session": context.session,
+            "isolation_scope": "task:fc-1",
+            "node_path": "wf.step1",
+        }
+    )
+    rehydrated = Context(result)
+    assert rehydrated.isolation_scope == "task:fc-1"
+    assert rehydrated.node_path == "wf.step1"
+
+  @pytest.mark.asyncio
+  async def test_tool_context_from_node_ic_nests_agent_tool_and_node_tool_children(
+      self, mock_invocation_context
+  ):
+    """ToolContext built from a node's InvocationContext nests _SingleTurnAgentTool and NodeTool run_node children under the caller's node_path."""
+    from google.adk.agents.llm_agent import LlmAgent
+    from google.adk.tools._node_tool import NodeTool
+    from google.adk.tools.agent_tool import _SingleTurnAgentTool
+    from google.adk.tools.tool_context import ToolContext
+    from google.adk.workflow._base_node import BaseNode
+    from pydantic import BaseModel
+
+    caller_ctx = Context(mock_invocation_context, node_path="wf@1/caller@1")
+    mock_copy = MagicMock()
+    mock_copy.node_path = "wf@1/caller@1"
+    mock_copy.isolation_scope = None
+    mock_copy.branch = None
+    mock_copy.invocation_id = "inv-1"
+    mock_copy.session = mock_invocation_context.session
+    mock_invocation_context.model_copy.return_value = mock_copy
+
+    node_ic = caller_ctx.get_invocation_context()
+    tool_ctx = ToolContext(
+        invocation_context=node_ic,
+        function_call_id="fc-tool-1",
+    )
+    assert tool_ctx.node_path == "wf@1/caller@1"
+
+    captured_paths: list[str] = []
+
+    class ChildNode(BaseNode):
+
+      async def _run_impl(self, *, ctx: Context, node_input: object):
+        captured_paths.append(ctx.node_path)
+        yield "node_out"
+
+    class ChildInput(BaseModel):
+      request: str
+
+    child_node = ChildNode(name="tool_node", input_schema=ChildInput)
+    node_tool = NodeTool(node=child_node, name="tool_node")
+    await node_tool.run_async(
+        args={"request": "hello"},
+        tool_context=tool_ctx,
+    )
+
+    sub_agent = LlmAgent(name="sub_agent", model="gemini-2.5-flash")
+
+    async def fake_agent_run_impl(*, ctx: Context, node_input: object):
+      captured_paths.append(ctx.node_path)
+      yield "agent_out"
+
+    object.__setattr__(sub_agent, "_run_impl", fake_agent_run_impl)
+    agent_tool = _SingleTurnAgentTool(sub_agent)
+    await agent_tool.run_async(
+        args={"request": "hello"},
+        tool_context=tool_ctx,
+    )
+
+    assert captured_paths == [
+        "wf@1/caller@1/tool_node@1",
+        "wf@1/caller@1/sub_agent@1",
+    ]
+
 
 @pytest.mark.asyncio
 async def test_context_run_node_delegates_to_dynamic_node_executor(

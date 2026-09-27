@@ -39,8 +39,11 @@ class WriteMode(Enum):
   In this mode write operations in the anonymous dataset of a BigQuery session
   are allowed. For example, a temporary table can be created, manipulated and
   deleted in the anonymous dataset during Agent interaction, while protecting
-  permanent tables from being modified or deleted. To learn more about BigQuery
-  sessions, see https://cloud.google.com/bigquery/docs/sessions-intro.
+  permanent tables from being modified or deleted. A non-SELECT statement runs
+  only when a dry run places it in that anonymous dataset, so a statement the
+  dry run attributes to no destination at all, such as a script, a procedure
+  call or an export, is rejected. To learn more about BigQuery sessions, see
+  https://cloud.google.com/bigquery/docs/sessions-intro.
   """
 
   ALLOWED = 'allowed'

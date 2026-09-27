@@ -38,8 +38,10 @@ from google.adk.flows.llm_flows.extensions._code_execution import _NON_BUILTIN_E
 from google.adk.flows.llm_flows.extensions._code_execution import get_content_as_bytes
 from google.adk.flows.llm_flows.extensions._code_execution import request_processor
 from google.adk.flows.llm_flows.extensions._code_execution import response_processor
+from google.adk.flows.llm_flows.extensions._planning import response_processor as nl_planning_response_processor
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.planners.plan_re_act_planner import PlanReActPlanner
 from google.genai import types
 import pytest
 
@@ -363,6 +365,162 @@ async def test_pre_processor_runs_execute_code_off_the_loop():
   ]
 
   assert record.thread is not threading.main_thread()
+
+
+def _stub_code_executor() -> MagicMock:
+  """Returns an executor that reports a successful run of whatever it gets."""
+  executor = MagicMock(spec=BaseCodeExecutor)
+  executor.code_block_delimiters = [('```python\n', '\n```')]
+  executor.error_retry_attempts = 2
+  executor.stateful = False
+  executor.execute_code.return_value = CodeExecutionResult(stdout='ok')
+  return executor
+
+
+async def _run_post_processor(code_executor, llm_response, planner=None):
+  """Runs the planning and code-execution response processors, in flow order."""
+  agent = Agent(name='test_agent', code_executor=code_executor, planner=planner)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='test message'
+  )
+  invocation_context.artifact_service = MagicMock()
+  invocation_context.artifact_service.save_artifact = AsyncMock()
+
+  async for _ in nl_planning_response_processor.run_async(
+      invocation_context, llm_response
+  ):
+    pass
+  return [
+      event
+      async for event in response_processor.run_async(
+          invocation_context, llm_response
+      )
+  ]
+
+
+@pytest.mark.asyncio
+async def test_code_in_a_thought_part_is_not_executed():
+  """The model's private reasoning is not a request to run code."""
+  code_executor = _stub_code_executor()
+  llm_response = LlmResponse(
+      content=types.Content(
+          parts=[
+              types.Part(
+                  text='```python\nprint("from the reasoning")\n```',
+                  thought=True,
+              ),
+              types.Part(text='The answer is 720.'),
+          ]
+      )
+  )
+
+  events = await _run_post_processor(code_executor, llm_response)
+
+  code_executor.execute_code.assert_not_called()
+  assert not events
+  assert llm_response.content is not None
+  assert llm_response.content.parts[1].text == 'The answer is 720.'
+
+
+@pytest.mark.asyncio
+async def test_code_outside_a_thought_part_still_executes():
+  """A thought alongside the answer must not suppress the answer's code."""
+  code_executor = _stub_code_executor()
+  llm_response = LlmResponse(
+      content=types.Content(
+          parts=[
+              types.Part(
+                  text='```python\nprint("from the reasoning")\n```',
+                  thought=True,
+              ),
+              types.Part(text='```python\nprint("from the answer")\n```'),
+          ]
+      )
+  )
+
+  await _run_post_processor(code_executor, llm_response)
+
+  code_executor.execute_code.assert_called_once()
+  executed = code_executor.execute_code.call_args.args[1]
+  assert executed.code == 'print("from the answer")'
+
+
+@pytest.mark.asyncio
+async def test_thought_parts_stay_on_the_emitted_event():
+  """The model expects the signature on its own reasoning back verbatim."""
+  code_executor = _stub_code_executor()
+  llm_response = LlmResponse(
+      content=types.Content(
+          parts=[
+              types.Part(
+                  text='first I should compute it',
+                  thought=True,
+                  thought_signature=b'opaque',
+              ),
+              types.Part(text='```python\nprint("from the answer")\n```'),
+          ]
+      )
+  )
+
+  events = await _run_post_processor(code_executor, llm_response)
+
+  emitted_parts = events[0].content.parts
+  assert emitted_parts[0].thought
+  assert emitted_parts[0].thought_signature == b'opaque'
+  assert emitted_parts[-1].executable_code.code == 'print("from the answer")'
+
+
+@pytest.mark.asyncio
+async def test_planner_marked_action_text_still_executes():
+  """A planner marks its own code-bearing action text as a thought."""
+  code_executor = _stub_code_executor()
+  llm_response = LlmResponse(
+      content=types.Content(
+          parts=[
+              types.Part(
+                  text='/*ACTION*/```python\nprint("from the plan")\n```'
+              )
+          ]
+      )
+  )
+
+  await _run_post_processor(
+      code_executor, llm_response, planner=PlanReActPlanner()
+  )
+
+  code_executor.execute_code.assert_called_once()
+  executed = code_executor.execute_code.call_args.args[1]
+  assert executed.code == 'print("from the plan")'
+
+
+@pytest.mark.asyncio
+async def test_signed_thought_is_not_executed_under_a_planner():
+  """A planner cannot sign a thought, so a signed one is the model's own."""
+  code_executor = _stub_code_executor()
+  llm_response = LlmResponse(
+      content=types.Content(
+          parts=[
+              types.Part(
+                  text='```python\nprint("from the reasoning")\n```',
+                  thought=True,
+                  thought_signature=b'opaque',
+              ),
+              types.Part(
+                  text='/*ACTION*/```python\nprint("from the plan")\n```'
+              ),
+          ]
+      )
+  )
+
+  events = await _run_post_processor(
+      code_executor, llm_response, planner=PlanReActPlanner()
+  )
+
+  executed = code_executor.execute_code.call_args.args[1]
+  assert executed.code == 'print("from the plan")'
+  emitted_parts = events[0].content.parts
+  assert emitted_parts[0].thought_signature == b'opaque'
+  assert emitted_parts[0].text == '```python\nprint("from the reasoning")\n```'
 
 
 def test_get_content_as_bytes_returns_bytes_unchanged():

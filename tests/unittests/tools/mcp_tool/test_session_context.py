@@ -27,6 +27,7 @@ from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.tools.mcp_tool.session_context import _format_exception
 from google.adk.tools.mcp_tool.session_context import _read_timeout
 from google.adk.tools.mcp_tool.session_context import SessionContext
+from google.adk.version import __version__
 import httpx
 from mcp import ClientSession
 import pytest
@@ -723,6 +724,28 @@ class TestSessionContext:
         pass
       _, kwargs = mock_client_session_class.call_args
       assert kwargs['elicitation_callback'] is elicitation_callback
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize('is_stdio', [False, True])
+  async def test_names_adk_in_client_info(self, is_stdio):
+    """ADK identifies itself rather than leaving the SDK's `mcp` default."""
+    context = SessionContext(
+        client=MockClient(),
+        timeout=5.0,
+        sse_read_timeout=None,
+        is_stdio=is_stdio,
+    )
+    with patch(
+        'google.adk.tools.mcp_tool.session_context.ClientSession',
+        autospec=True,
+    ) as mock_client_session_class:
+      mock_client_session = mock_client_session_class.return_value
+      mock_client_session.initialize = AsyncMock()
+      async with context:
+        pass
+      _, kwargs = mock_client_session_class.call_args
+      assert kwargs['client_info'].name == 'google-adk'
+      assert kwargs['client_info'].version == __version__
 
 
 class TestSessionContextIsTaskAlive:

@@ -44,6 +44,32 @@ def test_create_google_search_agent_uses_the_given_model():
   assert agent.canonical_model is model
 
 
+def test_create_google_search_agent_turn1_request_directs_builtin_grounding():
+  """Turn-1 request must attach built-in grounding without function calls."""
+  model = testing_utils.MockModel.create(responses=['grounded search answer'])
+  model.model = 'gemini-2.0-flash'
+  agent = create_google_search_agent(model)
+
+  runner = testing_utils.InMemoryRunner(agent)
+  runner.run('test search query')
+
+  assert len(model.requests) == 1
+  turn1_request = model.requests[0]
+  assert not turn1_request.tools_dict
+  assert any(
+      tool.google_search is not None for tool in turn1_request.config.tools
+  )
+  assert 'built-in Google Search' in turn1_request.config.system_instruction
+  assert (
+      'Do not attempt to invoke a client-side function'
+      in turn1_request.config.system_instruction
+  )
+  assert (
+      'use the `google_search` tool'
+      not in turn1_request.config.system_instruction
+  )
+
+
 function_call_no_schema = Part.from_function_call(
     name='tool_agent', args={'request': 'test1'}
 )
