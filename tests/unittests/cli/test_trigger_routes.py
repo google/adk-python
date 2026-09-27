@@ -1681,3 +1681,161 @@ class TestTriggerRequestModels:
         "ce-source": "//storage.googleapis.com/b",
         "ce-specversion": "1.0",
     }
+
+
+class TestEmailVerifiedStrictBoolean:
+  """Regression tests for issue #7289 — string "false" must not pass the
+  email_verified check in GoogleOidcVerifier.
+
+  The original check used ``not claims.get("email_verified")``,
+  which is a truthiness test.  Any non-empty string (including "false")
+  is truthy in Python, so an attacker could supply a forged token whose
+  email_verified claim is the string "false" and have it accepted.
+  """
+
+  @pytest.mark.parametrize(
+      "endpoint,payload",
+      _TRIGGER_ENDPOINTS_AND_PAYLOADS,
+  )
+  def test_rejects_string_false_email_verified(
+      self, client_oidc_emails, monkeypatch, endpoint, payload
+  ):
+    """String 'false' is truthy in Python but must NOT be accepted as True."""
+
+    def _ok(token, request, audience):
+      return {
+          "aud": audience,
+          "email": "allowed@project.iam",
+          "email_verified": "false",
+      }
+
+    monkeypatch.setattr(
+        trigger_routes_module.google_id_token,
+        "verify_oauth2_token",
+        _ok,
+    )
+    resp = client_oidc_emails.post(
+        endpoint,
+        json=payload,
+        headers={"Authorization": "Bearer forged.jwt.value"},
+    )
+    assert resp.status_code == 403
+    assert "Untrusted token principal" in resp.json()["detail"]
+
+  @pytest.mark.parametrize(
+      "endpoint,payload",
+      _TRIGGER_ENDPOINTS_AND_PAYLOADS,
+  )
+  def test_rejects_string_true_email_verified(
+      self, client_oidc_emails, monkeypatch, endpoint, payload
+  ):
+    """Even string 'true' is not boolean True; only a real bool is accepted."""
+
+    def _ok(token, request, audience):
+      return {
+          "aud": audience,
+          "email": "allowed@project.iam",
+          "email_verified": "true",
+      }
+
+    monkeypatch.setattr(
+        trigger_routes_module.google_id_token,
+        "verify_oauth2_token",
+        _ok,
+    )
+    resp = client_oidc_emails.post(
+        endpoint,
+        json=payload,
+        headers={"Authorization": "Bearer forged.jwt.value"},
+    )
+    assert resp.status_code == 403
+    assert "Untrusted token principal" in resp.json()["detail"]
+
+  @pytest.mark.parametrize(
+      "endpoint,payload",
+      _TRIGGER_ENDPOINTS_AND_PAYLOADS,
+  )
+  def test_rejects_missing_email_verified_claim(
+      self, client_oidc_emails, monkeypatch, endpoint, payload
+  ):
+    """An absent email_verified claim (None / KeyError) must be rejected."""
+
+    def _ok(token, request, audience):
+      return {"aud": audience, "email": "allowed@project.iam"}
+
+    monkeypatch.setattr(
+        trigger_routes_module.google_id_token,
+        "verify_oauth2_token",
+        _ok,
+    )
+    resp = client_oidc_emails.post(
+        endpoint,
+        json=payload,
+        headers={"Authorization": "Bearer forged.jwt.value"},
+    )
+    assert resp.status_code == 403
+    assert "Untrusted token principal" in resp.json()["detail"]
+
+  @pytest.mark.parametrize(
+      "endpoint,payload",
+      _TRIGGER_ENDPOINTS_AND_PAYLOADS,
+  )
+  def test_rejects_null_email_verified(
+      self, client_oidc_emails, monkeypatch, endpoint, payload
+  ):
+    """An explicit null (None) email_verified must be rejected."""
+
+    def _ok(token, request, audience):
+      return {
+          "aud": audience,
+          "email": "allowed@project.iam",
+          "email_verified": None,
+      }
+
+    monkeypatch.setattr(
+        trigger_routes_module.google_id_token,
+        "verify_oauth2_token",
+        _ok,
+    )
+    resp = client_oidc_emails.post(
+        endpoint,
+        json=payload,
+        headers={"Authorization": "Bearer forged.jwt.value"},
+    )
+    assert resp.status_code == 403
+    assert "Untrusted token principal" in resp.json()["detail"]
+
+  @pytest.mark.parametrize(
+      "endpoint,payload",
+      _TRIGGER_ENDPOINTS_AND_PAYLOADS,
+  )
+  def test_accepts_boolean_true_email_verified(
+      self, client_oidc_emails, monkeypatch, endpoint, payload
+  ):
+    """Real boolean True with an allowlisted email passes verification."""
+
+    def _ok(token, request, audience):
+      return {
+          "aud": audience,
+          "email": "allowed@project.iam",
+          "email_verified": True,
+      }
+
+    monkeypatch.setattr(
+        trigger_routes_module.google_id_token,
+        "verify_oauth2_token",
+        _ok,
+    )
+
+    async def dummy_run_async(self, user_id, session_id, new_message, **kwargs):
+      yield _model_event("ok")
+      await asyncio.sleep(0)
+
+    monkeypatch.setattr(Runner, "run_async", dummy_run_async)
+
+    resp = client_oidc_emails.post(
+        endpoint,
+        json=payload,
+        headers={"Authorization": "Bearer good.jwt.value"},
+    )
+    assert resp.status_code == 200
