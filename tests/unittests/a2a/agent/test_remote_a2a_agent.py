@@ -59,6 +59,7 @@ from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_preprocessor import TOOLSET_AUTH_CREDENTIAL_ID_PREFIX
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.flows.llm_flows.context._fencing import QUOTED_CONTENT_BEGIN
 from google.adk.flows.llm_flows.context._fencing import QUOTED_CONTENT_END
 from google.adk.flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
@@ -1643,6 +1644,63 @@ class TestRemoteA2aAgentMessageHandling:
 
     assert parts == []
     assert context_id is None
+
+  def test_construct_message_parts_warns_for_state_only_handoff(self, caplog):
+    """A state-only hand-off warns before the remote receives stale content."""
+    self.mock_session.events = [
+        Event(
+            author="local_agent",
+            actions=EventActions(state_delta={"routing": "priority"}),
+        )
+    ]
+
+    with caplog.at_level("WARNING"):
+      parts, context_id = self.agent._construct_message_parts_from_session(
+          self.mock_context
+      )
+
+    assert parts == []
+    assert context_id is None
+    assert "cannot forward the preceding state-only event" in caplog.text
+
+  def test_task_mode_state_warning_uses_latest_applicable_event(self, caplog):
+    """Task scoping ignores a newer state-only event from another task."""
+    task_scope = "task-scope"
+    self.agent.mode = "task"
+    trigger = Event(
+        author="coordinator",
+        content=genai_types.Content(
+            parts=[
+                genai_types.Part(
+                    function_call=genai_types.FunctionCall(
+                        id=task_scope,
+                        name=self.agent.name,
+                        args={},
+                    )
+                )
+            ]
+        ),
+    )
+    applicable = Event(
+        author="user",
+        isolation_scope=task_scope,
+        content=genai_types.Content(parts=[genai_types.Part(text="hello")]),
+    )
+    unrelated_state_only = Event(
+        author="other",
+        isolation_scope="different-task",
+        actions=EventActions(state_delta={"routing": "priority"}),
+    )
+    self.mock_session.events = [trigger, applicable, unrelated_state_only]
+    self.mock_context.isolation_scope = task_scope
+    self.mock_genai_part_converter.return_value = _compat.make_text_part(
+        "converted"
+    )
+
+    with caplog.at_level("WARNING"):
+      self.agent._construct_message_parts_from_session(self.mock_context)
+
+    assert "cannot forward the preceding state-only event" not in caplog.text
 
   def test_construct_message_parts_from_session_foreign_function_response_converted_in_default_mode(
       self,
