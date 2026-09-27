@@ -71,6 +71,8 @@ class _DynamicInstructionsLlmRequestProcessor(BaseLlmRequestProcessor):
   after the processor that resolves them.
   """
 
+  name = 'dynamic_instructions'
+
   @override
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest

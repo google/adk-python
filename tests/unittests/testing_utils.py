@@ -27,9 +27,9 @@ from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import App
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
-from google.adk.flows.llm_flows._fencing import OTHER_AGENT_CONTEXT_PREAMBLE
-from google.adk.flows.llm_flows._fencing import QUOTED_CONTENT_BEGIN
-from google.adk.flows.llm_flows._fencing import QUOTED_CONTENT_END
+from google.adk.flows.llm_flows.context._fencing import OTHER_AGENT_CONTEXT_PREAMBLE
+from google.adk.flows.llm_flows.context._fencing import QUOTED_CONTENT_BEGIN
+from google.adk.flows.llm_flows.context._fencing import QUOTED_CONTENT_END
 from google.adk.live import LiveRequestQueue
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.models import LlmCapabilities

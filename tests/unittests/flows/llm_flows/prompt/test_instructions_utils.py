@@ -139,6 +139,50 @@ async def test_inject_session_state_with_missing_state_raises_key_error():
 
 
 @pytest.mark.asyncio
+async def test_inject_session_state_preserves_literal_dollar_brace_patterns():
+  """Literal ${identifier} patterns in docs/tool descriptions should not crash."""
+  instruction_template = (
+      "The formatString supports interpolation via ${expression} syntax."
+  )
+  invocation_context = await _create_test_readonly_context()
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == instruction_template
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_with_dollar_brace_and_session_state():
+  instruction_template = (
+      "Hello {user_name}! Interpolation via ${expression} syntax."
+  )
+  invocation_context = await _create_test_readonly_context(
+      state={"user_name": "Foo"}
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert (
+      populated_instruction
+      == "Hello Foo! Interpolation via ${expression} syntax."
+  )
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_preserves_escaped_braces():
+  r"""Literal \{identifier\} patterns in docs/tool descriptions should not crash."""
+  instruction_template = r"Literal \{expression\} syntax."
+  invocation_context = await _create_test_readonly_context()
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == instruction_template
+
+
+@pytest.mark.asyncio
 async def test_inject_session_state_with_missing_artifact_raises_key_error():
   instruction_template = "The artifact content is: {artifact.missing_file}"
   mock_artifact_service = MockArtifactService(
@@ -447,3 +491,26 @@ def test_utils_shim_reexports():
   assert shim.InstructionProvider is instructions_utils.InstructionProvider
   assert shim.ReadonlyContext is ReadonlyContext
   assert shim._is_valid_state_name is _is_valid_state_name
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_preserves_dollar_double_brace_patterns():
+  """Literal ${{identifier}} patterns should not match template variables."""
+  instruction_template = "Workflow syntax: ${{expression}} syntax."
+  invocation_context = await _create_test_readonly_context()
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == instruction_template
+
+  instruction_template_with_state = (
+      "Workflow syntax: ${{expression}} and {user_name}."
+  )
+  invocation_context_with_state = await _create_test_readonly_context(
+      state={"expression": "foo", "user_name": "bar"}
+  )
+  populated_with_state = await instructions_utils.inject_session_state(
+      instruction_template_with_state, invocation_context_with_state
+  )
+  assert populated_with_state == "Workflow syntax: ${{expression}} and bar."

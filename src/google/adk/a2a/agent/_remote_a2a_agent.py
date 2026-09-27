@@ -60,13 +60,13 @@ from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
 from ...auth.auth_tool import AuthConfig
 from ...events.event import Event
-from ...flows.llm_flows._fencing import _is_other_agent_reply
-from ...flows.llm_flows._fencing import _present_other_agent_message
-from ...flows.llm_flows._fencing import quote_untrusted
-from ...flows.llm_flows.functions import find_matching_function_call
-from ...flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
-from ...flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
-from ...flows.llm_flows.functions import REQUEST_INPUT_FUNCTION_CALL_NAME
+from ...flows.llm_flows.context._fencing import _is_other_agent_reply
+from ...flows.llm_flows.context._fencing import _present_other_agent_message
+from ...flows.llm_flows.context._fencing import quote_untrusted
+from ...flows.llm_flows.tools._functions import find_matching_function_call
+from ...flows.llm_flows.tools._functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ...flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from ...flows.llm_flows.tools._functions import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ...sessions.session import Session
 from ...utils.context_utils import Aclosing
 from ..converters.event_converter import convert_a2a_message_to_event
@@ -110,15 +110,18 @@ _DEFAULT_PORTS = {"http": 80, "https": 443}
 logger = logging.getLogger("google_adk." + __name__)
 
 
-# Function call names whose pause is resolved locally (ADK request-* tools or a
-# workflow HITL node); their response is flattened to text before forwarding.
-_HUMAN_INPUT_FUNCTION_CALL_NAMES = frozenset({
+# Calls ADK synthesizes locally for a peer's input or auth request.
+_MOCK_FUNCTION_CALL_NAMES = frozenset({
     MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT,
     MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH,
+})
+
+# Pause names answered locally as text when the pause was raised on this side.
+_HUMAN_INPUT_FUNCTION_CALL_NAMES = _MOCK_FUNCTION_CALL_NAMES | {
     REQUEST_INPUT_FUNCTION_CALL_NAME,
     REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
     REQUEST_EUC_FUNCTION_CALL_NAME,
-})
+}
 
 # Function call names whose *response* carries credential material.
 _CREDENTIAL_FUNCTION_CALL_NAMES = frozenset({
@@ -303,6 +306,7 @@ def _sanitize_user_function_response_event(
     event: Event,
     trusted_call_names_by_id: dict[Optional[str], set[str]],
     id_less_call_is_ambiguous: bool,
+    human_input_call_names: frozenset[str],
 ) -> Event:
   """Returns a copy of ``event`` with its parts sanitized for forwarding."""
   if event.content is None:
@@ -316,14 +320,14 @@ def _sanitize_user_function_response_event(
 
   def _is_human_input(fr: genai_types.FunctionResponse) -> bool:
     names = trusted_call_names_by_id.get(fr.id)
-    if not names or names.isdisjoint(_HUMAN_INPUT_FUNCTION_CALL_NAMES):
+    if not names or names.isdisjoint(human_input_call_names):
       return False
     # An id-less response with an unknown name can't be classified by id when a
     # call the rewrite must not flatten shares the id-less bucket.
     if (
         id_less_call_is_ambiguous
         and fr.id is None
-        and fr.name not in _HUMAN_INPUT_FUNCTION_CALL_NAMES
+        and fr.name not in human_input_call_names
     ):
       return False
     return True
@@ -842,7 +846,7 @@ class RemoteA2aAgent(BaseAgent):
     from ...auth.auth_handler import AuthHandler
     from ...auth.auth_preprocessor import TOOLSET_AUTH_CREDENTIAL_ID_PREFIX
     from ...auth.credential_manager import CredentialManager
-    from ...flows.llm_flows.functions import build_auth_request_event
+    from ...flows.llm_flows.tools._functions import build_auth_request_event
 
     # Resolve against a copy, so a credential exchanged for one user is never
     # written back onto the config shared by every invocation.
@@ -1135,6 +1139,13 @@ class RemoteA2aAgent(BaseAgent):
 
     event = ctx.session.events[-1]
 
+    # A pause the peer raised and relayed here is answered by resuming the peer.
+    human_input_call_names = (
+        _MOCK_FUNCTION_CALL_NAMES
+        if self._is_relayed_peer_event(function_call_event)
+        else _HUMAN_INPUT_FUNCTION_CALL_NAMES
+    )
+
     # Map every pending call to its id by the trusted function CALL name so
     # credential matching does not depend on the human-input set.
     trusted_call_names_by_id: dict[Optional[str], set[str]] = {}
@@ -1143,11 +1154,14 @@ class RemoteA2aAgent(BaseAgent):
       if fc.name is None:
         continue
       trusted_call_names_by_id.setdefault(fc.id, set()).add(fc.name)
-      if fc.id is None and fc.name not in _HUMAN_INPUT_FUNCTION_CALL_NAMES:
+      if fc.id is None and fc.name not in human_input_call_names:
         id_less_call_is_ambiguous = True
 
     event = _sanitize_user_function_response_event(
-        event, trusted_call_names_by_id, id_less_call_is_ambiguous
+        event,
+        trusted_call_names_by_id,
+        id_less_call_is_ambiguous,
+        human_input_call_names,
     )
 
     a2a_message = convert_event_to_a2a_message(
@@ -1169,13 +1183,16 @@ class RemoteA2aAgent(BaseAgent):
 
     return a2a_message
 
-  def _is_remote_response(self, event: Event) -> bool:
-    is_a2a_resp = bool(
+  def _is_relayed_peer_event(self, event: Event) -> bool:
+    """True when this event came over the wire from this agent's peer."""
+    return bool(
         event.author == self.name
         and event.custom_metadata
         and event.custom_metadata.get(A2A_METADATA_PREFIX + "response", False)
     )
-    if is_a2a_resp:
+
+  def _is_remote_response(self, event: Event) -> bool:
+    if self._is_relayed_peer_event(event):
       return True
 
     # Also stop on synthesized FR events for this agent (meaning the previous

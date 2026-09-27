@@ -620,12 +620,16 @@ def mock_vertex_ai_session_service(
 def mock_api_client_instance():
   """Creates a mock API client instance for testing."""
   api_client = MockAsyncClient()
+  # Deep-copy the session payloads like the events below: the mock client
+  # mutates `session_dict[...]['update_time']` when an event is appended, and
+  # sharing the module-level dicts across tests would leak that update into
+  # later tests that compare against `MOCK_SESSION`.
   api_client.session_dict = {
-      '1': MOCK_SESSION_JSON_1,
-      '2': MOCK_SESSION_JSON_2,
-      '3': MOCK_SESSION_JSON_3,
-      'page1': MOCK_SESSION_JSON_PAGE1,
-      'page2': MOCK_SESSION_JSON_PAGE2,
+      '1': copy.deepcopy(MOCK_SESSION_JSON_1),
+      '2': copy.deepcopy(MOCK_SESSION_JSON_2),
+      '3': copy.deepcopy(MOCK_SESSION_JSON_3),
+      'page1': copy.deepcopy(MOCK_SESSION_JSON_PAGE1),
+      'page2': copy.deepcopy(MOCK_SESSION_JSON_PAGE2),
   }
   api_client.event_dict = {
       '1': (copy.deepcopy(MOCK_EVENT_JSON), None),

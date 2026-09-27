@@ -23,7 +23,6 @@ from typing import cast
 from typing import Final
 from typing import Optional
 from typing import TYPE_CHECKING
-import uuid
 
 import google.auth
 from google.auth.transport import mtls
@@ -31,16 +30,17 @@ from opentelemetry.sdk._logs import LogRecordProcessor
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.metrics.export import MetricReader
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
-from opentelemetry.sdk.resources import OTELResourceDetector
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import SpanProcessor
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.util.types import AttributeValue
 from typing_extensions import override
 
 from ._agent_engine import _get_agent_engine_metrics_setup
 from ._agent_engine import telemetry_user_agent_headers
 from ._agent_engine_metric_exporter import MIN_EXPORT_INTERVAL_MS
+from ._gcp_resource import _fetch_project
+from ._gcp_resource import CLOUD_RESOURCE_ID as CLOUD_RESOURCE_ID
+from ._gcp_resource import get_gcp_resource as get_gcp_resource
 from .setup import OTelHooks
 
 if TYPE_CHECKING:
@@ -51,11 +51,6 @@ if TYPE_CHECKING:
   from opentelemetry.sdk._logs.export import LogRecordExporter
 
 logger = logging.getLogger("google_adk." + __name__)
-
-# cloud.resource_id is only defined in the private _incubating semconv package
-# today; switch to the stable opentelemetry.semconv.attributes definition once
-# the dependency floor is bumped past its promotion.
-CLOUD_RESOURCE_ID = "cloud.resource_id"
 
 _GCP_DEFAULT_LOG_NAME = "GCP_DEFAULT_LOG_NAME"
 _ADK_OTEL = "adk-otel"
@@ -118,20 +113,9 @@ def get_gcp_exporters(
       google_auth if google_auth is not None else google.auth.default()
   )
   if os.environ.get("GOOGLE_CLOUD_AGENT_ENGINE_ID"):
-    # Try to convert project number to project ID to associate logs with traces.
-    try:
-      from google.cloud import resourcemanager_v3 as resourcemanager
-
-      projects_client = resourcemanager.ProjectsClient(credentials=credentials)
-      project = projects_client.get_project(name=f"projects/{project_id}")
-      project_id = project.project_id
-    except Exception:
-      logger.warning(
-          "Failed to convert project number to project ID. Your traces and logs"
-          " may not be associated. To fix this, consider enabling the resource"
-          " manager API and redeploying your agent.",
-          exc_info=True,
-      )
+    # Associating logs with traces needs the ID; keep what we have if the
+    # lookup could not produce one.
+    project_id = _fetch_project(project_id, credentials).id or project_id
   if TYPE_CHECKING:
     credentials = cast(Credentials, credentials)
     project_id = cast(str, project_id)
@@ -382,104 +366,6 @@ def _get_gcp_logs_exporter(
       ),
       project_id,
   )
-
-
-def _maybe_detect_agent_engine_resource(
-    project_id: str | None,
-) -> Resource | None:
-  """Returns the resource attributes describing the Agent Engine deployment.
-
-  Args:
-    project_id: project the agent reports telemetry to.
-  """
-  if not (agent_engine_id := os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_ID", "")):
-    return None
-
-  location = os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_LOCATION") or os.getenv(
-      "GOOGLE_CLOUD_LOCATION"
-  )
-
-  attributes = {
-      "cloud.provider": "gcp",
-      "cloud.platform": "gcp.agent_engine",
-      "service.name": agent_engine_id,
-      "service.version": os.getenv(
-          "GOOGLE_CLOUD_AGENT_ENGINE_RUNTIME_REVISION_ID", ""
-      ),
-      "cloud.region": location or "",
-  }
-  if project_id and location:
-    attributes[CLOUD_RESOURCE_ID] = (
-        f"//aiplatform.googleapis.com/projects/{project_id}"
-        f"/locations/{location}/reasoningEngines/{agent_engine_id}"
-    )
-  return Resource(attributes=attributes)
-
-
-def _maybe_detect_gcp_resource() -> Resource | None:
-  """Returns the resource the GCP detector describes this platform with."""
-  try:
-    from opentelemetry.resourcedetector.gcp_resource_detector import GoogleCloudResourceDetector
-
-    detector = GoogleCloudResourceDetector(raise_on_error=False)
-    # `detect()` is untyped upstream, annotate to satisfy `no-any-return`.
-    resource: Resource = detector.detect()
-    return resource
-  except ImportError:
-    logger.warning(
-        "Could not import"
-        " opentelemetry.resourcedetector.gcp_resource_detector GCE, GKE or"
-        " CloudRun related resource attributes may be missing"
-    )
-
-  return None
-
-
-def get_gcp_resource(project_id: str | None = None) -> Resource:
-  """Returns OTEL with attributes specified in the following order (attributes specified later, overwrite those specified earlier):
-
-  1. Populates gcp.project_id attribute from the project_id argument if present.
-  2. On Agent Engine, `_maybe_detect_agent_engine_resource` describes the
-  deployment.
-  3. OTELResourceDetector populates resource labels from environment variables
-  like OTEL_SERVICE_NAME and OTEL_RESOURCE_ATTRIBUTES.
-  4. Off Agent Engine, the GCP detector adds attributes corresponding to a
-  correct monitored resource if ADK runs on one of supported platforms (e.g.
-  GCE, GKE, CloudRun).
-
-  Args:
-    project_id: project id to fill out as `gcp.project_id` on the OTEL resource.
-      This may be overwritten by OTELResourceDetector, if `gcp.project_id` is
-      present in `OTEL_RESOURCE_ATTRIBUTES` env var.
-  """
-  resource_attributes: dict[str, AttributeValue] = {
-      "service.instance.id": f"{uuid.uuid4().hex}-{os.getpid()}",
-  }
-  if project_id is not None:
-    resource_attributes["gcp.project_id"] = project_id
-    resource_attributes["cloud.account.id"] = project_id
-
-  agent_engine_resource = _maybe_detect_agent_engine_resource(
-      project_id=project_id
-  )
-  if agent_engine_resource:
-    # `Resource.create` also contributes the `telemetry.sdk.*` attributes the
-    # Agent Engine resource has always carried.
-    resource = Resource.create(attributes=resource_attributes).merge(
-        agent_engine_resource
-    )
-  else:
-    resource = Resource(attributes=resource_attributes)
-
-  resource = resource.merge(OTELResourceDetector().detect())
-
-  # GCP detector clobbers Agent Engine resource.
-  if not agent_engine_resource and (
-      gcp_resource := _maybe_detect_gcp_resource()
-  ):
-    resource = resource.merge(gcp_resource)
-
-  return resource
 
 
 def _get_api_endpoint(

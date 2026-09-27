@@ -75,6 +75,14 @@ class InvocationEvent(EvalBaseModel):
   grounding_metadata: Optional[genai_types.GroundingMetadata] = None
   """Grounding metadata emitted with the event."""
 
+  usage_metadata: Optional[genai_types.GenerateContentResponseUsageMetadata] = (
+      None
+  )
+  """Token usage reported by the model for this event."""
+
+  model_version: Optional[str] = None
+  """The version/name of the model that served this call."""
+
 
 class InvocationEvents(EvalBaseModel):
   """A container for events that occur during the course of an invocation."""
@@ -107,6 +115,16 @@ class Invocation(EvalBaseModel):
 
   creation_timestamp: float = 0.0
   """Timestamp for the current invocation, primarily intended for debugging purposes."""
+
+  duration: Optional[float] = None
+  """Wall-clock seconds this invocation took, measured while it ran.
+
+  Set only when the eval performed the inference itself; an invocation read
+  back from a stored session or a hand-written eval case carries no timing, and
+  leaves this None rather than reporting a reconstructed figure. Timings cannot
+  be recovered afterwards from event timestamps: an event is stamped when it is
+  constructed, which for a model call is before the request is even sent.
+  """
 
   rubrics: Optional[list[Rubric]] = Field(
       default=None,
@@ -277,3 +295,16 @@ def get_all_tool_calls_with_responses(
     tool_call_and_responses.append((tool_call, response))
 
   return tool_call_and_responses
+
+
+def get_all_usage_metadata(
+    invocation: Invocation,
+) -> list[genai_types.GenerateContentResponseUsageMetadata]:
+  """Returns the usage metadata for every invocation event that reported it."""
+  if not isinstance(invocation.intermediate_data, InvocationEvents):
+    return []
+  return [
+      event.usage_metadata
+      for event in invocation.intermediate_data.invocation_events
+      if event.usage_metadata is not None
+  ]

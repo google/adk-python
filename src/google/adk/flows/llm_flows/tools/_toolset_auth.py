@@ -24,7 +24,6 @@ from typing_extensions import override
 
 from ....agents.callback_context import CallbackContext
 from ....agents.invocation_context import InvocationContext
-from ....auth.auth_preprocessor import TOOLSET_AUTH_CREDENTIAL_ID_PREFIX
 from ....auth.auth_tool import AuthConfig
 from ....events.event import Event
 from ....models.llm_request import LlmRequest
@@ -96,6 +95,8 @@ async def resolve_toolset_auth(
       invocation_context.credential_by_key[credential_key] = credential
     else:
       # Need auth - will interrupt
+      from ....auth.auth_preprocessor import TOOLSET_AUTH_CREDENTIAL_ID_PREFIX
+
       toolset_id = (
           f'{TOOLSET_AUTH_CREDENTIAL_ID_PREFIX}{type(tool_union).__name__}'
       )
@@ -124,6 +125,8 @@ async def resolve_toolset_auth(
 
 class _ToolsetAuthLlmRequestProcessor(BaseLlmRequestProcessor):
   """Resolves toolset auth so credentials are ready before tools are listed."""
+
+  name = 'toolset_auth'
 
   @override
   async def run_async(

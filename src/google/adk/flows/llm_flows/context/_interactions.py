@@ -93,6 +93,8 @@ class InteractionsRequestProcessor(BaseLlmRequestProcessor):
   done by the content request processor after this processor runs.
   """
 
+  name = 'interactions'
+
   _last_tier_warning_invocation_id: Optional[str] = None
   """Invocation that last logged the unusable-tier warning.
 
