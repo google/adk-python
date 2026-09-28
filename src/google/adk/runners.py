@@ -69,11 +69,11 @@ from .tools.base_toolset import BaseToolset
 from .utils._debug_output import print_event
 from .utils._runner_utils import _notify_run_error
 from .utils._runner_utils import _with_caller_context
+from .workflow._base_node import BaseNode
 
 if TYPE_CHECKING:
   from .apps.app import App
   from .apps.app import ResumabilityConfig
-  from .workflow._base_node import BaseNode
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -2069,6 +2069,8 @@ class Runner:
   def _collect_toolset(
       self, root: BaseNode, visited: set[int] | None = None
   ) -> set[BaseToolset]:
+    if not isinstance(root, BaseNode):
+      return set()
     if visited is None:
       visited = set()
     root_id = id(root)

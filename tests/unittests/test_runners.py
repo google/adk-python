@@ -1717,6 +1717,22 @@ class TestRunnerWithPlugins:
     assert toolset.closed
 
   @pytest.mark.asyncio
+  async def test_runner_close_with_bare_magic_mock_agent(self):
+    """Runner.close() does not recurse infinitely when agent is a bare MagicMock."""
+    runner = Runner(
+        app_name="test_app",
+        agent=mock.MagicMock(),
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+    runner.plugin_manager.close = AsyncMock()
+
+    assert runner._collect_toolset(runner.agent) == set()
+    await runner.close()
+
+    runner.plugin_manager.close.assert_awaited_once()
+
+  @pytest.mark.asyncio
   async def test_runner_passes_plugin_close_timeout(self):
     """Test that runner passes plugin_close_timeout to PluginManager."""
     runner = Runner(
