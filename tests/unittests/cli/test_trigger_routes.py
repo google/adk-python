@@ -572,6 +572,42 @@ class TestTriggerOidcVerification:
     assert "Untrusted token principal" in resp.json()["detail"]
 
   @pytest.mark.parametrize("endpoint,payload", _TRIGGER_ENDPOINTS_AND_PAYLOADS)
+  @pytest.mark.parametrize(
+      "email_verified_claim",
+      [{}, {"email_verified": None}],
+      ids=["missing", "none"],
+  )
+  def test_rejects_missing_or_null_email_verified(
+      self,
+      client_oidc_emails,
+      monkeypatch,
+      endpoint,
+      payload,
+      email_verified_claim,
+  ):
+    """An absent or null email_verified claim is not verified."""
+
+    def _ok(token, request, audience):
+      return {
+          "aud": audience,
+          "email": "allowed@project.iam",
+          **email_verified_claim,
+      }
+
+    monkeypatch.setattr(
+        trigger_routes_module.google_id_token,
+        "verify_oauth2_token",
+        _ok,
+    )
+    resp = client_oidc_emails.post(
+        endpoint,
+        json=payload,
+        headers={"Authorization": "Bearer some.jwt.value"},
+    )
+    assert resp.status_code == 403
+    assert "Untrusted token principal" in resp.json()["detail"]
+
+  @pytest.mark.parametrize("endpoint,payload", _TRIGGER_ENDPOINTS_AND_PAYLOADS)
   def test_accepts_allowed_email(
       self, client_oidc_emails, monkeypatch, endpoint, payload
   ):
