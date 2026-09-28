@@ -1021,7 +1021,9 @@ async def test_execute_sql_non_select_stmt_write_protected_persistent_target(
         ),
     ],
 )
-def test_execute_sql_unconfined_stmt_write_protected(query, statement_type):
+async def test_execute_sql_unconfined_stmt_write_protected(
+    query, statement_type
+):
   """Test execute_sql tool for a statement the dry run leaves undestined.
 
   A dry run that reports no destination shows nothing about where the statement
@@ -1059,7 +1061,7 @@ def test_execute_sql_unconfined_stmt_write_protected(query, statement_type):
     bq_client.query_and_wait.return_value = query_result
 
     # Test the tool
-    result = query_tool.execute_sql(
+    result = await query_tool.execute_sql(
         project, query, credentials, tool_settings, tool_context
     )
 
