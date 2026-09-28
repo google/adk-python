@@ -299,7 +299,12 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
         events, set(confirmations_by_fc_id.keys())
     )
     responded_fc_ids: set[str] = set()
-    for event in events:
+    # Only responses after the latest user confirmation can represent a prior
+    # execution of that confirmation. The initial gated tool response is before
+    # the user event and must not consume the first approval.
+    for event in reversed(events):
+      if event.author == "user":
+        break
       for function_response in event.get_function_responses():
         if function_response.id:
           responded_fc_ids.add(function_response.id)
