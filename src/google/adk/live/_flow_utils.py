@@ -26,6 +26,7 @@ from .live_request_queue import LiveRequestQueue
 
 if TYPE_CHECKING:
   from ..agents.invocation_context import InvocationContext
+  from ..agents.run_config import RunConfig
   from ..flows.llm_flows.base_llm_flow import BaseLlmFlow
   from ..models.llm_response import LlmResponse
 
@@ -69,8 +70,27 @@ def require_live_request_queue(
   return live_request_queue
 
 
+def run_config_for_new_live_session(run_config: RunConfig) -> RunConfig:
+  """Copies ``run_config`` for a fresh live session, clearing any handle.
+
+  Only ``session_resumption`` is copied. A deep copy of the whole config would
+  drag ``http_options`` along, and that can hold a live httpx or aiohttp client
+  which raises ``TypeError: cannot pickle``; the rest of the config is not
+  mutated here, so sharing it is what the caller wants anyway.
+  """
+  resumption_copy = (
+      None
+      if run_config.session_resumption is None
+      else run_config.session_resumption.model_copy(deep=True)
+  )
+  copied = run_config.model_copy(update={'session_resumption': resumption_copy})
+  if copied.session_resumption:
+    copied.session_resumption.handle = None
+  return copied
+
+
 async def stop_background_tool_tasks(
-    flow: BaseLlmFlow, invocation_context: InvocationContext
+    invocation_context: InvocationContext,
 ) -> None:
   """Cancels the background tool tasks this live run started.
 
@@ -92,7 +112,6 @@ async def stop_background_tool_tasks(
   ``_TOOL_SHUTDOWN_TIMEOUT_SECONDS`` is logged and left behind rather than
   stalling the handoff or the caller's teardown on it.
   """
-  del flow
   tasks = [
       active.task
       for active in (invocation_context.active_streaming_tools or {}).values()
