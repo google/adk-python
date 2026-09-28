@@ -1799,8 +1799,12 @@ async def _get_content(
       # arrived via a default fallback; raise early with an actionable message.
       if not file_mime_type or file_mime_type == "application/octet-stream":
         type_label = file_mime_type or "(unknown)"
+        redacted_file_uri = _redact_file_uri_for_log(
+            part.file_data.file_uri,
+            display_name=part.file_data.display_name,
+        )
         raise ValueError(
-            f"Cannot process file_uri {part.file_data.file_uri!r}: MIME type"
+            f"Cannot process file_uri {redacted_file_uri!r}: MIME type"
             f" {type_label!r} is not supported. Please set a specific MIME"
             " type on `file_data.mime_type`."
         )
@@ -3626,6 +3630,7 @@ class LiteLlm(BaseLlm):
       usage_metadata = None
       grounding_metadata = None
       last_finish_reason: str | None = None
+      last_model_version: str | None = None
       fallback_index = 0
       multiple_choices_logged = False
 
@@ -3741,6 +3746,8 @@ class LiteLlm(BaseLlm):
         last_finish_reason = None
 
       async for part in await self.llm_client.acompletion(**completion_args):
+        if getattr(part, "model", None):
+          last_model_version = part.model
         part_choices = part.get("choices") or []
         if not multiple_choices_logged and (
             len(part_choices) > 1
@@ -3881,16 +3888,17 @@ class LiteLlm(BaseLlm):
       # the provider actually sent rather than assuming a clean stop, so a
       # filtered stream reports the same finish_reason and error_code that the
       # non-streaming path reports.
+      resolved_model_version = last_model_version or effective_model
       if function_calls and not aggregated_llm_response_with_tool_call:
         aggregated_llm_response_with_tool_call = _finalize_tool_call_response(
-            model_version=part.model,
+            model_version=resolved_model_version,
             finish_reason=last_finish_reason or "tool_calls",
         )
         _reset_stream_buffers()
 
       if (text_parts or reasoning_parts) and not aggregated_llm_response:
         aggregated_llm_response = _finalize_text_response(
-            model_version=part.model,
+            model_version=resolved_model_version,
             finish_reason=last_finish_reason or "stop",
         )
         _reset_stream_buffers()
@@ -3898,19 +3906,15 @@ class LiteLlm(BaseLlm):
           not aggregated_llm_response
           and not aggregated_llm_response_with_tool_call
       ):
-        # The stream ended abnormally without ever producing content (an
-        # immediate content filter, or truncation before the first token).
-        # Non-streaming reports that as an error response; without this the
-        # generator ends having yielded nothing at all, so the reason, the
-        # error and the usage are all dropped and the caller sees a silent stop.
-        trailing_finish_reason = last_finish_reason or ""
-        if trailing_finish_reason and _map_finish_reason(
-            trailing_finish_reason
-        ) not in (None, types.FinishReason.STOP):
-          aggregated_llm_response = _finalize_text_response(
-              model_version=part.model,
-              finish_reason=trailing_finish_reason,
-          )
+        # The stream ended without ever producing content or tool calls (an
+        # immediate content filter, truncation before the first token, or a
+        # normal stop/tool_calls/function_call/EOF with empty deltas). Finalize
+        # an empty response so the finish_reason, error, and usage are
+        # preserved rather than ending the generator having yielded nothing.
+        aggregated_llm_response = _finalize_text_response(
+            model_version=resolved_model_version,
+            finish_reason=last_finish_reason or "stop",
+        )
 
       # waiting until streaming ends to yield the llm_response as litellm tends
       # to send chunk that contains usage_metadata after the chunk with

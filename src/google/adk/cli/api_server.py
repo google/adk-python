@@ -47,6 +47,7 @@ from fastapi import Query
 from fastapi import Request
 from fastapi import Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.responses import RedirectResponse
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -872,6 +873,11 @@ class ApiServer:
 
   _allow_special_agents: bool = False
 
+  # Whether this server serves the debug endpoints that read the in-memory
+  # span buffers. Nothing evicts from those buffers, so a server that has no
+  # reader for them must not fill them.
+  _serves_debug_trace_endpoints: bool = False
+
   def __init__(
       self,
       *,
@@ -1093,57 +1099,6 @@ class ApiServer:
     module = importlib.import_module(module_name)
     return getattr(module, obj_name)
 
-  def _setup_runtime_config(self, web_assets_dir: str):
-    """Sets up the runtime config for the web server."""
-    # Read existing runtime config file.
-    runtime_config_path = os.path.join(
-        web_assets_dir, "assets", "config", "runtime-config.json"
-    )
-    runtime_config = {}
-    try:
-      with open(runtime_config_path, "r") as f:
-        runtime_config = json.load(f)
-    except FileNotFoundError:
-      logger.info(
-          "File not found: %s. A new runtime config file will be created.",
-          runtime_config_path,
-      )
-    except json.JSONDecodeError:
-      logger.warning(
-          "Failed to decode JSON from %s. The file content will be"
-          " overwritten.",
-          runtime_config_path,
-      )
-    runtime_config["backendUrl"] = self.url_prefix if self.url_prefix else ""
-    # Inject telemetry consent on bootstrapping to avoid an extra API call
-    # when loading the UI.
-    runtime_config["telemetry"] = read_telemetry_consent()
-
-    # Set custom logo config.
-    if self.logo_text or self.logo_image_url:
-      if not self.logo_text or not self.logo_image_url:
-        raise ValueError(
-            "Both --logo-text and --logo-image-url must be defined when using"
-            " logo config."
-        )
-      runtime_config["logo"] = {
-          "text": self.logo_text,
-          "imageUrl": self.logo_image_url,
-      }
-    elif "logo" in runtime_config:
-      del runtime_config["logo"]
-
-    # Write the runtime config file.
-    try:
-      os.makedirs(os.path.dirname(runtime_config_path), exist_ok=True)
-      with open(runtime_config_path, "w") as f:
-        json.dump(runtime_config, f, indent=2)
-        f.write("\n")
-    except IOError as e:
-      logger.error(
-          "Failed to write runtime config file %s: %s", runtime_config_path, e
-      )
-
   async def _create_session(
       self,
       *,
@@ -1268,16 +1223,17 @@ class ApiServer:
     memory_exporter = InMemoryExporter(session_trace_dict)
     self._memory_exporter = memory_exporter
 
+    internal_exporters: list[SpanProcessor] = []
+    if self._serves_debug_trace_endpoints:
+      internal_exporters = [
+          export_lib.SimpleSpanProcessor(ApiServerSpanExporter(trace_dict)),
+          export_lib.SimpleSpanProcessor(memory_exporter),
+      ]
+
     _setup_telemetry(
         otel_to_cloud=otel_to_cloud,
-        internal_exporters=[
-            export_lib.SimpleSpanProcessor(ApiServerSpanExporter(trace_dict)),
-            export_lib.SimpleSpanProcessor(memory_exporter),
-        ],
+        internal_exporters=internal_exporters,
     )
-    if web_assets_dir:
-      self._setup_runtime_config(web_assets_dir)
-
     tracer_provider = trace.get_tracer_provider()
     register_processors(tracer_provider)
 
@@ -1337,6 +1293,33 @@ class ApiServer:
       redirect_dev_ui_url = (
           self.url_prefix + "/dev-ui/" if self.url_prefix else "/dev-ui/"
       )
+
+      # Both logo flags travel together; a half-specified logo is a
+      # configuration error rather than something to silently drop.
+      if bool(self.logo_text) != bool(self.logo_image_url):
+        raise ValueError(
+            "Both --logo-text and --logo-image-url must be defined when using"
+            " logo config."
+        )
+
+      # Serves what used to be written into the installed package at startup.
+      # MUST stay ahead of the app.mount() below: Starlette matches routes in
+      # registration order and the "/dev-ui/" mount would otherwise shadow this
+      # path and return a stale file from disk.
+      @app.get("/dev-ui/assets/config/runtime-config.json")
+      async def get_runtime_config():
+        config: dict[str, Any] = {
+            "backendUrl": self.url_prefix or "",
+            # Read per request so a consent change takes effect on reload,
+            # instead of being frozen at server startup.
+            "telemetry": read_telemetry_consent(),
+        }
+        if self.logo_text:
+          config["logo"] = {
+              "text": self.logo_text,
+              "imageUrl": self.logo_image_url,
+          }
+        return JSONResponse(config, headers={"Cache-Control": "no-store"})
 
       @app.get("/dev-ui/config")
       async def get_ui_config():

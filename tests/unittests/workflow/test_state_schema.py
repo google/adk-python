@@ -18,8 +18,15 @@ from __future__ import annotations
 
 from typing import Optional
 
+from fastapi.openapi.models import OAuth2
+from fastapi.openapi.models import OAuthFlowAuthorizationCode
+from fastapi.openapi.models import OAuthFlows
 from google.adk.agents.context import Context
 from google.adk.apps.app import App
+from google.adk.auth.auth_credential import AuthCredential
+from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.auth.auth_credential import OAuth2Auth
+from google.adk.auth.auth_tool import AuthConfig
 from google.adk.events.event import Event
 from google.adk.sessions.state import State
 from google.adk.sessions.state import StateSchemaError
@@ -31,6 +38,7 @@ import pytest
 
 from .. import testing_utils
 from .workflow_testing_utils import create_parent_invocation_context
+from .workflow_testing_utils import get_auth_request_events
 
 # ── Schema models for testing ────────────────────────────────────────
 
@@ -88,13 +96,15 @@ def test_state_allows_prefixed_keys() -> None:
   assert state['app:anything'] == 'value'
 
 
-def test_state_rejects_unrecognized_colon_keys() -> None:
-  """Arbitrary keys containing colons do not bypass schema validation."""
+def test_state_allows_owner_prefixed_keys() -> None:
+  """ADK's own <owner>:<key> state keys bypass schema validation."""
   state = State(value={}, delta={}, schema=_PipelineSchema)
-  with pytest.raises(StateSchemaError, match='users:pref'):
-    state['users:pref'] = 42
-  with pytest.raises(StateSchemaError, match='custom:key'):
-    state['custom:key'] = 'val'
+  state['adk_oauth_state:wf@1/node@1'] = 'generated-state'
+  state['save_files_as_artifacts_plugin:pending_delta'] = {'f.txt': 'art@1'}
+  assert state['adk_oauth_state:wf@1/node@1'] == 'generated-state'
+  assert state['save_files_as_artifacts_plugin:pending_delta'] == {
+      'f.txt': 'art@1'
+  }
 
 
 def test_state_update_validates_all_keys() -> None:
@@ -304,6 +314,48 @@ async def test_workflow_allows_prefixed_keys_at_runtime(
   events = await runner.run_async(testing_utils.get_user_content('start'))
   data_events = [e for e in events if isinstance(e, Event) and e.output]
   assert any(e.output == 'done' for e in data_events)
+
+
+@pytest.mark.asyncio
+async def test_workflow_schema_allows_oauth_auth_node(
+    request: pytest.FixtureRequest,
+) -> None:
+  """A node with an OAuth2 auth_config pauses for credentials under a schema."""
+  auth_config = AuthConfig(
+      auth_scheme=OAuth2(
+          flows=OAuthFlows(
+              authorizationCode=OAuthFlowAuthorizationCode(
+                  authorizationUrl='https://example.com/auth',
+                  tokenUrl='https://example.com/token',
+                  scopes={},
+              )
+          )
+      ),
+      raw_auth_credential=AuthCredential(
+          auth_type=AuthCredentialTypes.OAUTH2,
+          oauth2=OAuth2Auth(client_id='id', client_secret='secret'),
+      ),
+      credential_key='oauth_key',
+  )
+
+  def do_work(ctx: Context) -> str:
+    return 'done'
+
+  wf = Workflow(
+      name='wf',
+      edges=[(
+          START,
+          FunctionNode(
+              func=do_work, auth_config=auth_config, rerun_on_resume=True
+          ),
+      )],
+      state_schema=_PipelineSchema,
+  )
+  app = App(name=request.function.__name__, root_agent=wf)
+  runner = testing_utils.InMemoryRunner(app=app)
+  events = await runner.run_async(testing_utils.get_user_content('start'))
+
+  assert get_auth_request_events(events)
 
 
 @pytest.mark.asyncio

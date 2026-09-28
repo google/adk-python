@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
+import concurrent.futures
+from functools import cached_property
 import logging
 import sys
 from typing import Optional
@@ -254,6 +257,88 @@ def test_gemini_api_client_when_client_kwargs_missing_from_dict():
   with mock.patch("google.genai.Client", autospec=True) as mock_client:
     _ = model._live_api_client
     mock_client.assert_called_once()
+
+
+def _in_new_event_loop(read):
+  """Reads inside a fresh event loop, the way the synchronous Runner does."""
+
+  async def _call():
+    return read()
+
+  return asyncio.run(_call())
+
+
+@pytest.mark.parametrize("attribute", ["api_client", "_live_api_client"])
+def test_client_is_built_once_per_event_loop(attribute):
+  model = Gemini(model="gemini-2.5-flash")
+
+  def read():
+    return getattr(model, attribute)
+
+  with mock.patch(
+      "google.genai.Client", side_effect=lambda **kwargs: mock.MagicMock()
+  ):
+    first = _in_new_event_loop(read)
+    second = _in_new_event_loop(read)
+    within_one_loop = _in_new_event_loop(lambda: (read(), read()))
+
+  assert first is not second
+  assert within_one_loop[0] is within_one_loop[1]
+
+
+def test_api_client_survives_concurrent_reads_from_many_threads():
+  model = Gemini(model="gemini-2.5-flash")
+  thread_count = 8
+  without_a_loop = []
+
+  def hammer():
+    for _ in range(20):
+      # A read with no running loop shares one entry with every other
+      # thread, so these contend on a single key while the reads below
+      # insert and evict keys of their own.
+      without_a_loop.append(model.api_client)
+      _in_new_event_loop(lambda: model.api_client)
+
+  with mock.patch(
+      "google.genai.Client", side_effect=lambda **kwargs: mock.MagicMock()
+  ):
+    # One worker per hammer, so all of them really do run at once.
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=thread_count
+    ) as executor:
+      futures = [executor.submit(hammer) for _ in range(thread_count)]
+      # Every result is retrieved, so an exception in any thread fails
+      # the test.
+      for future in futures:
+        future.result()
+
+  assert len(set(id(client) for client in without_a_loop)) == 1
+
+
+def test_api_client_can_be_overridden_on_the_instance():
+  model = Gemini(model="gemini-2.5-flash")
+  with mock.patch(
+      "google.genai.Client", side_effect=lambda **kwargs: mock.MagicMock()
+  ):
+    with mock.patch.object(model, "api_client") as replacement:
+      assert model.api_client is replacement
+      assert _in_new_event_loop(lambda: model.api_client) is replacement
+
+    assert model.api_client is not replacement
+    assert model.api_client is model.api_client
+
+
+def test_api_client_can_be_overridden_by_a_subclass():
+
+  class SubclassGemini(Gemini):
+
+    @cached_property
+    def api_client(self):
+      return mock.MagicMock()
+
+  model = SubclassGemini(model="gemini-2.5-flash")
+  assert model.api_client is model.api_client
+  assert _in_new_event_loop(lambda: model.api_client) is model.api_client
 
 
 def test_client_version_header():

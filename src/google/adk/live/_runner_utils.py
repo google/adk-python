@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import aclosing
 import logging
+from typing import Any
 from typing import AsyncGenerator
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -233,7 +234,8 @@ async def run_live(
         yield event
 
   async with aclosing(
-      runner._merge_live_event_streams(  # pylint: disable=protected-access
+      _merge_live_event_streams(
+          runner,
           invocation_context,
           _with_caller_context(
               runner._exec_with_plugin(  # pylint: disable=protected-access
@@ -248,3 +250,70 @@ async def run_live(
   ) as agen:
     async for event in agen:
       yield event
+
+
+async def _merge_live_event_streams(
+    runner: Runner,
+    ic: InvocationContext,
+    agent_events: AsyncGenerator[Event, None],
+) -> AsyncGenerator[Event, None]:
+  """Interleaves the live agent's events with events from ``ic._event_queue``.
+
+  Code running underneath the live agent — a streaming tool, or a node — has
+  no way to yield an event back through the agent's own stream, so it
+  enqueues on ``ic._event_queue`` instead. Both sources are drained
+  concurrently into one queue and surfaced in the order they are produced.
+
+  Each source keeps its own post-processing: the agent's events are already
+  persisted and plugin-processed by ``_exec_with_plugin``, and the queued
+  events by ``_consume_event_queue``, so nothing is handled twice.
+  """
+  if ic._event_queue is None:
+    raise RuntimeError(
+        "Live event stream merging requires an initialized event queue."
+    )
+  # Bind the queue to a local: the narrowing above does not reach into the
+  # nested pumps below.
+  event_queue = ic._event_queue
+  done_sentinel = object()
+  merged: asyncio.Queue[Any] = asyncio.Queue(maxsize=1)
+
+  async def _pump_agent_events() -> None:
+    try:
+      async with aclosing(agent_events) as agen:
+        async for event in agen:
+          await merged.put(event)
+    finally:
+      # The queue consumer owns the merged sentinel, so end its stream
+      # rather than the merged one; that also lets already-enqueued events
+      # drain before the merge finishes.
+      await event_queue.put((done_sentinel, None))
+
+  async def _pump_queued_events() -> None:
+    try:
+      async with aclosing(
+          runner._consume_event_queue(  # pylint: disable=protected-access
+              ic, done_sentinel
+          )
+      ) as agen:
+        async for event in agen:
+          await merged.put(event)
+    finally:
+      await merged.put(done_sentinel)
+
+  agent_task = asyncio.create_task(_pump_agent_events())
+  queue_task = asyncio.create_task(_pump_queued_events())
+  try:
+    while True:
+      event_or_done = await merged.get()
+      if event_or_done is done_sentinel:
+        break
+      yield event_or_done
+  finally:
+    # _cleanup_root_task re-raises a failure from either pump.
+    await runner._cleanup_root_task(  # pylint: disable=protected-access
+        agent_task, runner.agent.name
+    )
+    await runner._cleanup_root_task(  # pylint: disable=protected-access
+        queue_task, runner.agent.name
+    )

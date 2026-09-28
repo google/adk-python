@@ -2227,7 +2227,9 @@ def test_function_declaration_to_tool_param_response_schema_exceeds_max_length_b
       },
   )
 
-  with caplog.at_level(logging.DEBUG):
+  # Other tests (e.g. CLI tests via setup_adk_logger) may raise the
+  # "google_adk" logger level, so set it explicitly for this capture.
+  with caplog.at_level(logging.DEBUG, logger="google_adk"):
     result = _function_declaration_to_tool_param(func_decl)["function"][
         "description"
     ]
@@ -4821,6 +4823,29 @@ async def test_get_content_file_uri_explicit_octet_stream_raises():
 
 
 @pytest.mark.asyncio
+async def test_get_content_unsupported_mime_type_error_redacts_file_uri():
+  """The unsupported-MIME-type error names the file, not the signed URL."""
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri=(
+                  "https://example.com/bucket/artifact"
+                  "?X-Goog-Signature=0123456789abcdef"
+              )
+          )
+      )
+  ]
+
+  with pytest.raises(ValueError) as exc_info:
+    await _get_content(parts)
+
+  message = str(exc_info.value)
+  assert "https://<redacted>/artifact" in message
+  assert "X-Goog-Signature" not in message
+  assert "0123456789abcdef" not in message
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "uri,expected_mime_type",
     [
@@ -5622,6 +5647,52 @@ async def test_generate_content_async_stream_with_only_finish_reason(
   assert responses[0].error_message == "Finished with SAFETY"
   assert responses[0].usage_metadata.prompt_token_count == 7
   assert responses[0].usage_metadata.total_token_count == 7
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "finish_reason", ["stop", "tool_calls", "function_call", None]
+)
+async def test_generate_content_async_stream_with_only_stop_finish_reason(
+    mock_completion, lite_llm_instance, finish_reason
+):
+  """A stream with a STOP-mapped finish_reason and no content yields a terminal response."""
+  mock_completion.return_value = iter([
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(finish_reason=finish_reason, delta=Delta())
+          ],
+          usage={
+              "prompt_tokens": 5,
+              "completion_tokens": 0,
+              "total_tokens": 5,
+          },
+      ),
+  ])
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          llm_request, stream=True
+      )
+  ]
+
+  assert len(responses) == 1
+  assert responses[0].content.parts == []
+  assert responses[0].partial is False
+  assert responses[0].finish_reason == types.FinishReason.STOP
+  assert responses[0].error_code is None
+  assert responses[0].usage_metadata.prompt_token_count == 5
+  assert responses[0].usage_metadata.total_token_count == 5
 
 
 @pytest.mark.asyncio

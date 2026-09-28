@@ -256,6 +256,7 @@ async def test_list_sessions_glob_metacharacters_match_literally(
       ("app1", "*", r"test:session:app1:\*:*"),
       ("app1", "u?", r"test:session:app1:u\?:*"),
       ("app1", "[u]1", r"test:session:app1:\[u\]1:*"),
+      ("app1", "u\\1", r"test:session:app1:u\\1:*"),
       ("*", "u1", r"test:session:\*:u1:*"),
   ):
     fake_redis.scan_patterns.clear()
