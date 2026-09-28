@@ -23,6 +23,7 @@ Features include:
   - Semaphore-based concurrency control to stay within LLM model quota
   - Automatic retry with exponential backoff on 429 / RESOURCE_EXHAUSTED
   - Transient error detection to signal upstream services to retry
+  - Delivery identity in session state so tools can recognize redeliveries
 """
 
 from __future__ import annotations
@@ -81,6 +82,23 @@ DEFAULT_RETRY_MAX_DELAY = float(
     os.environ.get("ADK_TRIGGER_RETRY_MAX_DELAY", "30.0")
 )
 """Maximum delay in seconds for exponential backoff."""
+
+TRIGGER_DELIVERY_STATE_KEY = "trigger_delivery"
+"""Session state key holding the identity of the delivery that started a run.
+
+Pub/Sub and Eventarc redeliver a message whenever the endpoint does not
+acknowledge it, and every delivery runs the agent in a new session. Tools
+with side effects can use ``tool_context.state[TRIGGER_DELIVERY_STATE_KEY]``
+to recognize a redelivery and skip work an earlier attempt already did. The
+value is a dict with:
+
+  - ``source``: ``"pubsub"`` or ``"eventarc"``.
+  - ``id``: the Pub/Sub ``messageId`` or the CloudEvents ``id``, which stay
+    the same across redeliveries of one message. ``None`` if the request did
+    not carry one.
+
+plus the source-specific fields set by each trigger endpoint.
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -341,6 +359,7 @@ class TriggerRouter:
       user_id: str,
       message_text: str,
       session_id: str,
+      session_state: Optional[dict[str, Any]] = None,
   ) -> list[Event]:
     """Run the agent with an auto-created ephemeral session.
 
@@ -352,6 +371,7 @@ class TriggerRouter:
       user_id: Identifier for observability (derived from trigger metadata).
       message_text: The text input to send to the agent.
       session_id: The session ID to use.
+      session_state: Initial state for the session if it has to be created.
 
     Returns:
       List of events produced by the agent invocation.
@@ -369,6 +389,7 @@ class TriggerRouter:
         session = await self._server.session_service.create_session(
             app_name=app_name,
             user_id=user_id,
+            state=session_state,
             session_id=session_id,
         )
 
@@ -396,6 +417,7 @@ class TriggerRouter:
       app_name: str,
       user_id: str,
       message_text: str,
+      delivery: Optional[dict[str, Any]] = None,
   ) -> list[Event]:
     """Run the agent with retry on transient errors.
 
@@ -407,6 +429,8 @@ class TriggerRouter:
       app_name: The target application / agent name.
       user_id: Identifier for observability.
       message_text: The text input to send to the agent.
+      delivery: Identity of the upstream delivery, stored in session state
+        under ``TRIGGER_DELIVERY_STATE_KEY``.
 
     Returns:
       List of events produced by the agent invocation.
@@ -417,6 +441,9 @@ class TriggerRouter:
     """
     last_error: Optional[Exception] = None
     session_id = str(uuid.uuid4())
+    session_state = (
+        {TRIGGER_DELIVERY_STATE_KEY: delivery} if delivery is not None else None
+    )
 
     for attempt in range(self._max_retries + 1):
       try:
@@ -425,6 +452,7 @@ class TriggerRouter:
             user_id=user_id,
             message_text=message_text,
             session_id=session_id,
+            session_state=session_state,
         )
       except Exception as e:
         if not _is_transient_error(e):
@@ -485,6 +513,9 @@ class TriggerRouter:
               "Processes a message from a Pub/Sub push subscription."
               " Returns 200 on success; errors trigger Pub/Sub retry."
               " Includes automatic retry with backoff on 429 errors."
+              " The messageId is stored in session state under"
+              f" '{TRIGGER_DELIVERY_STATE_KEY}' so tools can detect"
+              " redeliveries."
           ),
           dependencies=auth_dependencies,
       )
@@ -526,6 +557,12 @@ class TriggerRouter:
               app_name=app_name,
               user_id=user_id,
               message_text=message_text,
+              delivery={
+                  "source": "pubsub",
+                  "id": req.message.messageId,
+                  "subscription": req.subscription,
+                  "publish_time": req.message.publishTime,
+              },
           )
         except TransientError as te:
           logger.exception("Pub/Sub: transient error after retries: %s", te)
@@ -553,6 +590,9 @@ class TriggerRouter:
               "Processes a CloudEvent delivered by Eventarc."
               " Returns 200 on success; errors trigger Eventarc retry."
               " Includes automatic retry with backoff on 429 errors."
+              " The event id is stored in session state under"
+              f" '{TRIGGER_DELIVERY_STATE_KEY}' so tools can detect"
+              " redeliveries."
           ),
           dependencies=auth_dependencies,
       )
@@ -564,11 +604,18 @@ class TriggerRouter:
             default="eventarc-caller",
         )
 
+        event_type = req.type or request.headers.get("ce-type")
+        event_id = req.id or request.headers.get("ce-id")
+        if not event_id and req.message:
+          # A Pub/Sub-wrapped event may arrive without a CloudEvents id; its
+          # messageId is just as stable across redeliveries.
+          event_id = req.message.messageId
+
         logger.info(
             "Eventarc trigger: source=%s, type=%s, id=%s",
             user_id,
-            req.type or request.headers.get("ce-type"),
-            req.id or request.headers.get("ce-id"),
+            event_type,
+            event_id,
         )
 
         # Extract message text — support both structured and binary modes.
@@ -644,6 +691,14 @@ class TriggerRouter:
               app_name=app_name,
               user_id=user_id,
               message_text=message_text,
+              delivery={
+                  "source": "eventarc",
+                  "id": event_id,
+                  "event_source": (
+                      req.source or request.headers.get("ce-source")
+                  ),
+                  "type": event_type,
+              },
           )
         except TransientError as te:
           logger.exception("Eventarc: transient error after retries: %s", te)
