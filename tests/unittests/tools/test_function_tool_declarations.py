@@ -23,6 +23,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 import dataclasses
 from enum import Enum
+import functools
 import os
 from typing import Annotated
 from typing import Any
@@ -37,6 +38,7 @@ from unittest import mock
 from absl.testing import parameterized
 from google.adk.tools._function_tool_declarations import _resolve_annotation
 from google.adk.tools._function_tool_declarations import build_function_declaration_with_json_schema
+from google.adk.tools._function_tool_declarations import get_callable_name
 from google.adk.tools.tool_context import ToolContext
 from pydantic import BaseModel
 from pydantic import Field
@@ -1464,3 +1466,90 @@ class TestStreamingReturnTypes(parameterized.TestCase):
     self.assertEqual(decl.name, "sync_counter")
     # Should extract int from Generator[int, None, None]
     self.assertEqual(decl.response_json_schema, {"type": "integer"})
+
+
+class TestPartialAndCallableNaming(parameterized.TestCase):
+  """Naming and description for functools.partial and callable objects.
+
+  Regression tests for https://github.com/google/adk-python/issues/7190:
+  every partial used to be advertised as 'partial' (so only the last one
+  stayed registered) and callable objects documented only on __call__ lost
+  their description in the declaration.
+  """
+
+  def test_partial_uses_wrapped_function_name_and_doc(self):
+    def get_weather(key: str, city: str) -> str:
+      """Current weather for a city."""
+      return city
+
+    decl = build_function_declaration_with_json_schema(
+        functools.partial(get_weather, 'k')
+    )
+
+    self.assertEqual(decl.name, 'get_weather')
+    self.assertEqual(decl.description, 'Current weather for a city.')
+
+  def test_nested_partial_uses_wrapped_function_name(self):
+    def get_weather(key: str, city: str) -> str:
+      """Current weather for a city."""
+      return city
+
+    decl = build_function_declaration_with_json_schema(
+        functools.partial(functools.partial(get_weather, 'k'))
+    )
+
+    self.assertEqual(decl.name, 'get_weather')
+    self.assertEqual(decl.description, 'Current weather for a city.')
+
+  def test_distinct_partials_get_distinct_names(self):
+    def get_weather(key: str, city: str) -> str:
+      """Current weather for a city."""
+      return city
+
+    def get_forecast(key: str, city: str) -> str:
+      """Forecast for a city."""
+      return city
+
+    weather_decl = build_function_declaration_with_json_schema(
+        functools.partial(get_weather, 'k')
+    )
+    forecast_decl = build_function_declaration_with_json_schema(
+        functools.partial(get_forecast, 'k')
+    )
+
+    self.assertEqual(weather_decl.name, 'get_weather')
+    self.assertEqual(forecast_decl.name, 'get_forecast')
+
+  def test_callable_instance_uses_class_name_and_call_doc(self):
+    class OrderLookup:
+      def __call__(self, order_id: str) -> str:
+        """Finds an order by id."""
+        return order_id
+
+    decl = build_function_declaration_with_json_schema(OrderLookup())
+
+    self.assertEqual(decl.name, 'OrderLookup')
+    self.assertEqual(decl.description, 'Finds an order by id.')
+
+  def test_callable_instance_keeps_class_doc_when_call_undocumented(self):
+    class Documented:
+      """Class-level docs."""
+
+      def __call__(self, x: int) -> int:
+        return x
+
+    decl = build_function_declaration_with_json_schema(Documented())
+
+    self.assertEqual(decl.name, 'Documented')
+    self.assertEqual(decl.description, 'Class-level docs.')
+
+  def test_get_callable_name_directly(self):
+    def get_weather(key: str, city: str) -> str:
+      """Current weather for a city."""
+      return city
+
+    self.assertEqual(
+        get_callable_name(functools.partial(get_weather, 'k')),
+        'get_weather',
+    )
+    self.assertEqual(get_callable_name(get_weather), 'get_weather')
