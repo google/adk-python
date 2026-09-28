@@ -34,6 +34,10 @@ import click
 from packaging.version import parse
 
 from ..version import __version__
+from .deployers import DeployerFactory
+from .deployers._dockerfile_template import _render_dockerfile
+from .deployers._dockerfile_template import _render_install_agent_deps
+from .deployers._dockerfile_template import _validate_app_name
 from .utils import _onboarding
 
 _IS_WINDOWS = os.name == 'nt'
@@ -175,47 +179,14 @@ def _ensure_agent_engine_dependency(requirements_txt_path: str) -> None:
     f.write(f'google-adk[a2a]=={__version__}\n')
 
 
-_DOCKERFILE_TEMPLATE: Final[str] = """
-FROM python:3.11-slim
-WORKDIR /app
-
-# Create a non-root user
-RUN adduser --disabled-password --gecos "" myuser
-
-# Switch to the non-root user
-USER myuser
-
-# Set up environment variables - Start
-ENV PATH="/home/myuser/.local/bin:$PATH"
-
-ENV GOOGLE_GENAI_USE_ENTERPRISE=1
-ENV GOOGLE_CLOUD_PROJECT={gcp_project_id}
-ENV GOOGLE_CLOUD_LOCATION={gcp_region}
-
-# Set up environment variables - End
-
-# Install ADK - Start
-RUN pip install "google-adk[a2a]=={adk_version}"
-# Remove dev_server.py to ensure production-safe endpoints only (disabling dev endpoints in production)
-RUN python -c "import os, glob, google.adk.cli as cli; d = os.path.dirname(cli.__file__); [os.remove(f) for f in glob.glob(os.path.join(d, 'dev_server*'))]; [os.remove(f) for f in glob.glob(os.path.join(d, '__pycache__', 'dev_server*'))]" || true
-# Install ADK - End
-
-# Copy agent - Start
-
-# Set permission
-COPY --chown=myuser:myuser "agents/{app_name}/" "/app/agents/{app_name}/"
-{extra_packages_copy}
-# Copy agent - End
-
-# Install Agent Deps - Start
-{install_agent_deps}
-# Install Agent Deps - End
-
-EXPOSE {port}
-
-CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_option} {otel_to_cloud_option} {allow_origins_option} {a2a_option} {trigger_sources_option} {trigger_oidc_audience_option} {trigger_oidc_service_accounts_option} {gemini_enterprise_option}{express_mode_option} "/app/agents"
-"""
-
+# What a deployment advertises to Agent Platform: one entry per operation the
+# AdkApp template registers, mirroring the method's own documentation and
+# signature. A unit test checks the operation names and the parameters each
+# entry declares against the installed template, because a catalogue that
+# disagrees with the method makes the deployed resource advertise an API it
+# does not serve. The descriptions are not checked: wording drift is cosmetic,
+# and it varies with whichever Agent Platform SDK the version floor resolves
+# to.
 _AGENT_ENGINE_CLASS_METHODS = [
     {
         'name': 'get_session',
@@ -454,7 +425,12 @@ _AGENT_ENGINE_CLASS_METHODS = [
             ' (str):\n                Required. The ID of the user.\n          '
             '  session_id (str):\n                Optional. The ID of the'
             ' session. If not provided, a new\n                session will be'
-            ' created for the user.\n            run_config (Optional[Dict[str,'
+            ' created for the user. If this is specified, then\n               '
+            ' `session_events` will be ignored.\n            session_events'
+            ' (Optional[List[Dict[str, Any]]]):\n                Optional. The'
+            ' session events to use for the query. This will be\n             '
+            '   used to initialize the session if `session_id` is not'
+            ' provided.\n            run_config (Optional[Dict[str,'
             ' Any]]):\n                Optional. The run config to use for the'
             ' query. If you want to\n                pass in a `run_config`'
             ' pydantic object, you can pass in a dict\n               '
@@ -462,7 +438,10 @@ _AGENT_ENGINE_CLASS_METHODS = [
             '     **kwargs (dict[str, Any]):\n                Optional.'
             ' Additional keyword arguments to pass to the\n               '
             ' runner.\n\n        Yields:\n            Event dictionaries'
-            ' asynchronously.\n        '
+            ' asynchronously.\n\n        Raises:\n            TypeError: If'
+            ' message is not a string or a dictionary representing\n           '
+            ' a Content object.\n            ValueError: If both session_id and'
+            ' session_events are specified.\n        '
         ),
         'parameters': {
             'properties': {
@@ -474,6 +453,7 @@ _AGENT_ENGINE_CLASS_METHODS = [
                 },
                 'user_id': {'type': 'string'},
                 'session_id': {'type': 'string', 'nullable': True},
+                'session_events': {'type': 'array', 'nullable': True},
                 'run_config': {'type': 'object', 'nullable': True},
             },
             'required': ['message', 'user_id'],
@@ -525,80 +505,23 @@ def _resolve_project(project_in_option: Optional[str]) -> str:
   return project
 
 
-# app_name is interpolated verbatim into the generated Dockerfile (COPY/RUN
-# instructions and the shell-form CMD) by _DOCKERFILE_TEMPLATE. It defaults to
-# the basename of the agent source folder, so its value can come from a
-# directory name the deploying developer did not choose (a cloned or shared
-# agent template). Restrict it to a plain identifier before it reaches the
-# template so it cannot break out of a Dockerfile instruction or the CMD shell.
-_APP_NAME_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r'^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,62}$'
-)
-
-
-def _validate_app_name(app_name: str) -> None:
-  """Validates the deploy app name before it is written into a Dockerfile.
+def _validate_dockerfile_env_value(name: str, value: Optional[str]) -> None:
+  """Validates a value before it is written into a Dockerfile ENV instruction.
 
   Args:
-    app_name: The app name, either passed via --app_name or derived from the
-      agent source folder basename.
+    name: The environment variable name, used in the error message. The value
+      itself is never echoed, because it can come from the agent folder's `.env`
+      file.
+    value: The value to write.
 
   Raises:
-    click.ClickException: If the app name is not a plain identifier.
+    click.ClickException: If the value spans more than one line.
   """
-  if not _APP_NAME_PATTERN.fullmatch(app_name):
+  if value is not None and ('\n' in value or '\r' in value):
     raise click.ClickException(
-        f'Invalid app name {app_name!r}. The app name is used in the generated'
-        ' Dockerfile and must contain only letters, digits, hyphens,'
-        ' underscores, and periods (1-63 characters, starting with a letter,'
-        ' digit, hyphen, or underscore).'
+        f'Invalid value for {name}. The value is written into the generated'
+        ' Dockerfile and must not span multiple lines.'
     )
-
-
-def _validate_gcloud_extra_args(
-    extra_gcloud_args: Optional[tuple[str, ...]], adk_managed_args: set[str]
-) -> None:
-  """Validates that extra gcloud args don't conflict with ADK-managed args.
-
-  This function dynamically checks for conflicts based on the actual args
-  that ADK will set, rather than using a hardcoded list.
-
-  Args:
-    extra_gcloud_args: User-provided extra arguments for gcloud.
-    adk_managed_args: Set of argument names that ADK will set automatically.
-                     Should include '--' prefix (e.g., '--project').
-
-  Raises:
-    click.ClickException: If any conflicts are found.
-  """
-  if not extra_gcloud_args:
-    return
-
-  # Parse user arguments into a set of argument names for faster lookup
-  user_arg_names = set()
-  for arg in extra_gcloud_args:
-    if arg.startswith('--'):
-      # Handle both '--arg=value' and '--arg value' formats
-      arg_name = arg.split('=')[0]
-      user_arg_names.add(arg_name)
-
-  # Check for conflicts with ADK-managed args
-  conflicts = user_arg_names.intersection(adk_managed_args)
-
-  if conflicts:
-    conflict_list = ', '.join(f"'{arg}'" for arg in sorted(conflicts))
-    if len(conflicts) == 1:
-      raise click.ClickException(
-          f"The argument {conflict_list} conflicts with ADK's automatic"
-          ' configuration. ADK will set this argument automatically, so please'
-          ' remove it from your command.'
-      )
-    else:
-      raise click.ClickException(
-          f"The arguments {conflict_list} conflict with ADK's automatic"
-          ' configuration. ADK will set these arguments automatically, so'
-          ' please remove them from your command.'
-      )
 
 
 def _validate_agent_import(
@@ -642,6 +565,7 @@ def _validate_agent_import(
     # Add parent directory to path so imports work correctly
     if parent_dir not in sys.path:
       sys.path.insert(0, parent_dir)
+    importlib.invalidate_caches()
     try:
       module = importlib.import_module(f'{module_name}.agent')
     except ImportError as e:
@@ -717,14 +641,14 @@ def _validate_agent_import(
         sys.modules.pop(key, None)
 
 
-def _get_service_option_by_adk_version(
+def _get_service_options_by_adk_version(
     adk_version: str,
     session_uri: Optional[str],
     artifact_uri: Optional[str],
     memory_uri: Optional[str],
     use_local_storage: Optional[bool] = None,
-) -> str:
-  """Returns service option string based on adk_version."""
+) -> list[str]:
+  """Returns the service options based on adk_version, one per argv entry."""
   parsed_version = parse(adk_version)
   options: list[str] = []
 
@@ -747,14 +671,15 @@ def _get_service_option_by_adk_version(
           else '--no_use_local_storage'
       ))
 
-  return ' '.join(options)
+  return options
 
 
 def _get_ignore_patterns_func(
     agent_folder: str,
 ) -> Callable[[Any, list[str]], set[str]]:
-  """Returns a shutil.ignore_patterns function with combined patterns from .gitignore, .gcloudignore and .ae_ignore."""
-  patterns = set('.adk/')
+  """Returns a shutil.ignore_patterns function that excludes the local .adk folder along with the combined patterns from .gitignore, .gcloudignore and .ae_ignore."""
+  # .adk holds the developer's own sessions and artifacts.
+  patterns = {'.adk'}
 
   for filename in ['.gitignore', '.gcloudignore', '.ae_ignore']:
     filepath = os.path.join(agent_folder, filename)
@@ -780,11 +705,12 @@ def _get_ignore_patterns_func(
   return shutil.ignore_patterns(*patterns)
 
 
-def to_cloud_run(
+def run(
     *,
     agent_folder: str,
-    project: Optional[str],
-    region: Optional[str],
+    provider: str,
+    project: str | None = None,
+    region: str | None = None,
     service_name: str,
     app_name: str,
     temp_folder: str,
@@ -795,16 +721,18 @@ def to_cloud_run(
     log_level: str,
     verbosity: str,
     adk_version: str,
-    allow_origins: Optional[list[str]] = None,
-    session_service_uri: Optional[str] = None,
-    artifact_service_uri: Optional[str] = None,
-    memory_service_uri: Optional[str] = None,
+    allow_origins: list[str] | None = None,
+    session_service_uri: str | None = None,
+    artifact_service_uri: str | None = None,
+    memory_service_uri: str | None = None,
     use_local_storage: bool = False,
     a2a: bool = False,
-    trigger_sources: Optional[str] = None,
-    trigger_oidc_audience: Optional[str] = None,
-    trigger_oidc_service_accounts: Optional[str] = None,
-    extra_gcloud_args: Optional[tuple[str, ...]] = None,
+    trigger_sources: str | None = None,
+    trigger_oidc_audience: str | None = None,
+    trigger_oidc_service_accounts: str | None = None,
+    provider_args: tuple[str, ...] = (),
+    env: tuple[str, ...] = (),
+    extra_gcloud_args: tuple[str, ...] | None = None,
     with_cloud_run_sandbox: bool = False,
 ) -> None:
   """Deploys an agent to Google Cloud Run.
@@ -845,13 +773,14 @@ def to_cloud_run(
     with_cloud_run_sandbox: Whether to enable the Cloud Run sandbox for code
       execution.
   """
-  app_name = app_name or os.path.basename(os.path.normpath(agent_folder))
-  _validate_app_name(app_name)
+  app_name = _validate_app_name(
+      app_name or os.path.basename(os.path.normpath(agent_folder))
+  )
   if parse(adk_version) >= parse('1.3.0') and not use_local_storage:
     session_service_uri = session_service_uri or 'memory://'
     artifact_service_uri = artifact_service_uri or 'memory://'
 
-  click.echo(f'Start generating Cloud Run source files in {temp_folder}')
+  click.echo(f'Start generating {provider} source files in {temp_folder}')
 
   # remove temp_folder if exists
   if os.path.exists(temp_folder):
@@ -865,10 +794,8 @@ def to_cloud_run(
     ignore_func = _get_ignore_patterns_func(agent_folder)
     shutil.copytree(agent_folder, agent_src_path, ignore=ignore_func)
     requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
-    install_agent_deps = (
-        f'RUN pip install -r "/app/agents/{app_name}/requirements.txt"'
-        if os.path.exists(requirements_txt_path)
-        else '# No requirements.txt found.'
+    install_agent_deps = _render_install_agent_deps(
+        app_name, requirements_txt_path, '# No requirements.txt found.'
     )
     click.echo('Copying agent source code completed.')
 
@@ -892,14 +819,12 @@ def to_cloud_run(
         if trigger_oidc_service_accounts
         else ''
     )
-    dockerfile_content = _DOCKERFILE_TEMPLATE.format(
-        gcp_project_id=project,
-        gcp_region=region,
+    dockerfile_content = _render_dockerfile(
         app_name=app_name,
         port=port,
         command='api_server --with_ui' if with_ui else 'api_server',
         install_agent_deps=install_agent_deps,
-        service_option=_get_service_option_by_adk_version(
+        service_options=_get_service_options_by_adk_version(
             adk_version,
             session_service_uri,
             artifact_service_uri,
@@ -918,6 +843,7 @@ def to_cloud_run(
         gemini_enterprise_option='',
         express_mode_option='',
         extra_packages_copy='',
+        extra_env_vars='',
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
     os.makedirs(temp_folder, exist_ok=True)
@@ -927,70 +853,91 @@ def to_cloud_run(
       )
     click.echo(f'Creating Dockerfile complete: {dockerfile_path}')
 
-    # Deploy to Cloud Run
-    click.echo('Deploying to Cloud Run...')
-    region_options = ['--region', region] if region else []
-    project = _resolve_project(project)
+    # Deploy
+    click.echo(f'Deploying to {provider}...')
 
-    # Build the set of args that ADK will manage
-    adk_managed_args = {'--source', '--project', '--port', '--verbosity'}
-    if region:
-      adk_managed_args.add('--region')
-    if with_cloud_run_sandbox:
-      adk_managed_args.add('--sandbox-launcher')
-
-    # Validate that extra gcloud args don't conflict with ADK-managed args
-    _validate_gcloud_extra_args(extra_gcloud_args, adk_managed_args)
-
-    # Build the command with extra gcloud args
-    gcloud_cmd = [_GCLOUD_CMD]
-    if with_cloud_run_sandbox:
-      # --sandbox-launcher is only supported on the beta release track.
-      gcloud_cmd.append('beta')
-    gcloud_cmd += [
-        'run',
-        'deploy',
-        service_name,
-        '--source',
-        temp_folder,
-        '--project',
-        project,
-        *region_options,
-        '--port',
-        str(port),
-        '--verbosity',
-        log_level.lower() if log_level else verbosity,
-    ]
-    if with_cloud_run_sandbox:
-      gcloud_cmd.append('--sandbox-launcher')
-
-    # Handle labels specially - merge user labels with ADK label
-    user_labels = []
-    extra_args_without_labels = []
-
-    if extra_gcloud_args:
-      for arg in extra_gcloud_args:
-        if arg.startswith('--labels='):
-          # Extract user-provided labels
-          user_labels_value = arg[9:]  # Remove '--labels=' prefix
-          user_labels.append(user_labels_value)
-        else:
-          extra_args_without_labels.append(arg)
-
-    # Combine ADK label with user labels
-    all_labels = ['created-by=adk']
-    all_labels.extend(user_labels)
-    labels_arg = ','.join(all_labels)
-
-    gcloud_cmd.extend(['--labels', labels_arg])
-
-    # Add any remaining extra passthrough args
-    gcloud_cmd.extend(extra_args_without_labels)
-
-    subprocess.run(gcloud_cmd, check=True)
+    deployer = DeployerFactory.get_deployer(provider)
+    deployer.deploy(
+        agent_folder=agent_folder,
+        temp_folder=temp_folder,
+        service_name=service_name,
+        provider_args=provider_args,
+        env_vars=env,
+        project=project,
+        region=region,
+        port=port,
+        verbosity=verbosity,
+        extra_gcloud_args=extra_gcloud_args,
+        log_level=log_level,
+        with_cloud_run_sandbox=with_cloud_run_sandbox,
+    )
   finally:
     click.echo(f'Cleaning up the temp folder: {temp_folder}')
     _robust_rmtree(temp_folder)
+
+
+def to_cloud_run(
+    *,
+    agent_folder: str,
+    project: str | None = None,
+    region: str | None = None,
+    service_name: str,
+    app_name: str,
+    temp_folder: str,
+    port: int,
+    trace_to_cloud: bool,
+    otel_to_cloud: bool,
+    with_ui: bool,
+    log_level: str,
+    verbosity: str,
+    adk_version: str,
+    allow_origins: list[str] | None = None,
+    session_service_uri: str | None = None,
+    artifact_service_uri: str | None = None,
+    memory_service_uri: str | None = None,
+    use_local_storage: bool = False,
+    a2a: bool = False,
+    trigger_sources: str | None = None,
+    trigger_oidc_audience: str | None = None,
+    trigger_oidc_service_accounts: str | None = None,
+    extra_gcloud_args: tuple[str, ...] | None = None,
+    with_cloud_run_sandbox: bool = False,
+) -> None:
+  """Deploys an agent to Google Cloud Run (deprecated)."""
+  warnings.warn(
+      'to_cloud_run is deprecated, use run instead.',
+      DeprecationWarning,
+      stacklevel=2,
+  )
+  run(
+      agent_folder=agent_folder,
+      provider='cloud_run',
+      project=project,
+      region=region,
+      service_name=service_name,
+      app_name=app_name,
+      temp_folder=temp_folder,
+      port=port,
+      trace_to_cloud=trace_to_cloud,
+      otel_to_cloud=otel_to_cloud,
+      with_ui=with_ui,
+      log_level=log_level,
+      verbosity=verbosity,
+      adk_version=adk_version,
+      allow_origins=allow_origins,
+      session_service_uri=session_service_uri,
+      artifact_service_uri=artifact_service_uri,
+      memory_service_uri=memory_service_uri,
+      use_local_storage=use_local_storage,
+      a2a=a2a,
+      trigger_sources=trigger_sources,
+      trigger_oidc_audience=trigger_oidc_audience,
+      trigger_oidc_service_accounts=trigger_oidc_service_accounts,
+      provider_args=(),
+      env=(),
+      extra_gcloud_args=extra_gcloud_args,
+      with_cloud_run_sandbox=with_cloud_run_sandbox,
+  )
 
 
 def _print_agent_engine_url(resource_name: str) -> None:
@@ -1391,12 +1338,18 @@ def to_agent_engine(
           stacklevel=2,
       )
 
+    # Validated before the instance is created, so a failure cannot leak one.
+    enterprise_val = env_vars.get('GOOGLE_GENAI_USE_ENTERPRISE', '1')
+    _validate_dockerfile_env_value(
+        'GOOGLE_GENAI_USE_ENTERPRISE', enterprise_val
+    )
+    _validate_dockerfile_env_value('GOOGLE_CLOUD_PROJECT', project)
+    _validate_dockerfile_env_value('GOOGLE_CLOUD_LOCATION', region)
+
     def create_dockerfile_for_agent_engine(resource_name: str) -> None:
       requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
-      install_agent_deps = (
-          f'RUN pip install -r "/app/agents/{app_name}/requirements.txt"'
-          if os.path.exists(requirements_txt_path)
-          else '# No requirements.txt found.'
+      install_agent_deps = _render_install_agent_deps(
+          app_name, requirements_txt_path, '# No requirements.txt found.'
       )
       trigger_sources_option = (
           f'--trigger_sources={trigger_sources}' if trigger_sources else ''
@@ -1432,14 +1385,20 @@ def to_agent_engine(
             f' {adk_version} was requested',
             fg='yellow',
         )
-      dockerfile_content = _DOCKERFILE_TEMPLATE.format(
-          gcp_project_id=project,
-          gcp_region=region,
+      gcp_env_lines = [f'ENV GOOGLE_GENAI_USE_ENTERPRISE={enterprise_val}']
+      if project:
+        gcp_env_lines.append(f'ENV GOOGLE_CLOUD_PROJECT={project}')
+      if region:
+        gcp_env_lines.append(f'ENV GOOGLE_CLOUD_LOCATION={region}')
+      extra_env_vars = (
+          '\n' + '\n'.join(gcp_env_lines) + '\n' if gcp_env_lines else ''
+      )
+      dockerfile_content = _render_dockerfile(
           app_name=app_name,
           port=8080,
           command='api_server',
           install_agent_deps=install_agent_deps,
-          service_option=_get_service_option_by_adk_version(
+          service_options=_get_service_options_by_adk_version(
               adk_version,
               session_service_uri or agent_engine_uri,
               artifact_service_uri,
@@ -1461,9 +1420,10 @@ def to_agent_engine(
               else ''
           ),
           express_mode_option=(
-              ' --express_mode' if api_key and not project else ''
+              '--express_mode' if api_key and not project else ''
           ),
           extra_packages_copy=extra_packages_copy,
+          extra_env_vars=extra_env_vars,
       )
       with open('Dockerfile', 'w', encoding='utf-8') as f:
         f.write(dockerfile_content)
@@ -1602,10 +1562,8 @@ def to_gke(
     ignore_func = _get_ignore_patterns_func(agent_folder)
     shutil.copytree(agent_folder, agent_src_path, ignore=ignore_func)
     requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
-    install_agent_deps = (
-        f'RUN pip install -r "/app/agents/{app_name}/requirements.txt"'
-        if os.path.exists(requirements_txt_path)
-        else ''
+    install_agent_deps = _render_install_agent_deps(
+        app_name, requirements_txt_path, ''
     )
     click.secho('✅ Environment prepared.', fg='green')
 
@@ -1627,14 +1585,12 @@ def to_gke(
         if trigger_oidc_service_accounts
         else ''
     )
-    dockerfile_content = _DOCKERFILE_TEMPLATE.format(
-        gcp_project_id=project,
-        gcp_region=region,
+    dockerfile_content = _render_dockerfile(
         app_name=app_name,
         port=port,
         command='api_server --with_ui' if with_ui else 'api_server',
         install_agent_deps=install_agent_deps,
-        service_option=_get_service_option_by_adk_version(
+        service_options=_get_service_options_by_adk_version(
             adk_version,
             session_service_uri,
             artifact_service_uri,
@@ -1655,6 +1611,7 @@ def to_gke(
         gemini_enterprise_option='',
         express_mode_option='',
         extra_packages_copy='',
+        extra_env_vars='',
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
     os.makedirs(temp_folder, exist_ok=True)
@@ -1673,7 +1630,9 @@ def to_gke(
         ' below.)'
     )
     project = _resolve_project(project)
-    image_name = f'gcr.io/{project}/{service_name}'
+    # Tag each build uniquely rather than overwriting one floating tag.
+    image_tag = datetime.now().strftime('%Y%m%d-%H%M%S')
+    image_name = f'gcr.io/{project}/{service_name}:{image_tag}'
     subprocess.run(
         [
             _GCLOUD_CMD,
@@ -1681,6 +1640,8 @@ def to_gke(
             'submit',
             '--tag',
             image_name,
+            '--project',
+            project,
             '--verbosity',
             log_level.lower(),
             temp_folder,
@@ -1691,6 +1652,16 @@ def to_gke(
 
     # Create a Kubernetes deployment
     click.echo('  - Creating Kubernetes deployment.yaml...')
+    env_entries = [
+        '        - name: GOOGLE_GENAI_USE_ENTERPRISE\n          value: "1"',
+        f'        - name: GOOGLE_CLOUD_PROJECT\n          value: "{project}"',
+    ]
+    if region:
+      env_entries.append(
+          f'        - name: GOOGLE_CLOUD_LOCATION\n          value: "{region}"'
+      )
+    env_yaml = '        env:\n' + '\n'.join(env_entries)
+
     deployment_yaml = f"""
 apiVersion: apps/v1
 kind: Deployment
@@ -1720,6 +1691,7 @@ spec:
         image: {image_name}
         ports:
         - containerPort: {port}
+{env_yaml}
 ---
 apiVersion: v1
 kind: Service
@@ -1744,6 +1716,7 @@ spec:
     # Apply the deployment
     click.secho('\nSTEP 4: Applying deployment to GKE cluster...', bold=True)
     click.echo('  - Getting cluster credentials...')
+    region_options = ['--region', region] if region else []
     subprocess.run(
         [
             _GCLOUD_CMD,
@@ -1751,8 +1724,7 @@ spec:
             'clusters',
             'get-credentials',
             cluster_name,
-            '--region',
-            region,
+            *region_options,
             '--project',
             project,
         ],

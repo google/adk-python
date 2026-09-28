@@ -15,7 +15,6 @@
 """Tests for NodeRunner retry logic on failures."""
 
 import asyncio
-import sys
 from typing import Any
 from typing import AsyncGenerator
 from unittest import mock
@@ -1084,9 +1083,7 @@ async def test_error_event_emitted_on_each_retry(
   ]
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 11), reason='asyncio.timeout requires Python 3.11+'
-)
+@pytest.mark.asyncio
 async def test_node_runner_timeout():
   async def slow_route(ctx, node_input):
     await asyncio.sleep(2)
@@ -1104,29 +1101,6 @@ async def test_node_runner_timeout():
     await _run_workflow(agent)
   assert 'SlowNode' in str(exc_info.value)
   assert 'timed out' in str(exc_info.value)
-
-
-@pytest.mark.skip(
-    reason='Timeout is now supported in Python 3.10 via asyncio.wait_for',
-)
-async def test_node_runner_timeout_warning(caplog):
-  async def slow_route(ctx, node_input):
-    await asyncio.sleep(0.5)
-    return 'done'
-
-  node = TestingNode(name='SlowNode', route=slow_route, timeout=0.1)
-
-  agent = Workflow(
-      name='test_timeout_warning',
-      edges=[(START, node)],
-  )
-
-  await _run_workflow(agent)
-
-  assert (
-      'timeout 0.10 seconds is ignored because Python version is < 3.11'
-      in caplog.text
-  )
 
 
 @pytest.mark.asyncio

@@ -166,7 +166,7 @@ def test_resolve_and_derive_transfer_context_returns_target_and_none_when_no_rel
 
 
 def test_resolve_and_derive_transfer_context_works_with_cloned_agents():
-  """resolve_and_derive_transfer_context works correctly when the current agent is cloned (name-based matching)."""
+  """resolve_and_derive_transfer_context resolves a cloned agent's own child."""
   # Arrange
   target = LlmAgent(name='target')
   current = LlmAgent(name='current', sub_agents=[target])
@@ -184,5 +184,74 @@ def test_resolve_and_derive_transfer_context_works_with_cloned_agents():
   )
 
   # Assert
-  assert resolved_agent is target
+  assert resolved_agent is cloned_current.sub_agents[0]
+  assert resolved_agent.name == 'target'
   assert derived_ctx is curr_ctx
+
+
+def test_resolve_and_derive_transfer_context_prefers_own_child_over_namesake():
+  """resolve_and_derive_transfer_context ignores a same-named agent elsewhere."""
+  # Arrange
+  undeclared = LlmAgent(name='shared_name')
+  other_branch = LlmAgent(name='other_branch', sub_agents=[undeclared])
+  declared = LlmAgent(name='shared_name')
+  current = LlmAgent(name='current', sub_agents=[declared])
+  root = LlmAgent(name='root', sub_agents=[other_branch, current])
+
+  curr_ctx = MagicMock()
+
+  # Act
+  resolved_agent, derived_ctx = resolve_and_derive_transfer_context(
+      'shared_name', current, root, curr_ctx, None
+  )
+
+  # Assert
+  assert resolved_agent is declared
+  assert derived_ctx is curr_ctx
+
+
+def test_resolve_and_derive_transfer_context_prefers_parent_over_namesake_peer():
+  """A peer named after the parent does not shadow a parent transfer."""
+  # Arrange
+  root_ctx = MagicMock()
+  root_ctx.node = None
+  root_ctx.parent_ctx = None
+
+  curr_ctx = MagicMock()
+  curr_ctx.node = MagicMock()
+  curr_ctx.node.name = 'current'
+  curr_ctx.parent_ctx = root_ctx
+
+  current = LlmAgent(name='current', disallow_transfer_to_peers=True)
+  namesake_peer = LlmAgent(name='shared_name')
+  parent = LlmAgent(name='shared_name', sub_agents=[current, namesake_peer])
+  root = LlmAgent(name='root', sub_agents=[parent])
+
+  # Act
+  resolved_agent, derived_ctx = resolve_and_derive_transfer_context(
+      'shared_name', current, root, curr_ctx, None
+  )
+
+  # Assert
+  assert resolved_agent is parent
+  assert derived_ctx is root_ctx
+
+
+def test_resolve_and_derive_transfer_context_rejects_namesake_parent_child():
+  """A child of a same-named agent elsewhere is not routable as a child."""
+  # Arrange
+  undeclared = LlmAgent(name='target')
+  namesake = LlmAgent(name='current', sub_agents=[undeclared])
+  other_branch = LlmAgent(name='other_branch', sub_agents=[namesake])
+  current = LlmAgent(name='current')
+  own_branch = LlmAgent(name='own_branch', sub_agents=[current])
+  root = LlmAgent(name='root', sub_agents=[other_branch, own_branch])
+
+  # Act
+  resolved_agent, derived_ctx = resolve_and_derive_transfer_context(
+      'target', current, root, MagicMock(), None
+  )
+
+  # Assert
+  assert resolved_agent is undeclared
+  assert derived_ctx is None

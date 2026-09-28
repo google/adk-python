@@ -34,6 +34,35 @@ class NodeInterruptedError(BaseException):
   """
 
 
+class GraphValidationError(ValueError):
+  """Raised when a workflow graph is not well formed."""
+
+
+class WorkflowConfigurationError(ValueError):
+  """Raised when a workflow, node or edge is declared in an unusable way.
+
+  The caller's construction mistake: the same declaration fails the same way
+  every time, before anything runs.
+  """
+
+
+class WorkflowDataError(ValueError):
+  """Raised when data arriving during a run does not fit what accepts it.
+
+  Covers a node's inputs, an agent transfer target and an OAuth resume
+  payload. The wiring is fine and only this run's data is wrong, so it can
+  differ between runs of the same workflow.
+  """
+
+
+class WorkflowInvariantError(RuntimeError):
+  """Raised when the framework reaches a state it is supposed to prevent.
+
+  A bug in the engine rather than anything the caller did. Prefer this over
+  ``assert``, which ``python -O`` removes.
+  """
+
+
 class NodeTimeoutError(Exception):
   """Raised when a node exceeds its configured timeout.
 

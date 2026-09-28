@@ -18,13 +18,16 @@ import itertools
 import re
 from typing import Any
 
+from google.adk.agents.context import Context
 from google.adk.events.event import Event
 from google.adk.platform import uuid as platform_uuid
 from google.adk.tools.base_tool import BaseTool
+from google.adk.tools.function_tool import FunctionTool
 from google.adk.workflow import START
 from google.adk.workflow._tool_node import _ToolNode as ToolNode
 from google.adk.workflow._workflow import Workflow
 from google.genai import types
+from pydantic import BaseModel
 import pytest
 
 from . import workflow_testing_utils
@@ -187,3 +190,173 @@ async def test_tool_node_function_call_id_uses_platform_id_provider():
 
   assert len(captured_ids) == 1
   assert re.fullmatch(r"fixed-\d+", captured_ids[0])
+
+
+class SampleInput(BaseModel):
+  param_a: int
+  param_b: str
+
+
+class MockToolWithDeclaration(BaseTool):
+  """A mock tool that exposes parameters in its FunctionDeclaration."""
+
+  def __init__(
+      self,
+      name: str = "mock_tool_with_decl",
+      param_names: tuple[str, ...] = ("param_a", "param_b"),
+      required_param_names: tuple[str, ...] | None = None,
+  ):
+    super().__init__(name=name, description="Mock tool with declaration")
+    self._param_names = param_names
+    self._required_param_names = (
+        param_names if required_param_names is None else required_param_names
+    )
+
+  def _get_declaration(self) -> types.FunctionDeclaration:
+    return types.FunctionDeclaration(
+        name=self.name,
+        description=self.description,
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                p: types.Schema(type=types.Type.STRING)
+                for p in self._param_names
+            },
+            required=list(self._required_param_names),
+        ),
+    )
+
+  async def run_async(self, *, args: dict[str, Any], tool_context) -> Any:
+    return args
+
+
+@pytest.mark.asyncio
+async def test_tool_node_accepts_pydantic_model():
+  """Tests that ToolNode accepts a Pydantic BaseModel as input."""
+  model_input = SampleInput(param_a=42, param_b="test")
+  simplified = await _run_tool_node_wf(model_input)
+  assert (
+      "tool_node_test_wf@1/mock_tool@1",
+      {"output": {"param_a": 42, "param_b": "test"}},
+  ) in simplified
+
+
+@pytest.mark.asyncio
+async def test_tool_node_falls_back_to_ctx_state():
+  """Tests that ToolNode falls back to ctx.state for missing declared parameters."""
+  tool_node = ToolNode(
+      tool=MockToolWithDeclaration(param_names=("city", "units"))
+  )
+
+  def start_node(ctx: Context):
+    ctx.state["city"] = "Seattle"
+    ctx.state["units"] = "metric"
+    return Event(output=None)
+
+  wf = Workflow(
+      name="tool_node_state_fallback_wf",
+      edges=[
+          (START, start_node),
+          (start_node, tool_node),
+      ],
+  )
+  app_instance = testing_utils.App(name="test_app", root_agent=wf)
+  runner = testing_utils.InMemoryRunner(app=app_instance)
+  events = await runner.run_async("start")
+  simplified = workflow_testing_utils.simplify_events_with_node(events)
+  assert (
+      "tool_node_state_fallback_wf@1/mock_tool_with_decl@1",
+      {"output": {"city": "Seattle", "units": "metric"}},
+  ) in simplified
+
+
+@pytest.mark.asyncio
+async def test_tool_node_prefers_node_input_over_ctx_state():
+  """Tests that explicit node_input overrides ctx.state for declared parameters."""
+  tool_node = ToolNode(
+      tool=MockToolWithDeclaration(param_names=("city", "units"))
+  )
+
+  def start_node(ctx: Context):
+    ctx.state["city"] = "Seattle"
+    ctx.state["units"] = "metric"
+    return Event(output={"city": "Tokyo"})
+
+  wf = Workflow(
+      name="tool_node_precedence_wf",
+      edges=[
+          (START, start_node),
+          (start_node, tool_node),
+      ],
+  )
+  app_instance = testing_utils.App(name="test_app", root_agent=wf)
+  runner = testing_utils.InMemoryRunner(app=app_instance)
+  events = await runner.run_async("start")
+  simplified = workflow_testing_utils.simplify_events_with_node(events)
+  assert (
+      "tool_node_precedence_wf@1/mock_tool_with_decl@1",
+      {"output": {"city": "Tokyo", "units": "metric"}},
+  ) in simplified
+
+
+@pytest.mark.asyncio
+async def test_tool_node_falls_back_to_ctx_state_with_function_tool():
+  """Tests that ToolNode falls back to ctx.state for required params with a FunctionTool."""
+
+  def get_weather(city: str, units: str = "celsius") -> dict[str, str]:
+    return {"city": city, "units": units}
+
+  tool_node = ToolNode(tool=FunctionTool(func=get_weather))
+
+  def start_node(ctx: Context):
+    ctx.state["city"] = "Paris"
+    ctx.state["units"] = "fahrenheit"
+    return Event(output=None)
+
+  wf = Workflow(
+      name="tool_node_fn_tool_wf",
+      edges=[
+          (START, start_node),
+          (start_node, tool_node),
+      ],
+  )
+  app_instance = testing_utils.App(name="test_app", root_agent=wf)
+  runner = testing_utils.InMemoryRunner(app=app_instance)
+  events = await runner.run_async("start")
+  simplified = workflow_testing_utils.simplify_events_with_node(events)
+  assert (
+      "tool_node_fn_tool_wf@1/get_weather@1",
+      {"output": {"city": "Paris", "units": "celsius"}},
+  ) in simplified
+
+
+@pytest.mark.asyncio
+async def test_tool_node_does_not_override_optional_parameters_with_ctx_state():
+  """Tests that optional parameters not declared as required do not fall back to ctx.state."""
+  tool_node = ToolNode(
+      tool=MockToolWithDeclaration(
+          param_names=("city", "units"),
+          required_param_names=("city",),
+      )
+  )
+
+  def start_node(ctx: Context):
+    ctx.state["city"] = "Paris"
+    ctx.state["units"] = "fahrenheit"
+    return Event(output=None)
+
+  wf = Workflow(
+      name="tool_node_optional_state_wf",
+      edges=[
+          (START, start_node),
+          (start_node, tool_node),
+      ],
+  )
+  app_instance = testing_utils.App(name="test_app", root_agent=wf)
+  runner = testing_utils.InMemoryRunner(app=app_instance)
+  events = await runner.run_async("start")
+  simplified = workflow_testing_utils.simplify_events_with_node(events)
+  assert (
+      "tool_node_optional_state_wf@1/mock_tool_with_decl@1",
+      {"output": {"city": "Paris"}},
+  ) in simplified

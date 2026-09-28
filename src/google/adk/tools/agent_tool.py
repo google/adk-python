@@ -404,6 +404,7 @@ class _SingleTurnAgentTool(AgentTool):
       tool_context: ToolContext,
   ) -> Any:
     input_schema = _get_input_schema(self.agent)
+    node_input: object
     if input_schema:
       try:
         node_input = input_schema.model_validate(args)

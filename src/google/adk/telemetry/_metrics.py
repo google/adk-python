@@ -22,9 +22,9 @@ from google.adk import version
 from google.adk.telemetry import _adk_attributes
 from google.adk.telemetry import _hallucination
 from google.adk.telemetry import tracing
+from google.adk.telemetry._decorators import experimental_telemetry
 from google.adk.telemetry._token_usage import CACHE_READ_INPUT_TOKENS_MEANING
 from google.adk.telemetry._token_usage import INPUT_TOKENS_MEANING
-from google.adk.telemetry._token_usage import InvocationTokenTotals
 from google.adk.telemetry._token_usage import OUTPUT_TOKENS_MEANING
 from google.adk.telemetry._token_usage import REASONING_OUTPUT_TOKENS_MEANING
 from google.adk.telemetry._token_usage import TokenUsage
@@ -47,6 +47,11 @@ logger = logging.getLogger("google_adk." + __name__)
 
 GEN_AI_AGENT_VERSION = "gen_ai.agent.version"
 GEN_AI_TOOL_VERSION = "gen_ai.tool.version"
+
+# What one datapoint covers, spelled into the description so a reader of the
+# metric catalog can tell the two families apart.
+_PER_INVOCATION = "one agent invocation"
+_PER_WORKFLOW = "one workflow invocation, across every agent that ran in it"
 
 # What the turn was entered at, keying the per-workflow metrics. Named for the
 # common case, but a workflow-rooted runner puts the workflow's name here, not
@@ -146,6 +151,12 @@ _invoke_agent_tool_calls = meter.create_histogram(
     description="Number of tool calls per agent invocation.",
     explicit_bucket_boundaries_advisory=_CALL_COUNT_BUCKET_BOUNDS,
 )
+_invoke_agent_skill_loads = meter.create_histogram(
+    "adk.experimental.invoke_agent.skill.loads",
+    unit="1",
+    description=f"Number of skill loads over {_PER_INVOCATION}.",
+    explicit_bucket_boundaries_advisory=_CALL_COUNT_BUCKET_BOUNDS,
+)
 
 # Bounds are upper inclusive, so the leading 0 buckets exact zeros on their own.
 _INPUT_TOKEN_BUCKET_BOUNDS = [
@@ -181,12 +192,6 @@ _OUTPUT_TOKEN_BUCKET_BOUNDS = [
     65536,
     131072,
 ]
-
-
-# What one datapoint covers, spelled into the description so a reader of the
-# metric catalog can tell the two families apart.
-_PER_INVOCATION = "one agent invocation"
-_PER_WORKFLOW = "one workflow invocation, across every agent that ran in it"
 
 
 def _create_token_histogram(
@@ -291,10 +296,25 @@ _invoke_workflow_tool_calls = meter.create_histogram(
     ),
     explicit_bucket_boundaries_advisory=_CALL_COUNT_BUCKET_BOUNDS,
 )
+_invoke_workflow_skill_loads = meter.create_histogram(
+    "adk.experimental.invoke_workflow.skill.loads",
+    unit="1",
+    description=f"Number of skill loads over {_PER_WORKFLOW}.",
+    explicit_bucket_boundaries_advisory=_CALL_COUNT_BUCKET_BOUNDS,
+)
 _skill_script_executions = meter.create_counter(
     "adk.experimental.skill.script.executions",
     unit="1",
     description="Number of skill script executions.",
+)
+_skill_loads = meter.create_counter(
+    "adk.experimental.skill.loads",
+    unit="1",
+    description=(
+        "Number of times a skill was loaded. Counts the attempt,"
+        " so a load that resolved no skill is counted too, under its"
+        " `error.type`."
+    ),
 )
 
 
@@ -343,9 +363,10 @@ def record_invoke_agent_tool_calls(agent_name: str, count: int) -> None:
   _invoke_agent_tool_calls.record(count, attributes=attrs)
 
 
+@experimental_telemetry(gate="token_usage")
 def record_invoke_agent_token_usage(
     agent_name: str,
-    totals: InvocationTokenTotals,
+    totals: TokenUsage,
 ) -> None:
   """Records the token spend accumulated over one agent invocation.
 
@@ -354,17 +375,19 @@ def record_invoke_agent_token_usage(
     totals: Token counts summed over the invocation's model calls.
   """
   attrs = {gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name}
-  _invoke_agent_input_tokens.record(totals.input_tokens, attributes=attrs)
-  _invoke_agent_output_tokens.record(totals.output_tokens, attributes=attrs)
+  _invoke_agent_input_tokens.record(totals.input_tokens or 0, attributes=attrs)
+  _invoke_agent_output_tokens.record(
+      totals.output_tokens or 0, attributes=attrs
+  )
   _invoke_agent_total_tokens.record(totals.total_tokens, attributes=attrs)
   _invoke_agent_cache_read_input_tokens.record(
-      totals.cache_read_input_tokens, attributes=attrs
+      totals.cache_read_input_tokens or 0, attributes=attrs
   )
   _invoke_agent_reasoning_output_tokens.record(
-      totals.reasoning_output_tokens, attributes=attrs
+      totals.reasoning_output_tokens or 0, attributes=attrs
   )
   _invoke_agent_tool_input_tokens.record(
-      totals.tool_input_tokens, attributes=attrs
+      totals.tool_input_tokens or 0, attributes=attrs
   )
 
 
@@ -396,11 +419,12 @@ def _invoke_workflow_attrs(
   return attrs
 
 
+@experimental_telemetry(gate=["workflow", "token_usage"])
 def record_invoke_workflow_token_usage(
     *,
     root_agent_name: str,
     workflow_name: str | None,
-    totals: InvocationTokenTotals,
+    totals: TokenUsage,
     nested: bool,
 ) -> None:
   """Records the token spend of one workflow, across every agent in it.
@@ -415,20 +439,25 @@ def record_invoke_workflow_token_usage(
     nested: Whether another workflow enclosed this one.
   """
   attrs = _invoke_workflow_attrs(root_agent_name, workflow_name, nested)
-  _invoke_workflow_input_tokens.record(totals.input_tokens, attributes=attrs)
-  _invoke_workflow_output_tokens.record(totals.output_tokens, attributes=attrs)
+  _invoke_workflow_input_tokens.record(
+      totals.input_tokens or 0, attributes=attrs
+  )
+  _invoke_workflow_output_tokens.record(
+      totals.output_tokens or 0, attributes=attrs
+  )
   _invoke_workflow_total_tokens.record(totals.total_tokens, attributes=attrs)
   _invoke_workflow_cache_read_input_tokens.record(
-      totals.cache_read_input_tokens, attributes=attrs
+      totals.cache_read_input_tokens or 0, attributes=attrs
   )
   _invoke_workflow_reasoning_output_tokens.record(
-      totals.reasoning_output_tokens, attributes=attrs
+      totals.reasoning_output_tokens or 0, attributes=attrs
   )
   _invoke_workflow_tool_input_tokens.record(
-      totals.tool_input_tokens, attributes=attrs
+      totals.tool_input_tokens or 0, attributes=attrs
   )
 
 
+@experimental_telemetry(gate="workflow")
 def record_invoke_workflow_inference_calls(
     *,
     root_agent_name: str,
@@ -448,6 +477,7 @@ def record_invoke_workflow_inference_calls(
   _invoke_workflow_inference_calls.record(count, attributes=attrs)
 
 
+@experimental_telemetry(gate="workflow")
 def record_invoke_workflow_tool_calls(
     *,
     root_agent_name: str,
@@ -556,9 +586,9 @@ def record_client_token_usage(
   # thoughts tokens for "output".
   # `cached_content_token_count` is omitted as it's already included in prompt tokens.
   # `total_token_count` is omitted as SemConv expects input/output breakdown.
-  token_usage = TokenUsage(last_response.usage_metadata)
-  input_token_count = token_usage.input_token_count or 0
-  output_token_count = token_usage.output_token_count or 0
+  token_usage = TokenUsage.from_usage_metadata(last_response.usage_metadata)
+  input_token_count = token_usage.input_tokens or 0
+  output_token_count = token_usage.output_tokens or 0
   response_model = last_response.model_version or llm_request.model
   base_attrs = {
       gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name,
@@ -617,6 +647,7 @@ def get_elapsed_s(
   return time.monotonic() - fallback_start
 
 
+@experimental_telemetry(gate="skills")
 def record_skill_script_execution(
     agent_name: str,
     skill_name: _hallucination.MaybeHallucinated[str],
@@ -637,3 +668,56 @@ def record_skill_script_execution(
     )
 
   _skill_script_executions.add(1, attributes=attrs)
+
+
+@experimental_telemetry(gate="skills")
+def record_skill_load(
+    agent_name: str,
+    skill_name: _hallucination.MaybeHallucinated[str],
+    error_type: str | None = None,
+) -> None:
+  """Records one skill load, whether or not it resolved a skill."""
+  attrs: dict[str, AttributeValue] = {
+      gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name,
+      _adk_attributes.ADK_EXPERIMENTAL_SKILL_NAME: skill_name.bounded(),
+  }
+  if error_type is not None:
+    attrs[error_attributes.ERROR_TYPE] = error_type
+
+  _skill_loads.add(1, attributes=attrs)
+
+
+@experimental_telemetry(gate="skills")
+def record_invoke_agent_skill_loads(
+    agent_name: str,
+    count: int,
+) -> None:
+  """Records the number of skill loads in an agent invocation.
+
+  Args:
+    agent_name: The agent the invocation ran.
+    count: Loads made anywhere inside it, whether or not they resolved a skill.
+      An invocation that loaded nothing is recorded as the zero it measured.
+  """
+  attrs = {gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name}
+  _invoke_agent_skill_loads.record(count, attributes=attrs)
+
+
+@experimental_telemetry(gate=["skills", "workflow"])
+def record_invoke_workflow_skill_loads(
+    *,
+    root_agent_name: str,
+    workflow_name: str | None,
+    count: int,
+    nested: bool,
+) -> None:
+  """Records the skill loads made across one workflow.
+
+  Args:
+    root_agent_name: The runner's agent.
+    workflow_name: The workflow this datapoint covers.
+    count: Loads made by every agent that ran inside it.
+    nested: Whether another workflow enclosed this one.
+  """
+  attrs = _invoke_workflow_attrs(root_agent_name, workflow_name, nested)
+  _invoke_workflow_skill_loads.record(count, attributes=attrs)

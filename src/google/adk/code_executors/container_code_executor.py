@@ -14,11 +14,11 @@
 
 from __future__ import annotations
 
-import atexit
 import logging
 import os
 from typing import Any
 from typing import cast
+import weakref
 
 import docker
 from docker.client import DockerClient
@@ -104,6 +104,25 @@ else:
 """ % _TIMEOUT_EXIT_CODE
 
 
+def _cleanup_container(container: Container | None) -> bool:
+  """Stops and removes the container."""
+  if not container:
+    return True
+
+  try:
+    container.stop()
+    container.remove()
+    logger.info('Container %s stopped and removed.', container.id)
+    return True
+  except Exception as e:
+    try:
+      logger.warning('Failed to cleanup container: %s', e)
+    except Exception:
+      pass
+    e.__traceback__ = None
+    return False
+
+
 class ContainerCodeExecutor(BaseCodeExecutor):
   """A code executor that uses a custom container to execute code.
 
@@ -183,6 +202,7 @@ class ContainerCodeExecutor(BaseCodeExecutor):
 
   _client: DockerClient | None = PrivateAttr(default=None)
   _container: Container | None = PrivateAttr(default=None)
+  _finalizer: weakref.finalize | None = PrivateAttr(default=None)
 
   def __init__(
       self,
@@ -225,9 +245,6 @@ class ContainerCodeExecutor(BaseCodeExecutor):
     )
     # Initialize the container.
     self.__init_container()
-
-    # Close the container when the on exit.
-    atexit.register(self.__cleanup_container)
 
   @override
   def execute_code(
@@ -319,17 +336,28 @@ class ContainerCodeExecutor(BaseCodeExecutor):
         cap_drop=['ALL'],
         security_opt=['no-new-privileges'],
     )
+    self._finalizer = weakref.finalize(
+        self, _cleanup_container, self._container
+    )
     logger.info('Container %s started.', self._container.id)
 
     # Verify the container is able to run python3.
     self._verify_python_installation()
 
-  def __cleanup_container(self) -> None:
-    """Closes the container on exit."""
-    if not self._container:
+  def close(self) -> None:
+    """Stops and removes the container."""
+    container = getattr(self, '_container', None)
+    if not container:
       return
 
-    logger.info('[Cleanup] Stopping the container...')
-    self._container.stop()
-    self._container.remove()
-    logger.info('Container %s stopped and removed.', self._container.id)
+    if _cleanup_container(container):
+      self._container = None
+      finalizer = getattr(self, '_finalizer', None)
+      if finalizer:
+        finalizer.detach()
+
+  def __enter__(self) -> ContainerCodeExecutor:
+    return self
+
+  def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+    self.close()

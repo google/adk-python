@@ -18,7 +18,9 @@ from unittest.mock import Mock
 
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
+from google.adk.tools._node_tool import NodeTool
 from google.adk.tools.base_tool import BaseTool
+from google.adk.tools.function_tool import FunctionTool
 from google.adk.workflow._base_node import BaseNode
 from google.adk.workflow._base_node import START
 from google.adk.workflow._function_node import FunctionNode
@@ -106,6 +108,68 @@ class TestBuildNode:
     built = build_node(tool)
 
     assert isinstance(built, _ToolNode)
+
+  def test_unwraps_node_tool_to_underlying_node(self):
+    """build_node unwraps NodeTool and returns the underlying BaseNode."""
+
+    class DummyNode(BaseNode):
+
+      async def _run_impl(self, *, ctx, node_input):
+        yield node_input
+
+    inner_node = DummyNode(name="inner", input_schema=str)
+    node_tool = NodeTool(node=inner_node)
+
+    built = build_node(node_tool)
+
+    assert built is inner_node
+    assert not isinstance(built, _ToolNode)
+
+  def test_unwraps_node_tool_with_overrides(self):
+    """build_node unwraps NodeTool and applies property overrides."""
+
+    class DummyNode(BaseNode):
+
+      async def _run_impl(self, *, ctx, node_input):
+        yield node_input
+
+    inner_node = DummyNode(name="original_name", input_schema=str)
+    node_tool = NodeTool(node=inner_node)
+
+    built = build_node(node_tool, name="overridden_name", timeout=12.5)
+
+    assert built.name == "overridden_name"
+    assert built.timeout == 12.5
+    assert not isinstance(built, _ToolNode)
+
+  def test_unwraps_node_tool_preserves_tool_name(self):
+    """build_node unwraps NodeTool and preserves custom tool name."""
+
+    class DummyNode(BaseNode):
+
+      async def _run_impl(self, *, ctx, node_input):
+        yield node_input
+
+    inner_node = DummyNode(name="inner", input_schema=str)
+    node_tool = NodeTool(node=inner_node, name="custom_tool_name")
+
+    built = build_node(node_tool)
+
+    assert built.name == "custom_tool_name"
+    assert not isinstance(built, _ToolNode)
+
+  def test_wraps_function_tool_in_tool_node(self):
+    """build_node wraps FunctionTool in _ToolNode."""
+
+    def custom_func(x: int) -> int:
+      return x * 2
+
+    func_tool = FunctionTool(func=custom_func)
+
+    built = build_node(func_tool)
+
+    assert isinstance(built, _ToolNode)
+    assert built.tool is func_tool
 
   def test_returns_function_node_for_callable(self):
     """build_node wraps callable in a FunctionNode."""

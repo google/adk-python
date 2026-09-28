@@ -24,6 +24,7 @@ from typing_extensions import override
 
 from . import _session_util
 from ..errors.already_exists_error import AlreadyExistsError
+from ..errors.session_not_found_error import SessionNotFoundError
 from ..events.event import Event
 from ..features import FeatureName
 from ..features import is_feature_enabled
@@ -56,6 +57,18 @@ def _copy_session(session: Session) -> Session:
     return _light_copy(session)
   else:
     return copy.deepcopy(session)
+
+
+def _copy_state(state: dict[str, Any]) -> dict[str, Any]:
+  """Copies state as deeply as _copy_session copies a session's own state.
+
+  Scoped state is no more reachable through the result than session state
+  is. Under IN_MEMORY_SESSION_SERVICE_LIGHT_COPY, values merged into a returned
+  session stay aliased to the service's scoped state, by design.
+  """
+  if is_feature_enabled(FeatureName.IN_MEMORY_SESSION_SERVICE_LIGHT_COPY):
+    return dict(state)
+  return copy.deepcopy(state)
 
 
 class InMemorySessionService(BaseSessionService):
@@ -224,10 +237,8 @@ class InMemorySessionService(BaseSessionService):
     """Merges app and user state into session state."""
     # Merge app state
     if app_name in self.app_state:
-      for key in self.app_state[app_name].keys():
-        copied_session.state[State.APP_PREFIX + key] = self.app_state[app_name][
-            key
-        ]
+      for key, value in _copy_state(self.app_state[app_name]).items():
+        copied_session.state[State.APP_PREFIX + key] = value
 
     if (
         app_name not in self.user_state
@@ -236,10 +247,8 @@ class InMemorySessionService(BaseSessionService):
       return copied_session
 
     # Merge session state with user state.
-    for key in self.user_state[app_name][user_id].keys():
-      copied_session.state[State.USER_PREFIX + key] = self.user_state[app_name][
-          user_id
-      ][key]
+    for key, value in _copy_state(self.user_state[app_name][user_id]).items():
+      copied_session.state[State.USER_PREFIX + key] = value
     return copied_session
 
   @override
@@ -317,7 +326,8 @@ class InMemorySessionService(BaseSessionService):
   async def get_user_state(
       self, *, app_name: str, user_id: str
   ) -> dict[str, Any]:
-    return dict(self.user_state.get(app_name, {}).get(user_id, {}))
+    user_state = self.user_state.get(app_name, {}).get(user_id, {})
+    return _copy_state(user_state)
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:
@@ -328,20 +338,8 @@ class InMemorySessionService(BaseSessionService):
     user_id = session.user_id
     session_id = session.id
 
-    def _warning(message: str) -> None:
-      logger.warning(
-          f'Failed to append event to session {session_id}: {message}'
-      )
-
-    if app_name not in self.sessions:
-      _warning(f'app_name {app_name} not in sessions')
-      return event
-    if user_id not in self.sessions[app_name]:
-      _warning(f'user_id {user_id} not in sessions[app_name]')
-      return event
-    if session_id not in self.sessions[app_name][user_id]:
-      _warning(f'session_id {session_id} not in sessions[app_name][user_id]')
-      return event
+    if session_id not in self.sessions.get(app_name, {}).get(user_id, {}):
+      raise SessionNotFoundError(f'Session {session_id} not found.')
 
     # Fetch the canonical storage session early so we can drop a re-delivered
     # event before modifying any state. The same event can be delivered more

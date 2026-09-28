@@ -65,7 +65,7 @@ analyzer_agent = Agent(
 
 Do not write `{node_input}` in the instruction. Braces in an instruction are
 substituted from session state, and there is no state key by that name, so the
-agent fails with ``KeyError: 'Context variable not found: `node_input`.'``. If you
+agent fails with ``KeyError: "Context variable not found: `node_input` in agent 'analyzer'."``. If you
 want a value from state in the instruction, put it in state first. The parallel
 worker sample does exactly that, writing `topic` in an earlier node and reading
 `{topic}` in the agent.

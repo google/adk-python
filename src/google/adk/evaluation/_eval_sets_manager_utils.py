@@ -80,9 +80,12 @@ def update_eval_case_in_eval_set(
         f" `{eval_set.eval_set_id}`."
     )
 
-  # Remove the existing eval case and add the updated eval case.
-  eval_set.eval_cases.remove(eval_case_to_update)
-  eval_set.eval_cases.append(updated_eval_case)
+  # Replace the existing eval case in place to preserve its position.
+  for i, eval_case in enumerate(eval_set.eval_cases):
+    if eval_case.eval_id == eval_case_id:
+      eval_set.eval_cases[i] = updated_eval_case
+      break
+
   return eval_set
 
 

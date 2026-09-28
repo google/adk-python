@@ -32,7 +32,9 @@ from ..auth.auth_credential import AuthCredential
 from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..events._branch_path import _BranchPath
 from ..events.event import Event
+from ..live._active_streaming_tool import ActiveStreamingTool
 from ..live._audio_cache_manager import RealtimeCacheEntry as RealtimeCacheEntry
+from ..live._transcription_entry import TranscriptionEntry
 from ..live.live_request_queue import LiveRequestQueue
 from ..memory.base_memory_service import BaseMemoryService
 from ..plugins.plugin_manager import PluginManager
@@ -40,12 +42,10 @@ from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
 from ..tools.base_tool import BaseTool
 from ..workflow._base_node import BaseNode
-from .active_streaming_tool import ActiveStreamingTool
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
 from .context_cache_config import ContextCacheConfig
 from .run_config import RunConfig
-from .transcription_entry import TranscriptionEntry
 
 _EventQueueItem = tuple[object, asyncio.Event | None]
 
@@ -82,6 +82,32 @@ class _InvocationCostManager(BaseModel):
           "Max number of llm calls limit of"
           f" `{run_config.max_llm_calls}` exceeded"
       )
+
+
+class _AbortState:
+  """Shared mutable state container for invocation abort signals.
+
+  Because Pydantic model_copy() shallow-copies __pydantic_private__, all
+  derived contexts within the same Runner share the exact same _AbortState
+  instance reference. Updates to loop, signal, or aborted propagate across all
+  model_copy() clones in the tree. Cross-Runner sub-runs (such as AgentTool or
+  nested Workflow node runners) propagate cancellation by passing
+  ``_abort_signal`` to the child Runner's ``run_async``.
+  """
+
+  def __init__(
+      self,
+      signal: asyncio.Event | None = None,
+      loop: asyncio.AbstractEventLoop | None = None,
+  ) -> None:
+    self.signal = signal if signal is not None else asyncio.Event()
+    self.loop = loop
+    self.aborted = False
+
+  def __deepcopy__(self, memo: dict[int, Any] | None) -> _AbortState:
+    # Preserve single-instance sharing across deepcopies and avoid traversing
+    # active asyncio event loops or coroutines.
+    return self
 
 
 class InvocationContext(BaseModel):
@@ -258,11 +284,56 @@ class InvocationContext(BaseModel):
   of this invocation.
   """
 
+  _abort_state: _AbortState = PrivateAttr(default_factory=_AbortState)
+  """Captured abort state (signal, loop, and aborted flag) shared across copies."""
+
   @override
   def model_post_init(self, __context: Any) -> None:
     super().model_post_init(__context)
     if self.run_config and self.run_config.custom_metadata:
       self._custom_metadata.update(self.run_config.custom_metadata)
+    try:
+      self._abort_state.loop = asyncio.get_running_loop()
+    except RuntimeError:
+      pass
+
+  @property
+  def _abort_signal(self) -> asyncio.Event:
+    """The internal abort signal event for this invocation.
+
+    Private on purpose so callers use ``is_aborted``, while internal runners use
+    ``_abort_signal`` to await cancellation. Sub-contexts are shallow
+    ``model_copy`` clones that share this exact Event instance via
+    ``_abort_state``.
+    """
+    if self._abort_state.loop is None:
+      try:
+        self._abort_state.loop = asyncio.get_running_loop()
+      except RuntimeError:
+        pass
+    return self._abort_state.signal
+
+  def _attach_abort_signal(self, abort_signal: asyncio.Event) -> None:
+    """Replaces this context's abort signal with a caller-owned event.
+
+    Only for the runner to call on a freshly built root context, before any
+    sub-context is derived from it. The runner cannot pass the signal to the
+    constructor because the context is produced by ``_new_invocation_context``,
+    an overridable factory whose subclass overrides do not accept the argument.
+
+    Because sub-contexts share ``_abort_state``, replacing the signal here
+    propagates to all derived contexts. Rebinding after execution begins is
+    unsafe as active tasks may already be awaiting the previous event.
+
+    Args:
+      abort_signal: The caller-owned event to abort this invocation with.
+    """
+    self._abort_state.signal = abort_signal
+    if self._abort_state.loop is None:
+      try:
+        self._abort_state.loop = asyncio.get_running_loop()
+      except RuntimeError:
+        pass
 
   @property
   def is_resumable(self) -> bool:
@@ -271,6 +342,44 @@ class InvocationContext(BaseModel):
         self.resumability_config is not None
         and self.resumability_config.is_resumable
     )
+
+  @property
+  def is_aborted(self) -> bool:
+    """Returns whether the current invocation has been requested to abort."""
+    return self._abort_state.aborted or self._abort_state.signal.is_set()
+
+  def abort(self) -> None:
+    """Trip the abort signal in a thread-safe manner.
+
+    Can be safely called from either the event loop thread or an external
+    worker thread. When called from within the running event loop, trips the
+    signal immediately on the same tick. When called from a foreign thread,
+    schedules the trip thread-safely onto the captured event loop.
+    """
+    self._abort_state.aborted = True
+    signal = self._abort_state.signal
+    if signal.is_set():
+      return
+
+    try:
+      running_loop = asyncio.get_running_loop()
+    except RuntimeError:
+      running_loop = None
+
+    target_loop = self._abort_state.loop
+    if target_loop is not None and running_loop is not target_loop:
+      try:
+        target_loop.call_soon_threadsafe(signal.set)
+      except RuntimeError:
+        try:
+          signal.set()
+        except RuntimeError:
+          pass
+    else:
+      try:
+        signal.set()
+      except RuntimeError:
+        pass
 
   async def _enqueue_event(self, event: Event) -> None:
     """Enqueue an event for the Runner main loop to process.
@@ -569,38 +678,6 @@ class InvocationContext(BaseModel):
           return True
 
     return False
-
-  # TODO: Move this method from invocation_context to a dedicated module.
-  def _find_matching_function_call(
-      self, function_response_event: Event
-  ) -> Event | None:
-    """Finds the function call event in the current invocation that matches the function response id."""
-    from ..flows.llm_flows.functions import find_event_by_function_call_id
-
-    function_responses = function_response_event.get_function_responses()
-    if not function_responses:
-      return None
-
-    events = self._get_events(current_invocation=True)
-    if events and events[-1].id == function_response_event.id:
-      search_space = events[:-1]
-    else:
-      search_space = events
-
-    function_response_id = function_responses[0].id
-    if not function_response_id:
-      return None
-    return find_event_by_function_call_id(search_space, function_response_id)
-
-  def stamp_event_branch_context(self, event: Event) -> None:
-    """Stamps the event with the branch and isolation scope of its matching function call."""
-    if function_call := self._find_matching_function_call(event):
-      event.branch = function_call.branch
-      if (
-          event.isolation_scope is None
-          and function_call.isolation_scope is not None
-      ):
-        event.isolation_scope = function_call.isolation_scope
 
 
 def new_invocation_context_id() -> str:

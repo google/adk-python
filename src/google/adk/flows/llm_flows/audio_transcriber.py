@@ -14,9 +14,20 @@
 
 """Backward compatibility module for AudioTranscriber.
 
-AudioTranscriber has been moved to ``google.adk.live.audio_transcriber``.
+AudioTranscriber is no longer public; it lives in
+``google.adk.live._audio_transcriber`` and this module only keeps
+existing imports working.
 """
 
 from __future__ import annotations
 
+import warnings
+
 from ...live._audio_transcriber import AudioTranscriber as AudioTranscriber
+
+warnings.warn(
+    'google.adk.flows.llm_flows.audio_transcriber is deprecated; use'
+    ' google.adk.live._audio_transcriber instead.',
+    DeprecationWarning,
+    stacklevel=2,
+)

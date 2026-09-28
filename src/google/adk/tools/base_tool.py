@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from abc import ABC
+from collections.abc import Callable as CallableABC
 import inspect
 import logging
 from typing import Any
@@ -46,6 +47,11 @@ if TYPE_CHECKING:
 from .tool_context import ToolContext  # pylint: disable=unused-import
 
 SelfTool = TypeVar("SelfTool", bound="BaseTool")
+
+
+def _is_callable_annotation(annotation: object) -> bool:
+  """Returns whether a resolved annotation describes a callable."""
+  return annotation is Callable or get_origin(annotation) is CallableABC
 
 
 class BaseTool(ABC):
@@ -90,6 +96,16 @@ class BaseTool(ABC):
   NOTE: the entire dict must be JSON serializable.
   """
 
+  behavior: Optional[types.Behavior] = None
+  """Controls whether the tool is blocking or non-blocking (Live API only).
+
+  - ``NON_BLOCKING``: the model continues the conversation while the tool
+    executes in the background.
+  - ``BLOCKING``: the model waits for the tool response before continuing.
+
+  This field is currently only supported for live. ``None`` preserves the default behavior.
+  """
+
   response_scheduling: Optional[types.FunctionResponseScheduling] = None
   """Controls when the model reacts to the tool's response (Live API only).
 
@@ -110,10 +126,11 @@ class BaseTool(ABC):
   def __init__(
       self,
       *,
-      name,
-      description,
+      name: str,
+      description: str,
       is_long_running: bool = False,
       custom_metadata: Optional[dict[str, Any]] = None,
+      behavior: Optional[types.Behavior] = None,
       response_scheduling: Optional[types.FunctionResponseScheduling] = None,
   ):
     self.name = name
@@ -121,6 +138,7 @@ class BaseTool(ABC):
     self.is_long_running = is_long_running
     self._defers_response = False
     self.custom_metadata = custom_metadata
+    self.behavior = behavior
     self.response_scheduling = response_scheduling
 
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
@@ -235,7 +253,7 @@ class BaseTool(ABC):
             and value is not None
         ):
           kwargs[param_name] = param_type.model_validate(value)
-        elif param_type is Callable or get_origin(param_type) is Callable:
+        elif _is_callable_annotation(param_type):
           kwargs[param_name] = config_agent_utils.resolve_fully_qualified_name(
               value
           )
@@ -243,13 +261,15 @@ class BaseTool(ABC):
           kwargs[param_name] = param_type(value)
         elif get_origin(param_type) is list:
           list_args = get_args(param_type)
-          if issubclass(list_args[0], BaseModel):
+          if inspect.isclass(list_args[0]) and issubclass(
+              list_args[0], BaseModel
+          ):
             kwargs[param_name] = [
                 list_args[0].model_validate(item) for item in value
             ]
           elif list_args[0] in (int, str, bool, float):
             kwargs[param_name] = value
-          elif list_args[0] is Callable or get_origin(list_args[0]) is Callable:
+          elif _is_callable_annotation(list_args[0]):
             kwargs[param_name] = [
                 config_agent_utils.resolve_fully_qualified_name(item)
                 for item in value

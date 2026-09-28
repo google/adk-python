@@ -16,16 +16,19 @@ from __future__ import annotations
 
 from typing import List
 from typing import Optional
+from typing import TYPE_CHECKING
 from typing import Union
 
 import google.api_core.client_info
 from google.api_core.gapic_v1 import client_info as gapic_client_info
 from google.auth.credentials import Credentials
 from google.cloud import bigquery
-from google.cloud import dataplex_v1
 
 from ... import version
 from ...utils._telemetry_context import _is_visual_builder
+
+if TYPE_CHECKING:
+  from google.cloud import dataplex_v1
 
 USER_AGENT_BASE = f"google-adk/{version.__version__}"
 BQ_USER_AGENT = f"adk-bigquery-tool {USER_AGENT_BASE}"
@@ -34,6 +37,13 @@ USER_AGENT = BQ_USER_AGENT
 
 # Internal identifier for Visual Builder usage tracking.
 _VISUAL_BUILDER_UA = "google-adk-visual-builder"
+
+# google-cloud-dataplex is optional, so the modules that need it import it
+# where it is used and raise this instead of failing at import time.
+_DATAPLEX_REQUIRED = (
+    "The BigQuery catalog search tool requires google-cloud-dataplex. Install"
+    " it with: pip install google-adk[gcp]"
+)
 
 
 def get_bigquery_client(
@@ -93,7 +103,15 @@ def get_dataplex_catalog_client(
 
   Returns:
     A Dataplex Client.
+
+  Raises:
+    ImportError: If google-cloud-dataplex is not installed.
   """
+
+  try:
+    from google.cloud import dataplex_v1  # pylint: disable=g-import-not-at-top
+  except ImportError as e:
+    raise ImportError(_DATAPLEX_REQUIRED) from e
 
   user_agents = [DP_USER_AGENT]
 

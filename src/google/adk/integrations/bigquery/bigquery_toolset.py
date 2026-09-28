@@ -30,7 +30,7 @@ from . import search_tool
 from ...tools.base_tool import BaseTool
 from ...tools.base_toolset import BaseToolset
 from ...tools.base_toolset import ToolPredicate
-from ...tools.google_tool import GoogleTool
+from ._bigquery_tool import BigQueryTool
 from .bigquery_credentials import BigQueryCredentialsConfig
 from .config import BigQueryToolConfig
 
@@ -84,7 +84,7 @@ class BigQueryToolset(BaseToolset):
         search_tool.search_catalog,
     ]
     all_tools = [
-        GoogleTool(
+        BigQueryTool(
             func=func,
             credentials_config=self._credentials_config,
             tool_settings=self._tool_settings,

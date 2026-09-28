@@ -142,9 +142,7 @@ def _parse_db_path(db_path: str) -> tuple[str, str, bool]:
     return db_path, db_path, False
 
   normalized_path = raw_path
-  if normalized_path.startswith("//"):
-    normalized_path = normalized_path[1:]
-  elif normalized_path.startswith("/"):
+  if normalized_path.startswith("/"):
     normalized_path = normalized_path[1:]
 
   if parsed.query:
@@ -242,21 +240,26 @@ class SqliteSessionService(BaseSessionService):
       storage_user_state = await self._get_user_state(db, app_name, user_id)
 
       # Store the session
-      await db.execute(
-          """
-          INSERT INTO sessions (app_name, user_id, id, state, create_time, update_time)
-          VALUES (?, ?, ?, ?, ?, ?)
-          """,
-          (
-              app_name,
-              user_id,
-              session_id,
-              json.dumps(session_state),
-              now,
-              now,
-          ),
-      )
-      await db.commit()
+      try:
+        await db.execute(
+            """
+            INSERT INTO sessions (app_name, user_id, id, state, create_time, update_time)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                app_name,
+                user_id,
+                session_id,
+                json.dumps(session_state),
+                now,
+                now,
+            ),
+        )
+        await db.commit()
+      except (sqlite3.IntegrityError, aiosqlite.IntegrityError):
+        raise AlreadyExistsError(
+            f"Session with id {session_id} already exists."
+        )
 
       # Merge states for response
       merged_state = _merge_state(
@@ -513,8 +516,7 @@ class SqliteSessionService(BaseSessionService):
       session.last_update_time = event_timestamp
 
     # Also update the in-memory session
-    await super().append_event(session=session, event=event)
-    return event
+    return self._commit_event_to_session(session, event)
 
   @asynccontextmanager
   async def _get_db_connection(self) -> AsyncIterator[aiosqlite.Connection]:
@@ -554,19 +556,6 @@ class SqliteSessionService(BaseSessionService):
         db,
         "SELECT state FROM user_states WHERE app_name=? AND user_id=?",
         (app_name, user_id),
-    )
-
-  async def _get_session_state(
-      self,
-      db: aiosqlite.Connection,
-      app_name: str,
-      user_id: str,
-      session_id: str,
-  ) -> dict[str, Any]:
-    return await self._get_state(
-        db,
-        "SELECT state FROM sessions WHERE app_name=? AND user_id=? AND id=?",
-        (app_name, user_id, session_id),
     )
 
   async def _upsert_app_state(
@@ -612,13 +601,14 @@ class SqliteSessionService(BaseSessionService):
       now: float,
   ) -> None:
     """Atomically updates session state with dict.update() semantics."""
+    delta_json = json.dumps(delta)
     await db.execute(
         "UPDATE sessions SET"
         f" state=({_MERGE_STATE_SQL.format(delta='?', state='state')}),"
         " update_time=? WHERE app_name=? AND user_id=? AND id=?",
         (
-            json.dumps(delta),
-            json.dumps(delta),
+            delta_json,
+            delta_json,
             now,
             app_name,
             user_id,

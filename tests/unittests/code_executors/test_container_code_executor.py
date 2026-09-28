@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for the ContainerCodeExecutor container hardening defaults."""
+"""Tests for the ContainerCodeExecutor container hardening, timeout, and lifecycle."""
 
+import gc
 import os
 import signal
 import subprocess
@@ -21,6 +22,7 @@ import sys
 import textwrap
 import time
 from unittest import mock
+import weakref
 
 from google.adk.code_executors import container_code_executor
 from google.adk.code_executors.code_execution_utils import CodeExecutionInput
@@ -321,3 +323,98 @@ def test_wrapper_reports_an_uncaught_error_against_the_original_line():
   assert completed.returncode == 1
   assert '"<adk_code>", line 2' in completed.stderr
   assert 'boom' in completed.stderr
+
+
+@mock.patch('google.adk.code_executors.container_code_executor.docker')
+def test_explicit_close_stops_and_removes_container(mock_docker):
+  """Calling close() explicitly stops and removes the container."""
+  client = _mock_docker_client()
+  container = client.containers.run.return_value
+  mock_docker.from_env.return_value = client
+
+  executor = ContainerCodeExecutor(image='test-image')
+  ref = weakref.ref(executor)
+
+  executor.close()
+
+  container.stop.assert_called_once()
+  container.remove.assert_called_once()
+  assert executor._container is None
+  assert executor._finalizer is not None
+  assert not executor._finalizer.alive
+
+  del executor
+  gc.collect()
+  assert ref() is None
+
+
+@mock.patch('google.adk.code_executors.container_code_executor.docker')
+def test_close_is_idempotent(mock_docker):
+  """Calling close() multiple times only cleans up the container once."""
+  client = _mock_docker_client()
+  container = client.containers.run.return_value
+  mock_docker.from_env.return_value = client
+
+  executor = ContainerCodeExecutor(image='test-image')
+  executor.close()
+  executor.close()
+
+  container.stop.assert_called_once()
+  container.remove.assert_called_once()
+
+
+@mock.patch('google.adk.code_executors.container_code_executor.docker')
+def test_close_failure_retains_container_and_finalizer(mock_docker):
+  """When container stop raises, close retains _container and keeps finalizer alive."""
+  client = _mock_docker_client()
+  container = client.containers.run.return_value
+  container.stop.side_effect = [RuntimeError, None]
+  mock_docker.from_env.return_value = client
+
+  executor = ContainerCodeExecutor(image='test-image')
+  executor.close()
+
+  container.stop.assert_called_once()
+  container.remove.assert_not_called()
+  assert executor._container is container
+  assert executor._finalizer is not None
+  assert executor._finalizer.alive
+
+  # Subsequent GC retries cleanup via the live finalizer
+  del executor
+  gc.collect()
+
+  assert container.stop.call_count == 2
+  container.remove.assert_called_once()
+
+
+@mock.patch('google.adk.code_executors.container_code_executor.docker')
+def test_context_manager_stops_and_removes_container(mock_docker):
+  """Using the executor as a context manager cleans up the container on exit."""
+  client = _mock_docker_client()
+  container = client.containers.run.return_value
+  mock_docker.from_env.return_value = client
+
+  with ContainerCodeExecutor(image='test-image') as executor:
+    assert executor is not None
+
+  container.stop.assert_called_once()
+  container.remove.assert_called_once()
+
+
+@mock.patch('google.adk.code_executors.container_code_executor.docker')
+def test_discarded_executor_is_garbage_collected_and_cleaned_up(mock_docker):
+  """Discarded executor without explicit close is garbage collected and cleaned up."""
+  client = _mock_docker_client()
+  container = client.containers.run.return_value
+  mock_docker.from_env.return_value = client
+
+  executor = ContainerCodeExecutor(image='test-image')
+  ref = weakref.ref(executor)
+
+  del executor
+  gc.collect()
+
+  assert ref() is None
+  container.stop.assert_called_once()
+  container.remove.assert_called_once()

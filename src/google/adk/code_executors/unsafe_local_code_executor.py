@@ -21,11 +21,13 @@ import signal
 import subprocess
 import sys
 from typing import Any
+from typing import TYPE_CHECKING
 
 from pydantic import Field
 from typing_extensions import override
 
-from ..agents.invocation_context import InvocationContext
+if TYPE_CHECKING:
+  from ..agents.invocation_context import InvocationContext
 from .base_code_executor import BaseCodeExecutor
 from .code_execution_utils import CodeExecutionInput
 from .code_execution_utils import CodeExecutionResult

@@ -110,6 +110,17 @@
         "example_otel_instrumentation_value": "ClientError",
         "kind": "adk_bug",
         "reason": "ADK reports a failed call on the enclosing spans and on the duration metric, but leaves `error.type` off the inference span itself."
+      },
+      {
+        "path": [
+          "attributes",
+          "gen_ai.output.messages",
+          "finish_reason"
+        ],
+        "example_native_instrumentation_value": "",
+        "example_otel_instrumentation_value": "error",
+        "kind": "otel_bug",
+        "reason": "A chunk that has not finished has no reason to give, and the semconv makes the field required, so ADK writes it empty. The instrumentor maps the unset proto3 zero value to `error`, reporting every chunk of a healthy turn as a failed generation."
       }
     ]
   },
@@ -373,6 +384,73 @@
         },
         "kind": "otel_bug",
         "reason": "The instrumentor reads `FunctionDeclaration.parameters`, which ADK leaves unset in favour of `parameters_json_schema`, so it advertises the tools by name and description but without their schema."
+      },
+      {
+        "path": [
+          "attributes",
+          "gen_ai.response.finish_reasons"
+        ],
+        "example_native_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "example_otel_instrumentation_value": "unspecified",
+        "kind": "otel_bug",
+        "reason": "The instrumentor publishes the unset proto3 zero value as the reason `unspecified`, which is not one the semconv defines. ADK omits the attribute until a reason is actually reported."
+      },
+      {
+        "path": [
+          "attributes",
+          "gen_ai.output.messages",
+          "finish_reason"
+        ],
+        "example_native_instrumentation_value": "",
+        "example_otel_instrumentation_value": "error",
+        "kind": "otel_bug",
+        "reason": "A chunk that has not finished has no reason to give, and the semconv makes the field required, so ADK writes it empty. The instrumentor maps the unset proto3 zero value to `error`, reporting every chunk of a healthy turn as a failed generation."
+      }
+    ]
+  },
+  {
+    "owner_type": "log",
+    "owner_name": "gen_ai.choice",
+    "affected_tests": "streaming/stable-*",
+    "divergences": [
+      {
+        "path": [
+          "body",
+          "finish_reason"
+        ],
+        "example_native_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "example_otel_instrumentation_value": "FINISH_REASON_UNSPECIFIED",
+        "kind": "otel_bug",
+        "reason": "The instrumentor reports each chunk's own field, so the first chunk of a stream is published with the unset zero value. ADK reports the reason the turn actually ended with."
+      },
+      {
+        "path": [
+          "body",
+          "index"
+        ],
+        "example_native_instrumentation_value": 0,
+        "example_otel_instrumentation_value": 1,
+        "kind": "otel_bug",
+        "reason": "`index` identifies the choice among the candidates, and there is one. The instrumentor increments it per streamed chunk instead, numbering the pieces of a single choice as though they were alternatives to each other."
+      },
+      {
+        "path": [
+          "body",
+          "content",
+          "parts",
+          "function_call",
+          "id"
+        ],
+        "example_native_instrumentation_value": "PRESENT",
+        "example_otel_instrumentation_value": {
+          "missing_on_this_side": true
+        },
+        "kind": "desired_behavior",
+        "reason": "ADK assigns each function call an id, which is what pairs it with the response it gets back. The raw SDK part the instrumentor reports carries none."
       }
     ]
   }

@@ -25,7 +25,10 @@ import pathlib
 import shlex
 import signal
 from typing import Any
+from typing import Callable
+from typing import cast
 from typing import Optional
+from typing import Protocol
 
 from google.genai import types
 
@@ -34,7 +37,26 @@ from .tool_context import ToolContext
 
 logger = logging.getLogger("google_adk." + __name__)
 
-_resource = importlib.import_module("resource") if os.name == "posix" else None
+
+class _ResourceModule(Protocol):
+  RLIMIT_CORE: int
+  RLIMIT_AS: int
+  RLIMIT_FSIZE: int
+  RLIMIT_NPROC: int
+
+  def setrlimit(self, resource: int, limits: tuple[int, int]) -> None:
+    ...
+
+
+def _load_resource_module() -> Optional[_ResourceModule]:
+  try:
+    module = importlib.import_module("resource")
+  except ModuleNotFoundError:
+    return None
+  return cast(_ResourceModule, module)
+
+
+_resource = _load_resource_module()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -102,6 +124,19 @@ def _set_resource_limits(policy: BashToolPolicy) -> None:
     logger.warning("Failed to set resource limits: %s", e)
 
 
+def _kill_process_group(process: asyncio.subprocess.Process) -> None:
+  """Kills the subprocess group on POSIX and the process elsewhere."""
+  if process.pid is None:
+    return
+  killpg_candidate: object = getattr(os, "killpg", None)
+  sigkill: object = getattr(signal, "SIGKILL", None)
+  if callable(killpg_candidate) and isinstance(sigkill, int):
+    killpg = cast(Callable[[int, int], None], killpg_candidate)
+    killpg(process.pid, sigkill)
+  else:
+    process.kill()
+
+
 class ExecuteBashTool(BaseTool):
   """Tool to execute a validated bash command within a workspace directory."""
 
@@ -153,7 +188,7 @@ class ExecuteBashTool(BaseTool):
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
     command = args.get("command")
-    if not command:
+    if not isinstance(command, str) or not command:
       return {"error": "Command is required."}
 
     # Static validation.
@@ -197,7 +232,7 @@ class ExecuteBashTool(BaseTool):
       except asyncio.TimeoutError:
         try:
           if process.pid:
-            os.killpg(process.pid, signal.SIGKILL)
+            _kill_process_group(process)
         except ProcessLookupError:
           pass
         stdout, stderr = await process.communicate()
@@ -221,7 +256,7 @@ class ExecuteBashTool(BaseTool):
       finally:
         try:
           if process.pid:
-            os.killpg(process.pid, signal.SIGKILL)
+            _kill_process_group(process)
         except ProcessLookupError:
           pass
       return {

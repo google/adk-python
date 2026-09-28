@@ -23,6 +23,7 @@ from typing import Dict
 from typing import List
 
 from google.auth.credentials import Credentials
+from google.cloud.bigtable import data
 
 from . import client
 from ..tool_context import ToolContext
@@ -84,6 +85,7 @@ async def execute_sql(
   del tool_context  # Unused for now
 
   def _execute_sql() -> Dict[str, Any]:
+    bt_client: data.BigtableDataClient | None = None
     try:
       bt_client = client.get_bigtable_data_client(
           project=project_id, credentials=credentials
@@ -133,5 +135,12 @@ async def execute_sql(
           "status": "ERROR",
           "error_details": str(ex),
       }
+    finally:
+      if bt_client is not None:
+        try:
+          bt_client.close()
+        except Exception:
+          # Failing to release the client must not discard the tool's result.
+          logger.exception("Failed to close the Bigtable client")
 
   return await asyncio.to_thread(_execute_sql)

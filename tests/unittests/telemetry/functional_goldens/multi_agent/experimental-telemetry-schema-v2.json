@@ -89,27 +89,27 @@
                     }
                   }
                 ]
-              },
-              {
-                "name": "execute_tool transfer_to_agent",
-                "attributes": {
-                  "gen_ai.operation.name": "execute_tool",
-                  "gen_ai.tool.description": "Transfer the query to another agent.\n\nUse this tool to hand off control to another agent that is more suitable to\nanswer the user's query according to the agent's description.\n\nArgs:\n  agent_name: the agent name to transfer to.",
-                  "gen_ai.tool.name": "transfer_to_agent",
-                  "gen_ai.tool.type": "TransferToAgentTool",
-                  "gen_ai.agent.name": "some_root_agent",
-                  "gcp.vertex.agent.llm_request": "{}",
-                  "gcp.vertex.agent.llm_response": "{}",
-                  "gcp.vertex.agent.tool_call_args": "{}",
-                  "gen_ai.tool.call.id": "PRESENT",
-                  "gcp.vertex.agent.event_id": "PRESENT",
-                  "gcp.vertex.agent.tool_response": "{}"
-                },
-                "status": "UNSET",
-                "children": [],
-                "logs": []
               }
             ],
+            "logs": []
+          },
+          {
+            "name": "execute_tool transfer_to_agent",
+            "attributes": {
+              "gen_ai.operation.name": "execute_tool",
+              "gen_ai.tool.description": "Transfer the query to another agent.\n\nUse this tool to hand off control to another agent that is more suitable to\nanswer the user's query according to the agent's description.\n\nArgs:\n  agent_name: the agent name to transfer to.",
+              "gen_ai.tool.name": "transfer_to_agent",
+              "gen_ai.tool.type": "TransferToAgentTool",
+              "gen_ai.agent.name": "some_root_agent",
+              "gcp.vertex.agent.llm_request": "{}",
+              "gcp.vertex.agent.llm_response": "{}",
+              "gcp.vertex.agent.tool_call_args": "{}",
+              "gen_ai.tool.call.id": "PRESENT",
+              "gcp.vertex.agent.event_id": "PRESENT",
+              "gcp.vertex.agent.tool_response": "{}"
+            },
+            "status": "UNSET",
+            "children": [],
             "logs": []
           }
         ],
@@ -281,6 +281,20 @@
         "value": 15
       }
     ],
+    "adk.experimental.invoke_agent.skill.loads": [
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_root_agent"
+        },
+        "value": 0
+      },
+      {
+        "attributes": {
+          "gen_ai.agent.name": "some_specialist_agent"
+        },
+        "value": 0
+      }
+    ],
     "adk.experimental.invoke_agent.tool.input_tokens": [
       {
         "attributes": {
@@ -352,6 +366,15 @@
           "gen_ai.workflow.name": "some_root_agent"
         },
         "value": 20
+      }
+    ],
+    "adk.experimental.invoke_workflow.skill.loads": [
+      {
+        "attributes": {
+          "adk.experimental.root_agent.name": "some_root_agent",
+          "gen_ai.workflow.name": "some_root_agent"
+        },
+        "value": 0
       }
     ],
     "adk.experimental.invoke_workflow.tool.input_tokens": [

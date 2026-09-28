@@ -17,8 +17,10 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -27,6 +29,7 @@ from typing import Any
 from typing import Callable
 from typing import Dict
 from typing import List
+from typing import Optional
 from typing import Tuple
 from unittest import mock
 
@@ -126,6 +129,7 @@ def test_resolve_project_from_gcloud_fails(
       "run",
       mock.Mock(side_effect=subprocess.CalledProcessError(1, "cmd", "err")),
   )
+
   with pytest.raises(subprocess.CalledProcessError):
     cli_deploy._resolve_project(None)
 
@@ -140,10 +144,11 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             "rag://m",
             None,
-            (
-                "--session_service_uri=sqlite://s --artifact_service_uri=gs://a"
-                " --memory_service_uri=rag://m"
-            ),
+            [
+                "--session_service_uri=sqlite://s",
+                "--artifact_service_uri=gs://a",
+                "--memory_service_uri=rag://m",
+            ],
         ),
         (
             "1.2.5",
@@ -151,10 +156,11 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             "rag://m",
             None,
-            (
-                "--session_service_uri=sqlite://s --artifact_service_uri=gs://a"
-                " --memory_service_uri=rag://m"
-            ),
+            [
+                "--session_service_uri=sqlite://s",
+                "--artifact_service_uri=gs://a",
+                "--memory_service_uri=rag://m",
+            ],
         ),
         (
             "0.5.0",
@@ -162,10 +168,11 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             "rag://m",
             None,
-            (
-                "--session_service_uri=sqlite://s --artifact_service_uri=gs://a"
-                " --memory_service_uri=rag://m"
-            ),
+            [
+                "--session_service_uri=sqlite://s",
+                "--artifact_service_uri=gs://a",
+                "--memory_service_uri=rag://m",
+            ],
         ),
         (
             "1.3.0",
@@ -173,7 +180,7 @@ def test_resolve_project_from_gcloud_fails(
             None,
             None,
             None,
-            "--session_service_uri=sqlite://s",
+            ["--session_service_uri=sqlite://s"],
         ),
         (
             "1.3.0",
@@ -181,7 +188,7 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             "rag://m",
             None,
-            "--artifact_service_uri=gs://a --memory_service_uri=rag://m",
+            ["--artifact_service_uri=gs://a", "--memory_service_uri=rag://m"],
         ),
         (
             "1.2.0",
@@ -189,7 +196,7 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             None,
             None,
-            "--artifact_service_uri=gs://a",
+            ["--artifact_service_uri=gs://a"],
         ),
         (
             "1.21.0",
@@ -197,7 +204,7 @@ def test_resolve_project_from_gcloud_fails(
             None,
             None,
             False,
-            "--no_use_local_storage",
+            ["--no_use_local_storage"],
         ),
         (
             "1.21.0",
@@ -205,7 +212,7 @@ def test_resolve_project_from_gcloud_fails(
             None,
             None,
             True,
-            "--use_local_storage",
+            ["--use_local_storage"],
         ),
         (
             "1.21.0",
@@ -213,27 +220,40 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             None,
             False,
-            "--session_service_uri=sqlite://s --artifact_service_uri=gs://a",
+            [
+                "--session_service_uri=sqlite://s",
+                "--artifact_service_uri=gs://a",
+            ],
+        ),
+        # A value containing a space stays one argv entry; joining into a
+        # single string would have word split it into two flags.
+        (
+            "1.3.0",
+            "sqlite:///tmp/my sessions.db",
+            None,
+            None,
+            None,
+            ["--session_service_uri=sqlite:///tmp/my sessions.db"],
         ),
     ],
 )
-def test_get_service_option_by_adk_version(
+def test_get_service_options_by_adk_version(
     adk_version: str,
     session_uri: str | None,
     artifact_uri: str | None,
     memory_uri: str | None,
     use_local_storage: bool | None,
-    expected: str,
+    expected: list[str],
 ) -> None:
   """It should return the correct service URI flags for a given ADK version."""
-  actual = cli_deploy._get_service_option_by_adk_version(
+  actual = cli_deploy._get_service_options_by_adk_version(
       adk_version=adk_version,
       session_uri=session_uri,
       artifact_uri=artifact_uri,
       memory_uri=memory_uri,
       use_local_storage=use_local_storage,
   )
-  assert actual.rstrip() == expected.rstrip()
+  assert actual == expected
 
 
 def test_print_agent_engine_url() -> None:
@@ -399,18 +419,35 @@ def test_to_gke_happy_path(
   dockerfile_path = tmp_path / "Dockerfile"
   assert dockerfile_path.is_file()
   dockerfile_content = dockerfile_path.read_text()
-  assert "CMD adk api_server --with_ui --port=9090" in dockerfile_content
-  assert 'RUN pip install "google-adk[a2a]==1.2.0"' in dockerfile_content
+  assert (
+      'CMD ["adk", "api_server", "--with_ui", "--port=9090"'
+      in dockerfile_content
+  )
+  assert (
+      'RUN ["pip", "install", "google-adk[a2a]==1.2.0"]' in dockerfile_content
+  )
 
   assert len(run_recorder.calls) == 3, "Expected 3 subprocess calls"
 
   build_args = run_recorder.calls[0][0][0]
+  # The image is tagged uniquely per build. kubectl apply diffs the manifest,
+  # so reusing one floating tag leaves the Deployment spec unchanged and the
+  # freshly pushed image never rolls out.
+  image_ref = build_args[build_args.index("--tag") + 1]
+  image_name, _, image_tag = image_ref.partition(":")
+  assert image_name == "gcr.io/gke-proj/gke-svc"
+  assert re.fullmatch(r"\d{8}-\d{6}", image_tag), image_tag
+
   expected_build_args = [
       cli_deploy._GCLOUD_CMD,
       "builds",
       "submit",
       "--tag",
-      "gcr.io/gke-proj/gke-svc",
+      image_ref,
+      # Without --project the build runs in whatever project gcloud config
+      # points at, while the image is tagged for `project`.
+      "--project",
+      "gke-proj",
       "--verbosity",
       "debug",
       str(tmp_path),
@@ -445,15 +482,64 @@ def test_to_gke_happy_path(
   yaml_content = deployment_yaml_path.read_text()
 
   assert "kind: Deployment" in yaml_content
+  assert f"image: {image_ref}" in yaml_content
   assert "kind: Service" in yaml_content
   assert "name: gke-svc" in yaml_content
   assert "image: gcr.io/gke-proj/gke-svc" in yaml_content
   assert f"containerPort: 9090" in yaml_content
   assert f"targetPort: 9090" in yaml_content
   assert "type: ClusterIP" in yaml_content
+  assert "name: GOOGLE_GENAI_USE_ENTERPRISE" in yaml_content
+  assert 'value: "1"' in yaml_content
+  assert "name: GOOGLE_CLOUD_PROJECT" in yaml_content
+  assert 'value: "gke-proj"' in yaml_content
+  assert "name: GOOGLE_CLOUD_LOCATION" in yaml_content
+  assert 'value: "us-east1"' in yaml_content
 
   # 4. Verify cleanup
   assert str(rmtree_recorder.get_last_call_args()[0]) == str(tmp_path)
+
+
+def test_to_gke_without_region_omits_location(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  src_dir = agent_dir(False, False)
+  monkeypatch.setattr(
+      subprocess,
+      "run",
+      lambda *a, **k: types.SimpleNamespace(
+          stdout="deployment.apps/gke-svc created\nservice/gke-svc created"
+      ),
+  )
+  monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+
+  cli_deploy.to_gke(
+      agent_folder=str(src_dir),
+      project="gke-proj",
+      region=None,
+      cluster_name="my-gke-cluster",
+      service_name="gke-svc",
+      app_name="agent",
+      temp_folder=str(tmp_path),
+      port=9090,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="debug",
+      adk_version="1.2.0",
+  )
+
+  deployment_yaml_path = tmp_path / "deployment.yaml"
+  assert deployment_yaml_path.is_file()
+  yaml_content = deployment_yaml_path.read_text()
+
+  assert "name: GOOGLE_GENAI_USE_ENTERPRISE" in yaml_content
+  assert 'value: "1"' in yaml_content
+  assert "name: GOOGLE_CLOUD_PROJECT" in yaml_content
+  assert 'value: "gke-proj"' in yaml_content
+  assert "GOOGLE_CLOUD_LOCATION" not in yaml_content
 
 
 def test_to_gke_uses_gcloud_cmd_on_windows(
@@ -769,6 +855,41 @@ class TestValidateAgentImport:
         str(tmp_path), "app", is_config_agent=False
     )
 
+  def test_validate_agent_import_with_stale_cache(
+      self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    """Should succeed even when parent dir contents were cached before agent package creation."""
+    import os
+    import sys
+
+    parent_dir = str(tmp_path)
+    # Populate sys.path_importer_cache before agent package directory exists
+    finder = None
+    for hook in sys.path_hooks:
+      try:
+        finder = hook(parent_dir)
+        if finder and hasattr(finder, "find_spec"):
+          finder.find_spec("non_existent_module")
+          break
+      except Exception:
+        pass
+
+    assert finder is not None
+    monkeypatch.setitem(sys.path_importer_cache, parent_dir, finder)
+
+    agent_dir = tmp_path / "new_agent_package"
+    agent_dir.mkdir()
+    (agent_dir / "__init__.py").touch()
+    (agent_dir / "agent.py").write_text("root_agent = 'stale_test'\n")
+
+    # Ensure finder has stale mtime cache so it requires invalidate_caches
+    assert hasattr(finder, "_path_mtime")
+    finder._path_mtime = os.stat(parent_dir).st_mtime
+
+    cli_deploy._validate_agent_import(
+        str(agent_dir), "root_agent", is_config_agent=False
+    )
+
   def test_success_with_relative_imports(self, tmp_path: Path) -> None:
     """Should succeed when agent.py uses relative imports."""
     (tmp_path / "helper.py").write_text("VALUE = 'my_agent'\n")
@@ -972,13 +1093,11 @@ def test_cli_deploy_agent_engine_trigger_oidc_options(tmp_path: Path):
 
 
 def test_cli_deploy_cloud_run_trigger_oidc_options(tmp_path: Path):
-  """Tests that OIDC flags are passed to to_cloud_run."""
+  """Tests that OIDC flags are passed to run."""
   agent_dir = tmp_path / "my_agent"
   agent_dir.mkdir()
   runner = CliRunner()
-  with mock.patch(
-      "src.google.adk.cli.cli_deploy.to_cloud_run"
-  ) as mock_to_cloud_run:
+  with mock.patch("src.google.adk.cli.cli_deploy.run") as mock_run:
     result = runner.invoke(
         cli_tools_click.main,
         [
@@ -994,8 +1113,9 @@ def test_cli_deploy_cloud_run_trigger_oidc_options(tmp_path: Path):
         catch_exceptions=False,
     )
     assert result.exit_code == 0
-    mock_to_cloud_run.assert_called_once()
-    _, kwargs = mock_to_cloud_run.call_args
+    mock_run.assert_called_once()
+    _, kwargs = mock_run.call_args
+    assert kwargs["provider"] == "cloud_run"
     assert kwargs["trigger_sources"] == "pubsub,eventarc"
     assert kwargs["trigger_oidc_audience"] == "https://my-service.run.app"
     assert (
@@ -1085,6 +1205,7 @@ def test_ensure_agent_engine_dependency(tmp_path: Path):
 
 def _make_recording_vertexai(
     captured_configs: List[Dict[str, Any]],
+    created_instances: Optional[List[Any]] = None,
 ) -> types.ModuleType:
   """Returns a fake `vertexai` module whose client records deploy configs."""
   fake_vertexai = types.ModuleType("vertexai")
@@ -1092,7 +1213,8 @@ def _make_recording_vertexai(
   class _FakeAgentEngines:
 
     def create(self, **kwargs: Any) -> Any:
-      del kwargs
+      if created_instances is not None:
+        created_instances.append(kwargs)
       return types.SimpleNamespace(
           api_resource=types.SimpleNamespace(
               name="projects/p/locations/l/reasoningEngines/e"
@@ -1864,3 +1986,256 @@ def test_cli_deploy_agent_engine_passes_worker_pool(tmp_path: Path) -> None:
     mock_to_agent_engine.assert_called_once()
     _, kwargs = mock_to_agent_engine.call_args
     assert kwargs["worker_pool"] == _VALID_WORKER_POOL
+
+
+def _adk_app_template() -> type:
+  """Returns the Agent Platform template the class-method catalogue mirrors."""
+  agent_engines = pytest.importorskip(
+      "vertexai.agent_engines",
+      reason="Agent Platform deployment is an optional extra.",
+  )
+  return agent_engines.AdkApp
+
+
+def test_agent_engine_class_methods_match_the_template_operations() -> None:
+  """The deployed resource advertises the operations the template registers."""
+  adk_app_template = _adk_app_template()
+  # register_operations reads nothing off the instance, so call it unbound.
+  # Constructing the template would resolve Application Default Credentials,
+  # which a unit test must not depend on.
+  operations = adk_app_template.register_operations(None)
+
+  declared = {
+      (method["name"], method["api_mode"])
+      for method in cli_deploy._AGENT_ENGINE_CLASS_METHODS
+  }
+  registered = {
+      (name, api_mode)
+      for api_mode, names in operations.items()
+      for name in names
+  }
+
+  assert declared == registered
+
+
+def test_agent_engine_class_method_parameters_match_the_template() -> None:
+  """Every catalogue schema names what the template's method accepts."""
+  adk_app_template = _adk_app_template()
+
+  for method in cli_deploy._AGENT_ENGINE_CLASS_METHODS:
+    signature = inspect.signature(getattr(adk_app_template, method["name"]))
+    named = {
+        name: parameter
+        for name, parameter in signature.parameters.items()
+        if name != "self"
+        and parameter.kind
+        not in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD)
+    }
+    absorbs_extras = any(
+        parameter.kind is parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+    declared = method["parameters"]["properties"]
+
+    assert not set(named) - set(declared), method["name"]
+    if not absorbs_extras:
+      assert not set(declared) - set(named), method["name"]
+    assert sorted(method["parameters"]["required"]) == sorted(
+        name
+        for name, parameter in named.items()
+        if parameter.default is parameter.empty
+    ), method["name"]
+
+
+def test_to_agent_engine_sets_gcp_project_and_enterprise_env(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """Tests that to_agent_engine configures GCP project and enterprise env vars."""
+  update_config: Dict[str, Any] = {}
+  fake_vertexai = types.ModuleType("vertexai")
+
+  class _FakeAgentEngines:
+
+    def create(self, **kwargs: Any) -> Any:
+      return types.SimpleNamespace(
+          api_resource=types.SimpleNamespace(
+              name="projects/p/locations/l/reasoningEngines/e"
+          )
+      )
+
+    def update(self, *, name: str, config: Dict[str, Any]) -> None:
+      del name
+      nonlocal update_config
+      update_config = config
+
+  class _FakeVertexClient:
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+      del args
+      del kwargs
+      self.agent_engines = _FakeAgentEngines()
+
+  fake_vertexai.Client = _FakeVertexClient
+  monkeypatch.setitem(sys.modules, "vertexai", fake_vertexai)
+
+  dockerfile_content = None
+  orig_rmtree = shutil.rmtree
+
+  def mock_rmtree(path: Any, *args: Any, **kwargs: Any) -> None:
+    nonlocal dockerfile_content
+    df = Path(path) / "Dockerfile"
+    if df.exists():
+      dockerfile_content = df.read_text()
+    orig_rmtree(path, *args, **kwargs)
+
+  monkeypatch.setattr(shutil, "rmtree", mock_rmtree)
+
+  src_dir = agent_dir(True, False)
+  tmp_dir = src_dir.parent / "tmp"
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder=str(tmp_dir),
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+  )
+
+  env_vars = update_config.get("env_vars") or {}
+  has_enterprise = (
+      "ENV GOOGLE_GENAI_USE_ENTERPRISE=1" in (dockerfile_content or "")
+      or env_vars.get("GOOGLE_GENAI_USE_ENTERPRISE") == "1"
+  )
+  assert (
+      has_enterprise
+  ), "GOOGLE_GENAI_USE_ENTERPRISE=1 must be set in Dockerfile or env_vars"
+
+  has_project = (
+      "ENV GOOGLE_CLOUD_PROJECT=my-gcp-project" in (dockerfile_content or "")
+      or env_vars.get("GOOGLE_CLOUD_PROJECT") == "my-gcp-project"
+  )
+  assert (
+      has_project
+  ), "GOOGLE_CLOUD_PROJECT=my-gcp-project must be set in Dockerfile or env_vars"
+
+  has_location = (
+      "ENV GOOGLE_CLOUD_LOCATION=us-central1" in (dockerfile_content or "")
+      or env_vars.get("GOOGLE_CLOUD_LOCATION") == "us-central1"
+  )
+  assert (
+      has_location
+  ), "GOOGLE_CLOUD_LOCATION=us-central1 must be set in Dockerfile or env_vars"
+
+
+@pytest.mark.parametrize(
+    "value", ["1", "true", "us-central1", "example.com:my-project", "", None]
+)
+def test_validate_dockerfile_env_value_accepts_single_line_values(
+    value: Any,
+) -> None:
+  """Ordinary values, including domain-scoped project ids, are accepted."""
+  cli_deploy._validate_dockerfile_env_value("GOOGLE_CLOUD_PROJECT", value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "us-central1\nRUN touch /tmp/pwned",
+        "us-central1\r\nRUN touch /tmp/pwned",
+        "us-central1\n",
+        "\nRUN touch /tmp/pwned",
+    ],
+)
+def test_validate_dockerfile_env_value_rejects_multiline_values(
+    value: str,
+) -> None:
+  """A value spanning more than one line is rejected by name, not by value."""
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy._validate_dockerfile_env_value("GOOGLE_CLOUD_LOCATION", value)
+  assert "GOOGLE_CLOUD_LOCATION" in str(exc_info.value)
+  assert "RUN touch" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "env_name",
+    [
+        "GOOGLE_GENAI_USE_ENTERPRISE",
+        "GOOGLE_CLOUD_PROJECT",
+        "GOOGLE_CLOUD_LOCATION",
+    ],
+)
+def test_to_agent_engine_rejects_multiline_env_file_value(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    env_name: str,
+) -> None:
+  """A multi-line `.env` value must not add instructions to the Dockerfile."""
+  monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+  # An unset gcloud default project is what lets the .env project win.
+  monkeypatch.setattr(
+      subprocess, "run", lambda *a, **k: types.SimpleNamespace(stdout="\n")
+  )
+  created: List[Any] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai([], created)
+  )
+
+  src_dir = agent_dir(False, False)
+  tmp_dir = src_dir.parent / "tmp"
+  (src_dir / ".env").write_text(f'{env_name}="1\nRUN touch /tmp/pwned"\n')
+
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project=None if env_name == "GOOGLE_CLOUD_PROJECT" else "my-project",
+        region=None if env_name == "GOOGLE_CLOUD_LOCATION" else "us-central1",
+        adk_version="1.2.0",
+    )
+
+  assert env_name in str(exc_info.value)
+  assert "RUN touch" not in str(exc_info.value)
+  assert not (tmp_dir / "Dockerfile").exists()
+  assert not created, "rejecting the value must not leak an agent engine"
+
+
+def test_to_gke_without_region_passes_valid_subprocess_args(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """Tests that to_gke passes valid non-None arguments to subprocess commands when region is None."""
+  import os
+
+  src_dir = agent_dir(False, False)
+
+  def fake_run(cmd: Any, *args: Any, **kwargs: Any) -> Any:
+    for arg in cmd:
+      if not isinstance(arg, (str, bytes, os.PathLike)):
+        raise TypeError(
+            "expected str, bytes or os.PathLike object, not"
+            f" {type(arg).__name__}"
+        )
+    return types.SimpleNamespace(
+        stdout="deployment.apps/gke-svc created\nservice/gke-svc created"
+    )
+
+  monkeypatch.setattr(subprocess, "run", fake_run)
+  monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+
+  cli_deploy.to_gke(
+      agent_folder=str(src_dir),
+      project="gke-proj",
+      region=None,
+      cluster_name="my-gke-cluster",
+      service_name="gke-svc",
+      app_name="agent",
+      temp_folder=str(tmp_path),
+      port=9090,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="debug",
+      adk_version="1.2.0",
+  )

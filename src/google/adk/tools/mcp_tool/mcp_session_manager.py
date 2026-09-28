@@ -40,7 +40,6 @@ import urllib.parse
 import google.auth
 import google.auth.credentials
 from google.auth.transport.requests import Request
-import httpx
 
 try:
   from google.auth.aio.credentials import Credentials as AsyncCredentials
@@ -60,9 +59,11 @@ except ImportError:
 from pydantic import BaseModel
 from pydantic import ConfigDict
 
+from ...dependencies import _httpx as httpx
 from ...dependencies._mcp import ClientSession
 from ...dependencies._mcp import create_mcp_http_client as _create_mcp_http_client
 from ...dependencies._mcp import ElicitationFnT
+from ...dependencies._mcp import IS_MCP_SDK_V2
 from ...dependencies._mcp import McpError
 from ...dependencies._mcp import SamplingCapability
 from ...dependencies._mcp import SamplingFnT
@@ -81,6 +82,7 @@ except (ImportError, AttributeError):
 from ...features import FeatureName
 from ...features import is_feature_enabled
 from ...telemetry import tracing
+from ...utils._google_client_headers import merge_tracking_headers
 from .session_context import SessionContext
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -102,6 +104,16 @@ _SESSION_IDLE_TTL_SECONDS = 900.0
 # of silently keeping the session alive forever.
 _SESSION_USE_PIN_WARN_SECONDS = 4 * _SESSION_IDLE_TTL_SECONDS
 
+# A failed mTLS probe is not retried for this long. Not cached for the life of
+# the manager, so credentials granted while the process runs are picked up.
+_MTLS_PROBE_RETRY_INTERVAL_SECONDS = 300.0
+
+# The headers `merge_tracking_headers` writes, spelled the way it spells them.
+# HTTP header names are case-insensitive and a caller may have used any casing,
+# but a dict is not: leaving their spelling alongside ours would put the header
+# on the wire twice, so theirs is folded onto ours before merging.
+_TRACKING_HEADER_NAMES = frozenset(('user-agent', 'x-goog-api-client'))
+
 
 def create_mcp_http_client(
     headers: dict[str, str] | None = None,
@@ -114,8 +126,18 @@ def create_mcp_http_client(
       timeout=timeout,
       auth=auth,
   )
-  if _HAS_HTTPX_INSTRUMENTOR:
+  # The instrumentor is built against httpx 1.x: handed an `httpx2` client it
+  # wraps without complaint, then fails on the first request. Until an httpx2
+  # instrumentor exists, 2.x goes untraced rather than broken.
+  if _HAS_HTTPX_INSTRUMENTOR and not IS_MCP_SDK_V2:
     HTTPXClientInstrumentor.instrument_client(client)
+  elif _HAS_HTTPX_INSTRUMENTOR:
+    # Otherwise the MCP spans just vanish, with nothing pointing back here.
+    logger.debug(
+        'MCP HTTP calls are not traced: the OpenTelemetry httpx instrumentor is'
+        ' built against httpx, and MCP SDK 2.x pairs with httpx2. Tracing'
+        ' returns when an httpx2 instrumentor exists.'
+    )
   return client
 
 
@@ -220,6 +242,52 @@ def _has_cancelled_error_context(exc: BaseException) -> bool:
   return False
 
 
+# The Streamable HTTP spec has a server answer any request carrying a session
+# id it no longer holds with HTTP 404, and the SDK turns that answer into a
+# JSON-RPC error rather than surfacing the status code. It is the one signal
+# that separates "the server forgot this session" from an ordinary tool
+# failure, and it arrives while the transport underneath is still healthy.
+# The 1.x SDK spells the code 32600, the 2.x SDK INVALID_REQUEST (-32600).
+_SESSION_TERMINATED_ERROR_CODE = 32600
+_INVALID_REQUEST_ERROR_CODE = -32600
+# 2.x raises INVALID_REQUEST for ordinary bad requests too, so that spelling
+# counts only alongside the message the SDK pairs with the 404.
+_SESSION_TERMINATED_MESSAGE = 'Session terminated'
+
+
+def _reports_session_terminated(exc: McpError) -> bool:
+  """Whether this MCP error is the server's own session-terminated report."""
+  if exc.error.code == _SESSION_TERMINATED_ERROR_CODE:
+    return True
+  return (
+      exc.error.code == _INVALID_REQUEST_ERROR_CODE
+      and exc.error.message == _SESSION_TERMINATED_MESSAGE
+  )
+
+
+def _is_session_terminated_error(exc: BaseException | None) -> bool:
+  """Whether exc is the server reporting it no longer holds our session.
+
+  Only ``__cause__`` is followed. ``retry_on_errors`` re-runs the call from
+  inside its own ``except``, so on the second attempt every exception carries
+  the first attempt's in ``__context__``, and walking that would read a fresh
+  session as dead because the session before it was.
+
+  Args:
+      exc: The exception raised by a call made on a pooled session.
+
+  Returns:
+      True if the server reported the session terminated, False otherwise.
+  """
+  seen: set[int] = set()
+  while exc is not None and id(exc) not in seen:
+    seen.add(id(exc))
+    if isinstance(exc, McpError) and _reports_session_terminated(exc):
+      return True
+    exc = exc.__cause__
+  return False
+
+
 class StdioConnectionParams(BaseModel):
   """Parameters for the MCP Stdio connection.
 
@@ -311,7 +379,11 @@ class _DebugHttpxClientFactory:
       timeout: httpx.Timeout | None = None,
       auth: httpx.Auth | None = None,
   ) -> httpx.AsyncClient:
-    client = self._base_factory(headers=headers, timeout=timeout, auth=auth)
+    client = self._base_factory(
+        headers=headers,
+        timeout=None if timeout is None else httpx.PortableTimeout(timeout),
+        auth=auth,
+    )
     if hasattr(client, 'event_hooks') and isinstance(client.event_hooks, dict):
       client.event_hooks.setdefault('response', []).append(self._response_hook)
     return client
@@ -489,32 +561,6 @@ def retry_on_errors(func):
   return wrapper
 
 
-def _is_session_terminated_error(error: BaseException) -> bool:
-  """Whether `error` means the server no longer knows the session.
-
-  The streamable-HTTP client maps a 404 for a stored `mcp-session-id` (server
-  restart, idle-session eviction) to a JSON-RPC error with this message while
-  leaving the local read/write streams open and the background task alive, so
-  the pooled session passes every local health check yet fails every call.
-
-  The match is exact, not a substring: MCP SDK 2.x servers emit "Session
-  terminated before the request completed" for a request that was already in
-  flight when the session died, and that one may have run the tool, so it
-  must not be treated as safe to retry. The error code is not a usable
-  discriminator (1.x uses 32600, 2.x uses INVALID_REQUEST), so the exact
-  message is the stable signal across both.
-
-  Args:
-      error: The exception raised by a call on the session.
-
-  Returns:
-      True if the session should be dropped from the pool.
-  """
-  return (
-      isinstance(error, McpError) and str(error).strip() == 'Session terminated'
-  )
-
-
 def _is_google_api_host(host: str | None) -> bool:
   """Returns whether host is a Google API endpoint."""
   if not host:
@@ -551,9 +597,11 @@ class _RefreshableAsyncCredentials(AsyncCredentials):
       return
 
     # Application Default Credentials are issued to the caller by Google, so
-    # the bearer token only goes to Google API hosts. Other MCP servers are
-    # still reached over the mTLS channel, just without the token.
-    if not _is_google_api_host(parsed_url.hostname):
+    # the bearer token only goes to Google API hosts over https. Other MCP
+    # servers are still reached over the mTLS channel, just without the token.
+    if parsed_url.scheme != 'https' or not _is_google_api_host(
+        parsed_url.hostname
+    ):
       if not self._warned_non_google_host:
         self._warned_non_google_host = True
         logger.warning(
@@ -773,14 +821,6 @@ class MCPSessionManager:
     # still running.
     self._eviction_tasks: set[asyncio.Task[None]] = set()
 
-    # Exit stacks of invalidated sessions whose close is deferred because
-    # calls were still in flight on them; keyed by session key, closed by
-    # `_end_session_use` once the last in-flight call finishes. Guarded by
-    # `_use_count_lock`, like the use counts that decide when to drain it.
-    self._deferred_closes: dict[
-        str, list[tuple[AsyncExitStack, asyncio.AbstractEventLoop]]
-    ] = {}
-
     # Map of event loops to their respective locks to prevent race conditions
     # across different event loops in session creation.
     self._session_lock_map: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
@@ -792,6 +832,10 @@ class MCPSessionManager:
     self._mtls_transports: dict[
         asyncio.AbstractEventLoop, _GoogleAuthAsyncTransport
     ] = {}
+
+    # When the mTLS probe last failed, per event loop, so that a server which
+    # offers no mTLS is not probed again for every session it is given.
+    self._mtls_probe_failed_at: dict[asyncio.AbstractEventLoop, float] = {}
 
   def _make_on_session_created(self, session_key: str) -> Callable[[str], None]:
     def on_session_created(session_id: str):
@@ -823,7 +867,7 @@ class MCPSessionManager:
       return self._session_lock_map[current_loop]
 
   async def _get_mtls_transport(self) -> _GoogleAuthAsyncTransport | None:
-    """Attempts to create a _GoogleAuthAsyncTransport for mTLS, caching it per loop."""
+    """Attempts to create a _GoogleAuthAsyncTransport for mTLS, caching the outcome per loop."""
     if isinstance(self._connection_params, StdioConnectionParams):
       return None
 
@@ -841,6 +885,13 @@ class MCPSessionManager:
     current_loop = asyncio.get_running_loop()
     if current_loop in self._mtls_transports:
       return self._mtls_transports[current_loop]
+
+    last_failure = self._mtls_probe_failed_at.get(current_loop)
+    if (
+        last_failure is not None
+        and time.monotonic() - last_failure < _MTLS_PROBE_RETRY_INTERVAL_SECONDS
+    ):
+      return None
 
     try:
       scopes = ['https://www.googleapis.com/auth/cloud-platform']
@@ -870,6 +921,7 @@ class MCPSessionManager:
       logger.warning(
           'Failed to configure mTLS using AsyncAuthorizedSession: %s', e
       )
+    self._mtls_probe_failed_at[current_loop] = time.monotonic()
     return None
 
   def _generate_session_key(
@@ -920,11 +972,15 @@ class MCPSessionManager:
   ) -> Optional[Dict[str, str]]:
     """Merges base connection headers with additional headers.
 
+    The ADK client tokens are added on top, so that an MCP server sees the
+    traffic as coming from ADK rather than from bare httpx.
+
     Args:
         additional_headers: Optional headers to merge with connection headers.
 
     Returns:
-        Merged headers dictionary, or None if no headers are provided.
+        Merged headers dictionary, or None for stdio connections, which do not
+        support headers.
     """
     if isinstance(self._connection_params, StdioConnectionParams) or isinstance(
         self._connection_params, StdioServerParameters
@@ -942,7 +998,10 @@ class MCPSessionManager:
     if additional_headers:
       base_headers.update(additional_headers)
 
-    return base_headers
+    return merge_tracking_headers({
+        key.lower() if key.lower() in _TRACKING_HEADER_NAMES else key: value
+        for key, value in base_headers.items()
+    })
 
   def _is_session_disconnected(self, session: ClientSession) -> bool:
     """Checks if a session is disconnected or closed.
@@ -958,6 +1017,9 @@ class MCPSessionManager:
     the streams open while the task behind them is already dead. That pairing
     runs under `_MCP_GRACEFUL_ERROR_HANDLING`, which is on by default. The
     kill switch drops it and leaves this probe on its own.
+
+    Neither probe sees a session the server itself has dropped while the
+    transport stays up; `_discard_session` handles that case.
 
     Args:
         session: The ClientSession to check.
@@ -1016,78 +1078,56 @@ class MCPSessionManager:
         headers: The headers the caller passed to ``create_session``.
     """
     session_key = self._generate_session_key(self._merge_headers(headers))
-    deferred = None
     with self._use_count_lock:
       remaining = self._session_use_counts.get(session_key, 0) - 1
       if remaining > 0:
         self._session_use_counts[session_key] = remaining
       else:
         self._session_use_counts.pop(session_key, None)
-        deferred = self._deferred_closes.pop(session_key, None)
     # Start the idle clock now, at the end of the call.
     if session_key in self._sessions:
       self._session_last_used[session_key] = time.monotonic()
-    if deferred:
-      # This call was the last user of one or more invalidated sessions;
-      # their transports can be torn down now without failing anyone.
-      for exit_stack, stored_loop in deferred:
-        self._spawn_close(session_key, exit_stack, stored_loop)
 
-  async def _invalidate_session(
-      self, headers: Optional[Dict[str, str]] = None
-  ) -> None:
-    """Drops the pooled session for these headers so the next call rebuilds it.
-
-    Needed when the server reports it no longer knows the session (see
-    `_is_session_terminated_error`): the local streams and background task
-    still look healthy, so `create_session` would keep returning the dead
-    session from the pool.
-
-    Like `_evict_idle_sessions`, the entry leaves the pool synchronously but
-    the transport is never closed under the session lock: the close is
-    bounded by the connection timeout, and awaiting it here would park every
-    other caller of this toolset behind it. If other calls are still in
-    flight on the session, the close is deferred until the last of them
-    finishes (`_end_session_use`): they are about to observe their own
-    session-terminated error and retry on a fresh session, and closing the
-    transport under them would replace that recoverable error with an
-    unrecoverable transport failure.
-
-    Args:
-        headers: Optional headers identifying the session, exactly as they
-          would be passed to ``create_session``.
-    """
-    session_key = self._session_key_for(headers)
-    async with self._session_lock:
-      entry = self._sessions.get(session_key)
-      if entry is None:
-        return
-      _, exit_stack, stored_loop = entry
-      self._forget_session(session_key)
-    with self._use_count_lock:
-      # The invalidating caller's own call still counts as in flight here, so
-      # on the tool-call path this always defers and the close runs when the
-      # last `_end_session_use` for this key fires.
-      if self._session_use_counts.get(session_key, 0) > 0:
-        self._deferred_closes.setdefault(session_key, []).append(
-            (exit_stack, stored_loop)
-        )
-        return
-    self._spawn_close(session_key, exit_stack, stored_loop)
-
-  def _spawn_close(
+  def _discard_session(
       self,
-      session_key: str,
-      exit_stack: AsyncExitStack,
-      stored_loop: asyncio.AbstractEventLoop,
+      headers: Optional[Dict[str, str]] = None,
+      *,
+      session: Optional[ClientSession] = None,
   ) -> None:
-    """Tears a session's transport down in a background task.
+    """Drops the pooled session for these headers and closes its transport.
+
+    Called when the server has reported that it no longer holds the session,
+    which the pool cannot otherwise detect: the HTTP connection underneath
+    stays healthy, so every disconnection probe reads the dead session as
+    live and hands it back. Dropping the entry is what makes the next call
+    build a fresh session.
+
+    The transport is torn down even with calls still in flight, unlike the
+    idle sweep, which defers to them. A call in flight on the session that
+    failed is addressed to one the server has already forgotten and cannot be
+    completed by leaving the transport open.
 
     Args:
-        session_key: The session key the exit stack belonged to, for logging.
-        exit_stack: The AsyncExitStack managing the session resources.
-        stored_loop: The event loop on which the session was created.
+        headers: The headers the caller passed to ``create_session``.
+        session: The session the call actually failed on. The key alone is not
+          enough to identify it: another caller failing on the same session
+          discards it first and the retry pools a replacement under that same
+          key, and the replacement is live and in use by someone else. Omitted
+          means discard whatever is pooled.
     """
+    session_key = self._generate_session_key(self._merge_headers(headers))
+    entry = self._sessions.get(session_key)
+    if entry is None or (session is not None and entry[0] is not session):
+      return
+    # One atomic pop, so that two callers racing on the same dead session
+    # cannot both take the entry and close the same exit stack twice.
+    if self._sessions.pop(session_key, None) is None:
+      return
+    logger.info(
+        'Discarding MCP session the server no longer holds: %s', session_key
+    )
+    _, exit_stack, stored_loop = entry
+    self._forget_session(session_key)
     task = asyncio.ensure_future(
         self._close_exit_stack(session_key, exit_stack, stored_loop)
     )
@@ -1242,7 +1282,11 @@ class MCPSessionManager:
       # reuses this key gets a fresh session and the in-flight teardown never
       # reaches into the pool to drop it.
       self._forget_session(session_key)
-      self._spawn_close(session_key, exit_stack, stored_loop)
+      task = asyncio.ensure_future(
+          self._close_exit_stack(session_key, exit_stack, stored_loop)
+      )
+      self._eviction_tasks.add(task)
+      task.add_done_callback(self._eviction_tasks.discard)
 
   def _create_client(
       self,
@@ -1459,10 +1503,10 @@ class MCPSessionManager:
     state['_session_contexts'] = {}
     state['_session_last_used'] = {}
     state['_session_use_counts'] = {}
-    state['_deferred_closes'] = {}
     state['_eviction_tasks'] = set()
     state['_session_lock_map'] = {}
     state['_mtls_transports'] = {}
+    state['_mtls_probe_failed_at'] = {}
     state['_session_id_to_key'] = {}
     state['_active_debug_lists'] = {}
 
@@ -1481,10 +1525,10 @@ class MCPSessionManager:
     self._session_contexts = {}
     self._session_last_used = {}
     self._session_use_counts = {}
-    self._deferred_closes = {}
     self._eviction_tasks = set()
     self._session_lock_map = {}
     self._mtls_transports = {}
+    self._mtls_probe_failed_at = {}
     self._session_id_to_key = {}
     self._active_debug_lists = {}
     self._lock_map_lock = threading.Lock()
@@ -1500,15 +1544,6 @@ class MCPSessionManager:
       for session_key in list(self._sessions.keys()):
         _, exit_stack, stored_loop = self._sessions[session_key]
         await self._cleanup_session(session_key, exit_stack, stored_loop)
-
-      # Invalidated sessions whose deferred close never fired (their last
-      # in-flight call never ended) still own transports; close them too.
-      with self._use_count_lock:
-        deferred_closes = self._deferred_closes
-        self._deferred_closes = {}
-      for session_key, stacks in deferred_closes.items():
-        for exit_stack, stored_loop in stacks:
-          await self._close_exit_stack(session_key, exit_stack, stored_loop)
 
       # Detached eviction teardowns are still in flight. Only the ones on this
       # loop can be awaited -- this manager is used from more than one loop,
@@ -1526,6 +1561,7 @@ class MCPSessionManager:
       for transport in self._mtls_transports.values():
         await transport.aclose()
       self._mtls_transports.clear()
+      self._mtls_probe_failed_at.clear()
 
     # Awaited outside the lock: a wedged teardown must not park every other
     # caller of this pool, which is the stall detaching them avoided in the

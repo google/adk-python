@@ -18,6 +18,7 @@ from datetime import timezone
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.events.event_actions import EventCompaction
+from google.adk.sessions import _session_util
 from google.adk.sessions.schemas.shared import DEFAULT_MAX_VARCHAR_LENGTH
 from google.adk.sessions.schemas.v0 import _truncate_str
 from google.adk.sessions.schemas.v0 import StorageEvent
@@ -146,3 +147,80 @@ def test_storage_event_v1_timestamp_round_trip_uses_utc():
 
   assert storage_event.timestamp == datetime(1970, 1, 1, 0, 0, 1)
   assert storage_event.to_event().timestamp == 1.0
+
+
+def _event_with_recent_fields() -> Event:
+  return Event(
+      id="event_id",
+      invocation_id="inv",
+      author="agent",
+      isolation_scope="fc-1",
+      output={"result": "done"},
+      content=types.Content(role="model", parts=[types.Part(text="hi")]),
+  )
+
+
+def _session() -> Session:
+  return Session(id="s", app_name="app", user_id="u")
+
+
+def test_storage_event_v0_loses_the_fields_it_has_no_column_for():
+  """Pins the loss the legacy-schema warning exists for.
+
+  The legacy schema gives an event one column per field, so a field added
+  after it has nowhere to go. On read-back the event looks as though the field
+  was never set, which is what lets an agent misbehave in silence.
+  """
+  restored = StorageEvent.from_event(
+      _session(), _event_with_recent_fields()
+  ).to_event()
+
+  assert restored.isolation_scope is None
+  assert restored.output is None
+
+
+def test_storage_event_v1_keeps_them():
+  """The current schema stores the whole event, so nothing is dropped."""
+  restored = V1StorageEvent.from_event(
+      _session(), _event_with_recent_fields()
+  ).to_event()
+
+  assert restored.isolation_scope == "fc-1"
+  assert restored.output == {"result": "done"}
+
+
+def test_stored_event_fields_tracks_the_columns():
+  """The kept set is read off the columns, so it cannot drift from them."""
+  stored = StorageEvent.stored_event_fields()
+
+  assert "long_running_tool_ids" in stored
+  assert "long_running_tool_ids_json" not in stored
+  assert {"content", "author", "branch", "actions"} <= stored
+
+
+def test_v0_reports_every_event_field_it_cannot_hold():
+  """The reported loss is derived from Event, so it covers fields added later.
+
+  A hand-written list would name whichever fields were topical the day it was
+  written and silently stop being true afterwards.
+  """
+  dropped = set(
+      _session_util.event_fields_not_stored(StorageEvent.stored_event_fields())
+  )
+
+  assert {"isolation_scope", "output", "node_info"} <= dropped
+  # Nothing the table has a column for is reported as lost.
+  assert not dropped & StorageEvent.stored_event_fields()
+  # Every reported field really is one the round trip loses.
+  restored = StorageEvent.from_event(
+      _session(), _event_with_recent_fields()
+  ).to_event()
+  for field in dropped:
+    assert getattr(restored, field) == type(restored).model_fields[
+        field
+    ].get_default(call_default_factory=True), field
+
+
+def test_v1_reports_no_loss():
+  """The current schema stores the whole event, so there is nothing to warn."""
+  assert not _session_util.event_fields_not_stored(Event.model_fields)

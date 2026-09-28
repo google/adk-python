@@ -28,9 +28,11 @@ regressions documented in the bare-install audit cannot silently re-emerge:
 * ``google-genai`` MUST exclude 2.11 and floor at 2.12.1 or later, since that
   release is the first whose types module defers the optional MCP server stack
   instead of importing it at Agent startup.
-* The ``all`` extra MUST stay the union of every extra that unlocks a runtime
-  feature, so that ``pip install "google-adk[all]"`` cannot silently stop
-  installing a feature's dependencies.
+* ``all`` MUST stay the union of every extra that unlocks a runtime feature, so
+  that ``pip install "google-adk[all]"`` cannot silently stop installing a
+  feature's dependencies.
+* The ``eval`` extra MUST keep ``google-cloud-aiplatform`` below its 2.x major
+  line, matching the other runtime extras that depend on it.
 * Every ``<=`` upper bound MUST name the release the tests run against, so
   that raising one cannot claim support for a release nothing installed.
 """
@@ -267,6 +269,43 @@ def test_langgraph_extras_exclude_unsafe_checkpoint_releases(
   )
 
 
+@pytest.mark.parametrize(
+    ('extra', 'reason'),
+    [
+        (
+            'mcp',
+            (
+                'google.auth.aio builds no default transport without aiohttp,'
+                ' so the MCP session manager logs a warning and falls back from'
+                ' mTLS to plain TLS'
+            ),
+        ),
+        (
+            'slack',
+            (
+                "SlackRunner reaches socket mode through slack_bolt's aiohttp"
+                ' adapter, and neither slack-bolt nor slack-sdk declares'
+                ' aiohttp'
+            ),
+        ),
+    ],
+)
+def test_extras_that_reach_aiohttp_indirectly_declare_it(
+    pyproject: dict, extra: str, reason: str
+) -> None:
+  """Every extra needing aiohttp says so, now that the base install drops it.
+
+  No ADK module imports aiohttp, so a tree-wide grep reads the requirement as
+  dead. It is not. Each of these extras reaches it through a third-party
+  package that does not declare it, and used to get it only because every
+  install carried it.
+  """
+  names = _requirement_names(
+      pyproject['project']['optional-dependencies'][extra]
+  )
+  assert 'aiohttp' in names, f'The {extra!r} extra needs aiohttp: {reason}.'
+
+
 def test_main_deps_require_lazy_mcp_google_genai_release(
     pyproject: dict,
 ) -> None:
@@ -292,6 +331,30 @@ def test_main_deps_require_lazy_mcp_google_genai_release(
       f' {_LAZY_MCP_GOOGLE_GENAI_RELEASE}, the first release whose types module'
       ' defers the optional MCP server stack.'
   )
+
+
+def test_eval_extra_caps_google_cloud_aiplatform_at_v2(
+    pyproject: dict,
+) -> None:
+  """The eval extra must not resolve google-cloud-aiplatform 2.x."""
+  specifier = _requirement_specifier(
+      pyproject['project']['optional-dependencies']['eval'],
+      'google-cloud-aiplatform',
+  )
+
+  assert specifier is not None, (
+      'The eval extra must declare google-cloud-aiplatform so its evaluation '
+      'dependency remains explicitly constrained.'
+  )
+  assert any(
+      clause.operator == '<' and Version(clause.version) == Version('2')
+      for clause in specifier
+  ), (
+      'The eval extra must keep google-cloud-aiplatform below the 2.x major'
+      ' line.'
+  )
+  assert Version('1.148') in specifier
+  assert Version('2.0.0') not in specifier
 
 
 def test_inclusive_upper_bounds_ignores_other_operators() -> None:
@@ -477,3 +540,24 @@ def test_injection_config_validation_raises_pydantic_validation_error() -> None:
   with pytest.raises(ValidationError):
     # Both required fields missing — pydantic must reject the construction.
     InjectedError()  # type: ignore[call-arg]
+
+
+def test_packages_distributions_not_mocked_to_empty() -> None:
+  """packages_distributions must return installed packages, not an empty mock."""
+  distributions = importlib.metadata.packages_distributions()
+  assert 'pytest' in distributions, (
+      'packages_distributions() returned an empty mapping because it was'
+      ' mocked globally in conftest.py.'
+  )
+
+
+def test_vizier_service_not_prepopulated_with_mock_in_sys_modules() -> None:
+  """sys.modules must not be prepopulated with MagicMock for vizier services."""
+  import sys
+  from unittest.mock import MagicMock
+
+  module = sys.modules.get('google.cloud.aiplatform_v1.services.vizier_service')
+  assert module is None or not isinstance(module, MagicMock), (
+      'google.cloud.aiplatform_v1.services.vizier_service was prepopulated with'
+      ' a MagicMock in conftest.py.'
+  )

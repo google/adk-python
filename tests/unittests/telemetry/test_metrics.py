@@ -14,14 +14,30 @@
 
 # pylint: disable=protected-access
 
+import os
 from unittest import mock
 
 from google.adk.telemetry import _hallucination
 from google.adk.telemetry import _metrics
 from google.adk.telemetry import _token_usage
+from google.adk.telemetry import TelemetryConfig
+from google.adk.telemetry.context import _ExperimentalFeature
 from google.genai import types
 from opentelemetry import metrics
 import pytest
+
+_EXPERIMENTAL_TELEMETRY_ENV = "ADK_EXPERIMENTAL_TELEMETRY"
+_EXPERIMENTAL_FEATURES_ENV = "ADK_EXPERIMENTAL_TELEMETRY_FEATURES"
+_ADMIN_LOCK_ENV = "ADK_TELEMETRY_IGNORE_RUN_CONFIG"
+
+
+def _gates_on(*features: _ExperimentalFeature) -> TelemetryConfig:
+  """A config with ``features`` enabled."""
+  patched = {_EXPERIMENTAL_FEATURES_ENV: ",".join(features)}
+  with mock.patch.dict(os.environ, patched):
+    os.environ.pop(_EXPERIMENTAL_TELEMETRY_ENV, None)
+    os.environ.pop(_ADMIN_LOCK_ENV, None)
+    return TelemetryConfig()
 
 
 @pytest.fixture(name="mock_meter_setup")
@@ -503,13 +519,14 @@ def test_record_invoke_agent_token_usage(mock_meter_setup):
   """Each token bucket is recorded once, keyed by agent, zeros included."""
   # Recording genuine zeros is what keeps "what share of invocations read
   # nothing from cache" answerable. An invocation that called no model is kept
-  # out by its caller, which never builds an `InvocationTokenTotals` at all.
+  # out by its caller, which never builds a `TokenUsage` at all.
   input_tokens = 1000
   output_tokens = 200
   cache_read_input_tokens = 750
   _metrics.record_invoke_agent_token_usage(
+      _gates_on("token_usage"),
       "sub_agent",
-      _token_usage.InvocationTokenTotals(
+      _token_usage.TokenUsage(
           input_tokens=input_tokens,
           output_tokens=output_tokens,
           cache_read_input_tokens=cache_read_input_tokens,
@@ -546,9 +563,10 @@ def test_record_invoke_workflow_token_usage(mock_meter_setup):
   reasoning_output_tokens = 400
   tool_input_tokens = 650
   _metrics.record_invoke_workflow_token_usage(
+      _gates_on("workflow", "token_usage"),
       root_agent_name="root_agent",
       workflow_name="specialist",
-      totals=_token_usage.InvocationTokenTotals(
+      totals=_token_usage.TokenUsage(
           input_tokens=input_tokens,
           output_tokens=output_tokens,
           cache_read_input_tokens=cache_read_input_tokens,
@@ -583,11 +601,10 @@ def test_record_invoke_workflow_token_usage_omits_unset_workflow_name(
 ):
   """An unstamped entrypoint drops the attribute rather than sending empty."""
   _metrics.record_invoke_workflow_token_usage(
+      _gates_on("workflow", "token_usage"),
       root_agent_name="root_agent",
       workflow_name=None,
-      totals=_token_usage.InvocationTokenTotals(
-          input_tokens=10, output_tokens=5
-      ),
+      totals=_token_usage.TokenUsage(input_tokens=10, output_tokens=5),
       nested=False,
   )
 
@@ -601,12 +618,14 @@ def test_record_invoke_workflow_token_usage_omits_unset_workflow_name(
 def test_record_invoke_workflow_call_counts(mock_meter_setup):
   """Call counts carry both names and record even at zero."""
   _metrics.record_invoke_workflow_inference_calls(
+      _gates_on("workflow"),
       root_agent_name="root_agent",
       workflow_name="specialist",
       count=4,
       nested=False,
   )
   _metrics.record_invoke_workflow_tool_calls(
+      _gates_on("workflow"),
       root_agent_name="root_agent",
       workflow_name="specialist",
       count=0,
@@ -639,6 +658,7 @@ def _skill_script_counter(monkeypatch):
 def test_record_skill_script_execution(skill_script_counter):
   """One count per run, dimensioned by agent, skill and script."""
   _metrics.record_skill_script_execution(
+      _gates_on("skills"),
       "test_agent",
       _hallucination.ConfirmedNotHallucinated("my_skill"),
       _hallucination.ConfirmedNotHallucinated("scripts/run.py"),
@@ -660,13 +680,9 @@ def test_record_skill_script_execution(skill_script_counter):
 def test_record_skill_script_execution_collapses_the_exit_code_to_a_flag(
     skill_script_counter, exit_code
 ):
-  """Every failing code lands in the same series.
-
-  An exit code has 256 possible values, and one series per value is a
-  cardinality bill nobody wants for a fact that error-rate views read as a
-  yes/no. The code itself stays on the span, where it costs nothing.
-  """
+  """Every failing code lands in the same series."""
   _metrics.record_skill_script_execution(
+      _gates_on("skills"),
       "test_agent",
       _hallucination.ConfirmedNotHallucinated("my_skill"),
       _hallucination.ConfirmedNotHallucinated("scripts/run.py"),
@@ -682,13 +698,9 @@ def test_record_skill_script_execution_collapses_the_exit_code_to_a_flag(
 def test_record_skill_script_execution_with_unconfirmed_names(
     skill_script_counter,
 ):
-  """A name no lookup confirmed is reduced to the placeholder.
-
-  Whatever the model wrote is still on the span. The counter takes the
-  placeholder instead, because an unconfirmed name may be invented, and
-  invented names come from no bounded set.
-  """
+  """A name no lookup confirmed is reduced to the placeholder."""
   _metrics.record_skill_script_execution(
+      _gates_on("skills"),
       "test_agent",
       _hallucination.MaybeHallucinated("hallucinated_skill_name"),
       _hallucination.MaybeHallucinated("scripts/run.py"),
@@ -702,3 +714,131 @@ def test_record_skill_script_execution_with_unconfirmed_names(
       "adk.experimental.skill.script.path": "<hallucinated>",
       "adk.experimental.skill.script.ended_with_error": False,
   }
+
+
+@pytest.fixture(name="skill_loads_counter")
+def _skill_loads_counter(monkeypatch):
+  """Redirects the skill load counter."""
+  counter = mock.MagicMock(spec=metrics.Counter)
+  counter.name = "skill_loads"
+  monkeypatch.setattr(_metrics, "_skill_loads", counter)
+  return counter
+
+
+def test_record_skill_load(skill_loads_counter):
+  """One count per load, dimensioned by agent and skill."""
+  _metrics.record_skill_load(
+      _gates_on("skills"),
+      "test_agent",
+      _hallucination.ConfirmedNotHallucinated("my_skill"),
+  )
+
+  skill_loads_counter.add.assert_called_once()
+  args, kwargs = skill_loads_counter.add.call_args
+  assert args[0] == 1
+  assert kwargs["attributes"] == {
+      "gen_ai.agent.name": "test_agent",
+      "adk.experimental.skill.name": "my_skill",
+  }
+
+
+def test_record_skill_load_that_resolved_nothing(skill_loads_counter):
+  """A load that named no skill is still counted as a failure."""
+  _metrics.record_skill_load(
+      _gates_on("skills"),
+      "test_agent",
+      _hallucination.MaybeHallucinated("hallucinated_skill_name"),
+      "SKILL_NOT_FOUND",
+  )
+
+  skill_loads_counter.add.assert_called_once()
+  _, kwargs = skill_loads_counter.add.call_args
+  assert kwargs["attributes"] == {
+      "gen_ai.agent.name": "test_agent",
+      "adk.experimental.skill.name": "<hallucinated>",
+      "error.type": "SKILL_NOT_FOUND",
+  }
+
+
+@pytest.fixture(name="invoke_agent_skill_loads")
+def _invoke_agent_skill_loads(monkeypatch):
+  """Redirects the per-invocation skill load histogram."""
+  histogram = mock.MagicMock(spec=metrics.Histogram)
+  monkeypatch.setattr(_metrics, "_invoke_agent_skill_loads", histogram)
+  return histogram
+
+
+@pytest.fixture(name="invoke_workflow_skill_loads")
+def _invoke_workflow_skill_loads(monkeypatch):
+  """Redirects the per-workflow skill load histogram."""
+  histogram = mock.MagicMock(spec=metrics.Histogram)
+  monkeypatch.setattr(_metrics, "_invoke_workflow_skill_loads", histogram)
+  return histogram
+
+
+def _recorded(histogram) -> list[tuple[dict[str, object], int]]:
+  """The points a redirected histogram took, as (attributes, value)."""
+  return [
+      (kwargs["attributes"], args[0])
+      for args, kwargs in histogram.record.call_args_list
+  ]
+
+
+def test_record_invoke_agent_skill_loads(invoke_agent_skill_loads):
+  """The per-invocation total is recorded verbatim, keyed by the agent."""
+  _metrics.record_invoke_agent_skill_loads(_gates_on("skills"), "test_agent", 5)
+
+  assert _recorded(invoke_agent_skill_loads) == [
+      ({"gen_ai.agent.name": "test_agent"}, 5)
+  ]
+
+
+def test_record_invoke_agent_skill_loads_of_an_invocation_that_loaded_nothing(
+    invoke_agent_skill_loads,
+):
+  """No loads is a zero, not a missing point."""
+  _metrics.record_invoke_agent_skill_loads(_gates_on("skills"), "test_agent", 0)
+
+  assert _recorded(invoke_agent_skill_loads) == [
+      ({"gen_ai.agent.name": "test_agent"}, 0)
+  ]
+
+
+def test_record_invoke_workflow_skill_loads(invoke_workflow_skill_loads):
+  """The workflow total carries both names, and no agent dimension."""
+  _metrics.record_invoke_workflow_skill_loads(
+      _gates_on("skills", "workflow"),
+      root_agent_name="root_agent",
+      workflow_name="specialist",
+      count=4,
+      nested=False,
+  )
+
+  assert _recorded(invoke_workflow_skill_loads) == [(
+      {
+          "adk.experimental.root_agent.name": "root_agent",
+          "gen_ai.workflow.name": "specialist",
+      },
+      4,
+  )]
+
+
+def test_record_invoke_workflow_skill_loads_of_a_workflow_that_loaded_nothing(
+    invoke_workflow_skill_loads,
+):
+  """Zero is recorded here for the same reason it is per invocation."""
+  _metrics.record_invoke_workflow_skill_loads(
+      _gates_on("skills", "workflow"),
+      root_agent_name="root_agent",
+      workflow_name=None,
+      count=0,
+      nested=True,
+  )
+
+  assert _recorded(invoke_workflow_skill_loads) == [(
+      {
+          "adk.experimental.root_agent.name": "root_agent",
+          "gen_ai.workflow.nested": True,
+      },
+      0,
+  )]

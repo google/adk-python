@@ -26,16 +26,25 @@ properties ignore the per-request fields and fall back to the env vars.
 
 from __future__ import annotations
 
+from collections import deque
+from collections.abc import Iterable
 import enum
+import logging
 import os
 from typing import Any
+from typing import get_args as get_literals
 from typing import Literal
 from typing import Optional
+from typing import TypeAlias
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from pydantic import field_validator
 from pydantic import PrivateAttr
 from pydantic import StrictBool
+from typing_extensions import TypeIs
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 ADK_TELEMETRY_IGNORE_RUN_CONFIG = 'ADK_TELEMETRY_IGNORE_RUN_CONFIG'
 OTEL_SEMCONV_STABILITY_OPT_IN = 'OTEL_SEMCONV_STABILITY_OPT_IN'
@@ -44,7 +53,12 @@ OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = (
 )
 # Legacy ADK span-content knob; unlike the OTel env var above, it defaults on.
 ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS = 'ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS'
+
+# Blanket opt-in for all experimental telemetry features at once.
 ADK_EXPERIMENTAL_TELEMETRY = 'ADK_EXPERIMENTAL_TELEMETRY'
+
+# Names the experimental telemetry features to enable.
+_ADK_EXPERIMENTAL_TELEMETRY_FEATURES = 'ADK_EXPERIMENTAL_TELEMETRY_FEATURES'
 
 # Token in OTEL_SEMCONV_STABILITY_OPT_IN that selects experimental GenAI semconv.
 _GENAI_EXPERIMENTAL_OPT_IN = 'gen_ai_latest_experimental'
@@ -52,6 +66,17 @@ _GENAI_EXPERIMENTAL_OPT_IN = 'gen_ai_latest_experimental'
 # Env values (lowercased) treated as "on" / "off" for boolean env vars.
 _TRUTHY_ENV_VALUES = frozenset({'1', 'true'})
 _FALSY_ENV_VALUES = frozenset({'0', 'false'})
+
+_ExperimentalFeature: TypeAlias = Literal[
+    'skills',
+    'workflow',
+    'context_cache',
+    'mcp',
+    'token_usage',
+]
+
+# Stores unrecognized experimental features to warn only once per feature
+_warnings_cache: deque[str] = deque(maxlen=64)
 
 
 class ContentCapturingMode(enum.Enum):
@@ -118,6 +143,41 @@ def _read_emit_experimental_telemetry() -> bool:
   return env_value in _TRUTHY_ENV_VALUES
 
 
+def _is_experimental_feature(feature: str) -> TypeIs[_ExperimentalFeature]:
+  return feature in get_literals(_ExperimentalFeature)
+
+
+def _read_enabled_experimental_features() -> frozenset[_ExperimentalFeature]:
+  """Reads ``ADK_EXPERIMENTAL_TELEMETRY_FEATURES`` (defaults to no features)."""
+  env_value = os.getenv(_ADK_EXPERIMENTAL_TELEMETRY_FEATURES, '').split(',')
+  features = _normalize_experimental_features(env_value)
+  return features or frozenset()
+
+
+def _normalize_experimental_features(
+    values: Iterable[str] | None,
+) -> frozenset[_ExperimentalFeature] | None:
+  """Warns and filters out unrecognized experimental features."""
+  if values is None:
+    return None
+  features: set[_ExperimentalFeature] = set()
+  for feature in values:
+    stripped = feature.strip().lower()
+    if not stripped:
+      continue
+    if _is_experimental_feature(stripped):
+      features.add(stripped)
+    elif stripped not in _warnings_cache:
+      _warnings_cache.append(stripped)
+      logger.warning(
+          'Ignoring unrecognized experimental telemetry feature: %s',
+          stripped,
+      )
+  if len(features) == 0:
+    return None
+  return frozenset(features)
+
+
 def _read_ignore_per_request() -> bool:
   """Reads ``ADK_TELEMETRY_IGNORE_RUN_CONFIG`` (defaults off)."""
   lock = os.getenv(ADK_TELEMETRY_IGNORE_RUN_CONFIG, '').strip().lower()
@@ -156,6 +216,8 @@ class TelemetryConfig(BaseModel):
       matching uppercase string.
     adk_experimental_telemetry_opt_in: Override for
       ``ADK_EXPERIMENTAL_TELEMETRY``.
+    experimental_features_opt_in: Override for
+      ``ADK_EXPERIMENTAL_TELEMETRY_FEATURES``.
   """
 
   model_config = ConfigDict(frozen=True, extra='forbid')
@@ -165,11 +227,13 @@ class TelemetryConfig(BaseModel):
   ] = None
   capture_message_content: Optional[ContentCapturingMode] = None
   adk_experimental_telemetry_opt_in: Optional[StrictBool] = None
+  experimental_features_opt_in: Optional[frozenset[str]] = None
 
   _env_experimental_genai_semconv: bool = PrivateAttr()
   _env_content_capturing_mode: ContentCapturingMode = PrivateAttr()
   _env_add_content_to_legacy_spans: bool = PrivateAttr()
   _env_emit_experimental_telemetry: bool = PrivateAttr()
+  _env_enabled_experimental_features: frozenset[str] = PrivateAttr()
   _env_ignore_per_request: bool = PrivateAttr()
 
   def model_post_init(self, context: Any, /) -> None:
@@ -179,6 +243,9 @@ class TelemetryConfig(BaseModel):
     self._env_content_capturing_mode = _read_content_capturing_mode()
     self._env_add_content_to_legacy_spans = _read_add_content_to_legacy_spans()
     self._env_emit_experimental_telemetry = _read_emit_experimental_telemetry()
+    self._env_enabled_experimental_features = (
+        _read_enabled_experimental_features()
+    )
     self._env_ignore_per_request = _read_ignore_per_request()
 
   def __eq__(self, other: object) -> bool:
@@ -189,6 +256,14 @@ class TelemetryConfig(BaseModel):
 
   def __hash__(self) -> int:
     return hash((self.__class__, tuple(self.__dict__.values())))
+
+  @field_validator('experimental_features_opt_in', mode='after')
+  @classmethod
+  def _validate_experimental_features(
+      cls,
+      values: frozenset[str] | None,
+  ) -> frozenset[str] | None:
+    return _normalize_experimental_features(values)
 
   @property
   def _ignore_per_request(self) -> bool:
@@ -274,12 +349,15 @@ class TelemetryConfig(BaseModel):
 
   @property
   def should_emit_experimental_telemetry(self) -> bool:
-    """Whether to emit experimental telemetry.
+    """Whether experimental telemetry is enabled as a whole.
 
     Experimental telemetry includes all spans, logs, metrics, and attributes
     whose meaning or format is subject to change, or is not yet available via
-    standard OTel knobs. As of writing this, it is only used for in-progress
-    skill related telemetry changes.
+    standard OTel knobs. It is divided into features, and which of them a
+    signal belongs to is internal to ADK; this answers only for the blanket
+    opt-in that turns on every feature at once. A feature list is not a blanket
+    opt-in, so ``ADK_EXPERIMENTAL_TELEMETRY_FEATURES=<features>`` reads as off
+    here even though it does enable those features.
 
     Precedence: admin lock > ``adk_experimental_telemetry_opt_in`` >
     ``ADK_EXPERIMENTAL_TELEMETRY`` env var > ``False``.
@@ -290,3 +368,30 @@ class TelemetryConfig(BaseModel):
     ):
       return self.adk_experimental_telemetry_opt_in
     return self._env_emit_experimental_telemetry
+
+  def _experimental_feature_enabled(
+      self, feature: _ExperimentalFeature
+  ) -> bool:
+    """Whether the named experimental feature is enabled.
+
+    See :attr:`should_emit_experimental_telemetry` for what is experimental
+    telemetry.
+
+    Precedence: admin lock > ``adk_experimental_telemetry_opt_in`` >
+    ``experimental_features_opt_in`` > the two env vars > ``False``.
+
+    Args:
+      feature: The name of the experimental feature.
+
+    Returns:
+      True if the feature is enabled, False otherwise.
+    """
+    if not self._ignore_per_request:
+      if self.adk_experimental_telemetry_opt_in is not None:
+        return self.adk_experimental_telemetry_opt_in
+      if self.experimental_features_opt_in is not None:
+        return feature in self.experimental_features_opt_in
+    return (
+        feature in self._env_enabled_experimental_features
+        or self._env_emit_experimental_telemetry
+    )

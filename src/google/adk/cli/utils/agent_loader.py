@@ -35,6 +35,7 @@ from ...agents.base_agent import BaseAgent
 from ...apps.app import App
 from ...tools.computer_use.computer_use_toolset import ComputerUseToolset
 from ...utils.feature_decorator import experimental
+from ...workflow import BaseNode
 from .base_agent_loader import BaseAgentLoader
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -134,8 +135,6 @@ class AgentLoader(BaseAgentLoader):
       # Check for "root_agent" directly in "{agent_name}" module/package
       elif hasattr(module_candidate, "root_agent"):
         logger.debug("Found root_agent directly in %s", agent_name)
-        from ...workflow._base_node import BaseNode
-
         if isinstance(module_candidate.root_agent, (BaseAgent, BaseNode)):
           return module_candidate.root_agent
         else:
@@ -186,8 +185,6 @@ class AgentLoader(BaseAgentLoader):
         return module_candidate.app
       elif hasattr(module_candidate, "root_agent"):
         logger.info("Found root_agent in %s.agent", agent_name)
-        from ...workflow._base_node import BaseNode
-
         if isinstance(module_candidate.root_agent, (BaseAgent, BaseNode)):
           return module_candidate.root_agent
         else:
@@ -432,7 +429,7 @@ class AgentLoader(BaseAgentLoader):
       candidate = Path(agents_dir, expected_app_name)
       origin_path = candidate if candidate.exists() else Path(agents_dir)
 
-    def _attach_metadata(target: Union[BaseAgent, App]) -> None:
+    def _attach_metadata(target: Union[BaseNode, App]) -> None:
       setattr(target, "_adk_origin_app_name", expected_app_name)
       setattr(target, "_adk_origin_path", origin_path)
 
@@ -495,6 +492,8 @@ class AgentLoader(BaseAgentLoader):
           agent = loaded.root_agent
         else:
           agent = loaded
+        if agent is None:
+          continue
 
         language = self._determine_agent_language(agent_name)
         is_computer_use = any(

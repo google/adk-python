@@ -16,7 +16,13 @@ Here are the steps to deploy the agent:
 export GOOGLE_CLOUD_PROJECT=your-project-id
 export GOOGLE_CLOUD_LOCATION=us-central1 # Or your preferred location
 export GOOGLE_GENAI_USE_ENTERPRISE=True
+export VERTEXAI_DATASTORE_ID=your-datastore-id
 ```
+
+`VERTEXAI_DATASTORE_ID` is required, and is the full resource name of the
+Vertex AI Search data store the agent queries, with the format
+`projects/{project_number}/locations/{location}/collections/{collection}/dataStores/{datastore_id}`.
+The agent refuses to start without it.
 
 2. Run the deployment command
 

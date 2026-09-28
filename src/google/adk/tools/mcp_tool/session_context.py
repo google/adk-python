@@ -27,22 +27,32 @@ from typing import TypeVar
 
 from ...dependencies._mcp import ClientSession
 from ...dependencies._mcp import ElicitationFnT
+from ...dependencies._mcp import IS_MCP_SDK_V2
 from ...dependencies._mcp import SamplingCapability
 from ...dependencies._mcp import SamplingFnT
+from ...dependencies._mcp import types
 from ...features import FeatureName
 from ...features import is_feature_enabled
+from ...version import __version__
 
 logger = logging.getLogger('google_adk.' + __name__)
 
 _T = TypeVar('_T')
 
+# Who ADK says it is when it connects. Left unset, the SDK sends its own
+# default -- `mcp` / `0.1.0` -- so a server sees no difference between an ADK
+# agent and any other script built on the SDK.
+_CLIENT_INFO = types.Implementation(name='google-adk', version=__version__)
 
-def _read_timeout(seconds: Optional[float]) -> Optional[timedelta]:
+
+def _read_timeout(seconds: Optional[float]) -> Optional[float | timedelta]:
   """Converts a timeout in seconds to the type ``ClientSession`` expects.
 
   ADK carries every timeout as float seconds. MCP SDK 1.x wants a
-  ``timedelta`` here, while 2.x wants the float. Converting in one place keeps
-  that difference to a single function.
+  ``timedelta`` here, while 2.x wants the float. Neither accepts the other, and
+  the wrong one does not fail at the call: it fails later, in arithmetic the
+  SDK does on the value. Converting in one place keeps that difference to a
+  single function.
 
   Args:
     seconds: The timeout in seconds, or None for no timeout.
@@ -52,6 +62,8 @@ def _read_timeout(seconds: Optional[float]) -> Optional[timedelta]:
   """
   if seconds is None:
     return None
+  if IS_MCP_SDK_V2:
+    return seconds
   return timedelta(seconds=seconds)
 
 
@@ -367,6 +379,7 @@ class SessionContext:
                   sampling_callback=self._sampling_callback,
                   sampling_capabilities=self._sampling_capabilities,
                   elicitation_callback=self._elicitation_callback,
+                  client_info=_CLIENT_INFO,
               )
           )
         else:
@@ -379,6 +392,7 @@ class SessionContext:
                   sampling_callback=self._sampling_callback,
                   sampling_capabilities=self._sampling_capabilities,
                   elicitation_callback=self._elicitation_callback,
+                  client_info=_CLIENT_INFO,
               )
           )
         # pylint: disable-next=protected-access

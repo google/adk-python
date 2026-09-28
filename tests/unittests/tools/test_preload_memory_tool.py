@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 from unittest import mock
 
 from google.adk.memory.base_memory_service import SearchMemoryResponse
@@ -149,3 +150,102 @@ async def test_preload_memory_search_failure_is_noop():
   )
 
   assert request == original
+
+
+@pytest.mark.asyncio
+async def test_preload_memory_uses_text_from_every_part():
+  """The search query is not limited to the first content part.
+
+  A leading non-text part (e.g. an inline file or a provider-required
+  placeholder) must not blank out or replace the user's actual question.
+  """
+  request = LlmRequest(contents=[types.UserContent('current query')])
+  tool_context = mock.Mock()
+  tool_context.user_content = types.Content(
+      role='user',
+      parts=[
+          types.Part(text=''),
+          types.Part.from_text(text='what tea do I like'),
+      ],
+  )
+  tool_context.search_memory = mock.AsyncMock(
+      return_value=SearchMemoryResponse(memories=[])
+  )
+
+  await PreloadMemoryTool().process_llm_request(
+      tool_context=tool_context,
+      llm_request=request,
+  )
+
+  tool_context.search_memory.assert_awaited_once_with('what tea do I like')
+
+
+@pytest.mark.asyncio
+async def test_preload_memory_concatenates_multiple_text_parts():
+  """Multiple text parts in user content are concatenated with spaces."""
+  request = LlmRequest(contents=[types.UserContent('hello world')])
+  tool_context = mock.Mock()
+  tool_context.user_content = types.Content(
+      role='user',
+      parts=[
+          types.Part.from_text(text='hello'),
+          types.Part.from_text(text='world'),
+      ],
+  )
+  tool_context.search_memory = mock.AsyncMock(
+      return_value=SearchMemoryResponse(memories=[_memory('likes tea')])
+  )
+
+  await PreloadMemoryTool().process_llm_request(
+      tool_context=tool_context,
+      llm_request=request,
+  )
+
+  tool_context.search_memory.assert_awaited_once_with('hello world')
+
+
+@pytest.mark.asyncio
+async def test_preload_memory_empty_or_non_text_parts_is_noop():
+  """No non-empty text part means no memory search."""
+  request = LlmRequest(contents=[types.UserContent('query')])
+  tool_context = mock.Mock()
+  tool_context.user_content = types.Content(
+      role='user',
+      parts=[
+          types.Part.from_text(text=''),
+          types.Part.from_bytes(data=b'data', mime_type='image/png'),
+      ],
+  )
+  tool_context.search_memory = mock.AsyncMock()
+
+  await PreloadMemoryTool().process_llm_request(
+      tool_context=tool_context,
+      llm_request=request,
+  )
+
+  tool_context.search_memory.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_preload_memory_logs_search_failure_on_own_logger(caplog):
+  """Retrieval failures must be observable via the module's own logger.
+
+  Applications that configure logging by the `google_adk` namespace would
+  otherwise never see a memory backend outage, since a fail-open retrieval
+  error is indistinguishable from "no memories matched".
+  """
+  request = LlmRequest(contents=[types.UserContent('current query')])
+  tool_context = _tool_context()
+  tool_context.search_memory.side_effect = RuntimeError('unavailable')
+
+  with caplog.at_level(logging.WARNING, logger='google_adk'):
+    await PreloadMemoryTool().process_llm_request(
+        tool_context=tool_context,
+        llm_request=request,
+    )
+
+  warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+  assert len(warnings) == 1
+  assert warnings[0].name == 'google_adk.google.adk.tools.preload_memory_tool'
+  assert warnings[0].exc_info is not None
+  assert 'current query' not in caplog.text

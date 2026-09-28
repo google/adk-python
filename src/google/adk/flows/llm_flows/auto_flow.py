@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from . import agent_transfer
+from .extensions import _agent_transfer
 from .single_flow import SingleFlow
 
 
@@ -41,4 +41,4 @@ class AutoFlow(SingleFlow):
 
   def __init__(self) -> None:
     super().__init__()
-    self.request_processors += [agent_transfer.request_processor]
+    self.request_processors += [_agent_transfer.request_processor]

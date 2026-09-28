@@ -148,6 +148,25 @@ async def test_save_artifact_forwards_to_tool_context():
 
 
 @pytest.mark.asyncio
+async def test_save_artifact_normalizes_dictionary():
+  """Verifies dictionary artifacts honor the base-service contract."""
+  tool_context = _StubToolContext()
+  service = ForwardingArtifactService(tool_context)
+
+  version = await service.save_artifact(
+      app_name="ignored",
+      user_id="ignored",
+      filename="test.txt",
+      artifact={"text": "test"},
+  )
+
+  assert version == 0
+  _, artifact, _ = tool_context.saved_artifacts[0]
+  assert isinstance(artifact, types.Part)
+  assert artifact.text == "test"
+
+
+@pytest.mark.asyncio
 async def test_load_artifact_forwards_to_tool_context():
   """Verifies load_artifact forwards to tool_context."""
   tool_context = _StubToolContext()

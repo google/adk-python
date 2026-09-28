@@ -39,6 +39,7 @@ from .settings import SpannerToolSettings
 
 if TYPE_CHECKING:
   from google.cloud import spanner
+  from google.cloud.spanner_v1.database import Database
 
 # Pattern for valid SQL identifiers: alphanumeric, underscores,
 # dots (for schema-qualified names), and backtick/double-quote quoting.

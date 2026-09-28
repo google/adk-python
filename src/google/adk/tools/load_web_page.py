@@ -19,6 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import ipaddress
 import socket
+import time
 from typing import Any
 from urllib.parse import ParseResult
 from urllib.parse import urlparse
@@ -30,8 +31,29 @@ from requests.utils import select_proxy
 
 _ALLOWED_URL_SCHEMES = frozenset({'http', 'https'})
 _DEFAULT_PORT_BY_SCHEME = {'http': 80, 'https': 443}
-# Default timeout in seconds for HTTP requests.
+# Default timeout in seconds for HTTP requests. This bounds the connect phase
+# and the gap between two received chunks, but not the total transfer time.
 _DEFAULT_TIMEOUT_SECONDS = 30
+# Total wall-clock budget in seconds for reading a response body. This bounds
+# drip-feed responses that keep resetting the per-chunk read timeout.
+_MAX_BODY_READ_SECONDS = 60
+# Maximum number of response body bytes buffered in memory.
+_MAX_RESPONSE_BYTES = 10 * 1024 * 1024
+# Chunk size used while streaming a response body.
+_RESPONSE_CHUNK_BYTES = 64 * 1024
+# Hostnames that always designate the local machine or a metadata endpoint.
+_BLOCKED_HOSTNAMES = frozenset({
+    'localhost',
+    'metadata',
+    'metadata.goog',
+})
+# Hostname suffixes reserved for loopback, link-local and internal networks.
+_BLOCKED_HOSTNAME_SUFFIXES = (
+    '.localhost',
+    '.local',
+    '.internal',
+    '.metadata.goog',
+)
 _ResolvedAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 
 
@@ -152,10 +174,21 @@ def _parse_ip_literal(hostname: str) -> _ResolvedAddress | None:
 
 
 def _is_blocked_hostname(hostname: str) -> bool:
+  """Reports whether a name designates loopback or internal infrastructure.
+
+  This check is purely lexical, so unlike the address checks it also applies
+  when an outbound proxy performs the DNS resolution on our behalf.
+
+  Args:
+    hostname: The hostname parsed out of the requested url.
+
+  Returns:
+    True if the request must be refused without contacting the host.
+  """
   normalized_hostname = hostname.rstrip('.').lower()
-  return normalized_hostname == 'localhost' or normalized_hostname.endswith(
-      '.localhost'
-  )
+  if normalized_hostname in _BLOCKED_HOSTNAMES:
+    return True
+  return normalized_hostname.endswith(_BLOCKED_HOSTNAME_SUFFIXES)
 
 
 _NAT64_WELL_KNOWN_PREFIX = ipaddress.ip_network('64:ff9b::/96')
@@ -236,6 +269,81 @@ def _resolve_direct_addresses(hostname: str) -> tuple[_ResolvedAddress, ...]:
   return resolved_addresses
 
 
+def _reject_blocked_proxied_hostname(hostname: str) -> None:
+  """Best-effort address check for a hostname that the proxy will resolve.
+
+  The proxy performs the authoritative DNS resolution and opens the connection,
+  so the local lookup here is advisory rather than a pin. It still refuses the
+  common case where a public resolver maps the requested name onto a metadata,
+  loopback or otherwise private address.
+
+  A local resolution failure is not treated as an error: split-horizon DNS and
+  egress-only networks legitimately leave the proxy as the only resolver, and
+  failing closed there would break every such deployment. Those environments
+  are covered by `_is_blocked_hostname` instead. A proxy that resolves a
+  public-looking name to an internal address remains outside what a client can
+  detect, and has to be constrained by the proxy's own egress policy.
+
+  Args:
+    hostname: The hostname that will be handed to the proxy.
+
+  Raises:
+    ValueError: If the local resolver maps the hostname to a non-global
+      address.
+  """
+  try:
+    resolved_addresses = _resolve_host_addresses(hostname)
+  except ValueError:
+    return
+  if any(_is_blocked_address(address) for address in resolved_addresses):
+    raise ValueError(f'Blocked host: {hostname}')
+
+
+def _declared_content_length(response: requests.Response) -> int:
+  """Returns the declared body size, or 0 when the header is unusable.
+
+  A missing, malformed or negative Content-Length yields 0, which leaves the
+  cap to be enforced while streaming rather than up front.
+
+  Args:
+    response: The response whose headers to read.
+
+  Returns:
+    The declared body size in bytes, clamped to be non-negative.
+  """
+  raw_content_length = response.headers.get('Content-Length')
+  if raw_content_length is None:
+    return 0
+  try:
+    return max(0, int(raw_content_length))
+  except ValueError:
+    return 0
+
+
+def _read_capped_content(response: requests.Response) -> bytes:
+  """Buffers a streamed response body under a size and a time limit."""
+  if _declared_content_length(response) > _MAX_RESPONSE_BYTES:
+    raise ValueError(f'Response body is too large: {response.url}')
+
+  deadline = time.monotonic() + _MAX_BODY_READ_SECONDS
+  chunks: list[bytes] = []
+  buffered_bytes = 0
+  for chunk in response.iter_content(chunk_size=_RESPONSE_CHUNK_BYTES):
+    buffered_bytes += len(chunk)
+    if buffered_bytes > _MAX_RESPONSE_BYTES:
+      raise ValueError(f'Response body is too large: {response.url}')
+    if time.monotonic() > deadline:
+      raise ValueError(f'Timed out reading response body: {response.url}')
+    chunks.append(chunk)
+  return b''.join(chunks)
+
+
+def _read_successful_response(response: requests.Response) -> bytes:
+  if response.status_code != 200:
+    raise ValueError(f'Unexpected response status: {response.status_code}')
+  return _read_capped_content(response)
+
+
 def _rewrite_url_host(parsed_url: ParseResult, hostname: str) -> str:
   explicit_port = parsed_url.port
   formatted_hostname = _format_host(hostname)
@@ -246,12 +354,13 @@ def _rewrite_url_host(parsed_url: ParseResult, hostname: str) -> str:
   return parsed_url._replace(netloc=rewritten_netloc).geturl()
 
 
-def _fetch_direct_response(
+def _fetch_direct_content(
     *,
     url: str,
     target: _RequestTarget,
     resolved_addresses: tuple[_ResolvedAddress, ...],
-) -> requests.Response:
+) -> bytes:
+  """Fetches a url over a connection pinned to an already vetted address."""
   last_error: requests.RequestException | None = None
   for address in resolved_addresses:
     session = requests.Session()
@@ -262,12 +371,16 @@ def _fetch_direct_response(
     )
     session.mount(f'{target.scheme}://', adapter)
     try:
-      return session.get(
+      # The body is read inside the session scope so that the size cap is
+      # applied while streaming instead of after the whole body is buffered.
+      with session.get(
           url,
           allow_redirects=False,
           proxies={'http': None, 'https': None},
           timeout=_DEFAULT_TIMEOUT_SECONDS,
-      )
+          stream=True,
+      ) as response:
+        return _read_successful_response(response)
     except requests.RequestException as exc:
       last_error = exc
     finally:
@@ -278,33 +391,45 @@ def _fetch_direct_response(
   raise requests.RequestException(f'Unable to fetch url: {url}')
 
 
-def _fetch_response(url: str) -> requests.Response:
+def _fetch_proxied_content(url: str) -> bytes:
+  with requests.get(
+      url,
+      allow_redirects=False,
+      timeout=_DEFAULT_TIMEOUT_SECONDS,
+      stream=True,
+  ) as response:
+    return _read_successful_response(response)
+
+
+def _fetch_content(url: str) -> bytes:
+  """Fetches a vetted url and returns its capped response body."""
   target = _parse_request_target(url)
 
   if _is_blocked_hostname(target.hostname):
     raise ValueError(f'Blocked host: {target.hostname}')
 
   parsed_ip_literal = _parse_ip_literal(target.hostname)
+  if parsed_ip_literal is not None and _is_blocked_address(parsed_ip_literal):
+    raise ValueError(f'Blocked host: {target.hostname}')
+
   if _get_proxy_url(url):
-    # Proxies resolve the target hostname remotely, so only literal IPs and
-    # localhost-style names can be rejected locally without breaking proxy use.
-    if parsed_ip_literal is not None and _is_blocked_address(parsed_ip_literal):
-      raise ValueError(f'Blocked host: {target.hostname}')
-    return requests.get(
-        url, allow_redirects=False, timeout=_DEFAULT_TIMEOUT_SECONDS
-    )
+    # A proxy resolves the hostname remotely, so the connection cannot be
+    # pinned to a vetted address. Screen the name against the local resolver
+    # anyway; see `_reject_blocked_proxied_hostname` for why an unresolvable
+    # name is still forwarded.
+    if parsed_ip_literal is None:
+      _reject_blocked_proxied_hostname(target.hostname)
+    return _fetch_proxied_content(url)
 
   if parsed_ip_literal is not None:
-    if _is_blocked_address(parsed_ip_literal):
-      raise ValueError(f'Blocked host: {target.hostname}')
-    return _fetch_direct_response(
+    return _fetch_direct_content(
         url=url,
         target=target,
         resolved_addresses=(parsed_ip_literal,),
     )
 
   resolved_addresses = _resolve_direct_addresses(target.hostname)
-  return _fetch_direct_response(
+  return _fetch_direct_content(
       url=url,
       target=target,
       resolved_addresses=resolved_addresses,
@@ -329,17 +454,15 @@ def load_web_page(url: str) -> str:
         'Install them with: pip install google-adk[extensions]'
     ) from e
 
+  # Requests are issued with allow_redirects=False to prevent SSRF attacks via
+  # redirection, and the response body is capped to bound memory usage.
   try:
-    response = _fetch_response(url)
+    content = _fetch_content(url)
   except (ValueError, requests.RequestException):
     return _failed_to_fetch_message(url)
 
-  # Set allow_redirects=False to prevent SSRF attacks via redirection.
-  if response.status_code == 200:
-    soup = BeautifulSoup(response.content, 'lxml')
-    text = soup.get_text(separator='\n', strip=True)
-  else:
-    text = _failed_to_fetch_message(url)
+  soup = BeautifulSoup(content, 'lxml')
+  text = soup.get_text(separator='\n', strip=True)
 
   # Split the text into lines, filtering out very short lines
   # (e.g., single words or short subtitles)

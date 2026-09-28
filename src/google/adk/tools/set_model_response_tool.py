@@ -19,6 +19,7 @@ from __future__ import annotations
 import inspect
 import types as typing_types
 from typing import Any
+from typing import cast
 from typing import get_args
 from typing import get_origin
 from typing import Optional
@@ -33,7 +34,6 @@ from typing_extensions import override
 
 from ..utils._schema_utils import get_list_inner_type
 from ..utils._schema_utils import is_basemodel_schema
-from ..utils._schema_utils import is_list_of_basemodel
 from ..utils._schema_utils import SchemaType
 from ._automatic_function_calling_util import build_function_declaration
 from .base_tool import BaseTool
@@ -136,8 +136,14 @@ class SetModelResponseTool(BaseTool):
       output_schema = output_schema.model_dump(exclude_none=True)
 
     self.output_schema = output_schema
-    self._is_basemodel = is_basemodel_schema(output_schema)
-    self._is_list_of_basemodel = is_list_of_basemodel(output_schema)
+    self._model_type: Optional[type[BaseModel]] = (
+        cast('type[BaseModel]', output_schema)
+        if is_basemodel_schema(output_schema)
+        else None
+    )
+    self._list_model_type = get_list_inner_type(output_schema)
+    self._is_basemodel = self._model_type is not None
+    self._is_list_of_basemodel = self._list_model_type is not None
 
     # Create a function that matches the output schema
     def set_model_response() -> str:
@@ -149,9 +155,9 @@ class SetModelResponseTool(BaseTool):
       return 'Response set successfully.'
 
     # Add the schema fields as parameters to the function dynamically
-    if self._is_basemodel:
+    if self._model_type is not None:
       # For regular BaseModel, use the model's fields
-      schema_fields = output_schema.model_fields
+      schema_fields = self._model_type.model_fields
       params = []
       for field_name, field_info in schema_fields.items():
         # Carry the field's default across. Without it every parameter looks
@@ -168,14 +174,13 @@ class SetModelResponseTool(BaseTool):
             ),
         )
         params.append(param)
-    elif self._is_list_of_basemodel:
+    elif self._list_model_type is not None:
       # For list[BaseModel], create a single 'items' parameter
-      inner_type = get_list_inner_type(output_schema)
       params = [
           inspect.Parameter(
               'items',
               inspect.Parameter.KEYWORD_ONLY,
-              annotation=list[inner_type],
+              annotation=typing_types.GenericAlias(list, self._list_model_type),
           )
       ]
     elif isinstance(output_schema, dict):
@@ -284,18 +289,21 @@ class SetModelResponseTool(BaseTool):
         - raw value for other schema types (list[str], dict, etc.)
         - dict with an error message when Pydantic validation fails
     """
+    result: object
     try:
-      if self._is_basemodel:
+      if self._model_type is not None:
         # For regular BaseModel, validate directly
-        validated_response = self.output_schema.model_validate(args)
-        result = validated_response.model_dump(exclude_none=True)
-      elif self._is_list_of_basemodel:
+        validated_model = self._model_type.model_validate(args)
+        result = validated_model.model_dump(exclude_none=True)
+      elif self._list_model_type is not None:
         # For list[BaseModel], extract and validate the 'items' field
         items = args.get('items', [])
-        type_adapter = TypeAdapter(self.output_schema)
-        validated_response = type_adapter.validate_python(items)
+        type_adapter: TypeAdapter[list[BaseModel]] = TypeAdapter(
+            self.output_schema
+        )
+        validated_items = type_adapter.validate_python(items)
         result = [
-            item.model_dump(exclude_none=True) for item in validated_response
+            item.model_dump(exclude_none=True) for item in validated_items
         ]
       else:
         # For other schema types (list[str], dict, etc.),

@@ -56,7 +56,8 @@ durability.
 
 `Workflow._emit_node_checkpoint` does persist a node-status snapshot when
 `ic.is_resumable` — an `agent_state` event carrying `{"nodes": {name: {status,
-interrupts, resume_inputs}}}` for each static child. Two sibling markers are
+interrupts}}}` for each static child (`resume_inputs` is intentionally omitted
+from the checkpoint). Two sibling markers are
 written under the same flag: `_maybe_reemit_replayed_output` re-surfaces a
 fast-forwarded node's output, and `_emit_end_of_agent` records that the
 workflow ran to completion.

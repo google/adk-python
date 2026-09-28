@@ -90,6 +90,15 @@ class TestCachePerformanceAnalyzer:
 
     assert result == []
 
+  async def test_get_agent_cache_history_missing_session(self):
+    """An unknown session id is reported, not dereferenced."""
+    self.mock_session_service.get_session = AsyncMock(return_value=None)
+
+    with pytest.raises(ValueError, match="Session not found: no_such_session"):
+      await self.analyzer._get_agent_cache_history(
+          "no_such_session", "test_user", "test_app", "test_agent"
+      )
+
   async def test_get_agent_cache_history_no_cache_events(self):
     """Test getting cache history when no events have cache metadata."""
     events = [

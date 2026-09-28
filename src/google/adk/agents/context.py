@@ -19,7 +19,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from collections.abc import Sequence
 from typing import Any
-from typing import cast
 from typing import TYPE_CHECKING
 
 from opentelemetry import context as context_api
@@ -31,11 +30,14 @@ if TYPE_CHECKING:
   from google.genai import types
 
   from ..artifacts.base_artifact_service import ArtifactVersion
+  from ..artifacts.base_artifact_service import BaseArtifactService
   from ..auth.auth_credential import AuthCredential
   from ..auth.auth_tool import AuthConfig
+  from ..auth.credential_service.base_credential_service import BaseCredentialService
   from ..events.event import Event
   from ..events.event_actions import EventActions
   from ..events.ui_widget import UiWidget
+  from ..memory.base_memory_service import BaseMemoryService
   from ..memory.base_memory_service import SearchMemoryResponse
   from ..memory.memory_entry import MemoryEntry
   from ..sessions.session import Session
@@ -43,9 +45,9 @@ if TYPE_CHECKING:
   from ..telemetry.node_tracing import TelemetryContext
   from ..tools.tool_confirmation import ToolConfirmation
   from ..workflow._base_node import BaseNode
+  from ..workflow._dynamic_node_scheduler import DynamicNodeScheduler
   from ..workflow._graph import NodeLike
   from ..workflow._graph import RouteValue
-  from ..workflow._schedule_dynamic_node import ScheduleDynamicNode
   from .invocation_context import InvocationContext
 
 _MAX_PARENT_DEPTH = 50
@@ -53,16 +55,10 @@ _MAX_PARENT_DEPTH = 50
 
 def _derive_scheduler(
     parent_ctx: Context | None,
-) -> ScheduleDynamicNode | None:
+) -> DynamicNodeScheduler | None:
   """Derives the dynamic node scheduler from the parent context."""
   if parent_ctx:
-    scheduler = parent_ctx._workflow_scheduler
-    if scheduler is None:
-      from ..workflow._dynamic_node_scheduler import DynamicNodeScheduler
-      from ..workflow._dynamic_node_scheduler import DynamicNodeState
-
-      scheduler = DynamicNodeScheduler(state=DynamicNodeState())
-    return scheduler
+    return parent_ctx._workflow_scheduler
   return None
 
 
@@ -122,6 +118,8 @@ class Context(ReadonlyContext):
   When used in a workflow, additional fields under the ``Workflow-specific
   fields`` section are available.
   """
+
+  _workflow_scheduler: DynamicNodeScheduler | None = None
 
   def __init__(
       self,
@@ -196,17 +194,24 @@ class Context(ReadonlyContext):
     self._tool_confirmation = tool_confirmation
 
     # Workflow Execution
+    effective_node_path = node_path
+    if (
+        effective_node_path is None
+        and parent_ctx is None
+        and node is None
+        and isinstance(getattr(invocation_context, 'node_path', None), str)
+    ):
+      effective_node_path = invocation_context.node_path
     self._node_path, self._run_id = _derive_node_path(
         node.name if node else None,
         run_id,
-        node_path,
+        effective_node_path,
         parent_ctx.node_path if parent_ctx else None,
         node=node,
     )
     self._resume_inputs = resume_inputs or {}
     self._workflow_scheduler = _derive_scheduler(parent_ctx)
     self._node_rerun_on_resume = node.rerun_on_resume if node else True
-    self._child_run_counters: dict[str, int] = {}
     self._attempt_count = attempt_count
     self._output_delegated = False
     self._output_value: Any = None
@@ -214,11 +219,13 @@ class Context(ReadonlyContext):
     self._route_value: RouteValue | list[RouteValue] | None = None
     self._route_emitted: bool = False
     self._interrupt_ids: set[str] = set()
-    # scope tag inherited from parent ctx by default;
+    # scope tag inherited from parent ctx or invocation_context by default;
     # NodeRunner / Workflow may override before the node runs.
-    self._isolation_scope: str | None = (
-        parent_ctx.isolation_scope if parent_ctx else None
-    )
+    if parent_ctx is not None:
+      self._isolation_scope: str | None = parent_ctx.isolation_scope
+    else:
+      inv_iso = getattr(invocation_context, 'isolation_scope', None)
+      self._isolation_scope = inv_iso if isinstance(inv_iso, str) else None
 
     self._output_for_ancestors: list[str]
     if use_as_output and parent_ctx:
@@ -413,12 +420,13 @@ class Context(ReadonlyContext):
   def get_invocation_context(self) -> InvocationContext:
     """Returns a copy of the invocation context with the proxy session."""
     ctx = self._invocation_context
-    ctx_with_proxy = ctx.model_copy(
-        update={
-            'session': self.session,
-            'isolation_scope': self.isolation_scope,
-        }
-    )
+    update: dict[str, Any] = {
+        'session': self.session,
+        'isolation_scope': self.isolation_scope,
+    }
+    if self.node_path:
+      update['node_path'] = self.node_path
+    ctx_with_proxy = ctx.model_copy(update=update)
     return ctx_with_proxy
 
   async def run_node(
@@ -502,193 +510,33 @@ class Context(ReadonlyContext):
       return_ctx: If True, returns the child's Context instead of its output.
     """
 
-    if not self._node_rerun_on_resume:
-      raise ValueError(
-          'A node must have rerun_on_resume=True. Reason is that dynamically'
-          ' scheduled nodes might be interrupted, and the workflow'
-          ' wakes-up/re-runs the parent node, so it can get the child node'
-          ' response.'
-      )
+    from ..workflow import _dynamic_node_scheduler
 
-    from ..workflow.utils._workflow_graph_utils import build_node  # pylint: disable=g-import-not-at-top
-
-    built_node = build_node(node)
-
-    from ..agents.base_agent import BaseAgent
-
-    if isinstance(node, BaseAgent) and isinstance(built_node, BaseAgent):
-      built_node.parent_agent = node.parent_agent
-
-    # Output delegation: once set, the calling node's own output
-    # events are suppressed — the child's output (annotated with
-    # output_for) becomes the calling node's output.
-    # We validate and set this upfront before entering the loop.
-    if use_as_output:
-      from ..workflow._workflow import Workflow
-
-      if not isinstance(self.node, Workflow):
-        if self._output_delegated:
-          raise ValueError(
-              f'Node {self.node_path} already has a use_as_output delegate.'
-          )
-        self._output_delegated = True
-
-    # Pointers to track the active execution state in the transfer loop.
-    # These will be updated dynamically if an agent transfers execution.
-    curr_parent_ctx = self
-    curr_node = built_node
-    curr_run_id = run_id
-    curr_input = node_input
-
-    # Active Execution Loop: Handles both standard execution and sequential Agent Transfers
-    # (e.g. Agent A transferring to Agent B). Instead of recursive execution, we use this
-    # loop to execute the target agent in-place, updating pointers and 'continuing' the loop.
-    while True:
-      curr_use_as_output = use_as_output if (curr_parent_ctx is self) else False
-      if self._workflow_scheduler:
-        # --- Mode 1: Workflow Execution ---
-        # The node is running as part of a Workflow graph. We must delegate execution
-        # to the workflow scheduler to handle graph dependencies and state.
-        from ..workflow._errors import NodeInterruptedError
-
-        # Validate or auto-generate run_id for this scheduler execution.
-        if curr_run_id:
-          if curr_run_id.isdigit() and not skip_run_id_validation:
-            raise ValueError(
-                f'Explicit run_id "{curr_run_id}" for node "{curr_node.name}"'
-                ' must contain non-numeric characters to prevent collision'
-                ' with auto-generated IDs.'
-            )
-        elif not curr_run_id:
-          curr_parent_ctx._child_run_counters[curr_node.name] = (
-              curr_parent_ctx._child_run_counters.get(curr_node.name, 0) + 1
-          )
-          curr_run_id = str(curr_parent_ctx._child_run_counters[curr_node.name])
-
-        scheduler = cast(
-            'ScheduleDynamicNode', curr_parent_ctx._workflow_scheduler
-        )
-        child_ctx = await scheduler(
-            curr_parent_ctx,
-            curr_node,
-            curr_input,
-            node_name=curr_node.name,
-            use_as_output=curr_use_as_output,
-            run_id=curr_run_id,
-            use_sub_branch=use_sub_branch,
-            override_branch=override_branch,
-            override_isolation_scope=override_isolation_scope,
-        )
-      else:
-        # --- Mode 2: Standalone Execution ---
-        # The node is running independently (outside of a workflow).
-        # We run it directly using NodeRunner.
-        child_ctx = await curr_parent_ctx._run_node_standalone(
-            curr_node,
-            curr_input,
-            use_as_output=curr_use_as_output,
-            use_sub_branch=use_sub_branch,
-            override_branch=override_branch,
-            override_isolation_scope=override_isolation_scope,
-            run_id=curr_run_id,
-            resume_inputs=resume_inputs,
-        )
-
-      # Extract the transfer target if the node requested an agent transfer.
-      transfer_to_agent = (
-          child_ctx.actions.transfer_to_agent if child_ctx else None
-      )
-
-      # Post-Execution Validation: If the caller expects the raw output (not the Context),
-      # we check for errors or interrupts and raise them immediately.
-      if not return_ctx:
-        if child_ctx.error:
-          from ..workflow._errors import DynamicNodeFailError
-
-          raise DynamicNodeFailError(
-              message=f'Dynamic node {curr_node.name} failed',
-              error=child_ctx.error,
-              error_node_path=child_ctx.error_node_path,
-          )
-        if child_ctx.interrupt_ids:
-          from ..workflow._errors import NodeInterruptedError
-
-          # Propagate child's interrupt_ids to this node's ctx
-          # so NodeRunner sees them after catching the error.
-          curr_parent_ctx._interrupt_ids.update(child_ctx.interrupt_ids)
-          raise NodeInterruptedError()
-        # When the caller passes raise_on_wait=True, surface a child
-        # execution that's WAITING (wait_for_output, no output, not transferring)
-        # as NodeInterruptedError so the parent's NodeRunner records
-        # the parent as WAITING instead of falsely COMPLETED.
-        if raise_on_wait and child_ctx.output is None and not transfer_to_agent:
-          from ..workflow._workflow import Workflow
-
-          if isinstance(curr_node, Workflow) or getattr(
-              curr_node, 'wait_for_output', False
-          ):
-            from ..workflow._errors import NodeInterruptedError
-
-            raise NodeInterruptedError()
-
-      # Handle Agent Transfer: If a transfer was requested, we resolve the target agent
-      # and its parent context, update loop pointers, and continue to the next iteration.
-      if isinstance(transfer_to_agent, str):
-        from ..agents.base_agent import BaseAgent
-
-        if not isinstance(curr_node, BaseAgent):
-          raise ValueError('Only agents can request an agent transfer.')
-        target_name = transfer_to_agent
-        root_agent = getattr(curr_node, 'root_agent', None)
-        if not root_agent:
-          raise ValueError(f'Cannot find root_agent on node {curr_node.name}')
-
-        # Local import to avoid runtime circular dependencies with Context
-        from ..workflow.utils._transfer_utils import resolve_and_derive_transfer_context
-
-        target_agent, next_parent_ctx = resolve_and_derive_transfer_context(
-            target_name=target_name,
-            current_agent=curr_node,
-            root_agent=root_agent,
-            curr_ctx=child_ctx,
-            curr_parent_ctx=curr_parent_ctx,
-        )
-        if not target_agent:
-          raise ValueError(f"Transfer target agent '{target_name}' not found.")
-        if not next_parent_ctx:
-          available = []
-          if hasattr(curr_node, '_get_available_agent_names'):
-            available = curr_node._get_available_agent_names()
-          available_str = (
-              f"\nAvailable agents: {', '.join(available)}" if available else ''
-          )
-          raise ValueError(
-              f"Cannot transfer from '{curr_node.name}' to unrelated agent"
-              f" '{target_name}'.{available_str}"
-          )
-        curr_parent_ctx = next_parent_ctx
-
-        # Set up parameters for next iteration (the transfer target).
-        curr_node = target_agent
-        curr_run_id = None
-        curr_input = None  # Input for transfer target is usually empty.
-        resume_inputs = None
-
-        if not curr_parent_ctx:
-          raise AssertionError(
-              'curr_parent_ctx cannot be None during active workflow execution'
-          )
-
-        continue
-
-      # If no transfer occurred, execution of the branch is complete.
-      if return_ctx:
-        return child_ctx
-      return child_ctx.output
+    return await _dynamic_node_scheduler.run_node_internal(
+        self,
+        node,
+        node_input=node_input,
+        use_as_output=use_as_output,
+        run_id=run_id,
+        use_sub_branch=use_sub_branch,
+        override_branch=override_branch,
+        override_isolation_scope=override_isolation_scope,
+        raise_on_wait=raise_on_wait,
+        return_ctx=return_ctx,
+        resume_inputs=resume_inputs,
+        skip_run_id_validation=skip_run_id_validation,
+    )
 
   # ============================================================================
   # Artifact methods
   # ============================================================================
+
+  def _require_artifact_service(self) -> BaseArtifactService:
+    """Returns the artifact service, or raises if none is configured."""
+    service = self._invocation_context.artifact_service
+    if service is None:
+      raise ValueError('Artifact service is not initialized.')
+    return service
 
   async def load_artifact(
       self, filename: str, version: int | None = None
@@ -703,9 +551,7 @@ class Context(ReadonlyContext):
     Returns:
       The artifact.
     """
-    if self._invocation_context.artifact_service is None:
-      raise ValueError('Artifact service is not initialized.')
-    return await self._invocation_context.artifact_service.load_artifact(
+    return await self._require_artifact_service().load_artifact(
         app_name=self._invocation_context.app_name,
         user_id=self._invocation_context.user_id,
         session_id=self._invocation_context.session.id,
@@ -729,9 +575,7 @@ class Context(ReadonlyContext):
     Returns:
      The version of the artifact.
     """
-    if self._invocation_context.artifact_service is None:
-      raise ValueError('Artifact service is not initialized.')
-    version = await self._invocation_context.artifact_service.save_artifact(
+    version = await self._require_artifact_service().save_artifact(
         app_name=self._invocation_context.app_name,
         user_id=self._invocation_context.user_id,
         session_id=self._invocation_context.session.id,
@@ -755,9 +599,7 @@ class Context(ReadonlyContext):
     Returns:
       The artifact version info.
     """
-    if self._invocation_context.artifact_service is None:
-      raise ValueError('Artifact service is not initialized.')
-    return await self._invocation_context.artifact_service.get_artifact_version(
+    return await self._require_artifact_service().get_artifact_version(
         app_name=self._invocation_context.app_name,
         user_id=self._invocation_context.user_id,
         session_id=self._invocation_context.session.id,
@@ -767,9 +609,7 @@ class Context(ReadonlyContext):
 
   async def list_artifacts(self) -> list[str]:
     """Lists the filenames of the artifacts attached to the current session."""
-    if self._invocation_context.artifact_service is None:
-      raise ValueError('Artifact service is not initialized.')
-    return await self._invocation_context.artifact_service.list_artifact_keys(
+    return await self._require_artifact_service().list_artifact_keys(
         app_name=self._invocation_context.app_name,
         user_id=self._invocation_context.user_id,
         session_id=self._invocation_context.session.id,
@@ -779,17 +619,20 @@ class Context(ReadonlyContext):
   # Credential methods
   # ============================================================================
 
+  def _require_credential_service(self) -> BaseCredentialService:
+    """Returns the credential service, or raises if none is configured."""
+    service = self._invocation_context.credential_service
+    if service is None:
+      raise ValueError('Credential service is not initialized.')
+    return service
+
   async def save_credential(self, auth_config: AuthConfig) -> None:
     """Saves a credential to the credential service.
 
     Args:
       auth_config: The authentication configuration containing the credential.
     """
-    if self._invocation_context.credential_service is None:
-      raise ValueError('Credential service is not initialized.')
-    await self._invocation_context.credential_service.save_credential(
-        auth_config, self
-    )
+    await self._require_credential_service().save_credential(auth_config, self)
 
   async def load_credential(
       self, auth_config: AuthConfig
@@ -802,9 +645,7 @@ class Context(ReadonlyContext):
     Returns:
       The loaded credential, or None if not found.
     """
-    if self._invocation_context.credential_service is None:
-      raise ValueError('Credential service is not initialized.')
-    return await self._invocation_context.credential_service.load_credential(
+    return await self._require_credential_service().load_credential(
         auth_config, self
     )
 
@@ -880,7 +721,7 @@ class Context(ReadonlyContext):
       )
     self._event_actions.requested_tool_confirmations[self.function_call_id] = (
         ToolConfirmation(
-            hint=hint,
+            hint=hint or '',
             payload=payload,
         )
     )
@@ -888,6 +729,18 @@ class Context(ReadonlyContext):
   # ============================================================================
   # Memory methods
   # ============================================================================
+
+  def _require_memory_service(self, error_message: str) -> BaseMemoryService:
+    """Returns the memory service, or raises ``error_message`` if unavailable.
+
+    Args:
+      error_message: Message for the raised error. Each caller passes its own so
+        the wording stays specific to the operation that needed the service.
+    """
+    service = self._invocation_context.memory_service
+    if service is None:
+      raise ValueError(error_message)
+    return service
 
   async def add_session_to_memory(self) -> None:
     """Triggers memory generation for the current session.
@@ -905,13 +758,10 @@ class Context(ReadonlyContext):
           await ctx.add_session_to_memory()
       ```
     """
-    if self._invocation_context.memory_service is None:
-      raise ValueError(
-          'Cannot add session to memory: memory service is not available.'
-      )
-    await self._invocation_context.memory_service.add_session_to_memory(
-        self._invocation_context.session
+    service = self._require_memory_service(
+        'Cannot add session to memory: memory service is not available.'
     )
+    await service.add_session_to_memory(self._invocation_context.session)
 
   async def add_events_to_memory(
       self,
@@ -931,11 +781,10 @@ class Context(ReadonlyContext):
     Raises:
       ValueError: If memory service is not available.
     """
-    if self._invocation_context.memory_service is None:
-      raise ValueError(
-          'Cannot add events to memory: memory service is not available.'
-      )
-    await self._invocation_context.memory_service.add_events_to_memory(
+    service = self._require_memory_service(
+        'Cannot add events to memory: memory service is not available.'
+    )
+    await service.add_events_to_memory(
         app_name=self._invocation_context.session.app_name,
         user_id=self._invocation_context.session.user_id,
         session_id=self._invocation_context.session.id,
@@ -961,9 +810,10 @@ class Context(ReadonlyContext):
     Raises:
       ValueError: If memory service is not available.
     """
-    if self._invocation_context.memory_service is None:
-      raise ValueError('Cannot add memory: memory service is not available.')
-    await self._invocation_context.memory_service.add_memory(
+    service = self._require_memory_service(
+        'Cannot add memory: memory service is not available.'
+    )
+    await service.add_memory(
         app_name=self._invocation_context.session.app_name,
         user_id=self._invocation_context.session.user_id,
         memories=memories,
@@ -982,9 +832,8 @@ class Context(ReadonlyContext):
     Raises:
       ValueError: If memory service is not available.
     """
-    if self._invocation_context.memory_service is None:
-      raise ValueError('Memory service is not available.')
-    return await self._invocation_context.memory_service.search_memory(
+    service = self._require_memory_service('Memory service is not available.')
+    return await service.search_memory(
         app_name=self._invocation_context.app_name,
         user_id=self._invocation_context.user_id,
         query=query,
@@ -1032,16 +881,16 @@ class Context(ReadonlyContext):
       override_isolation_scope: str | None = None,
       resume_inputs: dict[str, Any] | None = None,
   ) -> Context:
-    """Run a node directly via NodeRunner without an orchestrator."""
-    from ..workflow._node_runner import NodeRunner
+    from ..workflow import _dynamic_node_scheduler
 
-    runner = NodeRunner(
-        node=node,
-        parent_ctx=self,
-        run_id=run_id,
+    return await _dynamic_node_scheduler.run_node_standalone(
+        self,
+        node,
+        node_input=node_input,
         use_as_output=use_as_output,
+        run_id=run_id,
         use_sub_branch=use_sub_branch,
         override_branch=override_branch,
         override_isolation_scope=override_isolation_scope,
+        resume_inputs=resume_inputs,
     )
-    return await runner.run(node_input=node_input, resume_inputs=resume_inputs)

@@ -174,6 +174,61 @@ async def test_get_agents_dict_single_agent_has_no_sub_agents():
 
 
 @pytest.mark.asyncio
+async def test_get_agents_dict_coerces_callable_instruction():
+  def dynamic_instruction(ctx: ReadonlyContext) -> str:
+    raise RuntimeError('app-info must not resolve InstructionProvider')
+
+  agent = LlmAgent(
+      name='dyn',
+      description='Agent with a dynamic (callable) instruction.',
+      instruction=dynamic_instruction,
+  )
+
+  agents = await get_agents_dict(agent)
+
+  assert agents['dyn'].instruction == (
+      '<InstructionProvider: dynamic_instruction>'
+  )
+
+
+@pytest.mark.asyncio
+async def test_get_agents_dict_coerces_async_and_subagent_callables():
+  async def async_instruction(ctx: ReadonlyContext) -> str:
+    return 'async'
+
+  def child_instruction(ctx: ReadonlyContext) -> str:
+    return 'child'
+
+  child = LlmAgent(name='child', instruction=child_instruction)
+  root = LlmAgent(
+      name='root', instruction=async_instruction, sub_agents=[child]
+  )
+
+  agents = await get_agents_dict(root)
+
+  assert agents['root'].instruction == (
+      '<InstructionProvider: async_instruction>'
+  )
+  assert agents['child'].instruction == (
+      '<InstructionProvider: child_instruction>'
+  )
+
+
+@pytest.mark.asyncio
+async def test_get_agents_dict_coerces_instruction_provider_instance():
+  class Persona:
+
+    def __call__(self, ctx: ReadonlyContext) -> str:
+      return 'persona'
+
+  agent = LlmAgent(name='dyn', instruction=Persona())
+
+  agents = await get_agents_dict(agent)
+
+  assert agents['dyn'].instruction == '<InstructionProvider: Persona>'
+
+
+@pytest.mark.asyncio
 async def test_get_agents_dict_includes_transitively_nested_agents():
   grandchild = LlmAgent(name='grandchild')
   child = LlmAgent(name='child', sub_agents=[grandchild])

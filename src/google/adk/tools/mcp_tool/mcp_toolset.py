@@ -61,6 +61,7 @@ from .mcp_session_manager import retry_on_errors
 from .mcp_session_manager import SseConnectionParams
 from .mcp_session_manager import StdioConnectionParams
 from .mcp_session_manager import StreamableHTTPConnectionParams
+from .mcp_tool import _dump_mcp_model
 from .mcp_tool import _RESERVED_TOOL_NAMES
 from .mcp_tool import MCPTool
 from .mcp_tool import ProgressCallbackFactory
@@ -398,47 +399,35 @@ class McpToolset(BaseToolset):
 
     session_headers = headers if headers else None
     try:
+      session = await self._mcp_session_manager.create_session(
+          headers=session_headers
+      )
       timeout_in_seconds = (
           self._connection_params.timeout
           if hasattr(self._connection_params, "timeout")
           else None
       )
-      # `retriable` is True on the first attempt only: when the server reports
-      # the pooled session as terminated (restart or idle eviction), it
-      # rejected the request before running it, so retrying once on a fresh
-      # session cannot duplicate anything. Without this, a dead pooled session
-      # would fail every listing here forever, exactly like the tool-call path
-      # in `McpTool._run_async_impl`.
-      for retriable in (True, False):
-        session = await self._mcp_session_manager.create_session(
-            headers=session_headers
+      # Hold the session out of the pool's idle sweep while it is in use, so
+      # another caller's sweep cannot close the transport mid-call.
+      self._mcp_session_manager._begin_session_use(session_headers)  # pylint: disable=protected-access
+      try:
+        return await asyncio.wait_for(
+            coroutine_func(session), timeout=timeout_in_seconds
         )
-        # Hold the session out of the pool's idle sweep while it is in use, so
-        # another caller's sweep cannot close the transport mid-call.
-        self._mcp_session_manager._begin_session_use(session_headers)  # pylint: disable=protected-access
-        try:
-          return await asyncio.wait_for(
-              coroutine_func(session), timeout=timeout_in_seconds
+      except Exception as e:
+        logger.exception(
+            f"Exception during MCP session execution: {error_message}: {e}"
+        )
+        # Drop the session the server has forgotten, so the retry from
+        # @retry_on_errors builds a fresh one instead of being handed the
+        # same dead session back.
+        if _is_session_terminated_error(e):
+          self._mcp_session_manager._discard_session(  # pylint: disable=protected-access
+              session_headers, session=session
           )
-        except Exception as e:
-          if _is_session_terminated_error(e):
-            await self._mcp_session_manager._invalidate_session(  # pylint: disable=protected-access
-                headers=session_headers
-            )
-            if retriable:
-              logger.info(
-                  "MCP session was terminated server-side; retrying %s on a"
-                  " fresh session.",
-                  error_message,
-              )
-              continue
-          logger.exception(
-              f"Exception during MCP session execution: {error_message}: {e}"
-          )
-          raise ConnectionError(f"{error_message}: {e}") from e
-        finally:
-          self._mcp_session_manager._end_session_use(session_headers)  # pylint: disable=protected-access
-      raise AssertionError("unreachable: retry loop always returns or raises")
+        raise ConnectionError(f"{error_message}: {e}") from e
+      finally:
+        self._mcp_session_manager._end_session_use(session_headers)  # pylint: disable=protected-access
     finally:
       if debug_token is not None:
         _http_debug_var.reset(debug_token)
@@ -614,7 +603,10 @@ class McpToolset(BaseToolset):
     )
     for resource in result.resources:
       if resource.name == name:
-        return resource.model_dump(mode="json", exclude_none=True)
+        # `Resource` carries `mimeType`, which 2.x renames. A plain dump would
+        # hand the caller a different key on each major, the way the tool
+        # result did.
+        return _dump_mcp_model(resource)
     raise ValueError(f"Resource with name '{name}' not found.")
 
   async def close(self) -> None:
