@@ -1530,3 +1530,58 @@ def test_node_tool_declaration_with_pydantic_schemas_and_overrides():
   assert 'query' in decl.parameters_json_schema['properties']
   assert decl.response_json_schema is not None
   assert 'result' in decl.response_json_schema['properties']
+
+
+@pytest.mark.parametrize('resumable', [False, True])
+@pytest.mark.parametrize('node_result', [3, 0, '', {}])
+@pytest.mark.asyncio
+async def test_node_tool_synchronous_result_answers_the_call(
+    resumable: bool, node_result: Any
+):
+  """A node tool that returns right away is not treated as long-running.
+
+  The model's call event is not flagged as a long-running pause, and even a
+  falsy result is answered with a function response so the agent continues.
+  """
+
+  def add(a: int, b: int) -> Any:
+    del a, b
+    return node_result
+
+  agent = LlmAgent(
+      name='agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(name='add', args={'a': 1, 'b': 2}),
+              types.Part.from_text(text='done'),
+          ]
+      ),
+      tools=[FunctionNode(func=add)],
+  )
+  app = App(
+      name='test_app',
+      root_agent=agent,
+      resumability_config=(
+          ResumabilityConfig(is_resumable=True) if resumable else None
+      ),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async('go')
+
+  call_event = next(e for e in events if e.get_function_calls())
+  assert not call_event.long_running_tool_ids
+  assert not call_event.is_final_response()
+  responses = [fr.response for e in events for fr in e.get_function_responses()]
+  expected_response = (
+      node_result if isinstance(node_result, dict) else {'result': node_result}
+  )
+  assert responses == [expected_response]
+  texts = [
+      part.text
+      for e in events
+      if e.content and e.content.parts
+      for part in e.content.parts
+      if part.text
+  ]
+  assert texts == ['done']
