@@ -3534,6 +3534,29 @@ async def test_database_session_service_caller_owned_engine_not_disposed_on_clos
 
 
 @pytest.mark.asyncio
+async def test_delete_session_removes_events_with_caller_owned_sqlite_engine():
+  """A deleted session's events do not come back when its id is reused."""
+  engine = create_async_engine(
+      'sqlite+aiosqlite:///:memory:',
+      poolclass=StaticPool,
+      connect_args={'check_same_thread': False},
+  )
+  service = DatabaseSessionService(db_engine=engine)
+  scope = dict(app_name='app', user_id='user', session_id='s1')
+  session = await service.create_session(**scope)
+  await service.append_event(
+      session, Event(author='user', invocation_id='inv', timestamp=time.time())
+  )
+  await service.delete_session(**scope)
+  await service.create_session(**scope)
+
+  got = await service.get_session(**scope)
+
+  assert got.events == []
+  await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_database_session_service_requires_one_argument():
   """Test that DatabaseSessionService requires exactly one of db_url or db_engine."""
   # Neither argument provided

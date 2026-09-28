@@ -873,6 +873,16 @@ class DatabaseSessionService(BaseSessionService):
     await self.prepare_tables()
     schema = self._get_schema_classes()
     async with self._rollback_on_exception_session() as sql_session:
+      # Delete events explicitly rather than relying on ON DELETE CASCADE,
+      # which SQLite skips when foreign keys are off, e.g. on a caller-owned
+      # engine.
+      await sql_session.execute(
+          delete(schema.StorageEvent).where(
+              schema.StorageEvent.app_name == app_name,
+              schema.StorageEvent.user_id == user_id,
+              schema.StorageEvent.session_id == session_id,
+          )
+      )
       stmt = delete(schema.StorageSession).where(
           schema.StorageSession.app_name == app_name,
           schema.StorageSession.user_id == user_id,
