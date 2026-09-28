@@ -87,17 +87,27 @@ TRIGGER_DELIVERY_STATE_KEY = "trigger_delivery"
 """Session state key holding the identity of the delivery that started a run.
 
 Pub/Sub and Eventarc redeliver a message whenever the endpoint does not
-acknowledge it, and every delivery runs the agent in a new session. Tools
-with side effects can use ``tool_context.state[TRIGGER_DELIVERY_STATE_KEY]``
-to recognize a redelivery and skip work an earlier attempt already did. The
-value is a dict with:
+acknowledge it, and every delivery runs the agent in a new session with fresh
+state, so nothing an earlier attempt wrote to session state is visible to the
+redelivery. A tool with side effects should instead derive an idempotency key
+from this value and deduplicate where the side effect happens: pass the key to
+the provider (for example a payment API's idempotency key) or check it against
+an external store.
+
+The value is a dict with:
 
   - ``source``: ``"pubsub"`` or ``"eventarc"``.
   - ``id``: the Pub/Sub ``messageId`` or the CloudEvents ``id``, which stay
     the same across redeliveries of one message. ``None`` if the request did
     not carry one.
+  - ``subscription`` and ``publish_time`` for Pub/Sub, or ``event_source``
+    and ``type`` for Eventarc.
 
-plus the source-specific fields set by each trigger endpoint.
+``id`` alone is not globally unique: a Pub/Sub ``messageId`` is unique only
+within its topic, and every subscription on the topic receives the message,
+while a CloudEvents ``id`` is unique only within its source. Build the key
+from ``subscription`` and ``id`` for Pub/Sub, and from ``event_source`` and
+``id`` for Eventarc.
 """
 
 

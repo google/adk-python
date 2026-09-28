@@ -1356,15 +1356,17 @@ class TestTriggerDeliveryIdentity:
   ):
     """A tool can use the delivery id to avoid repeating a side effect.
 
-    Setup: a runner that pays an invoice once per delivery id, then fails
-      on the first attempt with a non-transient error.
+    Setup: a runner that pays an invoice through a provider keyed on
+      subscription and messageId, then fails on the first attempt with a
+      non-transient error. The provider's ledger lives outside the session,
+      because each delivery starts with fresh session state.
     Act: deliver the same Pub/Sub message twice, as Pub/Sub does after a
       500 response.
     Assert: the first delivery returns 500, the redelivery returns 200, and
       the payment happened exactly once.
     """
     payments = []
-    completed_deliveries = set()
+    provider_idempotency_keys = set()
 
     async def dummy_run_async_pay_then_fail(
         self, user_id, session_id, new_message, **kwargs
@@ -1372,10 +1374,11 @@ class TestTriggerDeliveryIdentity:
       session = await self.session_service.get_session(
           app_name=self.app_name, user_id=user_id, session_id=session_id
       )
-      delivery_id = session.state[TRIGGER_DELIVERY_STATE_KEY]["id"]
-      if delivery_id not in completed_deliveries:
+      delivery = session.state[TRIGGER_DELIVERY_STATE_KEY]
+      idempotency_key = (delivery["subscription"], delivery["id"])
+      if idempotency_key not in provider_idempotency_keys:
         payments.append("INV-1")
-        completed_deliveries.add(delivery_id)
+        provider_idempotency_keys.add(idempotency_key)
         raise RuntimeError("503 UNAVAILABLE")
       yield _model_event("Already paid")
 
