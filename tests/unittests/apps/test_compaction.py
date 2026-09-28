@@ -564,6 +564,44 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
     # Thought-only events are filtered by contents processing.
     self.assertEqual(estimated_token_count, len('visible') // 4)
 
+  def _create_agent_event(
+      self,
+      timestamp: float,
+      author: str,
+      prompt_token_count: int,
+  ) -> Event:
+    return Event(
+        timestamp=timestamp,
+        invocation_id='inv1',
+        author=author,
+        content=Content(role='model', parts=[Part(text='response')]),
+        usage_metadata=types.GenerateContentResponseUsageMetadata(
+            prompt_token_count=prompt_token_count
+        ),
+    )
+
+  def test_latest_prompt_token_count_ignores_other_agents(self):
+    events = [
+        self._create_agent_event(1.0, 'worker', 5000),
+        self._create_agent_event(2.0, 'formatter', 100),
+    ]
+
+    token_count = compaction_module._latest_prompt_token_count(
+        events, agent_name='worker'
+    )
+
+    self.assertEqual(token_count, 5000)
+
+  def test_latest_prompt_token_count_without_agent_name_uses_latest(self):
+    events = [
+        self._create_agent_event(1.0, 'worker', 5000),
+        self._create_agent_event(2.0, 'formatter', 100),
+    ]
+
+    token_count = compaction_module._latest_prompt_token_count(events)
+
+    self.assertEqual(token_count, 100)
+
   async def test_run_compaction_for_token_threshold_keeps_retention_events(
       self,
   ):

@@ -259,6 +259,28 @@ def validate_schema(schema: SchemaType, json_text: str) -> Any:
     return _json_utils.safe_json_loads(json_text, context="schema value")
 
 
+def annotation_expects_str(annotated_type: Any) -> bool:
+  """Returns True if the annotation is or contains ``str``."""
+  if annotated_type is str:
+    return True
+  if get_origin(annotated_type) in (Union, UnionType):
+    return any(annotation_expects_str(a) for a in get_args(annotated_type))
+  return False
+
+
+def annotation_accepts_content(annotated_type: Any) -> bool:
+  """Returns True if the annotation accepts ``types.Content`` as-is."""
+  if annotated_type in (Any, object, types.Content):
+    return True
+  if isinstance(annotated_type, type) and issubclass(
+      annotated_type, types.Content
+  ):
+    return True
+  if get_origin(annotated_type) in (Union, UnionType):
+    return any(annotation_accepts_content(a) for a in get_args(annotated_type))
+  return False
+
+
 def validate_node_data(
     schema: Optional[SchemaType],
     data: Any,
@@ -286,9 +308,7 @@ def validate_node_data(
     return _to_serializable(validated)
 
   # If schema expects Content, do not unwrap
-  if isinstance(schema, type) and issubclass(schema, types.Content):
-    return _validate_python_object(data)
-  if schema is types.Content:
+  if annotation_accepts_content(schema):
     return _validate_python_object(data)
 
   if isinstance(data, types.Content):

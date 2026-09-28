@@ -44,6 +44,7 @@ from google.genai.interactions import StepStart
 from google.genai.interactions import StepStop
 from google.genai.interactions import TextContent
 from google.genai.interactions import ThoughtStep
+from google.genai.interactions import UnknownStepDeltaData
 from google.genai.interactions import Usage
 import pytest
 
@@ -2292,7 +2293,9 @@ class TestConvertInteractionEventToLlmResponse:
     event = StepDelta(
         event_type='step.delta',
         index=0,
-        delta={'type': 'totally_made_up_xyz', 'foo': 'bar'},
+        delta=UnknownStepDeltaData(
+            raw={'type': 'totally_made_up_xyz', 'foo': 'bar'}
+        ),
     )
     state = interactions_utils._StreamState()
     with caplog.at_level(

@@ -636,7 +636,7 @@ class TestStreamingResponseAggregator:
       assert final_response.content.parts[1].function_call.id == "fc_456"
 
   @pytest.mark.asyncio
-  async def test_progressive_close_deduplicates_function_calls_without_ids(
+  async def test_progressive_close_keeps_identical_calls_without_ids(
       self,
   ):
     with temporary_feature_override(
@@ -681,13 +681,14 @@ class TestStreamingResponseAggregator:
 
       assert final_response is not None
       assert final_response.content is not None
-      assert len(final_response.content.parts) == 2
-      fc1 = final_response.content.parts[0].function_call
-      fc2 = final_response.content.parts[1].function_call
-      assert fc1.id.startswith(AF_FUNCTION_CALL_ID_PREFIX)
-      assert fc2.id.startswith(AF_FUNCTION_CALL_ID_PREFIX)
-      assert fc1.name == "test_func"
-      assert fc2.name == "test_func2"
+      calls = [p.function_call for p in final_response.content.parts]
+      assert [fc.name for fc in calls] == [
+          "test_func",
+          "test_func",
+          "test_func2",
+      ]
+      assert all(fc.id.startswith(AF_FUNCTION_CALL_ID_PREFIX) for fc in calls)
+      assert len({fc.id for fc in calls}) == 3
 
 
 class TestFunctionCallIdGeneration:
