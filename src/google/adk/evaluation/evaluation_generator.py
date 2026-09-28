@@ -1035,7 +1035,10 @@ class EvaluationGenerator:
               break
           if should_add_event:
             events_to_add.append(event)
-        elif event.grounding_metadata is not None:
+        elif (
+            event.grounding_metadata is not None
+            or event.usage_metadata is not None
+        ):
           events_to_add.append(event)
 
       invocation_events = []
@@ -1057,13 +1060,48 @@ class EvaluationGenerator:
                 model_version=e.model_version,
             )
         )
+      merged_events = []
+      for index, (event, invocation_event) in enumerate(
+          zip(events_to_add, invocation_events)
+      ):
+        if (
+            not (event.content and event.content.parts)
+            and event.grounding_metadata is None
+            and event.usage_metadata is not None
+        ):
+          # Live usage can arrive before or after content. Merge into an event
+          # already counted as a model call, without changing the input events
+          # or overwriting usage reported by another call.
+          # ponytail: scan within one invocation; index by model if long live
+          # turns make this quadratic search expensive.
+          model_event = next(
+              (
+                  candidate
+                  for candidate in (
+                      invocation_events[:index][::-1]
+                      + invocation_events[index + 1 :]
+                  )
+                  if candidate.model_version is not None
+                  and candidate.author == event.author
+                  and candidate.usage_metadata is None
+                  and (
+                      event.model_version is None
+                      or candidate.model_version == event.model_version
+                  )
+              ),
+              None,
+          )
+          if model_event is not None:
+            model_event.usage_metadata = event.usage_metadata
+            continue
+        merged_events.append(invocation_event)
       invocations.append(
           Invocation(
               invocation_id=invocation_id,
               user_content=user_content,
               final_response=final_response,
               intermediate_data=InvocationEvents(
-                  invocation_events=invocation_events
+                  invocation_events=merged_events
               ),
               creation_timestamp=invocation_timestamp,
               duration=(durations_per_invocation or {}).get(invocation_id),
