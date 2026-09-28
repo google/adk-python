@@ -1308,18 +1308,19 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
     )
     parts = [part for content in contents for part in content.parts]
 
-    self.assertTrue(
-        any(
-            part.function_call and part.function_call.id == 'a1'
-            for part in parts
-        )
-    )
-    self.assertTrue(
-        any(
-            part.function_response and part.function_response.id == 'a1'
-            for part in parts
-        )
-    )
+    call_indices = [
+        index
+        for index, part in enumerate(parts)
+        if part.function_call and part.function_call.id == 'a1'
+    ]
+    response_indices = [
+        index
+        for index, part in enumerate(parts)
+        if part.function_response and part.function_response.id == 'a1'
+    ]
+    self.assertEqual(len(call_indices), 1)
+    self.assertEqual(len(response_indices), 1)
+    self.assertLess(call_indices[0], response_indices[0])
 
   async def test_token_threshold_excludes_pending_function_call_events(self):
     """Token-threshold compaction stays contiguous before pending calls."""
