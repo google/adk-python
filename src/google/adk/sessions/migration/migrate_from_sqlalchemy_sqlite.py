@@ -155,8 +155,9 @@ def migrate(source_db_url: str, dest_db_path: str) -> None:
       # is the number that survived, not the number the source held.
       logger.warning(
           "Skipped %d event(s) that could not be migrated: %s. They are still"
-          " in the source database; re-run the migration once the cause is"
-          " fixed.",
+          " in the source database; once the cause is fixed, re-run the"
+          " migration into a new, empty destination (the session rows are"
+          " already in this one).",
           len(skipped_event_ids),
           ", ".join(skipped_event_ids),
       )

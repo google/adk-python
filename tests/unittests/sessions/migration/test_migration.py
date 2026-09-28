@@ -942,3 +942,26 @@ def test_sqlite_migration_reports_only_migrated_events(
   assert "Migrated 1 events." in caplog.text
   assert "Migrated 2 events." not in caplog.text
   assert "event2" in caplog.text
+  # Re-running into the same destination fails on the sessions UNIQUE
+  # constraint, so the advice has to point at a fresh one.
+  assert "new, empty destination" in caplog.text
+
+  # And that advice is what actually works: with the cause fixed, a second run
+  # into a new destination gets both rows.
+  caplog.clear()
+  dest_db_path2 = tmp_path / "dest_sqlite2.db"
+  with caplog.at_level(logging.INFO):
+    mfss.migrate(source_db_url, str(dest_db_path2))
+  dest_conn2 = sqlite3.connect(dest_db_path2)
+  try:
+    migrated_ids2 = [
+        row[0] for row in dest_conn2.execute("SELECT id FROM events").fetchall()
+    ]
+  finally:
+    dest_conn2.close()
+  assert sorted(migrated_ids2) == ["event1", "event2"]
+  assert "Skipped" not in caplog.text
+
+  # The same destination cannot be reused, which is why the warning says so.
+  with pytest.raises(SystemExit):
+    mfss.migrate(source_db_url, str(dest_db_path2))
