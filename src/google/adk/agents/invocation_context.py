@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+import weakref
 from typing import Any
 
 from google.adk.platform import uuid as platform_uuid
@@ -48,6 +50,11 @@ from .context_cache_config import ContextCacheConfig
 from .run_config import RunConfig
 
 _EventQueueItem = tuple[object, asyncio.Event | None]
+
+_confirmation_claim_lock = threading.Lock()
+_claimed_tool_confirmations: dict[
+    int, tuple[weakref.ReferenceType[BaseSessionService], set[tuple[str, str]]]
+] = {}
 
 
 class LlmCallsLimitExceededError(Exception):
@@ -204,17 +211,25 @@ class InvocationContext(BaseModel):
   """
 
   _consumed_tool_confirmation_ids: set[str] = PrivateAttr(default_factory=set)
-  _tool_confirmation_consume_lock: asyncio.Lock = PrivateAttr(
-      default_factory=asyncio.Lock
-  )
 
   async def _consume_tool_confirmation(self, function_call_id: str) -> bool:
-    """Atomically claim a confirmation so it can only resume a tool once."""
-    async with self._tool_confirmation_consume_lock:
-      if function_call_id in self._consumed_tool_confirmation_ids:
+    """Atomically claim a confirmation across invocations in this process."""
+    service_key = id(self.session_service)
+    with _confirmation_claim_lock:
+      service_claims = _claimed_tool_confirmations.get(service_key)
+      if service_claims is None or service_claims[0]() is not self.session_service:
+        service_claims = (weakref.ref(self.session_service), set())
+        _claimed_tool_confirmations[service_key] = service_claims
+      claims = service_claims[1]
+      claim_key = (self.session.id, function_call_id)
+      if claim_key in claims:
         return False
-      self._consumed_tool_confirmation_ids.add(function_call_id)
-      return True
+      claims.add(claim_key)
+
+    # Keep this per-context set for compatibility with callers that inspect it
+    # and to make the ownership explicit on the context that won the claim.
+    self._consumed_tool_confirmation_ids.add(function_call_id)
+    return True
 
   agent_states: dict[str, dict[str, Any]] = Field(default_factory=dict)
   """The state of the agent for this invocation."""

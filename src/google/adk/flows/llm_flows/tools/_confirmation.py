@@ -305,14 +305,21 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
         events, set(confirmations_by_fc_id.keys())
     )
     responded_fc_ids: set[str] = set()
-    # Only responses after the latest user confirmation can represent a prior
-    # execution of that confirmation. The initial gated tool response is before
-    # the user event and must not consume the first approval.
-    for event in reversed(events):
-      if event.author == "user":
-        break
+    # Count completed responses from the whole branch so a later duplicate
+    # submission cannot hide an earlier execution. Exclude the initial gated
+    # response itself: its event advertises the pending confirmation.
+    response_counts: dict[str, int] = {}
+    for event in events:
       for function_response in event.get_function_responses():
-        if function_response.id:
+        if not function_response.id:
+          continue
+        response_counts[function_response.id] = (
+            response_counts.get(function_response.id, 0) + 1
+        )
+        # The first response for a confirmed function call is the pending
+        # gate response. A later response with the same ID means execution
+        # completed and the confirmation must be treated as consumed.
+        if response_counts[function_response.id] > 1:
           responded_fc_ids.add(function_response.id)
 
     confirmations_by_fc_id = {
@@ -356,6 +363,11 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
             tools_dict,
         )
     )
+    confirmation_claim_ids = {
+        original_id: confirmation_id
+        for confirmation_id, original_id in confirmation_to_original_fc_id.items()
+        if confirmation_id in confirmations_by_fc_id
+    }
 
     if not tools_to_resume_with_confirmation:
       return
@@ -363,7 +375,9 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
     claimed_ids = {
         function_call_id
         for function_call_id in tools_to_resume_with_confirmation
-        if await invocation_context._consume_tool_confirmation(function_call_id)
+        if await invocation_context._consume_tool_confirmation(
+            confirmation_claim_ids[function_call_id]
+        )
     }
     if not claimed_ids:
       return
