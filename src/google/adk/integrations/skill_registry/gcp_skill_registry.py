@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import ssl
 import tempfile
 from typing import Any
@@ -36,9 +37,34 @@ import google.auth.exceptions
 from google.auth.transport import mtls
 from google.auth.transport import requests as auth_requests
 import httpx
+from pydantic import field_validator
 from pydantic import ValidationError
 
 logger = logging.getLogger("google_adk." + __name__)
+
+# Registry resource ids (e.g. "cloud.google.com-agent-platform-eval-flywheel"
+# for Google-published skills) are a different namespace from SKILL.md
+# frontmatter names: they are not required to be kebab/snake-case and may
+# contain dots. They still need to be safe to interpolate as a single URL
+# path segment, so they get their own, more permissive check instead of
+# reusing the SKILL.md content naming rule.
+_SAFE_REGISTRY_ID_PATTERN = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
+
+
+def _is_safe_registry_id(name: str) -> bool:
+  """True if `name` is safe to use as a single skill-registry path segment."""
+  return len(name) <= 256 and bool(_SAFE_REGISTRY_ID_PATTERN.fullmatch(name))
+
+
+class _RegistryFrontmatter(models.Frontmatter):
+  """Frontmatter variant that validates names using registry id rules."""
+
+  @field_validator("name")
+  @classmethod
+  def _validate_name(cls, v: str) -> str:
+    if not _is_safe_registry_id(v):
+      raise ValueError(f"not a safe registry id: {v!r}")
+    return v
 
 
 class GCPSkillRegistry(SkillRegistry):
@@ -158,9 +184,31 @@ class GCPSkillRegistry(SkillRegistry):
 
   def _create_httpx_client(self) -> httpx.AsyncClient:
     """Creates a new httpx.AsyncClient with appropriate SSL/mTLS configuration."""
+    base_host = httpx.URL(self.base_url).host
+
+    async def _drop_cross_origin_goog_headers(request: httpx.Request) -> None:
+      if request.url.host != base_host:
+        for header in list(request.headers):
+          if header.lower().startswith("x-goog-"):
+            del request.headers[header]
+
+    # The Agent Registry media download (alt=media) replies with a 302 to a
+    # short-lived GCS signed URL, so the client must follow redirects; httpx
+    # drops the Authorization header on cross-origin redirects, but retains
+    # custom headers like x-goog-user-project and x-goog-api-client. GCS
+    # requires all x-goog-* headers on a signed request to match its signature,
+    # so we drop them when redirected off the base API host.
+    event_hooks = {"request": [_drop_cross_origin_goog_headers]}
     if self._ssl_context is not None:
-      return httpx.AsyncClient(verify=self._ssl_context)
-    return httpx.AsyncClient()
+      return httpx.AsyncClient(
+          verify=self._ssl_context,
+          follow_redirects=True,
+          event_hooks=event_hooks,
+      )
+    return httpx.AsyncClient(
+        follow_redirects=True,
+        event_hooks=event_hooks,
+    )
 
   async def get_skill(self, *, name: str) -> models.Skill:
     """Fetches a skill from the registry.
@@ -175,15 +223,16 @@ class GCPSkillRegistry(SkillRegistry):
       ValueError: If the name is not a valid skill name.
     """
     # The name reaches here straight from a model-issued tool call, so it must
-    # be a single path segment before it is interpolated into the request URL.
-    # Accept the same character set skill names are already held to; the
-    # snake-or-kebab pattern is the superset of the two accepted spellings.
-    # pylint: disable-next=protected-access
-    if not models._SNAKE_OR_KEBAB_NAME_PATTERN.match(name):
+    # be a single, safe path segment before it is interpolated into the
+    # request URL. This is a registry resource id, not a SKILL.md frontmatter
+    # name, so it is held to its own safe-path-segment rule rather than the
+    # stricter kebab/snake-case naming rule SKILL.md content is held to.
+    if not _is_safe_registry_id(name):
       raise ValueError(
-          f"Invalid skill name {name!r}: name must be lowercase kebab-case"
-          " (a-z, 0-9, hyphens) or snake_case (a-z, 0-9, underscores), with"
-          " no leading, trailing, or consecutive delimiters."
+          f"Invalid skill name {name!r}: name must be a single safe path"
+          " segment of at most 256 characters (lowercase letters, digits,"
+          " and non-consecutive '.', '_', '-' separators), with no leading,"
+          " trailing, or consecutive delimiters."
       )
 
     async with self._create_httpx_client() as client:
@@ -239,7 +288,7 @@ class GCPSkillRegistry(SkillRegistry):
       response = await self._make_request(client, url, params=params)
       response_data = response.json()
 
-      results = []
+      results: list[models.Frontmatter] = []
       for s in response_data.get("skills", []):
         # A non-string name is as much outside the caller's control as a
         # non-conforming one, so give it the same treatment: an empty name
@@ -248,7 +297,7 @@ class GCPSkillRegistry(SkillRegistry):
         name = raw_name.split("/")[-1] if isinstance(raw_name, str) else ""
         try:
           results.append(
-              models.Frontmatter(
+              _RegistryFrontmatter(
                   name=name,
                   description=s.get("description", "") or "",
               )

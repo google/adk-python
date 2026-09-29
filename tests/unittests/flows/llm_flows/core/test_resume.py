@@ -29,6 +29,7 @@ from google.adk.flows.llm_flows.core._resume import decide_resume
 from google.adk.flows.llm_flows.core._resume import decide_step_resume
 from google.adk.flows.llm_flows.core._resume import ResumeAction
 from google.adk.flows.llm_flows.core._resume import ResumeDecision
+from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
 from google.genai import types
 import pytest
@@ -74,6 +75,28 @@ def _response_event(
           ],
       ),
   )
+
+
+def _parallel_call_event(calls: list[tuple[str, str]]) -> Event:
+  return Event(
+      author='agent',
+      invocation_id='inv-1',
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id=call_id, name=name, args={}
+                  )
+              )
+              for name, call_id in calls
+          ],
+      ),
+  )
+
+
+def _replayed_ids(decision: ResumeDecision) -> list[str | None]:
+  return [fc.id for fc in decision.replay_event().get_function_calls()]
 
 
 def _text_event(text: str) -> Event:
@@ -321,6 +344,55 @@ class TestDecideResume:
     )
     assert decision.action is ResumeAction.CONTINUE
 
+  @pytest.mark.parametrize(
+      'sibling_name', ['fetch', 'ask'], ids=['other_name', 'same_name']
+  )
+  def test_parallel_call_that_never_ran_is_replayed_alone(self, sibling_name):
+    call = _parallel_call_event([('ask', 'c1'), (sibling_name, 'c2')])
+    events = [call, _response_event('ask', 'c1')]
+    decision = decide_resume(
+        self._ctx(), events, {'ask': object(), 'fetch': object()}
+    )
+    assert decision.action is ResumeAction.REPLAY_CALLS
+    assert _replayed_ids(decision) == ['c2']
+
+  def test_response_without_an_id_answers_its_call_by_name(self):
+    call = _parallel_call_event([('ask', 'c1'), ('fetch', 'c2')])
+    events = [call, _response_event('ask', None)]
+    decision = decide_resume(
+        self._ctx(), events, {'ask': object(), 'fetch': object()}
+    )
+    assert _replayed_ids(decision) == ['c2']
+
+  def test_sibling_missing_a_response_after_an_auth_resume_is_not_replayed(
+      self,
+  ):
+    auth_request = Event(
+        author='agent',
+        invocation_id='inv-1',
+        long_running_tool_ids={'a1'},
+        content=types.Content(
+            role='user',
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(
+                        id='a1', name=REQUEST_EUC_FUNCTION_CALL_NAME, args={}
+                    )
+                )
+            ],
+        ),
+    )
+    events = [
+        _parallel_call_event([('ask', 'c1'), ('fetch', 'c2')]),
+        auth_request,
+        _response_event(REQUEST_EUC_FUNCTION_CALL_NAME, 'a1'),
+        _response_event('ask', 'c1', author='agent'),
+    ]
+    decision = decide_resume(
+        self._ctx(), events, {'ask': object(), 'fetch': object()}
+    )
+    assert decision.action is ResumeAction.CONTINUE
+
   def test_sub_branch_answer_replays_instead_of_pausing(self):
     # A HITL answer returned against the branch the call opened resolves it,
     # even though it carries none of the call's ids.
@@ -416,6 +488,19 @@ class TestDecideStepResume:
     tail = _call_event('ask', 'c2')
     events = [answered, _response_event('ask', 'c1'), tail]
     decision = decide_step_resume(self._ctx(events), {'ask': object()})
+    assert decision.action is ResumeAction.REPLAY_CALLS
+    assert decision.replay_event() is tail
+
+  def test_a_later_model_turn_leaves_an_earlier_unexecuted_call_alone(self):
+    tail = _call_event('ask', 'c3')
+    events = [
+        _parallel_call_event([('ask', 'c1'), ('fetch', 'c2')]),
+        _response_event('ask', 'c1'),
+        tail,
+    ]
+    decision = decide_step_resume(
+        self._ctx(events), {'ask': object(), 'fetch': object()}
+    )
     assert decision.action is ResumeAction.REPLAY_CALLS
     assert decision.replay_event() is tail
 

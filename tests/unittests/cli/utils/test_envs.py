@@ -90,3 +90,64 @@ def test_load_dotenv_for_agent_respects_disable_flag(
   envs.load_dotenv_for_agent("agent1", str(agents_dir))
 
   assert key not in os.environ
+
+
+def test_load_dotenv_for_agent_does_not_apply_metadata_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Agent dotenv loading does not apply metadata defaults."""
+  from google.adk.utils import _gcp_metadata
+
+  monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+  monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+  monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+  monkeypatch.delenv("GOOGLE_GENAI_USE_ENTERPRISE", raising=False)
+  monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+  monkeypatch.delenv("SOME_OTHER", raising=False)
+  envs._get_explicit_env_keys.cache_clear()
+
+  agent_dir = tmp_path / "my_agent"
+  agent_dir.mkdir()
+  (agent_dir / ".env").write_text("SOME_OTHER=1\n")
+
+  monkeypatch.setattr(
+      _gcp_metadata, "get_project_id_from_metadata", lambda: "dotenv-project"
+  )
+
+  envs.load_dotenv_for_agent("my_agent", str(tmp_path))
+
+  assert "GOOGLE_CLOUD_PROJECT" not in os.environ
+  assert "GOOGLE_GENAI_USE_ENTERPRISE" not in os.environ
+  assert os.environ["SOME_OTHER"] == "1"
+
+
+def test_load_dotenv_for_agent_explicit_project_prevents_metadata_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Agent `.env` project prevents metadata default project from being used."""
+  from google.adk.utils import _gcp_metadata
+  from google.adk.utils._gcp_metadata import get_gcp_client_defaults
+
+  monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+  monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+  monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+  monkeypatch.delenv("GOOGLE_GENAI_USE_ENTERPRISE", raising=False)
+  monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+  envs._get_explicit_env_keys.cache_clear()
+
+  monkeypatch.setattr(
+      _gcp_metadata, "get_project_id_from_metadata", lambda: "meta-project"
+  )
+
+  agent_dir = tmp_path / "my_agent"
+  agent_dir.mkdir()
+  (agent_dir / ".env").write_text(
+      "GOOGLE_CLOUD_PROJECT=agent-project\nGOOGLE_GENAI_USE_ENTERPRISE=true\n"
+  )
+
+  envs.load_dotenv_for_agent("my_agent", str(tmp_path))
+
+  assert os.environ["GOOGLE_CLOUD_PROJECT"] == "agent-project"
+  defaults = get_gcp_client_defaults()
+  assert defaults == {}
+  assert "project" not in defaults

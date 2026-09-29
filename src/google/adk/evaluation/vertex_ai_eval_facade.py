@@ -325,6 +325,8 @@ class _MultiTurnVertexiAiEvalFacade(_VertexAiEvalFacade):
 
     if isinstance(invocation.intermediate_data, InvocationEvents):
       for invocation_event in invocation.intermediate_data.invocation_events:
+        if invocation_event.content is None:
+          continue
         agent_events.append(
             _MultiTurnVertexiAiEvalFacade._map_inovcation_event_to_agent_event(
                 invocation_event
