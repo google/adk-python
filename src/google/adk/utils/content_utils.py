@@ -41,10 +41,25 @@ def is_audio_part(part: types.Part) -> bool:
   )
 
 
+def is_adk_live_artifact_part(part: types.Part) -> bool:
+  """Returns whether `part` references an internal `_adk_live` artifact."""
+  if part.file_data is None:
+    return False
+  file_uri = part.file_data.file_uri or ''
+  if '/_adk_live/' in file_uri:
+    return True
+  mime_type = (part.file_data.mime_type or '').split(';', 1)[0].strip().lower()
+  return file_uri.startswith('artifact://') and mime_type == 'application/zip'
+
+
 def filter_audio_parts(content: types.Content) -> types.Content | None:
   if not content.parts:
     return None
-  filtered_parts = [part for part in content.parts if not is_audio_part(part)]
+  filtered_parts = [
+      part
+      for part in content.parts
+      if not is_audio_part(part) and not is_adk_live_artifact_part(part)
+  ]
   if not filtered_parts:
     return None
   return types.Content(role=content.role, parts=filtered_parts)

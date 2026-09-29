@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from google.adk.utils.content_utils import extract_text_from_content
 from google.adk.utils.content_utils import filter_audio_parts
+from google.adk.utils.content_utils import is_adk_live_artifact_part
 from google.adk.utils.content_utils import is_audio_part
 from google.adk.utils.content_utils import SKIP_THOUGHT_SIGNATURE_VALIDATOR
 from google.adk.utils.content_utils import to_user_content
@@ -136,6 +137,56 @@ def test_is_audio_part_blob_without_mime_type_is_not_audio():
   assert is_audio_part(part) is False
 
 
+def test_is_adk_live_artifact_part():
+  """Internal `_adk_live` artifact parts (zip and single-frame) are detected."""
+  zip_part = types.Part(
+      file_data=types.FileData(
+          file_uri='artifact://app/user/s1/_adk_live/adk_live_media_storage_input_media_123.zip#0',
+          mime_type='application/zip',
+      )
+  )
+  single_frame_part = types.Part(
+      file_data=types.FileData(
+          file_uri='artifact://app/user/s1/_adk_live/adk_live_media_storage_input_media_123.jpeg#0',
+          mime_type='image/jpeg',
+      )
+  )
+  parameterized_zip_part = types.Part(
+      file_data=types.FileData(
+          file_uri='artifact://app/user/s1/custom_bundle.zip#0',
+          mime_type='APPLICATION/ZIP; charset=binary',
+      )
+  )
+  empty_file_data_part = types.Part(
+      file_data=types.FileData(file_uri=None, mime_type=None)
+  )
+  external_file_part = types.Part(
+      file_data=types.FileData(
+          file_uri='gs://bucket/file.jpeg',
+          mime_type='image/jpeg',
+      )
+  )
+  external_zip_part = types.Part(
+      file_data=types.FileData(
+          file_uri='gs://bucket/archive.zip',
+          mime_type='application/zip',
+      )
+  )
+  inline_image_part = types.Part(
+      inline_data=types.Blob(data=b'img', mime_type='image/jpeg')
+  )
+  text_part = types.Part(text='hello')
+
+  assert is_adk_live_artifact_part(zip_part)
+  assert is_adk_live_artifact_part(single_frame_part)
+  assert is_adk_live_artifact_part(parameterized_zip_part)
+  assert not is_adk_live_artifact_part(empty_file_data_part)
+  assert not is_adk_live_artifact_part(external_file_part)
+  assert not is_adk_live_artifact_part(external_zip_part)
+  assert not is_adk_live_artifact_part(inline_image_part)
+  assert not is_adk_live_artifact_part(text_part)
+
+
 def test_filter_audio_parts_drops_audio_and_keeps_role_and_order():
   content = types.Content(
       role='user',
@@ -152,6 +203,45 @@ def test_filter_audio_parts_drops_audio_and_keeps_role_and_order():
   assert filtered is not None
   assert filtered.role == 'user'
   assert [p.text for p in filtered.parts] == ['before', 'after']
+
+
+def test_filter_audio_parts_filters_adk_live_artifact_parts():
+  """filter_audio_parts strips internal `_adk_live` artifact parts."""
+  text_part = types.Part(text='Describe this frame')
+  inline_image = types.Part(
+      inline_data=types.Blob(data=b'png', mime_type='image/png')
+  )
+  adk_live_zip = types.Part(
+      file_data=types.FileData(
+          file_uri='artifact://app/u/s/_adk_live/adk_live_media_storage_input_media_1.zip#0',
+          mime_type='application/zip',
+      )
+  )
+  adk_live_jpeg = types.Part(
+      file_data=types.FileData(
+          file_uri='artifact://app/u/s/_adk_live/adk_live_media_storage_input_media_2.jpeg#0',
+          mime_type='image/jpeg',
+      )
+  )
+  content = types.Content(
+      role='user',
+      parts=[text_part, inline_image, adk_live_zip, adk_live_jpeg],
+  )
+  result = filter_audio_parts(content)
+  assert result is not None
+  assert result.parts == [text_part, inline_image]
+
+
+def test_filter_audio_parts_returns_none_when_only_adk_live_artifacts():
+  """Content containing only `_adk_live` artifact parts filters to None."""
+  adk_live_zip = types.Part(
+      file_data=types.FileData(
+          file_uri='artifact://app/u/s/_adk_live/adk_live_media_storage_input_media_1.zip#0',
+          mime_type='application/zip',
+      )
+  )
+  content = types.Content(role='user', parts=[adk_live_zip])
+  assert filter_audio_parts(content) is None
 
 
 def test_filter_audio_parts_all_audio_returns_none():
