@@ -29,11 +29,6 @@ import warnings
 
 from google.auth import _cloud_sdk
 from google.auth import exceptions as auth_exceptions
-# google-auth does not expose a public API for direct Compute Engine metadata
-# server probes (google.auth.default() requires credentials configuration).
-# _metadata is the standard internal module used across Google Cloud SDKs.
-from google.auth.compute_engine import _metadata
-from google.auth.transport import requests as auth_requests
 
 from . import env_utils
 
@@ -66,6 +61,16 @@ def get_project_id_from_metadata() -> str | None:
     return _cached_project_id or None
 
   try:
+    # Imported here, not at module level: both pull in requests, urllib3 and
+    # cryptography, which `from google.adk.agents import Agent` would
+    # otherwise load in every ADK process.
+    # google-auth does not expose a public API for direct Compute Engine
+    # metadata server probes (google.auth.default() requires credentials
+    # configuration). _metadata is the standard internal module used across
+    # Google Cloud SDKs.
+    from google.auth.compute_engine import _metadata  # pylint: disable=import-outside-toplevel
+    from google.auth.transport import requests as auth_requests  # pylint: disable=import-outside-toplevel
+
     request = auth_requests.Request()
     if not _metadata.ping(
         request, timeout=_METADATA_TIMEOUT_SECONDS, retry_count=1
