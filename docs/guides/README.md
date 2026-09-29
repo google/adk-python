@@ -79,8 +79,10 @@ This directory contains specific developer guides for the ADK Python implementat
 * [AntigravityAgent](labs/antigravity/index.md) - Runs a Google Antigravity SDK agent as an ADK agent node.
 
 ### Live
+* [CacheManager](live/cache_manager/index.md) - Buffering and persisting realtime audio, image, and video blobs during live streaming sessions.
 * [Live tools](live/tools/index.md) - Asynchronous background execution and response scheduling for Gemini Live agents.
 * [LiveRequestQueue](live/live_request_queue/index.md) - Streaming content, realtime audio, and stream control signals to live agents.
+* [MediaFrame and archive helpers](live/media_frames/index.md) - Packing and unpacking timestamped image and video frame sequences as uncompressed ZIP archives.
 
 ### Memory
 * [BaseMemoryService](memory/memory_service/index.md) - Storing finished sessions and recalling them from later conversations.

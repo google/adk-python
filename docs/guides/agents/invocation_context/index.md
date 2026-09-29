@@ -190,6 +190,10 @@ Configuration fields supporting live bidirectional audio, streaming tools, and t
 | `live_request_queue` | Field | `LiveRequestQueue \| None` | Queue for receiving real-time input chunks in live sessions. |
 | `active_streaming_tools` | Field | `dict[str, ActiveStreamingTool] \| None` | Active background streaming tools for live agents. |
 | `active_non_blocking_tool_tasks` | Field | `dict[str, Task[Any]] \| None` | Running background tool tasks executing concurrently with live audio. |
+| `input_realtime_cache` | Field | `list[RealtimeCacheEntry] \| None` | Buffered incoming user audio chunks awaiting flush when `save_live_blob` is enabled. |
+| `output_realtime_cache` | Field | `list[RealtimeCacheEntry] \| None` | Buffered outgoing model audio chunks awaiting flush when `save_live_blob` is enabled. |
+| `input_media_realtime_cache` | Field | `list[RealtimeCacheEntry] \| None` | Buffered incoming user image and video frames awaiting flush when `save_live_blob` is enabled. |
+| `output_media_realtime_cache` | Field | `list[RealtimeCacheEntry] \| None` | Buffered outgoing model image and video frames awaiting flush when `save_live_blob` is enabled. |
 | `transcription_cache` | Field | `list[TranscriptionEntry] \| None` | Cached transcriptions and audio buffers for live streaming. |
 | `run_config` | Field | `RunConfig \| None` | Runtime limits and metadata configuration (such as `max_llm_calls`). |
 | `resumability_config` | Field | `ResumabilityConfig \| None` | Configuration controlling session pause and resume capabilities. |

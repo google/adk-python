@@ -181,7 +181,7 @@ async def test_handle_control_event_flush_on_interrupted():
   response = LlmResponse(interrupted=True)
 
   with mock.patch.object(
-      flow.audio_cache_manager, 'flush_caches', new_callable=mock.AsyncMock
+      flow.cache_manager, 'flush_caches', new_callable=mock.AsyncMock
   ) as mock_flush:
     mock_flush.return_value = [Event(id='flushed-event')]
     events = await _live_llm_flow.handle_control_event_flush(
@@ -190,18 +190,22 @@ async def test_handle_control_event_flush_on_interrupted():
 
   assert len(events) == 1
   mock_flush.assert_awaited_once_with(
-      context, flush_user_audio=False, flush_model_audio=True
+      context,
+      flush_user_audio=False,
+      flush_model_audio=True,
+      flush_user_media=False,
+      flush_model_media=True,
   )
 
 
 async def test_handle_control_event_flush_on_turn_complete():
-  """A turn_complete response triggers both user and model audio cache flushes."""
+  """A turn_complete response triggers both user and model audio and media cache flushes."""
   flow = _TestBaseLlmFlow()
   context = _create_test_context(live_request_queue=LiveRequestQueue())
   response = LlmResponse(turn_complete=True)
 
   with mock.patch.object(
-      flow.audio_cache_manager, 'flush_caches', new_callable=mock.AsyncMock
+      flow.cache_manager, 'flush_caches', new_callable=mock.AsyncMock
   ) as mock_flush:
     mock_flush.return_value = [Event(id='flushed-event')]
     events = await _live_llm_flow.handle_control_event_flush(
@@ -210,7 +214,11 @@ async def test_handle_control_event_flush_on_turn_complete():
 
   assert len(events) == 1
   mock_flush.assert_awaited_once_with(
-      context, flush_user_audio=True, flush_model_audio=True
+      context,
+      flush_user_audio=True,
+      flush_model_audio=True,
+      flush_user_media=True,
+      flush_model_media=True,
   )
 
 
@@ -308,71 +316,247 @@ async def test_handle_control_event_flush_logs_stats_when_enabled():
   with (
       mock.patch.object(_flow_utils, 'DEFAULT_ENABLE_CACHE_STATISTICS', True),
       mock.patch.object(
-          flow.audio_cache_manager, 'get_cache_stats'
+          flow.cache_manager, 'get_cache_stats'
       ) as mock_get_stats,
-      mock.patch.object(
-          flow.audio_cache_manager, 'flush_caches', return_value=[]
-      ),
+      mock.patch.object(flow.cache_manager, 'flush_caches', return_value=[]),
   ):
     await _live_llm_flow.handle_control_event_flush(flow, context, response)
 
   mock_get_stats.assert_called_once_with(context)
 
 
-async def test_send_to_model_uses_flow_audio_cache_manager():
-  """send_to_model accesses the audio cache manager directly from the flow instance."""
-  flow = _TestBaseLlmFlow()
-  queue = LiveRequestQueue()
-  queue.send_realtime(types.Blob(mime_type='audio/pcm', data=b'audio_bytes'))
-  context = _create_test_context(
-      live_request_queue=queue, run_config=RunConfig(save_live_blob=True)
-  )
+async def _run_send_to_model_once(flow, context):
+  """Drains the queued requests deterministically by appending a close signal."""
   mock_connection = mock.AsyncMock()
-
-  with mock.patch.object(
-      flow.audio_cache_manager, 'cache_audio'
-  ) as mock_cache_audio:
-    # Run send_to_model briefly and cancel it after processing the queued item
-    send_task = asyncio.create_task(
-        _live_llm_flow.send_to_model(
-            flow, mock_connection, context, LlmRequest()
-        )
-    )
-    await asyncio.sleep(0.01)
-    send_task.cancel()
-    try:
-      await send_task
-    except asyncio.CancelledError:
-      pass
-
-  mock_cache_audio.assert_called_once()
+  context.live_request_queue.close()
+  await _live_llm_flow.send_to_model(
+      flow, mock_connection, context, LlmRequest()
+  )
+  return mock_connection
 
 
-async def test_send_to_model_caches_only_audio_blobs():
-  """Non-audio blobs such as video frames are sent but not cached."""
+async def test_send_to_model_routes_audio_to_the_audio_cache():
+  """send_to_model caches user audio into input_realtime_cache and forwards to connection."""
   flow = _TestBaseLlmFlow()
   queue = LiveRequestQueue()
   audio_blob = types.Blob(mime_type='audio/pcm', data=b'audio_bytes')
-  video_blob = types.Blob(mime_type='image/jpeg', data=b'video_frame')
-  queue.send_realtime(video_blob)
   queue.send_realtime(audio_blob)
   context = _create_test_context(
       live_request_queue=queue, run_config=RunConfig(save_live_blob=True)
   )
-  mock_connection = mock.AsyncMock()
 
-  send_task = asyncio.create_task(
-      _live_llm_flow.send_to_model(flow, mock_connection, context, LlmRequest())
+  mock_connection = await _run_send_to_model_once(flow, context)
+
+  assert len(context.input_realtime_cache) == 1
+  assert context.input_realtime_cache[0].data == audio_blob
+  assert not context.input_media_realtime_cache
+  mock_connection.send_realtime.assert_awaited_once_with(audio_blob)
+
+
+async def test_send_to_model_routes_video_to_the_media_cache():
+  """send_to_model routes image/* and video/* blobs into input_media_realtime_cache."""
+  flow = _TestBaseLlmFlow()
+  queue = LiveRequestQueue()
+  video_blob = types.Blob(mime_type='image/jpeg', data=b'frame_bytes')
+  queue.send_realtime(video_blob)
+  context = _create_test_context(
+      live_request_queue=queue, run_config=RunConfig(save_live_blob=True)
   )
-  await asyncio.sleep(0.01)
-  send_task.cancel()
-  try:
-    await send_task
-  except asyncio.CancelledError:
-    pass
 
-  assert [entry.data for entry in context.input_realtime_cache] == [audio_blob]
-  assert mock_connection.send_realtime.await_args_list == [
-      mock.call(video_blob),
-      mock.call(audio_blob),
+  mock_connection = await _run_send_to_model_once(flow, context)
+
+  assert len(context.input_media_realtime_cache) == 1
+  assert context.input_media_realtime_cache[0].data == video_blob
+  assert not context.input_realtime_cache
+  mock_connection.send_realtime.assert_awaited_once_with(video_blob)
+
+
+async def test_send_to_model_caches_nothing_when_save_live_blob_is_off():
+  """`save_live_blob` gates the whole feature; with it off no frame may be cached."""
+  flow = _TestBaseLlmFlow()
+  queue = LiveRequestQueue()
+  video_blob = types.Blob(mime_type='image/jpeg', data=b'frame_bytes')
+  queue.send_realtime(video_blob)
+  context = _create_test_context(
+      live_request_queue=queue, run_config=RunConfig(save_live_blob=False)
+  )
+
+  mock_connection = await _run_send_to_model_once(flow, context)
+
+  assert not context.input_media_realtime_cache
+  assert not context.input_realtime_cache
+  mock_connection.send_realtime.assert_awaited_once_with(video_blob)
+
+
+async def test_audio_cache_manager_alias_still_resolves_and_warns():
+  """Reading or setting `flow.audio_cache_manager` forwards to `cache_manager` and warns."""
+  from google.adk.live._cache_manager import CacheManager
+
+  flow = _TestBaseLlmFlow()
+
+  with pytest.warns(DeprecationWarning, match='use cache_manager instead'):
+    alias = flow.audio_cache_manager
+  assert alias is flow.cache_manager
+
+  replacement = CacheManager()
+  with pytest.warns(DeprecationWarning, match='use cache_manager instead'):
+    flow.audio_cache_manager = replacement
+  assert flow.cache_manager is replacement
+
+
+class _FakeLiveConnection:
+  """Replays a fixed script of responses once, then goes quiet."""
+
+  def __init__(self, responses: list[LlmResponse]):
+    self._responses = responses
+    self.receive_calls = 0
+
+  async def receive(self):
+    self.receive_calls += 1
+    if self.receive_calls > 1:
+      return
+    for response in self._responses:
+      yield response
+
+
+def _model_blob_response(mime_type: str, data: bytes) -> LlmResponse:
+  """A model turn carrying a single inline blob."""
+  return LlmResponse(
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(inline_data=types.Blob(mime_type=mime_type, data=data))
+          ],
+      )
+  )
+
+
+async def _drain_receive_from_model(flow, connection, context) -> list[Event]:
+  events = []
+  async for event in _live_llm_flow.receive_from_model(
+      flow, connection, context, LlmRequest()
+  ):
+    events.append(event)
+  return events
+
+
+async def test_receive_from_model_routes_video_to_the_media_cache():
+  """Model-generated image/* and video/* inline_data blobs are routed to output_media_realtime_cache."""
+  flow = _TestBaseLlmFlow()
+  context = _create_test_context(run_config=RunConfig(save_live_blob=True))
+  connection = _FakeLiveConnection(
+      [_model_blob_response('image/jpeg', b'model_frame')]
+  )
+
+  await _drain_receive_from_model(flow, connection, context)
+
+  assert len(context.output_media_realtime_cache) == 1
+  assert context.output_media_realtime_cache[0].data.data == b'model_frame'
+  assert not context.output_realtime_cache
+
+
+async def test_receive_from_model_routes_audio_to_the_audio_cache():
+  """Routing by MIME type preserves the output audio caching path."""
+  flow = _TestBaseLlmFlow()
+  context = _create_test_context(run_config=RunConfig(save_live_blob=True))
+  connection = _FakeLiveConnection(
+      [_model_blob_response('audio/pcm', b'model_audio')]
+  )
+
+  await _drain_receive_from_model(flow, connection, context)
+
+  assert len(context.output_realtime_cache) == 1
+  assert context.output_realtime_cache[0].data.data == b'model_audio'
+  assert not context.output_media_realtime_cache
+
+
+async def test_receive_from_model_caches_nothing_when_save_live_blob_is_off():
+  """`save_live_blob` gates model output caching as well as user input caching."""
+  flow = _TestBaseLlmFlow()
+  context = _create_test_context(run_config=RunConfig())
+  connection = _FakeLiveConnection(
+      [_model_blob_response('image/jpeg', b'model_frame')]
+  )
+
+  await _drain_receive_from_model(flow, connection, context)
+
+  assert not context.output_media_realtime_cache
+  assert not context.output_realtime_cache
+
+
+async def test_postprocess_live_flow_flushes_media_on_interrupted_and_turn_complete():
+  """Interrupted responses flush only model media/audio; turn_complete flushes remaining user media/audio."""
+  import io
+  import zipfile
+
+  from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
+
+  flow = _TestBaseLlmFlow()
+  context = _create_test_context(
+      live_request_queue=LiveRequestQueue(),
+      run_config=RunConfig(save_live_blob=True),
+  )
+  artifact_service = InMemoryArtifactService()
+  context.artifact_service = artifact_service
+
+  flow.cache_manager.cache_blob(
+      context, types.Blob(mime_type='image/jpeg', data=b'user_frame_1'), 'input'
+  )
+  flow.cache_manager.cache_blob(
+      context, types.Blob(mime_type='image/jpeg', data=b'user_frame_2'), 'input'
+  )
+  flow.cache_manager.cache_blob(
+      context, types.Blob(mime_type='image/png', data=b'model_frame'), 'output'
+  )
+
+  # 1. Interrupted response flushes only model media cache (1 frame -> stored as image/png)
+  interrupted_events = [
+      e
+      async for e in _live_llm_flow.postprocess_live_flow(
+          flow,
+          context,
+          LlmRequest(),
+          LlmResponse(interrupted=True),
+          Event(
+              id='ev-int', invocation_id=context.invocation_id, author='model'
+          ),
+      )
   ]
+  assert len(interrupted_events) == 1
+  assert interrupted_events[0].author == 'test_agent'
+  assert (
+      interrupted_events[0].content.parts[0].file_data.mime_type == 'image/png'
+  )
+  assert context.output_media_realtime_cache == []
+  assert len(context.input_media_realtime_cache) == 2
+
+  # 2. Turn complete response flushes remaining user media cache (2 frames -> stored as .zip)
+  turn_complete_events = [
+      e
+      async for e in _live_llm_flow.postprocess_live_flow(
+          flow,
+          context,
+          LlmRequest(),
+          LlmResponse(turn_complete=True),
+          Event(
+              id='ev-done', invocation_id=context.invocation_id, author='model'
+          ),
+      )
+  ]
+  assert len(turn_complete_events) == 1
+  assert turn_complete_events[0].author == 'user'
+  assert context.input_media_realtime_cache == []
+
+  user_uri = turn_complete_events[0].content.parts[0].file_data.file_uri
+  user_filename = user_uri.rsplit('/', 1)[-1].split('#')[0]
+  loaded = await artifact_service.load_artifact(
+      app_name=context.app_name,
+      user_id=context.user_id,
+      session_id=context.session.id,
+      filename=user_filename,
+  )
+  assert loaded is not None
+  assert loaded.inline_data.mime_type == 'application/zip'
+  with zipfile.ZipFile(io.BytesIO(loaded.inline_data.data), mode='r') as zf:
+    assert zf.read('frames/frame_0000.jpeg') == b'user_frame_1'
+    assert zf.read('frames/frame_0001.jpeg') == b'user_frame_2'
