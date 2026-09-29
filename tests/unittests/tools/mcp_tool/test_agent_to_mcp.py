@@ -458,6 +458,38 @@ async def test_one_failing_session_does_not_hold_up_the_rest():
 
 
 @pytest.mark.asyncio
+async def test_cancelled_reap_stops_promptly_and_keeps_unfinished_ids():
+  """A reap cancelled mid-pass, e.g. at event loop shutdown, stops instead
+  of draining its backlog, and puts back the ids no worker had started and
+  the ones still in flight rather than dropping them from tracking."""
+  runner = _FakeRunner([_text_event("ok")])
+  record_delete = runner.session_service.delete_session
+
+  async def slow_delete(**kwargs):
+    await asyncio.sleep(0.05)
+    await record_delete(**kwargs)
+
+  runner.session_service.delete_session = slow_delete
+  backlog = {f"session-{i}" for i in range(400)}
+  created = set(backlog)
+
+  reap = asyncio.create_task(_reap_orphaned_sessions(runner, {}, created))
+  await asyncio.sleep(0.1)
+  deleted_before_cancel = len(runner.deleted_session_ids)
+  reap.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await reap
+
+  deleted = set(runner.deleted_session_ids)
+  # At most the deletes already finishing when the cancel arrived land after
+  # it; the rest of the backlog must not be drained.
+  assert len(deleted) - deleted_before_cancel <= _MAX_CONCURRENT_DELETES
+  # Nothing is dropped. A delete finishing as the cancel arrives may also be
+  # put back; retrying a deleted session is a no-op.
+  assert deleted | created == backlog
+
+
+@pytest.mark.asyncio
 async def test_hung_delete_times_out_instead_of_stopping_reaping(
     monkeypatch, caplog
 ):

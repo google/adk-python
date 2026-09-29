@@ -120,6 +120,45 @@ def _connection_key(ctx: Context[ServerSession, Any]) -> object:
   return getattr(session, "_connection", session)
 
 
+async def _delete_session_with_timeout(runner: Runner, session_id: str) -> None:
+  """Deletes one ADK session, giving up after ``_DELETE_TIMEOUT_SECONDS``.
+
+  Only one reap runs at a time, so a delete that never returns would stop all
+  reaping; timing it out lets a later call retry it instead. This uses
+  ``asyncio.wait`` rather than ``asyncio.wait_for``: before Python 3.12,
+  ``wait_for`` can swallow a cancellation that arrives as the delete
+  finishes, which would let a cancelled reap keep draining its backlog.
+
+  Args:
+    runner: The Runner whose session service owns the session.
+    session_id: The id of the session to delete.
+
+  Raises:
+    TimeoutError: If the delete does not finish within the timeout.
+  """
+  delete = asyncio.ensure_future(
+      runner.session_service.delete_session(
+          app_name=runner.app_name,
+          user_id=_MCP_USER_ID,
+          session_id=session_id,
+      )
+  )
+  try:
+    await asyncio.wait({delete}, timeout=_DELETE_TIMEOUT_SECONDS)
+  except asyncio.CancelledError:
+    delete.cancel()
+    if delete.done() and not delete.cancelled():
+      # Retrieve the outcome so asyncio does not report it as unretrieved.
+      delete.exception()
+    raise
+  if not delete.done():
+    delete.cancel()
+    raise TimeoutError(
+        f"delete_session did not finish within {_DELETE_TIMEOUT_SECONDS}s"
+    )
+  delete.result()
+
+
 async def _reap_orphaned_sessions(
     runner: Runner,
     sessions: MutableMapping[object, str],
@@ -162,16 +201,12 @@ async def _reap_orphaned_sessions(
         created.add(session_id)
         continue
       try:
-        # Only one reap runs at a time, so a delete that never returns would
-        # stop all reaping; time it out and retry it on a later call instead.
-        await asyncio.wait_for(
-            runner.session_service.delete_session(
-                app_name=runner.app_name,
-                user_id=_MCP_USER_ID,
-                session_id=session_id,
-            ),
-            timeout=_DELETE_TIMEOUT_SECONDS,
-        )
+        await _delete_session_with_timeout(runner, session_id)
+      except asyncio.CancelledError:
+        # The cancelled delete may or may not have landed; deleting a missing
+        # session is a no-op for the built-in services, so a retry is safe.
+        created.add(session_id)
+        raise
       except Exception as e:  # pylint: disable=broad-exception-caught
         # Reaping is housekeeping; it must not fail the tool call that
         # triggered it. Put the id back so a later call retries it.
@@ -191,9 +226,14 @@ async def _reap_orphaned_sessions(
     # Stopping only once there have been as many failures as workers tells an
     # outage apart from a single session that keeps failing, which must not
     # hold up the rest of the batch.
-    await asyncio.gather(
-        *(delete_pending(pending, errors, workers) for _ in range(workers))
-    )
+    try:
+      await asyncio.gather(
+          *(delete_pending(pending, errors, workers) for _ in range(workers))
+      )
+    finally:
+      # If the reap is cancelled (e.g. at loop shutdown), ids no worker had
+      # started yet go back too, so they are not dropped from tracking.
+      created.update(pending)
     if errors:
       logger.warning(
           "Failed to delete %d orphaned MCP agent session(s); will retry on a"
@@ -357,6 +397,9 @@ def to_mcp_server(
       retain finished conversations in the session service, e.g. when a
       caller-supplied ``runner`` uses a persistent session service whose
       records are read after the fact; the caller then owns their cleanup.
+      Only sessions created by this server process are tracked, so with a
+      persistent session service, sessions orphaned before a restart are not
+      deleted.
 
   Returns:
     A ``FastMCP`` server exposing the agent as a single tool.
