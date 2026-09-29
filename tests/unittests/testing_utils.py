@@ -83,6 +83,7 @@ async def create_invocation_context(
     user_content: str = '',
     run_config: RunConfig = None,
     plugins: list[BasePlugin] = [],
+    abort_signal: Optional[asyncio.Event] = None,
 ):
   invocation_id = 'test_id'
   artifact_service = InMemoryArtifactService()
@@ -103,6 +104,8 @@ async def create_invocation_context(
       ),
       run_config=run_config or RunConfig(),
   )
+  if abort_signal is not None:
+    invocation_context._attach_abort_signal(abort_signal)
   if user_content:
     append_user_content(
         invocation_context, [types.Part.from_text(text=user_content)]

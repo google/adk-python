@@ -279,6 +279,7 @@ root_agent = Agent(
       - If it's about workflow agents or workflow execution, the component is "workflow".
       - If it's agent orchestration, agent definition, the component is "core".
       - If it's about Model Context Protocol (e.g. MCP tool, MCP toolset, MCP session management etc.), the component is "mcp".
+      - If it's about A2A (Agent-to-Agent) protocol or RemoteA2aAgent, the component is "a2a".
       - If you can't find an appropriate component for the PR, follow the previous instruction that starts with "IMPORTANT:".
 
       # 4. Steps

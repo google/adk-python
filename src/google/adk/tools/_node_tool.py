@@ -115,7 +115,6 @@ class NodeTool(BaseTool):
         or node.description
         or f'Executes the node: {node.name}',
     )
-    self.is_long_running = True
 
   @override
   def _get_declaration(self) -> types.FunctionDeclaration | None:
