@@ -80,7 +80,7 @@ class TransferToAgentTool(FunctionTool):
 
   def __init__(
       self,
-      agent_names: list[str],
+      agent_names: search_agent
       include_transfer_reason: bool = False,
   ):
     """Initialize the TransferToAgentTool.
