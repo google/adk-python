@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from typing import AsyncGenerator
 
@@ -282,3 +283,40 @@ async def test_merge_live_event_streams_interleaves_agent_and_queued_events():
       )
   ]
   assert set(collected) == {"agent_turn", "queued_tool"}
+
+
+@pytest.mark.asyncio
+async def test_merge_live_event_streams_closes_while_merged_queue_is_full():
+  """Closing the merged stream early must not hang on its full queue."""
+  runner = Runner(
+      app_name="test_app",
+      agent=_MockLiveAgent(name="root"),
+      session_service=InMemorySessionService(),
+  )
+  session = await runner.session_service.create_session(
+      user_id="u1", session_id="s1", app_name=runner.app_name
+  )
+  ic = runner._new_invocation_context_for_live(
+      session, live_request_queue=LiveRequestQueue()
+  )
+  ic._event_queue = asyncio.Queue()
+  for i in range(3):
+    ic._event_queue.put_nowait(
+        (Event(author=f"queued_{i}", partial=True), None)
+    )
+
+  async def _agent_stream() -> AsyncGenerator[Event, None]:
+    await asyncio.Event().wait()
+    yield Event(author="never")
+
+  merged = _runner_utils._merge_live_event_streams(runner, ic, _agent_stream())
+  first = await anext(merged)
+  # Let the queue pump refill the one-slot merged queue and block on the
+  # next event, which is the state a caller leaving mid-stream sees.
+  await asyncio.sleep(0.1)
+
+  close = asyncio.ensure_future(merged.aclose())
+  done, _ = await asyncio.wait({close}, timeout=5)
+
+  assert first.author == "queued_0"
+  assert close in done, "aclose() hung waiting for room in the merged queue"

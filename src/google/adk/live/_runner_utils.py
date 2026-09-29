@@ -277,6 +277,9 @@ async def _merge_live_event_streams(
   event_queue = ic._event_queue
   done_sentinel = object()
   merged: asyncio.Queue[Any] = asyncio.Queue(maxsize=1)
+  # Set once the loop below stops reading `merged`. A pump unwinding after
+  # that must not wait for room in the full queue, since none will come.
+  consumer_done = False
 
   async def _pump_agent_events() -> None:
     try:
@@ -299,7 +302,8 @@ async def _merge_live_event_streams(
         async for event in agen:
           await merged.put(event)
     finally:
-      await merged.put(done_sentinel)
+      if not consumer_done:
+        await merged.put(done_sentinel)
 
   agent_task = asyncio.create_task(_pump_agent_events())
   queue_task = asyncio.create_task(_pump_queued_events())
@@ -310,6 +314,7 @@ async def _merge_live_event_streams(
         break
       yield event_or_done
   finally:
+    consumer_done = True
     # _cleanup_root_task re-raises a failure from either pump.
     await runner._cleanup_root_task(  # pylint: disable=protected-access
         agent_task, runner.agent.name
