@@ -49,6 +49,7 @@ from mcp.client.stdio import stdio_client as stdio_client
 from mcp.client.streamable_http import create_mcp_http_client as create_mcp_http_client
 from mcp.client.streamable_http import streamable_http_client as streamable_http_client
 from mcp.server.session import ServerSession as ServerSession
+from mcp.types import CallToolResult as CallToolResult
 from mcp.types import ListResourcesResult as ListResourcesResult
 from mcp.types import ListToolsResult as ListToolsResult
 from mcp.types import Tool as Tool
@@ -72,6 +73,7 @@ except ImportError:
   IS_MCP_SDK_V2 = False
 
 __all__ = [
+    "CallToolResult",
     "IS_MCP_SDK_V2",
     "ClientSession",
     "Context",

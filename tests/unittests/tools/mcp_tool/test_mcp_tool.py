@@ -1474,6 +1474,49 @@ class TestMCPTool:
     self.mock_session.call_tool.assert_awaited_once()
 
   @pytest.mark.asyncio
+  async def test_run_async_impl_recovers_from_terminated_session(self):
+    """Regression test for https://github.com/google/adk-python/issues/6822.
+
+    A server-side session termination (restart or idle eviction) leaves the
+    pooled session locally healthy but rejected by the server. The dead
+    session must be dropped from the pool and the call retried once on a
+    fresh session: the server refused the request before running the tool,
+    so the retry cannot duplicate a side effect.
+    """
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+    dead_session = AsyncMock()
+    dead_session.call_tool = AsyncMock(
+        side_effect=make_mcp_error(32600, "Session terminated")
+    )
+    fresh_session = AsyncMock()
+    fresh_session.call_tool = AsyncMock(
+        return_value=CallToolResult(
+            content=[TextContent(type="text", text="ok")]
+        )
+    )
+    self.mock_session_manager.create_session = AsyncMock(
+        side_effect=[dead_session, fresh_session]
+    )
+    tool_context = ToolContext(invocation_context=Mock())
+
+    result = await tool._run_async_impl(
+        args={"param1": "test_value"},
+        tool_context=tool_context,
+        credential=None,
+    )
+
+    assert result["content"][0]["text"] == "ok"
+    self.mock_session_manager._discard_session.assert_called_once_with(
+        None, session=dead_session
+    )
+    assert self.mock_session_manager.create_session.await_count == 2
+    dead_session.call_tool.assert_awaited_once()
+    fresh_session.call_tool.assert_awaited_once()
+
+  @pytest.mark.asyncio
   async def test_get_headers_http_custom_scheme(self):
     """Test header generation for custom HTTP scheme."""
     tool = MCPTool(
@@ -2483,9 +2526,15 @@ class TestMCPToolGracefulErrorHandling:
           args={"param1": "x"}, tool_context=tool_context, credential=None
       )
 
-    self.mock_session_manager._discard_session.assert_called_once_with(
+    # The first failure is retried once on a freshly created session; the
+    # pool hands back the same dead mock, so that attempt fails and is
+    # discarded too. A third attempt would be a loop.
+    self.mock_session_manager._discard_session.assert_called_with(
         None, session=self.mock_session
     )
+    assert self.mock_session_manager._discard_session.call_count == 2
+    assert self.mock_session_manager.create_session.await_count == 2
+    assert self.mock_session.call_tool.await_count == 2
 
   @pytest.mark.asyncio
   async def test_run_async_impl_keeps_the_session_when_the_tool_itself_fails(

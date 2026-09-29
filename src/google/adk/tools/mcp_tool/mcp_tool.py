@@ -36,6 +36,7 @@ from ...agents.readonly_context import ReadonlyContext
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
 from ...auth.auth_tool import AuthConfig
+from ...dependencies._mcp import CallToolResult
 from ...dependencies._mcp import ClientSession
 from ...dependencies._mcp import IS_MCP_SDK_V2
 from ...dependencies._mcp import McpError
@@ -672,6 +673,89 @@ class McpTool(BaseAuthenticatedTool):
     # Resolve progress callback (may be a factory that needs runtime context)
     resolved_callback = self._resolve_progress_callback(tool_context)
 
+    try:
+      response = await self._call_tool_on_session(
+          session, final_headers, args, resolved_callback, meta_trace_context
+      )
+    except Exception as e:
+      if not _is_session_terminated_error(e):
+        raise
+      # The server rejected the pooled session id (restart or idle eviction)
+      # before running the tool, so no side effect happened and one retry on
+      # a fresh session is safe. `_call_tool_on_session` already discarded
+      # the dead session from the pool, so `_create_session` builds a new one.
+      logger.info(
+          "MCP session was terminated server-side; retrying %s on a fresh"
+          " session.",
+          self._mcp_tool.name,
+      )
+      session = await self._create_session(headers=final_headers)
+      response = await self._call_tool_on_session(
+          session, final_headers, args, resolved_callback, meta_trace_context
+      )
+
+    # Keep the caller's key names off the installed SDK's field naming.
+    result = _dump_mcp_model(response)
+
+    # 2.x-only field. Acting on it (`input_required` drives elicitation) is a
+    # feature, not compatibility. Not dropped on 1.x, where a key of that name
+    # could only be a server extra.
+    if IS_MCP_SDK_V2:
+      result.pop("resultType", None)
+
+    # Push UI widget to the event actions if the tool supports it. Dump the
+    # tool: `payload` is a plain dict, so a model left in it gets serialized by
+    # whichever sink writes the event, and the sinks disagree -- `inputSchema`
+    # from those passing `by_alias`, `input_schema` from the session stores.
+    if self.mcp_app_resource_uri:
+      # Tests and external subclasses pass duck-typed tools that cannot be
+      # dumped. Pass those through rather than fail a call that succeeded.
+      tool_payload: Any = self._mcp_tool
+      if hasattr(tool_payload, "model_dump"):
+        tool_payload = _dump_mcp_model(tool_payload)
+      tool_context.render_ui_widget(
+          UiWidget(
+              id=tool_context.function_call_id,
+              provider="mcp",
+              payload={
+                  "resource_uri": self.mcp_app_resource_uri,
+                  "tool": tool_payload,
+                  "tool_args": args,
+              },
+          )
+      )
+    return result
+
+  async def _call_tool_on_session(
+      self,
+      session: ClientSession,
+      final_headers: dict[str, str] | None,
+      args: dict[str, Any],
+      resolved_callback: ProgressFnT | None,
+      meta_trace_context: dict[str, str] | None,
+  ) -> CallToolResult:
+    """Runs one tool call on `session`.
+
+    If the server reports the session as terminated (it restarted or evicted
+    the session id), the pooled session is discarded before the error
+    propagates: its local streams and background task still look healthy, so
+    without this every later call would keep reusing the dead session.
+
+    Args:
+        session: The pooled session to run the call on.
+        final_headers: The headers the session was created with, as passed to
+          ``create_session``.
+        args: The arguments to pass to the tool.
+        resolved_callback: The progress callback for this invocation, if any.
+        meta_trace_context: Trace context to send in the request ``_meta``.
+
+    Returns:
+        The raw result of the tool call.
+
+    Raises:
+        Exception: Whatever the call raised; a session-terminated error has
+          already had its session discarded from the pool.
+    """
     call_coro = session.call_tool(
         self._mcp_tool.name,
         arguments=args,
@@ -719,40 +803,9 @@ class McpTool(BaseAuthenticatedTool):
               final_headers, session=session
           )
         raise
+      return response
     finally:
       self._mcp_session_manager._end_session_use(final_headers)  # pylint: disable=protected-access
-
-    # Keep the caller's key names off the installed SDK's field naming.
-    result = _dump_mcp_model(response)
-
-    # 2.x-only field. Acting on it (`input_required` drives elicitation) is a
-    # feature, not compatibility. Not dropped on 1.x, where a key of that name
-    # could only be a server extra.
-    if IS_MCP_SDK_V2:
-      result.pop("resultType", None)
-
-    # Push UI widget to the event actions if the tool supports it. Dump the
-    # tool: `payload` is a plain dict, so a model left in it gets serialized by
-    # whichever sink writes the event, and the sinks disagree -- `inputSchema`
-    # from those passing `by_alias`, `input_schema` from the session stores.
-    if self.mcp_app_resource_uri:
-      # Tests and external subclasses pass duck-typed tools that cannot be
-      # dumped. Pass those through rather than fail a call that succeeded.
-      tool_payload: Any = self._mcp_tool
-      if hasattr(tool_payload, "model_dump"):
-        tool_payload = _dump_mcp_model(tool_payload)
-      tool_context.render_ui_widget(
-          UiWidget(
-              id=tool_context.function_call_id,
-              provider="mcp",
-              payload={
-                  "resource_uri": self.mcp_app_resource_uri,
-                  "tool": tool_payload,
-                  "tool_args": args,
-              },
-          )
-      )
-    return result
 
   def _detect_error_in_response(self, response: Any) -> str | None:
     """Telemetry hook: returns an error type if the response indicates an error."""
