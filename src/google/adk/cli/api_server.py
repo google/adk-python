@@ -2171,7 +2171,11 @@ class ApiServer:
             ),
             save_live_blob=save_live_blob,
             explicit_vad_signal=explicit_vad_signal,
-            avatar_config=self.avatar_config,
+            # Avatars are rendered as video, so only apply the server-wide
+            # avatar config to sessions that request VIDEO output.
+            avatar_config=(
+                self.avatar_config if "VIDEO" in modalities else None
+            ),
         )
         async with Aclosing(
             runner.run_live(

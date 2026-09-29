@@ -1758,6 +1758,35 @@ def test_cli_web_passes_service_uris(
   assert called_kwargs.get("memory_service_uri") == "rag://mycorpus"
 
 
+def test_cli_api_server_passes_auto_create_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _patch_uvicorn: _Recorder,
+) -> None:
+  """`adk api_server --auto_create_session` enables automatic sessions."""
+  agents_dir = tmp_path / "agents_api"
+  agents_dir.mkdir()
+
+  mock_get_app = _Recorder()
+  monkeypatch.setattr("google.adk.cli.fast_api.get_fast_api_app", mock_get_app)
+
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "api_server",
+          str(agents_dir),
+          "--auto_create_session",
+      ],
+  )
+
+  assert result.exit_code == 0
+  assert mock_get_app.calls
+
+  called_kwargs = mock_get_app.calls[-1][1]
+  assert called_kwargs["auto_create_session"] is True
+
+
 @pytest.mark.parametrize("command", ["web", "api_server"])
 @pytest.mark.parametrize("host", ["127.0.0.1", "0.0.0.0"])
 def test_cli_arms_rebinding_guard_with_the_address_it_binds(
@@ -2833,6 +2862,20 @@ def test_fast_api_common_options_rejects_invalid_avatar_config() -> None:
 
   assert result.exit_code == 2
   assert "valid AvatarConfig JSON object" in result.output
+
+
+def test_fast_api_common_options_rejects_missing_avatar_config_file(
+    tmp_path: Path,
+) -> None:
+  """A non-JSON value that is not a readable file is a usage error."""
+  command, _ = _fast_api_command()
+  missing_path = tmp_path / "missing_avatar.json"
+
+  result = CliRunner().invoke(command, ["--avatar_config", str(missing_path)])
+
+  assert result.exit_code == 2
+  assert "could not read avatar configuration file" in result.output
+  assert "missing_avatar.json" in result.output
 
 
 # adk test

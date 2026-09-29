@@ -184,9 +184,31 @@ class GCPSkillRegistry(SkillRegistry):
 
   def _create_httpx_client(self) -> httpx.AsyncClient:
     """Creates a new httpx.AsyncClient with appropriate SSL/mTLS configuration."""
+    base_host = httpx.URL(self.base_url).host
+
+    async def _drop_cross_origin_goog_headers(request: httpx.Request) -> None:
+      if request.url.host != base_host:
+        for header in list(request.headers):
+          if header.lower().startswith("x-goog-"):
+            del request.headers[header]
+
+    # The Agent Registry media download (alt=media) replies with a 302 to a
+    # short-lived GCS signed URL, so the client must follow redirects; httpx
+    # drops the Authorization header on cross-origin redirects, but retains
+    # custom headers like x-goog-user-project and x-goog-api-client. GCS
+    # requires all x-goog-* headers on a signed request to match its signature,
+    # so we drop them when redirected off the base API host.
+    event_hooks = {"request": [_drop_cross_origin_goog_headers]}
     if self._ssl_context is not None:
-      return httpx.AsyncClient(verify=self._ssl_context)
-    return httpx.AsyncClient()
+      return httpx.AsyncClient(
+          verify=self._ssl_context,
+          follow_redirects=True,
+          event_hooks=event_hooks,
+      )
+    return httpx.AsyncClient(
+        follow_redirects=True,
+        event_hooks=event_hooks,
+    )
 
   async def get_skill(self, *, name: str) -> models.Skill:
     """Fetches a skill from the registry.

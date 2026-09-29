@@ -124,8 +124,76 @@ def test_run_live_applies_server_and_query_run_config_options():
   assert run_config.session_resumption.transparent is True
   assert run_config.save_live_blob is True
   assert run_config.explicit_vad_signal is True
-  assert run_config.avatar_config is not None
-  assert run_config.avatar_config.avatar_name == "Kai"
+  # No VIDEO modality was requested, so the server avatar config is skipped.
+  assert run_config.avatar_config is None
+
+
+@pytest.mark.parametrize(
+    ("modalities_query", "expect_avatar"),
+    [
+        ("&modalities=VIDEO", True),
+        ("&modalities=AUDIO&modalities=VIDEO", True),
+        ("&modalities=AUDIO", False),
+        ("&modalities=TEXT", False),
+        ("", False),
+    ],
+)
+def test_run_live_applies_avatar_config_only_for_video(
+    modalities_query: str, expect_avatar: bool
+):
+  """The server avatar config is sent only when VIDEO output is requested."""
+  session_service = InMemorySessionService()
+  asyncio.run(
+      session_service.create_session(
+          app_name="test_app",
+          user_id="user",
+          session_id="session",
+          state={},
+      )
+  )
+
+  runner = _CapturingRunner()
+  adk_web_server = AdkWebServer(
+      agent_loader=_DummyAgentLoader(),
+      session_service=session_service,
+      memory_service=types.SimpleNamespace(),
+      artifact_service=types.SimpleNamespace(),
+      credential_service=types.SimpleNamespace(),
+      eval_sets_manager=types.SimpleNamespace(),
+      eval_set_results_manager=types.SimpleNamespace(),
+      agents_dir=".",
+      avatar_config=genai_types.AvatarConfig(avatar_name="Kai"),
+  )
+
+  async def _get_runner_async(_self, _app_name: str):
+    return runner
+
+  adk_web_server.get_runner_async = _get_runner_async.__get__(adk_web_server)  # pytype: disable=attribute-error
+
+  fast_api_app = adk_web_server.get_fast_api_app(
+      setup_observer=lambda _observer, _server: None,
+      tear_down_observer=lambda _observer, _server: None,
+  )
+
+  client = TestClient(fast_api_app)
+  url = (
+      "/run_live"
+      "?app_name=test_app"
+      "&user_id=user"
+      "&session_id=session"
+      f"{modalities_query}"
+  )
+
+  with client.websocket_connect(url) as ws:
+    _ = ws.receive_text()
+
+  run_config = runner.captured_run_config
+  assert run_config is not None
+  if expect_avatar:
+    assert run_config.avatar_config is not None
+    assert run_config.avatar_config.avatar_name == "Kai"
+  else:
+    assert run_config.avatar_config is None
 
 
 @pytest.mark.parametrize(

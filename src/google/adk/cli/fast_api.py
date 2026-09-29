@@ -195,7 +195,8 @@ def get_fast_api_app(
     gemini_enterprise_app_name: The Gemini Enterprise app name to use for the
       agent.
     express_mode: Whether to enable express mode.
-    avatar_config: Avatar configuration to apply to live agent runs.
+    avatar_config: Avatar configuration to apply to live agent runs that
+      request VIDEO output.
 
   Returns:
     The configured FastAPI application instance.

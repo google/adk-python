@@ -2086,7 +2086,9 @@ def fast_api_common_options():
         callback=_parse_avatar_config,
         help=(
             "Optional. AvatarConfig as an inline JSON object or a path to a"
-            " JSON file. Applied to live sessions."
+            " JSON file. Applied only to /run_live sessions whose client"
+            " requests video output (modalities=VIDEO); other live sessions"
+            " ignore it."
         ),
         default=None,
     )
