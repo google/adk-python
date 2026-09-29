@@ -29,7 +29,10 @@ class ConversationScenario(EvalBaseModel):
 
   starting_prompt: str
   """Starting prompt for the conversation.
-
+{
+  "starting_prompt": "What can you do for me?",
+  "conversation_plan": "Ask the agent to roll a 20-sided die. After you get the result, ask the agent to check if it is prime."
+}
   This prompt acts as the fixed first user message that is given to the Agent.
   Any subsequent user messages are obtained by the system that is simulating the
   user.
@@ -37,7 +40,11 @@ class ConversationScenario(EvalBaseModel):
 
   conversation_plan: str
   """A plan that user simulation system needs to follow as it plays out the conversation.
-
+{
+  "starting_prompt": "What can you do for me?",
+  "conversation_plan": "Ask the agent to roll a 20-sided die. After you get the result, ask the agent to check if it is prime.",
+  "user_persona": "NOVICE"
+}
   Example:
   For a Travel Agent that has tools that let it book a flight and car, a sample
   starting prompt could be:
