@@ -18,9 +18,14 @@ import time
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 
+from google.adk.live import _audio_cache_manager as compat_module
 from google.adk.live._audio_cache_manager import AudioCacheConfig
 from google.adk.live._audio_cache_manager import AudioCacheManager
 from google.adk.live._audio_cache_manager import RealtimeCacheEntry
+from google.adk.live._realtime_cache_manager import logger as canonical_logger
+from google.adk.live._realtime_cache_manager import RealtimeCacheConfig
+from google.adk.live._realtime_cache_manager import RealtimeCacheEntry as CanonicalRealtimeCacheEntry
+from google.adk.live._realtime_cache_manager import RealtimeCacheManager
 from google.genai import types
 import pydantic
 import pytest
@@ -551,3 +556,17 @@ class TestAudioCacheManager:
     assert len(events) == 1
     assert events[0].author == 'my_test_agent'  # Agent name, not 'model'
     assert events[0].content.role == 'model'  # Role is still 'model'
+
+
+def test_audio_cache_manager_reexports_realtime_cache_manager_symbols():
+  """The legacy `_audio_cache_manager` module aliases `_realtime_cache_manager`."""
+  assert AudioCacheManager is RealtimeCacheManager
+  assert AudioCacheConfig is RealtimeCacheConfig
+  assert RealtimeCacheEntry is CanonicalRealtimeCacheEntry
+  assert compat_module.logger is canonical_logger
+  assert set(compat_module.__all__) == {
+      'AudioCacheConfig',
+      'AudioCacheManager',
+      'RealtimeCacheEntry',
+      'logger',
+  }
