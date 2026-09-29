@@ -196,6 +196,7 @@ async def handle_control_event_flush(
         flush_user_audio=True,
         flush_model_audio=True,
     )
-  # TODO: Once generation_complete is surfaced on LlmResponse, we can flush
-  # model audio here (flush_user_audio=False, flush_model_audio=True).
+  # LlmResponse does not surface generation_complete, so model audio is not
+  # flushed when generation completes. turn_complete, which follows it, already
+  # flushes model audio.
   return []

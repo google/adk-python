@@ -379,6 +379,25 @@ class Workflow(BaseNode):
           await self._handle_completion(loop_state, name, node, child_ctx, ctx)
 
       if error_to_raise:
+        # Drain sibling tasks that finished in the same tick so their completed
+        # outputs and state changes are preserved before shutting down.
+        while loop_state.pending_tasks:
+          done_siblings = [
+              task for task in loop_state.pending_tasks.values() if task.done()
+          ]
+          if not done_siblings:
+            break
+          for task in done_siblings:
+            name = self._pop_completed_task(loop_state, task)
+            node = self._get_static_node_by_name(name)
+            child_ctx = task.result()
+            if child_ctx.error:
+              loop_state.nodes[name].status = NodeStatus.FAILED
+            else:
+              await self._handle_completion(
+                  loop_state, name, node, child_ctx, ctx
+              )
+
         loop_state.error_shut_down = True
         logger.debug("node %s execute loop end.", ctx.node_path)
         return
