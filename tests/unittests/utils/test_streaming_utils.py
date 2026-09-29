@@ -1088,11 +1088,11 @@ class TestStreamingFunctionCallArgs:
       written_chars = 0
       set_value = aggregator._set_value_by_json_path
 
-      def counting_set_value(json_path, value):
+      def counting_set_value(json_path, value, *args, **kwargs):
         nonlocal written_chars
         if isinstance(value, str):
           written_chars += len(value)
-        set_value(json_path, value)
+        set_value(json_path, value, *args, **kwargs)
 
       aggregator._set_value_by_json_path = counting_set_value
 
@@ -1172,6 +1172,682 @@ class TestStreamingFunctionCallArgs:
     args = closed_response.content.parts[0].function_call.args
     assert args == {"a": "hello world", "b": 7}
     assert list(args.keys()) == ["a", "b"]
+
+  @pytest.mark.asyncio
+  async def test_sequential_streaming_fc_isolated_arguments(
+      self,
+  ):
+    """Sequential streaming function calls maintain separate state."""
+    with temporary_feature_override(
+        FeatureName.PROGRESSIVE_SSE_STREAMING, True
+    ):
+      aggregator = streaming_utils.StreamingResponseAggregator()
+
+      # Chunk 1: First function call begins streaming
+      response1 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(
+                      parts=[
+                          types.Part(
+                              function_call=types.FunctionCall(
+                                  name="get_weather",
+                                  id="call_weather_1",
+                                  partial_args=[
+                                      types.PartialArg(
+                                          json_path="$.location",
+                                          string_value="San ",
+                                      )
+                                  ],
+                                  will_continue=True,
+                              )
+                          ),
+                      ]
+                  )
+              )
+          ]
+      )
+
+      # Chunk 2: First tool completes
+      response2 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(
+                      parts=[
+                          types.Part(
+                              function_call=types.FunctionCall(
+                                  id="call_weather_1",
+                                  partial_args=[
+                                      types.PartialArg(
+                                          json_path="$.location",
+                                          string_value="Francisco",
+                                      ),
+                                      types.PartialArg(
+                                          json_path="$.units",
+                                          string_value="celsius",
+                                      ),
+                                  ],
+                                  will_continue=False,
+                              )
+                          ),
+                      ]
+                  )
+              )
+          ]
+      )
+
+      # Chunk 3: Second tool begins streaming
+      response3 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(
+                      parts=[
+                          types.Part(
+                              function_call=types.FunctionCall(
+                                  name="search_web",
+                                  id="call_search_2",
+                                  partial_args=[
+                                      types.PartialArg(
+                                          json_path="$.query",
+                                          string_value="weather ",
+                                      )
+                                  ],
+                                  will_continue=True,
+                              )
+                          ),
+                      ]
+                  )
+              )
+          ]
+      )
+
+      # Chunk 4: Second tool completes with additional arg content
+      response4 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(
+                      parts=[
+                          types.Part(
+                              function_call=types.FunctionCall(
+                                  id="call_search_2",
+                                  partial_args=[
+                                      types.PartialArg(
+                                          json_path="$.query",
+                                          string_value="forecast today",
+                                      ),
+                                      types.PartialArg(
+                                          json_path="$.limit",
+                                          number_value=5,
+                                      ),
+                                  ],
+                                  will_continue=False,
+                              )
+                          ),
+                      ]
+                  ),
+                  finish_reason=types.FinishReason.STOP,
+              )
+          ]
+      )
+
+      async for _ in aggregator.process_response(response1):
+        pass
+      async for _ in aggregator.process_response(response2):
+        pass
+      async for _ in aggregator.process_response(response3):
+        pass
+      async for _ in aggregator.process_response(response4):
+        pass
+
+      closed_response = aggregator.close()
+
+    assert closed_response is not None
+    assert closed_response.content is not None
+    assert len(closed_response.content.parts) == 2
+
+    fc1 = closed_response.content.parts[0].function_call
+    fc2 = closed_response.content.parts[1].function_call
+
+    assert fc1.name == "get_weather"
+    assert fc1.id == "call_weather_1"
+    assert fc1.args == {"location": "San Francisco", "units": "celsius"}
+
+    assert fc2.name == "search_web"
+    assert fc2.id == "call_search_2"
+    assert fc2.args == {"query": "weather forecast today", "limit": 5}
+
+  @pytest.mark.asyncio
+  async def test_parallel_streaming_function_calls_auto_generated_ids(self):
+    """Parallel function calls without IDs receive distinct generated IDs."""
+    with temporary_feature_override(
+        FeatureName.PROGRESSIVE_SSE_STREAMING, True
+    ):
+      aggregator = streaming_utils.StreamingResponseAggregator()
+
+      response1 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(
+                      parts=[
+                          types.Part(
+                              function_call=types.FunctionCall(
+                                  name="tool_a",
+                                  partial_args=[
+                                      types.PartialArg(
+                                          json_path="$.arg_a",
+                                          string_value="val_a",
+                                      )
+                                  ],
+                                  will_continue=False,
+                              )
+                          ),
+                          types.Part(
+                              function_call=types.FunctionCall(
+                                  name="tool_b",
+                                  partial_args=[
+                                      types.PartialArg(
+                                          json_path="$.arg_b",
+                                          string_value="val_b",
+                                      )
+                                  ],
+                                  will_continue=False,
+                              )
+                          ),
+                      ]
+                  ),
+                  finish_reason=types.FinishReason.STOP,
+              )
+          ]
+      )
+
+      async for _ in aggregator.process_response(response1):
+        pass
+
+      closed_response = aggregator.close()
+
+    assert closed_response is not None
+    assert closed_response.content is not None
+    assert len(closed_response.content.parts) == 2
+
+    fc_a = closed_response.content.parts[0].function_call
+    fc_b = closed_response.content.parts[1].function_call
+
+    assert fc_a.name == "tool_a"
+    assert fc_a.args == {"arg_a": "val_a"}
+    assert fc_a.id.startswith(AF_FUNCTION_CALL_ID_PREFIX)
+
+    assert fc_b.name == "tool_b"
+    assert fc_b.args == {"arg_b": "val_b"}
+    assert fc_b.id.startswith(AF_FUNCTION_CALL_ID_PREFIX)
+
+    assert fc_a.id != fc_b.id
+
+  @pytest.mark.asyncio
+  async def test_parallel_streaming_function_calls_thought_signatures(self):
+    """Parallel function calls retain their respective thought signatures."""
+    with temporary_feature_override(
+        FeatureName.PROGRESSIVE_SSE_STREAMING, True
+    ):
+      aggregator = streaming_utils.StreamingResponseAggregator()
+
+      response1 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(
+                      parts=[
+                          types.Part(
+                              thought_signature=b"sig_tool_1",
+                              function_call=types.FunctionCall(
+                                  name="tool_1",
+                                  partial_args=[
+                                      types.PartialArg(
+                                          json_path="$.k1",
+                                          string_value="v1",
+                                      )
+                                  ],
+                                  will_continue=False,
+                              ),
+                          ),
+                          types.Part(
+                              thought_signature=b"sig_tool_2",
+                              function_call=types.FunctionCall(
+                                  name="tool_2",
+                                  partial_args=[
+                                      types.PartialArg(
+                                          json_path="$.k2",
+                                          string_value="v2",
+                                      )
+                                  ],
+                                  will_continue=False,
+                              ),
+                          ),
+                      ]
+                  ),
+                  finish_reason=types.FinishReason.STOP,
+              )
+          ]
+      )
+
+      async for _ in aggregator.process_response(response1):
+        pass
+
+      closed_response = aggregator.close()
+
+    assert closed_response is not None
+    assert closed_response.content is not None
+    assert len(closed_response.content.parts) == 2
+
+    part1 = closed_response.content.parts[0]
+    part2 = closed_response.content.parts[1]
+
+    assert part1.thought_signature == b"sig_tool_1"
+    assert part1.function_call.name == "tool_1"
+    assert part1.function_call.args == {"k1": "v1"}
+
+    assert part2.thought_signature == b"sig_tool_2"
+    assert part2.function_call.name == "tool_2"
+    assert part2.function_call.args == {"k2": "v2"}
+
+  @pytest.mark.asyncio
+  async def test_parallel_streaming_function_calls_flushed_at_close(self):
+    """In-flight parallel calls are all flushed when close() is called."""
+    with temporary_feature_override(
+        FeatureName.PROGRESSIVE_SSE_STREAMING, True
+    ):
+      aggregator = streaming_utils.StreamingResponseAggregator()
+
+      response1 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(
+                      parts=[
+                          types.Part(
+                              function_call=types.FunctionCall(
+                                  name="tool_x",
+                                  partial_args=[
+                                      types.PartialArg(
+                                          json_path="$.x",
+                                          string_value="hello",
+                                      )
+                                  ],
+                                  will_continue=True,
+                              )
+                          ),
+                          types.Part(
+                              function_call=types.FunctionCall(
+                                  name="tool_y",
+                                  partial_args=[
+                                      types.PartialArg(
+                                          json_path="$.y",
+                                          string_value="world",
+                                      )
+                                  ],
+                                  will_continue=True,
+                              )
+                          ),
+                      ]
+                  ),
+                  finish_reason=types.FinishReason.STOP,
+              )
+          ]
+      )
+
+      async for _ in aggregator.process_response(response1):
+        pass
+
+      # End of stream reached without will_continue=False
+      closed_response = aggregator.close()
+
+    assert closed_response is not None
+    assert closed_response.content is not None
+    assert len(closed_response.content.parts) == 2
+
+    fc_x = closed_response.content.parts[0].function_call
+    fc_y = closed_response.content.parts[1].function_call
+
+    assert fc_x.name == "tool_x"
+    assert fc_x.args == {"x": "hello"}
+
+    assert fc_y.name == "tool_y"
+    assert fc_y.args == {"y": "world"}
+
+  @pytest.mark.asyncio
+  async def test_streaming_function_call_with_preceding_text_part(self):
+    """Preceding text parts do not cause index shifts for fc_index."""
+    with temporary_feature_override(
+        FeatureName.PROGRESSIVE_SSE_STREAMING, True
+    ):
+      aggregator = streaming_utils.StreamingResponseAggregator()
+
+      # Chunk 1: Text part (thought) followed by FunctionCall part
+      response1 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(
+                      parts=[
+                          types.Part(text="Thinking...", thought=True),
+                          types.Part(
+                              function_call=types.FunctionCall(
+                                  name="my_tool",
+                                  partial_args=[
+                                      types.PartialArg(
+                                          json_path="$.query",
+                                          string_value="hello ",
+                                      )
+                                  ],
+                                  will_continue=True,
+                              )
+                          ),
+                      ]
+                  )
+              )
+          ]
+      )
+
+      # Chunk 2: FunctionCall part only (no preceding text)
+      response2 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(
+                      parts=[
+                          types.Part(
+                              function_call=types.FunctionCall(
+                                  partial_args=[
+                                      types.PartialArg(
+                                          json_path="$.query",
+                                          string_value="world",
+                                      )
+                                  ],
+                                  will_continue=False,
+                              )
+                          ),
+                      ]
+                  ),
+                  finish_reason=types.FinishReason.STOP,
+              )
+          ]
+      )
+
+      async for _ in aggregator.process_response(response1):
+        pass
+      async for _ in aggregator.process_response(response2):
+        pass
+
+      closed_response = aggregator.close()
+
+    assert closed_response is not None
+    assert closed_response.content is not None
+    assert len(closed_response.content.parts) == 2
+    assert closed_response.content.parts[0].text == "Thinking..."
+    assert closed_response.content.parts[0].thought
+    fc = closed_response.content.parts[1].function_call
+    assert fc.name == "my_tool"
+    assert fc.args == {"query": "hello world"}
+
+  @pytest.mark.asyncio
+  async def test_streaming_fc_continuation_populates_state_id(self):
+    """Continuation chunks without id carry populated state.id."""
+    with temporary_feature_override(
+        FeatureName.PROGRESSIVE_SSE_STREAMING, True
+    ):
+      aggregator = streaming_utils.StreamingResponseAggregator()
+
+      # Chunk 1: FunctionCall with id
+      response1 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(
+                      parts=[
+                          types.Part(
+                              function_call=types.FunctionCall(
+                                  name="my_tool",
+                                  id="explicit_fc_id_123",
+                                  partial_args=[
+                                      types.PartialArg(
+                                          json_path="$.x",
+                                          string_value="val1",
+                                      )
+                                  ],
+                                  will_continue=True,
+                              )
+                          ),
+                      ]
+                  )
+              )
+          ]
+      )
+
+      # Chunk 2: FunctionCall without id
+      response2 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(
+                      parts=[
+                          types.Part(
+                              function_call=types.FunctionCall(
+                                  partial_args=[
+                                      types.PartialArg(
+                                          json_path="$.y",
+                                          string_value="val2",
+                                      )
+                                  ],
+                                  will_continue=False,
+                              )
+                          ),
+                      ]
+                  ),
+                  finish_reason=types.FinishReason.STOP,
+              )
+          ]
+      )
+
+      results1 = []
+      async for r in aggregator.process_response(response1):
+        results1.append(r)
+
+      results2 = []
+      async for r in aggregator.process_response(response2):
+        results2.append(r)
+
+      closed_response = aggregator.close()
+
+    assert results1[0].content.parts[0].function_call.id == "explicit_fc_id_123"
+    assert results2[0].content.parts[0].function_call.id == "explicit_fc_id_123"
+    assert (
+        closed_response.content.parts[0].function_call.id
+        == "explicit_fc_id_123"
+    )
+
+  @pytest.mark.asyncio
+  async def test_sequential_streaming_function_calls_omitted_will_continue(
+      self,
+  ):
+    """Sequential streamed calls where closing chunk omits will_continue.
+
+    Matches golden Vertex trace where Proto3 drops will_continue on closing
+    chunks, surfacing as None in the SDK.
+    """
+    with temporary_feature_override(
+        FeatureName.PROGRESSIVE_SSE_STREAMING, True
+    ):
+      aggregator = streaming_utils.StreamingResponseAggregator()
+
+      # Chunk 1: find_hotels begins
+      response1 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(
+                      parts=[
+                          types.Part(
+                              function_call=types.FunctionCall(
+                                  name="find_hotels",
+                                  will_continue=True,
+                              )
+                          )
+                      ]
+                  )
+              )
+          ]
+      )
+
+      # Chunk 2: find_hotels partial args with will_continue omitted (None)
+      response2 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(
+                      parts=[
+                          types.Part(
+                              function_call=types.FunctionCall(
+                                  partial_args=[
+                                      types.PartialArg(
+                                          json_path="$.amenities[0]",
+                                          string_value="POOL",
+                                      )
+                                  ]
+                              )
+                          )
+                      ]
+                  )
+              )
+          ]
+      )
+
+      # Chunk 3: book_hotels begins
+      response3 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(
+                      parts=[
+                          types.Part(
+                              function_call=types.FunctionCall(
+                                  name="book_hotels",
+                                  will_continue=True,
+                              )
+                          )
+                      ]
+                  )
+              )
+          ]
+      )
+
+      # Chunk 4: book_hotels partial args with will_continue=True
+      response4 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(
+                      parts=[
+                          types.Part(
+                              function_call=types.FunctionCall(
+                                  partial_args=[
+                                      types.PartialArg(
+                                          json_path="$.length_of_stay",
+                                          number_value=10.0,
+                                      )
+                                  ],
+                                  will_continue=True,
+                              )
+                          )
+                      ]
+                  ),
+                  finish_reason=types.FinishReason.STOP,
+              )
+          ]
+      )
+
+      async for _ in aggregator.process_response(response1):
+        pass
+      async for _ in aggregator.process_response(response2):
+        pass
+      async for _ in aggregator.process_response(response3):
+        pass
+      async for _ in aggregator.process_response(response4):
+        pass
+
+      closed_response = aggregator.close()
+
+    assert closed_response is not None
+    assert closed_response.content is not None
+    assert len(closed_response.content.parts) == 2
+
+    fc1 = closed_response.content.parts[0].function_call
+    fc2 = closed_response.content.parts[1].function_call
+
+    assert fc1.name == "find_hotels"
+    assert fc1.args == {"amenities": ["POOL"]}
+
+    assert fc2.name == "book_hotels"
+    assert fc2.args == {"length_of_stay": 10.0}
+
+  @pytest.mark.asyncio
+  async def test_streaming_function_call_empty_final_chunk_completes_call(self):
+    """Empty chunk with will_continue=False finishes and flushes call."""
+    with temporary_feature_override(
+        FeatureName.PROGRESSIVE_SSE_STREAMING, True
+    ):
+      aggregator = streaming_utils.StreamingResponseAggregator()
+
+      # Chunk 1: Function call start
+      response1 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(
+                      parts=[
+                          types.Part(
+                              function_call=types.FunctionCall(
+                                  name="my_tool",
+                                  id="fc_empty_finish",
+                                  partial_args=[
+                                      types.PartialArg(
+                                          json_path="$.msg",
+                                          string_value="hello",
+                                      )
+                                  ],
+                                  will_continue=True,
+                              )
+                          )
+                      ]
+                  )
+              )
+          ]
+      )
+
+      # Chunk 2: Empty final chunk (no partial_args, will_continue=False)
+      response2 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(
+                      parts=[
+                          types.Part(
+                              function_call=types.FunctionCall(
+                                  will_continue=False,
+                              )
+                          )
+                      ]
+                  ),
+                  finish_reason=types.FinishReason.STOP,
+              )
+          ]
+      )
+
+      async for _ in aggregator.process_response(response1):
+        pass
+      # Active call should exist before response2
+      assert aggregator._active_function_call is not None
+
+      async for _ in aggregator.process_response(response2):
+        pass
+      # Active call should be flushed immediately by the empty final chunk
+      assert aggregator._active_function_call is None
+
+      closed_response = aggregator.close()
+
+    assert closed_response is not None
+    assert closed_response.content is not None
+    assert len(closed_response.content.parts) == 1
+    fc = closed_response.content.parts[0].function_call
+    assert fc.name == "my_tool"
+    assert fc.id == "fc_empty_finish"
+    assert fc.args == {"msg": "hello"}
 
 
 class TestJsonPathHelpers:
