@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import ntpath
 import os
 import pathlib
 import shutil
@@ -110,6 +111,31 @@ def test_has_no_unit_guide_tag_ignores_a_prose_mention(
   assert not check_new_py_files.has_no_unit_guide_tag('  NO_UNIT_GUIDE=x')
   assert not check_new_py_files.has_no_unit_guide_tag('NO_UNIT_GUIDE = x')
   assert not check_new_py_files.has_no_unit_guide_tag('no_unit_guide=x')
+
+
+def test_has_no_unit_guide_tag_requires_a_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """A waiver with no reason waives nothing, in either channel.
+
+  The reason is the only record of the decision, and a bare tag waived every
+  file the change added while leaving nothing for a reviewer to weigh.
+  """
+  monkeypatch.delenv('NO_UNIT_GUIDE', raising=False)
+  monkeypatch.delenv('SKIP_UNIT_GUIDE', raising=False)
+
+  assert not check_new_py_files.has_no_unit_guide_tag('body\nNO_UNIT_GUIDE=\n')
+  assert not check_new_py_files.has_no_unit_guide_tag(
+      'body\nSKIP_UNIT_GUIDE=   \n'
+  )
+  # A reason still waives, with or without space after the '='.
+  assert check_new_py_files.has_no_unit_guide_tag('NO_UNIT_GUIDE=a reason')
+  assert check_new_py_files.has_no_unit_guide_tag('NO_UNIT_GUIDE= a reason')
+
+  monkeypatch.setenv('NO_UNIT_GUIDE', '   ')
+  assert not check_new_py_files.has_no_unit_guide_tag('')
+  monkeypatch.setenv('NO_UNIT_GUIDE', 'a reason')
+  assert check_new_py_files.has_no_unit_guide_tag('')
 
 
 def test_run_turns_a_crash_into_a_setup_error(
@@ -779,22 +805,37 @@ def test_get_vcs_added_files_git_empty_range_is_no_files(
   assert check_new_py_files.get_vcs_added_files('.') == set()
 
 
-def test_get_vcs_added_files_jj(monkeypatch: pytest.MonkeyPatch) -> None:
+def _patch_windows_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+  monkeypatch.setattr(check_new_py_files.os, 'path', ntpath)
+  monkeypatch.setattr(check_new_py_files.os, 'sep', '\\')
+
+
+@pytest.mark.parametrize('windows', [False, True])
+def test_get_vcs_added_files_jj(
+    monkeypatch: pytest.MonkeyPatch, windows: bool
+) -> None:
   def fake_which(cmd: str) -> str | None:
     return '/usr/bin/' + cmd if cmd == 'jj' else None
 
   def fake_run_cmd(cmd: list[str], cwd: str | None = None) -> tuple[int, str]:
     if cmd == ['jj', 'root']:
-      return 0, '/workspace'
+      return 0, r'C:\workspace' if windows else '/workspace'
     if cmd == ['jj', 'diff', '--summary']:
       return 0, 'A src/google/adk/agents/_jj_agent.py\nM existing.py'
     return 1, ''
 
   monkeypatch.setattr(check_new_py_files.shutil, 'which', fake_which)
   monkeypatch.setattr(check_new_py_files, '_run_cmd', fake_run_cmd)
+  if windows:
+    _patch_windows_paths(monkeypatch)
 
+  expected = (
+      'C:/workspace/src/google/adk/agents/_jj_agent.py'
+      if windows
+      else '/workspace/src/google/adk/agents/_jj_agent.py'
+  )
   added = check_new_py_files.get_vcs_added_files('.')
-  assert added == {'/workspace/src/google/adk/agents/_jj_agent.py'}
+  assert added == {expected}
 
 
 _HG_SYNCED_BASE_STATUS = [
@@ -808,22 +849,32 @@ _HG_SYNCED_BASE_STATUS = [
 _HG_WORKING_DIR_STATUS = ['hg', 'status', '--added', '--no-status']
 
 
-def test_get_vcs_added_files_hg(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize('windows', [False, True])
+def test_get_vcs_added_files_hg(
+    monkeypatch: pytest.MonkeyPatch, windows: bool
+) -> None:
   def fake_which(cmd: str) -> str | None:
     return '/usr/bin/' + cmd if cmd == 'hg' else None
 
   def fake_run_cmd(cmd: list[str], cwd: str | None = None) -> tuple[int, str]:
     if cmd == ['hg', 'root']:
-      return 0, '/workspace'
+      return 0, r'C:\workspace' if windows else '/workspace'
     if cmd == _HG_SYNCED_BASE_STATUS:
       return 0, 'src/google/adk/agents/_hg_agent.py'
     return 1, ''
 
   monkeypatch.setattr(check_new_py_files.shutil, 'which', fake_which)
   monkeypatch.setattr(check_new_py_files, '_run_cmd', fake_run_cmd)
+  if windows:
+    _patch_windows_paths(monkeypatch)
 
+  expected = (
+      'C:/workspace/src/google/adk/agents/_hg_agent.py'
+      if windows
+      else '/workspace/src/google/adk/agents/_hg_agent.py'
+  )
   added = check_new_py_files.get_vcs_added_files('.')
-  assert added == {'/workspace/src/google/adk/agents/_hg_agent.py'}
+  assert added == {expected}
 
 
 def test_get_vcs_added_files_hg_sees_an_already_committed_add(
@@ -1469,3 +1520,94 @@ def test_real_git_reports_a_staged_addition(tmp_path: pathlib.Path) -> None:
   assert check_new_py_files.get_vcs_added_files(str(repo)) == {
       'src/google/adk/agents/_added.py'
   }
+
+
+def _stage_an_unguided_module(repo: pathlib.Path) -> None:
+  """Stages a module that needs a guide and does not have one."""
+  (repo / 'src' / 'google' / 'adk' / 'agents' / '_brand_new.py').write_text(
+      '', encoding='utf-8'
+  )
+  _git(repo, 'add', '-A')
+
+
+def test_real_git_previous_commits_waiver_does_not_cover_staged_addition(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """A waiver belongs to the commit carrying it, not to the next one.
+
+  Dropping COMMIT_EDITMSG closed one route for a stale waiver and left another
+  open: at pre-commit time HEAD is the previous commit, so reading its message
+  waived whatever was staged on top of it.
+
+  The assertion is the exit code rather than get_commit_message, because any
+  later channel reaching has_no_unit_guide_tag revives the same user-visible
+  defect while that function still returns ''.
+  """
+  monkeypatch.delenv('NO_UNIT_GUIDE', raising=False)
+  monkeypatch.delenv('SKIP_UNIT_GUIDE', raising=False)
+  repo = _git_repo_with_a_guided_module(tmp_path)
+  _git(repo, 'commit', '--amend', '-qm', 'base\n\nNO_UNIT_GUIDE=an old reason')
+  _stage_an_unguided_module(repo)
+
+  assert check_new_py_files.main(['--new-dir', str(repo)]) == 1
+
+
+def test_real_git_a_waiver_in_the_committed_change_still_applies(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Control for the test above: nothing staged, so HEAD is the change.
+
+  Continuous integration reaches this path, and a contributor's waiver has to
+  keep working there. Without this, the test above would also pass if waiving
+  stopped working everywhere.
+  """
+  monkeypatch.delenv('NO_UNIT_GUIDE', raising=False)
+  monkeypatch.delenv('SKIP_UNIT_GUIDE', raising=False)
+  repo = _git_repo_with_a_guided_module(tmp_path)
+  _stage_an_unguided_module(repo)
+  _git(repo, 'commit', '-qm', 'add a module\n\nNO_UNIT_GUIDE=a stated reason')
+
+  assert check_new_py_files.main(['--new-dir', str(repo)]) == 0
+
+
+def test_real_git_the_same_addition_without_a_waiver_is_flagged(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Second control: the committed change passes only on its own tag.
+
+  This fails if the guide rule stops firing on the file the two tests above
+  rely on, which would otherwise let either of them pass for the wrong reason.
+  """
+  monkeypatch.delenv('NO_UNIT_GUIDE', raising=False)
+  monkeypatch.delenv('SKIP_UNIT_GUIDE', raising=False)
+  repo = _git_repo_with_a_guided_module(tmp_path)
+  _stage_an_unguided_module(repo)
+  _git(repo, 'commit', '-qm', 'add a module')
+
+  assert check_new_py_files.main(['--new-dir', str(repo)]) == 1
+
+
+def test_real_git_an_unreadable_index_is_indeterminate_not_a_pass(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """A staged addition nobody could read is not a clean bill of health.
+
+  Treating an unreadable index as "nothing is staged" sent the scan to
+  HEAD~1..HEAD, which reports what the previous commit added and passes the
+  staged file unexamined.
+
+  The second commit matters: with only one, HEAD~1 does not resolve and the
+  fallback fails on its own, so the test would pass whether or not the index
+  was ever consulted.
+  """
+  monkeypatch.delenv('NO_UNIT_GUIDE', raising=False)
+  monkeypatch.delenv('SKIP_UNIT_GUIDE', raising=False)
+  repo = _git_repo_with_a_guided_module(tmp_path)
+  existing = repo / 'src' / 'google' / 'adk' / 'agents' / '_existing.py'
+  existing.write_text('# edited\n', encoding='utf-8')
+  _git(repo, 'add', '-A')
+  _git(repo, 'commit', '-qm', 'a second commit, so that HEAD~1 resolves')
+  _stage_an_unguided_module(repo)
+  (repo / '.git' / 'index').write_text('not an index', encoding='utf-8')
+
+  assert check_new_py_files.main(['--new-dir', str(repo)]) == 3

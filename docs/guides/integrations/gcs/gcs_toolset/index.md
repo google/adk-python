@@ -31,7 +31,7 @@ from google.adk.integrations.gcs.settings import Capabilities, GCSToolSettings
 # By default, toolsets are read-only.
 tool_settings = GCSToolSettings(capabilities=[Capabilities.READ_WRITE])
 
-# Initialize the toolset. 
+# Initialize the toolset.
 # Providing no credentials_config defaults to Application Default Credentials.
 gcs_toolset = GCSToolset(gcs_tool_settings=tool_settings)
 
@@ -104,7 +104,7 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.integrations.gcs import GCSAdminToolset
 from google.adk.integrations.gcs.settings import Capabilities, GCSToolSettings
 
-# Admin tools also respect capabilities. 
+# Admin tools also respect capabilities.
 # READ_WRITE is required to create or delete buckets.
 admin_settings = GCSToolSettings(capabilities=[Capabilities.READ_WRITE])
 admin_toolset = GCSAdminToolset(gcs_tool_settings=admin_settings)
