@@ -22,6 +22,7 @@ import asyncio
 from collections import Counter
 from typing import Any
 from typing import AsyncGenerator
+from unittest import mock
 import uuid
 
 from google.adk.agents.context import Context
@@ -34,6 +35,7 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.workflow._base_node import BaseNode
 from google.adk.workflow._base_node import START
 from google.adk.workflow._join_node import JoinNode
+from google.adk.workflow._node_status import NodeStatus
 from google.adk.workflow._workflow import get_common_branch_prefix
 from google.adk.workflow._workflow import Workflow
 from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
@@ -2596,3 +2598,150 @@ async def _drain(agen: AsyncGenerator[Event, None], sink: list[Event]) -> None:
   """Consume an event stream into sink."""
   async for event in agen:
     sink.append(event)
+
+
+async def test_workflow_error_drains_completed_sibling_nodes():
+  """Sibling nodes that complete in the same tick as a failing node have their completions preserved."""
+  succeeding_completed = False
+  handle_completion_calls = []
+
+  class _FailingNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      await asyncio.sleep(0)
+      raise ValueError('node failure')
+      yield Event(output='should_not_reach_here')
+
+  class _SucceedingNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      nonlocal succeeding_completed
+      await asyncio.sleep(0)
+      succeeding_completed = True
+      yield Event(output='sibling_output')
+
+  failing = _FailingNode(name='failing_node')
+  succeeding = _SucceedingNode(name='succeeding_node')
+  wf = Workflow(
+      name='sibling_error_wf', edges=[(START, failing), (START, succeeding)]
+  )
+  ss = InMemorySessionService()
+  runner = Runner(app_name='test', node=wf, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  original_handle_completion = Workflow._handle_completion
+
+  def spy_handle_completion(
+      self, loop_state, node_name, node_obj, child_ctx, ctx
+  ):
+    handle_completion_calls.append(node_name)
+    return original_handle_completion(
+        self, loop_state, node_name, node_obj, child_ctx, ctx
+    )
+
+  events: list[Event] = []
+  with mock.patch.object(
+      Workflow, '_handle_completion', new=spy_handle_completion
+  ):
+    with pytest.raises(ValueError, match='node failure'):
+      async for event in runner.run_async(
+          user_id='u',
+          session_id=session.id,
+          new_message=types.Content(parts=[types.Part(text='go')], role='user'),
+      ):
+        events.append(event)
+
+  assert succeeding_completed is True
+  assert 'failing_node' not in handle_completion_calls
+  assert 'succeeding_node' in handle_completion_calls
+  outputs = [e.output for e in events if e.output is not None]
+  assert 'sibling_output' in outputs
+
+
+async def test_workflow_error_drain_marks_errored_sibling_failed_in_checkpoint():
+  """An errored sibling drained after the initial batch is marked failed in checkpoints."""
+  first_batch_emitted = asyncio.Event()
+
+  class _ImmediateSuccessNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      yield Event(output='first_output')
+
+  class _ImmediateFailNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      raise ValueError('first failure')
+      yield Event(output='unreachable')
+
+  class _DelayedFailNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      await first_batch_emitted.wait()
+      raise ValueError('second failure')
+      yield Event(output='unreachable')
+
+  class _DelayedSuccessNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      await first_batch_emitted.wait()
+      yield Event(output='second_output')
+
+  first_ok = _ImmediateSuccessNode(name='first_ok')
+  failing_1 = _ImmediateFailNode(name='failing_1')
+  failing_2 = _DelayedFailNode(name='failing_2')
+  second_ok = _DelayedSuccessNode(name='second_ok')
+  wf = Workflow(
+      name='drain_checkpoint_wf',
+      edges=[
+          (START, first_ok),
+          (START, failing_1),
+          (START, failing_2),
+          (START, second_ok),
+      ],
+  )
+  app = App(
+      name='test',
+      root_agent=wf,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  ss = InMemorySessionService()
+  runner = Runner(app=app, session_service=ss)
+  session = await ss.create_session(app_name='test', user_id='u')
+
+  events: list[Event] = []
+  with pytest.raises(ValueError, match='first failure'):
+    async for event in runner.run_async(
+        user_id='u',
+        session_id=session.id,
+        new_message=types.Content(parts=[types.Part(text='go')], role='user'),
+    ):
+      events.append(event)
+      if event.error_message == 'first failure':
+        first_batch_emitted.set()
+      await asyncio.sleep(0)
+
+  checkpoints = [
+      e.actions.agent_state['nodes']
+      for e in events
+      if e.actions
+      and e.actions.agent_state
+      and 'nodes' in e.actions.agent_state
+  ]
+  assert checkpoints
+  last_checkpoint = checkpoints[-1]
+  assert last_checkpoint['first_ok']['status'] == NodeStatus.COMPLETED.value
+  assert last_checkpoint['failing_1']['status'] == NodeStatus.FAILED.value
+  assert last_checkpoint['failing_2']['status'] == NodeStatus.FAILED.value
+  assert last_checkpoint['second_ok']['status'] == NodeStatus.COMPLETED.value
