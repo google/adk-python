@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import ntpath
 import os
 import pathlib
 import shutil
@@ -179,37 +178,6 @@ def test_no_waiver_ignores_a_tag_the_caller_did_not_mean(
   assert check_new_py_files.main(argv) == 0
   # With it, neither does.
   assert check_new_py_files.main(argv + ['--no-waiver']) == 1
-
-
-def test_get_commit_message_hg_reads_every_local_commit(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  """The message range has to match the range the added-file scan covers.
-
-  The file set spans back to the last synced revision, so reading only the
-  tip's message would let a commit stacked on top bury a waiver written in the
-  commit that adds the file.
-  """
-
-  def fake_which(cmd: str) -> str | None:
-    return '/usr/bin/' + cmd if cmd == 'hg' else None
-
-  def fake_run_cmd(cmd: list[str], cwd: str | None = None) -> tuple[int, str]:
-    if cmd == ['hg', 'root']:
-      return 0, '/workspace'
-    if check_new_py_files._LOCAL_COMMITS in cmd:
-      return 0, 'add a seam\nNO_UNIT_GUIDE=internal\n\nlater unrelated commit\n'
-    if '-r' in cmd and '.' in cmd:
-      return 0, 'later unrelated commit'
-    return 1, ''
-
-  monkeypatch.setattr(check_new_py_files.shutil, 'which', fake_which)
-  monkeypatch.setattr(check_new_py_files, '_run_cmd', fake_run_cmd)
-  monkeypatch.delenv('NO_UNIT_GUIDE', raising=False)
-  monkeypatch.delenv('SKIP_UNIT_GUIDE', raising=False)
-
-  msg = check_new_py_files.get_commit_message('.')
-  assert check_new_py_files.has_no_unit_guide_tag(msg)
 
 
 def test_check_files_prefix_violation(tmp_path: pathlib.Path) -> None:
@@ -451,7 +419,7 @@ def test_main_baseline_dir_env_tag_waives_without_a_commit_message(
 ) -> None:
   """NO_UNIT_GUIDE works, and is advertised, where there is no commit message.
 
-  Baseline mode can run against an exported tree with no VCS, where
+  Baseline mode can run against a tree with no git history, where
   `get_commit_message` returns '', so the commit-message tag cannot be the
   only remedy the violation text offers.
   """
@@ -530,15 +498,15 @@ def test_main_checks_a_file_in_a_subpackage_with_no_symlink_yet(
 ) -> None:
   """A change that adds a whole new subpackage must still be checked.
 
-  Internally the checkout sits inside the package it points into, and its
-  src/google/adk reaches the real subpackages through per-subpackage symlinks.
+  A checkout can sit inside the package it points into, with its
+  src/google/adk reaching the real subpackages through per-subpackage symlinks.
   A subpackage the change is adding has no symlink yet, so its files stay put
   and used to relativize against the package root as
   `<checkout>/src/google/adk/...` -- a path whose first component is an
   excluded directory name, so it was dropped and the change passed without
   being examined.
   """
-  # The internal layout: a package root that *contains* the checkout.
+  # A package root that *contains* the checkout.
   package_root = tmp_path / 'pkg'
   checkout = package_root / 'checkout'
   real_agents = package_root / 'agents'
@@ -695,22 +663,21 @@ def test_sh_forwarder_execution(tmp_path: pathlib.Path) -> None:
 
 
 def test_symlinked_layout_normalization(tmp_path: pathlib.Path) -> None:
-  # Simulate symlinked layout where open_source_workspace/src/google/adk/__init__.py
-  # is a symlink pointing to the real upstream package root.
-  upstream_adk = tmp_path / 'repo' / 'third_party' / 'adk'
-  upstream_adk.mkdir(parents=True)
-  (upstream_adk / '__init__.py').write_text('', encoding='utf-8')
+  # A checkout nested inside the package root, whose src/google/adk/__init__.py
+  # is a symlink to the package's own.
+  package_root = tmp_path / 'pkg'
+  package_root.mkdir(parents=True)
+  (package_root / '__init__.py').write_text('', encoding='utf-8')
 
-  oss_workspace = upstream_adk / 'open_source_workspace'
-  oss_src_adk = oss_workspace / 'src' / 'google' / 'adk'
-  oss_src_adk.mkdir(parents=True)
-  # Symlink __init__.py pointing back to upstream_adk/__init__.py
-  (oss_src_adk / '__init__.py').symlink_to(upstream_adk / '__init__.py')
+  checkout = package_root / 'checkout'
+  checkout_adk = checkout / 'src' / 'google' / 'adk'
+  checkout_adk.mkdir(parents=True)
+  (checkout_adk / '__init__.py').symlink_to(package_root / '__init__.py')
 
-  # A file added in upstream package tree
-  added_file = str(upstream_adk / 'agents' / '_agent.py')
+  # A file added in the package itself.
+  added_file = str(package_root / 'agents' / '_agent.py')
   results = check_new_py_files._normalize_and_filter_files(
-      [added_file], repo_root=str(oss_workspace)
+      [added_file], repo_root=str(checkout)
   )
   assert len(results) == 1
   display_path, rel_to_adk, filename = results[0]
@@ -718,7 +685,9 @@ def test_symlinked_layout_normalization(tmp_path: pathlib.Path) -> None:
   assert filename == '_agent.py'
 
 
-def test_get_vcs_added_files_git(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_git_added_files_reads_staged_additions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
   def fake_which(cmd: str) -> str | None:
     return '/usr/bin/' + cmd if cmd == 'git' else None
 
@@ -732,11 +701,11 @@ def test_get_vcs_added_files_git(monkeypatch: pytest.MonkeyPatch) -> None:
   monkeypatch.setattr(check_new_py_files.shutil, 'which', fake_which)
   monkeypatch.setattr(check_new_py_files, '_run_cmd', fake_run_cmd)
 
-  added = check_new_py_files.get_vcs_added_files('.')
+  added = check_new_py_files.get_git_added_files('.')
   assert added == {'src/google/adk/agents/_staged.py'}
 
 
-def test_get_vcs_added_files_git_head_diff(
+def test_get_git_added_files_reads_the_last_commit_when_nothing_is_staged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   def fake_which(cmd: str) -> str | None:
@@ -754,11 +723,11 @@ def test_get_vcs_added_files_git_head_diff(
   monkeypatch.setattr(check_new_py_files.shutil, 'which', fake_which)
   monkeypatch.setattr(check_new_py_files, '_run_cmd', fake_run_cmd)
 
-  added = check_new_py_files.get_vcs_added_files('.')
+  added = check_new_py_files.get_git_added_files('.')
   assert added == {'src/google/adk/agents/_committed.py'}
 
 
-def test_get_vcs_added_files_git_unreachable_range_is_indeterminate(
+def test_get_git_added_files_unreachable_range_is_indeterminate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   """A range that does not resolve is unknown, not empty.
@@ -783,10 +752,10 @@ def test_get_vcs_added_files_git_unreachable_range_is_indeterminate(
   monkeypatch.setattr(check_new_py_files.shutil, 'which', fake_which)
   monkeypatch.setattr(check_new_py_files, '_run_cmd', fake_run_cmd)
 
-  assert check_new_py_files.get_vcs_added_files('.') is None
+  assert check_new_py_files.get_git_added_files('.') is None
 
 
-def test_get_vcs_added_files_git_empty_range_is_no_files(
+def test_get_git_added_files_empty_range_is_no_files(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   """A range that resolves to an empty diff really is no added files."""
@@ -802,189 +771,96 @@ def test_get_vcs_added_files_git_empty_range_is_no_files(
   monkeypatch.setattr(check_new_py_files.shutil, 'which', fake_which)
   monkeypatch.setattr(check_new_py_files, '_run_cmd', fake_run_cmd)
 
-  assert check_new_py_files.get_vcs_added_files('.') == set()
+  assert check_new_py_files.get_git_added_files('.') == set()
 
 
-def _patch_windows_paths(monkeypatch: pytest.MonkeyPatch) -> None:
-  monkeypatch.setattr(check_new_py_files.os, 'path', ntpath)
-  monkeypatch.setattr(check_new_py_files.os, 'sep', '\\')
-
-
-@pytest.mark.parametrize('windows', [False, True])
-def test_get_vcs_added_files_jj(
-    monkeypatch: pytest.MonkeyPatch, windows: bool
+@pytest.mark.parametrize(
+    'git_installed', [True, False], ids=['git_installed', 'git_missing']
+)
+def test_added_files_and_message_are_unknown_outside_a_git_work_tree(
+    monkeypatch: pytest.MonkeyPatch, git_installed: bool
 ) -> None:
-  def fake_which(cmd: str) -> str | None:
-    return '/usr/bin/' + cmd if cmd == 'jj' else None
+  """Outside a git work tree the added files and the message are unknown.
 
-  def fake_run_cmd(cmd: list[str], cwd: str | None = None) -> tuple[int, str]:
-    if cmd == ['jj', 'root']:
-      return 0, r'C:\workspace' if windows else '/workspace'
-    if cmd == ['jj', 'diff', '--summary']:
-      return 0, 'A src/google/adk/agents/_jj_agent.py\nM existing.py'
-    return 1, ''
-
-  monkeypatch.setattr(check_new_py_files.shutil, 'which', fake_which)
-  monkeypatch.setattr(check_new_py_files, '_run_cmd', fake_run_cmd)
-  if windows:
-    _patch_windows_paths(monkeypatch)
-
-  expected = (
-      'C:/workspace/src/google/adk/agents/_jj_agent.py'
-      if windows
-      else '/workspace/src/google/adk/agents/_jj_agent.py'
-  )
-  added = check_new_py_files.get_vcs_added_files('.')
-  assert added == {expected}
-
-
-_HG_SYNCED_BASE_STATUS = [
-    'hg',
-    'status',
-    '--added',
-    '--no-status',
-    '--rev',
-    check_new_py_files._SYNCED_BASE,
-]
-_HG_WORKING_DIR_STATUS = ['hg', 'status', '--added', '--no-status']
-
-
-@pytest.mark.parametrize('windows', [False, True])
-def test_get_vcs_added_files_hg(
-    monkeypatch: pytest.MonkeyPatch, windows: bool
-) -> None:
-  def fake_which(cmd: str) -> str | None:
-    return '/usr/bin/' + cmd if cmd == 'hg' else None
-
-  def fake_run_cmd(cmd: list[str], cwd: str | None = None) -> tuple[int, str]:
-    if cmd == ['hg', 'root']:
-      return 0, r'C:\workspace' if windows else '/workspace'
-    if cmd == _HG_SYNCED_BASE_STATUS:
-      return 0, 'src/google/adk/agents/_hg_agent.py'
-    return 1, ''
-
-  monkeypatch.setattr(check_new_py_files.shutil, 'which', fake_which)
-  monkeypatch.setattr(check_new_py_files, '_run_cmd', fake_run_cmd)
-  if windows:
-    _patch_windows_paths(monkeypatch)
-
-  expected = (
-      'C:/workspace/src/google/adk/agents/_hg_agent.py'
-      if windows
-      else '/workspace/src/google/adk/agents/_hg_agent.py'
-  )
-  added = check_new_py_files.get_vcs_added_files('.')
-  assert added == {expected}
-
-
-def test_get_vcs_added_files_hg_sees_an_already_committed_add(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  """A Mercurial checkout is normally committed by the time this runs.
-
-  `hg status --added` on its own reports only files added and not yet
-  committed, so it goes empty after `hg commit` or `hg amend` and the check
-  silently passed every such change. The file set has to come from a diff
-  against the last synced revision instead.
+  git's own answer about the work tree decides that. Another tool on PATH may
+  well answer, but the check reports that it could not tell rather than taking
+  another system's word for what the change is, whether git is merely not
+  managing root or not installed at all.
   """
-
-  def fake_which(cmd: str) -> str | None:
-    return '/usr/bin/' + cmd if cmd == 'hg' else None
+  consulted: list[str] = []
 
   def fake_run_cmd(cmd: list[str], cwd: str | None = None) -> tuple[int, str]:
-    if cmd == ['hg', 'root']:
-      return 0, '/workspace'
-    if cmd == _HG_SYNCED_BASE_STATUS:
-      return 0, 'src/google/adk/agents/_committed.py'
-    if cmd == _HG_WORKING_DIR_STATUS:
-      return 0, ''  # Committed, so nothing is pending in the working copy.
-    return 1, ''
+    consulted.append(cmd[0])
+    if cmd[0] != 'git':
+      return 0, 'an answer'
+    # Only the work-tree probe fails, so the test pins that it is the probe,
+    # not some later git command, that ends the search.
+    return (1, '') if 'rev-parse' in cmd else (0, '')
+
+  def fake_which(cmd: str) -> str | None:
+    if cmd == 'git' and not git_installed:
+      return None
+    return '/usr/bin/' + cmd
 
   monkeypatch.setattr(check_new_py_files.shutil, 'which', fake_which)
   monkeypatch.setattr(check_new_py_files, '_run_cmd', fake_run_cmd)
 
-  added = check_new_py_files.get_vcs_added_files('.')
-  assert added == {'/workspace/src/google/adk/agents/_committed.py'}
+  assert check_new_py_files.get_git_added_files('.') is None
+  assert check_new_py_files.get_commit_message('.') == ''
+  assert set(consulted) <= {'git'}
 
 
-def test_get_vcs_added_files_hg_falls_back_when_the_revset_fails(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize('channel', ['list_file', 'argument'])
+def test_main_refuses_a_depot_style_name_that_is_not_a_file(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    channel: str,
 ) -> None:
-  """A plain hg repository need not have the phases the revset relies on."""
+  """A `//`-prefixed .py name with no file behind it fails the run.
 
-  def fake_which(cmd: str) -> str | None:
-    return '/usr/bin/' + cmd if cmd == 'hg' else None
+  Nothing can place it in the package, so without the refusal it would drop
+  out of the check without a word and the compliant file beside it would pass
+  alone. The refusal holds however the name is given.
+  """
+  new_dir = tmp_path / 'new'
+  compliant = _tree_with_added_file(new_dir, 'agents/_compliant.py')
+  depot_style = '//server/src/google/adk/agents/public.py'
+  argv = ['--new-dir', str(new_dir), '--no-unit-guide']
+  if channel == 'list_file':
+    listing = tmp_path / 'added.txt'
+    listing.write_text(f'{compliant}\n{depot_style}\n', encoding='utf-8')
+    argv += ['--added-files-from', str(listing)]
+  else:
+    argv += [str(compliant), depot_style]
 
-  def fake_run_cmd(cmd: list[str], cwd: str | None = None) -> tuple[int, str]:
-    if cmd == ['hg', 'root']:
-      return 0, '/workspace'
-    if cmd == _HG_SYNCED_BASE_STATUS:
-      return 255, ''
-    if cmd == _HG_WORKING_DIR_STATUS:
-      return 0, 'src/google/adk/agents/_hg_agent.py'
-    return 1, ''
-
-  monkeypatch.setattr(check_new_py_files.shutil, 'which', fake_which)
-  monkeypatch.setattr(check_new_py_files, '_run_cmd', fake_run_cmd)
-
-  added = check_new_py_files.get_vcs_added_files('.')
-  assert added == {'/workspace/src/google/adk/agents/_hg_agent.py'}
-
-
-def test_get_vcs_added_files_g4(monkeypatch: pytest.MonkeyPatch) -> None:
-  def fake_which(cmd: str) -> str | None:
-    return '/usr/bin/' + cmd if cmd == 'g4' else None
-
-  def fake_run_cmd(cmd: list[str], cwd: str | None = None) -> tuple[int, str]:
-    if cmd == ['g4', 'info']:
-      return 0, 'Server: ...'
-    if cmd == ['g4', 'opened']:
-      return (
-          0,
-          (
-              '//depot/mirror/src/google/adk/agents/_g4_agent.py#1'
-              ' - add default change (text)'
-          ),
-      )
-    return 1, ''
-
-  monkeypatch.setattr(check_new_py_files.shutil, 'which', fake_which)
-  monkeypatch.setattr(check_new_py_files, '_run_cmd', fake_run_cmd)
-
-  added = check_new_py_files.get_vcs_added_files('.')
-  assert added == {'//depot/mirror/src/google/adk/agents/_g4_agent.py'}
+  assert check_new_py_files.main(argv) == check_new_py_files._EXIT_SETUP_ERROR
+  assert depot_style in capsys.readouterr().err
 
 
-def test_get_vcs_added_files_p4(monkeypatch: pytest.MonkeyPatch) -> None:
-  def fake_which(cmd: str) -> str | None:
-    return '/usr/bin/' + cmd if cmd == 'p4' else None
-
-  def fake_run_cmd(cmd: list[str], cwd: str | None = None) -> tuple[int, str]:
-    if cmd == ['p4', 'info']:
-      return 0, 'Server: ...'
-    if cmd == ['p4', 'opened']:
-      return (
-          0,
-          (
-              '//depot/mirror/src/google/adk/agents/_p4_agent.py#1'
-              ' - add default change (text)'
-          ),
-      )
-    return 1, ''
-
-  monkeypatch.setattr(check_new_py_files.shutil, 'which', fake_which)
-  monkeypatch.setattr(check_new_py_files, '_run_cmd', fake_run_cmd)
-
-  added = check_new_py_files.get_vcs_added_files('.')
-  assert added == {'//depot/mirror/src/google/adk/agents/_p4_agent.py'}
-
-
-def test_get_vcs_added_files_none_detected(
-    monkeypatch: pytest.MonkeyPatch,
+def test_main_checks_a_real_path_that_starts_with_a_double_slash(
+    tmp_path: pathlib.Path,
 ) -> None:
-  monkeypatch.setattr(check_new_py_files.shutil, 'which', lambda _: None)
-  added = check_new_py_files.get_vcs_added_files('.')
-  assert added is None
+  """A real file named with a leading `//` is checked, not refused.
+
+  POSIX allows a doubled leading slash, and Windows writes UNC paths that way,
+  so such a name can point at a genuine file. A `//` entry that is not a .py
+  file is ignored like any other non-Python entry.
+  """
+  new_dir = tmp_path / 'new'
+  public = _tree_with_added_file(new_dir, 'agents/public.py')
+  listing = tmp_path / 'added.txt'
+  listing.write_text(f'/{public}\n//server/BUILD\n', encoding='utf-8')
+
+  exit_code = check_new_py_files.main([
+      '--new-dir',
+      str(new_dir),
+      '--added-files-from',
+      str(listing),
+      '--no-unit-guide',
+  ])
+
+  # Checked, and the public name breaks the prefix rule.
+  assert exit_code == check_new_py_files._EXIT_VIOLATIONS
 
 
 def test_get_commit_message_git(
@@ -1078,108 +954,7 @@ def test_get_commit_message_git_reads_the_merged_commits_on_a_pull_request(
   assert check_new_py_files.has_no_unit_guide_tag(msg)
 
 
-def test_get_commit_message_jj(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
-) -> None:
-  def fake_which(cmd: str) -> str | None:
-    return '/usr/bin/' + cmd if cmd == 'jj' else None
-
-  def fake_run_cmd(cmd: list[str], cwd: str | None = None) -> tuple[int, str]:
-    if cmd == ['jj', 'root']:
-      return 0, str(tmp_path)
-    if 'jj' in cmd and 'log' in cmd:
-      return 0, 'JJ Description'
-    return 1, ''
-
-  monkeypatch.setattr(check_new_py_files.shutil, 'which', fake_which)
-  monkeypatch.setattr(check_new_py_files, '_run_cmd', fake_run_cmd)
-
-  msg = check_new_py_files.get_commit_message(str(tmp_path))
-  assert msg == 'JJ Description'
-
-
-def test_get_commit_message_hg(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
-) -> None:
-  def fake_which(cmd: str) -> str | None:
-    return '/usr/bin/' + cmd if cmd == 'hg' else None
-
-  def fake_run_cmd(cmd: list[str], cwd: str | None = None) -> tuple[int, str]:
-    if cmd == ['hg', 'root']:
-      return 0, str(tmp_path)
-    if 'hg' in cmd and 'log' in cmd:
-      return 0, 'HG Description'
-    return 1, ''
-
-  monkeypatch.setattr(check_new_py_files.shutil, 'which', fake_which)
-  monkeypatch.setattr(check_new_py_files, '_run_cmd', fake_run_cmd)
-
-  msg = check_new_py_files.get_commit_message(str(tmp_path))
-  assert msg == 'HG Description'
-
-
-def test_get_commit_message_g4(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
-) -> None:
-  def fake_which(cmd: str) -> str | None:
-    return '/usr/bin/' + cmd if cmd == 'g4' else None
-
-  def fake_run_cmd(cmd: list[str], cwd: str | None = None) -> tuple[int, str]:
-    if cmd == ['g4', 'info']:
-      return 0, 'Server: ...'
-    if cmd == ['g4', 'change', '-o']:
-      return 0, 'G4 Change Description'
-    return 1, ''
-
-  monkeypatch.setattr(check_new_py_files.shutil, 'which', fake_which)
-  monkeypatch.setattr(check_new_py_files, '_run_cmd', fake_run_cmd)
-
-  msg = check_new_py_files.get_commit_message(str(tmp_path))
-  assert msg == 'G4 Change Description'
-
-
-def test_get_commit_message_p4(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
-) -> None:
-  def fake_which(cmd: str) -> str | None:
-    return '/usr/bin/' + cmd if cmd == 'p4' else None
-
-  def fake_run_cmd(cmd: list[str], cwd: str | None = None) -> tuple[int, str]:
-    if cmd == ['p4', 'info']:
-      return 0, 'Server: ...'
-    if cmd == ['p4', 'change', '-o']:
-      return 0, 'P4 Change Description'
-    return 1, ''
-
-  monkeypatch.setattr(check_new_py_files.shutil, 'which', fake_which)
-  monkeypatch.setattr(check_new_py_files, '_run_cmd', fake_run_cmd)
-
-  msg = check_new_py_files.get_commit_message(str(tmp_path))
-  assert msg == 'P4 Change Description'
-
-
-def test_normalize_depot_path(tmp_path: pathlib.Path) -> None:
-  upstream_adk = tmp_path / 'third_party' / 'py' / 'google' / 'adk'
-  upstream_adk.mkdir(parents=True)
-  (upstream_adk / '__init__.py').write_text('', encoding='utf-8')
-
-  workspace = upstream_adk / 'open_source_workspace'
-  src_adk = workspace / 'src' / 'google' / 'adk'
-  src_adk.mkdir(parents=True)
-  (src_adk / '__init__.py').symlink_to(upstream_adk / '__init__.py')
-
-  depot_path = '//depot/mirror/src/google/adk/agents/_g4_agent.py'
-  results = check_new_py_files._normalize_and_filter_files(
-      [depot_path], repo_root=str(workspace)
-  )
-  assert len(results) == 1
-  display_path, rel_to_adk, filename = results[0]
-  assert display_path == depot_path
-  assert rel_to_adk == 'agents/_g4_agent.py'
-  assert filename == '_g4_agent.py'
-
-
-def test_main_no_vcs_no_baseline(
+def test_main_without_git_or_baseline_is_indeterminate(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -1194,7 +969,7 @@ def test_main_no_vcs_no_baseline(
 
   exit_code = check_new_py_files.main(['--new-dir', str(new_dir)])
   # 3, not 1 or 2: nothing was checked, which is neither a pass nor a
-  # violation. run_precommit_checks reports this as skipped.
+  # violation. A caller running this opportunistically reports it as skipped.
   assert exit_code == check_new_py_files._EXIT_INDETERMINATE
   err = capsys.readouterr().err
   assert 'Could not determine the added files' in err
@@ -1220,8 +995,8 @@ def test_sh_forwarder_execution_from_any_cwd(tmp_path: pathlib.Path) -> None:
 
 
 # Tests that drive a real repository rather than monkeypatching _run_cmd. The
-# faked tests above pin the parsing of each VCS's output; these pin what the
-# VCS actually says, which is where the interesting mistakes live -- a rename
+# faked tests above pin the parsing of git's output; these pin what git
+# actually says, which is where the interesting mistakes live -- a rename
 # reported as R100 rather than as an add, for one.
 
 
@@ -1236,37 +1011,33 @@ def test_a_renamed_subpackage_keeps_its_source_tree_name(
 ) -> None:
   """A subpackage exposed under another name is checked under that name.
 
-  `dependencies` points at `dependencies_external`. Resolving the symlink
-  would report the target's name, and the guide would then be demanded at a
-  directory that does not exist in the tree the contributor sees.
+  `dependencies` is a symlink to a directory named differently. Resolving the
+  symlink would report the target's name, and the guide would then be demanded
+  at a directory that does not exist in the tree the contributor sees.
   """
-  # The internal shape: a package root holding the real subpackage, and a
-  # checkout inside it whose src/google/adk exposes it under another name.
+  # A package root holding the real subpackage, and a checkout inside it whose
+  # src/google/adk exposes it under another name.
   package_root = tmp_path / 'pkg'
-  (package_root / 'dependencies_external').mkdir(parents=True)
+  (package_root / 'dependencies_impl').mkdir(parents=True)
   (package_root / '__init__.py').write_text('', encoding='utf-8')
-  added = package_root / 'dependencies_external' / '_thing.py'
+  added = package_root / 'dependencies_impl' / '_thing.py'
   added.write_text('', encoding='utf-8')
 
   checkout = package_root / 'checkout'
   adk_src = checkout / 'src' / 'google' / 'adk'
   adk_src.mkdir(parents=True)
   (checkout / 'docs' / 'guides').mkdir(parents=True)
-  os.symlink(package_root / 'dependencies_external', adk_src / 'dependencies')
+  os.symlink(package_root / 'dependencies_impl', adk_src / 'dependencies')
   os.symlink(package_root / '__init__.py', adk_src / '__init__.py')
 
   # Which of the subpackage's two names a path arrives wearing depends only on
-  # how it was detected: git reports it relative to the checkout, while the
-  # Piper-shaped detectors report the real location. All of them have to land
-  # on the name the source tree uses, or the same file demands its guide in
-  # two different directories depending on where it is checked.
+  # how it was given: relative to the checkout, as git and --baseline-dir give
+  # it, or as an absolute path into the real subpackage. Both have to land on
+  # the name the source tree uses, or the same file demands its guide in two
+  # different directories depending on how it was named.
   for raw in (
-      'src/google/adk/dependencies/_thing.py',  # git, --baseline-dir
-      str(added),  # hg and jj, an absolute path into the real subpackage
-      (  # g4 and p4
-          '//depot/mirror/third_party/py/google/adk/'
-          'dependencies_external/_thing.py'
-      ),
+      'src/google/adk/dependencies/_thing.py',  # relative, through the link
+      str(added),  # absolute, into the linked directory
   ):
     results = check_new_py_files._normalize_and_filter_files(
         [raw], repo_root=str(checkout)
@@ -1336,7 +1107,7 @@ def test_real_git_flags_a_rename_into_a_public_name(
   )
   _git(repo, 'commit', '-qm', 'refactor: rename')
 
-  added = check_new_py_files.get_vcs_added_files(str(repo))
+  added = check_new_py_files.get_git_added_files(str(repo))
   assert added == {'src/google/adk/agents/brand_new_public.py'}
 
 
@@ -1356,7 +1127,7 @@ def test_real_git_ignores_a_pure_relocation(tmp_path: pathlib.Path) -> None:
   )
   _git(repo, 'commit', '-qm', 'refactor: relocate')
 
-  assert check_new_py_files.get_vcs_added_files(str(repo)) == set()
+  assert check_new_py_files.get_git_added_files(str(repo)) == set()
 
 
 def test_real_git_ignores_a_public_to_public_rename(
@@ -1385,7 +1156,7 @@ def test_real_git_ignores_a_public_to_public_rename(
   )
   _git(repo, 'commit', '-qm', 'refactor: rename')
 
-  assert check_new_py_files.get_vcs_added_files(str(repo)) == set()
+  assert check_new_py_files.get_git_added_files(str(repo)) == set()
 
 
 def test_real_git_flags_a_file_moved_in_from_an_excluded_tree(
@@ -1412,7 +1183,7 @@ def test_real_git_flags_a_file_moved_in_from_an_excluded_tree(
   )
   _git(repo, 'commit', '-qm', 'promote the helper')
 
-  assert check_new_py_files.get_vcs_added_files(str(repo)) == {
+  assert check_new_py_files.get_git_added_files(str(repo)) == {
       'src/google/adk/agents/helper_public.py'
   }
 
@@ -1436,7 +1207,7 @@ def test_real_git_flags_a_stub_promoted_to_a_module(
   )
   _git(repo, 'commit', '-qm', 'promote the stub')
 
-  assert check_new_py_files.get_vcs_added_files(str(repo)) == {
+  assert check_new_py_files.get_git_added_files(str(repo)) == {
       'src/google/adk/agents/thing.py'
   }
 
@@ -1466,7 +1237,7 @@ def test_real_git_flags_a_move_out_of_a_guide_exempt_subtree(
   )
   _git(repo, 'commit', '-qm', 'move it out of cli')
 
-  assert check_new_py_files.get_vcs_added_files(str(repo)) == {
+  assert check_new_py_files.get_git_added_files(str(repo)) == {
       'src/google/adk/agents/tool.py'
   }
 
@@ -1507,7 +1278,22 @@ def test_real_git_staged_edit_is_not_judged_on_the_previous_commit(
   existing.write_text('# edited\n', encoding='utf-8')
   _git(repo, 'add', str(existing))
 
-  assert check_new_py_files.get_vcs_added_files(str(repo)) == set()
+  assert check_new_py_files.get_git_added_files(str(repo)) == set()
+
+
+def test_real_git_the_git_directory_is_not_a_work_tree(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+  """Inside .git itself there is no work tree, and the check does not claim one.
+
+  git answers that question with `false` and a zero exit status, so a probe
+  that trusted the status went on to report a work tree whose index could not
+  be read -- a diagnosis that sends the reader to the wrong problem.
+  """
+  repo = _git_repo_with_a_guided_module(tmp_path)
+
+  assert check_new_py_files.get_git_added_files(str(repo / '.git')) is None
+  assert 'git work tree, but' not in capsys.readouterr().err
 
 
 def test_real_git_reports_a_staged_addition(tmp_path: pathlib.Path) -> None:
@@ -1517,7 +1303,7 @@ def test_real_git_reports_a_staged_addition(tmp_path: pathlib.Path) -> None:
   )
   _git(repo, 'add', '-A')
 
-  assert check_new_py_files.get_vcs_added_files(str(repo)) == {
+  assert check_new_py_files.get_git_added_files(str(repo)) == {
       'src/google/adk/agents/_added.py'
   }
 

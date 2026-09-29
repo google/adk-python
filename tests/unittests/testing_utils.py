@@ -224,17 +224,23 @@ class TestInMemoryRunner(AfInMemoryRunner):
   """
 
   async def run_async_with_new_session(
-      self, new_message: types.ContentUnion
+      self,
+      new_message: types.ContentUnion,
+      run_config: Optional[RunConfig] = None,
   ) -> list[Event]:
 
     collected_events: list[Event] = []
-    async for event in self.run_async_with_new_session_agen(new_message):
+    async for event in self.run_async_with_new_session_agen(
+        new_message, run_config
+    ):
       collected_events.append(event)
 
     return collected_events
 
   async def run_async_with_new_session_agen(
-      self, new_message: types.ContentUnion
+      self,
+      new_message: types.ContentUnion,
+      run_config: Optional[RunConfig] = None,
   ) -> AsyncGenerator[Event, None]:
     session = await self.session_service.create_session(
         app_name='InMemoryRunner', user_id='test_user'
@@ -243,6 +249,7 @@ class TestInMemoryRunner(AfInMemoryRunner):
         user_id=session.user_id,
         session_id=session.id,
         new_message=get_user_content(new_message),
+        run_config=run_config,
     )
     async with Aclosing(agen):
       async for event in agen:

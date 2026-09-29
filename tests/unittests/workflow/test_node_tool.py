@@ -1585,3 +1585,343 @@ async def test_node_tool_synchronous_result_answers_the_call(
       if part.text
   ]
   assert texts == ['done']
+
+
+def _function_responses(events: list[Event]) -> list[Any]:
+  return [
+      part.function_response.response
+      for event in events
+      if event.content and event.content.parts
+      for part in event.content.parts
+      if part.function_response
+  ]
+
+
+class _TypedInput(BaseModel):
+  x: int
+
+
+@pytest.mark.asyncio
+async def test_node_tool_validation_error_returns_error_dict(
+    request: pytest.FixtureRequest,
+):
+  """Invalid LLM args yield an {'error': ...} response, like FunctionTool."""
+
+  def typed(node_input: _TypedInput) -> int:
+    return node_input.x
+
+  typed_node = FunctionNode(func=typed)
+  typed_node.input_schema = _TypedInput
+  agent = LlmAgent(
+      name='agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(name='typed', args={'x': 'abc'}),
+              types.Part.from_text(text='done'),
+          ]
+      ),
+      tools=[typed_node],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(name=request.function.__name__, root_agent=agent)
+  )
+
+  events = await runner.run_async(testing_utils.get_user_content('go'))
+
+  responses = _function_responses(events)
+  assert len(responses) == 1
+  assert set(responses[0]) == {'error'}
+  assert 'argument validation errors' in responses[0]['error']
+
+
+@pytest.mark.asyncio
+async def test_node_tool_function_node_validation_error_returns_error_dict(
+    request: pytest.FixtureRequest,
+):
+  """FunctionNode tool returns {'error': ...} when arguments fail validation."""
+
+  def calculate(x: int) -> int:
+    return x
+
+  calc_node = FunctionNode(func=calculate)
+  agent = LlmAgent(
+      name='agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name='calculate', args={'x': 'abc'}
+              ),
+              types.Part.from_text(text='done'),
+          ]
+      ),
+      tools=[calc_node],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(name=request.function.__name__, root_agent=agent)
+  )
+
+  events = await runner.run_async(testing_utils.get_user_content('go'))
+
+  responses = _function_responses(events)
+  assert len(responses) == 1
+  assert set(responses[0]) == {'error'}
+  assert 'argument validation errors' in responses[0]['error']
+
+
+@pytest.mark.asyncio
+async def test_node_tool_failure_reaches_on_tool_error_callback(
+    request: pytest.FixtureRequest,
+):
+  """A failing node surfaces its original error to on_tool_error callbacks."""
+  seen_errors: list[Exception] = []
+
+  def boom(x: int) -> int:
+    raise ValueError(f'kaboom {x}')
+
+  def on_tool_error(tool, args, tool_context, error):
+    seen_errors.append(error)
+    return {'handled': True}
+
+  agent = LlmAgent(
+      name='agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(name='boom', args={'x': 1}),
+              types.Part.from_text(text='done'),
+          ]
+      ),
+      tools=[FunctionNode(func=boom)],
+      on_tool_error_callback=on_tool_error,
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(name=request.function.__name__, root_agent=agent)
+  )
+
+  events = await runner.run_async(testing_utils.get_user_content('go'))
+
+  assert len(seen_errors) == 1
+  assert isinstance(seen_errors[0], ValueError)
+  assert str(seen_errors[0]) == 'kaboom 1'
+  assert _function_responses(events) == [{'handled': True}]
+
+
+@pytest.mark.asyncio
+async def test_node_tool_unhandled_failure_propagates(
+    request: pytest.FixtureRequest,
+):
+  """Without on_tool_error, a node failure propagates like a FunctionTool's."""
+
+  def boom(x: int) -> int:
+    raise ValueError(f'kaboom {x}')
+
+  agent = LlmAgent(
+      name='agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(name='boom', args={'x': 1}),
+              types.Part.from_text(text='done'),
+          ]
+      ),
+      tools=[FunctionNode(func=boom)],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(name=request.function.__name__, root_agent=agent)
+  )
+
+  with pytest.raises(ValueError, match='kaboom 1'):
+    await runner.run_async(testing_utils.get_user_content('go'))
+
+
+@pytest.mark.asyncio
+async def test_node_tool_function_node_none_arg_for_non_optional_returns_error_dict(
+    request: pytest.FixtureRequest,
+):
+  """Passing None to a non-optional parameter returns validation error dict."""
+
+  def calculate(x: int) -> int:
+    return x
+
+  calc_node = FunctionNode(func=calculate)
+  agent = LlmAgent(
+      name='agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(name='calculate', args={'x': None}),
+              types.Part.from_text(text='done'),
+          ]
+      ),
+      tools=[calc_node],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(name=request.function.__name__, root_agent=agent)
+  )
+
+  events = await runner.run_async(testing_utils.get_user_content('go'))
+
+  responses = _function_responses(events)
+  assert len(responses) == 1
+  assert set(responses[0]) == {'error'}
+  assert 'argument validation errors' in responses[0]['error']
+
+
+@pytest.mark.asyncio
+async def test_node_tool_function_node_missing_node_input_param_returns_error_dict(
+    request: pytest.FixtureRequest,
+):
+  """Missing a required node_input parameter returns validation error dict."""
+
+  def process(node_input: str) -> str:
+    return node_input
+
+  proc_node = FunctionNode(func=process)
+  agent = LlmAgent(
+      name='agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(name='process', args={}),
+              types.Part.from_text(text='done'),
+          ]
+      ),
+      tools=[proc_node],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(name=request.function.__name__, root_agent=agent)
+  )
+
+  events = await runner.run_async(testing_utils.get_user_content('go'))
+
+  responses = _function_responses(events)
+  assert len(responses) == 1
+  assert set(responses[0]) == {'error'}
+  assert 'argument validation errors' in responses[0]['error']
+  assert 'Missing value for parameter "node_input"' in responses[0]['error']
+
+
+@pytest.mark.asyncio
+async def test_node_tool_non_dict_input_schema_happy_path(
+    request: pytest.FixtureRequest,
+):
+  """FunctionNode tool with non-dict input_schema successfully coerces node_input."""
+
+  def typed(node_input: _TypedInput) -> int:
+    return node_input.x * 2
+
+  typed_node = FunctionNode(func=typed)
+  typed_node.input_schema = _TypedInput
+  agent = LlmAgent(
+      name='agent',
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(name='typed', args={'x': 21}),
+              types.Part.from_text(text='done'),
+          ]
+      ),
+      tools=[typed_node],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(name=request.function.__name__, root_agent=agent)
+  )
+
+  events = await runner.run_async(testing_utils.get_user_content('go'))
+
+  responses = _function_responses(events)
+  assert responses == [{'result': 42}]
+
+
+@pytest.mark.asyncio
+async def test_node_tool_skip_summarization_returns_workflow_output_directly(
+    request: pytest.FixtureRequest,
+):
+  """Setting ctx.actions.skip_summarization=True inside a workflow node tool emits output directly as final text without a second LLM turn."""
+
+  def run_parallel_report(node_input: GreetRequest, ctx: Context) -> str:
+    ctx.actions.skip_summarization = True
+    return f'Exact workflow report for {node_input.request}'
+
+  sub_workflow = Workflow(
+      name='report_workflow',
+      description='Generates an exact report.',
+      input_schema=GreetRequest,
+      edges=[(START, run_parallel_report)],
+  )
+
+  mock_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(
+              name='report_workflow',
+              args={'request': 'Project X'},
+          ),
+          types.Part.from_text(
+              text='Should never be reached because summarization is skipped.'
+          ),
+      ]
+  )
+
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=mock_model,
+      tools=[sub_workflow],
+  )
+
+  app = App(name=request.function.__name__, root_agent=parent_agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(testing_utils.get_user_content('Report X'))
+
+  parent_final_events = [
+      e for e in events if e.author == 'parent_agent' and e.is_final_response()
+  ]
+  assert len(parent_final_events) == 1
+  last_event = events[-1]
+  assert last_event == parent_final_events[0]
+  assert last_event.actions.skip_summarization is True
+  assert any(p.function_response for p in last_event.content.parts)
+  text_parts = [p.text for p in last_event.content.parts if p.text]
+  assert text_parts == ['Exact workflow report for Project X']
+  assert len(mock_model.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_function_node_tool_skip_summarization_returns_output_directly(
+    request: pytest.FixtureRequest,
+):
+  """Setting ctx.actions.skip_summarization=True inside a @node tool emits output directly as final text."""
+
+  @node
+  def generate_report(project: str, ctx: Context) -> str:
+    """Generates a report for a project."""
+    ctx.actions.skip_summarization = True
+    return f'Report for {project}: Ready'
+
+  mock_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(
+              name='generate_report',
+              args={'project': 'Apollo'},
+          ),
+          types.Part.from_text(
+              text='Should never be reached because summarization is skipped.'
+          ),
+      ]
+  )
+
+  parent_agent = LlmAgent(
+      name='parent_agent',
+      model=mock_model,
+      tools=[generate_report],
+  )
+
+  app = App(name=request.function.__name__, root_agent=parent_agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(
+      testing_utils.get_user_content('Report Apollo')
+  )
+
+  last_event = events[-1]
+  assert last_event.author == 'parent_agent'
+  assert last_event.is_final_response()
+  assert last_event.actions.skip_summarization is True
+  text_parts = [p.text for p in last_event.content.parts if p.text]
+  assert text_parts == ['Report for Apollo: Ready']
+  assert len(mock_model.requests) == 1

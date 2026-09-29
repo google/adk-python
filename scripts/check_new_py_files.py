@@ -33,7 +33,7 @@ waives one must not quietly disable the other.
 Modes for finding added files:
 - Baseline Diff Mode (CI):
     python scripts/check_new_py_files.py --baseline-dir /path/to/origin-main
-- VCS Detection Mode (Local / Pre-commit):
+- Git Detection Mode (Local / Pre-commit):
     python scripts/check_new_py_files.py
 - Explicit File List:
     python scripts/check_new_py_files.py file1.py file2.py
@@ -63,28 +63,12 @@ import traceback
 _PACKAGE_RELPATH = os.path.join('src', 'google', 'adk')
 _DOCS_GUIDES_RELPATH = os.path.join('docs', 'guides')
 
-# The package's import path, i.e. _PACKAGE_RELPATH without the src/ root that
-# only this checkout uses. A repository laying the package out differently
-# still ends its path to it with these components.
-_PACKAGE_IMPORT_PATH = 'google/adk'
-
 _EXIT_OK = 0
 _EXIT_VIOLATIONS = 1
 _EXIT_SETUP_ERROR = 2
 _EXIT_INDETERMINATE = 3
 
-# The newest revision this checkout shares with the server, as a Mercurial
-# revset: everything after it is the change under construction. Revisions the
-# server already has are in the public phase and local work is draft, so this
-# is the base the change sits on; with no local commits it evaluates to '.'.
-_SYNCED_BASE = 'last(public() & ::.)'
-
-# The local commits themselves, as a Mercurial revset: the ones after
-# `_SYNCED_BASE`, i.e. the work the change is made of. Used to read the commit
-# messages over the same range the added-file scan covers.
-_LOCAL_COMMITS = 'draft() & ::.'
-
-# The commit range a git checkout's HEAD covers when nothing is staged. On a
+# The commit range a git work tree's HEAD covers when nothing is staged. On a
 # pull request this is the base branch to the merge commit, i.e. the pull
 # request's own commits, which is both the file set to check and the place a
 # NO_UNIT_GUIDE waiver would be written.
@@ -135,8 +119,9 @@ _GUIDE_VIOLATION_LINE = (
     'If a unit guide is not required for this file, explain why with a'
     " 'NO_UNIT_GUIDE=<reason>' tag in the commit message of the change that"
     ' adds it. Where no message can be read, as when the change is only'
-    ' staged or the tree carries no version control, set the tag in the'
-    " environment instead: NO_UNIT_GUIDE='<reason>' git commit ...\n"
+    ' staged or the tree is not a git work tree, set the tag in the'
+    ' environment instead; for a staged change, that is'
+    " NO_UNIT_GUIDE='<reason>' git commit.\n"
     'See .agents/skills/adk-unit-guide/SKILL.md for details on creating unit'
     ' guides.'
 )
@@ -367,214 +352,106 @@ def _git_is_mid_commit(root: str) -> bool | None:
   return bool(staged_any.strip())
 
 
-def get_vcs_added_files(root: str = '.') -> set[str] | None:
-  """Detects added files using local VCS (git, jj, hg, g4, p4).
+def _in_git_work_tree(root: str) -> bool:
+  """Whether git is installed and root lies inside a git work tree."""
+  if not shutil.which('git'):
+    return False
+  # The exit status alone is not enough: inside the .git directory itself the
+  # command succeeds and prints `false`.
+  code, out = _run_cmd(['git', 'rev-parse', '--is-inside-work-tree'], cwd=root)
+  return code == 0 and out == 'true'
+
+
+def get_git_added_files(root: str = '.') -> set[str] | None:
+  """Detects the files a change adds, using git.
+
+  The change is what is staged, when anything is, and otherwise the range
+  HEAD~1..HEAD, which on a pull request covers the contributor's commits. A
+  rename counts only when it exposes a name no rule has judged.
 
   Args:
     root: The root directory of the repository.
 
   Returns:
-    A set of added file paths if a supported VCS is detected, or None if no
-    supported VCS was detected.
+    The added file paths, or None when git is not installed, root is not in a
+    git work tree, or git could not say what the change adds.
   """
-  # 1. git
-  if shutil.which('git'):
-    code, _ = _run_cmd(['git', 'rev-parse', '--is-inside-work-tree'], cwd=root)
-    if code == 0:
-      mid_commit = _git_is_mid_commit(root)
-      if mid_commit is None:
-        print(
-            'git is active but its index cannot be read, so whether this'
-            ' change is staged or committed is unknown, and so is what it'
-            ' adds.',
-            file=sys.stderr,
-        )
-        return None
-      if mid_commit:
-        return _git_added_paths(['git', 'diff', '--cached'], root)
-      range_code, head_diff = _run_cmd(
-          ['git', 'diff', _GIT_HEAD_RANGE, '--name-only', _GIT_ADD_FILTER],
-          cwd=root,
-      )
-      if range_code != 0:
-        # HEAD~1 is unreachable, as in a depth-1 clone. The range resolved to
-        # nothing rather than to an empty diff, so the added files are unknown
-        # and saying "none" here would be a clean bill of health nobody earned.
-        # Say why here: the caller only learns that nothing could be resolved,
-        # and "no version control is active" would be the wrong diagnosis when
-        # git is active and it is the range that failed.
-        print(
-            f'git is active but {_GIT_HEAD_RANGE} does not resolve, so what'
-            ' this change adds cannot be read from it. A shallow clone does'
-            ' this; fetch enough history for HEAD to have a parent.',
-            file=sys.stderr,
-        )
-        return None
-      added = {f for f in head_diff.splitlines() if f.strip()}
-      return added | _git_renamed_to_new_names(
-          ['git', 'diff', _GIT_HEAD_RANGE], root
-      )
-
-  # 2. jj
-  if shutil.which('jj'):
-    code, jj_root = _run_cmd(['jj', 'root'], cwd=root)
-    if code == 0:
-      _, out = _run_cmd(['jj', 'diff', '--summary'], cwd=root)
-      added = set()
-      for line in out.splitlines():
-        if line.startswith('A '):
-          parts = line.split(maxsplit=1)
-          if len(parts) == 2:
-            p = parts[1].strip()
-            if jj_root and not os.path.isabs(p):
-              p = os.path.join(jj_root, p)
-            added.add(p.replace(os.sep, '/'))
-      return added
-
-  # 3. hg
-  if shutil.which('hg'):
-    code, hg_root = _run_cmd(['hg', 'root'], cwd=root)
-    if code == 0:
-      # A bare `hg status --added` reports only files added and not yet
-      # committed, so it goes empty the moment the change is committed or
-      # amended -- which is the usual state of a checkout by the time anyone
-      # runs this. Diff against the last synced revision instead, so the file
-      # set is the change's own content whether or not it is committed.
-      # `_SYNCED_BASE` degrades to '.' in a checkout with no local commits,
-      # where it reports the same thing a bare status does.
-      code, out = _run_cmd(
-          ['hg', 'status', '--added', '--no-status', '--rev', _SYNCED_BASE],
-          cwd=root,
-      )
-      if code != 0:
-        # A repository whose phases do not distinguish local work this way.
-        _, out = _run_cmd(['hg', 'status', '--added', '--no-status'], cwd=root)
-      return {
-          (
-              os.path.join(hg_root, f.strip())
-              if (hg_root and not os.path.isabs(f.strip()))
-              else f.strip()
-          ).replace(os.sep, '/')
-          for f in out.splitlines()
-          if f.strip()
-      }
-
-  # 4. g4
-  if shutil.which('g4'):
-    code, _ = _run_cmd(['g4', 'info'], cwd=root)
-    if code == 0:
-      _, out = _run_cmd(['g4', 'opened'], cwd=root)
-      added = set()
-      for line in out.splitlines():
-        if ' - add ' in line:
-          depot_file = line.split(' - add ')[0].split('#')[0].strip()
-          added.add(depot_file)
-      return added
-
-  # 5. p4
-  if shutil.which('p4'):
-    code, _ = _run_cmd(['p4', 'info'], cwd=root)
-    if code == 0:
-      _, out = _run_cmd(['p4', 'opened'], cwd=root)
-      added = set()
-      for line in out.splitlines():
-        if ' - add ' in line:
-          depot_file = line.split(' - add ')[0].split('#')[0].strip()
-          added.add(depot_file)
-      return added
-
-  return None
+  if not _in_git_work_tree(root):
+    return None
+  mid_commit = _git_is_mid_commit(root)
+  if mid_commit is None:
+    print(
+        'This is a git work tree, but its index cannot be read, so whether'
+        ' this change is staged or committed is unknown, and so is what it'
+        ' adds.',
+        file=sys.stderr,
+    )
+    return None
+  if mid_commit:
+    return _git_added_paths(['git', 'diff', '--cached'], root)
+  range_code, head_diff = _run_cmd(
+      ['git', 'diff', _GIT_HEAD_RANGE, '--name-only', _GIT_ADD_FILTER],
+      cwd=root,
+  )
+  if range_code != 0:
+    # HEAD~1 is unreachable, as in a depth-1 clone. The range resolved to
+    # nothing rather than to an empty diff, so the added files are unknown and
+    # saying "none" here would be a clean bill of health nobody earned. Say why
+    # here: the caller only learns that nothing could be resolved, and would
+    # otherwise leave "not a git work tree" as the likeliest reading when it is
+    # the range that failed.
+    print(
+        f'This is a git work tree, but {_GIT_HEAD_RANGE} does not resolve, so'
+        ' what this change adds cannot be read from it. A shallow clone does'
+        ' this; fetch enough history for HEAD to have a parent.',
+        file=sys.stderr,
+    )
+    return None
+  added = {f for f in head_diff.splitlines() if f.strip()}
+  return added | _git_renamed_to_new_names(
+      ['git', 'diff', _GIT_HEAD_RANGE], root
+  )
 
 
 def get_commit_message(root: str = '.') -> str:
-  """Retrieves commit message or description from VCS.
+  """Retrieves the commit messages to search for a waiver, using git.
 
   Args:
     root: The root directory of the repository.
 
   Returns:
-    The message to search for a waiver tag, or '' when none can be read.
+    The messages to search for a waiver tag, or '' when none can be read.
   """
-  # 1. git
-  if shutil.which('git'):
-    code, _ = _run_cmd(['git', 'rev-parse', '--is-inside-work-tree'], cwd=root)
-    if code == 0:
-      if _git_is_mid_commit(root) is not False:
-        # The change is staged, so the commit carrying it does not exist yet
-        # and its message is nowhere to be read: a pre-commit hook runs before
-        # git records what the author typed, and HEAD still describes the
-        # previous change. Returning HEAD's message here is what let a waiver
-        # written for an earlier commit silently cover this one. Waiving the
-        # change being committed goes through the environment instead --
-        # `NO_UNIT_GUIDE='<reason>' git commit ...` -- which
-        # has_no_unit_guide_tag honours and the violation text advertises.
-        # None lands here too: a waiver that cannot be attributed to a change
-        # must not be applied to one.
-        return ''
-      _, msg = _run_cmd(['git', 'log', '-1', '--pretty=%B'], cwd=root)
-      # On a pull request, HEAD is a merge commit whose own message is
-      # generated by CI and can hold no waiver. The commits being merged are
-      # the ones the contributor wrote, so read the same range the added-file
-      # scan falls back to. Empty when HEAD~1 is unreachable.
-      _, range_msg = _run_cmd(
-          ['git', 'log', _GIT_HEAD_RANGE, '--pretty=%B'], cwd=root
-      )
-      if range_msg:
-        msg = f'{msg}\n{range_msg}'
-      # COMMIT_EDITMSG is deliberately not consulted. It was read here to
-      # catch the message of the commit being made, which it never held: git
-      # writes it only after the pre-commit hook has run, so during that hook
-      # it carries the previous commit's message, or the message of an attempt
-      # some hook rejected. Both are messages written for another change, and
-      # neither can be told from a current one by inspection.
-      return msg
-
-  # 2. jj
-  if shutil.which('jj'):
-    code, _ = _run_cmd(['jj', 'root'], cwd=root)
-    if code == 0:
-      _, out = _run_cmd(
-          ['jj', 'log', '-r', '@', '--no-graph', '-T', 'description'], cwd=root
-      )
-      return out
-
-  # 3. hg
-  if shutil.which('hg'):
-    code, _ = _run_cmd(['hg', 'root'], cwd=root)
-    if code == 0:
-      # Every local commit, not just the tip. The added-file scan above spans
-      # the whole range back to the last synced revision, so reading only the
-      # tip's message would let one commit on top bury a waiver written in the
-      # commit that actually adds the file -- and would let an unrelated tip
-      # message waive the whole range.
-      code, out = _run_cmd(
-          ['hg', 'log', '-r', _LOCAL_COMMITS, '--template', '{desc}\n'],
-          cwd=root,
-      )
-      if code != 0:
-        _, out = _run_cmd(
-            ['hg', 'log', '-r', '.', '--template', '{desc}'], cwd=root
-        )
-      return out
-
-  # 4. g4
-  if shutil.which('g4'):
-    code, _ = _run_cmd(['g4', 'info'], cwd=root)
-    if code == 0:
-      code, out = _run_cmd(['g4', 'change', '-o'], cwd=root)
-      if code == 0 and out:
-        return out
-      _, out = _run_cmd(['g4', 'describe'], cwd=root)
-      return out
-
-  # 5. p4
-  if shutil.which('p4'):
-    code, _ = _run_cmd(['p4', 'info'], cwd=root)
-    if code == 0:
-      _, out = _run_cmd(['p4', 'change', '-o'], cwd=root)
-      return out
-
-  return ''
+  if not _in_git_work_tree(root):
+    return ''
+  if _git_is_mid_commit(root) is not False:
+    # The change is staged, so the commit carrying it does not exist yet and
+    # its message is nowhere to be read: a pre-commit hook runs before git
+    # records what the author typed, and HEAD still describes the previous
+    # change. Returning HEAD's message here is what let a waiver written for an
+    # earlier commit silently cover this one. Waiving the change being
+    # committed goes through the environment instead --
+    # `NO_UNIT_GUIDE='<reason>' git commit ...` -- which has_no_unit_guide_tag
+    # honours and the violation text advertises. None lands here too: a waiver
+    # that cannot be attributed to a change must not be applied to one.
+    return ''
+  _, msg = _run_cmd(['git', 'log', '-1', '--pretty=%B'], cwd=root)
+  # On a pull request, HEAD is a merge commit whose own message is generated by
+  # CI and can hold no waiver. The commits being merged are the ones the
+  # contributor wrote, so read the same range the added-file scan falls back
+  # to. Empty when HEAD~1 is unreachable.
+  _, range_msg = _run_cmd(
+      ['git', 'log', _GIT_HEAD_RANGE, '--pretty=%B'], cwd=root
+  )
+  if range_msg:
+    msg = f'{msg}\n{range_msg}'
+  # COMMIT_EDITMSG is deliberately not consulted. It was read here to catch the
+  # message of the commit being made, which it never held: git writes it only
+  # after the pre-commit hook has run, so during that hook it carries the
+  # previous commit's message, or the message of an attempt some hook rejected.
+  # Both are messages written for another change, and neither can be told from
+  # a current one by inspection.
+  return msg
 
 
 def is_exempt_from_unit_guide(rel_path: str, filename: str) -> bool:
@@ -598,40 +475,15 @@ def has_no_unit_guide_tag(commit_msg: str) -> bool:
   return bool(_NO_UNIT_GUIDE_TAG.search(commit_msg))
 
 
-def _depot_path_to_abs(depot_path: str, adk_real_root: str) -> str:
-  """Locates a depot-style path inside the package being checked.
-
-  A depot path names a file by its position in the repository the VCS serves,
-  which shares no prefix with the checkout on disk. What the two do share is
-  the package itself, so the split point is the last occurrence of the import
-  path. Keying on that rather than on a repository prefix keeps any particular
-  repository layout out of this script.
-
-  Args:
-    depot_path: A path of the form `//<repo>/<...>/<module>.py`.
-    adk_real_root: Absolute, symlink-resolved path of the package root.
-
-  Returns:
-    The absolute path of the matching file, or the depot path resolved as-is
-    when it does not run through the package. The caller drops anything that
-    does not land inside the package.
-  """
-  clean_path = depot_path.lstrip('/')
-  marker = f'{_PACKAGE_IMPORT_PATH}/'
-  if marker in clean_path:
-    rel_to_package = clean_path.rsplit(marker, 1)[1]
-    return os.path.realpath(os.path.join(adk_real_root, rel_to_package))
-  return os.path.realpath(clean_path)
-
-
 def _subpackage_renames(package_dir: str) -> dict[str, str]:
   """Maps a subpackage's real directory to the name the source tree gives it.
 
-  A subpackage can be exposed under a name of its own: `dependencies` points
-  at `dependencies_external`. Which of the two names a path arrives wearing
-  depends only on how it was detected -- git reports it relative to the
-  checkout, while the Piper-shaped detectors report the real location -- so
-  without this the same file demands its guide in two different directories.
+  A checkout can expose a subpackage through a symlink whose name differs from
+  the directory it points at. Which of the two names a path arrives wearing
+  depends only on how it was given -- a path relative to the checkout keeps the
+  link's name, while an absolute path into the linked directory, which only an
+  explicit file list supplies, carries the directory's -- so without this the
+  same file demands its guide in two different directories.
 
   Args:
     package_dir: The checkout's own `src/google/adk`, symlinks unresolved.
@@ -708,7 +560,7 @@ def _normalize_and_filter_files(
   """Normalizes added files and filters to relevant Python source files.
 
   Handles both standard layout (src/google/adk/) and symlinked package
-  structures where subpackages point to an upstream source tree.
+  structures where subpackages link to a source tree kept elsewhere.
 
   Args:
     raw_files: The set of raw file paths to normalize and filter.
@@ -738,44 +590,37 @@ def _normalize_and_filter_files(
     if not raw_file or not raw_file.endswith('.py'):
       continue
 
-    # Handle depot-style paths (e.g. //depot/.../agents/_agent.py), which the
-    # Perforce-style branches of get_vcs_added_files report.
-    if raw_file.startswith('//'):
-      abs_file = _depot_path_to_abs(raw_file, adk_real_root)
-    elif os.path.isabs(raw_file):
+    if os.path.isabs(raw_file):
       abs_file = os.path.realpath(raw_file)
     else:
       abs_file = os.path.realpath(os.path.join(repo_root, raw_file))
 
     # Before resolving anything, see whether the path already sits under the
-    # checkout's own src/google/adk. A subpackage exposed there under a name
-    # different from its own -- `dependencies` for `dependencies_external` --
-    # would otherwise resolve through the symlink and come back wearing the
-    # name the source tree does not use, so the guide would be demanded at a
-    # directory that does not exist in the exported repository. Keeping the
-    # unresolved form makes the source-tree name win, which is the one both
-    # this checkout and the exported repository agree on.
+    # checkout's own src/google/adk. A subpackage exposed there through a
+    # symlink named differently from its directory would otherwise resolve
+    # through the link and come back wearing the directory's name, so the
+    # guide would be demanded at a directory the source tree does not have.
+    # Keeping the unresolved form makes the source-tree name win.
     lexical = os.path.abspath(os.path.join(repo_root, raw_file))
-    if not raw_file.startswith('//') and lexical.startswith(
-        package_dir + os.sep
-    ):
+    if lexical.startswith(package_dir + os.sep):
       rel_to_adk = os.path.relpath(lexical, package_dir).replace(os.sep, '/')
       if _keep_relative_path(rel_to_adk):
         results.append((raw_file, rel_to_adk, os.path.basename(lexical)))
       continue
 
-    # Check whether the file belongs to the package in either internal or
-    # external layout.
+    # Check whether the file belongs to the package, both when the checkout
+    # holds the package itself and when it exposes it through symlinks.
     #
-    # The checkout's own src/google/adk comes first, and must: internally it
-    # sits *inside* the package it points into, so both prefixes match a file
-    # under it and matching the outer one first mislabels the file. A path
-    # there resolves out to the package only through a subpackage symlink, so
-    # a file in a subpackage the checkout has no symlink for -- a subpackage
-    # the change is adding -- stays put and relativizes against the package
-    # root as `<checkout>/src/google/adk/<...>`. That starts with an excluded
-    # directory name, so the file was dropped and a change adding a new
-    # subpackage passed both rules without being examined.
+    # The checkout's own src/google/adk comes first, and must: a checkout that
+    # exposes the package through symlinks can sit *inside* the package it
+    # points into, so both prefixes match a file under it and matching the
+    # outer one first mislabels the file. A path there resolves out to the
+    # package only through a subpackage symlink, so a file in a subpackage the
+    # checkout has no symlink for -- a subpackage the change is adding -- stays
+    # put and relativizes against the package root as
+    # `<checkout>/src/google/adk/<...>`. That starts with an excluded directory
+    # name, so the file was dropped and a change adding a new subpackage passed
+    # both rules without being examined.
     if abs_file.startswith(package_real_dir + os.sep):
       rel_to_adk = os.path.relpath(abs_file, package_real_dir).replace(
           os.sep, '/'
@@ -889,7 +734,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
       '--baseline-dir',
       help=(
           'Baseline source tree to diff against (an origin/main checkout). If'
-          ' omitted, detects added files via local VCS.'
+          ' omitted, detects added files via git.'
       ),
   )
   parser.add_argument(
@@ -958,9 +803,9 @@ def main(argv: list[str]) -> int:
     )
     return _EXIT_SETUP_ERROR
 
-  # Only a VCS can supply a commit message, so this is '' when checking an
-  # exported tree that has none. NO_UNIT_GUIDE comes from the environment
-  # there instead -- see _GUIDE_VIOLATION_LINE.
+  # Only git can supply a commit message, so this is '' when checking a tree
+  # that is not a git work tree. NO_UNIT_GUIDE comes from the environment there
+  # instead -- see _GUIDE_VIOLATION_LINE.
   commit_msg = get_commit_message(repo_root)
   if args.added_files_from:
     if not os.path.isfile(args.added_files_from):
@@ -983,20 +828,41 @@ def main(argv: list[str]) -> int:
       return _EXIT_SETUP_ERROR
     raw_added_files = added_py_files_from_baseline(repo_root, args.baseline_dir)
   else:
-    vcs_added = get_vcs_added_files(repo_root)
-    if vcs_added is None:
+    git_added = get_git_added_files(repo_root)
+    if git_added is None:
       print(
           'Could not determine the added files: no --baseline-dir or'
-          ' --added-files-from was given, and no version control in'
-          f' {os.path.abspath(repo_root)} could report them -- either none of'
-          ' git/jj/hg/g4/p4 is active there, or the one that is could not'
-          ' resolve what this change added (see above).\n'
+          ' --added-files-from was given, and git could not report them for'
+          f' {os.path.abspath(repo_root)}: either git is not installed, the'
+          ' directory is not in a git work tree, or git could not resolve what'
+          ' this change added (see any message above).\n'
           'This is not a clean bill of health -- nothing was checked. Pass'
           ' --baseline-dir or --added-files-from to say what to check.',
           file=sys.stderr,
       )
       return _EXIT_INDETERMINATE
-    raw_added_files = vcs_added
+    raw_added_files = git_added
+
+  # A `//`-prefixed .py name with nothing on disk behind it is a depot-style
+  # path from a version control server, and this script has no way to place it
+  # in the package. Checking the rest of the list without it would pass a file
+  # nobody looked at, so refuse the list. A `//` name that does exist -- POSIX
+  # allows the doubled slash, and Windows writes UNC paths that way -- is an
+  # ordinary path and is checked.
+  depot_style_paths = sorted(
+      p
+      for p in raw_added_files
+      if p.startswith('//') and p.endswith('.py') and not os.path.exists(p)
+  )
+  if depot_style_paths:
+    print(
+        'Error: these look like depot-style paths rather than files in this'
+        ' checkout, so they cannot be checked: '
+        + ', '.join(depot_style_paths)
+        + '\nPass the paths of the files in the checkout instead.',
+        file=sys.stderr,
+    )
+    return _EXIT_SETUP_ERROR
 
   filtered_files = _normalize_and_filter_files(raw_added_files, repo_root)
 
