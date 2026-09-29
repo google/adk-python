@@ -19,8 +19,10 @@ from datetime import timezone
 import enum
 import inspect
 import os
+from pathlib import Path
 import sqlite3
 import time
+from typing import Any
 from unittest import mock
 import warnings
 
@@ -35,6 +37,8 @@ from google.adk.sessions import database_session_service
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.schemas import v0
+from google.adk.sessions.schemas import v1
 from google.adk.sessions.schemas.shared import DynamicJSON
 from google.adk.sessions.schemas.v0 import DynamicPickleType
 from google.adk.sessions.schemas.v1 import StorageSession
@@ -1702,6 +1706,67 @@ async def test_append_event_to_stale_session():
         'inv1',
         'inv2',
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('schema_module', [v0, v1], ids=['v0', 'v1'])
+async def test_append_event_same_timestamp_single_writer_not_stale(
+    schema_module: Any, tmp_path: Path
+) -> None:
+  """A single writer must not be rejected when two events share a timestamp.
+
+  Regression test: `StorageSession.update_time` used to be declared with
+  `onupdate=func.now()`. When an event's timestamp equalled the value
+  already stored, SQLAlchemy saw no change to that column and omitted it
+  from the UPDATE, so `onupdate` fired and wrote the database's own clock
+  instead. The in-memory revision marker (read before commit) then no
+  longer matched storage, and the next append from the same, only, writer
+  was incorrectly rejected as stale.
+  """
+  db_path = tmp_path / f'{schema_module.__name__}.db'
+  db_url = f'sqlite+aiosqlite:///{db_path}'
+  if schema_module is v0:
+    engine = create_async_engine(db_url)
+    async with engine.begin() as conn:
+      await conn.run_sync(v0.Base.metadata.create_all)
+    await engine.dispose()
+
+  session_service = DatabaseSessionService(db_url)
+
+  async with session_service:
+    app_name = 'my_app'
+    user_id = 'user'
+    same_timestamp = datetime.now().astimezone(timezone.utc).timestamp()
+
+    session = await session_service.create_session(
+        app_name=app_name, user_id=user_id
+    )
+    event1 = Event(
+        invocation_id='inv1',
+        author='user',
+        timestamp=same_timestamp,
+    )
+    await session_service.append_event(session, event1)
+
+    # Same timestamp as the previous event, with a state change so the
+    # UPDATE statement still runs for other columns.
+    event2 = Event(
+        invocation_id='inv2',
+        author='user',
+        timestamp=same_timestamp,
+        actions=EventActions(state_delta={'sk1': 'v1'}),
+    )
+    await session_service.append_event(session, event2)
+
+    event3 = Event(
+        invocation_id='inv3',
+        author='user',
+        timestamp=same_timestamp + 1,
+    )
+    # The same writer appending a third event must not be rejected.
+    await session_service.append_event(session, event3)
+
+    assert len(session.events) == 3
 
 
 @pytest.mark.asyncio
