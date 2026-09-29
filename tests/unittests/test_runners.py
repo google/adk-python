@@ -19,6 +19,7 @@ import logging
 from pathlib import Path
 import sys
 import textwrap
+from typing import Any
 from typing import AsyncGenerator
 from typing import Optional
 from unittest import mock
@@ -28,6 +29,7 @@ from unittest.mock import patch
 
 from google.adk import runners
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.context import Context
 from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_ERROR_RESULT
@@ -49,7 +51,11 @@ from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
+from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.base_toolset import BaseToolset
+from google.adk.workflow import BaseNode
+from google.adk.workflow import START
+from google.adk.workflow._workflow import Workflow
 from google.genai import types
 from opentelemetry import trace
 import pytest
@@ -1579,11 +1585,10 @@ class TestRunnerWithPlugins:
           raise
 
     toolset = SlowCloseToolset()
+    self.root_agent.tools = [toolset]
     runner = Runner(
         app_name="test_app",
-        agent=LlmAgent(
-            name="test_agent", model="gemini-1.5-pro", tools=[toolset]
-        ),
+        agent=self.root_agent,
         session_service=self.session_service,
         artifact_service=self.artifact_service,
     )
@@ -1598,6 +1603,138 @@ class TestRunnerWithPlugins:
     assert close_task.cancelled() is True
     assert toolset.close_cancelled is False
     assert toolset.close_finished.is_set()
+
+  @pytest.mark.asyncio
+  async def test_runner_close_closes_toolsets_in_workflow_with_llm_agent(self):
+    """LlmAgent inside a Workflow has its toolsets collected and closed by Runner.close()."""
+
+    class RecordingToolset(BaseToolset):
+
+      def __init__(self):
+        super().__init__()
+        self.closed = False
+
+      async def get_tools(self, readonly_context=None):
+        del readonly_context
+        return []
+
+      async def close(self) -> None:
+        self.closed = True
+
+    toolset = RecordingToolset()
+    mock_model = testing_utils.MockModel.create(responses=["hello"])
+    agent = LlmAgent(name="llm_agent", model=mock_model, tools=[toolset])
+    workflow = Workflow(name="wf", edges=[(START, agent)])
+    runner = Runner(
+        app_name="test_app",
+        agent=workflow,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+        auto_create_session=True,
+    )
+    async for _ in runner.run_async(
+        user_id="test_user",
+        session_id="test_session",
+        new_message=types.Content(role="user", parts=[types.Part(text="hi")]),
+    ):
+      pass
+
+    assert not toolset.closed
+    await runner.close()
+    assert toolset.closed
+
+  @pytest.mark.asyncio
+  async def test_runner_close_closes_toolsets_in_workflow_node(self):
+    """Workflow passed as root node has toolsets collected and closed by Runner.close()."""
+
+    class RecordingToolset(BaseToolset):
+
+      def __init__(self):
+        super().__init__()
+        self.closed = False
+
+      async def get_tools(self, readonly_context=None):
+        del readonly_context
+        return []
+
+      async def close(self) -> None:
+        self.closed = True
+
+    toolset = RecordingToolset()
+    mock_model = testing_utils.MockModel.create(responses=["hello"])
+    agent = LlmAgent(name="llm_agent", model=mock_model, tools=[toolset])
+    workflow = Workflow(name="wf", edges=[(START, agent)])
+    runner = Runner(
+        app_name="test_app",
+        node=workflow,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+        auto_create_session=True,
+    )
+    async for _ in runner.run_async(
+        user_id="test_user",
+        session_id="test_session",
+        new_message=types.Content(role="user", parts=[types.Part(text="hi")]),
+    ):
+      pass
+
+    assert not toolset.closed
+    await runner.close()
+    assert toolset.closed
+
+  @pytest.mark.asyncio
+  async def test_runner_close_closes_toolsets_in_workflow_parallel_worker(self):
+    """LlmAgent with parallel_worker=True in a Workflow has its toolsets closed."""
+
+    class RecordingToolset(BaseToolset):
+
+      def __init__(self):
+        super().__init__()
+        self.closed = False
+
+      async def get_tools(self, readonly_context=None):
+        del readonly_context
+        return []
+
+      async def close(self) -> None:
+        self.closed = True
+
+    toolset = RecordingToolset()
+    mock_model = testing_utils.MockModel.create(responses=["hello"])
+    agent = LlmAgent(
+        name="llm_agent",
+        model=mock_model,
+        tools=[toolset],
+        parallel_worker=True,
+    )
+    workflow = Workflow(name="wf", edges=[(START, agent)])
+    runner = Runner(
+        app_name="test_app",
+        agent=workflow,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+        auto_create_session=True,
+    )
+
+    assert not toolset.closed
+    await runner.close()
+    assert toolset.closed
+
+  @pytest.mark.asyncio
+  async def test_runner_close_with_bare_magic_mock_agent(self):
+    """Runner.close() does not recurse infinitely when agent is a bare MagicMock."""
+    runner = Runner(
+        app_name="test_app",
+        agent=mock.MagicMock(),
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+    runner.plugin_manager.close = AsyncMock()
+
+    assert runner._collect_toolset(runner.agent) == set()
+    await runner.close()
+
+    runner.plugin_manager.close.assert_awaited_once()
 
   @pytest.mark.asyncio
   async def test_runner_passes_plugin_close_timeout(self):
@@ -4326,6 +4463,65 @@ def test_run_sync_early_break_executes_after_run_plugin():
   assert after_run_called is True
 
 
+def test_run_sync_early_break_on_root_node_executes_after_run_plugin():
+  """Breaking out of synchronous run() on a root node executes after_run.
+
+  A root node runs through the node runtime path rather than
+  `_exec_with_plugin`, and sync `run()` stops it by cancelling with
+  `_CALLER_CLOSED_EARLY_MSG`. That cancellation is an ordinary early stop, so
+  after_run must still fire, matching the agent path.
+  """
+  after_run_called = False
+
+  class _TestPlugin(BasePlugin):
+
+    async def after_run_callback(
+        self, *, invocation_context: InvocationContext
+    ) -> None:
+      nonlocal after_run_called
+      after_run_called = True
+
+  class _SteppingNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      for i in range(5):
+        yield Event(
+            author=self.name,
+            content=types.Content(
+                role="model", parts=[types.Part(text=f"step {i}")]
+            ),
+        )
+        await asyncio.sleep(0.05)
+
+  workflow = Workflow(
+      name="stepping_wf", edges=[(START, _SteppingNode(name="stepping_node"))]
+  )
+  app = App(
+      name="test_app",
+      root_agent=workflow,
+      plugins=[_TestPlugin(name="test_plugin")],
+  )
+  runner = Runner(
+      app=app,
+      session_service=InMemorySessionService(),
+      auto_create_session=True,
+  )
+
+  consumed = 0
+  for _ in runner.run(
+      user_id=TEST_USER_ID,
+      session_id="session_sync_break_node",
+      new_message=types.Content(role="user", parts=[types.Part(text="go")]),
+  ):
+    consumed += 1
+    break
+
+  assert consumed == 1
+  assert after_run_called is True
+
+
 def test_stamp_event_branch_context_preserves_isolation_scope():
   """Tests _stamp_event_branch_context does not overwrite existing isolation_scope with None."""
   fc = types.Part.from_function_call(name="some_tool", args={})
@@ -4392,6 +4588,385 @@ def test_stamp_event_branch_context_does_not_overwrite_existing_scope():
   runners._stamp_event_branch_context(ic, fr_event)
   assert fr_event.branch == "root@1"
   assert fr_event.isolation_scope == "task_123"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["async", "sse", "live"])
+@pytest.mark.parametrize("replace_event", [False, True])
+async def test_callback_downgraded_partial_event_is_persisted(
+    mode, replace_event
+):
+  """Events with partial flipped from True to False by callback are persisted."""
+  from google.adk.agents.run_config import StreamingMode
+  from google.adk.live import LiveRequestQueue
+
+  class PartialAgent(BaseAgent):
+
+    async def _run_async_impl(self, ctx):
+      yield Event(
+          invocation_id=ctx.invocation_id,
+          author=self.name,
+          partial=True,
+          content=types.Content(
+              role="model", parts=[types.Part(text="source")]
+          ),
+      )
+
+    _run_live_impl = _run_async_impl
+
+  class TransformPlugin(BasePlugin):
+
+    async def on_event_callback(self, *, invocation_context, event):
+      if not event.content or event.content.parts[0].text != "source":
+        return None
+      output = event.model_copy(deep=True) if replace_event else event
+      output.partial = False
+      output.content = types.Content(
+          role="model", parts=[types.Part(text="transformed")]
+      )
+      output.actions = EventActions(state_delta={"transformed": True})
+      return output if replace_event else None
+
+  service = InMemorySessionService()
+  runner = Runner(
+      app_name="app",
+      agent=PartialAgent(name="agent"),
+      session_service=service,
+      plugins=[TransformPlugin(name="transform")],
+  )
+  session = await service.create_session(app_name="app", user_id="user")
+  try:
+    if mode == "live":
+      events = [
+          event
+          async for event in runner.run_live(
+              user_id="user",
+              session_id=session.id,
+              live_request_queue=LiveRequestQueue(),
+          )
+      ]
+    else:
+      events = [
+          event
+          async for event in runner.run_async(
+              user_id="user",
+              session_id=session.id,
+              new_message=types.Content(
+                  role="user", parts=[types.Part(text="hello")]
+              ),
+              run_config=RunConfig(
+                  streaming_mode=(
+                      StreamingMode.SSE if mode == "sse" else StreamingMode.NONE
+                  )
+              ),
+          )
+      ]
+    stored = await service.get_session(
+        app_name="app", user_id="user", session_id=session.id
+    )
+  finally:
+    await runner.close()
+
+  transformed = next(
+      event
+      for event in events
+      if event.content and event.content.parts[0].text == "transformed"
+  )
+  assert transformed.partial is False
+  persisted = [event for event in stored.events if event.id == transformed.id]
+  assert len(persisted) == 1
+  assert persisted[0].content == transformed.content
+  assert stored.state.get("transformed", False) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["async", "sse", "live"])
+@pytest.mark.parametrize("replace_event", [False, True])
+async def test_callback_upgraded_partial_event_is_not_persisted(
+    mode, replace_event
+):
+  """Events with partial flipped from False to True by callback are not persisted."""
+  from google.adk.agents.run_config import StreamingMode
+  from google.adk.live import LiveRequestQueue
+
+  class PartialAgent(BaseAgent):
+
+    async def _run_async_impl(self, ctx):
+      yield Event(
+          invocation_id=ctx.invocation_id,
+          author=self.name,
+          partial=False,
+          content=types.Content(
+              role="model", parts=[types.Part(text="source")]
+          ),
+      )
+
+    _run_live_impl = _run_async_impl
+
+  class TransformPlugin(BasePlugin):
+
+    async def on_event_callback(self, *, invocation_context, event):
+      if not event.content or event.content.parts[0].text != "source":
+        return None
+      output = event.model_copy(deep=True) if replace_event else event
+      output.partial = True
+      output.content = types.Content(
+          role="model", parts=[types.Part(text="transformed")]
+      )
+      output.actions = EventActions(state_delta={"transformed": True})
+      return output if replace_event else None
+
+  service = InMemorySessionService()
+  runner = Runner(
+      app_name="app",
+      agent=PartialAgent(name="agent"),
+      session_service=service,
+      plugins=[TransformPlugin(name="transform")],
+  )
+  session = await service.create_session(app_name="app", user_id="user")
+  try:
+    if mode == "live":
+      events = [
+          event
+          async for event in runner.run_live(
+              user_id="user",
+              session_id=session.id,
+              live_request_queue=LiveRequestQueue(),
+          )
+      ]
+    else:
+      events = [
+          event
+          async for event in runner.run_async(
+              user_id="user",
+              session_id=session.id,
+              new_message=types.Content(
+                  role="user", parts=[types.Part(text="hello")]
+              ),
+              run_config=RunConfig(
+                  streaming_mode=(
+                      StreamingMode.SSE if mode == "sse" else StreamingMode.NONE
+                  )
+              ),
+          )
+      ]
+    stored = await service.get_session(
+        app_name="app", user_id="user", session_id=session.id
+    )
+  finally:
+    await runner.close()
+
+  transformed = next(
+      event
+      for event in events
+      if event.content and event.content.parts[0].text == "transformed"
+  )
+  assert transformed.partial is True
+  persisted = [event for event in stored.events if event.id == transformed.id]
+  assert not persisted
+  assert stored.state.get("transformed", False) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replace_event", [False, True])
+async def test_run_live_persists_queued_event_when_callback_clears_partial(
+    replace_event,
+):
+  """Queued events under run_live are persisted and cleared when callback clears partial."""
+  from google.adk.events.event import NodeInfo
+  from google.adk.live import LiveRequestQueue
+
+  class QueuedLiveAgent(BaseAgent):
+
+    async def _run_live_impl(self, ctx):
+      event = Event(
+          invocation_id=ctx.invocation_id,
+          author=self.name,
+          partial=True,
+          output="duplicate output",
+          node_info=NodeInfo(message_as_output=True),
+          content=types.Content(
+              role="model", parts=[types.Part(text="source")]
+          ),
+      )
+      await ctx._enqueue_event(event)
+      if False:
+        yield
+
+  class TransformPlugin(BasePlugin):
+
+    async def on_event_callback(self, *, invocation_context, event):
+      if not event.content or event.content.parts[0].text != "source":
+        return None
+      output = event.model_copy(deep=True) if replace_event else event
+      output.partial = False
+      output.content = types.Content(
+          role="model", parts=[types.Part(text="transformed")]
+      )
+      output.actions = EventActions(state_delta={"transformed": True})
+      return output if replace_event else None
+
+  service = InMemorySessionService()
+  runner = Runner(
+      app_name="app",
+      agent=QueuedLiveAgent(name="agent"),
+      session_service=service,
+      plugins=[TransformPlugin(name="transform")],
+  )
+  session = await service.create_session(app_name="app", user_id="user")
+  try:
+    events = [
+        event
+        async for event in runner.run_live(
+            user_id="user",
+            session_id=session.id,
+            live_request_queue=LiveRequestQueue(),
+        )
+    ]
+    stored = await service.get_session(
+        app_name="app", user_id="user", session_id=session.id
+    )
+  finally:
+    await runner.close()
+
+  assert len(events) == 1
+  assert events[0].partial is False
+  assert events[0].output is None
+  persisted = [e for e in stored.events if e.id == events[0].id]
+  assert len(persisted) == 1
+  assert persisted[0].output is None
+  assert persisted[0].content == events[0].content
+  assert stored.state.get("transformed", False) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replace_event", [False, True])
+async def test_run_live_queued_event_not_persisted_when_callback_sets_partial(
+    replace_event,
+):
+  """Queued events under run_live are not persisted when callback sets partial."""
+  from google.adk.live import LiveRequestQueue
+
+  class QueuedLiveAgent(BaseAgent):
+
+    async def _run_live_impl(self, ctx):
+      event = Event(
+          invocation_id=ctx.invocation_id,
+          author=self.name,
+          partial=False,
+          content=types.Content(
+              role="model", parts=[types.Part(text="source")]
+          ),
+      )
+      await ctx._enqueue_event(event)
+      if False:
+        yield
+
+  class TransformPlugin(BasePlugin):
+
+    async def on_event_callback(self, *, invocation_context, event):
+      if not event.content or event.content.parts[0].text != "source":
+        return None
+      output = event.model_copy(deep=True) if replace_event else event
+      output.partial = True
+      output.content = types.Content(
+          role="model", parts=[types.Part(text="transformed")]
+      )
+      output.actions = EventActions(state_delta={"transformed": True})
+      return output if replace_event else None
+
+  service = InMemorySessionService()
+  runner = Runner(
+      app_name="app",
+      agent=QueuedLiveAgent(name="agent"),
+      session_service=service,
+      plugins=[TransformPlugin(name="transform")],
+  )
+  session = await service.create_session(app_name="app", user_id="user")
+  try:
+    events = [
+        event
+        async for event in runner.run_live(
+            user_id="user",
+            session_id=session.id,
+            live_request_queue=LiveRequestQueue(),
+        )
+    ]
+    stored = await service.get_session(
+        app_name="app", user_id="user", session_id=session.id
+    )
+  finally:
+    await runner.close()
+
+  assert len(events) == 1
+  assert events[0].partial is True
+  persisted = [e for e in stored.events if e.id == events[0].id]
+  assert not persisted
+  assert stored.state.get("transformed", False) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replace_event", [False, True])
+@pytest.mark.parametrize("final_media", [False, True])
+@pytest.mark.parametrize("early_exit", [False, True])
+async def test_run_live_filters_media_after_event_callback(
+    replace_event, final_media, early_exit
+):
+  """Live persistence filters the transformed content, not the source content."""
+  from google.adk.live import LiveRequestQueue
+
+  def content(media):
+    part = (
+        types.Part(inline_data=types.Blob(data=b"audio", mime_type="audio/pcm"))
+        if media
+        else types.Part(text="transcript")
+    )
+    return types.Content(role="model", parts=[part])
+
+  class MediaAgent(BaseAgent):
+
+    async def _run_live_impl(self, ctx):
+      yield Event(author=self.name, content=content(not final_media))
+
+  class TransformPlugin(BasePlugin):
+
+    async def before_run_callback(self, *, invocation_context):
+      return content(not final_media) if early_exit else None
+
+    async def on_event_callback(self, *, invocation_context, event):
+      output = event.model_copy(deep=True) if replace_event else event
+      output.content = content(final_media)
+      return output if replace_event else None
+
+  service = InMemorySessionService()
+  runner = Runner(
+      app_name="app",
+      agent=MediaAgent(name="agent"),
+      session_service=service,
+      plugins=[TransformPlugin(name="transform")],
+  )
+  session = await service.create_session(app_name="app", user_id="user")
+  try:
+    events = [
+        event
+        async for event in runner.run_live(
+            user_id="user",
+            session_id=session.id,
+            live_request_queue=LiveRequestQueue(),
+        )
+    ]
+    stored = await service.get_session(
+        app_name="app", user_id="user", session_id=session.id
+    )
+  finally:
+    await runner.close()
+
+  assert len(events) == 1
+  assert events[0].content == content(final_media)
+  assert bool(stored.events) is (not final_media)
+  if stored.events:
+    assert stored.events[0].id == events[0].id
+    assert stored.events[0].content == events[0].content
 
 
 if __name__ == "__main__":

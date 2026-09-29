@@ -1,62 +1,13 @@
-# OpenAI Integration (Experimental)
+# OpenAI Integration (Moved)
 
-This folder contains an experimental integration for OpenAI models in ADK.
+The OpenAI models moved to
+[`google.adk.integrations.openai`](../../integrations/openai/README.md).
 
-## Usage in Code
-
-To use the OpenAI integration in your Python code, instantiate `OpenAILlm` and assign it to your agent's `model` field:
-
-```python
-from google.adk.agents.llm_agent import LlmAgent
-from google.adk.labs.openai import OpenAILlm
-
-# Create the OpenAI model instance
-openai_model = OpenAILlm(model="gpt-4o")
-
-# Create an agent and assign the model
-agent = LlmAgent(
-    name="my_openai_agent",
-    model=openai_model,
-    instruction="You are a helpful assistant.",
-)
-```
-
-Requires the `openai` Python package and `OPENAI_API_KEY` environment variable.
-
-## OpenAI-Compatible Endpoints
-
-To reach a host that speaks the OpenAI API, set `base_url` and `api_key`
-directly. `api_key` may be a string or a zero-argument callable (sync or async)
-that returns one; the client re-invokes a callable on every request, so a
-credential that expires (e.g. a Vertex AI OAuth token) is refreshed for you:
+This package re-exports them so existing imports keep working:
 
 ```python
-from google.adk.labs.openai import OpenAILlm
-
-openai_model = OpenAILlm(
-    model="my-model",
-    base_url="https://my-host.example/v1",
-    api_key="...",  # or a callable returning a (possibly refreshed) key
-)
+from google.adk.labs.openai import OpenAILlm  # still works
+from google.adk.integrations.openai import OpenAILlm  # preferred
 ```
 
-`OpenAIResponsesLlm` takes the same `base_url` and `api_key` fields.
-
-For anything else the client supports (organization, timeout, retries, custom
-headers, ...), build an `AsyncOpenAI` yourself and pass it as `client`. Each
-model instance keeps its own client, so one process can talk to several hosts:
-
-```python
-from openai import AsyncOpenAI
-from google.adk.labs.openai import OpenAILlm
-
-openai_model = OpenAILlm(
-    model="my-model",
-    client=AsyncOpenAI(base_url="https://my-host.example/v1", api_key="..."),
-)
-```
-
-`OpenAIResponsesLlm` takes the same `client` field.
-
-> **Tip:** To send every request to one compatible host, leave `client` unset
-> and set `OPENAI_BASE_URL` in the environment. The default client reads it.
+New code should import from `google.adk.integrations.openai`.

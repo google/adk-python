@@ -19,6 +19,7 @@ from collections.abc import AsyncGenerator
 from collections.abc import Callable
 from collections.abc import Mapping
 import inspect
+import json
 import logging
 import typing
 from typing import Any
@@ -35,6 +36,9 @@ from typing_extensions import override
 from ..auth.auth_tool import AuthConfig
 from ..events.event import Event
 from ..events.request_input import RequestInput
+from ..utils._callable_utils import CallableSpec
+from ..utils._schema_utils import annotation_accepts_content
+from ..utils._schema_utils import annotation_expects_str
 from ._base_node import BaseNode
 from ._errors import WorkflowConfigurationError
 from ._errors import WorkflowDataError
@@ -67,9 +71,6 @@ _GENERATOR_ORIGINS = (
 )
 
 
-from ..utils._callable_utils import CallableSpec
-
-
 def _content_to_str(
     content: types.Content, func_name: str, param_name: str
 ) -> str:
@@ -89,13 +90,8 @@ def _content_to_str(
   return "".join(texts)
 
 
-def _expects_str(annotated_type: Any) -> bool:
-  """Returns True if the annotation is or contains ``str``."""
-  if annotated_type is str:
-    return True
-  if typing.get_origin(annotated_type) is typing.Union:
-    return any(_expects_str(a) for a in typing.get_args(annotated_type))
-  return False
+_expects_str = annotation_expects_str
+_expects_content = annotation_accepts_content
 
 
 class FunctionNode(BaseNode):
@@ -414,7 +410,8 @@ class FunctionNode(BaseNode):
     Uses Pydantic's ``TypeAdapter`` for validation and coercion (handles
     ``dict`` → ``BaseModel``, ``list[dict]`` → ``list[BaseModel]``, unions,
     primitives, etc.).  A special case converts ``types.Content`` → ``str``
-    when the annotation expects ``str``.
+    when the annotation expects ``str``, or parses JSON from ``types.Content``
+    when the annotation expects structured data.
 
     Args:
       param_name: The name of the parameter (for error messages).
@@ -424,9 +421,17 @@ class FunctionNode(BaseNode):
     Returns:
       The coerced value.
     """
-    # Content → str auto-conversion (e.g. user content from START node).
-    if isinstance(value, types.Content) and _expects_str(annotated_type):
-      return _content_to_str(value, self.name, param_name)
+    # Content → str / JSON auto-conversion (e.g. user content from START node).
+    if isinstance(value, types.Content):
+      if _expects_str(annotated_type):
+        return _content_to_str(value, self.name, param_name)
+      if not _expects_content(annotated_type):
+        if value.parts and all(p.text is not None for p in value.parts):
+          text_str = _content_to_str(value, self.name, param_name)
+          try:
+            value = json.loads(text_str)
+          except json.JSONDecodeError:
+            value = text_str
     adapter = self._type_adapters.get(param_name)
     if adapter is None:
       adapter = TypeAdapter(annotated_type)

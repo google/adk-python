@@ -33,6 +33,7 @@ from ..evaluation.eval_metrics import EvalMetric
 from .constants import DEFAULT_LIVE_TIMEOUT_SECONDS
 from .eval_metrics import BaseCriterion
 from .eval_metrics import MetricInfo
+from .eval_metrics import PrebuiltMetrics
 from .eval_metrics import Threshold
 from .simulation._llm_audio_user_simulator import LlmAudioUserSimulatorConfig
 from .simulation.llm_backed_user_simulator import LlmBackedUserSimulatorConfig
@@ -238,6 +239,18 @@ _DEFAULT_EVAL_CONFIG = EvalConfig(
     criteria={"tool_trajectory_avg_score": 1.0, "response_match_score": 0.8}
 )
 
+# Informational efficiency metrics that are reported automatically for every
+# eval, without the user having to enable them in the config. They are
+# reference-free and never pass or fail (their status is always
+# INFORMATIONAL); they simply report a value for the user to track. Because
+# they require no configuration, they are always on and cannot be turned off.
+_DEFAULT_EFFICIENCY_METRICS: tuple[str, ...] = (
+    PrebuiltMetrics.TOOL_CALL_COUNT_V1.value,
+    PrebuiltMetrics.INFERENCE_CALL_COUNT_V1.value,
+    PrebuiltMetrics.TOKEN_USAGE_V1.value,
+    PrebuiltMetrics.INVOCATION_DURATION_V1.value,
+)
+
 
 def get_evaluation_criteria_or_default(
     eval_config_file_path: Optional[str],
@@ -258,10 +271,23 @@ def get_evaluation_criteria_or_default(
 
 
 def get_eval_metrics_from_config(eval_config: EvalConfig) -> list[EvalMetric]:
-  """Returns a list of EvalMetrics mapped from the EvalConfig."""
+  """Returns a list of EvalMetrics mapped from the EvalConfig.
+
+  In addition to the metrics explicitly configured in `eval_config.criteria`,
+  the informational efficiency metrics in `_DEFAULT_EFFICIENCY_METRICS` are
+  always appended, so that efficiency is reported for every eval without any
+  configuration. These metrics never pass or fail.
+
+  They cannot be configured, though: naming one in `criteria` means giving it a
+  threshold, and these metrics reject a threshold, so the eval fails with a
+  `ValueError`. The entry is still not duplicated here, so the failure names the
+  metric once.
+  """
   eval_metric_list = []
+  configured_metric_names = set()
   if eval_config.criteria:
     for metric_name, criterion in eval_config.criteria.items():
+      configured_metric_names.add(metric_name)
       custom_function_path = None
       if eval_config.custom_metrics and (
           config := eval_config.custom_metrics.get(metric_name)
@@ -295,5 +321,13 @@ def get_eval_metrics_from_config(eval_config: EvalConfig) -> list[EvalMetric]:
       # own function.
       eval_metric._config_custom_function_path = custom_function_path  # pylint: disable=protected-access
       eval_metric_list.append(eval_metric)
+
+  # Always report the informational efficiency metrics, even when the user did
+  # not enable them in the config. A metric named in the config above is not
+  # added a second time; that entry is rejected later, for carrying a
+  # threshold.
+  for metric_name in _DEFAULT_EFFICIENCY_METRICS:
+    if metric_name not in configured_metric_names:
+      eval_metric_list.append(EvalMetric(metric_name=metric_name))
 
   return eval_metric_list

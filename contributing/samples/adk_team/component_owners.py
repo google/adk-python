@@ -24,6 +24,7 @@ the OWNERS file, which is the authority.
 
 # Component label -> GitHub login of the owner who shepherds that component.
 LABEL_TO_OWNER = {
+    "a2a": "mykytanetipa",
     "agent engine": "yeesian",
     "auth": "xuanyang15",
     "bq": "shobsi",

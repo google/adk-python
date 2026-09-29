@@ -598,6 +598,61 @@ def test_get_results_as_rows_handles_missing_expected_invocation():
   assert rows[0]["actual_response"] == "hello"
 
 
+def test_process_metrics_informational_metric_is_never_a_failure():
+  """An informational metric (INFORMATIONAL status) never fails or raises.
+
+  The efficiency metrics are auto-appended to every eval, report an
+  INFORMATIONAL status, and carry no threshold, so the failure aggregation must
+  skip them rather than trying to resolve a (non-existent) threshold for them.
+  """
+  result = _EvalMetricResultWithInvocation(
+      actual_invocation=Invocation(
+          user_content=_content("hi"),
+          final_response=_content("hello"),
+      ),
+      expected_invocation=None,
+      eval_metric_result=EvalMetricResult(
+          metric_name="tool_call_count_v1",
+          score=3.0,
+          eval_status=EvalStatus.INFORMATIONAL,
+      ),
+  )
+
+  failures = AgentEvaluator._process_metrics_and_get_failures(
+      eval_metric_results={"tool_call_count_v1": [result]},
+      print_detailed_results=False,
+      agent_module="my_agent",
+  )
+
+  assert failures == []
+
+
+def test_process_metrics_thresholded_metric_below_threshold_still_fails():
+  """A thresholded metric below its threshold is still reported as a failure."""
+  result = _EvalMetricResultWithInvocation(
+      actual_invocation=Invocation(
+          user_content=_content("hi"),
+          final_response=_content("hello"),
+      ),
+      expected_invocation=None,
+      eval_metric_result=EvalMetricResult(
+          metric_name="response_match_score",
+          threshold=0.8,
+          score=0.0,
+          eval_status=EvalStatus.FAILED,
+      ),
+  )
+
+  failures = AgentEvaluator._process_metrics_and_get_failures(
+      eval_metric_results={"response_match_score": [result]},
+      print_detailed_results=False,
+      agent_module="my_agent",
+  )
+
+  assert len(failures) == 1
+  assert "response_match_score" in failures[0]
+
+
 def test_write_results_to_csv_writes_expected_file(tmp_path):
   rows = [
       {

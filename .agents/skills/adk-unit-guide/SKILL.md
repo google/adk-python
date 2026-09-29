@@ -118,6 +118,67 @@ Then add the guide to `docs/guides/README.md` under the right category heading,
 as `* [Title](path/index.md) - one-line summary.` That index is the only table
 of contents; a guide missing from it is unreachable.
 
+## When a guide is not required
+
+`scripts/check_new_py_files.py` enforces this convention on the Python files a
+change adds under `src/google/adk/`. Some it passes over without asking, and
+the rest you can waive, so work out which case you are in before writing a
+guide the rule does not ask for.
+
+Three subtrees sit outside the rule, because nothing in them is published:
+`src/google/adk/internal/`, `src/google/adk/platform/internal/`, and
+`src/google/adk/v1/`.
+
+Elsewhere a file is exempt on one of two grounds. It carries no unit of its
+own, which covers `__init__.py` and any path with a `cli/` or `utils/`
+component. Or it holds declarations that belong in the guide of whatever uses
+them rather than in a guide of their own, which covers any filename ending
+`_utils.py`, `_helper.py`, `_helpers.py`, `_types.py`, `_errors.py`,
+`_exceptions.py`, or `_constants.py`.
+
+Everything else needs a guide or a waiver. A waiver is a `NO_UNIT_GUIDE=` or
+`SKIP_UNIT_GUIDE=` tag carrying the reason, and the two names behave
+identically. It waives the unit guide requirement alone; the `_` prefix rule
+shares the same hook and the same error report, and has no waiver at all. One
+tag waives every file the change adds, not the one its reason names, so a
+change adding several needs a reason that covers all of them.
+
+Write a reason a reviewer can check against the code, because the tag becomes
+the only record of why the guide is absent:
+
+```
+NO_UNIT_GUIDE=_model_call is internal to the LLM flow; no __init__.py re-exports it.
+```
+
+### Where to put the waiver
+
+The tag reaches the check through a commit message or through the environment,
+and which one applies depends on whether the commit exists yet.
+
+Once the commit exists, its message carries the tag. Continuous integration
+reads the messages of the commits a pull request contains, so a waiver a
+contributor writes there satisfies the check that gates the pull request. Start
+the tag at the left margin with no space before the `=`, because the check
+matches at the start of a line. An indented tag, or one inside a list item, is
+not found, and nothing reports the miss.
+
+The environment carries the tag for a commit that does not exist yet:
+
+```
+NO_UNIT_GUIDE='internal to the LLM flow' git commit ...
+```
+
+Reach for that form when the pre-commit hook stops you. A pre-commit hook runs
+before git records your message anywhere, and the check declines to read the
+previous commit's message in its place, so the environment is the channel left
+open. Quote the reason: an unquoted one ends at the first space, and the shell
+takes the next word for the command to run, so no commit happens at all. Write
+the tag into the message as well, so the reason survives in the history rather
+than only in the shell that ran the commit.
+
+A tag carrying no reason waives nothing, in either channel. The reason is the
+only record of the decision, so a waiver without one leaves nothing to review.
+
 ## Code examples
 
 - One minimal example under "Get started", with enough of the surrounding
