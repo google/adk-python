@@ -15,7 +15,7 @@
 """Backward compatibility module for AudioCacheManager.
 
 AudioCacheManager and AudioCacheConfig are no longer public; they live in
-``google.adk.live._audio_cache_manager`` and this module only keeps
+``google.adk.live._cache_manager`` and this module only keeps
 existing imports working. RealtimeCacheEntry is public as
 ``google.adk.agents.invocation_context.RealtimeCacheEntry``.
 """
@@ -24,14 +24,25 @@ from __future__ import annotations
 
 import warnings
 
-from ...live._audio_cache_manager import AudioCacheConfig as AudioCacheConfig
-from ...live._audio_cache_manager import AudioCacheManager as AudioCacheManager
-from ...live._audio_cache_manager import logger as logger
-from ...live._audio_cache_manager import RealtimeCacheEntry as RealtimeCacheEntry
+from ...live._cache_manager import AudioCacheConfig
+from ...live._cache_manager import AudioCacheManager
+from ...live._cache_manager import CacheConfig
+from ...live._cache_manager import CacheManager
+from ...live._cache_manager import logger
+from ...live._cache_manager import RealtimeCacheEntry
 
 warnings.warn(
     'google.adk.flows.llm_flows.audio_cache_manager is deprecated; use'
-    ' google.adk.live._audio_cache_manager instead.',
+    ' google.adk.live._cache_manager instead.',
     DeprecationWarning,
     stacklevel=2,
 )
+
+__all__ = [
+    'AudioCacheConfig',
+    'AudioCacheManager',
+    'CacheConfig',
+    'CacheManager',
+    'RealtimeCacheEntry',
+    'logger',
+]

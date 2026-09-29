@@ -47,11 +47,9 @@ def test_require_live_request_queue_raises_when_missing():
 async def test_handle_control_event_flush_flushes_model_audio_on_interrupt():
   """Flushes only model audio when the response indicates an interruption."""
   flushed_event = Event(author='model')
-  audio_cache_manager = mock.Mock()
-  audio_cache_manager.flush_caches = mock.AsyncMock(
-      return_value=[flushed_event]
-  )
-  flow = mock.Mock(audio_cache_manager=audio_cache_manager)
+  cache_manager = mock.Mock()
+  cache_manager.flush_caches = mock.AsyncMock(return_value=[flushed_event])
+  flow = mock.Mock(cache_manager=cache_manager)
   invocation_context = mock.Mock()
   llm_response = LlmResponse(interrupted=True)
 
@@ -60,7 +58,7 @@ async def test_handle_control_event_flush_flushes_model_audio_on_interrupt():
   )
 
   assert events == [flushed_event]
-  audio_cache_manager.flush_caches.assert_awaited_once_with(
+  cache_manager.flush_caches.assert_awaited_once_with(
       invocation_context,
       flush_user_audio=False,
       flush_model_audio=True,
@@ -70,11 +68,9 @@ async def test_handle_control_event_flush_flushes_model_audio_on_interrupt():
 async def test_handle_control_event_flush_flushes_both_on_turn_complete():
   """Flushes both user and model audio when the turn completes."""
   flushed_event = Event(author='model')
-  audio_cache_manager = mock.Mock()
-  audio_cache_manager.flush_caches = mock.AsyncMock(
-      return_value=[flushed_event]
-  )
-  flow = mock.Mock(audio_cache_manager=audio_cache_manager)
+  cache_manager = mock.Mock()
+  cache_manager.flush_caches = mock.AsyncMock(return_value=[flushed_event])
+  flow = mock.Mock(cache_manager=cache_manager)
   invocation_context = mock.Mock()
   llm_response = LlmResponse(turn_complete=True)
 
@@ -83,7 +79,7 @@ async def test_handle_control_event_flush_flushes_both_on_turn_complete():
   )
 
   assert events == [flushed_event]
-  audio_cache_manager.flush_caches.assert_awaited_once_with(
+  cache_manager.flush_caches.assert_awaited_once_with(
       invocation_context,
       flush_user_audio=True,
       flush_model_audio=True,

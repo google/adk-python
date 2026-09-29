@@ -25,6 +25,7 @@ from google.adk.agents.run_config import RunConfig
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
 from google.adk.live import _live_llm_flow
+from google.adk.live._cache_manager import CacheManager
 from google.adk.live.live_request_queue import LiveRequestQueue
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
@@ -181,7 +182,7 @@ async def test_handle_control_event_flush_on_interrupted():
   response = LlmResponse(interrupted=True)
 
   with mock.patch.object(
-      flow.audio_cache_manager, 'flush_caches', new_callable=mock.AsyncMock
+      flow.cache_manager, 'flush_caches', new_callable=mock.AsyncMock
   ) as mock_flush:
     mock_flush.return_value = [Event(id='flushed-event')]
     events = await _live_llm_flow.handle_control_event_flush(
@@ -201,7 +202,7 @@ async def test_handle_control_event_flush_on_turn_complete():
   response = LlmResponse(turn_complete=True)
 
   with mock.patch.object(
-      flow.audio_cache_manager, 'flush_caches', new_callable=mock.AsyncMock
+      flow.cache_manager, 'flush_caches', new_callable=mock.AsyncMock
   ) as mock_flush:
     mock_flush.return_value = [Event(id='flushed-event')]
     events = await _live_llm_flow.handle_control_event_flush(
@@ -308,48 +309,50 @@ async def test_handle_control_event_flush_logs_stats_when_enabled():
   with (
       mock.patch.object(_flow_utils, 'DEFAULT_ENABLE_CACHE_STATISTICS', True),
       mock.patch.object(
-          flow.audio_cache_manager, 'get_cache_stats'
+          flow.cache_manager, 'get_cache_stats'
       ) as mock_get_stats,
-      mock.patch.object(
-          flow.audio_cache_manager, 'flush_caches', return_value=[]
-      ),
+      mock.patch.object(flow.cache_manager, 'flush_caches', return_value=[]),
   ):
     await _live_llm_flow.handle_control_event_flush(flow, context, response)
 
   mock_get_stats.assert_called_once_with(context)
 
 
-async def test_send_to_model_uses_flow_audio_cache_manager():
-  """send_to_model accesses the audio cache manager directly from the flow instance."""
+async def _run_send_to_model_once(flow, context):
+  """Drains the queued requests deterministically by appending a close signal."""
+  mock_connection = mock.AsyncMock()
+  context.live_request_queue.close()
+  await _live_llm_flow.send_to_model(
+      flow, mock_connection, context, LlmRequest()
+  )
+  return mock_connection
+
+
+async def test_send_to_model_uses_flow_cache_manager():
+  """send_to_model delegates blob caching to flow.cache_manager.cache_blob."""
   flow = _TestBaseLlmFlow()
   queue = LiveRequestQueue()
-  queue.send_realtime(types.Blob(mime_type='audio/pcm', data=b'audio_bytes'))
+  audio_blob = types.Blob(mime_type='audio/pcm', data=b'audio_bytes')
+  queue.send_realtime(audio_blob)
   context = _create_test_context(
       live_request_queue=queue, run_config=RunConfig(save_live_blob=True)
   )
-  mock_connection = mock.AsyncMock()
 
   with mock.patch.object(
-      flow.audio_cache_manager, 'cache_audio'
-  ) as mock_cache_audio:
-    # Run send_to_model briefly and cancel it after processing the queued item
-    send_task = asyncio.create_task(
-        _live_llm_flow.send_to_model(
-            flow, mock_connection, context, LlmRequest()
-        )
-    )
-    await asyncio.sleep(0.01)
-    send_task.cancel()
-    try:
-      await send_task
-    except asyncio.CancelledError:
-      pass
+      flow.cache_manager, 'cache_blob', wraps=flow.cache_manager.cache_blob
+  ) as mock_cache_blob:
+    mock_connection = await _run_send_to_model_once(flow, context)
 
-  mock_cache_audio.assert_called_once()
+  mock_cache_blob.assert_called_once_with(
+      context, audio_blob, cache_type='input'
+  )
+  assert len(context.input_realtime_cache) == 1
+  assert context.input_realtime_cache[0].data == audio_blob
+  mock_connection.send_realtime.assert_awaited_once_with(audio_blob)
 
 
 async def test_send_to_model_caches_only_audio_blobs():
-  """Non-audio blobs such as video frames are sent but not cached."""
+  """Non-audio blobs such as video frames are sent but not cached in CL 2B."""
   flow = _TestBaseLlmFlow()
   queue = LiveRequestQueue()
   audio_blob = types.Blob(mime_type='audio/pcm', data=b'audio_bytes')
@@ -359,20 +362,62 @@ async def test_send_to_model_caches_only_audio_blobs():
   context = _create_test_context(
       live_request_queue=queue, run_config=RunConfig(save_live_blob=True)
   )
-  mock_connection = mock.AsyncMock()
 
-  send_task = asyncio.create_task(
-      _live_llm_flow.send_to_model(flow, mock_connection, context, LlmRequest())
-  )
-  await asyncio.sleep(0.01)
-  send_task.cancel()
-  try:
-    await send_task
-  except asyncio.CancelledError:
-    pass
+  mock_connection = await _run_send_to_model_once(flow, context)
 
   assert [entry.data for entry in context.input_realtime_cache] == [audio_blob]
+  assert context.input_media_realtime_cache is None
   assert mock_connection.send_realtime.await_args_list == [
       mock.call(video_blob),
       mock.call(audio_blob),
   ]
+
+
+async def test_audio_cache_manager_alias_still_resolves_and_warns():
+  """Reading or setting `flow.audio_cache_manager` forwards to `cache_manager` and warns."""
+  flow = _TestBaseLlmFlow()
+
+  with pytest.warns(DeprecationWarning, match='use cache_manager instead'):
+    alias = flow.audio_cache_manager
+  assert alias is flow.cache_manager
+
+  replacement = CacheManager()
+  with pytest.warns(DeprecationWarning, match='use cache_manager instead'):
+    flow.audio_cache_manager = replacement
+  assert flow.cache_manager is replacement
+
+
+async def test_receive_from_model_routes_audio_via_cache_blob():
+  """Model-generated audio/* inline_data blobs are routed via flow.cache_manager.cache_blob."""
+  flow = _TestBaseLlmFlow()
+  context = _create_test_context(run_config=RunConfig(save_live_blob=True))
+  calls = 0
+
+  async def _receive():
+    nonlocal calls
+    calls += 1
+    if calls == 1:
+      yield LlmResponse(
+          content=types.Content(
+              role='model',
+              parts=[
+                  types.Part(
+                      inline_data=types.Blob(
+                          mime_type='audio/pcm', data=b'model_audio'
+                      )
+                  )
+              ],
+          )
+      )
+
+  connection = mock.MagicMock(receive=_receive)
+  events = [
+      event
+      async for event in _live_llm_flow.receive_from_model(
+          flow, connection, context, LlmRequest()
+      )
+  ]
+  assert len(events) == 1
+  assert len(context.output_realtime_cache) == 1
+  assert context.output_realtime_cache[0].data.data == b'model_audio'
+  assert context.output_media_realtime_cache is None
