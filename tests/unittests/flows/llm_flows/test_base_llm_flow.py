@@ -36,12 +36,12 @@ from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.flows.llm_flows.base_llm_flow import _finalize_dynamic_instructions
 from google.adk.flows.llm_flows.base_llm_flow import _process_agent_tools
-from google.adk.flows.llm_flows.base_llm_flow import _ReconnectSentinel
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
 from google.adk.flows.llm_flows.core._finalizer import handle_after_model_callback
 from google.adk.flows.llm_flows.core._utils import copy_http_options
-from google.adk.flows.llm_flows.core._utils import run_config_for_new_live_session
 from google.adk.live import LiveRequestQueue
+from google.adk.live._flow_utils import _ReconnectSentinel
+from google.adk.live._flow_utils import run_config_for_new_live_session
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.base_llm_connection import BaseLlmConnection
 from google.adk.models.google_llm import Gemini
@@ -1938,7 +1938,7 @@ async def test_run_live_transfer_is_independent_of_response_order(
   with (
       mock.patch('google.adk.models.google_llm.Gemini.connect') as mock_connect,
       mock.patch(
-          'google.adk.flows.llm_flows._live_llm_flow.DEFAULT_TRANSFER_AGENT_DELAY',
+          'google.adk.live._live_llm_flow.DEFAULT_TRANSFER_AGENT_DELAY',
           0,
       ),
   ):
@@ -2032,7 +2032,7 @@ async def test_run_live_task_completion_is_independent_of_response_order(
   with (
       mock.patch('google.adk.models.google_llm.Gemini.connect') as mock_connect,
       mock.patch(
-          'google.adk.flows.llm_flows._live_llm_flow.DEFAULT_TASK_COMPLETION_DELAY',
+          'google.adk.live._live_llm_flow.DEFAULT_TASK_COMPLETION_DELAY',
           0,
       ),
   ):
@@ -3506,3 +3506,104 @@ async def test_base_llm_flow_delegates_to_core_model_call():
     ):
       pass
     mock_apply.assert_called_once_with(invocation_context, empty_stop_response)
+
+
+async def test_run_async_aborted_before_first_step_breaks_immediately():
+  """Starting run_async with an already-aborted context exits before executing any step."""
+  flow = BaseLlmFlowForTesting()
+  abort_signal = asyncio.Event()
+  abort_signal.set()
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=Agent(name='test_agent'),
+      user_content='hello',
+      abort_signal=abort_signal,
+  )
+
+  step_called = False
+
+  async def failing_step(_ctx):
+    nonlocal step_called
+    step_called = True
+    yield Event(author='test_agent')
+
+  with mock.patch.object(flow, '_run_one_step_async', side_effect=failing_step):
+    events = [e async for e in flow.run_async(invocation_context)]
+
+  assert not events
+  assert not step_called
+
+
+async def test_run_async_aborted_during_step_event_streaming_breaks():
+  """Tripping abort during step event streaming stops yielding subsequent events."""
+  flow = BaseLlmFlowForTesting()
+  abort_signal = asyncio.Event()
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=Agent(name='test_agent'),
+      user_content='hello',
+      abort_signal=abort_signal,
+  )
+
+  event1 = Event(
+      invocation_id=invocation_context.invocation_id,
+      author='test_agent',
+      content=types.Content(parts=[types.Part(text='chunk 1')]),
+  )
+  event2 = Event(
+      invocation_id=invocation_context.invocation_id,
+      author='test_agent',
+      content=types.Content(parts=[types.Part(text='chunk 2')]),
+  )
+
+  async def mock_step(_ctx):
+    yield event1
+    yield event2
+
+  yielded_events = []
+  with mock.patch.object(flow, '_run_one_step_async', side_effect=mock_step):
+    async for event in flow.run_async(invocation_context):
+      yielded_events.append(event)
+      abort_signal.set()
+
+  assert yielded_events == [event1]
+
+
+async def test_run_async_aborted_between_steps_breaks_outer_loop():
+  """Tripping abort after an intermediate step exits the flow before starting the next step."""
+  flow = BaseLlmFlowForTesting()
+  abort_signal = asyncio.Event()
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=Agent(name='test_agent'),
+      user_content='hello',
+      abort_signal=abort_signal,
+  )
+
+  fc_part = types.Part.from_function_call(name='tool', args={})
+  fc_event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author='test_agent',
+      content=types.Content(role='model', parts=[fc_part]),
+  )
+  assert not fc_event.is_final_response()
+
+  step_invocations = 0
+
+  async def mock_step(_ctx):
+    nonlocal step_invocations
+    step_invocations += 1
+    if step_invocations == 1:
+      yield fc_event
+      abort_signal.set()
+    else:
+      yield Event(
+          invocation_id=invocation_context.invocation_id,
+          author='test_agent',
+          content=types.Content(parts=[types.Part(text='second step')]),
+      )
+
+  yielded_events = []
+  with mock.patch.object(flow, '_run_one_step_async', side_effect=mock_step):
+    async for event in flow.run_async(invocation_context):
+      yielded_events.append(event)
+
+  assert step_invocations == 1
+  assert yielded_events == [fc_event]

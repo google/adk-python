@@ -133,6 +133,9 @@ async def test_agent_tool_inherits_parent_app_name(monkeypatch):
         new_message: Optional[types.Content] = None,
         state_delta: Optional[dict[str, Any]] = None,
         run_config: Optional[RunConfig] = None,
+        yield_user_message: bool = False,
+        abort_signal: Optional[asyncio.Event] = None,
+        **kwargs,
     ):
       del (
           user_id,
@@ -141,6 +144,9 @@ async def test_agent_tool_inherits_parent_app_name(monkeypatch):
           new_message,
           state_delta,
           run_config,
+          yield_user_message,
+          abort_signal,
+          kwargs,
       )
       return _empty_async_generator()
 
@@ -227,8 +233,20 @@ async def _capture_nested_run_config(
         new_message: Optional[types.Content] = None,
         state_delta: Optional[dict[str, Any]] = None,
         run_config: Optional[RunConfig] = None,
+        yield_user_message: bool = False,
+        abort_signal: Optional[asyncio.Event] = None,
+        **kwargs,
     ):
-      del user_id, session_id, invocation_id, new_message, state_delta
+      del (
+          user_id,
+          session_id,
+          invocation_id,
+          new_message,
+          state_delta,
+          yield_user_message,
+          abort_signal,
+          kwargs,
+      )
       captured['run_config'] = run_config
       return _empty_async_generator()
 
@@ -319,6 +337,92 @@ async def test_agent_tool_keeps_unary_run_unchanged(monkeypatch):
   )
 
   assert nested_run_config.streaming_mode == StreamingMode.NONE
+
+
+async def test_agent_tool_forwards_parent_abort_signal(monkeypatch):
+  """Parent invocation's abort_signal is forwarded to child Runner.run_async."""
+  captured: dict[str, Any] = {}
+
+  async def _empty_async_generator():
+    if False:
+      yield None
+
+  class StubRunner:
+
+    def __init__(
+        self,
+        *,
+        app_name: str,
+        agent: Agent,
+        artifact_service,
+        session_service,
+        memory_service,
+        credential_service,
+        plugins,
+    ):
+      del app_name, artifact_service, memory_service, credential_service
+      self.agent = agent
+      self.session_service = session_service
+      self.plugin_manager = PluginManager(plugins=plugins)
+
+    def run_async(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        invocation_id: Optional[str] = None,
+        new_message: Optional[types.Content] = None,
+        state_delta: Optional[dict[str, Any]] = None,
+        run_config: Optional[RunConfig] = None,
+        yield_user_message: bool = False,
+        abort_signal: Optional[asyncio.Event] = None,
+        **kwargs,
+    ):
+      del (
+          user_id,
+          session_id,
+          invocation_id,
+          new_message,
+          state_delta,
+          run_config,
+          yield_user_message,
+          kwargs,
+      )
+      captured['abort_signal'] = abort_signal
+      return _empty_async_generator()
+
+    async def close(self):
+      pass
+
+  monkeypatch.setattr('google.adk.runners.Runner', StubRunner)
+
+  tool_agent = Agent(name='tool_agent', model='test-model')
+  agent_tool = AgentTool(agent=tool_agent)
+  root_agent = Agent(name='root_agent', model='test-model', tools=[agent_tool])
+
+  parent_session_service = InMemorySessionService()
+  parent_session = await parent_session_service.create_session(
+      app_name='parent_app',
+      user_id='user',
+  )
+  invocation_context = InvocationContext(
+      artifact_service=InMemoryArtifactService(),
+      session_service=parent_session_service,
+      memory_service=InMemoryMemoryService(),
+      plugin_manager=PluginManager(),
+      invocation_id='invocation-id',
+      agent=root_agent,
+      session=parent_session,
+  )
+  parent_signal = asyncio.Event()
+  invocation_context._attach_abort_signal(parent_signal)
+
+  await agent_tool.run_async(
+      args={'request': 'hello'},
+      tool_context=ToolContext(invocation_context),
+  )
+
+  assert captured['abort_signal'] is parent_signal
 
 
 def test_no_schema():
@@ -1742,7 +1846,20 @@ async def test_no_schema_args_handling(monkeypatch, args, expected_text):
         new_message=None,
         state_delta=None,
         run_config=None,
+        yield_user_message: bool = False,
+        abort_signal: Optional[asyncio.Event] = None,
+        **kwargs,
     ):
+      del (
+          user_id,
+          session_id,
+          invocation_id,
+          state_delta,
+          run_config,
+          yield_user_message,
+          abort_signal,
+          kwargs,
+      )
       captured['new_message'] = new_message
       return _empty_async_generator()
 
@@ -1936,7 +2053,20 @@ async def _run_agent_tool_and_capture_content(
         new_message=None,
         state_delta=None,
         run_config=None,
+        yield_user_message: bool = False,
+        abort_signal: Optional[asyncio.Event] = None,
+        **kwargs,
     ):
+      del (
+          user_id,
+          session_id,
+          invocation_id,
+          state_delta,
+          run_config,
+          yield_user_message,
+          abort_signal,
+          kwargs,
+      )
       new_message_holder.append(new_message)
       return _empty_async_generator()
 
