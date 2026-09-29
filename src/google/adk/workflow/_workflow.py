@@ -100,6 +100,9 @@ class _LoopState(DynamicNodeState):
   pending_tasks: dict[str, asyncio.Task[Context]] = field(default_factory=dict)
   """Running static node tasks."""
 
+  abort_task: asyncio.Task[Any] | None = None
+  """Task awaiting ctx._invocation_context._abort_signal.wait() to wake the loop early."""
+
   replayed_nodes: set[str] = field(default_factory=set)
   """Names of nodes whose in-flight run is a replayed history fast-forward.
 
@@ -249,9 +252,15 @@ class Workflow(BaseNode):
       await self._run_loop(loop_state, ctx)
     finally:
       ctx._workflow_scheduler = None
-      await self._cleanup_all_tasks(loop_state)
+      # `is True` rather than truthiness: tests run workflows with mocked
+      # invocation contexts, whose is_aborted is a truthy Mock rather than False.
+      aborted = ctx._invocation_context.is_aborted is True
+      await self._cleanup_all_tasks(loop_state, aborted=aborted)
 
-    if loop_state.error_shut_down:
+    # An aborted workflow did not finish, so it must not fall through to
+    # _finalize and _emit_end_of_agent: that would let a resumable session
+    # record the aborted run as completed.
+    if loop_state.error_shut_down or ctx._invocation_context.is_aborted is True:
       return
 
     # Collect remaining interrupts from WAITING nodes
@@ -285,15 +294,39 @@ class Workflow(BaseNode):
     }
 
     while True:
+      if ctx._invocation_context.is_aborted is True:
+        logger.debug("node %s execute loop end.", ctx.node_path)
+        return
+
       await self._schedule_ready_nodes(loop_state, ctx)
 
       if not loop_state.pending_tasks:
         break
 
+      wait_tasks: list[asyncio.Task[Any]] = list(
+          loop_state.pending_tasks.values()
+      )
+      # A mocked invocation context has no real signal to wait on, and
+      # asyncio.create_task rejects the Mock its wait() returns.
+      abort_signal = ctx._invocation_context._abort_signal  # pylint: disable=protected-access
+      if isinstance(abort_signal, asyncio.Event):
+        if not loop_state.abort_task or loop_state.abort_task.done():
+          loop_state.abort_task = asyncio.create_task(abort_signal.wait())
+        wait_tasks.append(loop_state.abort_task)
+
       done, _ = await asyncio.wait(
-          loop_state.pending_tasks.values(),
+          wait_tasks,
           return_when=asyncio.FIRST_COMPLETED,
       )
+
+      if loop_state.abort_task and loop_state.abort_task in done:
+        for t in loop_state.pending_tasks.values():
+          t.cancel()
+        for run in loop_state.runs.values():
+          if run.task:
+            run.task.cancel()
+        logger.debug("node %s execute loop end.", ctx.node_path)
+        return
 
       # To ensure deterministic processing order even for fresh executions,
       # first order the done tasks by their insertion order in pending_tasks.
@@ -346,6 +379,25 @@ class Workflow(BaseNode):
           await self._handle_completion(loop_state, name, node, child_ctx, ctx)
 
       if error_to_raise:
+        # Drain sibling tasks that finished in the same tick so their completed
+        # outputs and state changes are preserved before shutting down.
+        while loop_state.pending_tasks:
+          done_siblings = [
+              task for task in loop_state.pending_tasks.values() if task.done()
+          ]
+          if not done_siblings:
+            break
+          for task in done_siblings:
+            name = self._pop_completed_task(loop_state, task)
+            node = self._get_static_node_by_name(name)
+            child_ctx = task.result()
+            if child_ctx.error:
+              loop_state.nodes[name].status = NodeStatus.FAILED
+            else:
+              await self._handle_completion(
+                  loop_state, name, node, child_ctx, ctx
+              )
+
         loop_state.error_shut_down = True
         logger.debug("node %s execute loop end.", ctx.node_path)
         return
@@ -890,19 +942,39 @@ class Workflow(BaseNode):
         return name
     raise WorkflowInvariantError("Task not found in pending_tasks.")
 
-  async def _cleanup_all_tasks(self, loop_state: _LoopState) -> None:
+  async def _cleanup_all_tasks(
+      self, loop_state: _LoopState, *, aborted: bool = False
+  ) -> None:
     """Cancel remaining tasks to prevent leaks."""
     dynamic_tasks = loop_state.get_dynamic_tasks()
 
-    all_tasks = list(loop_state.pending_tasks.values()) + dynamic_tasks
-    if all_tasks:
-      logger.warning(
+    node_tasks = list(loop_state.pending_tasks.values()) + dynamic_tasks
+    if node_tasks:
+      logger.log(
+          logging.INFO if aborted else logging.WARNING,
           "Workflow %s: cancelling %d leftover tasks.",
           self.name,
-          len(all_tasks),
+          len(node_tasks),
       )
+    all_tasks: list[asyncio.Task[Any]] = list(node_tasks)
+    if loop_state.abort_task:
+      all_tasks.append(loop_state.abort_task)
+
     for task in all_tasks:
       if not task.done():
         task.cancel()
     if all_tasks:
       await asyncio.gather(*all_tasks, return_exceptions=True)
+      for task in node_tasks:
+        if task.cancelled():
+          # Mark static nodes as CANCELLED
+          for name, t in loop_state.pending_tasks.items():
+            if t is task:
+              loop_state.nodes[name].status = NodeStatus.CANCELLED
+              break
+          # Mark dynamic nodes as CANCELLED
+          for _, run in loop_state.runs.items():
+            if run.task is task:
+              run.state.status = NodeStatus.CANCELLED
+              break
+    loop_state.abort_task = None

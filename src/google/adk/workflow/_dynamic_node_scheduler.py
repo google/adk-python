@@ -731,6 +731,8 @@ async def run_node_internal(
   )
 
   transfer_to_agent = child_ctx.actions.transfer_to_agent if child_ctx else None
+  if child_ctx and child_ctx.actions.skip_summarization:
+    ctx.actions.skip_summarization = True
 
   if not return_ctx:
     if child_ctx.error:

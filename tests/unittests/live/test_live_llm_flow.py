@@ -23,8 +23,8 @@ from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.events.event import Event
-from google.adk.flows.llm_flows import _live_llm_flow
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
+from google.adk.live import _live_llm_flow
 from google.adk.live.live_request_queue import LiveRequestQueue
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
@@ -216,7 +216,6 @@ async def test_handle_control_event_flush_on_turn_complete():
 
 async def test_stop_background_tool_tasks_cancels_and_clears():
   """Cancels pending background tasks and clears active tool registries on the context."""
-  flow = _TestBaseLlmFlow()
   context = _create_test_context()
 
   async def _long_task():
@@ -227,7 +226,7 @@ async def test_stop_background_tool_tasks_cancels_and_clears():
   context.active_streaming_tools = {'stream_tool': mock_active}
   context.active_non_blocking_tool_tasks = {'non_blocking_tool': task1}
 
-  await _live_llm_flow.stop_background_tool_tasks(flow, context)
+  await _live_llm_flow.stop_background_tool_tasks(context)
 
   assert task1.cancelled()
   assert context.active_streaming_tools == {}
@@ -281,7 +280,6 @@ async def test_stop_background_tool_tasks_uses_timeout():
   """stop_background_tool_tasks uses _TOOL_SHUTDOWN_TIMEOUT_SECONDS."""
   from google.adk.live import _flow_utils
 
-  flow = _TestBaseLlmFlow()
   context = _create_test_context()
 
   async def _dummy():
@@ -294,7 +292,7 @@ async def test_stop_background_tool_tasks_uses_timeout():
       mock.patch.object(_flow_utils, '_TOOL_SHUTDOWN_TIMEOUT_SECONDS', 0.01),
       mock.patch('asyncio.wait', wraps=asyncio.wait) as mock_wait,
   ):
-    await _live_llm_flow.stop_background_tool_tasks(flow, context)
+    await _live_llm_flow.stop_background_tool_tasks(context)
 
   assert mock_wait.call_args.kwargs['timeout'] == 0.01
 
@@ -348,3 +346,33 @@ async def test_send_to_model_uses_flow_audio_cache_manager():
       pass
 
   mock_cache_audio.assert_called_once()
+
+
+async def test_send_to_model_caches_only_audio_blobs():
+  """Non-audio blobs such as video frames are sent but not cached."""
+  flow = _TestBaseLlmFlow()
+  queue = LiveRequestQueue()
+  audio_blob = types.Blob(mime_type='audio/pcm', data=b'audio_bytes')
+  video_blob = types.Blob(mime_type='image/jpeg', data=b'video_frame')
+  queue.send_realtime(video_blob)
+  queue.send_realtime(audio_blob)
+  context = _create_test_context(
+      live_request_queue=queue, run_config=RunConfig(save_live_blob=True)
+  )
+  mock_connection = mock.AsyncMock()
+
+  send_task = asyncio.create_task(
+      _live_llm_flow.send_to_model(flow, mock_connection, context, LlmRequest())
+  )
+  await asyncio.sleep(0.01)
+  send_task.cancel()
+  try:
+    await send_task
+  except asyncio.CancelledError:
+    pass
+
+  assert [entry.data for entry in context.input_realtime_cache] == [audio_blob]
+  assert mock_connection.send_realtime.await_args_list == [
+      mock.call(video_blob),
+      mock.call(audio_blob),
+  ]

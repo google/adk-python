@@ -49,7 +49,11 @@ class ResumeAction(enum.Enum):
   """A tool call is still unanswered; stop without emitting anything."""
 
   REPLAY_CALLS = 'replay_calls'
-  """A tool call was never executed; run the calls on `ResumeDecision.event`."""
+  """A tool call was never executed; run the calls on `ResumeDecision.event`.
+
+  That event may be a copy holding only the unexecuted calls, so it is not
+  always one of `session.events` and must not be compared by identity.
+  """
 
 
 @dataclasses.dataclass(frozen=True)
@@ -207,6 +211,42 @@ def _needs_call_replay(
   )
 
 
+def _unexecuted_calls_event(
+    call_event: Event, later_events: list[Event]
+) -> Event | None:
+  """`call_event` cut down to the calls that never ran, or None if all did.
+
+  A call ran when a response in `later_events` carries its id, or its name
+  with no id. None is also returned once the agent has written any event with
+  content after `call_event`: tool responses and auth or confirmation requests
+  are only written after the whole batch ran, so a call still missing its
+  response then ran and lost it, or is pending.
+  """
+  if any(
+      ev.author == call_event.author and ev.content is not None
+      for ev in later_events
+  ):
+    return None
+  responses = [fr for ev in later_events for fr in ev.get_function_responses()]
+  answered_ids = {fr.id for fr in responses if fr.id is not None}
+  answered_names = {fr.name for fr in responses if fr.id is None}
+  unexecuted_ids = {
+      fc.id
+      for fc in call_event.get_function_calls()
+      if fc.id not in answered_ids and fc.name not in answered_names
+  }
+  if not unexecuted_ids or call_event.content is None:
+    return None
+  parts = [
+      part
+      for part in call_event.content.parts or []
+      if part.function_call is None or part.function_call.id in unexecuted_ids
+  ]
+  return call_event.model_copy(
+      update={'content': call_event.content.model_copy(update={'parts': parts})}
+  )
+
+
 def decide_resume(
     invocation_context: InvocationContext,
     events: list[Event],
@@ -222,7 +262,9 @@ def decide_resume(
 
   Returns:
     PAUSE when a call is still unanswered, REPLAY_CALLS (naming the event whose
-    calls to run) when a call was never executed, else CONTINUE.
+    calls to run, which may be a copy holding only the unexecuted calls rather
+    than one of `session.events`) when a call was never executed, else
+    CONTINUE.
   """
   paused_by_last = invocation_context.should_pause_invocation(events[-1])
   if not paused_by_last and _pause_left_calls_unanswered(
@@ -270,6 +312,10 @@ def decide_resume(
       pause = True
     elif _needs_call_replay(call_names, answers, from_sub_branch):
       return ResumeDecision(ResumeAction.REPLAY_CALLS, call_event)
+    elif unexecuted := _unexecuted_calls_event(
+        call_event, events[call_idx + 1 :]
+    ):
+      return ResumeDecision(ResumeAction.REPLAY_CALLS, unexecuted)
 
   return ResumeDecision(ResumeAction.PAUSE if pause else ResumeAction.CONTINUE)
 

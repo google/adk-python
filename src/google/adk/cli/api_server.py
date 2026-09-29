@@ -901,6 +901,7 @@ class ApiServer:
           Callable[[Request], None | Awaitable[None]]
       ] = None,
       default_llm_model: Optional[str] = None,
+      avatar_config: Optional[types.AvatarConfig] = None,
   ):
     self.agent_loader = agent_loader
     self.session_service = session_service
@@ -933,6 +934,7 @@ class ApiServer:
     self.trigger_oidc_service_accounts = trigger_oidc_service_accounts
     self.trigger_auth_verifier = trigger_auth_verifier
     self.default_llm_model = default_llm_model
+    self.avatar_config = avatar_config
     self.default_app_name = os.getenv("ADK_DEFAULT_APP_NAME")
 
   async def get_runner_async(self, app_name: str) -> Runner:
@@ -2169,6 +2171,11 @@ class ApiServer:
             ),
             save_live_blob=save_live_blob,
             explicit_vad_signal=explicit_vad_signal,
+            # Avatars are rendered as video, so only apply the server-wide
+            # avatar config to sessions that request VIDEO output.
+            avatar_config=(
+                self.avatar_config if "VIDEO" in modalities else None
+            ),
         )
         async with Aclosing(
             runner.run_live(
