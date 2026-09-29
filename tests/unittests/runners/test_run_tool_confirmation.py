@@ -15,6 +15,7 @@
 """Tests for HITL flows with different agent structures."""
 
 import copy
+import asyncio
 from unittest import mock
 
 from google.adk.agents.base_agent import BaseAgent
@@ -223,6 +224,58 @@ class TestHITLConfirmationFlowWithSingleAgent(BaseHITLTest):
         testing_utils.simplify_events(copy.deepcopy(events))
         == expected_parts_final
     )
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("concurrent", [False, True])
+  async def test_repeated_confirmation_is_executed_once(
+      self,
+      runner: testing_utils.InMemoryRunner,
+      agent: LlmAgent,
+      concurrent: bool,
+  ):
+    """The public Runner must consume one confirmation across invocations."""
+    executions = 0
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def counted_tool(tool_context):
+      nonlocal executions
+      executions += 1
+      started.set()
+      if concurrent:
+        await release.wait()
+      return {"executions": executions}
+
+    agent.tools[0].func = counted_tool
+    # Duplicate submissions still traverse the runner's normal model loop
+    # before the confirmation claim filters the tool call.
+    agent.model.responses.extend(
+        [_create_llm_response_from_text("done") for _ in range(2)]
+    )
+    initial_events = await runner.run_async(testing_utils.UserContent("test"))
+    confirmation_id = initial_events[1].content.parts[0].function_call.id
+    confirmation = testing_utils.UserContent(
+        Part(
+            function_response=FunctionResponse(
+                id=confirmation_id,
+                name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                response={"confirmed": True},
+            )
+        )
+    )
+
+    if concurrent:
+      first = asyncio.create_task(runner.run_async(confirmation))
+      await started.wait()
+      second = asyncio.create_task(runner.run_async(confirmation))
+      await asyncio.sleep(0)
+      release.set()
+      await asyncio.gather(first, second)
+    else:
+      await runner.run_async(confirmation)
+      await runner.run_async(confirmation)
+
+    assert executions == 1
 
 
 class TestHITLConfirmationFlowWithCustomPayloadSchema(BaseHITLTest):

@@ -210,8 +210,6 @@ class InvocationContext(BaseModel):
   None for non-workflow agents.
   """
 
-  _consumed_tool_confirmation_ids: set[str] = PrivateAttr(default_factory=set)
-
   async def _consume_tool_confirmation(self, function_call_id: str) -> bool:
     """Atomically claim a confirmation across invocations in this process."""
     service_key = id(self.session_service)
@@ -226,9 +224,6 @@ class InvocationContext(BaseModel):
         return False
       claims.add(claim_key)
 
-    # Keep this per-context set for compatibility with callers that inspect it
-    # and to make the ownership explicit on the context that won the claim.
-    self._consumed_tool_confirmation_ids.add(function_call_id)
     return True
 
   agent_states: dict[str, dict[str, Any]] = Field(default_factory=dict)
