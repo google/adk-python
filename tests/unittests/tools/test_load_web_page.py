@@ -14,20 +14,34 @@
 
 from __future__ import annotations
 
+import itertools
 import os
 import socket
 from unittest import mock
 
-from google.adk.tools.load_web_page import load_web_page
-import google.adk.tools.load_web_page as load_web_page_module
+from google.adk.tools import load_web_page as load_web_page_module
+import pytest
 import requests
 
+load_web_page = load_web_page_module.load_web_page
 
-def _create_response(html: str) -> requests.Response:
+
+def _create_response(
+    html: str,
+    *,
+    status_code: int = 200,
+    headers: dict[str, str] | None = None,
+) -> requests.Response:
+  """Builds a response whose buffered body can be replayed by iter_content."""
   response = requests.Response()
-  response.status_code = 200
+  response.status_code = status_code
   response._content = html.encode('utf-8')  # pylint: disable=protected-access
+  # load_web_page streams the body, so mark the buffered payload as already
+  # read to make iter_content() replay it instead of touching response.raw.
+  response._content_consumed = True  # pylint: disable=protected-access
   response.url = 'https://example.com'
+  if headers:
+    response.headers.update(headers)
   return response
 
 
@@ -35,6 +49,38 @@ def _clear_proxy_env(monkeypatch):
   for env_var in list(os.environ):
     if env_var.lower().endswith('_proxy'):
       monkeypatch.delenv(env_var, raising=False)
+
+
+def _set_proxy_env(monkeypatch):
+  monkeypatch.setenv('HTTP_PROXY', 'http://proxy.example.test:8080')
+  monkeypatch.setenv('HTTPS_PROXY', 'http://proxy.example.test:8080')
+  monkeypatch.setenv('NO_PROXY', '')
+
+
+def _mock_getaddrinfo(monkeypatch, *addresses: str):
+  monkeypatch.setattr(
+      load_web_page_module.socket,
+      'getaddrinfo',
+      mock.Mock(
+          return_value=[
+              (
+                  socket.AF_INET6 if ':' in address else socket.AF_INET,
+                  socket.SOCK_STREAM,
+                  socket.IPPROTO_TCP,
+                  '',
+                  (address, 0),
+              )
+              for address in addresses
+          ]
+      ),
+  )
+
+
+def _mock_soup(monkeypatch, text: str = 'This page has enough words to keep.'):
+  monkeypatch.setattr(
+      'bs4.BeautifulSoup',
+      mock.Mock(return_value=mock.Mock(get_text=mock.Mock(return_value=text))),
+  )
 
 
 def test_load_web_page_blocks_file_scheme_urls(monkeypatch):
@@ -197,23 +243,15 @@ def test_load_web_page_blocks_private_hostname_targets(monkeypatch):
 
 
 def test_load_web_page_uses_proxy_for_unresolved_public_hostnames(monkeypatch):
-  monkeypatch.setenv('HTTPS_PROXY', 'http://proxy.example.test:8080')
-  monkeypatch.setenv('NO_PROXY', '')
+  _set_proxy_env(monkeypatch)
+  # Split-horizon DNS and egress-only networks leave the proxy as the only
+  # resolver, so a local lookup failure must not block the request.
   monkeypatch.setattr(
       load_web_page_module.socket,
       'getaddrinfo',
-      mock.Mock(side_effect=AssertionError('unexpected local DNS lookup')),
+      mock.Mock(side_effect=socket.gaierror('no such host')),
   )
-  monkeypatch.setattr(
-      'bs4.BeautifulSoup',
-      mock.Mock(
-          return_value=mock.Mock(
-              get_text=mock.Mock(
-                  return_value='This page has enough words to keep.'
-              )
-          )
-      ),
-  )
+  _mock_soup(monkeypatch)
   mock_get = mock.Mock(
       return_value=_create_response(
           '<html><body><p>This page has enough words to keep.</p></body></html>'
@@ -230,7 +268,89 @@ def test_load_web_page_uses_proxy_for_unresolved_public_hostnames(monkeypatch):
       'https://does-not-resolve.invalid',
       allow_redirects=False,
       timeout=load_web_page_module._DEFAULT_TIMEOUT_SECONDS,
+      stream=True,
   )
+  mock_send.assert_not_called()
+
+
+def test_load_web_page_blocks_private_hostname_targets_behind_a_proxy(
+    monkeypatch,
+):
+  """A proxy must not be a bypass for the resolved-address SSRF check."""
+  _set_proxy_env(monkeypatch)
+  _mock_getaddrinfo(monkeypatch, '169.254.169.254')
+  mock_get = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.requests, 'get', mock_get)
+  mock_send = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.HTTPAdapter, 'send', mock_send)
+
+  url = 'http://metadata-alias.example.com/token'
+
+  assert load_web_page(url) == f'Failed to fetch url: {url}'
+  mock_get.assert_not_called()
+  mock_send.assert_not_called()
+
+
+def test_load_web_page_blocks_nat64_embedded_metadata_ip_behind_a_proxy(
+    monkeypatch,
+):
+  """The embedded-IPv4 check also covers hostnames screened for the proxy."""
+  _set_proxy_env(monkeypatch)
+  _mock_getaddrinfo(monkeypatch, '64:ff9b::169.254.169.254')
+  mock_get = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.requests, 'get', mock_get)
+  mock_send = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.HTTPAdapter, 'send', mock_send)
+
+  url = 'http://nat64-alias.example.com/token'
+
+  assert load_web_page(url) == f'Failed to fetch url: {url}'
+  mock_get.assert_not_called()
+  mock_send.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    'url',
+    [
+        'http://metadata.google.internal/computeMetadata/v1/',
+        'http://metadata/computeMetadata/v1/',
+        'http://metadata.goog/computeMetadata/v1/',
+        'http://intranet.corp.internal/secrets',
+        'http://printer.local/status',
+        'http://localhost:8080/admin',
+    ],
+)
+def test_load_web_page_blocks_internal_hostnames_behind_a_proxy(
+    monkeypatch, url
+):
+  """Internal names are rejected lexically, without relying on local DNS."""
+  _set_proxy_env(monkeypatch)
+  monkeypatch.setattr(
+      load_web_page_module.socket,
+      'getaddrinfo',
+      mock.Mock(side_effect=AssertionError('unexpected local DNS lookup')),
+  )
+  mock_get = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.requests, 'get', mock_get)
+  mock_send = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.HTTPAdapter, 'send', mock_send)
+
+  assert load_web_page(url) == f'Failed to fetch url: {url}'
+  mock_get.assert_not_called()
+  mock_send.assert_not_called()
+
+
+def test_load_web_page_blocks_loopback_ip_urls_behind_a_proxy(monkeypatch):
+  _set_proxy_env(monkeypatch)
+  mock_get = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.requests, 'get', mock_get)
+  mock_send = mock.Mock()
+  monkeypatch.setattr(load_web_page_module.HTTPAdapter, 'send', mock_send)
+
+  url = 'http://169.254.169.254/computeMetadata/v1/'
+
+  assert load_web_page(url) == f'Failed to fetch url: {url}'
+  mock_get.assert_not_called()
   mock_send.assert_not_called()
 
 
@@ -408,23 +528,13 @@ def test_load_web_page_passes_timeout_to_pinned_session(monkeypatch):
 
 def test_load_web_page_passes_timeout_to_proxied_get(monkeypatch):
   """Verify that the default timeout is passed to requests.get when proxy is used."""
-  monkeypatch.setenv('HTTPS_PROXY', 'http://proxy.example.test:8080')
-  monkeypatch.setenv('NO_PROXY', '')
+  _set_proxy_env(monkeypatch)
   monkeypatch.setattr(
       load_web_page_module.socket,
       'getaddrinfo',
-      mock.Mock(side_effect=AssertionError('unexpected local DNS lookup')),
+      mock.Mock(side_effect=socket.gaierror('no such host')),
   )
-  monkeypatch.setattr(
-      'bs4.BeautifulSoup',
-      mock.Mock(
-          return_value=mock.Mock(
-              get_text=mock.Mock(
-                  return_value='This page has enough words to keep.'
-              )
-          )
-      ),
-  )
+  _mock_soup(monkeypatch)
   mock_get = mock.Mock(
       return_value=_create_response(
           '<html><body><p>This page has enough words to keep.</p></body></html>'
@@ -438,6 +548,7 @@ def test_load_web_page_passes_timeout_to_proxied_get(monkeypatch):
       'https://does-not-resolve.invalid',
       allow_redirects=False,
       timeout=load_web_page_module._DEFAULT_TIMEOUT_SECONDS,
+      stream=True,
   )
 
 
@@ -475,3 +586,190 @@ def test_load_web_page_returns_failure_on_timeout(monkeypatch):
   result = load_web_page('https://example.com')
 
   assert result == 'Failed to fetch url: https://example.com'
+
+
+def test_load_web_page_streams_the_body_of_pinned_requests(monkeypatch):
+  """The body must be streamed so the size cap applies before buffering."""
+  _clear_proxy_env(monkeypatch)
+  _mock_getaddrinfo(monkeypatch, '93.184.216.34')
+  _mock_soup(monkeypatch)
+  captured_streams: list[object] = []
+
+  def _send(
+      self,
+      request,
+      stream=False,
+      timeout=None,
+      verify=True,
+      cert=None,
+      proxies=None,
+  ):
+    del self, request, timeout, verify, cert, proxies
+    captured_streams.append(stream)
+    return _create_response(
+        '<html><body><p>This page has enough words to keep.</p></body></html>'
+    )
+
+  monkeypatch.setattr(load_web_page_module.HTTPAdapter, 'send', _send)
+
+  load_web_page('https://example.com')
+
+  assert captured_streams == [True]
+
+
+def test_load_web_page_rejects_bodies_larger_than_the_cap(monkeypatch):
+  """An oversized body is dropped instead of being buffered in memory."""
+  _clear_proxy_env(monkeypatch)
+  _mock_getaddrinfo(monkeypatch, '93.184.216.34')
+  _mock_soup(monkeypatch)
+  monkeypatch.setattr(load_web_page_module, '_MAX_RESPONSE_BYTES', 64)
+  monkeypatch.setattr(load_web_page_module, '_RESPONSE_CHUNK_BYTES', 8)
+
+  def _send(
+      self,
+      request,
+      stream=False,
+      timeout=None,
+      verify=True,
+      cert=None,
+      proxies=None,
+  ):
+    del self, request, stream, timeout, verify, cert, proxies
+    return _create_response('a' * 1024)
+
+  monkeypatch.setattr(load_web_page_module.HTTPAdapter, 'send', _send)
+
+  assert load_web_page('https://example.com') == (
+      'Failed to fetch url: https://example.com'
+  )
+
+
+def test_load_web_page_rejects_an_oversized_declared_content_length(
+    monkeypatch,
+):
+  """A large Content-Length is rejected without reading the body at all."""
+  _clear_proxy_env(monkeypatch)
+  _mock_getaddrinfo(monkeypatch, '93.184.216.34')
+  _mock_soup(monkeypatch)
+  response = _create_response(
+      'a' * 16,
+      headers={
+          'Content-Length': str(
+              load_web_page_module._MAX_RESPONSE_BYTES + 1  # pylint: disable=protected-access
+          )
+      },
+  )
+  response.iter_content = mock.Mock(
+      side_effect=AssertionError('body must not be read')
+  )
+
+  def _send(
+      self,
+      request,
+      stream=False,
+      timeout=None,
+      verify=True,
+      cert=None,
+      proxies=None,
+  ):
+    del self, request, stream, timeout, verify, cert, proxies
+    return response
+
+  monkeypatch.setattr(load_web_page_module.HTTPAdapter, 'send', _send)
+
+  assert load_web_page('https://example.com') == (
+      'Failed to fetch url: https://example.com'
+  )
+
+
+@pytest.mark.parametrize('declared_length', ['-1', 'not-a-number'])
+def test_load_web_page_still_caps_an_unusable_content_length(
+    monkeypatch, declared_length
+):
+  """A negative or malformed Content-Length falls back to the stream cap."""
+  _clear_proxy_env(monkeypatch)
+  _mock_getaddrinfo(monkeypatch, '93.184.216.34')
+  _mock_soup(monkeypatch)
+  monkeypatch.setattr(load_web_page_module, '_MAX_RESPONSE_BYTES', 64)
+  monkeypatch.setattr(load_web_page_module, '_RESPONSE_CHUNK_BYTES', 8)
+
+  def _send(
+      self,
+      request,
+      stream=False,
+      timeout=None,
+      verify=True,
+      cert=None,
+      proxies=None,
+  ):
+    del self, request, stream, timeout, verify, cert, proxies
+    return _create_response(
+        'a' * 1024, headers={'Content-Length': declared_length}
+    )
+
+  monkeypatch.setattr(load_web_page_module.HTTPAdapter, 'send', _send)
+
+  assert load_web_page('https://example.com') == (
+      'Failed to fetch url: https://example.com'
+  )
+
+
+def test_load_web_page_rejects_bodies_that_exceed_the_read_deadline(
+    monkeypatch,
+):
+  """A drip-feed body is abandoned once the total read budget is spent."""
+  _clear_proxy_env(monkeypatch)
+  _mock_getaddrinfo(monkeypatch, '93.184.216.34')
+  _mock_soup(monkeypatch)
+  monkeypatch.setattr(load_web_page_module, '_MAX_BODY_READ_SECONDS', 60)
+  # Every chunk appears to take much longer than the total budget to arrive,
+  # without ever tripping the per-chunk socket timeout.
+  ticks = itertools.count(start=0.0, step=1000.0)
+  monkeypatch.setattr(
+      load_web_page_module,
+      'time',
+      mock.Mock(monotonic=lambda: next(ticks)),
+  )
+
+  def _send(
+      self,
+      request,
+      stream=False,
+      timeout=None,
+      verify=True,
+      cert=None,
+      proxies=None,
+  ):
+    del self, request, stream, timeout, verify, cert, proxies
+    return _create_response('a' * 1024)
+
+  monkeypatch.setattr(load_web_page_module.HTTPAdapter, 'send', _send)
+
+  assert load_web_page('https://example.com') == (
+      'Failed to fetch url: https://example.com'
+  )
+
+
+def test_load_web_page_returns_failure_for_non_200_responses(monkeypatch):
+  """A non-200 status is reported as a fetch failure, as it was before."""
+  _clear_proxy_env(monkeypatch)
+  _mock_getaddrinfo(monkeypatch, '93.184.216.34')
+  _mock_soup(monkeypatch)
+
+  def _send(
+      self,
+      request,
+      stream=False,
+      timeout=None,
+      verify=True,
+      cert=None,
+      proxies=None,
+  ):
+    del self, request, stream, timeout, verify, cert, proxies
+    return _create_response('<html><body>nope</body></html>', status_code=404)
+
+  monkeypatch.setattr(load_web_page_module.HTTPAdapter, 'send', _send)
+
+  assert load_web_page('https://example.com') == (
+      'Failed to fetch url: https://example.com'
+  )

@@ -19,7 +19,9 @@ from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_case import get_all_tool_calls
 from google.adk.evaluation.eval_case import get_all_tool_calls_with_responses
 from google.adk.evaluation.eval_case import get_all_tool_responses
+from google.adk.evaluation.eval_case import get_all_usage_metadata
 from google.adk.evaluation.eval_case import IntermediateData
+from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_case import InvocationEvent
 from google.adk.evaluation.eval_case import InvocationEvents
 from google.adk.evaluation.eval_case import SessionInput
@@ -416,3 +418,36 @@ def test_conversation_and_conversation_scenario_mutual_exclusion():
   # these two should not cause exceptions
   EvalCase(eval_id='test_id', conversation=[])
   EvalCase(eval_id='test_id', conversation_scenario=test_conversation_scenario)
+
+
+def test_get_all_usage_metadata():
+  """Tests get_all_usage_metadata extraction from InvocationEvents."""
+  # No intermediate data
+  inv_none = Invocation(user_content=genai_types.Content(parts=[]))
+  assert get_all_usage_metadata(inv_none) == []
+
+  # IntermediateData (legacy) returns []
+  inv_legacy = Invocation(
+      user_content=genai_types.Content(parts=[]),
+      intermediate_data=IntermediateData(tool_uses=[]),
+  )
+  assert get_all_usage_metadata(inv_legacy) == []
+
+  # InvocationEvents with usage metadata
+  usage1 = genai_types.GenerateContentResponseUsageMetadata(
+      total_token_count=10
+  )
+  usage2 = genai_types.GenerateContentResponseUsageMetadata(
+      total_token_count=20
+  )
+  inv_events = Invocation(
+      user_content=genai_types.Content(parts=[]),
+      intermediate_data=InvocationEvents(
+          invocation_events=[
+              InvocationEvent(author='agent', usage_metadata=usage1),
+              InvocationEvent(author='tool'),
+              InvocationEvent(author='agent', usage_metadata=usage2),
+          ]
+      ),
+  )
+  assert get_all_usage_metadata(inv_events) == [usage1, usage2]

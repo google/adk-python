@@ -36,12 +36,12 @@ from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.flows.llm_flows.base_llm_flow import _finalize_dynamic_instructions
 from google.adk.flows.llm_flows.base_llm_flow import _process_agent_tools
-from google.adk.flows.llm_flows.base_llm_flow import _ReconnectSentinel
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
 from google.adk.flows.llm_flows.core._finalizer import handle_after_model_callback
 from google.adk.flows.llm_flows.core._utils import copy_http_options
-from google.adk.flows.llm_flows.core._utils import run_config_for_new_live_session
 from google.adk.live import LiveRequestQueue
+from google.adk.live._flow_utils import _ReconnectSentinel
+from google.adk.live._flow_utils import run_config_for_new_live_session
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.base_llm_connection import BaseLlmConnection
 from google.adk.models.google_llm import Gemini
@@ -1938,7 +1938,7 @@ async def test_run_live_transfer_is_independent_of_response_order(
   with (
       mock.patch('google.adk.models.google_llm.Gemini.connect') as mock_connect,
       mock.patch(
-          'google.adk.flows.llm_flows._live_llm_flow.DEFAULT_TRANSFER_AGENT_DELAY',
+          'google.adk.live._live_llm_flow.DEFAULT_TRANSFER_AGENT_DELAY',
           0,
       ),
   ):
@@ -2032,7 +2032,7 @@ async def test_run_live_task_completion_is_independent_of_response_order(
   with (
       mock.patch('google.adk.models.google_llm.Gemini.connect') as mock_connect,
       mock.patch(
-          'google.adk.flows.llm_flows._live_llm_flow.DEFAULT_TASK_COMPLETION_DELAY',
+          'google.adk.live._live_llm_flow.DEFAULT_TASK_COMPLETION_DELAY',
           0,
       ),
   ):
@@ -2487,6 +2487,259 @@ async def test_empty_stop_after_tool_call_surfaces_error_event():
   assert err.error_message
   # And it must be the run's final event (no silent empty event after it).
   assert events[-1] is err
+
+
+@pytest.mark.asyncio
+async def test_thought_only_stop_after_tool_call_surfaces_error_event():
+  """Tests that a thought-only turn after a tool call surfaces an error event."""
+  function_call_part = types.Part.from_function_call(
+      name='increase_by_one', args={'x': 1}
+  )
+
+  turn_1 = LlmResponse(
+      content=types.Content(role='model', parts=[function_call_part]),
+      finish_reason=types.FinishReason.STOP,
+  )
+  # A thought-only turn: STOP with non-empty parts, but all parts are thoughts.
+  turn_2 = LlmResponse(
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part(
+                  text='I have processed the tool result...', thought=True
+              )
+          ],
+      ),
+      finish_reason=types.FinishReason.STOP,
+  )
+
+  function_called = 0
+
+  def increase_by_one(x: int) -> int:
+    nonlocal function_called
+    function_called += 1
+    return x + 1
+
+  mock_model = testing_utils.MockModel.create(responses=[turn_1, turn_2])
+  agent = Agent(name='root_agent', model=mock_model, tools=[increase_by_one])
+  runner = testing_utils.InMemoryRunner(agent)
+  events = runner.run('test')
+
+  assert function_called == 1, 'Tool should still execute on turn 1'
+
+  function_call_events = [e for e in events if e.get_function_calls()]
+  function_response_events = [e for e in events if e.get_function_responses()]
+  assert len(function_call_events) == 1
+  assert len(function_response_events) == 1
+
+  error_events = [e for e in events if e.error_code]
+  assert len(error_events) == 1
+  err = error_events[0]
+  assert err.error_code == 'MODEL_RETURNED_NO_CONTENT'
+  assert err.error_message
+  assert events[-1] is err
+
+
+@pytest.mark.asyncio
+async def test_whitespace_only_stop_after_tool_call_surfaces_error_event():
+  """Tests that a whitespace-only turn after a tool call surfaces an error event."""
+  function_call_part = types.Part.from_function_call(
+      name='increase_by_one', args={'x': 1}
+  )
+
+  turn_1 = LlmResponse(
+      content=types.Content(role='model', parts=[function_call_part]),
+      finish_reason=types.FinishReason.STOP,
+  )
+  # A whitespace-only turn: STOP with text parts that strip to empty.
+  turn_2 = LlmResponse(
+      content=types.Content(
+          role='model',
+          parts=[types.Part.from_text(text='   \n\t  ')],
+      ),
+      finish_reason=types.FinishReason.STOP,
+  )
+
+  function_called = 0
+
+  def increase_by_one(x: int) -> int:
+    nonlocal function_called
+    function_called += 1
+    return x + 1
+
+  mock_model = testing_utils.MockModel.create(responses=[turn_1, turn_2])
+  agent = Agent(name='root_agent', model=mock_model, tools=[increase_by_one])
+  runner = testing_utils.InMemoryRunner(agent)
+  events = runner.run('test')
+
+  assert function_called == 1, 'Tool should still execute on turn 1'
+
+  function_call_events = [e for e in events if e.get_function_calls()]
+  function_response_events = [e for e in events if e.get_function_responses()]
+  assert len(function_call_events) == 1
+  assert len(function_response_events) == 1
+
+  error_events = [e for e in events if e.error_code]
+  assert len(error_events) == 1
+  err = error_events[0]
+  assert err.error_code == 'MODEL_RETURNED_NO_CONTENT'
+  assert err.error_message
+  assert events[-1] is err
+
+
+@pytest.mark.asyncio
+async def test_thought_only_stop_in_sse_streaming_surfaces_error_event():
+  """Tests that a thought-only streaming turn under SSE surfaces an error event."""
+  partial_thought = LlmResponse(
+      content=types.Content(
+          role='model',
+          parts=[types.Part(text='Thinking step 1...', thought=True)],
+      ),
+      partial=True,
+  )
+  final_thought = LlmResponse(
+      content=types.Content(
+          role='model',
+          parts=[types.Part(text='Thinking step 1...', thought=True)],
+      ),
+      partial=False,
+      finish_reason=types.FinishReason.STOP,
+  )
+
+  class _ThoughtOnlyStreamModel(BaseLlm):
+    model: str = 'thought-stream-mock'
+
+    @classmethod
+    def supported_models(cls) -> list[str]:
+      return ['thought-stream-mock']
+
+    async def generate_content_async(
+        self, llm_request: LlmRequest, stream: bool = False
+    ):
+      yield partial_thought
+      yield final_thought
+
+  agent = Agent(name='root_agent', model=_ThoughtOnlyStreamModel())
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent,
+      user_content='test',
+      run_config=RunConfig(streaming_mode=StreamingMode.SSE),
+  )
+  events = [e async for e in agent.run_async(invocation_context)]
+
+  partial_events = [e for e in events if e.partial]
+  assert len(partial_events) == 1
+  assert partial_events[0].error_code is None
+
+  error_events = [e for e in events if e.error_code]
+  assert len(error_events) == 1
+  err = error_events[0]
+  assert err.error_code == 'MODEL_RETURNED_NO_CONTENT'
+  assert (
+      err.error_message
+      == 'The model returned no actionable content (finish_reason=STOP with'
+      ' thought-only or whitespace-only parts).'
+  )
+  assert events[-1] is err
+
+
+@pytest.mark.asyncio
+async def test_thought_before_tool_call_in_non_progressive_sse_does_not_error():
+  """With PROGRESSIVE_SSE_STREAMING off, the flushed thought chunk before a tool call is not an error."""
+  from google.adk.utils.streaming_utils import StreamingResponseAggregator
+
+  function_called = 0
+
+  def increase_by_one(x: int) -> int:
+    nonlocal function_called
+    function_called += 1
+    return x + 1
+
+  class _NonProgressiveThoughtThenToolModel(BaseLlm):
+    model: str = 'non-progressive-thought-fc-mock'
+    calls: int = 0
+
+    @classmethod
+    def supported_models(cls) -> list[str]:
+      return ['non-progressive-thought-fc-mock']
+
+    async def generate_content_async(
+        self, llm_request: LlmRequest, stream: bool = False
+    ):
+      del llm_request, stream
+      self.calls += 1
+      aggregator = StreamingResponseAggregator()
+      if self.calls == 1:
+        raw_chunks = [
+            types.GenerateContentResponse(
+                candidates=[
+                    types.Candidate(
+                        content=types.Content(
+                            role='model',
+                            parts=[
+                                types.Part(
+                                    text='Let me call increase_by_one...',
+                                    thought=True,
+                                )
+                            ],
+                        )
+                    )
+                ]
+            ),
+            types.GenerateContentResponse(
+                candidates=[
+                    types.Candidate(
+                        content=types.Content(
+                            role='model',
+                            parts=[
+                                types.Part.from_function_call(
+                                    name='increase_by_one', args={'x': 1}
+                                )
+                            ],
+                        ),
+                        finish_reason=types.FinishReason.STOP,
+                    )
+                ]
+            ),
+        ]
+      else:
+        raw_chunks = [
+            types.GenerateContentResponse(
+                candidates=[
+                    types.Candidate(
+                        content=types.Content(
+                            role='model',
+                            parts=[types.Part.from_text(text='Result is 2.')],
+                        ),
+                        finish_reason=types.FinishReason.STOP,
+                    )
+                ]
+            )
+        ]
+
+      for raw in raw_chunks:
+        async for resp in aggregator.process_response(raw):
+          yield resp
+      if closed := aggregator.close():
+        yield closed
+
+  agent = Agent(
+      name='root_agent',
+      model=_NonProgressiveThoughtThenToolModel(),
+      tools=[increase_by_one],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent,
+      user_content='test',
+      run_config=RunConfig(streaming_mode=StreamingMode.SSE),
+  )
+
+  with temporary_feature_override(FeatureName.PROGRESSIVE_SSE_STREAMING, False):
+    events = [e async for e in agent.run_async(invocation_context)]
+
+  assert function_called == 1
+  assert [e for e in events if e.error_code] == []
+  assert events[-1].content.parts[0].text == 'Result is 2.'
 
 
 @pytest.mark.asyncio
@@ -3253,3 +3506,104 @@ async def test_base_llm_flow_delegates_to_core_model_call():
     ):
       pass
     mock_apply.assert_called_once_with(invocation_context, empty_stop_response)
+
+
+async def test_run_async_aborted_before_first_step_breaks_immediately():
+  """Starting run_async with an already-aborted context exits before executing any step."""
+  flow = BaseLlmFlowForTesting()
+  abort_signal = asyncio.Event()
+  abort_signal.set()
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=Agent(name='test_agent'),
+      user_content='hello',
+      abort_signal=abort_signal,
+  )
+
+  step_called = False
+
+  async def failing_step(_ctx):
+    nonlocal step_called
+    step_called = True
+    yield Event(author='test_agent')
+
+  with mock.patch.object(flow, '_run_one_step_async', side_effect=failing_step):
+    events = [e async for e in flow.run_async(invocation_context)]
+
+  assert not events
+  assert not step_called
+
+
+async def test_run_async_aborted_during_step_event_streaming_breaks():
+  """Tripping abort during step event streaming stops yielding subsequent events."""
+  flow = BaseLlmFlowForTesting()
+  abort_signal = asyncio.Event()
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=Agent(name='test_agent'),
+      user_content='hello',
+      abort_signal=abort_signal,
+  )
+
+  event1 = Event(
+      invocation_id=invocation_context.invocation_id,
+      author='test_agent',
+      content=types.Content(parts=[types.Part(text='chunk 1')]),
+  )
+  event2 = Event(
+      invocation_id=invocation_context.invocation_id,
+      author='test_agent',
+      content=types.Content(parts=[types.Part(text='chunk 2')]),
+  )
+
+  async def mock_step(_ctx):
+    yield event1
+    yield event2
+
+  yielded_events = []
+  with mock.patch.object(flow, '_run_one_step_async', side_effect=mock_step):
+    async for event in flow.run_async(invocation_context):
+      yielded_events.append(event)
+      abort_signal.set()
+
+  assert yielded_events == [event1]
+
+
+async def test_run_async_aborted_between_steps_breaks_outer_loop():
+  """Tripping abort after an intermediate step exits the flow before starting the next step."""
+  flow = BaseLlmFlowForTesting()
+  abort_signal = asyncio.Event()
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=Agent(name='test_agent'),
+      user_content='hello',
+      abort_signal=abort_signal,
+  )
+
+  fc_part = types.Part.from_function_call(name='tool', args={})
+  fc_event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author='test_agent',
+      content=types.Content(role='model', parts=[fc_part]),
+  )
+  assert not fc_event.is_final_response()
+
+  step_invocations = 0
+
+  async def mock_step(_ctx):
+    nonlocal step_invocations
+    step_invocations += 1
+    if step_invocations == 1:
+      yield fc_event
+      abort_signal.set()
+    else:
+      yield Event(
+          invocation_id=invocation_context.invocation_id,
+          author='test_agent',
+          content=types.Content(parts=[types.Part(text='second step')]),
+      )
+
+  yielded_events = []
+  with mock.patch.object(flow, '_run_one_step_async', side_effect=mock_step):
+    async for event in flow.run_async(invocation_context):
+      yielded_events.append(event)
+
+  assert step_invocations == 1
+  assert yielded_events == [fc_event]

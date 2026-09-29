@@ -355,8 +355,6 @@ class RecordingsPlugin(BasePlugin):
           len(state.records.recordings),
           recordings_file,
       )
-    except Exception as e:
-      logger.error("Failed to save interactions: %s", e)
     finally:
       # Cleanup per-invocation recording state
       self._invocation_states.pop(ctx.invocation_id, None)
