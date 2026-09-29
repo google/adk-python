@@ -260,3 +260,90 @@ class RubricBasedMultiTurnTrajectoryMetricInfoProvider(MetricInfoProvider):
             interval=Interval(min_value=0.0, max_value=1.0)
         ),
     )
+
+
+class ToolCallCountV1MetricInfoProvider(MetricInfoProvider):
+  """Metric info provider for _ToolCallCountV1Evaluator."""
+
+  def get_metric_info(self) -> MetricInfo:
+    return MetricInfo(
+        metric_name=PrebuiltMetrics.TOOL_CALL_COUNT_V1.value,
+        description=(
+            "This metric counts the number of tool (function) calls the agent"
+            " made per invocation, averaged across the eval case. It is an"
+            " informational efficiency metric: it reports the value for"
+            " tracking and does not pass or fail the eval case."
+        ),
+        metric_value_info=MetricValueInfo(),
+        # Informational: reports a value, never gates, so no threshold
+        # is required and no value interval bounds it.
+        requires_threshold=False,
+    )
+
+
+class InferenceCallCountV1MetricInfoProvider(MetricInfoProvider):
+  """Metric info provider for _InferenceCallCountV1Evaluator."""
+
+  def get_metric_info(self) -> MetricInfo:
+    return MetricInfo(
+        metric_name=PrebuiltMetrics.INFERENCE_CALL_COUNT_V1.value,
+        description=(
+            "This metric counts the number of inference (model) calls the agent"
+            " made per invocation, averaged across the eval case. It is a proxy"
+            " for the number of attempts or reasoning steps taken, and read"
+            " alongside token usage it separates the two ways a turn gets"
+            " expensive: more calls, or a larger context per call. It is an"
+            " informational efficiency metric: it reports the value for"
+            " tracking and does not pass or fail the eval case."
+        ),
+        metric_value_info=MetricValueInfo(),
+        # Informational: reports a value, never gates, so no threshold
+        # is required and no value interval bounds it.
+        requires_threshold=False,
+    )
+
+
+class InvocationDurationV1MetricInfoProvider(MetricInfoProvider):
+  """Metric info provider for _InvocationDurationV1Evaluator."""
+
+  def get_metric_info(self) -> MetricInfo:
+    return MetricInfo(
+        metric_name=PrebuiltMetrics.INVOCATION_DURATION_V1.value,
+        description=(
+            "This metric reports the wall-clock seconds an invocation took,"
+            " averaged across the eval case. The duration is measured while the"
+            " agent runs; an invocation not produced by this eval run reports"
+            " no value. Wall-clock time is noisier than the token and call"
+            " counts, since it moves with model-server load and network, so"
+            " read it as an indication rather than a regression signal. It is"
+            " an informational efficiency metric: it reports the value for"
+            " tracking and does not pass or fail the eval case."
+        ),
+        metric_value_info=MetricValueInfo(),
+        # Informational: reports a value, never gates, so no threshold
+        # is required and no value interval bounds it.
+        requires_threshold=False,
+    )
+
+
+class TokenUsageV1MetricInfoProvider(MetricInfoProvider):
+  """Metric info provider for _TokenUsageV1Evaluator."""
+
+  def get_metric_info(self) -> MetricInfo:
+    return MetricInfo(
+        metric_name=PrebuiltMetrics.TOKEN_USAGE_V1.value,
+        description=(
+            "This metric sums the tokens consumed by the model across all model"
+            " calls in an invocation, averaged across the eval case. The score"
+            " is the total; every token type is reported alongside it as a"
+            " nested breakdown -- total, then input (prompt, of which cached,"
+            " plus tool use) and output (candidates plus reasoning) -- using"
+            " the same definitions as ADK's telemetry token metrics. It is an"
+            " informational efficiency metric: it reports the value for"
+            " tracking and does not pass or fail the eval case."
+        ),
+        metric_value_info=MetricValueInfo(),
+        # Informational: reports a value, never gates, so no threshold
+        # is required and no value interval bounds it.
+        requires_threshold=False,
+    )

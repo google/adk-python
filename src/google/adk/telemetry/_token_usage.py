@@ -41,9 +41,10 @@ GEN_AI_USAGE_CACHE_CREATION_INPUT_TOKENS = (
 # from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_REASONING_OUTPUT_TOKENS
 GEN_AI_USAGE_REASONING_OUTPUT_TOKENS = 'gen_ai.usage.reasoning.output_tokens'
 
-# What each token count means. This module owns the definition: the properties
-# below implement it and `_metrics` interpolates it into the published metric
-# descriptions, so the two cannot drift apart.
+# What each token count means. This module owns the definition: the buckets
+# below implement it, `_metrics` interpolates it into the published metric
+# descriptions, and ADK eval reuses it for the token breakdown it reports, so
+# none of them can drift apart.
 INPUT_TOKENS_MEANING = (
     'Input (prompt) tokens, summing the prompt itself and the results of'
     ' server-side tool calls. Prompt tokens served from a cache are part of the'
@@ -57,6 +58,16 @@ OUTPUT_TOKENS_MEANING = (
 TOTAL_TOKENS_MEANING = (
     'Input plus output tokens, derived from those two rather than taken from'
     ' the model-reported total.'
+)
+PROMPT_INPUT_TOKENS_MEANING = (
+    'Input tokens in the request itself -- text, images and any other media --'
+    ' excluding the results of server-side tool calls. Prompt tokens served'
+    ' from a cache are part of the prompt count, so they are included here too.'
+)
+CANDIDATE_OUTPUT_TOKENS_MEANING = (
+    'Output tokens in the generated candidates, excluding reasoning tokens. The'
+    ' tokens a model spends emitting a tool call are candidate tokens, so they'
+    ' count here.'
 )
 CACHE_READ_INPUT_TOKENS_MEANING = (
     'Input tokens served from a provider-managed cache.'
@@ -89,10 +100,14 @@ class TokenUsage:
   reported zero: `to_attributes` omits the former and emits the latter. `add`
   preserves that, so a sum reports only the buckets something reported.
 
-  `cache_read_input_tokens` and `tool_input_tokens` are subsets of
-  `input_tokens`; `reasoning_output_tokens` is a subset of `output_tokens`.
-  `cache_creation_input_tokens` and `system_instruction_tokens` reach spans
-  only; no metric reads them.
+  `cache_read_input_tokens`, `prompt_input_tokens` and `tool_input_tokens` are
+  subsets of `input_tokens`; `reasoning_output_tokens` and
+  `candidate_output_tokens` are subsets of `output_tokens`. `prompt_input` plus
+  `tool_input` is the whole of `input_tokens`, as `candidate_output` plus
+  `reasoning_output` is of `output_tokens`; the other two are overlapping
+  subsets. `cache_creation_input_tokens` and `system_instruction_tokens` reach
+  spans only, and `prompt_input_tokens` and `candidate_output_tokens` reach ADK
+  eval's breakdown only; no metric reads any of the four.
   """
 
   input_tokens: int | None = None
@@ -100,6 +115,8 @@ class TokenUsage:
   cache_read_input_tokens: int | None = None
   reasoning_output_tokens: int | None = None
   tool_input_tokens: int | None = None
+  prompt_input_tokens: int | None = None
+  candidate_output_tokens: int | None = None
   cache_creation_input_tokens: int | None = None
   system_instruction_tokens: int | None = None
 
@@ -134,6 +151,8 @@ class TokenUsage:
         cache_read_input_tokens=usage_metadata.cached_content_token_count,
         reasoning_output_tokens=thoughts_tokens,
         tool_input_tokens=tool_tokens,
+        prompt_input_tokens=prompt_tokens,
+        candidate_output_tokens=candidates_tokens,
         # Absent from Gemini's type; the Anthropic paths set them by hand.
         cache_creation_input_tokens=getattr(
             usage_metadata, 'cache_creation_input_tokens', None
@@ -189,6 +208,12 @@ class TokenUsage:
     )
     self.tool_input_tokens = _merge(
         self.tool_input_tokens, usage.tool_input_tokens
+    )
+    self.prompt_input_tokens = _merge(
+        self.prompt_input_tokens, usage.prompt_input_tokens
+    )
+    self.candidate_output_tokens = _merge(
+        self.candidate_output_tokens, usage.candidate_output_tokens
     )
     self.cache_creation_input_tokens = _merge(
         self.cache_creation_input_tokens, usage.cache_creation_input_tokens

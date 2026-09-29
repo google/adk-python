@@ -28,9 +28,6 @@ class StateSchemaError(TypeError):
   """Raised when a state mutation violates the declared state_schema."""
 
 
-_SCOPE_PREFIXES = ("app:", "user:", "temp:")
-
-
 @functools.lru_cache(maxsize=256)
 def _get_type_adapter(annotation: Any) -> TypeAdapter[Any]:
   """Returns a cached Pydantic TypeAdapter for the given type annotation."""
@@ -47,10 +44,11 @@ def _validate_state_entry(
   """Validates a single state key-value pair against a Pydantic schema.
 
   Raises StateSchemaError if the key is not in the schema or the value
-  does not match the field's type annotation. Prefixed keys (app:, user:,
-  temp:) bypass validation.
+  does not match the field's type annotation. Prefixed keys (any key
+  containing ``:``) bypass validation: besides the app:, user: and temp:
+  scopes, ADK keeps its own state under ``<owner>:<key>`` names.
   """
-  if key.startswith(_SCOPE_PREFIXES):
+  if ":" in key:
     return
 
   fields = schema.model_fields
