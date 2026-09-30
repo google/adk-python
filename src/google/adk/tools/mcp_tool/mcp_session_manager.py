@@ -1006,15 +1006,20 @@ class MCPSessionManager:
   def _is_session_disconnected(self, session: ClientSession) -> bool:
     """Checks if a session is disconnected or closed.
 
-    Reads two attributes ADK does not own: the SDK holds the transport streams
-    on the session privately, and each stream reports its own closed flag. A
-    session that lacks either one reads as connected rather than raising,
-    because a release is free to restructure both away and this probe is not
-    the only thing standing between a dead session and a caller.
+    Reads attributes ADK does not own, and where they hang moved between SDK
+    majors. On 1.x the session holds the transport streams and each stream
+    reports its own closed flag. On 2.x the transport moved behind a
+    dispatcher, which reports one closed flag of its own and need not hold
+    streams at all, so a session holding no streams is read there instead. A
+    session offering neither reads as connected rather than raising, because
+    a release is free to restructure them away and this probe is not the only
+    thing standing between a dead session and a caller.
 
     `create_session` pairs this with `SessionContext._is_task_alive`, which
-    ADK owns and which catches strictly more: a crashed transport can leave
-    the streams open while the task behind them is already dead. That pairing
+    ADK owns. Neither check subsumes the other: a crashed transport can
+    leave the streams open while the task behind them is already dead, and a
+    transport that closes under a live session leaves that task parked on
+    its close event, where only these flags report the death. That pairing
     runs under `_MCP_GRACEFUL_ERROR_HANDLING`, which is on by default. The
     kill switch drops it and leaves this probe on its own.
 
@@ -1027,6 +1032,16 @@ class MCPSessionManager:
     Returns:
         True if the session is known to be disconnected, False otherwise.
     """
+    if not hasattr(session, '_read_stream'):
+      dispatcher = getattr(session, '_dispatcher', None)
+      if not hasattr(dispatcher, '_closed'):
+        logger.debug(
+            'MCP session %s offers no closed flag to read, on itself or on a'
+            ' dispatcher; reading it as connected.',
+            type(session).__name__,
+        )
+        return False
+      return bool(getattr(dispatcher, '_closed', False))
     read_stream = getattr(session, '_read_stream', None)
     write_stream = getattr(session, '_write_stream', None)
     return bool(

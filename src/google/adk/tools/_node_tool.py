@@ -17,11 +17,13 @@ from __future__ import annotations
 from typing import Any
 
 from google.genai import types
+from pydantic import ValidationError
 from typing_extensions import override
 
 from ..utils._schema_utils import schema_to_json_schema
 from ..workflow._base_node import BaseNode
-from ..workflow._errors import NodeInterruptedError
+from ..workflow._errors import DynamicNodeFailError
+from ..workflow._errors import WorkflowDataError
 from .base_tool import BaseTool
 from .tool_context import ToolContext
 
@@ -131,27 +133,29 @@ class NodeTool(BaseTool):
       args: dict[str, Any],
       tool_context: ToolContext,
   ) -> Any:
-    import inspect
-
-    from pydantic import BaseModel
-
     input_schema = getattr(self.node, 'input_schema', None)
-    node_input: Any
-    if inspect.isclass(input_schema) and issubclass(input_schema, BaseModel):
-      try:
-        node_input = input_schema.model_validate(args)
-      except Exception as e:
-        return f'Error validating input for node: {e}'
+    schema = (
+        schema_to_json_schema(input_schema)
+        if input_schema is not None
+        else None
+    )
+    if isinstance(schema, dict) and schema.get('type') != 'object':
+      node_input = args.get('request')
     else:
-      schema = (
-          schema_to_json_schema(input_schema)
-          if input_schema is not None
-          else None
-      )
-      if isinstance(schema, dict) and schema.get('type') != 'object':
-        node_input = args.get('request')
-      else:
-        node_input = args
+      node_input = args
+
+    try:
+      node_input = self.node._validate_input_data(node_input)
+    except (ValidationError, WorkflowDataError) as e:
+      # Same shape as FunctionTool's argument validation errors, so the
+      # model can correct its arguments and retry.
+      return {
+          'error': (
+              f'Invoking `{self.name}()` failed due to argument validation'
+              f' errors:\n{e}\nYou could retry calling this tool with'
+              ' corrected argument types.'
+          )
+      }
 
     fc_id = tool_context.function_call_id
     base_branch = tool_context.branch
@@ -166,10 +170,10 @@ class NodeTool(BaseTool):
           use_sub_branch=False,
           raise_on_wait=True,
       )
-      if res is None:
-        return {'result': None}
-      return res
-    except NodeInterruptedError:
-      raise
-    except Exception as e:
-      return f'Error running node {self.name}: {e}'
+    except DynamicNodeFailError as e:
+      # Surface the node's own error, as a FunctionTool would, so the tool
+      # pipeline runs on_tool_error callbacks with the real cause.
+      raise e.error from e
+    if res is None:
+      return {'result': None}
+    return res

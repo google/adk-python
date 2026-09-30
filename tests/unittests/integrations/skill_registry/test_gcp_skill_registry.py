@@ -17,11 +17,13 @@
 import io
 import logging
 import os
+import ssl
 from unittest import mock
 import zipfile
 
 from google.adk.integrations.skill_registry import gcp_skill_registry
 from google.adk.utils._google_client_headers import merge_tracking_headers
+import httpx
 import pytest
 
 
@@ -588,7 +590,11 @@ async def test_get_skill_with_mtls():
       skill = await registry.get_skill(name="my-skill")
 
       # Verify AsyncClient was instantiated with verify=mock_ssl_context
-      mock_client_class.assert_called_with(verify=mock_ssl_context)
+      mock_client_class.assert_called_with(
+          verify=mock_ssl_context,
+          follow_redirects=True,
+          event_hooks=mock.ANY,
+      )
 
   assert skill.frontmatter.name == "my-skill"
 
@@ -652,3 +658,98 @@ async def test_search_skills_result_passes_frontmatter_validation():
       results[0].model_dump()
   )
   assert validated.name == "cloud.google.com-agent-platform-eval-flywheel"
+
+
+@pytest.mark.asyncio
+async def test_create_httpx_client_follows_redirects():
+  """Clients follow the 302 redirect issued by the media download endpoint."""
+  registry = gcp_skill_registry.GCPSkillRegistry()
+
+  client = registry._create_httpx_client()
+  try:
+    assert client.follow_redirects is True
+    assert client.event_hooks["request"]
+  finally:
+    await client.aclose()
+
+  registry._ssl_context = ssl.create_default_context()
+  client = registry._create_httpx_client()
+  try:
+    assert client.follow_redirects is True
+    assert client.event_hooks["request"]
+  finally:
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_get_skill_drops_goog_headers_on_redirect():
+  """Verifies that x-goog-* and auth headers are stripped on cross-origin redirects."""
+  fake_zip = _create_fake_zip_bytes()
+
+  def transport_handler(request: httpx.Request) -> httpx.Response:
+    if "skills/my-skill" in str(request.url) and "revisions" not in str(
+        request.url
+    ):
+      return httpx.Response(
+          200,
+          json={
+              "name": (
+                  "projects/test-project/locations/us-central1/skills/my-skill"
+              ),
+              "defaultRevision": (
+                  "projects/test-project/locations/us-central1/skills/my-skill/revisions/rev-123"
+              ),
+          },
+      )
+    if "alt=media" in str(request.url) or (
+        request.url.params and request.url.params.get("alt") == "media"
+    ):
+      if request.url.host == "agentregistry.googleapis.com":
+        return httpx.Response(
+            302,
+            headers={
+                "Location": (
+                    "https://storage.googleapis.com/download/storage/v1/b/bucket/o/skill.zip?signature=123"
+                )
+            },
+        )
+    if request.url.host == "storage.googleapis.com":
+      for header in request.headers:
+        if header.lower().startswith("x-goog-"):
+          return httpx.Response(
+              403,
+              text=f"SignatureDoesNotMatch: Header {header} not signed",
+          )
+        if header.lower() == "authorization":
+          return httpx.Response(
+              403,
+              text="SignatureDoesNotMatch: Authorization not signed",
+          )
+      return httpx.Response(200, content=fake_zip)
+    return httpx.Response(404, text=f"Not found: {request.url}")
+
+  mock_creds = mock.MagicMock()
+  mock_creds.valid = True
+  mock_creds.token = "test-token"
+  mock_creds.quota_project_id = "test-quota"
+
+  registry = gcp_skill_registry.GCPSkillRegistry(
+      project_id="test-project",
+      location="us-central1",
+      credentials=mock_creds,
+  )
+
+  orig_create = registry._create_httpx_client
+
+  def custom_create():
+    client = orig_create()
+    return httpx.AsyncClient(
+        transport=httpx.MockTransport(transport_handler),
+        follow_redirects=client.follow_redirects,
+        event_hooks=client.event_hooks,
+    )
+
+  registry._create_httpx_client = custom_create
+
+  skill = await registry.get_skill(name="my-skill")
+  assert skill.frontmatter.name == "my-skill"

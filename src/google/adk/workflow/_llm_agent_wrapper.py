@@ -310,7 +310,7 @@ def prepare_llm_agent_context(agent: LlmAgent, ctx: Context) -> Context:
 
 def prepare_llm_agent_input(
     agent: LlmAgent, ctx: Context, node_input: object
-) -> None:
+) -> Event | None:
   """Prepares the input for running LlmAgent as a node.
 
   For ``single_turn`` mode, append a user-role event with the input
@@ -341,11 +341,14 @@ def prepare_llm_agent_input(
       or agent.mode != 'single_turn'
       or bool(ctx.resume_inputs)
   ):
-    return
+    return None
   agent_input = to_user_content(node_input)
   user_event = Event(author='user', message=agent_input)
   if user_event.content is not None:
     user_event.content.role = 'user'
+  node_path = getattr(ctx, 'node_path', None)
+  if isinstance(node_path, str) and node_path:
+    user_event.node_info.path = node_path
   iso = getattr(ctx, 'isolation_scope', None)
   if iso:
     user_event.isolation_scope = iso
@@ -353,6 +356,7 @@ def prepare_llm_agent_input(
   if branch:
     user_event.branch = branch
   ctx.session.events.append(user_event)
+  return user_event
 
 
 def process_llm_agent_output(
@@ -411,7 +415,7 @@ async def run_llm_agent_as_node(
     agent.include_contents = 'none'
 
   agent_ctx = prepare_llm_agent_context(agent, ctx)
-  prepare_llm_agent_input(agent, agent_ctx, node_input)
+  injected_input_event = prepare_llm_agent_input(agent, agent_ctx, node_input)
 
   ic = agent_ctx.get_invocation_context()
   update: dict[str, object] = {'agent': agent}
@@ -435,10 +439,17 @@ async def run_llm_agent_as_node(
 
   if agent.mode == 'single_turn':
     # is_live is always False here (single_turn forces non-live).
-    async with aclosing(agent.run_async(ic)) as run_iter:
-      async for event in run_iter:
-        process_llm_agent_output(agent, ctx, event)
-        yield event
+    try:
+      async with aclosing(agent.run_async(ic)) as run_iter:
+        async for event in run_iter:
+          process_llm_agent_output(agent, ctx, event)
+          yield event
+    finally:
+      if (
+          injected_input_event is not None
+          and injected_input_event in agent_ctx.session.events
+      ):
+        agent_ctx.session.events.remove(injected_input_event)
     return
 
   if agent.mode == 'chat':
