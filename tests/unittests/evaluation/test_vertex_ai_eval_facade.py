@@ -454,6 +454,22 @@ class TestMultiTurnVertexAiEvalFacade:
     assert conversation_turn.events[2].author == "agent"
     assert conversation_turn.events[2].content.parts[0].text == "final response"
 
+  def test_map_invocation_turn_skips_events_without_content(self):
+    invocation = Invocation(
+        invocation_id="inv1",
+        user_content=genai_types.Content(parts=[genai_types.Part(text="hi")]),
+        intermediate_data=InvocationEvents(
+            invocation_events=[InvocationEvent(author="agent1", content=None)]
+        ),
+        final_response=genai_types.Content(
+            parts=[genai_types.Part(text="hello")]
+        ),
+    )
+    conversation_turn = _MultiTurnVertexiAiEvalFacade._map_invocation_turn(
+        0, invocation
+    )
+    assert [e.author for e in conversation_turn.events] == ["user", "agent"]
+
   def test_get_turns(self):
     invocations = [
         Invocation(
