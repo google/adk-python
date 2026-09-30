@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import ssl
+import string
 from typing import Any
 from typing import Callable
 from typing import Dict
@@ -460,6 +461,19 @@ class RestApiTool(BaseTool):
     # Construct URL
     base_url = self.endpoint.base_url or ""
     base_url = base_url[:-1] if base_url.endswith("/") else base_url
+    # Fail closed with a structured, retryable tool error when a required
+    # path placeholder was not provided: str.format() would otherwise
+    # raise an uncaught KeyError that aborts the whole agent invocation.
+    missing_path_params = [
+        field_name
+        for _, field_name, _, _ in string.Formatter().parse(self.endpoint.path)
+        if field_name and field_name not in path_params
+    ]
+    if missing_path_params:
+        raise InputValidationError(
+            f"Missing required path parameter(s) {missing_path_params} for path"
+            f" template '{self.endpoint.path}'."
+        )
     url = f"{base_url}{self.endpoint.path.format(**path_params)}"
 
     # Move query params embedded in the path template itself (now that path
