@@ -35,7 +35,6 @@ from google.adk.agents.llm_agent import Agent
 from google.adk.agents.run_config import RunConfig
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows import base_llm_flow
-from google.adk.flows.llm_flows.single_flow import SingleFlow
 from google.adk.live import _flow_utils
 from google.adk.live import LiveRequestQueue
 from google.adk.live._active_streaming_tool import ActiveStreamingTool
@@ -170,7 +169,7 @@ async def test_teardown_empties_both_registries(
       'lookup_1': non_blocking_task
   }
 
-  await SingleFlow()._stop_background_tool_tasks(invocation_context)
+  await _flow_utils.stop_background_tool_tasks(invocation_context)
 
   assert not invocation_context.active_streaming_tools
   assert not invocation_context.active_non_blocking_tool_tasks
@@ -605,7 +604,7 @@ async def _handoff_with_background_tool(
           testing_utils.MockLlmConnection, '_send_content', _record_send_content
       ),
       mock.patch(
-          'google.adk.flows.llm_flows._live_llm_flow.asyncio.sleep',
+          'google.adk.live._live_llm_flow.asyncio.sleep',
           side_effect=_mock_sleep,
       ),
   ):

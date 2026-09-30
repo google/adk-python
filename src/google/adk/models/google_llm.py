@@ -41,6 +41,7 @@ from typing_extensions import override
 from google import genai
 
 from ..utils._event_loop_cache import PerLoopCachedProperty
+from ..utils._gcp_metadata import get_gcp_client_defaults
 from ..utils._google_client_headers import get_tracking_headers
 from ..utils._google_client_headers import merge_tracking_headers
 from ..utils.context_utils import Aclosing
@@ -452,6 +453,8 @@ class Gemini(BaseLlm):
       kwargs['enterprise'] = True
 
     client_kwargs = getattr(self, 'client_kwargs', None)
+    if not self.model.startswith('projects/'):
+      kwargs.update(get_gcp_client_defaults(client_kwargs))
     if client_kwargs:
       kwargs.update(client_kwargs)
 
@@ -519,6 +522,8 @@ class Gemini(BaseLlm):
       kwargs['enterprise'] = True
 
     client_kwargs = getattr(self, 'client_kwargs', None)
+    if not self.model.startswith('projects/'):
+      kwargs.update(get_gcp_client_defaults(client_kwargs))
     if client_kwargs:
       kwargs.update(client_kwargs)
 
