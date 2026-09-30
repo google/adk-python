@@ -22,6 +22,7 @@ from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.invocation_context import LlmCallsLimitExceededError
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps import ResumabilityConfig
+from google.adk.events._internal_metadata import INTERNAL_METADATA_PREFIX
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.platform.thread import create_thread
@@ -484,6 +485,23 @@ class TestInvocationContextInitialization:
         run_config=run_cfg,
     )
     # Access private attribute to verify
+    assert inv_ctx._custom_metadata == {'test_key': 'test_value'}
+
+  def test_custom_metadata_drops_internal_keys(self):
+    """Callers cannot set ADK-internal keys in the context's custom_metadata."""
+    run_cfg = RunConfig(
+        custom_metadata={
+            'test_key': 'test_value',
+            INTERNAL_METADATA_PREFIX + 'planted': 'x',
+        }
+    )
+    inv_ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_1',
+        session=Mock(spec=Session, events=[]),
+        run_config=run_cfg,
+    )
     assert inv_ctx._custom_metadata == {'test_key': 'test_value'}
 
   def test_custom_metadata_default_empty(self):

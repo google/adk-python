@@ -797,6 +797,7 @@ async def _execute_single_prepared_call(
   function_args = prepared_call.function_args
   function_response: object | None = None
   detected_error_type: Optional[str] = None
+  response_source: _instrumentation.ToolResponseSource | None = None
 
   async def _run_with_trace() -> Event | None:
     """Executes the tool with full lifecycle management and telemetry.
@@ -808,7 +809,7 @@ async def _execute_single_prepared_call(
     4. Detecting error types for telemetry.
     5. Building the final FunctionResponse Event to be returned.
     """
-    nonlocal function_response, detected_error_type
+    nonlocal function_response, detected_error_type, response_source
 
     # Step 1: Check if plugin before_tool_callback overrides the function
     # response.
@@ -828,6 +829,8 @@ async def _execute_single_prepared_call(
           args=function_args,
           tool_context=tool_context,
       )
+    if function_response is not None:
+      response_source = 'before_tool_callback'
 
     # A tool name that resolved to nothing is answered once the before-tool
     # callbacks have had their chance to answer it themselves. The after-tool
@@ -850,6 +853,8 @@ async def _execute_single_prepared_call(
         function_response = _tool_error_handler.build_tool_not_found_response(
             tool.name, prepared_call.tools_dict
         )
+      else:
+        response_source = 'on_tool_error_callback'
       return _build_response_event(
           tool, function_response, tool_context, invocation_context
       )
@@ -877,6 +882,7 @@ async def _execute_single_prepared_call(
         )
         if error_response is not None:
           function_response = error_response
+          response_source = 'on_tool_error_callback'
         else:
           raise tool_error
 
@@ -907,6 +913,8 @@ async def _execute_single_prepared_call(
     # Step 6: If alternative response exists from after_tool_callback, use it
     # instead of the original function response.
     if altered_function_response is not None:
+      if altered_function_response is not callback_tool_response:
+        response_source = 'after_tool_callback'
       function_response = altered_function_response
 
     if (
@@ -937,6 +945,7 @@ async def _execute_single_prepared_call(
   ) as tel_ctx:
     tel_ctx.function_response_event = await _run_with_trace()
     tel_ctx.error_type = detected_error_type
+    tel_ctx.response_source = response_source
     return tel_ctx.function_response_event
 
 
