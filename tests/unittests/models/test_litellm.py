@@ -6408,6 +6408,44 @@ async def test_get_completion_inputs_generation_params():
 
 
 @pytest.mark.asyncio
+async def test_get_completion_inputs_maps_thinking_level_to_reasoning_effort():
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=types.GenerateContentConfig(
+          thinking_config=types.ThinkingConfig(
+              thinking_level=types.ThinkingLevel.LOW
+          ),
+      ),
+  )
+
+  _, _, _, generation_params, _ = await _get_completion_inputs(
+      req, model="gpt-4o-mini"
+  )
+  assert generation_params == {"reasoning_effort": "low"}
+
+
+@pytest.mark.asyncio
+async def test_get_completion_inputs_maps_thinking_budget():
+  req = LlmRequest(
+      contents=[
+          types.Content(role="user", parts=[types.Part.from_text(text="hi")]),
+      ],
+      config=types.GenerateContentConfig(
+          thinking_config=types.ThinkingConfig(thinking_budget=2048),
+      ),
+  )
+
+  _, _, _, generation_params, _ = await _get_completion_inputs(
+      req, model="gpt-4o-mini"
+  )
+  assert generation_params == {
+      "thinking": {"type": "enabled", "budget_tokens": 2048}
+  }
+
+
+@pytest.mark.asyncio
 async def test_get_completion_inputs_empty_generation_params():
   # Test that generation_params is None when no generation parameters are set
   req = LlmRequest(
