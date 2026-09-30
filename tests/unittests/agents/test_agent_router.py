@@ -24,6 +24,7 @@ from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.events._abort_events import _build_abort_events
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -470,6 +471,69 @@ def test_find_agent_to_run_resumable_stale_function_call_author_falls_back():
       _agent_router.find_agent_to_run(session, root, resumability_config)
       == root
   )
+
+
+def test_find_agent_to_run_skips_synthetic_abort_function_response_when_resumable():
+  """Synthetic abort FunctionResponse does not trap next turn on non-transferable sub-agent."""
+  root, _, _, _ = _make_agent_tree()
+  call_event = Event(
+      invocation_id="inv1",
+      author="non_transferable",
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="func_456", name="test_func", args={}
+                  )
+              )
+          ],
+      ),
+  )
+  abort_events = _build_abort_events(
+      [call_event],
+      invocation_id="inv1",
+      root_agent_name="root_agent",
+      branch=None,
+  )
+  session = Session(
+      id="s1",
+      app_name="app",
+      user_id="u1",
+      events=[call_event, *abort_events],
+  )
+  resumability_config = ResumabilityConfig(is_resumable=True)
+
+  assert (
+      _agent_router.find_agent_to_run(session, root, resumability_config)
+      == root
+  )
+
+
+def test_find_agent_to_run_skips_root_authored_abort_event():
+  """The root-authored abort event does not route the next turn back to root."""
+  root, sub1, _, _ = _make_agent_tree()
+  reply_event = Event(
+      invocation_id="inv1",
+      author="sub_agent1",
+      content=types.Content(
+          role="model", parts=[types.Part(text="Sub response")]
+      ),
+  )
+  abort_events = _build_abort_events(
+      [reply_event],
+      invocation_id="inv1",
+      root_agent_name="root_agent",
+      branch=None,
+  )
+  session = Session(
+      id="s1",
+      app_name="app",
+      user_id="u1",
+      events=[reply_event, *abort_events],
+  )
+
+  assert _agent_router.find_agent_to_run(session, root) == sub1
 
 
 def test_restore_branch_from_history():

@@ -788,6 +788,8 @@ class TestContextGetInvocationContext:
     mock_copy.branch = None
     mock_copy.invocation_id = "inv-1"
     mock_copy.session = mock_invocation_context.session
+    mock_copy._enqueue_event = AsyncMock()
+    mock_copy.model_copy.return_value = mock_copy
     mock_invocation_context.model_copy.return_value = mock_copy
 
     node_ic = caller_ctx.get_invocation_context()

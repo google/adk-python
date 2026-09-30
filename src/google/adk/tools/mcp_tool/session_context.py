@@ -18,6 +18,7 @@ import asyncio
 from contextlib import AbstractAsyncContextManager
 from contextlib import AsyncExitStack
 from datetime import timedelta
+import functools
 import logging
 from types import TracebackType
 from typing import Any
@@ -28,6 +29,7 @@ from typing import TypeVar
 from ...dependencies._mcp import ClientSession
 from ...dependencies._mcp import ElicitationFnT
 from ...dependencies._mcp import IS_MCP_SDK_V2
+from ...dependencies._mcp import negotiate_auto
 from ...dependencies._mcp import SamplingCapability
 from ...dependencies._mcp import SamplingFnT
 from ...dependencies._mcp import types
@@ -43,6 +45,35 @@ _T = TypeVar('_T')
 # default -- `mcp` / `0.1.0` -- so a server sees no difference between an ADK
 # agent and any other script built on the SDK.
 _CLIENT_INFO = types.Implementation(name='google-adk', version=__version__)
+
+
+async def _connect(session: ClientSession) -> None:
+  """Connects ``session`` using the newest protocol both sides support.
+
+  When enabled, tries the modern protocol (``server/discover``) first, which
+  needs no ``Mcp-Session-Id`` and sends ``clientInfo`` on every request. Falls
+  back to ``initialize`` for older servers.
+
+  Args:
+    session: The session to bring up.
+  """
+  # pylint: disable-next=protected-access
+  if not is_feature_enabled(FeatureName._MCP_MODERN_PROTOCOL):
+    await session.initialize()
+  elif negotiate_auto is None:
+    _warn_probe_unavailable()
+    await session.initialize()
+  else:
+    await negotiate_auto(session)
+
+
+# Cached so it only logs once.
+@functools.cache
+def _warn_probe_unavailable() -> None:
+  logger.warning(
+      'MCP_MODERN_PROTOCOL is enabled, but the installed MCP SDK has no era'
+      ' probe ADK can use; MCP connections will use the legacy handshake.'
+  )
 
 
 def _read_timeout(seconds: Optional[float]) -> Optional[float | timedelta]:
@@ -397,15 +428,15 @@ class SessionContext:
           )
         # pylint: disable-next=protected-access
         if is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):
-          # Use anyio.fail_after to keep session.initialize within the AnyIO
+          # Use anyio.fail_after to keep the handshake within the AnyIO
           # cancel scope instead of asyncio.wait_for which runs in a nested
           # task.
           import anyio
 
           with anyio.fail_after(self._timeout):
-            await session.initialize()
+            await _connect(session)
         else:
-          await asyncio.wait_for(session.initialize(), timeout=self._timeout)
+          await asyncio.wait_for(_connect(session), timeout=self._timeout)
         logger.debug('Session has been successfully initialized')
 
         self._session = session

@@ -13,12 +13,16 @@
 # limitations under the License.
 
 import asyncio
+import contextvars
+import threading
 from typing import Any
 from typing import Callable
 from unittest import mock
 
 from fastapi.openapi.models import HTTPBearer
 from google.adk.agents.llm_agent import Agent
+from google.adk.agents.run_config import RunConfig
+from google.adk.agents.run_config import ToolThreadPoolConfig
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.auth.auth_tool import AuthToolArguments
 from google.adk.events.event import Event
@@ -939,6 +943,150 @@ async def test_sync_function_blocks_async_functions():
   # With blocking sync function, execution should be sequential: A, B, C, D
   # The sync function blocks, preventing the async function from yielding properly
   assert execution_order == ['sync_A', 'sync_B', 'async_C', 'async_D']
+
+
+@pytest.mark.asyncio
+async def test_parallel_sync_function_calls_run_concurrently_with_tool_thread_pool():
+  """Test that parallel calls to a sync function overlap with the pool set."""
+  both_calls_running = threading.Barrier(2, timeout=5)
+
+  def wait_for_other_call() -> dict:
+    both_calls_running.wait()
+    return {'result': 'done'}
+
+  function_calls = [
+      types.Part.from_function_call(name='wait_for_other_call', args={}),
+      types.Part.from_function_call(name='wait_for_other_call', args={}),
+  ]
+  function_responses = [
+      types.Part.from_function_response(
+          name='wait_for_other_call', response={'result': 'done'}
+      ),
+      types.Part.from_function_response(
+          name='wait_for_other_call', response={'result': 'done'}
+      ),
+  ]
+  mock_model = testing_utils.MockModel.create(
+      responses=[function_calls, 'response1']
+  )
+  agent = Agent(
+      name='test_agent', model=mock_model, tools=[wait_for_other_call]
+  )
+  runner = testing_utils.TestInMemoryRunner(agent)
+
+  events = await runner.run_async_with_new_session(
+      'test', RunConfig(tool_thread_pool_config=ToolThreadPoolConfig())
+  )
+
+  assert testing_utils.simplify_events(events) == [
+      ('test_agent', function_calls),
+      ('test_agent', function_responses),
+      ('test_agent', 'response1'),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_sync_function_does_not_block_async_functions_with_tool_thread_pool():
+  """Test that async functions run while a sync function blocks in the pool."""
+  async_function_done = threading.Event()
+
+  def blocking_sync_function() -> dict:
+    return {'async_function_done': async_function_done.wait(timeout=5)}
+
+  async def yielding_async_function() -> dict:
+    await asyncio.sleep(0)
+    async_function_done.set()
+    return {'result': 'async_done'}
+
+  function_calls = [
+      types.Part.from_function_call(name='blocking_sync_function', args={}),
+      types.Part.from_function_call(name='yielding_async_function', args={}),
+  ]
+  mock_model = testing_utils.MockModel.create(
+      responses=[function_calls, 'response1']
+  )
+  agent = Agent(
+      name='test_agent',
+      model=mock_model,
+      tools=[blocking_sync_function, yielding_async_function],
+  )
+  runner = testing_utils.TestInMemoryRunner(agent)
+
+  events = await runner.run_async_with_new_session(
+      'test', RunConfig(tool_thread_pool_config=ToolThreadPoolConfig())
+  )
+
+  assert testing_utils.simplify_events(events)[1] == (
+      'test_agent',
+      [
+          types.Part.from_function_response(
+              name='blocking_sync_function',
+              response={'async_function_done': True},
+          ),
+          types.Part.from_function_response(
+              name='yielding_async_function', response={'result': 'async_done'}
+          ),
+      ],
+  )
+
+
+@pytest.mark.asyncio
+async def test_sync_function_sees_callers_context_variables_with_tool_thread_pool():
+  """Test that a sync function in the pool sees its caller's context variables."""
+  request_id = contextvars.ContextVar('request_id', default=None)
+
+  def read_request_id() -> dict:
+    return {'request_id': request_id.get()}
+
+  mock_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(name='read_request_id', args={}),
+          'response1',
+      ]
+  )
+  agent = Agent(name='test_agent', model=mock_model, tools=[read_request_id])
+  runner = testing_utils.TestInMemoryRunner(agent)
+  request_id.set('request-1')
+
+  events = await runner.run_async_with_new_session(
+      'test', RunConfig(tool_thread_pool_config=ToolThreadPoolConfig())
+  )
+
+  assert testing_utils.simplify_events(events)[1] == (
+      'test_agent',
+      types.Part.from_function_response(
+          name='read_request_id', response={'request_id': 'request-1'}
+      ),
+  )
+
+
+@pytest.mark.asyncio
+async def test_async_function_runs_on_event_loop_thread_with_tool_thread_pool():
+  """Test that an async function stays on the event loop thread with the pool set."""
+  event_loop_thread = threading.get_ident()
+
+  async def check_thread() -> dict:
+    return {'on_event_loop_thread': threading.get_ident() == event_loop_thread}
+
+  mock_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(name='check_thread', args={}),
+          'response1',
+      ]
+  )
+  agent = Agent(name='test_agent', model=mock_model, tools=[check_thread])
+  runner = testing_utils.TestInMemoryRunner(agent)
+
+  events = await runner.run_async_with_new_session(
+      'test', RunConfig(tool_thread_pool_config=ToolThreadPoolConfig())
+  )
+
+  assert testing_utils.simplify_events(events)[1] == (
+      'test_agent',
+      types.Part.from_function_response(
+          name='check_thread', response={'on_event_loop_thread': True}
+      ),
+  )
 
 
 @pytest.mark.asyncio

@@ -21,6 +21,7 @@ import sys
 import time
 from typing import AsyncIterator
 from typing import Iterator
+from typing import Literal
 from typing import TYPE_CHECKING
 
 from opentelemetry import trace
@@ -244,6 +245,33 @@ SkillTelemetry = (
     | SkillScriptExecutionTelemetry
 )
 
+ToolResponseSource = Literal[
+    "before_tool_callback", "on_tool_error_callback", "after_tool_callback"
+]
+ModelResponseSource = Literal[
+    "before_model_callback", "on_model_error_callback"
+]
+
+
+def record_response_source(
+    span: trace.Span,
+    source: ModelResponseSource | ToolResponseSource,
+    invocation_context: InvocationContext,
+) -> None:
+  """Names the callback that produced the response recorded on ``span``."""
+  _set_response_source(
+      tracing._telemetry_config_from_invocation_context(invocation_context),
+      span,
+      source,
+  )
+
+
+@experimental_telemetry(gate=[])
+def _set_response_source(
+    span: trace.Span, source: ModelResponseSource | ToolResponseSource
+) -> None:
+  span.set_attribute(_adk_attributes.ADK_EXPERIMENTAL_RESPONSE_SOURCE, source)
+
 
 @dataclasses.dataclass
 class ToolScope:
@@ -257,6 +285,8 @@ class ToolScope:
   function_response_event: event_lib.Event | None = None
   error_type: str | None = None
   skill_telemetry: SkillTelemetry | None = None
+  response_source: ToolResponseSource | None = None
+  """The callback that produced the recorded response, if one did."""
 
 
 @dataclasses.dataclass
@@ -616,6 +646,10 @@ async def record_tool_execution(
             invocation_context=invocation_context,
             error_type=tel_ctx.error_type,
         )
+        if response_event is not None and tel_ctx.response_source is not None:
+          record_response_source(
+              span, tel_ctx.response_source, invocation_context
+          )
         if tel_ctx.skill_telemetry is not None:
           _dispatch_skill_telemetry(
               span,

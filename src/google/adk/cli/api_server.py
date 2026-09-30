@@ -79,6 +79,9 @@ from ..auth.credential_service.base_credential_service import BaseCredentialServ
 from ..errors.already_exists_error import AlreadyExistsError
 from ..errors.input_validation_error import InputValidationError
 from ..errors.session_not_found_error import SessionNotFoundError
+from ..events._internal_metadata import mark_restored
+from ..events._internal_metadata import public_event
+from ..events._internal_metadata import public_session
 from ..events.event import Event
 from ..events.event_actions import EventActions
 from ..flows.llm_flows.tools._functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
@@ -901,6 +904,7 @@ class ApiServer:
           Callable[[Request], None | Awaitable[None]]
       ] = None,
       default_llm_model: Optional[str] = None,
+      avatar_config: Optional[types.AvatarConfig] = None,
   ):
     self.agent_loader = agent_loader
     self.session_service = session_service
@@ -933,6 +937,7 @@ class ApiServer:
     self.trigger_oidc_service_accounts = trigger_oidc_service_accounts
     self.trigger_auth_verifier = trigger_auth_verifier
     self.default_llm_model = default_llm_model
+    self.avatar_config = avatar_config
     self.default_app_name = os.getenv("ADK_DEFAULT_APP_NAME")
 
   async def get_runner_async(self, app_name: str) -> Runner:
@@ -1526,7 +1531,7 @@ class ApiServer:
       if not session:
         raise HTTPException(status_code=404, detail="Session not found")
       self.current_app_name_ref.value = app_name
-      return session
+      return public_session(session)
 
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions",
@@ -1537,7 +1542,7 @@ class ApiServer:
           app_name=app_name, user_id=user_id
       )
       return [
-          session
+          public_session(session)
           for session in list_sessions_response.sessions
           # Remove sessions that were generated as a part of Eval.
           if not session.id.startswith(EVAL_SESSION_ID_PREFIX)
@@ -1557,11 +1562,13 @@ class ApiServer:
         session_id: str,
         state: Optional[dict[str, Any]] = None,
     ) -> Session:
-      return await self._create_session(
-          app_name=app_name,
-          user_id=user_id,
-          state=state,
-          session_id=session_id,
+      return public_session(
+          await self._create_session(
+              app_name=app_name,
+              user_id=user_id,
+              state=state,
+              session_id=session_id,
+          )
       )
 
     @app.post(
@@ -1574,7 +1581,9 @@ class ApiServer:
         req: Optional[CreateSessionRequest] = None,
     ) -> Session:
       if not req:
-        return await self._create_session(app_name=app_name, user_id=user_id)
+        return public_session(
+            await self._create_session(app_name=app_name, user_id=user_id)
+        )
 
       if req.events:
         _validate_session_initialization_events(req.events)
@@ -1592,9 +1601,11 @@ class ApiServer:
 
       if req.events:
         for event in req.events:
-          await self.session_service.append_event(session=session, event=event)
+          await self.session_service.append_event(
+              session=session, event=mark_restored(event)
+          )
 
-      return session
+      return public_session(session)
 
     @app.delete("/apps/{app_name}/users/{user_id}/sessions/{session_id}")
     async def delete_session(
@@ -1652,7 +1663,7 @@ class ApiServer:
           session=session, event=state_update_event
       )
 
-      return session
+      return public_session(session)
 
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name:path}/versions/{version_id}/metadata",
@@ -1923,7 +1934,7 @@ class ApiServer:
                   run_config=run_config,
               )
           ) as agen:
-            return [event async for event in agen]
+            return [public_event(event) async for event in agen]
         except SessionNotFoundError as e:
           raise HTTPException(status_code=404, detail=str(e)) from e
 
@@ -2039,7 +2050,7 @@ class ApiServer:
                   events_to_stream = [content_event, artifact_event]
 
                 for event_to_stream in events_to_stream:
-                  sse_event = event_to_stream.model_dump_json(
+                  sse_event = public_event(event_to_stream).model_dump_json(
                       exclude_none=True,
                       by_alias=True,
                   )
@@ -2169,6 +2180,11 @@ class ApiServer:
             ),
             save_live_blob=save_live_blob,
             explicit_vad_signal=explicit_vad_signal,
+            # Avatars are rendered as video, so only apply the server-wide
+            # avatar config to sessions that request VIDEO output.
+            avatar_config=(
+                self.avatar_config if "VIDEO" in modalities else None
+            ),
         )
         async with Aclosing(
             runner.run_live(
@@ -2179,7 +2195,9 @@ class ApiServer:
         ) as agen:
           async for event in agen:
             await websocket.send_text(
-                event.model_dump_json(exclude_none=True, by_alias=True)
+                public_event(event).model_dump_json(
+                    exclude_none=True, by_alias=True
+                )
             )
 
       async def process_messages():
