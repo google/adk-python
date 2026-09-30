@@ -31,6 +31,9 @@ from ...agents.readonly_context import ReadonlyContext
 from ...features import experimental
 from ...features import FeatureName
 from ...models.llm_request import LlmRequest
+from .._url_validator import _is_blocked_hostname
+from .._url_validator import _parse_request_target
+from .._url_validator import _resolve_direct_addresses
 from ..base_toolset import BaseToolset
 from ..tool_context import ToolContext
 from .base_computer import BaseComputer
@@ -135,11 +138,6 @@ class ComputerUseToolset(BaseToolset):
 
     @functools.wraps(navigate_method)
     async def wrapper(url: str) -> Any:
-      # Deferred to keep `requests` off the computer-use import path.
-      from ..load_web_page import _is_blocked_hostname
-      from ..load_web_page import _parse_request_target
-      from ..load_web_page import _resolve_direct_addresses
-
       try:
         if not isinstance(url, str):
           raise ValueError("url is not a string")

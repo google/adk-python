@@ -18,7 +18,7 @@ from unittest.mock import MagicMock
 from unittest.mock import Mock
 
 from google.adk.models.llm_request import LlmRequest
-from google.adk.tools import load_web_page
+from google.adk.tools import _url_validator
 # Use the actual ComputerEnvironment enum from the code
 from google.adk.tools.computer_use.base_computer import BaseComputer
 from google.adk.tools.computer_use.base_computer import ComputerEnvironment
@@ -641,7 +641,7 @@ class TestNavigateUrlSafety:
             ("93.184.216.34", 0),
         )]
     )
-    monkeypatch.setattr(load_web_page.socket, "getaddrinfo", resolver)
+    monkeypatch.setattr(_url_validator.socket, "getaddrinfo", resolver)
     return resolver
 
   @staticmethod
