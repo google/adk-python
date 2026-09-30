@@ -126,6 +126,7 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           agent.name,
           preserve_function_call_ids=preserve_function_call_ids,
           isolation_scope=invocation_context.isolation_scope,
+          node_path=invocation_context.node_path,
           is_single_turn=is_single_turn,
           user_content=invocation_context.user_content,
           include_thoughts_from_other_agents=include_thoughts_from_other_agents,
@@ -139,6 +140,7 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           agent.name,
           preserve_function_call_ids=preserve_function_call_ids,
           isolation_scope=invocation_context.isolation_scope,
+          node_path=invocation_context.node_path,
           is_single_turn=is_single_turn,
           user_content=invocation_context.user_content,
           include_thoughts_from_other_agents=False,
@@ -312,6 +314,7 @@ def _should_include_event_in_context(
     event: Event,
     isolation_scope: str | None = None,
     *,
+    node_path: str | None = None,
     include_thoughts: bool = False,
 ) -> bool:
   """Determines if an event should be included in the LLM context.
@@ -330,12 +333,22 @@ def _should_include_event_in_context(
     current_branch: The current branch of the agent.
     event: The event to filter.
     isolation_scope: The agent's isolation_scope. None means unscoped.
+    node_path: The current workflow node path, if executing as a node.
 
   Returns:
     True if the event should be included in the context, False otherwise.
   """
   ev_iso = getattr(event, 'isolation_scope', None)
   if ev_iso != isolation_scope:
+    return False
+  ev_node_info = getattr(event, 'node_info', None)
+  ev_node_path = getattr(ev_node_info, 'path', None) if ev_node_info else None
+  if (
+      event.author == 'user'
+      and not event.get_function_responses()
+      and ev_node_path
+      and ev_node_path != (node_path or '')
+  ):
     return False
   return not (
       _contains_empty_content(event, include_thoughts=include_thoughts)
@@ -399,6 +412,7 @@ def _get_contents(
     *,
     preserve_function_call_ids: bool = False,
     isolation_scope: str | None = None,
+    node_path: str | None = None,
     is_single_turn: bool = False,
     user_content: types.Content | None = None,
     include_thoughts_from_other_agents: bool = False,
@@ -414,6 +428,7 @@ def _get_contents(
     preserve_function_call_ids: Whether to preserve function call ids.
     isolation_scope: scope tag — when set, restricts events
       to those with matching ``event.isolation_scope`` (or unscoped).
+    node_path: The current workflow node path, if executing as a node.
     user_content: Fallback first user turn for task agents whose
       originating delegation FC is not in session (workflow-node
       task case).
@@ -440,6 +455,7 @@ def _get_contents(
           current_branch,
           e,
           isolation_scope=isolation_scope,
+          node_path=node_path,
           include_thoughts=(
               include_thoughts_from_other_agents
               and _is_other_agent_reply(agent_name, e)
@@ -586,6 +602,7 @@ def _get_current_turn_contents(
     preserve_function_call_ids: bool = False,
     is_single_turn: bool = False,
     isolation_scope: str | None = None,
+    node_path: str | None = None,
     user_content: types.Content | None = None,
     include_thoughts_from_other_agents: bool = False,
 ) -> list[types.Content]:
@@ -637,6 +654,7 @@ def _get_current_turn_contents(
             current_branch,
             event,
             isolation_scope=isolation_scope,
+            node_path=node_path,
             include_thoughts=(
                 include_thoughts_from_other_agents
                 and _is_other_agent_reply(agent_name, event)
@@ -652,6 +670,7 @@ def _get_current_turn_contents(
           agent_name,
           preserve_function_call_ids=preserve_function_call_ids,
           isolation_scope=isolation_scope,
+          node_path=node_path,
           is_single_turn=is_single_turn,
           user_content=user_content,
           include_thoughts_from_other_agents=include_thoughts_from_other_agents,
