@@ -1058,3 +1058,77 @@ async def test_workflow_mixed_turn_lro_pause(
       and any(p.text and 'Parent all done' in p.text for p in e.content.parts)
   ]
   assert parent_finished_events2, 'Parent did not finish after resume!'
+
+
+@pytest.mark.asyncio
+async def test_static_node_fast_forward_resumes_transfer_target(
+    request: pytest.FixtureRequest,
+):
+  """Resuming a fast-forwarded static node still resumes its transfer target."""
+  beta_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(name='long_running_tool_func', args={}),
+          types.Part.from_text(text='BETA_RESUMED_OUTPUT'),
+      ]
+  )
+  alpha_model = testing_utils.MockModel.create(
+      responses=[
+          types.Part.from_function_call(
+              name='transfer_to_agent', args={'agent_name': 'beta'}
+          ),
+      ]
+  )
+
+  beta = LlmAgent(
+      name='beta',
+      model=beta_model,
+      tools=[LongRunningFunctionTool(func=long_running_tool_func)],
+  )
+  alpha = LlmAgent(name='alpha', model=alpha_model, sub_agents=[beta])
+
+  wf = Workflow(name='wf', edges=[(START, alpha)])
+  app = App(
+      name=request.function.__name__,
+      root_agent=wf,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  # Turn 1: alpha transfers to beta, beta pauses on the long-running tool.
+  events1 = await runner.run_async(testing_utils.get_user_content('go'))
+  assert any(e.long_running_tool_ids for e in events1)
+
+  invocation_id = events1[0].invocation_id
+  fc_event = workflow_testing_utils.find_function_call_event(
+      events1, 'long_running_tool_func'
+  )
+  assert fc_event is not None
+  function_call_id = fc_event.content.parts[0].function_call.id
+
+  tool_response = testing_utils.UserContent(
+      types.Part(
+          function_response=types.FunctionResponse(
+              id=function_call_id,
+              name='long_running_tool_func',
+              response={'result': 'tool done'},
+          )
+      )
+  )
+
+  # Turn 2: resume. alpha is fast-forwarded but must still reach beta.
+  events2 = await runner.run_async(
+      new_message=tool_response,
+      invocation_id=invocation_id,
+  )
+
+  resumed_texts = [
+      p.text
+      for e in events2
+      if e.content and e.content.parts
+      for p in e.content.parts
+      if p.text
+  ]
+  assert any('BETA_RESUMED_OUTPUT' in t for t in resumed_texts), (
+      'Transfer target was not resumed after the static node was'
+      f' fast-forwarded; got {resumed_texts!r}'
+  )

@@ -38,8 +38,10 @@ from google.adk.flows.llm_flows.extensions._code_execution import _NON_BUILTIN_E
 from google.adk.flows.llm_flows.extensions._code_execution import get_content_as_bytes
 from google.adk.flows.llm_flows.extensions._code_execution import request_processor
 from google.adk.flows.llm_flows.extensions._code_execution import response_processor
+from google.adk.flows.llm_flows.extensions._planning import response_processor as nl_planning_response_processor
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.planners.plan_re_act_planner import PlanReActPlanner
 from google.genai import types
 import pytest
 
@@ -365,6 +367,162 @@ async def test_pre_processor_runs_execute_code_off_the_loop():
   assert record.thread is not threading.main_thread()
 
 
+def _stub_code_executor() -> MagicMock:
+  """Returns an executor that reports a successful run of whatever it gets."""
+  executor = MagicMock(spec=BaseCodeExecutor)
+  executor.code_block_delimiters = [('```python\n', '\n```')]
+  executor.error_retry_attempts = 2
+  executor.stateful = False
+  executor.execute_code.return_value = CodeExecutionResult(stdout='ok')
+  return executor
+
+
+async def _run_post_processor(code_executor, llm_response, planner=None):
+  """Runs the planning and code-execution response processors, in flow order."""
+  agent = Agent(name='test_agent', code_executor=code_executor, planner=planner)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='test message'
+  )
+  invocation_context.artifact_service = MagicMock()
+  invocation_context.artifact_service.save_artifact = AsyncMock()
+
+  async for _ in nl_planning_response_processor.run_async(
+      invocation_context, llm_response
+  ):
+    pass
+  return [
+      event
+      async for event in response_processor.run_async(
+          invocation_context, llm_response
+      )
+  ]
+
+
+@pytest.mark.asyncio
+async def test_code_in_a_thought_part_is_not_executed():
+  """The model's private reasoning is not a request to run code."""
+  code_executor = _stub_code_executor()
+  llm_response = LlmResponse(
+      content=types.Content(
+          parts=[
+              types.Part(
+                  text='```python\nprint("from the reasoning")\n```',
+                  thought=True,
+              ),
+              types.Part(text='The answer is 720.'),
+          ]
+      )
+  )
+
+  events = await _run_post_processor(code_executor, llm_response)
+
+  code_executor.execute_code.assert_not_called()
+  assert not events
+  assert llm_response.content is not None
+  assert llm_response.content.parts[1].text == 'The answer is 720.'
+
+
+@pytest.mark.asyncio
+async def test_code_outside_a_thought_part_still_executes():
+  """A thought alongside the answer must not suppress the answer's code."""
+  code_executor = _stub_code_executor()
+  llm_response = LlmResponse(
+      content=types.Content(
+          parts=[
+              types.Part(
+                  text='```python\nprint("from the reasoning")\n```',
+                  thought=True,
+              ),
+              types.Part(text='```python\nprint("from the answer")\n```'),
+          ]
+      )
+  )
+
+  await _run_post_processor(code_executor, llm_response)
+
+  code_executor.execute_code.assert_called_once()
+  executed = code_executor.execute_code.call_args.args[1]
+  assert executed.code == 'print("from the answer")'
+
+
+@pytest.mark.asyncio
+async def test_thought_parts_stay_on_the_emitted_event():
+  """The model expects the signature on its own reasoning back verbatim."""
+  code_executor = _stub_code_executor()
+  llm_response = LlmResponse(
+      content=types.Content(
+          parts=[
+              types.Part(
+                  text='first I should compute it',
+                  thought=True,
+                  thought_signature=b'opaque',
+              ),
+              types.Part(text='```python\nprint("from the answer")\n```'),
+          ]
+      )
+  )
+
+  events = await _run_post_processor(code_executor, llm_response)
+
+  emitted_parts = events[0].content.parts
+  assert emitted_parts[0].thought
+  assert emitted_parts[0].thought_signature == b'opaque'
+  assert emitted_parts[-1].executable_code.code == 'print("from the answer")'
+
+
+@pytest.mark.asyncio
+async def test_planner_marked_action_text_still_executes():
+  """A planner marks its own code-bearing action text as a thought."""
+  code_executor = _stub_code_executor()
+  llm_response = LlmResponse(
+      content=types.Content(
+          parts=[
+              types.Part(
+                  text='/*ACTION*/```python\nprint("from the plan")\n```'
+              )
+          ]
+      )
+  )
+
+  await _run_post_processor(
+      code_executor, llm_response, planner=PlanReActPlanner()
+  )
+
+  code_executor.execute_code.assert_called_once()
+  executed = code_executor.execute_code.call_args.args[1]
+  assert executed.code == 'print("from the plan")'
+
+
+@pytest.mark.asyncio
+async def test_signed_thought_is_not_executed_under_a_planner():
+  """A planner cannot sign a thought, so a signed one is the model's own."""
+  code_executor = _stub_code_executor()
+  llm_response = LlmResponse(
+      content=types.Content(
+          parts=[
+              types.Part(
+                  text='```python\nprint("from the reasoning")\n```',
+                  thought=True,
+                  thought_signature=b'opaque',
+              ),
+              types.Part(
+                  text='/*ACTION*/```python\nprint("from the plan")\n```'
+              ),
+          ]
+      )
+  )
+
+  events = await _run_post_processor(
+      code_executor, llm_response, planner=PlanReActPlanner()
+  )
+
+  executed = code_executor.execute_code.call_args.args[1]
+  assert executed.code == 'print("from the plan")'
+  emitted_parts = events[0].content.parts
+  assert emitted_parts[0].thought_signature == b'opaque'
+  assert emitted_parts[0].text == '```python\nprint("from the reasoning")\n```'
+
+
 def test_get_content_as_bytes_returns_bytes_unchanged():
   """Binary output files are already bytes and must not be decoded again."""
   # PNG magic: valid bytes, but not decodable as base64.
@@ -479,3 +637,103 @@ async def test_pre_processor_does_not_inject_instruction_for_builtin_executor():
 
   system_instruction = str(llm_request.config.system_instruction or '')
   assert 'CRITICAL: Code execution format' not in system_instruction
+
+
+@pytest.mark.asyncio
+async def test_support_cfc_resolves_builtin_code_executor_without_mutating_agent():
+  from google.adk.agents.run_config import RunConfig
+
+  agent = Agent(name='test_agent', code_executor=None)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent,
+      user_content='run some code',
+      run_config=RunConfig(support_cfc=True),
+  )
+  invocation_context.artifact_service = MagicMock()
+  invocation_context.artifact_service.save_artifact = AsyncMock(return_value=1)
+
+  llm_request = LlmRequest(model='gemini-2.0-flash')
+  _ = [
+      event
+      async for event in request_processor.run_async(
+          invocation_context, llm_request
+      )
+  ]
+  assert agent.code_executor is None
+  assert any(
+      tool.code_execution is not None for tool in llm_request.config.tools or []
+  )
+
+  llm_response = LlmResponse(
+      content=types.Content(
+          parts=[
+              types.Part(
+                  inline_data=types.Blob(
+                      data=b'png_bytes',
+                      mime_type='image/png',
+                      display_name='cfc_plot.png',
+                  )
+              )
+          ]
+      )
+  )
+  events = [
+      event
+      async for event in response_processor.run_async(
+          invocation_context, llm_response
+      )
+  ]
+  assert agent.code_executor is None
+  assert len(events) == 1
+  assert events[0].actions.artifact_delta == {'cfc_plot.png': 1}
+
+  # Verify sub-agents (parent_agent is not None) do not inherit BuiltInCodeExecutor
+  sub_agent = Agent(name='sub_agent', code_executor=None)
+  root_agent = Agent(name='root_agent', sub_agents=[sub_agent])
+  del root_agent
+  sub_ctx = await testing_utils.create_invocation_context(
+      agent=sub_agent,
+      user_content='run sub code',
+      run_config=RunConfig(support_cfc=True),
+  )
+  sub_request = LlmRequest(model='gemini-2.0-flash')
+  _ = [
+      event async for event in request_processor.run_async(sub_ctx, sub_request)
+  ]
+  assert not any(
+      tool.code_execution is not None for tool in sub_request.config.tools or []
+  )
+
+
+@pytest.mark.asyncio
+async def test_append_new_message_to_session_stamps_isolation_scope_and_honors_session():
+  from google.adk.events.event import Event
+  from google.adk.events.event_actions import EventActions
+  from google.adk.runners import InMemoryRunner
+
+  agent = Agent(name='test_agent')
+  runner = InMemoryRunner(agent=agent, app_name='test_app')
+  target_session = await runner.session_service.create_session(
+      app_name='test_app', user_id='user_1'
+  )
+  # Seed a paused task event with isolation_scope so _find_active_task_scope finds it
+  paused_event = Event(
+      invocation_id='inv_1',
+      author='sub_agent',
+      isolation_scope='task_scope_1',
+  )
+  await runner.session_service.append_event(
+      session=target_session, event=paused_event
+  )
+
+  ic = await testing_utils.create_invocation_context(
+      agent=agent, user_content='hello'
+  )
+  await runner._append_new_message_to_session(
+      session=target_session,
+      new_message=types.Content(role='user', parts=[types.Part(text='resume')]),
+      invocation_context=ic,
+  )
+
+  assert len(target_session.events) == 2
+  assert target_session.events[-1].isolation_scope == 'task_scope_1'

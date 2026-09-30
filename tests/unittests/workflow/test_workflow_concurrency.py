@@ -130,3 +130,43 @@ async def test_max_concurrency_limits_running_nodes(
   await run_task
   started_count = sum(1 for e in started_events if e.is_set())
   assert started_count == num_nodes
+
+
+@pytest.mark.asyncio
+async def test_negative_max_concurrency_treated_as_unlimited(
+    request: pytest.FixtureRequest,
+):
+  """A negative max_concurrency is treated as unlimited and does not wedge the scheduler."""
+
+  class SimpleWorkerNode(BaseNode):
+
+    @override
+    async def _run_impl(
+        self,
+        *,
+        ctx: Context,
+        node_input: Any,
+    ) -> AsyncGenerator[Any, None]:
+      yield f'{self.name}_done'
+
+  class TerminalNode(BaseNode):
+
+    @override
+    async def _run_impl(
+        self, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      yield 'workflow_done'
+
+  nodes = [SimpleWorkerNode(name=f'Node{i}') for i in range(3)]
+  terminal_node = TerminalNode(name='Terminal')
+  agent = Workflow(
+      name='negative_concurrency_agent',
+      max_concurrency=-1,
+      edges=[(START, tuple(nodes), terminal_node)],
+  )
+
+  app = App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+  events = await runner.run_async(testing_utils.get_user_content('start'))
+  outputs = [e.output for e in events if e.output is not None]
+  assert 'workflow_done' in outputs

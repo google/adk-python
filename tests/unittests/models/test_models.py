@@ -15,7 +15,7 @@
 from unittest import mock
 
 from google.adk import models
-from google.adk.labs.openai._openai_llm import OpenAILlm
+from google.adk.integrations.openai import OpenAILlm
 from google.adk.models import registry
 from google.adk.models.anthropic_llm import Claude
 from google.adk.models.apigee_llm import ApigeeLlm
@@ -140,6 +140,20 @@ def test_non_exist_model():
   assert 'Model non-exist-model not found.' in str(e_info.value)
 
 
+def test_bare_third_party_model_name_is_told_about_the_provider_form():
+  """A bare unregistered name gets the "provider/model" hint and the install.
+
+  Neither of the existing branches fires for it: it has no claude prefix and
+  no slash, so before this it got "Model x not found." and nothing else.
+  """
+  with pytest.raises(ValueError) as e_info:
+    models.LLMRegistry.resolve('grok-4')
+  error_msg = str(e_info.value)
+  assert 'Model grok-4 not found.' in error_msg
+  assert '"provider/model"' in error_msg
+  assert 'pip install google-adk[extensions]' in error_msg
+
+
 def test_helpful_error_for_claude_without_extensions():
   """Test that Claude models show install instructions when anthropic is absent.
 
@@ -163,6 +177,35 @@ def test_helpful_error_for_claude_without_extensions():
   assert 'Model claude-opus-5 not found' in error_msg
   assert 'anthropic package' in error_msg
   assert 'pip install' in error_msg
+
+
+@pytest.mark.parametrize('model_name', ['gpt-4o', 'o3-mini'])
+def test_helpful_error_for_openai_without_openai_extra(model_name):
+  """OpenAI model names point at the openai extra when openai is absent.
+
+  Without this branch they fell through to the generic hint, which told the
+  user to reach the model through litellm instead of installing the package
+  the registered OpenAILlm needs.
+  """
+  # Point the lazy entries at a module that cannot be imported, which is what
+  # an uninstalled openai looks like to the registry.
+  with mock.patch.dict(
+      registry._llm_registry_dict,
+      {
+          r'gpt-.*': ('google.adk.models.not_installed', 'OpenAILlm'),
+          r'o\d+-.*': ('google.adk.models.not_installed', 'OpenAILlm'),
+      },
+  ):
+    registry.LLMRegistry.resolve.cache_clear()
+    with pytest.raises(ValueError) as e_info:
+      models.LLMRegistry.resolve(model_name)
+  registry.LLMRegistry.resolve.cache_clear()
+
+  error_msg = str(e_info.value)
+  assert f'Model {model_name} not found' in error_msg
+  assert 'openai package' in error_msg
+  assert 'pip install google-adk[openai]' in error_msg
+  assert '"provider/model"' not in error_msg
 
 
 def test_helpful_error_for_litellm_without_extensions():

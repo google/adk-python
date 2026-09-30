@@ -25,8 +25,8 @@ from ..agents.invocation_context import InvocationContext
 from ..agents.readonly_context import ReadonlyContext
 from ..events.event import Event
 from ..flows.llm_flows._base_llm_processor import BaseLlmRequestProcessor
-from ..flows.llm_flows.functions import handle_function_calls_async
-from ..flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from ..flows.llm_flows.tools._functions import handle_function_calls_async
+from ..flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from ..models.llm_request import LlmRequest
 from ..sessions.state import State
 from .auth_credential import AuthCredential
@@ -221,6 +221,8 @@ async def _store_auth_and_collect_resume_targets(
 
 class _AuthLlmRequestProcessor(BaseLlmRequestProcessor):
   """Handles auth information to build the LLM request."""
+
+  name = "auth"
 
   @override
   async def run_async(

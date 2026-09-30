@@ -27,6 +27,7 @@ from pydantic import field_serializer
 from pydantic import model_validator
 
 from ..models.llm_response import LlmResponse
+from ._node_path_builder import _NodePathBuilder
 from .event_actions import EventActions
 
 
@@ -65,16 +66,12 @@ class NodeInfo(BaseModel):
   @property
   def run_id(self) -> str:
     """The run ID of the node that generated the event."""
-    from ._node_path_builder import _NodePathBuilder
-
     return _NodePathBuilder.from_string(self.path).run_id or ''
 
   @property
   def parent_run_id(self) -> str | None:
     """The run ID of the parent node that dynamically scheduled
     this node. Used to reconstruct dynamic node state from session events."""
-    from ._node_path_builder import _NodePathBuilder
-
     builder = _NodePathBuilder.from_string(self.path)
     if builder.parent:
       return builder.parent.run_id
@@ -83,8 +80,6 @@ class NodeInfo(BaseModel):
   @property
   def name(self) -> str:
     """The clean name of the node (without @run_id)."""
-    from ._node_path_builder import _NodePathBuilder
-
     return _NodePathBuilder.from_string(self.path).node_name
 
 

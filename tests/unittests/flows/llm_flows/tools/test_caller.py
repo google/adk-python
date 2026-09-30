@@ -17,8 +17,11 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable
+import concurrent.futures
 import contextvars
 from typing import Any
+from typing import Callable
 from unittest import mock
 
 from google.adk.agents.invocation_context import InvocationContext
@@ -346,3 +349,86 @@ async def test_awaiting_tool_callbacks_keep_their_state_per_call() -> None:
     )
   # The tools still overlap; awaiting callbacks must not serialize the batch.
   assert order.index('tool-start:2') < order.index('tool-end:1')
+
+
+def _run_with_own_loop(
+    coro_fn: Callable[[], Awaitable[None]], *, raise_after: bool
+) -> dict[str, Any]:
+  """Runs coro_fn on a fresh loop; returns that loop and its tool pool.
+
+  Mirrors a server that calls asyncio.run per request. The returned dict keeps
+  the loop referenced after asyncio.run has closed it, standing in for whatever
+  holds it in production -- a traceback on a log record, most often.
+
+  Args:
+    coro_fn: Awaited on the fresh loop, after its tool pool is acquired.
+    raise_after: Whether the coroutine should raise once coro_fn returns, so
+      that the run ends the way a failed request does.
+
+  Returns:
+    A dict with the run's event loop under 'loop' and the tool pool it
+    acquired under 'pool'.
+  """
+  captured: dict[str, Any] = {}
+
+  async def main() -> None:
+    captured['loop'] = asyncio.get_running_loop()
+    captured['pool'] = _tool_caller._get_tool_thread_pool()
+    await coro_fn()
+    if raise_after:
+      raise RuntimeError('request failed')
+
+  try:
+    asyncio.run(main())
+  except RuntimeError:
+    pass
+  return captured
+
+
+async def _noop() -> None:
+  await asyncio.sleep(0)
+
+
+def _is_shut_down(pool: concurrent.futures.ThreadPoolExecutor) -> bool:
+  """Whether the pool refuses new work, via public API rather than _shutdown."""
+  try:
+    pool.submit(bool).cancel()
+  except RuntimeError:
+    return True
+  return False
+
+
+def test_tool_thread_pool_is_released_when_its_loop_closes() -> None:
+  """A closed-but-uncollected loop must not keep its tool threads alive."""
+  # Hold the result -- and so the loop -- for the whole test, the way a
+  # traceback held by a log record would.
+  failed = _run_with_own_loop(_noop, raise_after=True)
+  stranded_loop = failed['loop']
+  stranded_pool = failed['pool']
+
+  assert stranded_loop.is_closed()
+  # The weakref finalizer cannot have fired: the loop is still referenced.
+  assert stranded_loop in _tool_caller._TOOL_THREAD_POOLS
+  assert not _is_shut_down(stranded_pool)
+
+  # A later acquisition sweeps it.
+  _run_with_own_loop(_noop, raise_after=False)
+
+  assert stranded_loop not in _tool_caller._TOOL_THREAD_POOLS
+  assert _is_shut_down(stranded_pool)
+
+
+def test_tool_thread_pool_is_reused_within_one_loop() -> None:
+  """Sweeping must not disturb the pool of the loop that is still running."""
+
+  async def main() -> None:
+    first = _tool_caller._get_tool_thread_pool()
+    second = _tool_caller._get_tool_thread_pool()
+    assert first is second
+    assert not _is_shut_down(first)
+    # A different max_workers is a different pool on the same loop.
+    assert _tool_caller._get_tool_thread_pool(max_workers=2) is not first
+    # Still live after the acquisition that created the second pool swept.
+    assert not _is_shut_down(first)
+
+  asyncio.run(main())

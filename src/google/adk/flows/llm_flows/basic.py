@@ -26,10 +26,10 @@ from ...events.event import Event
 from ...models.llm_request import LlmRequest
 from ...utils import model_name_utils
 from ._base_llm_processor import BaseLlmRequestProcessor
-from ._invocation_utils import as_llm_agent
-from ._invocation_utils import copy_http_options as _copy_http_options
-from ._invocation_utils import copy_or_none as _copy_or_none
-from ._invocation_utils import require_run_config
+from .core._utils import as_llm_agent
+from .core._utils import copy_http_options as _copy_http_options
+from .core._utils import copy_or_none as _copy_or_none
+from .core._utils import require_run_config
 
 
 def _merge_run_config_http_options(
@@ -127,8 +127,8 @@ def _build_basic_request(
     llm_request.config.labels.update(invocation_context.run_config.labels)
   # Only set output_schema if no tools are specified. as of now, model don't
   # support output_schema and tools together. we have a workaround to support
-  # both output_schema and tools at the same time. see
-  # _output_schema_processor.py for details
+  # both output_schema and tools at the same time. see prompt/_schema.py for
+  # details
   #
   # task-mode agents skip output_schema configuration in
   # the basic flow. Structured output for tasks is collected via the
@@ -207,6 +207,8 @@ def _build_basic_request(
 
 
 class _BasicLlmRequestProcessor(BaseLlmRequestProcessor):
+
+  name = 'basic'
 
   @override
   async def run_async(

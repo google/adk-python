@@ -144,14 +144,6 @@ BACKENDS = [
         'redis',
         _make_redis,
         divergences={
-            'test_list_sessions_ordered_by_last_update_time': (
-                'Redis sorts sessions newest first, while the base class'
-                ' documents oldest first.'
-            ),
-            'test_session_last_update_time_updates_on_event': (
-                'Redis stamps the session with the wall clock instead of the'
-                " appended event's timestamp."
-            ),
             'test_append_event_to_unknown_session_raises_session_not_found': (
                 'Redis writes the session key unconditionally on append, so'
                 ' appending to a session it has never stored creates one'

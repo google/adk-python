@@ -313,8 +313,8 @@ class RedisSessionService(BaseSessionService):
         except Exception as e:
           logger.warning("Failed to parse session at key %s: %s", key, e)
 
-    # Sort descending by last_update_time
-    sessions.sort(key=lambda s: s.last_update_time, reverse=True)
+    # Sort oldest first, with stable ordering when update times are equal.
+    sessions.sort(key=lambda s: (s.last_update_time, s.user_id, s.id))
     return ListSessionsResponse(sessions=sessions)
 
   async def delete_session(
@@ -340,7 +340,12 @@ class RedisSessionService(BaseSessionService):
     """Appends an event to the session and synchronizes state in Redis."""
     client = self._get_redis()
     event = await super().append_event(session, event)
-    session.last_update_time = time.time()
+    # Stamp the session with the event's own timestamp, matching
+    # InMemorySessionService, SqliteSessionService and DatabaseSessionService.
+    # The wall clock is wrong here: an event records when it was produced, which
+    # can predate the append when it is replayed or re-delivered, and
+    # last_update_time is the key list_sessions orders by.
+    session.last_update_time = event.timestamp
 
     # Sync app and user state deltas to their respective keys
     if event.actions and event.actions.state_delta:

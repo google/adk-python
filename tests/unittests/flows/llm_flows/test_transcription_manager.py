@@ -16,11 +16,22 @@
 
 from __future__ import annotations
 
+import importlib
+
 from google.adk.flows.llm_flows import transcription_manager as legacy_module
 from google.adk.flows.llm_flows.transcription_manager import TranscriptionManager as LegacyTranscriptionManager
 from google.adk.live._transcription_manager import TranscriptionManager
+import pytest
 
 
 def test_transcription_manager_reexport():
   assert LegacyTranscriptionManager is TranscriptionManager
   assert getattr(legacy_module, 'TranscriptionManager') is TranscriptionManager
+
+
+def test_transcription_manager_deprecation_warning():
+  with pytest.warns(
+      DeprecationWarning,
+      match='use google.adk.live._transcription_manager instead',
+  ):
+    importlib.reload(legacy_module)

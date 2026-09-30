@@ -22,7 +22,6 @@ from typing import TYPE_CHECKING
 from google.genai import types
 from typing_extensions import override
 
-from .. import functions
 from ....agents.invocation_context import InvocationContext
 from ....agents.readonly_context import ReadonlyContext
 from ....events.event import Event
@@ -35,13 +34,10 @@ from ....tools.tool_context import ToolContext
 from .._base_llm_processor import BaseLlmRequestProcessor
 from ..agent_transfer import _build_transfer_tool
 from ..agent_transfer import _get_transfer_targets
+from ._functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 
 if TYPE_CHECKING:
   from ....agents.llm_agent import LlmAgent
-
-REQUEST_CONFIRMATION_FUNCTION_CALL_NAME = (
-    functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
-)
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -130,6 +126,12 @@ async def _resolve_confirmation_targets(
         dynamically_requested_fc_ids.add(fr.id)
 
   for event in events:
+    # If this confirmation request was authored by another agent, skip it to let that
+    # agent's processor handle it.
+    agent = invocation_context.agent
+    if agent and event.author and event.author != agent.name:
+      continue
+
     event_function_calls = event.get_function_calls()
     if not event_function_calls:
       continue
@@ -327,6 +329,8 @@ def _apply_caller_principal_gate(
 class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
   """Handles tool confirmation information to build the LLM request."""
 
+  name = "request_confirmation"
+
   @override
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
@@ -436,6 +440,8 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
       return
 
     # Step 4: Re-execute the confirmed tools.
+    from .. import functions
+
     if function_response_event := await functions.handle_function_call_list_async(
         invocation_context,
         list(tools_to_resume_with_args.values()),

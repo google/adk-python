@@ -177,6 +177,10 @@ class BaseSessionService(abc.ABC):
     # read temp values (e.g. output_key='temp:my_key' in SequentialAgent).
     self._apply_temp_state(session, event)
     event = self._trim_temp_delta_state(event)
+    return self._commit_event_to_session(session, event)
+
+  def _commit_event_to_session(self, session: Session, event: Event) -> Event:
+    """Applies non-temp state delta and appends the event to the in-memory session."""
     self._update_session_state(session, event)
     session.events.append(event)
     return event
