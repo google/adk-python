@@ -989,6 +989,7 @@ async def test_execute_sql_non_select_stmt_write_protected_persistent_target(
     }
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("query", "statement_type"),
     [
