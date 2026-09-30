@@ -61,6 +61,10 @@ class FeatureName(str, Enum):
   _MCP_GRACEFUL_ERROR_HANDLING = "MCP_GRACEFUL_ERROR_HANDLING"
   MONGODB_MEMORY_SERVICE = "MONGODB_MEMORY_SERVICE"
   MONGODB_SESSION_SERVICE = "MONGODB_SESSION_SERVICE"
+  # Off by default since it changes wire behavior. Enable with
+  # `ADK_ENABLE_MCP_MODERN_PROTOCOL=1`. No effect on MCP SDK 1.x.
+  _MCP_MODERN_PROTOCOL = "MCP_MODERN_PROTOCOL"
+  MONGODB_TOOLSET = "MONGODB_TOOLSET"
   MONGODB_TOOL_SETTINGS = "MONGODB_TOOL_SETTINGS"
   MONGODB_TOOLSET = "MONGODB_TOOLSET"
   PROGRESSIVE_SSE_STREAMING = "PROGRESSIVE_SSE_STREAMING"
@@ -197,6 +201,10 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.MONGODB_SESSION_SERVICE: FeatureConfig(
+    FeatureName._MCP_MODERN_PROTOCOL: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=False
+    ),
+    FeatureName.MONGODB_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.MONGODB_TOOL_SETTINGS: FeatureConfig(

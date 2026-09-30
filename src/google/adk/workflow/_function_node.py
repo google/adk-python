@@ -338,6 +338,24 @@ class FunctionNode(BaseNode):
         except (TypeError, KeyError):
           pass
 
+      if (
+          not has_param
+          and input_bound
+          and param_name == "node_input"
+          and self.input_schema is not None
+          and not isinstance(self.input_schema, (dict, types.Schema))
+          and param_name in self._type_hints
+      ):
+        try:
+          value = self._coerce_param(
+              param_name,
+              node_input,
+              self._type_hints[param_name],
+          )
+          has_param = True
+        except Exception:
+          pass
+
       if has_param:
         if param_name in self._type_hints:
           value = self._coerce_param(
@@ -436,6 +454,55 @@ class FunctionNode(BaseNode):
     if adapter is None:
       adapter = TypeAdapter(annotated_type)
     return adapter.validate_python(value)
+
+  @override
+  def _validate_input_data(self, data: Any) -> Any:
+    """Validates input data for FunctionNode."""
+    if self.input_schema is not None and not isinstance(
+        self.input_schema, (dict, types.Schema)
+    ):
+      return super()._validate_input_data(data)
+
+    if self.parameter_binding == "node_input":
+      source: Any = data if isinstance(data, (dict, BaseModel)) else {}
+      validated: dict[str, Any] = {}
+      for param_name, param in self._sig.parameters.items():
+        if param_name == self._context_param_name:
+          continue
+
+        has_param = False
+        value = None
+        if isinstance(source, BaseModel):
+          if hasattr(source, param_name):
+            has_param = True
+            value = getattr(source, param_name)
+        else:
+          try:
+            if param_name in source:
+              has_param = True
+              value = source[param_name]
+          except (TypeError, KeyError):
+            pass
+
+        if has_param:
+          if param_name in self._type_hints:
+            value = self._coerce_param(
+                param_name,
+                value,
+                self._type_hints[param_name],
+            )
+          validated[param_name] = value
+        elif param.default is not inspect.Parameter.empty:
+          validated[param_name] = param.default
+        else:
+          raise WorkflowDataError(
+              f'Missing value for parameter "{param_name}" of function'
+              f' "{self.name}". It was not found in node_input and has no'
+              " default value."
+          )
+      return validated
+
+    return super()._validate_input_data(data)
 
   @override
   def model_copy(
