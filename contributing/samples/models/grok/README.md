@@ -4,8 +4,8 @@
 
 A hello-world agent powered by **xAI Grok 4.6**, served as a partner model on
 **Vertex AI Model Garden**. Grok is reached through the OpenAI-compatible Chat
-Completions surface (`endpoints/openapi`), so the labs
-[`OpenAILlm`](../../../../src/google/adk/labs/openai/README.md) model talks to it directly --
+Completions surface (`endpoints/openapi`), so the
+[`OpenAILlm`](../../../../src/google/adk/integrations/openai/README.md) model talks to it directly --
 no LiteLLM, and no xAI API key.
 
 The agent has two tools, `roll_die` and `check_prime`, so the sample exercises

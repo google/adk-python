@@ -102,7 +102,7 @@ coordinator:
 #### Remote Server Definition (`remote_agent.py`)
 
 ```python
-from google.adk.a2a import to_a2a
+from google.adk.a2a.utils.agent_to_a2a import to_a2a
 from google.adk.agents import LlmAgent
 
 # Define the remote agent with mode="task" (automatically injects finish_task)

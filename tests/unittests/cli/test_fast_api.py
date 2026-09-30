@@ -54,6 +54,8 @@ from google.api_core.exceptions import InvalidArgument
 from google.genai import types
 from pydantic import BaseModel
 import pytest
+from starlette.applications import Starlette
+from starlette.routing import Mount
 
 # Configure logging to help diagnose server startup issues
 logging.basicConfig(
@@ -2761,6 +2763,32 @@ def test_list_metrics_info(builder_test_client):
     assert "metricValueInfo" in metric
 
 
+def test_list_metrics_info_omits_metrics_that_need_no_threshold(
+    builder_test_client,
+):
+  """Always-on informational metrics are not offered for threshold selection.
+
+  This surface asks the user to pick metrics and set a threshold for each, and
+  bounds the threshold control by the metric's value interval. Metrics that
+  need no threshold have neither, so listing them leaves consumers with nothing
+  to render.
+  """
+  response = builder_test_client.get("/dev/apps/test_app/metrics-info")
+
+  assert response.status_code == 200
+  listed = [metric["metricName"] for metric in response.json()["metricsInfo"]]
+  assert "tool_trajectory_avg_score" in listed
+  for informational in (
+      "tool_call_count_v1",
+      "inference_call_count_v1",
+      "token_usage_v1",
+  ):
+    assert informational not in listed
+  # Everything that is listed can be rendered as a bounded threshold control.
+  for metric in response.json()["metricsInfo"]:
+    assert metric["metricValueInfo"]["interval"]
+
+
 def test_debug_trace(test_app):
   """Test the debug trace endpoint."""
   # This test will likely return 404 since we haven't set up trace data,
@@ -5201,6 +5229,61 @@ def test_agent_run_sse_deferred_without_streaming_is_allowed(
   response = test_app.post("/run_sse", json=payload)
 
   assert response.status_code == 200
+
+
+def test_runtime_config_endpoint_shadows_static_file(tmp_path):
+  """The in-memory config must win over the file still shipped in the package.
+
+  ApiServer registers this route before mounting StaticFiles at "/dev-ui/".
+  Starlette matches in registration order, so moving the route after the mount
+  would silently serve the stale on-disk file instead -- with a 200 and no
+  error. Assert on the payload, not just the status code.
+  """
+  app = get_fast_api_app(
+      agents_dir=str(tmp_path), web=True, url_prefix="/custom"
+  )
+
+  # The prefix is stripped by whatever mounts the app (reverse proxy, gateway,
+  # or an outer Starlette Mount); ADK registers its routes unprefixed.
+  outer = Starlette(routes=[Mount("/custom", app)])
+  response = TestClient(outer).get(
+      "/custom/dev-ui/assets/config/runtime-config.json"
+  )
+
+  assert response.status_code == 200
+  body = response.json()
+  # A stale file on disk would report "" here.
+  assert body["backendUrl"] == "/custom"
+  assert "telemetry" in body
+  assert response.headers["cache-control"] == "no-store"
+
+
+def test_runtime_config_endpoint_does_not_write_to_disk(tmp_path):
+  """Serving the config must not touch the installed package directory."""
+  import google.adk.cli as cli_package
+
+  config_path = (
+      Path(cli_package.__file__).parent
+      / "browser"
+      / "assets"
+      / "config"
+      / "runtime-config.json"
+  )
+  before = config_path.read_bytes() if config_path.exists() else None
+
+  app = get_fast_api_app(
+      agents_dir=str(tmp_path), web=True, url_prefix="/prefix"
+  )
+  TestClient(app).get("/dev-ui/assets/config/runtime-config.json")
+
+  after = config_path.read_bytes() if config_path.exists() else None
+  assert after == before
+
+
+def test_runtime_config_rejects_half_specified_logo(tmp_path):
+  """--logo-text without --logo-image-url is a config error, not a silent drop."""
+  with pytest.raises(ValueError, match="Both --logo-text and --logo-image-url"):
+    get_fast_api_app(agents_dir=str(tmp_path), web=True, logo_text="ACME")
 
 
 if __name__ == "__main__":

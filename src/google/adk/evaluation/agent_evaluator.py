@@ -569,7 +569,7 @@ class AgentEvaluator:
       overall_eval_status: EvalStatus,
       overall_score: Optional[float],
       metric_name: str,
-      threshold: float,
+      threshold: Optional[float],
   ) -> None:
     try:
       import pandas as pd  # pylint: disable=g-import-not-at-top
@@ -860,24 +860,48 @@ class AgentEvaluator:
     ) in eval_metric_results.items():
       if not eval_metric_results_with_invocations:
         continue
-      threshold = _get_metric_threshold(
-          eval_metric_results_with_invocations[0].eval_metric_result
-      )
+
+      metric_result = eval_metric_results_with_invocations[0].eval_metric_result
       scores = [
           m.eval_metric_result.score
           for m in eval_metric_results_with_invocations
           if m.eval_metric_result.score is not None
       ]
+      overall_score = statistics.mean(scores) if scores else None
 
-      if scores:
-        overall_score = statistics.mean(scores)
+      # Informational metrics (e.g. the efficiency metrics) report a value but
+      # never pass or fail. Detect them by their INFORMATIONAL status, falling
+      # back to the absence of any threshold/criterion. Report their value but
+      # never count them as a failure.
+      is_informational = (
+          metric_result.eval_status == EvalStatus.INFORMATIONAL
+          or (
+              metric_result.criterion is None
+              and metric_result.threshold is None
+          )
+      )
+      if is_informational:
+        if print_detailed_results:
+          AgentEvaluator._print_details(
+              eval_metric_result_with_invocations=eval_metric_results_with_invocations,
+              overall_eval_status=EvalStatus.INFORMATIONAL,
+              overall_score=overall_score,
+              metric_name=metric_name,
+              threshold=None,
+          )
+        continue
+
+      threshold = _get_metric_threshold(metric_result)
+
+      # Keyed on the score rather than on `scores`, which holds the same
+      # condition but leaves the score's type unnarrowed.
+      if overall_score is not None:
         overall_eval_status = (
             EvalStatus.PASSED
             if overall_score >= threshold
             else EvalStatus.FAILED
         )
       else:
-        overall_score = None
         overall_eval_status = EvalStatus.NOT_EVALUATED
 
       # Gather all the failures.

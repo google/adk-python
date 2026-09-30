@@ -116,6 +116,33 @@ def merge_parallel_function_response_events(
   return merged_event
 
 
+def _apply_latest_state_writes(
+    merged_event: Event,
+    function_response_events: list[Event],
+    session_state: dict[str, Any],
+) -> None:
+  """Re-applies the latest value of list and dict keys several calls wrote.
+
+  Calls share the session state, so a call that reads a key after another call
+  wrote it builds on that write, which merging in call order alone can drop.
+  """
+  merged_delta = merged_event.actions.state_delta
+  latest_writes: dict[str, Any] = {}
+  for key in merged_delta:
+    latest = session_state.get(key)
+    if not isinstance(latest, (dict, list)):
+      continue
+    writes = [
+        event.actions.state_delta[key]
+        for event in function_response_events
+        if key in event.actions.state_delta
+    ]
+    # State stores the same object in the session and in the call's delta.
+    if len(writes) > 1 and any(write is latest for write in writes):
+      latest_writes[key] = latest
+  deep_merge_dicts(merged_delta, latest_writes)
+
+
 def _merge_and_trace_function_response_events(
     invocation_context: InvocationContext,
     function_response_events: list[Event],
@@ -123,6 +150,9 @@ def _merge_and_trace_function_response_events(
   """Merges the response events of parallel calls into a single event."""
   merged_event = merge_parallel_function_response_events(
       function_response_events
+  )
+  _apply_latest_state_writes(
+      merged_event, function_response_events, invocation_context.session.state
   )
 
   # this is needed for debug traces of parallel calls

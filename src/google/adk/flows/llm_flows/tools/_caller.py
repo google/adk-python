@@ -20,7 +20,9 @@ import asyncio
 import base64
 import binascii
 from collections.abc import Awaitable
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+import contextlib
 import contextvars
 import copy
 import dataclasses
@@ -180,6 +182,34 @@ def _is_sync_tool(tool: BaseTool) -> bool:
   )
 
 
+@contextlib.contextmanager
+def _use_executor_for_sync_callables(
+    executor: ThreadPoolExecutor,
+) -> Iterator[None]:
+  """Binds a sync callable runner that calls each callable on ``executor``.
+
+  The callable runs with a copy of the caller's context variables and with no
+  runner bound, so a nested call it makes runs inline on its worker thread.
+  """
+
+  async def run_sync_callable(
+      target: Callable[..., Any], call_args: dict[str, Any]
+  ) -> Any:
+    call_context = contextvars.copy_context()
+
+    def invoke() -> Any:
+      with _use_sync_callable_runner(None):
+        return target(**call_args)
+
+    return await asyncio.get_running_loop().run_in_executor(
+        executor,
+        lambda: call_context.run(invoke),
+    )
+
+  with _use_sync_callable_runner(run_sync_callable):
+    yield
+
+
 async def _call_tool_in_thread_pool(
     tool: BaseTool,
     args: dict[str, Any],
@@ -209,22 +239,7 @@ async def _call_tool_in_thread_pool(
   executor = _get_tool_thread_pool(max_workers)
 
   if _is_sync_tool(tool) and isinstance(tool, FunctionTool):
-
-    async def run_sync_callable(
-        target: Callable[..., Any], call_args: dict[str, Any]
-    ) -> Any:
-      call_context = contextvars.copy_context()
-
-      def invoke() -> Any:
-        with _use_sync_callable_runner(None):
-          return target(**call_args)
-
-      return await loop.run_in_executor(
-          executor,
-          lambda: call_context.run(invoke),
-      )
-
-    with _use_sync_callable_runner(run_sync_callable):
+    with _use_executor_for_sync_callables(executor):
       return await tool.run_async(args=args, tool_context=tool_context)
 
   ctx = contextvars.copy_context()
@@ -527,17 +542,19 @@ def _build_response_event(
       and 'error' not in function_result
       and has_displayable_result
   ):
-    # Imported lazily: AgentTool is only needed on the skip-summarization
-    # path, so it is not worth pulling into every functions.py import.
+    # Imported lazily: AgentTool and NodeTool are only needed on the
+    # skip-summarization path, so they are not worth pulling into every
+    # functions.py import.
+    from ....tools._node_tool import NodeTool
     from ....tools.agent_tool import AgentTool
 
-    # This is scoped to AgentTool deliberately: other tools (e.g. UI/widget-
-    # rendering tools) set skip_summarization precisely because their function
-    # response is an internal acknowledgement that must NOT be surfaced as
-    # visible text. AgentTool subclasses can still return None (e.g.
+    # This is scoped to AgentTool and NodeTool deliberately: other tools (e.g.
+    # UI/widget-rendering tools) set skip_summarization precisely because their
+    # function response is an internal acknowledgement that must NOT be surfaced
+    # as visible text. AgentTool subclasses can still return None (e.g.
     # _SingleTurnAgentTool delegating to run_node), hence the
     # has_displayable_result guard above.
-    if isinstance(tool, AgentTool):
+    if isinstance(tool, (AgentTool, NodeTool)):
       if isinstance(display_result, str):
         result_text = display_result
       else:
@@ -934,16 +951,38 @@ async def _execute_single_prepared_call_async(
   the tool unless one of them answered the call, run the after-tool callbacks,
   and turn the result into an event. State modifications stay thread safe
   because each call owns its own ToolContext.
+
+  With `RunConfig.tool_thread_pool_config` set, a synchronous `FunctionTool`
+  calls its function on the tool thread pool. Every other tool, async function
+  tools included, runs on the event loop as it does without the config.
   """
-  return await _execute_single_prepared_call(
-      invocation_context,
-      prepared_call,
-      agent,
-      tool_runner=lambda: _call_tool_async(
-          prepared_call.tool,
+  tool = prepared_call.tool
+  run_config = invocation_context.run_config
+  thread_pool_config = (
+      run_config.tool_thread_pool_config if run_config else None
+  )
+
+  async def call_tool() -> object:
+    sync_callables: contextlib.AbstractContextManager[None] = (
+        contextlib.nullcontext()
+    )
+    if (
+        thread_pool_config is not None
+        and _is_sync_tool(tool)
+        and isinstance(tool, FunctionTool)
+    ):
+      sync_callables = _use_executor_for_sync_callables(
+          _get_tool_thread_pool(thread_pool_config.max_workers)
+      )
+    with sync_callables:
+      return await _call_tool_async(
+          tool,
           args=prepared_call.function_args,
           tool_context=prepared_call.tool_context,
-      ),
+      )
+
+  return await _execute_single_prepared_call(
+      invocation_context, prepared_call, agent, tool_runner=call_tool
   )
 
 
