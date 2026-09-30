@@ -30,6 +30,38 @@ import google.oauth2.service_account
 
 class TestEventarcClient(unittest.IsolatedAsyncioTestCase):
 
+  def test_impersonated_credentials_are_keyed_by_source_principal(self):
+    def make_sa(email):
+      return google.oauth2.service_account.Credentials(
+          signer=mock.Mock(),
+          service_account_email=email,
+          token_uri="https://oauth2.mtls.googleapis.com/token",
+      )
+
+    def impersonate(source):
+      return google.auth.impersonated_credentials.Credentials(
+          source_credentials=source,
+          target_principal="target@test.com",
+          target_scopes=[],
+      )
+
+    authorized = impersonate(make_sa("authorized@test.com"))
+    same_source = impersonate(make_sa("authorized@test.com"))
+    other_source = impersonate(make_sa("unauthorized@test.com"))
+
+    self.assertEqual(
+        client._get_credential_id(authorized),
+        client._get_credential_id(same_source),
+    )
+    self.assertNotEqual(
+        client._get_credential_id(authorized),
+        client._get_credential_id(other_source),
+    )
+    self.assertNotEqual(
+        client._get_cache_key(authorized, "ua", "project"),
+        client._get_cache_key(other_source, "ua", "project"),
+    )
+
   def test_get_credential_id(self):
     # Service Account
     sa_creds = google.oauth2.service_account.Credentials(
@@ -39,13 +71,16 @@ class TestEventarcClient(unittest.IsolatedAsyncioTestCase):
     )
     self.assertEqual(client._get_credential_id(sa_creds), "test@test.com")
 
-    # Impersonated (Uses service_account_email under the hood in google-auth)
+    # Impersonated (the identity includes the source principal)
     imp_creds = google.auth.impersonated_credentials.Credentials(
-        source_credentials=mock.Mock(),
+        source_credentials=sa_creds,
         target_principal="imp@test.com",
         target_scopes=[],
     )
-    self.assertEqual(client._get_credential_id(imp_creds), "imp@test.com")
+    self.assertEqual(
+        client._get_credential_id(imp_creds),
+        "Impersonated:imp@test.com:test@test.com",
+    )
 
     # Compute Engine (ADC)
     gce_creds = google.auth.compute_engine.credentials.Credentials()
