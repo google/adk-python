@@ -43,6 +43,7 @@ from .base_eval_service import InferenceResult
 from .base_eval_service import InferenceStatus
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
+from .eval_case import SessionState
 from .eval_metrics import EvalMetric
 from .eval_metrics import EvalMetricResult
 from .eval_metrics import EvalMetricResultDetails
@@ -54,6 +55,7 @@ from .eval_set_results_manager import EvalSetResultsManager
 from .eval_sets_manager import EvalSetsManager
 from .evaluation_generator import EvaluationGenerator
 from .evaluator import EvalStatus
+from .evaluator import EvaluationContext
 from .evaluator import EvaluationResult
 from .evaluator import PerInvocationResult
 from .metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
@@ -424,6 +426,11 @@ class LocalEvalService(BaseEvalService):
             actual_invocations=actual_invocations,
             expected_invocations=eval_case.conversation,
             conversation_scenario=eval_case.conversation_scenario,
+            context=EvaluationContext(
+                initial_session_state=inference_result.initial_session_state,
+                final_session_state=inference_result.final_session_state,
+                expected_final_session_state=eval_case.final_session_state,
+            ).model_copy(deep=True),
         )
     except Exception as e:
       # We intentionally catch the Exception as we don't want failures to
@@ -527,6 +534,7 @@ class LocalEvalService(BaseEvalService):
       actual_invocations: list[Invocation],
       expected_invocations: Optional[list[Invocation]],
       conversation_scenario: Optional[ConversationScenario],
+      context: EvaluationContext,
   ) -> EvaluationResult:
     """Returns EvaluationResult obtained from evaluating a metric using an Evaluator."""
 
@@ -535,10 +543,11 @@ class LocalEvalService(BaseEvalService):
         eval_metric=eval_metric
     )
 
-    result = metric_evaluator.evaluate_invocations(
+    result = metric_evaluator.evaluate_with_context(
         actual_invocations=actual_invocations,
         expected_invocations=expected_invocations,
         conversation_scenario=conversation_scenario,
+        context=context,
     )
     if inspect.isawaitable(result):
       return await result
@@ -593,6 +602,12 @@ class LocalEvalService(BaseEvalService):
         session_id=session_id,
     )
 
+    def record_session_state(
+        initial_state: SessionState, final_state: Optional[SessionState]
+    ) -> None:
+      inference_result.initial_session_state = initial_state
+      inference_result.final_session_state = final_state
+
     try:
       with client_label_context(EVAL_CLIENT_LABEL):
         if use_live:
@@ -606,6 +621,7 @@ class LocalEvalService(BaseEvalService):
               memory_service=self._memory_service,
               live_timeout_seconds=live_timeout_seconds,
               app=self._app,
+              session_state_callback=record_session_state,
           )
         else:
           inferences = (
@@ -620,6 +636,7 @@ class LocalEvalService(BaseEvalService):
                   artifact_service=self._artifact_service,
                   memory_service=self._memory_service,
                   app=self._app,
+                  session_state_callback=record_session_state,
               )
           )
 

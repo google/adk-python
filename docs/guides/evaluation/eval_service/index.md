@@ -159,6 +159,23 @@ conversation, which is why the manager is a constructor argument rather than
 something you pass per request. An `InferenceResult` naming a case the manager
 does not have raises `NotFoundError`.
 
+### Session state for metrics
+
+`perform_inference` stores the actual session state before the first turn and
+after the last turn in `InferenceResult.initial_session_state` and
+`InferenceResult.final_session_state`. For an existing session, the initial
+snapshot comes from that session. `SessionInput.state` is the seed for a new
+session and may differ from the actual initial state.
+
+`evaluate` passes these snapshots to each metric through `EvaluationContext`,
+along with `expected_final_session_state` from `EvalCase.final_session_state`.
+Each metric receives its own copy, so changes in one metric do not affect another.
+The expected state preserves the eval case value, whose default is `{}`. An
+omitted expected state therefore differs from an explicit `None`.
+To read these fields, override
+[`Evaluator.evaluate_with_context`](../evaluator/index.md#write-an-evaluator-subclass).
+Existing evaluators and custom metric functions keep their original arguments.
+
 ### Statuses
 
 Each metric produces an `EvalMetricResult` with a score and an `EvalStatus`.
@@ -289,8 +306,17 @@ async for case_result in eval_service.evaluate(
   ...
 ```
 
+Actual state snapshots survive serialization, so a later session update does
+not change the state a metric sees. Old results without snapshots load with
+`None` for those fields. The service does not fill missing snapshots from the
+live session. An empty dictionary is a valid snapshot and differs from `None`.
+
+`EvalCaseResult.session_details` still comes from the session service at evaluation
+time. It may reflect later updates, or be `None` if the session was deleted. Metrics
+use the inference snapshots instead.
+
 The eval sets manager must still hold the same cases under the same ids, since
-`evaluate` re-reads the expected conversation from it.
+`evaluate` re-reads the expected conversation and expected final state from it.
 
 ### Evaluate a subset
 
@@ -325,10 +351,9 @@ collecting a list, because callers rely on that to report progress.
 *   **It needs the evaluation extra.** `base_eval_service` imports on a base
     install, but `local_eval_service` pulls in `vertexai` through
     `google-cloud-aiplatform[evaluation]`. Install `google-adk[eval]`.
-*   **Nothing is re-exported at package level.** Import from
+*   **Service types use module imports.** Import from
     `google.adk.evaluation.base_eval_service` and
-    `google.adk.evaluation.local_eval_service`; `google.adk.evaluation` exports
-    only `AgentEvaluator`.
+    `google.adk.evaluation.local_eval_service` directly.
 *   **Failures are absorbed at both layers.** A failed inference becomes a
     `FAILURE` result, and a metric that raises becomes `NOT_EVALUATED`. Neither
     reaches the caller as an exception, so a job that does not check statuses

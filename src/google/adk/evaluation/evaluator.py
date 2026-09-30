@@ -22,6 +22,7 @@ from pydantic import BaseModel
 
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
+from .eval_case import SessionState
 from .eval_metrics import BaseCriterion
 from .eval_metrics import EvalStatus as EvalStatus
 from .eval_metrics import TokenUsageDetails
@@ -72,10 +73,56 @@ class EvaluationResult(BaseModel):
   """Per-type token counts, averaged over invocations."""
 
 
+class EvaluationContext(BaseModel):
+  """Session state for one eval case.
+
+  LocalEvalService gives each metric its own copy. Actual states are snapshots
+  from inference, so later session updates do not change the evaluation input.
+  """
+
+  initial_session_state: Optional[SessionState] = None
+  """Actual state before the first turn, or None if no snapshot is available."""
+
+  final_session_state: Optional[SessionState] = None
+  """Actual state after the last turn, or None if no snapshot is available."""
+
+  expected_final_session_state: Optional[SessionState] = None
+  """Expected final state from EvalCase.final_session_state."""
+
+
 class Evaluator(ABC):
   """A metrics evaluator interface."""
 
   criterion_type: ClassVar[type[BaseCriterion]] = BaseCriterion
+
+  def evaluate_with_context(
+      self,
+      actual_invocations: list[Invocation],
+      expected_invocations: Optional[list[Invocation]] = None,
+      conversation_scenario: Optional[ConversationScenario] = None,
+      *,
+      context: EvaluationContext,
+  ) -> EvaluationResult | Awaitable[EvaluationResult]:
+    """Returns a metric result with access to session state.
+
+    Override this method for metrics that need session state. The default calls
+    evaluate_invocations with its original arguments, so existing evaluators
+    keep their current signatures. Both methods can return an awaitable.
+
+    Args:
+      actual_invocations: Invocations from the agent under test.
+      expected_invocations: Optional reference invocations.
+      conversation_scenario: Optional scenario for a multi-turn conversation.
+      context: Actual state snapshots and the expected final state for this case.
+
+    Returns:
+      The evaluation result, or an awaitable that returns it.
+    """
+    return self.evaluate_invocations(
+        actual_invocations=actual_invocations,
+        expected_invocations=expected_invocations,
+        conversation_scenario=conversation_scenario,
+    )
 
   def evaluate_invocations(
       self,

@@ -14,9 +14,11 @@
 
 import logging
 
+from .evaluator import EvaluationContext
+
 logger = logging.getLogger('google_adk.' + __name__)
 
-__all__ = []
+__all__ = ['EvaluationContext']
 
 try:
   from .agent_evaluator import AgentEvaluator

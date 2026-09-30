@@ -27,6 +27,7 @@ from pydantic import Field
 
 from .constants import DEFAULT_LIVE_TIMEOUT_SECONDS
 from .eval_case import Invocation
+from .eval_case import SessionState
 from .eval_metrics import EvalMetric
 from .eval_result import EvalCaseResult
 
@@ -170,6 +171,18 @@ class InferenceResult(BaseModel):
       default=None,
       description="""Error message if the inference failed.""",
   )
+
+  initial_session_state: Optional[SessionState] = Field(default=None)
+  """Actual state before the first turn, or None if no snapshot was captured.
+
+  For a reused session, this is its stored state, not SessionInput.state.
+  """
+
+  final_session_state: Optional[SessionState] = Field(default=None)
+  """Actual state after inference, or None if the session was unavailable.
+
+  Older inference results without state snapshots also leave this as None.
+  """
 
 
 class EvaluateRequest(BaseModel):

@@ -15,8 +15,11 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncGenerator
 from typing import Optional
 
+from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import App
 from google.adk.errors.not_found_error import NotFoundError
@@ -42,17 +45,22 @@ from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.eval_set_results_manager import EvalSetResultsManager
 from google.adk.evaluation.eval_sets_manager import EvalSetsManager
 from google.adk.evaluation.evaluator import EvalStatus
+from google.adk.evaluation.evaluator import EvaluationContext
 from google.adk.evaluation.evaluator import EvaluationResult
 from google.adk.evaluation.evaluator import Evaluator
 from google.adk.evaluation.evaluator import PerInvocationResult
+from google.adk.evaluation.in_memory_eval_sets_manager import InMemoryEvalSetsManager
 from google.adk.evaluation.local_eval_service import _add_rubrics_to_invocation
 from google.adk.evaluation.local_eval_service import _copy_eval_case_rubrics_to_actual_invocations
 from google.adk.evaluation.local_eval_service import _copy_invocation_rubrics_to_actual_invocations
 from google.adk.evaluation.local_eval_service import LocalEvalService
-from google.adk.evaluation.metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
+from google.adk.evaluation.metric_evaluator_registry import MetricEvaluatorRegistry
 from google.adk.evaluation.simulation.user_simulator import NextUserMessage
 from google.adk.evaluation.simulation.user_simulator import Status as UserSimulatorStatus
+from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.models.registry import LLMRegistry
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.genai import types as genai_types
 import pytest
 from typing_extensions import override
@@ -75,24 +83,34 @@ def mock_eval_set_results_manager(mocker):
 
 
 @pytest.fixture
-def eval_service(
-    dummy_agent, mock_eval_sets_manager, mock_eval_set_results_manager
-):
-  DEFAULT_METRIC_EVALUATOR_REGISTRY.register_evaluator(
+def metric_evaluator_registry():
+  registry = MetricEvaluatorRegistry()
+  registry.register_evaluator(
       metric_info=FakeEvaluator.get_metric_info(), evaluator=FakeEvaluator
   )
-  DEFAULT_METRIC_EVALUATOR_REGISTRY.register_evaluator(
+  registry.register_evaluator(
       metric_info=FakeSingleSidedEvaluator.get_metric_info(),
       evaluator=FakeSingleSidedEvaluator,
   )
-  DEFAULT_METRIC_EVALUATOR_REGISTRY.register_evaluator(
+  registry.register_evaluator(
       metric_info=FakeInformationalEvaluator.get_metric_info(),
       evaluator=FakeInformationalEvaluator,
   )
+  return registry
+
+
+@pytest.fixture
+def eval_service(
+    dummy_agent,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    metric_evaluator_registry,
+):
   return LocalEvalService(
       root_agent=dummy_agent,
       eval_sets_manager=mock_eval_sets_manager,
       eval_set_results_manager=mock_eval_set_results_manager,
+      metric_evaluator_registry=metric_evaluator_registry,
   )
 
 
@@ -210,6 +228,411 @@ class FakeInformationalEvaluator(Evaluator):
         overall_eval_status=EvalStatus.INFORMATIONAL,
         per_invocation_results=per_invocation_results,
     )
+
+
+@pytest.fixture
+def state_eval_case():
+  return EvalCase(
+      eval_id="add_book",
+      conversation=[
+          Invocation(
+              user_content=genai_types.Content(
+                  role="user", parts=[genai_types.Part(text="Add a book.")]
+              ),
+              final_response=genai_types.Content(
+                  role="model", parts=[genai_types.Part(text="Added a book.")]
+              ),
+          )
+      ],
+      session_input=SessionInput(
+          app_name="test_app",
+          user_id="test_user",
+          session_id="cart_session",
+          state={"cart": {"items": ["seed"]}},
+      ),
+      final_session_state={"cart": {"items": ["book"]}},
+  )
+
+
+@pytest.fixture
+def state_eval_setup(state_eval_case, metric_evaluator_registry):
+  class CartAgent(BaseAgent):
+
+    async def _run_async_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      yield Event(
+          author=self.name,
+          invocation_id=ctx.invocation_id,
+          content=genai_types.Content(
+              role="model", parts=[genai_types.Part(text="Added a book.")]
+          ),
+          actions=EventActions(state_delta={"cart": {"items": ["book"]}}),
+      )
+
+  eval_sets = InMemoryEvalSetsManager()
+  eval_sets.create_eval_set("test_app", "test_eval_set")
+  eval_sets.add_eval_case("test_app", "test_eval_set", state_eval_case)
+  sessions = InMemorySessionService()
+  service = LocalEvalService(
+      root_agent=CartAgent(name="cart_agent"),
+      eval_sets_manager=eval_sets,
+      session_service=sessions,
+      metric_evaluator_registry=metric_evaluator_registry,
+  )
+  return service, sessions
+
+
+@pytest.fixture
+def state_inference_result(state_eval_case):
+  return InferenceResult(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      eval_case_id=state_eval_case.eval_id,
+      session_id=None,
+      inferences=state_eval_case.conversation,
+      initial_session_state={"cart": {"items": ["seed"]}},
+      final_session_state={"cart": {"items": ["book"]}},
+  )
+
+
+@pytest.fixture
+def recorded_contexts(metric_evaluator_registry):
+  contexts = []
+
+  class StateEvaluator(FakeEvaluator):
+
+    def evaluate_with_context(
+        self,
+        actual_invocations,
+        expected_invocations=None,
+        conversation_scenario=None,
+        *,
+        context,
+    ):
+      contexts.append(context)
+      return super().evaluate_invocations(
+          actual_invocations, expected_invocations, conversation_scenario
+      )
+
+  metric_evaluator_registry.register_evaluator(
+      metric_info=FakeEvaluator.get_metric_info(), evaluator=StateEvaluator
+  )
+  return contexts
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+async def test_evaluate_accepts_legacy_evaluator_signatures(
+    state_eval_setup,
+    state_eval_case,
+    state_inference_result,
+    metric_evaluator_registry,
+    is_async,
+):
+  """Existing evaluators receive the same three arguments as before."""
+  calls = []
+
+  class LegacyEvaluator(FakeEvaluator):
+
+    def evaluate_invocations(
+        self,
+        actual_invocations,
+        expected_invocations=None,
+        conversation_scenario=None,
+    ):
+      calls.append(
+          (actual_invocations, expected_invocations, conversation_scenario)
+      )
+      return super().evaluate_invocations(
+          actual_invocations, expected_invocations, conversation_scenario
+      )
+
+  class AsyncLegacyEvaluator(LegacyEvaluator):
+
+    async def evaluate_invocations(
+        self,
+        actual_invocations,
+        expected_invocations=None,
+        conversation_scenario=None,
+    ):
+      return super().evaluate_invocations(
+          actual_invocations, expected_invocations, conversation_scenario
+      )
+
+  metric_evaluator_registry.register_evaluator(
+      metric_info=FakeEvaluator.get_metric_info(),
+      evaluator=AsyncLegacyEvaluator if is_async else LegacyEvaluator,
+  )
+  service, _ = state_eval_setup
+  request = EvaluateRequest(
+      inference_results=[state_inference_result],
+      evaluate_config=EvaluateConfig(
+          eval_metrics=[EvalMetric(metric_name="fake_metric", threshold=0.5)]
+      ),
+  )
+
+  results = [result async for result in service.evaluate(request)]
+
+  assert calls == [
+      (state_inference_result.inferences, state_eval_case.conversation, None)
+  ]
+  assert results[0].final_eval_status == EvalStatus.PASSED
+  assert results[0].overall_eval_metric_results[0].score == 0.9
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize(
+    "expected_final_state",
+    [{"cart": {"items": ["expected"]}}, {}, None],
+    ids=["expected", "empty", "absent"],
+)
+async def test_evaluate_passes_actual_and_expected_session_state(
+    state_eval_setup,
+    state_eval_case,
+    state_inference_result,
+    metric_evaluator_registry,
+    is_async,
+    expected_final_state,
+):
+  """An evaluator can opt in to all three session state snapshots."""
+  contexts = []
+  state_eval_case.final_session_state = expected_final_state
+
+  class StateEvaluator(FakeEvaluator):
+
+    def evaluate_with_context(
+        self,
+        actual_invocations,
+        expected_invocations=None,
+        conversation_scenario=None,
+        *,
+        context,
+    ):
+      contexts.append(context)
+      return super().evaluate_invocations(
+          actual_invocations, expected_invocations, conversation_scenario
+      )
+
+  class AsyncStateEvaluator(StateEvaluator):
+
+    async def evaluate_with_context(
+        self,
+        actual_invocations,
+        expected_invocations=None,
+        conversation_scenario=None,
+        *,
+        context,
+    ):
+      return super().evaluate_with_context(
+          actual_invocations,
+          expected_invocations,
+          conversation_scenario,
+          context=context,
+      )
+
+  metric_evaluator_registry.register_evaluator(
+      metric_info=FakeEvaluator.get_metric_info(),
+      evaluator=AsyncStateEvaluator if is_async else StateEvaluator,
+  )
+  service, _ = state_eval_setup
+  request = EvaluateRequest(
+      inference_results=[state_inference_result],
+      evaluate_config=EvaluateConfig(
+          eval_metrics=[EvalMetric(metric_name="fake_metric", threshold=0.5)]
+      ),
+  )
+
+  results = [result async for result in service.evaluate(request)]
+
+  assert contexts == [
+      EvaluationContext(
+          initial_session_state={"cart": {"items": ["seed"]}},
+          final_session_state={"cart": {"items": ["book"]}},
+          expected_final_session_state=expected_final_state,
+      )
+  ]
+  assert results[0].final_eval_status == EvalStatus.PASSED
+
+
+async def test_evaluate_keeps_absent_snapshots_unknown(
+    state_eval_setup, state_inference_result, recorded_contexts
+):
+  """Old inference data does not use the creation seed as an actual snapshot."""
+  legacy_result = InferenceResult.model_validate(
+      state_inference_result.model_dump(
+          exclude={"initial_session_state", "final_session_state"}
+      )
+  )
+  service, _ = state_eval_setup
+  request = EvaluateRequest(
+      inference_results=[legacy_result],
+      evaluate_config=EvaluateConfig(
+          eval_metrics=[EvalMetric(metric_name="fake_metric", threshold=0.5)]
+      ),
+  )
+
+  results = [result async for result in service.evaluate(request)]
+
+  assert recorded_contexts == [
+      EvaluationContext(
+          initial_session_state=None,
+          final_session_state=None,
+          expected_final_session_state={"cart": {"items": ["book"]}},
+      )
+  ]
+  assert results[0].final_eval_status == EvalStatus.PASSED
+
+
+async def test_evaluate_isolates_nested_state_for_each_metric_and_result(
+    state_eval_setup,
+    state_eval_case,
+    state_inference_result,
+    metric_evaluator_registry,
+):
+  """A metric's state edits do not affect other metrics or source data."""
+  contexts = []
+
+  class StateMutator(FakeEvaluator):
+
+    def evaluate_with_context(
+        self,
+        actual_invocations,
+        expected_invocations=None,
+        conversation_scenario=None,
+        *,
+        context,
+    ):
+      contexts.append(context.model_copy(deep=True))
+      for state in (
+          context.initial_session_state,
+          context.final_session_state,
+          context.expected_final_session_state,
+      ):
+        state["cart"]["items"].append("changed by metric")
+      return super().evaluate_invocations(
+          actual_invocations, expected_invocations, conversation_scenario
+      )
+
+  metrics = []
+  for name in ("first_metric", "second_metric"):
+    metric_evaluator_registry.register_evaluator(
+        metric_info=FakeEvaluator.get_metric_info().model_copy(
+            update={"metric_name": name}
+        ),
+        evaluator=StateMutator,
+    )
+    metrics.append(EvalMetric(metric_name=name, threshold=0.5))
+  service, _ = state_eval_setup
+  second_inference = state_inference_result.model_copy()
+  expected_context = EvaluationContext(
+      initial_session_state={"cart": {"items": ["seed"]}},
+      final_session_state={"cart": {"items": ["book"]}},
+      expected_final_session_state={"cart": {"items": ["book"]}},
+  )
+  request = EvaluateRequest(
+      inference_results=[state_inference_result, second_inference],
+      evaluate_config=EvaluateConfig(eval_metrics=metrics, parallelism=1),
+  )
+
+  results = [result async for result in service.evaluate(request)]
+
+  assert contexts == [expected_context] * 4
+  assert all(
+      result.final_eval_status == EvalStatus.PASSED for result in results
+  )
+  for inference in (state_inference_result, second_inference):
+    assert inference.initial_session_state == {"cart": {"items": ["seed"]}}
+    assert inference.final_session_state == {"cart": {"items": ["book"]}}
+  assert state_eval_case.final_session_state == {"cart": {"items": ["book"]}}
+  assert state_eval_case.session_input.state == {"cart": {"items": ["seed"]}}
+
+
+@pytest.mark.parametrize("reuse_session", [False, True], ids=["new", "reused"])
+async def test_perform_inference_captures_actual_initial_and_final_state(
+    state_eval_setup, state_eval_case, reuse_session
+):
+  """Snapshots use the actual state even when the session already exists."""
+  service, sessions = state_eval_setup
+  if reuse_session:
+    await sessions.create_session(
+        app_name="test_app",
+        user_id="test_user",
+        session_id="cart_session",
+        state={},
+    )
+  request = InferenceRequest(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      inference_config=InferenceConfig(),
+  )
+
+  results = [result async for result in service.perform_inference(request)]
+
+  assert len(results) == 1
+  result = results[0]
+  assert result.status == InferenceStatus.SUCCESS
+  assert result.initial_session_state == (
+      {} if reuse_session else {"cart": {"items": ["seed"]}}
+  )
+  assert result.final_session_state == {"cart": {"items": ["book"]}}
+  assert state_eval_case.session_input.state == {"cart": {"items": ["seed"]}}
+
+
+@pytest.mark.parametrize("session_change", ["update", "delete"])
+async def test_evaluate_uses_snapshots_after_session_change(
+    state_eval_setup, recorded_contexts, session_change
+):
+  """Saved snapshots survive later session updates or deletion."""
+  service, sessions = state_eval_setup
+  inferences = [
+      result
+      async for result in service.perform_inference(
+          InferenceRequest(
+              app_name="test_app",
+              eval_set_id="test_eval_set",
+              inference_config=InferenceConfig(),
+          )
+      )
+  ]
+  restored = InferenceResult.model_validate_json(
+      inferences[0].model_dump_json(by_alias=True)
+  )
+  if session_change == "delete":
+    await sessions.delete_session(
+        app_name="test_app", user_id="test_user", session_id="cart_session"
+    )
+  else:
+    session = await sessions.get_session(
+        app_name="test_app", user_id="test_user", session_id="cart_session"
+    )
+    await sessions.append_event(
+        session=session,
+        event=Event(
+            author="user",
+            actions=EventActions(state_delta={"cart": {"items": ["pen"]}}),
+        ),
+    )
+  request = EvaluateRequest(
+      inference_results=[restored],
+      evaluate_config=EvaluateConfig(
+          eval_metrics=[EvalMetric(metric_name="fake_metric", threshold=0.5)]
+      ),
+  )
+
+  results = [result async for result in service.evaluate(request)]
+
+  assert recorded_contexts == [
+      EvaluationContext(
+          initial_session_state={"cart": {"items": ["seed"]}},
+          final_session_state={"cart": {"items": ["book"]}},
+          expected_final_session_state={"cart": {"items": ["book"]}},
+      )
+  ]
+  assert results[0].final_eval_status == EvalStatus.PASSED
+  if session_change == "delete":
+    assert results[0].session_details is None
+  else:
+    assert results[0].session_details.state == {"cart": {"items": ["pen"]}}
 
 
 @pytest.mark.asyncio
@@ -403,6 +826,7 @@ async def test_evaluate_success(
   mock_eval_case.conversation = [invocation.model_copy(deep=True)]
   mock_eval_case.conversation_scenario = None
   mock_eval_case.session_input = None
+  mock_eval_case.final_session_state = None
   mock_eval_sets_manager.get_eval_case.return_value = mock_eval_case
 
   results = []
@@ -479,6 +903,7 @@ async def test_evaluate_single_inference_result(
   ]
   mock_eval_case.conversation_scenario = None
   mock_eval_case.session_input = None
+  mock_eval_case.final_session_state = None
   mock_eval_sets_manager.get_eval_case.return_value = mock_eval_case
 
   _, result = await eval_service._evaluate_single_inference_result(
@@ -547,6 +972,7 @@ async def test_evaluate_informational_metric_preserves_per_invocation_scores(
   ]
   mock_eval_case.conversation_scenario = None
   mock_eval_case.session_input = None
+  mock_eval_case.final_session_state = None
   mock_eval_sets_manager.get_eval_case.return_value = mock_eval_case
 
   _, result = await eval_service._evaluate_single_inference_result(
@@ -591,6 +1017,7 @@ async def test_evaluate_single_inference_result_failed_without_inferences(
   mock_eval_case.conversation = []
   mock_eval_case.conversation_scenario = None
   mock_eval_case.session_input = None
+  mock_eval_case.final_session_state = None
   mock_eval_sets_manager.get_eval_case.return_value = mock_eval_case
 
   _, result = await eval_service._evaluate_single_inference_result(
@@ -637,6 +1064,7 @@ async def test_evaluate_single_inference_result_for_conversation_scenario(
   mock_eval_case.conversation = None
   mock_eval_case.conversation_scenario = mocker.MagicMock()
   mock_eval_case.session_input = None
+  mock_eval_case.final_session_state = None
   mock_eval_sets_manager.get_eval_case.return_value = mock_eval_case
 
   _, result = await eval_service._evaluate_single_inference_result(
@@ -699,6 +1127,7 @@ async def test_evaluate_single_inference_result_for_conversation_scenario_with_u
   mock_eval_case.conversation = None
   mock_eval_case.conversation_scenario = mocker.MagicMock()
   mock_eval_case.session_input = None
+  mock_eval_case.final_session_state = None
   mock_eval_sets_manager.get_eval_case.return_value = mock_eval_case
 
   _, result = await eval_service._evaluate_single_inference_result(
@@ -1016,6 +1445,7 @@ async def test_perform_inference_single_eval_item_live(
       memory_service=eval_service._memory_service,
       live_timeout_seconds=600,
       app=None,
+      session_state_callback=mocker.ANY,
   )
 
 
@@ -1059,6 +1489,7 @@ async def test_perform_inference_single_eval_item_non_live(
       artifact_service=eval_service._artifact_service,
       memory_service=eval_service._memory_service,
       app=None,
+      session_state_callback=mocker.ANY,
   )
 
 
@@ -1107,6 +1538,7 @@ async def test_perform_inference_single_eval_item_uses_session_input_id(
       artifact_service=eval_service._artifact_service,
       memory_service=eval_service._memory_service,
       app=None,
+      session_state_callback=mocker.ANY,
   )
 
 
