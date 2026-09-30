@@ -76,13 +76,25 @@ def _get_credential_id(credentials: typing.Any) -> str:
   ):
     return "ComputeEngineCredentials"
 
+  module_name = getattr(credentials.__class__, "__module__", "")
+
+  # Impersonated credentials act as the target service account, but which
+  # source principal is authorized to impersonate it is part of the identity.
+  # Keying on the target alone would let a caller that cannot impersonate the
+  # target reuse a client that was authorized for a different source principal.
+  if module_name == "google.auth.impersonated_credentials":
+    target = getattr(credentials, "service_account_email", None)
+    source = getattr(credentials, "_source_credentials", None)
+    if target is not None and source is not None:
+      return f"Impersonated:{target}:{_get_credential_id(source)}"
+    return str(id(credentials))
+
   sa_email = getattr(credentials, "service_account_email", None)
   if sa_email is not None:
-    # This covers both standard ServiceAccountCredentials and ImpersonatedCredentials
+    # This covers standard ServiceAccountCredentials.
     return str(sa_email)
 
   # Handle User Credentials (like local ADC) using refresh token hash
-  module_name = getattr(credentials.__class__, "__module__", "")
   if (
       module_name.startswith("google.oauth2.credentials")
       and getattr(credentials, "refresh_token", None) is not None
