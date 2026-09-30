@@ -44,11 +44,11 @@ To verify connection-drop abortion over network protocols (e.g. simple HTTP REST
 
 1. Start the local development server to watch the sample workspace:
    ```bash
-   adk web --allow_origins=http://localhost:4200 contributing/samples/
+   adk web contributing/samples/core/
    ```
 1. In a separate terminal, register the test session (local CLI development servers run with `--auto_create_session` set to `False` by default):
    ```bash
-   curl -X POST http://localhost:8000/apps/abort_agent/users/user/sessions \
+   curl -X POST http://localhost:8000/apps/abort/users/user/sessions \
      -H "Content-Type: application/json" \
      -d '{"session_id": "8b24e6ed-1fff-4f0c-a06a-e065692a446e"}'
    ```
@@ -57,7 +57,7 @@ To verify connection-drop abortion over network protocols (e.g. simple HTTP REST
    curl -X POST http://localhost:8000/run \
      -H "Content-Type: application/json" \
      -d '{
-       "app_name": "abort_agent",
+       "app_name": "abort",
        "user_id": "user",
        "session_id": "8b24e6ed-1fff-4f0c-a06a-e065692a446e",
        "new_message": {
@@ -79,10 +79,10 @@ To observe cooperative aborts interactively in the web-based developer interface
 
 1. Start the local development server:
    ```bash
-   adk web --allow_origins=http://localhost:4200 contributing/samples/
+   adk web contributing/samples/core/
    ```
-1. Open the ADK Web interface (`http://localhost:4200`) in your web browser.
-1. Select the **`abort_agent`** app from the left sidebar panel.
+1. Open the ADK Web interface (`http://localhost:8000`) in your web browser.
+1. Select the **`abort`** app from the left sidebar panel.
 1. Type `count to 100` in the message input box and click submit.
 1. **Trigger the Abort**: Simply close your browser tab, refresh the page, or navigate away from the chat panel.
 1. Observe the server's stdout terminal console. You will see that counting halts immediately and logs:

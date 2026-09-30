@@ -1,210 +1,142 @@
-# Parallel Execution, Fan-Out, and Fan-In Reference
+# Parallel Execution, Fan-Out, and Fan-In
 
-Execute multiple nodes concurrently and collect their results.
-
-## 📋 Agent Verification Checklist (Parallel & Fan-Out)
-Use this checklist when implementing parallel patterns:
-- [ ] **JoinNode Serialization**: If LLM agents feed into a `JoinNode`, did you set `output_schema` on them to prevent JSON serialization errors?
-- [ ] **ParallelWorker Usage**: Did you avoid using `parallel_worker=True` on fan-out nodes? (It expects a list input)
-- [ ] **Multi-Trigger vs Join**: Do you understand that Multi-Trigger fires downstream once per branch, while JoinNode waits and fires once with merged dict?
-
-## 💡 Quick Reference
-- **Fan-Out (Tuple)**: `('START', (node_a, node_b))`
-- **Fan-In (JoinNode)**: `((node_a, node_b), join_node)`
-- **List Worker**: `@node(parallel_worker=True)` (Takes list, outputs list)
-
-## Imports
+Two different things share the word "parallel": **fan-out** runs several
+*different* nodes on the same input, and a **parallel worker** runs one node
+across every item of a list. Mixing them up is the most common failure here.
 
 ```python
-from google.adk.workflow import Workflow
-from google.adk.workflow._parallel_worker import ParallelWorker
-from google.adk.workflow import JoinNode
-from google.adk.workflow import node
+from google.adk import Agent, Workflow
+from google.adk.workflow import JoinNode, node
 ```
 
-## Fan-Out: Multiple Branches
+## Fan-out: several nodes, same input
 
-Send output to multiple nodes simultaneously using tuple syntax:
+A tuple of targets sends the same output to each of them concurrently:
 
 ```python
-def analyze_text(node_input: str) -> str:
-  return f"Analysis: {node_input}"
-
-def translate_text(node_input: str) -> str:
-  return f"Translation: {node_input}"
-
-def summarize_text(node_input: str) -> str:
-  return f"Summary: {node_input}"
-
 agent = Workflow(
-    name="fan_out",
-    edges=[
-        ('START', (analyze_text, translate_text, summarize_text)),
-    ],
+    name='fan_out',
+    edges=[('START', (analyze_text, translate_text, summarize_text))],
 )
 ```
 
-Each branch receives the same input and runs concurrently.
+## Fan-in: `JoinNode`
 
-## Fan-In: JoinNode
-
-Collect outputs from multiple branches before continuing:
+A `JoinNode` waits for every predecessor, then fires once with all their outputs
+in a dict keyed by predecessor node name:
 
 ```python
-join = JoinNode(name="collect_results")
+join = JoinNode(name='collect_results')
 
 agent = Workflow(
-    name="fan_out_fan_in",
+    name='fan_out_fan_in',
     edges=[
         ('START', (analyze_text, translate_text, summarize_text)),
         ((analyze_text, translate_text, summarize_text), join),
         (join, final_processor),
     ],
 )
-```
 
-### JoinNode Output Format
-
-JoinNode outputs a dictionary mapping predecessor names to their outputs:
-
-```python
-# JoinNode output:
-# {
-#   "analyze_text": "Analysis: hello",
-#   "translate_text": "Translation: hello",
-#   "summarize_text": "Summary: hello",
-# }
 
 def final_processor(node_input: dict) -> str:
-  analysis = node_input["analyze_text"]
-  translation = node_input["translate_text"]
-  summary = node_input["summarize_text"]
-  return f"Combined: {analysis}, {translation}, {summary}"
+  # {'analyze_text': ..., 'translate_text': ..., 'summarize_text': ...}
+  return f"Combined: {node_input['analyze_text']}"
 ```
 
-### JoinNode Behavior
+While waiting, the join holds partial inputs in session state. If a predecessor
+is an `LlmAgent` without `output_schema`, what it holds is a `types.Content`,
+which a database-backed session service cannot serialize — set `output_schema`
+on every LLM agent feeding a join.
 
-- Waits for **all** predecessor nodes to complete
-- Emits intermediate events while still waiting (downstream not triggered until all inputs received)
-- Only triggers downstream when all inputs are received
-- Stores partial inputs in workflow state
+## Multi-trigger: fan-out into one shared successor
 
-**Serialization warning:** JoinNode stores partial inputs in session state while waiting. If predecessors are LLM agents without `output_schema`, the stored values are `types.Content` objects which are **not JSON-serializable**. This causes `TypeError` with SQLite/database session services. Fix: use `output_schema` on LLM agents feeding into a JoinNode.
-
-## ParallelWorker: Process Lists in Parallel
-
-Apply the same node to each item in a list concurrently:
+Point several branches at one node with no join and that node runs once per
+branch:
 
 ```python
-def process_item(node_input: int) -> int:
-  return node_input * 2
-
-parallel = ParallelWorker(node(process_item))
-
-def produce_list(node_input: str) -> list:
-  return [1, 2, 3, 4, 5]
-
 agent = Workflow(
-    name="parallel_processing",
-    edges=[
-        ('START', produce_list),
-        (produce_list, parallel),
-    ],
+    name='root_agent',
+    input_schema=str,
+    edges=[(
+        'START',
+        (make_uppercase, count_characters, reverse_string),
+        send_message,
+    )],
 )
-# Output: [2, 4, 6, 8, 10]
 ```
 
-### ParallelWorker Details
+`send_message` fires three times here. A `JoinNode` in the same position would
+fire once with a merged dict. Pick by whether the downstream work is per-branch
+or needs all branches at once.
 
-- Input: a **list** (or single item, which gets wrapped in a list)
-- Output: a **list** of results in the same order as inputs
-- Empty list input produces empty list output
-- Each item is processed by a dynamically created worker node
-- Workers are named `{parent_name}__{index}` (e.g., `process_item__0`)
-- Default `rerun_on_resume=True`
+## Parallel workers: one node, every item of a list
 
-### ParallelWorker with @node Decorator
+`parallel_worker=True` wraps a node so it receives a list, runs an instance per
+item concurrently, and emits a list of results in input order.
 
 ```python
 @node(parallel_worker=True)
 def process_item(node_input: int) -> int:
   return node_input * 2
 
-# Equivalent to: ParallelWorker(FunctionNode(process_item_fn))
+
+def produce_list(node_input: str) -> list:
+  return [1, 2, 3, 4, 5]
+
+
+agent = Workflow(
+    name='parallel_processing',
+    edges=[('START', produce_list, process_item)],
+)
+# process_item emits [2, 4, 6, 8, 10]
 ```
 
-### ParallelWorker with Agents
+There is no `ParallelWorker` class to import; the wrapper is internal.
 
-Set `parallel_worker=True` directly on an Agent:
+Behavior worth knowing:
+
+- A non-list input is wrapped in a one-element list rather than rejected.
+- An empty list produces an empty list, and downstream still fires.
+- `rerun_on_resume` is forced to `True`.
+- `max_parallel_workers=N` caps concurrency; unset means unbounded. It must be
+  at least 1.
+
+### On an agent
+
+Set the flag on the `LlmAgent` itself — each item is handled by a clone:
 
 ```python
-from google.adk import Agent
-
 explain_topic = Agent(
-    name="explain_topic",
-    instruction="Explain how this topic relates to the original topic: \"{topic}\".",
+    name='explain_topic',
+    instruction='Explain how this topic relates to "{topic}".',
     output_schema=TopicExplanation,
-    parallel_worker=True,  # Each list item processed by a cloned agent
+    parallel_worker=True,
 )
 
 agent = Workflow(
-    name="parallel_analysis",
-    edges=[
-        ('START', process_input, find_related_topics, explain_topic, aggregate),
-    ],
+    name='parallel_analysis',
+    edges=[('START', process_input, find_related_topics, explain_topic, aggregate)],
 )
 ```
 
-Or wrap manually:
+### Do not put `parallel_worker=True` on a fan-out branch
+
+Fan-out edges already run their targets concurrently. Adding the flag makes the
+branch expect a list and iterate it; handed a single value it iterates once, and
+handed `None` it emits nothing — so a downstream join waits forever.
+
+## Diamond
 
 ```python
-parallel_analyzer = ParallelWorker(analyzer)
-```
+join = JoinNode(name='merge')
 
-**Do NOT use `parallel_worker=True` on fan-out nodes.** Fan-out edges `(a, (b, c, d))` already run nodes in parallel. Adding `parallel_worker=True` makes the node expect a list input and iterate over it — if it receives a single value or None, it produces no output and the JoinNode gets nothing.
-
-## Multi-Trigger (Fan-Out to Shared Downstream)
-
-Fan-out branches that all feed a single downstream node. The downstream node is triggered once per branch:
-
-```python
-async def send_message(node_input: Any):
-  yield Event(message=f"Triggered for input: {node_input}")
-
-agent = Workflow(
-    name="root_agent",
-    edges=[(
-        "START",
-        (make_uppercase, count_characters, reverse_string),
-        send_message,
-    )],
-    input_schema=str,
-)
-```
-
-This differs from JoinNode: here `send_message` fires 3 times (once per branch), while JoinNode waits for all branches and fires once with a merged dict.
-
-## Diamond Pattern
-
-Fan-out then fan-in (diamond shape):
-
-```python
-def splitter(node_input: str) -> str:
-  return node_input
-
-def branch_a(node_input: str) -> str:
-  return f"A: {node_input}"
-
-def branch_b(node_input: str) -> str:
-  return f"B: {node_input}"
-
-join = JoinNode(name="merge")
 
 def combiner(node_input: dict) -> str:
-  return f"Combined: {node_input['branch_a']} + {node_input['branch_b']}"
+  return f"{node_input['branch_a']} + {node_input['branch_b']}"
+
 
 agent = Workflow(
-    name="diamond",
+    name='diamond',
     edges=[
         ('START', splitter),
         (splitter, (branch_a, branch_b)),
@@ -214,25 +146,26 @@ agent = Workflow(
 )
 ```
 
-## SequentialAgent and ParallelAgent
+## `SequentialAgent` and `ParallelAgent`
 
-Convenience subclasses for common patterns:
+> **Deprecated.** Both are deprecated in favour of `Workflow` and will be
+> removed in a future version. Use the edge forms above for new code.
+
+Shorthands for the two commonest graphs, when you have agents rather than
+functions:
 
 ```python
-from google.adk.agents.sequential_agent import SequentialAgent
-from google.adk.agents.parallel_agent import ParallelAgent
+from google.adk.agents import ParallelAgent, SequentialAgent
 
-# Sequential: runs sub_agents in order
+# START -> writer -> reviewer -> editor
 pipeline = SequentialAgent(
-    name="pipeline",
+    name='pipeline',
     sub_agents=[writer_agent, reviewer_agent, editor_agent],
 )
-# Equivalent to: START -> writer -> reviewer -> editor
 
-# Parallel: runs sub_agents concurrently
+# START -> (analyzer, translator, summarizer)
 parallel = ParallelAgent(
-    name="concurrent",
+    name='concurrent',
     sub_agents=[analyzer_agent, translator_agent, summarizer_agent],
 )
-# Equivalent to: START -> (analyzer, translator, summarizer)
 ```

@@ -15,23 +15,41 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from collections.abc import Callable
+from collections.abc import Iterator
 from contextlib import asynccontextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass
 from dataclasses import field
+import sys
+import time
 from typing import TYPE_CHECKING
 
 from opentelemetry import context as context_api
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_CONVERSATION_ID
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_OPERATION_NAME
-from opentelemetry.util.types import Attributes
+from opentelemetry.trace import Span
+from opentelemetry.trace import Status
+from opentelemetry.trace import StatusCode
 
+from . import _metrics
 from ..agents.context import Context
 from ..workflow._base_node import BaseNode
+from .context import TelemetryConfig
+from .tracing import _telemetry_config_from_invocation_context
 from .tracing import tracer
 
 if TYPE_CHECKING:
+  from opentelemetry.util.types import AttributeValue
+
+  from ..agents.base_agent import BaseAgent
   from ..events.event import Event
   from ..workflow._workflow import Workflow
+
+# Span/metric attribute flagging that an `invoke_workflow` span is nested
+# within another workflow. Only emitted for nested workflows; the root
+# (entrypoint) workflow omits it entirely.
+GEN_AI_WORKFLOW_NESTED = "gen_ai.workflow.nested"
 
 
 @dataclass(frozen=True)
@@ -49,15 +67,9 @@ class TelemetryContext:
     self._associated_event_ids.append(event.id)
 
 
-@dataclass
-class _SpanMetadata:
-  name: str
-  attributes: Attributes
-
-
 @asynccontextmanager
 async def start_as_current_node_span(
-    context: Context, node: BaseNode
+    context: Context, node: BaseNode, node_context: Context | None = None
 ) -> AsyncIterator[TelemetryContext]:
   """Creates a scope-based OpenTelemetry span, representing a node invocation.
 
@@ -66,10 +78,12 @@ async def start_as_current_node_span(
   - `invoke_workflow {workflow.name}`
   - `invoke_node {node.name}`
 
-  invoke_agent spans align with OpenTelemetry Semantic Conventions (semconv) version 1.36 spans for backwards compatibility.
+  invoke_agent spans align with OpenTelemetry Semantic Conventions (semconv)
+  version 1.36 spans for backwards compatibility.
   https://github.com/open-telemetry/semantic-conventions/blob/v1.36.0/docs/gen-ai/README.md
 
-  invoke_workflow spans align with semconv version 1.41, because these were not included in any prior releases.
+  invoke_workflow spans align with semconv version 1.41, because these were not
+  included in any prior releases.
   https://github.com/open-telemetry/semantic-conventions/blob/main/docs/gen-ai/README.md
 
   invoke_node spans are not present in any semconv release.
@@ -78,69 +92,191 @@ async def start_as_current_node_span(
   Args:
     context: Context in which the span is created.
     node: The node to be invoked inside the created span.
+    node_context: The node's own context, when the caller has one. A workflow
+      stores a failed child's exception here instead of letting it unwind, so
+      it is the only place the span can learn the turn went wrong.
 
   Yields:
     Context with the started span.
   """
 
-  span_metadata = _span_metadata(context, node)
-  if span_metadata is None:
-    token = context_api.attach(context.telemetry_context.otel_context)
-    try:
-      yield TelemetryContext(
-          otel_context=context.telemetry_context.otel_context
-      )
-    finally:
-      context_api.detach(token)
-    return
-
-  with tracer.start_as_current_span(
-      span_metadata.name,
-      attributes=span_metadata.attributes,
-      context=context.telemetry_context.otel_context,
-  ) as span:
-    telemetry_context = TelemetryContext(otel_context=context_api.get_current())
-    yield telemetry_context
-
-    if span.is_recording() and len(telemetry_context._associated_event_ids) > 0:
-      span.set_attribute(
-          "gcp.vertex.agent.associated_event_ids",
-          telemetry_context._associated_event_ids,
-      )
-
-
-def _span_metadata(context: Context, node: BaseNode) -> _SpanMetadata | None:
   from ..agents.base_agent import BaseAgent
   from ..workflow._workflow import Workflow
 
   if isinstance(node, BaseAgent):
-    return None
+    with _invoke_agent_span(context, node) as tel_ctx:
+      yield tel_ctx
   elif isinstance(node, Workflow):
-    return _workflow_span_metadata(context, node)
+    with _invoke_workflow_span(context, node, node_context) as tel_ctx:
+      yield tel_ctx
   else:
-    return _default_node_span_metadata(context, node)
+    with _invoke_node_span(context, node) as tel_ctx:
+      yield tel_ctx
 
 
-def _workflow_span_metadata(
-    context: Context, workflow: Workflow
-) -> _SpanMetadata:
-  return _SpanMetadata(
-      name=f"invoke_workflow {workflow.name}",
-      attributes={
-          GEN_AI_OPERATION_NAME: "invoke_workflow",
-          "gen_ai.workflow.name": workflow.name,
-          GEN_AI_CONVERSATION_ID: context.session.id,
-      },
-  )
+@contextmanager
+def _invoke_agent_span(
+    context: Context, agent: BaseAgent
+) -> Iterator[TelemetryContext]:
+  """Passes through an agent node; agents emit their own `invoke_agent` span."""
+  del agent
+  token = context_api.attach(context.telemetry_context.otel_context)
+  try:
+    yield TelemetryContext(otel_context=context.telemetry_context.otel_context)
+  finally:
+    context_api.detach(token)
 
 
-def _default_node_span_metadata(
+@contextmanager
+def _invoke_workflow_span(
+    context: Context, workflow: Workflow, node_context: Context | None = None
+) -> Iterator[TelemetryContext]:
+  """Opens an `invoke_workflow` span plus its duration metric for ``node``."""
+  with _use_invoke_workflow_span(
+      workflow.name,
+      context.session.id,
+      otel_context=context.telemetry_context.otel_context,
+      telemetry_config=_telemetry_config_from_invocation_context(
+          context.get_invocation_context()
+      ),
+      get_recorded_error=(
+          None if node_context is None else lambda: node_context.error
+      ),
+  ) as span:
+    tel_ctx = TelemetryContext(otel_context=context_api.get_current())
+    yield tel_ctx
+    _maybe_set_associated_events(span, tel_ctx)
+
+
+@contextmanager
+def _invoke_node_span(
     context: Context, node: BaseNode
-) -> _SpanMetadata:
-  return _SpanMetadata(
-      name=f"invoke_node {node.name}",
+) -> Iterator[TelemetryContext]:
+  """Opens an `invoke_node` span for a plain node."""
+  with tracer.start_as_current_span(
+      f"invoke_node {node.name}",
       attributes={
           GEN_AI_OPERATION_NAME: "invoke_node",
           GEN_AI_CONVERSATION_ID: context.session.id,
       },
+      context=context.telemetry_context.otel_context,
+  ) as span:
+    tel_ctx = TelemetryContext(otel_context=context_api.get_current())
+    yield tel_ctx
+    _maybe_set_associated_events(span, tel_ctx)
+
+
+def _maybe_set_associated_events(
+    span: Span, telemetry_context: TelemetryContext
+) -> None:
+  """Stamps the node's associated event IDs onto its span, if any."""
+  if span.is_recording() and len(telemetry_context._associated_event_ids) > 0:
+    span.set_attribute(
+        "gcp.vertex.agent.associated_event_ids",
+        telemetry_context._associated_event_ids,
+    )
+
+
+@contextmanager
+def _use_invoke_workflow_span(
+    workflow_name: str,
+    conversation_id: str,
+    *,
+    otel_context: context_api.Context | None = None,
+    telemetry_config: TelemetryConfig | None = None,
+    get_recorded_error: Callable[[], BaseException | None] | None = None,
+) -> Iterator[Span]:
+  """Opens an `invoke_workflow {workflow_name}` span and its token scope.
+
+  The span owns the scope the tokens spent under it accumulate into. A nested
+  workflow accumulates into its own scope and into every scope enclosing it, so
+  outer totals stay inclusive.
+
+  Args:
+    workflow_name: The workflow being invoked.
+    conversation_id: Session/conversation id, stamped on the span.
+    otel_context: Context to open the span under; defaults to the one in force.
+    telemetry_config: The run's config, carrying the experimental opt-in. Read
+      only for a root scope; a nested one inherits the decision already made.
+    get_recorded_error: Consulted when no exception is unwinding, for the
+      failure a node stored as data instead of raising. A workflow catches a
+      node's exception so the graph can act on it, so the span would otherwise
+      close clean on a turn that failed.
+
+  Yields:
+    The `invoke_workflow` span.
+  """
+  from . import _instrumentation  # pylint: disable=g-import-not-at-top
+
+  if otel_context is None:
+    otel_context = context_api.get_current()
+  # The enclosing scope is itself the nesting signal: it rides along the
+  # otel_context propagated to child nodes, so a workflow already running has
+  # one and the first workflow in the invocation does not.
+  enclosing = _instrumentation._workflow_scope(otel_context)
+  nested = enclosing is not None
+  attributes: dict[str, AttributeValue] = {
+      GEN_AI_OPERATION_NAME: "invoke_workflow",
+      GEN_AI_CONVERSATION_ID: conversation_id,
+  }
+  # Root workflow omits the attribute entirely; only nested ones emit it.
+  if nested:
+    attributes[GEN_AI_WORKFLOW_NESTED] = True
+  if workflow_name:
+    attributes["gen_ai.workflow.name"] = workflow_name
+
+  span_name = (
+      f"invoke_workflow {workflow_name}" if workflow_name else "invoke_workflow"
   )
+
+  scope = _instrumentation._WorkflowScope(
+      root_agent_name=(
+          enclosing.root_agent_name if enclosing else workflow_name
+      ),
+      telemetry_config=(
+          enclosing.telemetry_config
+          if enclosing
+          else telemetry_config or TelemetryConfig()
+      ),
+      workflow_name=workflow_name,
+      parent=enclosing,
+  )
+
+  start_s = time.monotonic()
+  workflow_span: Span | None = None
+  recorded_error: BaseException | None = None
+  try:
+    with (
+        tracer.start_as_current_span(
+            name=span_name,
+            attributes=attributes,
+            context=otel_context,
+        ) as span,
+    ):
+      workflow_span = span
+      # In the otel context rather than a ContextVar: a caller that abandons
+      # the turn mid-iteration keeps its own pre-span context, so the scope
+      # cannot outlive the span that owns it and no later turn can adopt it.
+      scope_token = context_api.attach(
+          context_api.set_value(_instrumentation._WORKFLOW_SCOPE_KEY, scope)
+      )
+      try:
+        yield span
+      finally:
+        context_api.detach(scope_token)
+        _instrumentation._flush_workflow_metrics(scope)
+        # A node hands its failure back as data rather than letting it unwind,
+        # so nothing is in flight here and the span would otherwise be recorded
+        # as a success. Mark it inside the span, where it still exists.
+        if sys.exc_info()[1] is None and get_recorded_error is not None:
+          recorded_error = get_recorded_error()
+          if recorded_error is not None:
+            span.record_exception(recorded_error)
+            span.set_status(Status(StatusCode.ERROR, str(recorded_error)))
+  finally:
+    _metrics.record_workflow_invocation_duration(
+        workflow_name=workflow_name,
+        elapsed_s=_metrics.get_elapsed_s(workflow_span, start_s),
+        nested=nested,
+        error=sys.exc_info()[1] or recorded_error,
+    )

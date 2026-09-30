@@ -25,6 +25,15 @@ import requests
 
 class TestGcpUtils(unittest.TestCase):
 
+  def setUp(self):
+    super().setUp()
+    patcher = mock.patch(
+        "google.adk.cli.utils.gcp_utils._mtls_utils.use_client_cert_effective",
+        return_value=False,
+    )
+    self.mock_use_client_cert_effective = patcher.start()
+    self.addCleanup(patcher.stop)
+
   @mock.patch("google.auth.default")
   def test_check_adc_success(self, mock_auth_default):
     mock_auth_default.return_value = (mock.Mock(), "test-project")
@@ -167,6 +176,52 @@ class TestGcpUtils(unittest.TestCase):
         "Listing GCP projects requires the 'gcp' optional dependency",
     ):
       gcp_utils.list_gcp_projects()
+
+  @mock.patch("google.adk.cli.utils.gcp_utils.AuthorizedSession")
+  @mock.patch("google.auth.default")
+  def test_retrieve_express_project_mtls_enabled(
+      self, mock_auth_default, mock_session_cls
+  ):
+    # Enable mtls
+    self.mock_use_client_cert_effective.return_value = True
+
+    mock_auth_default.return_value = (mock.Mock(), "test-project-id")
+
+    mock_session = mock.Mock()
+    mock_session_cls.return_value = mock_session
+    mock_response = mock.Mock()
+    mock_response.json.return_value = {
+        "expressProject": {
+            "projectId": "test-project",
+            "defaultApiKey": "test-api-key",
+            "region": "us-central1",
+        }
+    }
+    mock_session.get.return_value = mock_response
+
+    with mock.patch(
+        "google.adk.cli.utils.gcp_utils._mtls_utils.get_api_endpoint",
+        return_value=(
+            "https://us-central1-aiplatform.mtls.googleapis.com/v1beta1"
+        ),
+    ) as mock_get_api_endpoint:
+      result = gcp_utils.retrieve_express_project()
+
+    self.assertEqual(result["project_id"], "test-project")
+    mock_session.configure_mtls_channel.assert_called_once()
+    mock_get_api_endpoint.assert_called_once_with(
+        location="us-central1",
+        default_template="https://{location}-aiplatform.googleapis.com/v1beta1",
+        mtls_template=(
+            "https://{location}-aiplatform.mtls.googleapis.com/v1beta1"
+        ),
+    )
+    mock_session.get.assert_called_once()
+    args, _ = mock_session.get.call_args
+    self.assertEqual(
+        args[0],
+        "https://us-central1-aiplatform.mtls.googleapis.com/v1beta1/vertexExpress:retrieveExpressProject",
+    )
 
 
 if __name__ == "__main__":

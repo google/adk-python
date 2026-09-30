@@ -3,7 +3,7 @@
 ## Introduction
 
 This sample agent demonstrates the BigQuery first-party tools in ADK,
-distributed via the `google.adk.tools.bigquery` module. These tools include:
+distributed via the `google.adk.integrations.bigquery` module. These tools include:
 
 1. `list_dataset_ids`
 
@@ -67,7 +67,7 @@ or
 for the LLM service for your agent. For example, for using Google AI Studio you
 would set:
 
-- GOOGLE_GENAI_USE_VERTEXAI=FALSE
+- GOOGLE_GENAI_USE_ENTERPRISE=FALSE
 - GOOGLE_API_KEY={your api key}
 
 ### With Application Default Credentials

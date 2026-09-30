@@ -15,6 +15,7 @@
 __all__ = []
 
 try:
+  from ._agent_to_mcp import to_mcp_server
   from .conversion_utils import adk_to_mcp_tool_type
   from .conversion_utils import gemini_to_json_schema
   from .mcp_session_manager import SseConnectionParams
@@ -35,6 +36,7 @@ try:
       'SseConnectionParams',
       'StdioConnectionParams',
       'StreamableHTTPConnectionParams',
+      'to_mcp_server',
   ])
 
 except ImportError as e:

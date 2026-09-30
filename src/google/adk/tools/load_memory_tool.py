@@ -28,7 +28,7 @@ from .function_tool import FunctionTool
 from .tool_context import ToolContext
 
 if TYPE_CHECKING:
-  from ..models import LlmRequest
+  from ..models.llm_request import LlmRequest
 
 
 class LoadMemoryResponse(BaseModel):
@@ -56,7 +56,7 @@ class LoadMemoryTool(FunctionTool):
   NOTE: Currently this tool only uses text part from the memory.
   """
 
-  def __init__(self):
+  def __init__(self) -> None:
     super().__init__(load_memory)
 
   @override

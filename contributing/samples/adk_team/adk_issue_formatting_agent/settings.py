@@ -26,8 +26,5 @@ if not GITHUB_TOKEN:
 
 OWNER = os.getenv("OWNER", "google")
 REPO = os.getenv("REPO", "adk-python")
-EVENT_NAME = os.getenv("EVENT_NAME")
-ISSUE_NUMBER = os.getenv("ISSUE_NUMBER")
-ISSUE_COUNT_TO_PROCESS = os.getenv("ISSUE_COUNT_TO_PROCESS")
 
 IS_INTERACTIVE = os.environ.get("INTERACTIVE", "1").lower() in ["true", "1"]

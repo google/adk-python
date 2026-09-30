@@ -64,6 +64,7 @@ class _RequestIntercepterPlugin(BasePlugin):
     request_id = str(uuid.uuid4())
     self._llm_requests_cache[request_id] = llm_request
     callback_context.state[_LLM_REQUEST_ID_KEY] = request_id
+    return None
 
   @override
   async def after_model_callback(
@@ -77,6 +78,7 @@ class _RequestIntercepterPlugin(BasePlugin):
       llm_response.custom_metadata[_LLM_REQUEST_ID_KEY] = (
           callback_context.state[_LLM_REQUEST_ID_KEY]
       )
+    return None
 
   def get_model_request(
       self, llm_response: LlmResponse
@@ -92,3 +94,5 @@ class _RequestIntercepterPlugin(BasePlugin):
         return self._llm_requests_cache[request_id]
       else:
         logger.warning("`%s` not found in llm_request_cache.", request_id)
+
+    return None

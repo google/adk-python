@@ -223,3 +223,72 @@ async def test_execute_sql(mock_utils_execute_sql):
       mock_tool_context,
   )
   assert result == {"status": "SUCCESS", "rows": [[1]]}
+
+
+def test_get_execute_sql_default_mode_returns_the_plain_function():
+  """Default mode needs no wrapper, so the original function is reused."""
+  tool_settings = SpannerToolSettings(query_result_mode=QueryResultMode.DEFAULT)
+
+  assert query_tool.get_execute_sql(tool_settings) is query_tool.execute_sql
+
+
+def test_get_execute_sql_without_settings_returns_the_plain_function():
+  """No settings at all must behave like the default mode, not crash."""
+  assert query_tool.get_execute_sql(None) is query_tool.execute_sql
+
+
+def test_get_execute_sql_dict_list_mode_keeps_the_tool_name():
+  """The wrapper is what the model calls, so its name must stay execute_sql."""
+  tool_settings = SpannerToolSettings(
+      query_result_mode=QueryResultMode.DICT_LIST
+  )
+
+  wrapper = query_tool.get_execute_sql(tool_settings)
+
+  assert wrapper is not query_tool.execute_sql
+  assert wrapper.__name__ == "execute_sql"
+
+
+def test_get_execute_sql_dict_list_mode_documents_dict_shaped_rows():
+  """The docstring becomes the tool description, so it must match the mode."""
+  tool_settings = SpannerToolSettings(
+      query_result_mode=QueryResultMode.DICT_LIST
+  )
+
+  wrapper = query_tool.get_execute_sql(tool_settings)
+
+  assert '"name": "The Hotel"' in wrapper.__doc__
+  assert '["The Hotel", 4.1, "Modern hotel."]' not in wrapper.__doc__
+
+
+@pytest.mark.asyncio
+@mock.patch.object(query_tool.utils, "execute_sql", spec_set=True)
+async def test_get_execute_sql_dict_list_wrapper_delegates_to_execute_sql(
+    mock_utils_execute_sql,
+):
+  """The wrapper only re-documents the tool; the behavior is unchanged."""
+  mock_credentials = mock.create_autospec(
+      Credentials, instance=True, spec_set=True
+  )
+  mock_tool_context = mock.create_autospec(
+      ToolContext, instance=True, spec_set=True
+  )
+  mock_utils_execute_sql.return_value = {
+      "status": "SUCCESS",
+      "rows": [{"count": 1}],
+  }
+  tool_settings = SpannerToolSettings(
+      query_result_mode=QueryResultMode.DICT_LIST
+  )
+
+  result = await query_tool.get_execute_sql(tool_settings)(
+      project_id="test-project",
+      instance_id="test-instance",
+      database_id="test-database",
+      query="SELECT 1",
+      credentials=mock_credentials,
+      settings=tool_settings,
+      tool_context=mock_tool_context,
+  )
+
+  assert result == {"status": "SUCCESS", "rows": [{"count": 1}]}

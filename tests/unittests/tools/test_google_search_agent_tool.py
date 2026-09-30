@@ -16,13 +16,59 @@ from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
 from google.adk.models.llm_response import LlmResponse
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.tools.google_search_agent_tool import create_google_search_agent
 from google.adk.tools.google_search_agent_tool import GoogleSearchAgentTool
+from google.adk.tools.google_search_tool import google_search
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 from google.genai.types import Part
 from pytest import mark
 
 from .. import testing_utils
+
+
+def test_create_google_search_agent_only_carries_the_search_tool():
+  """The whole point of the workaround is a sub-agent isolated to search."""
+  agent = create_google_search_agent('gemini-2.0-flash')
+
+  assert agent.name == 'google_search_agent'
+  assert agent.tools == [google_search]
+
+
+def test_create_google_search_agent_uses_the_given_model():
+  """The caller's model must reach the sub-agent, not a hard-coded one."""
+  model = testing_utils.MockModel.create(responses=['ignored'])
+
+  agent = create_google_search_agent(model)
+
+  assert agent.canonical_model is model
+
+
+def test_create_google_search_agent_turn1_request_directs_builtin_grounding():
+  """Turn-1 request must attach built-in grounding without function calls."""
+  model = testing_utils.MockModel.create(responses=['grounded search answer'])
+  model.model = 'gemini-2.0-flash'
+  agent = create_google_search_agent(model)
+
+  runner = testing_utils.InMemoryRunner(agent)
+  runner.run('test search query')
+
+  assert len(model.requests) == 1
+  turn1_request = model.requests[0]
+  assert not turn1_request.tools_dict
+  assert any(
+      tool.google_search is not None for tool in turn1_request.config.tools
+  )
+  assert 'built-in Google Search' in turn1_request.config.system_instruction
+  assert (
+      'Do not attempt to invoke a client-side function'
+      in turn1_request.config.system_instruction
+  )
+  assert (
+      'use the `google_search` tool'
+      not in turn1_request.config.system_instruction
+  )
+
 
 function_call_no_schema = Part.from_function_call(
     name='tool_agent', args={'request': 'test1'}
@@ -31,7 +77,7 @@ function_call_no_schema = Part.from_function_call(
 grounding_metadata = types.GroundingMetadata(web_search_queries=['test query'])
 
 
-# TODO(b/448114567): Remove test_grounding_metadata_ tests once the workaround
+# Pending cleanup: remove test_grounding_metadata_ tests once the workaround
 # is no longer needed.
 
 

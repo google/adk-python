@@ -16,8 +16,6 @@ from __future__ import annotations
 import abc
 from typing import Optional
 
-from google.genai.types import Content
-
 from ..events.event import Event
 from ..utils.feature_decorator import experimental
 

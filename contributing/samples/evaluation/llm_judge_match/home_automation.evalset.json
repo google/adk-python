@@ -1,0 +1,34 @@
+{
+  "eval_set_id": "llm_judge_match",
+  "name": "LLM-judged semantic match",
+  "description": "final_response_match_v2 tolerates rephrasing that ROUGE-1 would penalize.",
+  "eval_cases": [
+    {
+      "eval_id": "kitchen_temp_rephrased",
+      "conversation": [
+        {
+          "invocation_id": "lj-1",
+          "user_content": {
+            "parts": [{"text": "How warm is the Kitchen right now?"}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "It's currently 24 degrees Celsius in the Kitchen."}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {"name": "get_temperature", "args": {"location": "Kitchen"}}
+            ],
+            "intermediate_responses": []
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "home_automation_agent",
+        "user_id": "user",
+        "state": {}
+      }
+    }
+  ]
+}

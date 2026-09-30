@@ -18,16 +18,25 @@ from __future__ import annotations
 
 import json
 import os
+from typing import TYPE_CHECKING
 
 from google.adk.agents.agent_config import AgentConfig
+from pydantic.errors import PydanticInvalidForJsonSchema
 from pydantic.json_schema import GenerateJsonSchema
-from pydantic.json_schema import PydanticInvalidForJsonSchema
+from pydantic.json_schema import JsonSchemaValue
+from typing_extensions import override
+
+if TYPE_CHECKING:
+  from pydantic._internal._core_utils import CoreSchemaOrField
 
 
 class CustomGenerateJsonSchema(GenerateJsonSchema):
   """Custom schema generator that handles invalid types by falling back."""
 
-  def handle_invalid_for_json_schema(self, schema, error_info):
+  @override
+  def handle_invalid_for_json_schema(
+      self, schema: CoreSchemaOrField, error_info: str
+  ) -> JsonSchemaValue:
     try:
       return super().handle_invalid_for_json_schema(schema, error_info)
     except PydanticInvalidForJsonSchema:
@@ -38,7 +47,7 @@ class CustomGenerateJsonSchema(GenerateJsonSchema):
       }
 
 
-def main():
+def main() -> None:
   """Generates the AgentConfig.json schema."""
   # Use the custom generator to avoid failing on httpx.Client
   schema = AgentConfig.model_json_schema(

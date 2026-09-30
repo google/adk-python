@@ -75,7 +75,7 @@ class BuiltInPlanner(BasePlanner):
       readonly_context: ReadonlyContext,
       llm_request: LlmRequest,
   ) -> Optional[str]:
-    return
+    return None
 
   @override
   def process_planning_response(
@@ -83,4 +83,4 @@ class BuiltInPlanner(BasePlanner):
       callback_context: CallbackContext,
       response_parts: List[types.Part],
   ) -> Optional[List[types.Part]]:
-    return
+    return None

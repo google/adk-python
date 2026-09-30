@@ -73,7 +73,6 @@ async def process_message(runner, session_id, message):
 
 async def call_agent_async(runner, user_id, session_id, prompt):
   """Helper function to call agent asynchronously."""
-  from google.adk.agents.run_config import RunConfig
   from google.genai import types
 
   content = types.Content(
@@ -85,7 +84,6 @@ async def call_agent_async(runner, user_id, session_id, prompt):
       user_id=user_id,
       session_id=session_id,
       new_message=content,
-      run_config=RunConfig(save_input_blobs_as_artifacts=False),
   ):
     if event.content and event.content.parts:
       if text := "".join(part.text or "" for part in event.content.parts):

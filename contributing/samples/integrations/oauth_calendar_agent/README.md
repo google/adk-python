@@ -2,7 +2,7 @@
 
 ## Introduction
 
-This sample tests and demos the OAuth support in ADK via two tools:
+This sample tests and demos the OAuth support in ADK via the following tools:
 
 - 1. list_calendar_events
 
@@ -11,12 +11,17 @@ This sample tests and demos the OAuth support in ADK via two tools:
   the access token from ADK. And then it uses the access token to call
   calendar api.
 
-- 2. get_calendar_events
+- 2. google_calendar_events_get
 
   This is a google calendar tool that calls Google Calendar API to get the
   details of a specific calendar. This tool is from the ADK built-in Google
   Calendar ToolSet. Everything is wrapped and the tool user just needs to pass
   in the client id and client secret.
+
+- 3. google_calendar_events_update
+
+  This is a google calendar tool that calls Google Calendar API to update an
+  existing event. It comes from the same built-in Google Calendar ToolSet.
 
 ## How to use
 

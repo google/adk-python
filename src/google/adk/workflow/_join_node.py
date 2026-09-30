@@ -29,21 +29,6 @@ from ._base_node import BaseNode
 logger = logging.getLogger('google_adk.' + __name__)
 
 
-def _get_common_branch_prefix(branches: list[str]) -> str:
-  """Find the common prefix of dot-separated branch strings."""
-  if not branches:
-    return ''
-  split_branches = [b.split('.') if b else [] for b in branches]
-
-  common = []
-  for segments in zip(*split_branches):
-    if len(set(segments)) == 1:
-      common.append(segments[0])
-    else:
-      break
-  return '.'.join(common)
-
-
 class JoinNode(BaseNode):
   """A node that waits for all specified predecessors to trigger it before
   outputting."""

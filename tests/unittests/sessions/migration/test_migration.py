@@ -15,10 +15,15 @@
 
 from __future__ import annotations
 
+import contextlib
 from datetime import datetime
 from datetime import timezone
+import logging
 import os
 import pickle
+import sqlite3
+import time
+from unittest import mock
 
 from fastapi.openapi.models import HTTPBearer
 from google.adk.auth.auth_tool import AuthConfig
@@ -27,6 +32,8 @@ from google.adk.events.event_actions import EventCompaction
 from google.adk.events.ui_widget import UiWidget
 from google.adk.sessions.migration import _schema_check_utils
 from google.adk.sessions.migration import migrate_from_sqlalchemy_pickle as mfsp
+from google.adk.sessions.migration import migrate_from_sqlalchemy_sqlite as mfss
+from google.adk.sessions.migration import migration_runner
 from google.adk.sessions.schemas import v0
 from google.adk.sessions.schemas import v1
 from google.adk.tools.tool_confirmation import ToolConfirmation
@@ -34,6 +41,7 @@ from google.genai import types
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy import text
+from sqlalchemy.exc import ArgumentError
 from sqlalchemy.orm import sessionmaker
 
 
@@ -112,6 +120,181 @@ class TestToSyncUrl:
   def test_to_sync_url_empty_string(self):
     """Test that empty string is returned unchanged."""
     assert _schema_check_utils.to_sync_url("") == ""
+
+
+class TestRedactDbUrl:
+  """Tests for the _redact_db_url function."""
+
+  def test_password_is_masked(self):
+    redacted = _schema_check_utils._redact_db_url(
+        "postgresql+asyncpg://user:sup3r-s3cret@host:5432/db"
+    )
+    assert redacted == "postgresql+asyncpg://user:***@host:5432/db"
+
+  def test_unparseable_url_falls_back_to_placeholder(self):
+    """Redaction runs while reporting an error, so it must never raise."""
+    assert (
+        _schema_check_utils._redact_db_url("definitely not a url sup3r-s3cret")
+        == "<unparseable database URL>"
+    )
+
+  def test_query_parameter_values_are_masked(self):
+    """Drivers accept secrets as query parameters, so every value is masked."""
+    redacted = _schema_check_utils._redact_db_url(
+        "postgresql://user@host:5432/db?password=sup3r-s3cret&sslmode=require"
+    )
+    assert redacted == (
+        "postgresql://user@host:5432/db?password=REDACTED&sslmode=REDACTED"
+    )
+
+  def test_schema_version_failure_warning_hides_password(self, caplog):
+    db_url = "postgresql+asyncpg://user:sup3r-s3cret@host:5432/db"
+
+    with mock.patch.object(
+        _schema_check_utils,
+        "create_sync_engine",
+        side_effect=RuntimeError("boom"),
+    ):
+      with caplog.at_level(logging.WARNING):
+        with pytest.raises(RuntimeError):
+          _schema_check_utils.get_db_schema_version(db_url)
+
+    assert "sup3r-s3cret" not in caplog.text
+    assert "postgresql+asyncpg://user:***@host:5432/db" in caplog.text
+
+  def test_schema_version_connect_failure_hides_password(self):
+    """The schema check runs before any migration, so it reports first."""
+    db_url = "postgresql+asyncpg://user:sup3r-s3cret@host:5432/db"
+    error = ArgumentError(
+        f"Could not parse SQLAlchemy URL from string '{db_url}'"
+    )
+
+    with mock.patch.object(
+        _schema_check_utils, "create_sync_engine", side_effect=error
+    ):
+      with pytest.raises(RuntimeError) as exc_info:
+        _schema_check_utils.get_db_schema_version(db_url)
+
+    assert "sup3r-s3cret" not in str(exc_info.value)
+    assert "postgresql+asyncpg://user:***@host:5432/db" in str(exc_info.value)
+    assert "ArgumentError" in str(exc_info.value)
+
+
+_SOURCE_URL = "postgresql+asyncpg://user:sup3r-s3cret@host:5432/src"
+_DEST_URL = "postgresql+asyncpg://user:0ther-s3cret@host:5432/dst"
+
+
+class TestMigrationLogsHidePassword:
+  """These entry points log their URLs on every run, not only on failure."""
+
+  def test_pickle_migration_connect_logs_are_redacted(self, caplog):
+    with mock.patch.object(
+        mfsp,
+        "create_engine",
+        side_effect=[mock.MagicMock(), RuntimeError("boom")],
+    ):
+      with caplog.at_level(logging.INFO):
+        with pytest.raises(RuntimeError):
+          mfsp.migrate(_SOURCE_URL, _DEST_URL)
+
+    assert "sup3r-s3cret" not in caplog.text
+    assert "0ther-s3cret" not in caplog.text
+    assert "postgresql+asyncpg://user:***@host:5432/src" in caplog.text
+    assert "postgresql+asyncpg://user:***@host:5432/dst" in caplog.text
+
+  def test_pickle_migration_source_connect_failure_hides_password(self, caplog):
+    """A password containing '@' or '/' makes the URL parser quote it back."""
+    error = ArgumentError(
+        f"Could not parse SQLAlchemy URL from string '{_SOURCE_URL}'"
+    )
+    with mock.patch.object(mfsp, "create_engine", side_effect=error):
+      with caplog.at_level(logging.INFO):
+        with pytest.raises(RuntimeError) as exc_info:
+          mfsp.migrate(_SOURCE_URL, _DEST_URL)
+
+    assert "sup3r-s3cret" not in caplog.text
+    assert "sup3r-s3cret" not in str(exc_info.value)
+    assert "postgresql+asyncpg://user:***@host:5432/src" in str(exc_info.value)
+    assert "ArgumentError" in str(exc_info.value)
+
+  def test_pickle_migration_dest_connect_failure_hides_password(self, caplog):
+    error = ArgumentError(
+        f"Could not parse SQLAlchemy URL from string '{_DEST_URL}'"
+    )
+    with mock.patch.object(
+        mfsp, "create_engine", side_effect=[mock.MagicMock(), error]
+    ):
+      with caplog.at_level(logging.INFO):
+        with pytest.raises(RuntimeError) as exc_info:
+          mfsp.migrate(_SOURCE_URL, _DEST_URL)
+
+    assert "0ther-s3cret" not in caplog.text
+    assert "0ther-s3cret" not in str(exc_info.value)
+    assert "postgresql+asyncpg://user:***@host:5432/dst" in str(exc_info.value)
+    assert "ArgumentError" in str(exc_info.value)
+
+  def test_sqlite_migration_connect_log_is_redacted(self, caplog, tmp_path):
+    with mock.patch.object(
+        mfss, "create_engine", side_effect=RuntimeError("boom")
+    ):
+      with caplog.at_level(logging.INFO):
+        with pytest.raises(SystemExit):
+          mfss.migrate(_SOURCE_URL, str(tmp_path / "dest.db"))
+
+    assert "sup3r-s3cret" not in caplog.text
+    assert "postgresql+asyncpg://user:***@host:5432/src" in caplog.text
+
+  def test_sqlite_migration_connect_failure_hides_password(
+      self, caplog, tmp_path
+  ):
+    error = ArgumentError(
+        f"Could not parse SQLAlchemy URL from string '{_SOURCE_URL}'"
+    )
+    with mock.patch.object(mfss, "create_engine", side_effect=error):
+      with caplog.at_level(logging.INFO):
+        with pytest.raises(SystemExit):
+          mfss.migrate(_SOURCE_URL, str(tmp_path / "dest.db"))
+
+    assert "sup3r-s3cret" not in caplog.text
+    assert "postgresql+asyncpg://user:***@host:5432/src" in caplog.text
+    assert "ArgumentError" in caplog.text
+
+  def test_runner_up_to_date_log_is_redacted(self, caplog):
+    with mock.patch.object(
+        _schema_check_utils,
+        "get_db_schema_version",
+        return_value=migration_runner.LATEST_VERSION,
+    ):
+      with caplog.at_level(logging.INFO):
+        migration_runner.upgrade(_SOURCE_URL, _DEST_URL)
+
+    assert "sup3r-s3cret" not in caplog.text
+    assert "postgresql+asyncpg://user:***@host:5432/src" in caplog.text
+
+  def test_runner_migration_step_log_is_redacted(self, caplog):
+    mock_migrate = mock.Mock()
+    with mock.patch.object(
+        _schema_check_utils,
+        "get_db_schema_version",
+        return_value=_schema_check_utils.SCHEMA_VERSION_0_PICKLE,
+    ):
+      with mock.patch.dict(
+          migration_runner.MIGRATIONS,
+          {
+              _schema_check_utils.SCHEMA_VERSION_0_PICKLE: (
+                  _schema_check_utils.SCHEMA_VERSION_1_JSON,
+                  mock_migrate,
+              )
+          },
+      ):
+        with caplog.at_level(logging.INFO):
+          migration_runner.upgrade(_SOURCE_URL, _DEST_URL)
+
+    mock_migrate.assert_called_once_with(_SOURCE_URL, _DEST_URL)
+    assert "sup3r-s3cret" not in caplog.text
+    assert "0ther-s3cret" not in caplog.text
+    assert "postgresql+asyncpg://user:***@host:5432/src" in caplog.text
+    assert "postgresql+asyncpg://user:***@host:5432/dst" in caplog.text
 
 
 def test_migrate_from_sqlalchemy_pickle(tmp_path):
@@ -367,6 +550,107 @@ def test_migrate_from_sqlalchemy_pickle_ignores_non_object_json_fields():
   assert event.content is None
 
 
+@pytest.mark.parametrize("as_binary", [bytes, bytearray, memoryview])
+def test_migrate_from_sqlalchemy_pickle_reads_every_binary_column_type(
+    as_binary,
+):
+  """Pickled actions must survive whichever binary type the driver returns.
+
+  Events are read with raw SQL, so SQLAlchemy has no column type to coerce
+  with and the driver's own representation reaches the migration: psycopg2
+  returns a memoryview rather than bytes. Treating that as "some other
+  backend handed us an object" replaced the actions with an empty one while
+  the migration still reported success.
+  """
+  actions = EventActions(state_delta={"skey": 4}, escalate=True)
+
+  event = mfsp._row_to_event({
+      "id": "event-binary-actions",
+      "invocation_id": "invoke1",
+      "author": "user",
+      "timestamp": datetime(2026, 1, 1, tzinfo=timezone.utc),
+      "actions": as_binary(pickle.dumps(actions)),
+  })
+
+  assert event.actions.state_delta == {"skey": 4}
+  assert event.actions.escalate is True
+
+
+@contextlib.contextmanager
+def _pinned_local_timezone(name: str):
+  """Pins the process timezone for the duration of the block.
+
+  ``time.tzset`` is POSIX-only, so on other platforms the block runs in the
+  host zone instead. Restoring ``TZ`` without a second ``tzset`` would leave
+  the C library pinned for the rest of the session, so both are undone.
+  """
+  if not hasattr(time, "tzset"):
+    yield
+    return
+  previous = os.environ.get("TZ")
+  os.environ["TZ"] = name
+  time.tzset()
+  try:
+    yield
+  finally:
+    if previous is None:
+      os.environ.pop("TZ", None)
+    else:
+      os.environ["TZ"] = previous
+    time.tzset()
+
+
+def test_migrate_from_sqlalchemy_pickle_reads_naive_timestamp_as_local():
+  """Naive v0 event timestamps must migrate as local time, not UTC.
+
+  The v0 schema stored the event ``timestamp`` column as a naive datetime in
+  local time (``StorageEvent.from_event`` uses ``datetime.fromtimestamp`` and
+  ``to_event`` reads it back with naive ``.timestamp()``). Forcing UTC on that
+  naive value shifted every migrated timestamp by the host's UTC offset.
+  """
+  original_epoch = 1000000.0
+
+  class NaiveLocalDatetime(datetime):
+    """Local naive datetime that rejects a timezone being forced onto it.
+
+    ``replace`` and ``astimezone`` return instances of this subclass, so a
+    migration that pins a timezone before reading the epoch back trips the
+    guard even on a host whose local zone is already UTC and where the
+    resulting epoch would be unchanged.
+    """
+
+    def timestamp(self) -> float:
+      assert (
+          self.tzinfo is None
+      ), f"migration forced {self.tzinfo} onto a naive v0 timestamp"
+      return super().timestamp()
+
+  # The pinned zone is what catches a UTC recomputation that arrives by some
+  # other route, e.g. calendar.timegm(), which the guard above cannot see.
+  with _pinned_local_timezone("Asia/Kolkata"):
+    # Exactly what v0.StorageEvent.from_event persisted: naive local time.
+    local = datetime.fromtimestamp(original_epoch)
+    naive_local_timestamp = NaiveLocalDatetime(
+        local.year,
+        local.month,
+        local.day,
+        local.hour,
+        local.minute,
+        local.second,
+        local.microsecond,
+    )
+
+    event = mfsp._row_to_event({
+        "id": "event-naive-timestamp",
+        "invocation_id": "invoke1",
+        "author": "user",
+        "actions": EventActions(),
+        "timestamp": naive_local_timestamp,
+    })
+
+    assert event.timestamp == original_epoch
+
+
 def test_migrate_from_sqlalchemy_pickle_blocks_unsafe_actions_pickle(
     tmp_path, monkeypatch
 ):
@@ -495,7 +779,7 @@ def test_migrate_from_sqlalchemy_pickle_allows_unsafe_actions_pickle_when_opted_
 
 
 def test_migrate_from_sqlalchemy_pickle_with_async_driver_urls(tmp_path):
-  """Tests that migration works with async driver URLs (fixes issue #4176).
+  """Tests that migration works with async driver URLs.
 
   Users often provide async driver URLs (e.g., postgresql+asyncpg://) since
   that's what ADK requires at runtime. The migration tool should handle these
@@ -531,7 +815,7 @@ def test_migrate_from_sqlalchemy_pickle_with_async_driver_urls(tmp_path):
   source_session.commit()
   source_session.close()
 
-  # This should NOT raise an error about async drivers (the fix for #4176)
+  # This should NOT raise an error about async drivers.
   mfsp.migrate(source_db_url, dest_db_url)
 
   # Verify destination DB
@@ -591,3 +875,71 @@ def test_v1_storage_session_update_timestamp_tz() -> None:
 
 def test_v0_storage_session_update_timestamp_tz() -> None:
   _assert_update_timestamp_tz_is_utc_timestamp(v0)
+
+
+def test_sqlite_migration_reports_only_migrated_events(
+    caplog, tmp_path
+) -> None:
+  """A row that fails to convert is skipped, so the count must not claim it."""
+  source_db_path = tmp_path / "source_sqlite.db"
+  dest_db_path = tmp_path / "dest_sqlite.db"
+  source_db_url = f"sqlite:///{source_db_path}"
+
+  source_engine = create_engine(source_db_url)
+  v0.Base.metadata.create_all(source_engine)
+  SourceSession = sessionmaker(bind=source_engine)
+  source_session = SourceSession()
+
+  now = datetime.now(timezone.utc)
+  source_session.add(
+      v0.StorageSession(
+          app_name="app1",
+          user_id="user1",
+          id="session1",
+          state={},
+          create_time=now,
+          update_time=now,
+      )
+  )
+  for event_id, invocation_id in (("event1", "invoke1"), ("event2", "invoke2")):
+    source_session.add(
+        v0.StorageEvent(
+            id=event_id,
+            app_name="app1",
+            user_id="user1",
+            session_id="session1",
+            invocation_id=invocation_id,
+            author="user",
+            actions=EventActions(state_delta={}),
+            timestamp=now,
+        )
+    )
+  source_session.commit()
+  source_session.close()
+
+  original_to_event = v0.StorageEvent.to_event
+
+  def to_event(self):
+    if self.id == "event2":
+      raise ValueError("unreadable event payload")
+    return original_to_event(self)
+
+  with mock.patch.object(v0.StorageEvent, "to_event", to_event):
+    with caplog.at_level(logging.INFO):
+      mfss.migrate(source_db_url, str(dest_db_path))
+
+  # Only the convertible row lands in the destination.
+  dest_conn = sqlite3.connect(dest_db_path)
+  try:
+    migrated_ids = [
+        row[0] for row in dest_conn.execute("SELECT id FROM events").fetchall()
+    ]
+  finally:
+    dest_conn.close()
+  assert migrated_ids == ["event1"]
+
+  # The summary counts migrated rows, not source rows, and names the skipped
+  # one.
+  assert "Migrated 1 events." in caplog.text
+  assert "Migrated 2 events." not in caplog.text
+  assert "event2" in caplog.text

@@ -15,14 +15,10 @@
 from __future__ import annotations
 
 from unittest.mock import Mock
-from unittest.mock import patch
-import uuid
 
-from a2a.types import Part as A2APart
 from a2a.types import TaskArtifactUpdateEvent
-from a2a.types import TaskState
 from a2a.types import TaskStatusUpdateEvent
-from a2a.types import TextPart
+from google.adk.a2a import _compat
 from google.adk.a2a.converters.from_adk_event import convert_event_to_a2a_events
 from google.adk.events import event_actions
 from google.adk.events.event import Event
@@ -62,8 +58,7 @@ class TestFromAdk:
     agents_artifacts = {}
 
     # Mock part converter to return a standard text part
-    mock_a2a_part = A2APart(root=TextPart(text="hello"))
-    mock_a2a_part.root.metadata = {}
+    mock_a2a_part = _compat.make_text_part("hello")
     mock_convert_part = Mock(return_value=[mock_a2a_part])
 
     result = convert_event_to_a2a_events(
@@ -80,6 +75,58 @@ class TestFromAdk:
     assert result[0].context_id == "context-456"
     assert result[0].artifact.parts == [mock_a2a_part]
     assert "agent-1" in agents_artifacts  # Artifact ID should be stored
+
+  def test_convert_event_to_a2a_events_final_chunk_replaces(self):
+    """The final (non-partial) chunk of a stream must replace, not
+
+    append, the artifact because it contains the accumulated content.
+    """
+    self.mock_event.content = genai_types.Content(
+        parts=[genai_types.Part(text="hello")], role="model"
+    )
+    self.mock_event.author = "agent-1"
+    self.mock_event.partial = True
+
+    agents_artifacts = {}
+    mock_convert_part = Mock(return_value=[_compat.make_text_part("hello")])
+
+    # First chunk (partial): starts the artifact stream (append=False)
+    first = convert_event_to_a2a_events(
+        self.mock_event,
+        agents_artifacts,
+        task_id="task-123",
+        context_id="context-456",
+        part_converter=mock_convert_part,
+    )
+    assert first[0].append is False
+    artifact_id = first[0].artifact.artifact_id
+    assert agents_artifacts["agent-1"] == artifact_id
+
+    # Second chunk (partial): continues the stream (append=True)
+    second = convert_event_to_a2a_events(
+        self.mock_event,
+        agents_artifacts,
+        task_id="task-123",
+        context_id="context-456",
+        part_converter=mock_convert_part,
+    )
+    assert second[0].append is True
+    assert second[0].artifact.artifact_id == artifact_id
+    assert agents_artifacts["agent-1"] == artifact_id
+
+    # Final chunk (non-partial): replaces the artifact (append=False)
+    self.mock_event.partial = False
+    final = convert_event_to_a2a_events(
+        self.mock_event,
+        agents_artifacts,
+        task_id="task-123",
+        context_id="context-456",
+        part_converter=mock_convert_part,
+    )
+
+    assert final[0].append is False
+    assert final[0].artifact.artifact_id == artifact_id
+    assert "agent-1" not in agents_artifacts
 
   def test_convert_event_to_a2a_events_error(self):
     """Test conversion of event with error to TaskStatusUpdateEvent."""
@@ -130,3 +177,86 @@ class TestFromAdk:
     metadata = result[0].status.message.metadata
     assert "adk_actions" in metadata
     assert metadata["adk_actions"]["artifactDelta"] == {"image": 0}
+
+
+class TestSerializeValue:
+  """Tests for _serialize_value preserving JSON-native types."""
+
+  def setup_method(self) -> None:
+    from google.adk.a2a.converters.from_adk_event import _serialize_value
+
+    self.serialize = _serialize_value
+
+  def test_dict_preserved(self) -> None:
+    value = {"key": "val", "nested": {"a": 1}}
+    result = self.serialize(value)
+    assert result == value
+    assert isinstance(result, dict)
+
+  def test_list_preserved(self) -> None:
+    value = [1, "two", {"three": 3}]
+    result = self.serialize(value)
+    assert result == value
+    assert isinstance(result, list)
+
+  def test_int_preserved(self) -> None:
+    result = self.serialize(42)
+    assert result == 42
+    assert isinstance(result, int)
+
+  def test_float_preserved(self) -> None:
+    result = self.serialize(3.14)
+    assert result == 3.14
+    assert isinstance(result, float)
+
+  def test_bool_preserved(self) -> None:
+    assert self.serialize(True) is True
+    assert self.serialize(False) is False
+
+  def test_string_preserved(self) -> None:
+    assert self.serialize("hello") == "hello"
+
+  def test_none_returns_none(self) -> None:
+    assert self.serialize(None) is None
+
+  def test_non_json_type_stringified(self) -> None:
+    """Non-JSON-native types should still be converted to str."""
+    from datetime import datetime
+
+    dt = datetime(2025, 1, 1)
+    result = self.serialize(dt)
+    assert isinstance(result, str)
+
+  def test_nested_non_json_value_in_dict_stringified(self) -> None:
+    """A non-JSON-native value nested in a dict is stringified."""
+    from datetime import datetime
+
+    dt = datetime(2025, 1, 1)
+    value = {"when": dt, "count": 1, "label": "x"}
+    result = self.serialize(value)
+    assert result == {"when": str(dt), "count": 1, "label": "x"}
+    assert isinstance(result["when"], str)
+    assert isinstance(result["count"], int)
+    assert isinstance(result["label"], str)
+
+  def test_nested_non_json_value_in_list_stringified(self) -> None:
+    """A non-JSON-native value nested in a list is stringified."""
+    from datetime import datetime
+
+    dt = datetime(2025, 1, 1)
+    value = [dt, 1, "x"]
+    result = self.serialize(value)
+    assert result == [str(dt), 1, "x"]
+    assert isinstance(result[0], str)
+    assert isinstance(result[1], int)
+    assert isinstance(result[2], str)
+
+  def test_non_string_dict_key_stringified(self) -> None:
+    """Non-string dict keys are stringified so the result is JSON-encodable."""
+    from datetime import datetime
+
+    dt = datetime(2025, 1, 1)
+    value = {dt: "when", 1: "one", "label": "x"}
+    result = self.serialize(value)
+    assert result == {str(dt): "when", "1": "one", "label": "x"}
+    assert all(isinstance(k, str) for k in result)

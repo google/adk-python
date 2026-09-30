@@ -15,13 +15,18 @@
 from __future__ import annotations
 
 import base64
-from typing import Optional
+from typing import Any
 
 from google.auth.credentials import Credentials
-from google.cloud import pubsub_v1
+import google.cloud.pubsub_v1 as pubsub_v1
 
 from . import client
 from .config import PubSubToolConfig
+
+
+def _user_agent(project_id: str | None, operation: str) -> list[str]:
+  """Return only defined user-agent components."""
+  return [component for component in (project_id, operation) if component]
 
 
 def publish_message(
@@ -29,9 +34,9 @@ def publish_message(
     message: str,
     credentials: Credentials,
     settings: PubSubToolConfig,
-    attributes: Optional[dict[str, str]] = None,
+    attributes: dict[str, str] | None = None,
     ordering_key: str = "",
-) -> dict:
+) -> dict[str, Any]:
   """Publish a message to a Pub/Sub topic.
 
   Args:
@@ -52,7 +57,7 @@ def publish_message(
     )
     publisher_client = client.get_publisher_client(
         credentials=credentials,
-        user_agent=[settings.project_id, "publish_message"],
+        user_agent=_user_agent(settings.project_id, "publish_message"),
         publisher_options=publisher_options,
     )
 
@@ -90,7 +95,7 @@ def pull_messages(
     *,
     max_messages: int = 1,
     auto_ack: bool = False,
-) -> dict:
+) -> dict[str, Any]:
   """Pull messages from a Pub/Sub subscription.
 
   Args:
@@ -108,7 +113,7 @@ def pull_messages(
   try:
     subscriber_client = client.get_subscriber_client(
         credentials=credentials,
-        user_agent=[settings.project_id, "pull_messages"],
+        user_agent=_user_agent(settings.project_id, "pull_messages"),
     )
 
     response = subscriber_client.pull(
@@ -152,7 +157,7 @@ def acknowledge_messages(
     ack_ids: list[str],
     credentials: Credentials,
     settings: PubSubToolConfig,
-) -> dict:
+) -> dict[str, Any]:
   """Acknowledge messages on a Pub/Sub subscription.
 
   Args:
@@ -168,7 +173,7 @@ def acknowledge_messages(
   try:
     subscriber_client = client.get_subscriber_client(
         credentials=credentials,
-        user_agent=[settings.project_id, "acknowledge_messages"],
+        user_agent=_user_agent(settings.project_id, "acknowledge_messages"),
     )
 
     subscriber_client.acknowledge(

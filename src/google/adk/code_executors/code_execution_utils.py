@@ -20,11 +20,10 @@ import base64
 import binascii
 import copy
 import dataclasses
-import re
-from typing import List
-from typing import Optional
+from typing import TYPE_CHECKING
 
-from google.genai import types
+if TYPE_CHECKING:
+  from google.genai import types
 
 
 @dataclasses.dataclass(frozen=True)
@@ -61,7 +60,7 @@ class CodeExecutionInput:
   The input files available to the code.
   """
 
-  execution_id: Optional[str] = None
+  execution_id: str | None = None
   """
   The execution ID for the stateful code execution.
   """
@@ -84,6 +83,12 @@ class CodeExecutionResult:
   output_files: list[File] = dataclasses.field(default_factory=list)
   """
   The output files from the code execution.
+  """
+
+  exit_code: int | None = None
+  """
+  The status the executed process exited with, or None when the executor could
+  not report one.
   """
 
 
@@ -112,8 +117,8 @@ class CodeExecutionUtils:
   @staticmethod
   def extract_code_and_truncate_content(
       content: types.Content,
-      code_block_delimiters: List[tuple[str, str]],
-  ) -> Optional[str]:
+      code_block_delimiters: list[tuple[str, str]],
+  ) -> str | None:
     """Extracts the first code block from the content and truncate everything after it.
 
     Args:
@@ -125,7 +130,7 @@ class CodeExecutionUtils:
       The first code block if found; otherwise, None.
     """
     if not content or not content.parts:
-      return
+      return None
 
     # Extract the code from the executable code parts if there are no associated
     # code execution result parts.
@@ -140,36 +145,46 @@ class CodeExecutionUtils:
     # Extract the code from the text parts.
     text_parts = [p for p in content.parts if p.text]
     if not text_parts:
-      return
+      return None
 
     first_text_part = copy.deepcopy(text_parts[0])
-    response_text = '\n'.join([p.text for p in text_parts])
+    response_text = '\n'.join(p.text or '' for p in text_parts)
 
-    # Find the first code block.
-    leading_delimiter_pattern = '|'.join(d[0] for d in code_block_delimiters)
-    trailing_delimiter_pattern = '|'.join(d[1] for d in code_block_delimiters)
-    pattern = re.compile(
-        (
-            rf'(?P<prefix>.*?)({leading_delimiter_pattern})(?P<code>.*?)({trailing_delimiter_pattern})(?P<suffix>.*?)$'
-        ).encode(),
-        re.DOTALL,
-    )
-    pattern_match = pattern.search(response_text.encode())
-    if pattern_match is None:
-      return
+    # Find the first code block using simple string search
+    best_start = -1
+    best_end = -1
+    best_lead_len = 0
 
-    code_str = pattern_match.group('code').decode()
+    for lead, trail in code_block_delimiters:
+      start_idx = response_text.find(lead)
+      if start_idx == -1:
+        continue
+      code_start = start_idx + len(lead)
+      end_idx = response_text.find(trail, code_start)
+      if end_idx == -1:
+        continue
+      # Pick the earliest occurring code block.
+      if best_start == -1 or start_idx < best_start:
+        best_start = start_idx
+        best_end = end_idx
+        best_lead_len = len(lead)
+
+    if best_start == -1:
+      return None
+
+    code_str = response_text[best_start + best_lead_len : best_end]
     if not code_str:
-      return
+      return None
 
     content.parts = []
-    if pattern_match.group('prefix'):
-      first_text_part.text = pattern_match.group('prefix').decode()
+    prefix_text = response_text[:best_start]
+    if prefix_text:
+      first_text_part.text = prefix_text
       content.parts.append(first_text_part)
     content.parts.append(
         CodeExecutionUtils.build_executable_code_part(code_str)
     )
-    return pattern_match.group('code').decode()
+    return code_str
 
   @staticmethod
   def build_executable_code_part(code: str) -> types.Part:
@@ -181,9 +196,11 @@ class CodeExecutionUtils:
     Returns:
       The constructed executable code part.
     """
+    from google.genai import types
+
     return types.Part.from_executable_code(
         code=code,
-        language='PYTHON',
+        language=types.Language.PYTHON,
     )
 
   @staticmethod
@@ -198,9 +215,11 @@ class CodeExecutionUtils:
     Returns:
       The constructed code execution result part.
     """
+    from google.genai import types
+
     if code_execution_result.stderr:
       return types.Part.from_code_execution_result(
-          outcome='OUTCOME_FAILED',
+          outcome=types.Outcome.OUTCOME_FAILED,
           output=code_execution_result.stderr,
       )
     final_result = []
@@ -216,7 +235,7 @@ class CodeExecutionUtils:
           )
       )
     return types.Part.from_code_execution_result(
-        outcome='OUTCOME_OK',
+        outcome=types.Outcome.OUTCOME_OK,
         output='\n\n'.join(final_result),
     )
 
@@ -225,7 +244,7 @@ class CodeExecutionUtils:
       content: types.Content,
       code_block_delimiter: tuple[str, str],
       execution_result_delimiters: tuple[str, str],
-  ):
+  ) -> None:
     """Converts the code execution parts to text parts in a Content.
 
     Args:
@@ -238,12 +257,14 @@ class CodeExecutionUtils:
     if not content.parts:
       return
 
+    from google.genai import types
+
     # Handle the conversion of trailing executable code parts.
     if content.parts[-1].executable_code:
       content.parts[-1] = types.Part(
           text=(
               code_block_delimiter[0]
-              + content.parts[-1].executable_code.code
+              + (content.parts[-1].executable_code.code or '')
               + code_block_delimiter[1]
           )
       )

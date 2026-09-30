@@ -175,16 +175,18 @@ def after_tool_enhancement_callback(
   """Enhance tool responses with additional metadata."""
   print(f"✨ ENHANCE: Adding metadata to response from '{tool.name}'")
 
-  # Add enhancement metadata
-  enhanced_response = tool_response.copy()
-  enhanced_response.update({
+  # The after chain stops at the first callback that returns a response, and
+  # every callback receives the original tool response rather than the previous
+  # callback's. So hand the metadata over through state and return None to let
+  # the rest of the chain run.
+  tool_context.state["temp:enhancement_metadata"] = {
       "enhanced": True,
       "enhancement_timestamp": datetime.now().isoformat(),
       "tool_name": tool.name,
       "execution_context": "live_streaming",
-  })
+  }
 
-  return enhanced_response
+  return None
 
 
 async def after_tool_async_callback(
@@ -202,8 +204,12 @@ async def after_tool_async_callback(
   # Simulate async post-processing
   await asyncio.sleep(0.05)
 
-  # Add async processing metadata
+  # Add async processing metadata, along with whatever the earlier callback in
+  # the chain left behind.
   processed_response = tool_response.copy()
+  processed_response.update(
+      tool_context.state.get("temp:enhancement_metadata", {})
+  )
   processed_response.update({
       "async_processed": True,
       "processing_time": "0.05s",

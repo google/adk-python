@@ -18,14 +18,17 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import importlib
 import logging
 import os
 import pathlib
-import resource
 import shlex
 import signal
 from typing import Any
+from typing import Callable
+from typing import cast
 from typing import Optional
+from typing import Protocol
 
 from google.genai import types
 
@@ -33,6 +36,27 @@ from .base_tool import BaseTool
 from .tool_context import ToolContext
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+class _ResourceModule(Protocol):
+  RLIMIT_CORE: int
+  RLIMIT_AS: int
+  RLIMIT_FSIZE: int
+  RLIMIT_NPROC: int
+
+  def setrlimit(self, resource: int, limits: tuple[int, int]) -> None:
+    ...
+
+
+def _load_resource_module() -> Optional[_ResourceModule]:
+  try:
+    module = importlib.import_module("resource")
+  except ModuleNotFoundError:
+    return None
+  return cast(_ResourceModule, module)
+
+
+_resource = _load_resource_module()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -77,25 +101,40 @@ def _validate_command(command: str, policy: BashToolPolicy) -> Optional[str]:
 
 def _set_resource_limits(policy: BashToolPolicy) -> None:
   """Sets resource limits for the subprocess based on the provided policy."""
+  if _resource is None:
+    return
   try:
-    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    _resource.setrlimit(_resource.RLIMIT_CORE, (0, 0))
     if policy.max_memory_bytes:
-      resource.setrlimit(
-          resource.RLIMIT_AS,
+      _resource.setrlimit(
+          _resource.RLIMIT_AS,
           (policy.max_memory_bytes, policy.max_memory_bytes),
       )
     if policy.max_file_size_bytes:
-      resource.setrlimit(
-          resource.RLIMIT_FSIZE,
+      _resource.setrlimit(
+          _resource.RLIMIT_FSIZE,
           (policy.max_file_size_bytes, policy.max_file_size_bytes),
       )
     if policy.max_child_processes:
-      resource.setrlimit(
-          resource.RLIMIT_NPROC,
+      _resource.setrlimit(
+          _resource.RLIMIT_NPROC,
           (policy.max_child_processes, policy.max_child_processes),
       )
   except (ValueError, OSError) as e:
     logger.warning("Failed to set resource limits: %s", e)
+
+
+def _kill_process_group(process: asyncio.subprocess.Process) -> None:
+  """Kills the subprocess group on POSIX and the process elsewhere."""
+  if process.pid is None:
+    return
+  killpg_candidate: object = getattr(os, "killpg", None)
+  sigkill: object = getattr(signal, "SIGKILL", None)
+  if callable(killpg_candidate) and isinstance(sigkill, int):
+    killpg = cast(Callable[[int, int], None], killpg_candidate)
+    killpg(process.pid, sigkill)
+  else:
+    process.kill()
 
 
 class ExecuteBashTool(BaseTool):
@@ -149,7 +188,7 @@ class ExecuteBashTool(BaseTool):
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
     command = args.get("command")
-    if not command:
+    if not isinstance(command, str) or not command:
       return {"error": "Command is required."}
 
     # Static validation.
@@ -171,6 +210,9 @@ class ExecuteBashTool(BaseTool):
     elif not tool_context.tool_confirmation.confirmed:
       return {"error": "This tool call is rejected."}
 
+    if os.name != "posix":
+      return {"error": "ExecuteBashTool is only supported on POSIX systems."}
+
     stdout = None
     stderr = None
     try:
@@ -190,7 +232,7 @@ class ExecuteBashTool(BaseTool):
       except asyncio.TimeoutError:
         try:
           if process.pid:
-            os.killpg(process.pid, signal.SIGKILL)
+            _kill_process_group(process)
         except ProcessLookupError:
           pass
         stdout, stderr = await process.communicate()
@@ -214,7 +256,7 @@ class ExecuteBashTool(BaseTool):
       finally:
         try:
           if process.pid:
-            os.killpg(process.pid, signal.SIGKILL)
+            _kill_process_group(process)
         except ProcessLookupError:
           pass
       return {

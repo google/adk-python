@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import google.api_core.client_info
 from google.auth.credentials import Credentials
 from google.cloud import bigtable
@@ -31,7 +33,7 @@ def _get_client_info() -> google.api_core.client_info.ClientInfo:
 
 def get_bigtable_data_client(
     *, project: str, credentials: Credentials
-) -> bigtable.BigtableDataClient:
+) -> data.BigtableDataClient:
   """Get a Bigtable client."""
 
   bigtable_data_client = data.BigtableDataClient(
@@ -46,11 +48,12 @@ def get_bigtable_admin_client(
 ) -> bigtable.Client:
   """Get a Bigtable client."""
 
-  bigtable_admin_client = bigtable.Client(
-      project=project,
-      admin=True,
-      credentials=credentials,
-      client_info=_get_client_info(),
+  return cast(
+      bigtable.Client,
+      bigtable.Client(
+          project=project,
+          admin=True,
+          credentials=credentials,
+          client_info=_get_client_info(),
+      ),
   )
-
-  return bigtable_admin_client

@@ -17,12 +17,14 @@ from unittest.mock import Mock
 from unittest.mock import patch
 
 from authlib.oauth2.rfc6749 import OAuth2Token
+from authlib.oauth2.rfc6749.errors import OAuth2Error
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_schemes import OpenIdConnectWithConfig
 from google.adk.auth.refresher.oauth2_credential_refresher import OAuth2CredentialRefresher
 import pytest
+import requests
 
 
 class TestOAuth2CredentialRefresher:
@@ -177,3 +179,132 @@ class TestOAuth2CredentialRefresher:
     needs_refresh = await refresher.is_refresh_needed(credential, None)
 
     assert not needs_refresh
+
+  @patch("google.adk.auth.refresher.oauth2_credential_refresher.logger")
+  @patch("google.adk.auth.oauth2_credential_util.OAuth2Session")
+  @patch("google.adk.auth.oauth2_credential_util.OAuth2Token")
+  @pytest.mark.asyncio
+  async def test_refresh_oauth2_error_returns_original_and_logs(
+      self, mock_oauth2_token, mock_oauth2_session, mock_logger
+  ):
+    """An authlib OAuth2 error is non-fatal: original is returned and logged."""
+    mock_token_instance = Mock()
+    mock_token_instance.is_expired.return_value = True
+    mock_oauth2_token.return_value = mock_token_instance
+
+    mock_client = Mock()
+    mock_oauth2_session.return_value = mock_client
+    mock_client.refresh_token.side_effect = OAuth2Error(
+        description="invalid_grant"
+    )
+
+    scheme = OpenIdConnectWithConfig(
+        type_="openIdConnect",
+        openId_connect_url=(
+            "https://example.com/.well-known/openid_configuration"
+        ),
+        authorization_endpoint="https://example.com/auth",
+        token_endpoint="https://example.com/token",
+        scopes=["openid"],
+    )
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            access_token="old_token",
+            refresh_token="old_refresh_token",
+            expires_at=int(time.time()) - 3600,  # Expired
+        ),
+    )
+
+    refresher = OAuth2CredentialRefresher()
+    result = await refresher.refresh(credential, scheme)
+
+    assert result is credential
+    assert result.oauth2.access_token == "old_token"
+    mock_logger.error.assert_called_once()
+
+  @patch("google.adk.auth.refresher.oauth2_credential_refresher.logger")
+  @patch("google.adk.auth.oauth2_credential_util.OAuth2Session")
+  @patch("google.adk.auth.oauth2_credential_util.OAuth2Token")
+  @pytest.mark.asyncio
+  async def test_refresh_transport_error_returns_original_and_logs(
+      self, mock_oauth2_token, mock_oauth2_session, mock_logger
+  ):
+    """A requests transport error is non-fatal: original is returned and logged."""
+    mock_token_instance = Mock()
+    mock_token_instance.is_expired.return_value = True
+    mock_oauth2_token.return_value = mock_token_instance
+
+    mock_client = Mock()
+    mock_oauth2_session.return_value = mock_client
+    mock_client.refresh_token.side_effect = requests.ConnectionError(
+        "network down"
+    )
+
+    scheme = OpenIdConnectWithConfig(
+        type_="openIdConnect",
+        openId_connect_url=(
+            "https://example.com/.well-known/openid_configuration"
+        ),
+        authorization_endpoint="https://example.com/auth",
+        token_endpoint="https://example.com/token",
+        scopes=["openid"],
+    )
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            access_token="old_token",
+            refresh_token="old_refresh_token",
+            expires_at=int(time.time()) - 3600,  # Expired
+        ),
+    )
+
+    refresher = OAuth2CredentialRefresher()
+    result = await refresher.refresh(credential, scheme)
+
+    assert result is credential
+    assert result.oauth2.access_token == "old_token"
+    mock_logger.error.assert_called_once()
+
+  @patch("google.adk.auth.oauth2_credential_util.OAuth2Session")
+  @patch("google.adk.auth.oauth2_credential_util.OAuth2Token")
+  @pytest.mark.asyncio
+  async def test_refresh_unexpected_error_propagates(
+      self, mock_oauth2_token, mock_oauth2_session
+  ):
+    """An unexpected error (programming bug) propagates instead of being swallowed."""
+    mock_token_instance = Mock()
+    mock_token_instance.is_expired.return_value = True
+    mock_oauth2_token.return_value = mock_token_instance
+
+    mock_client = Mock()
+    mock_oauth2_session.return_value = mock_client
+    mock_client.refresh_token.side_effect = ValueError("unexpected bug")
+
+    scheme = OpenIdConnectWithConfig(
+        type_="openIdConnect",
+        openId_connect_url=(
+            "https://example.com/.well-known/openid_configuration"
+        ),
+        authorization_endpoint="https://example.com/auth",
+        token_endpoint="https://example.com/token",
+        scopes=["openid"],
+    )
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            access_token="old_token",
+            refresh_token="old_refresh_token",
+            expires_at=int(time.time()) - 3600,  # Expired
+        ),
+    )
+
+    refresher = OAuth2CredentialRefresher()
+    with pytest.raises(ValueError, match="unexpected bug"):
+      await refresher.refresh(credential, scheme)

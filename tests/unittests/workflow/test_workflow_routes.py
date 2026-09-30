@@ -15,7 +15,6 @@
 """Testings for the Workflow routes."""
 
 from typing import Any
-from typing import Dict
 
 from google.adk.agents.context import Context
 from google.adk.apps.app import App
@@ -28,7 +27,6 @@ from google.adk.workflow._workflow import Workflow
 import pytest
 
 from .. import testing_utils
-from .workflow_testing_utils import create_parent_invocation_context
 from .workflow_testing_utils import simplify_events_with_node
 from .workflow_testing_utils import TestingNode
 
@@ -37,7 +35,7 @@ from .workflow_testing_utils import TestingNode
 async def test_run_async_with_edge_routes(request: pytest.FixtureRequest):
   route_holder = {'route': 'route_b'}
 
-  def dynamic_router(ctx: Context, node_input: Any):
+  def dynamic_router(_ctx: Context, _node_input: Any):
     return route_holder['route']
 
   node_a = TestingNode(name='NodeA', output='A', route=dynamic_router)
@@ -136,6 +134,39 @@ async def test_output_route_bool(request: pytest.FixtureRequest):
       (
           'test_workflow_agent_route_bool@1/NodeB@1',
           {'output': 'B'},
+      ),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_wait_for_output_with_route_only_completes_successfully(
+    request: pytest.FixtureRequest,
+):
+  """A node with wait_for_output=True that yields only a route should complete and continue the workflow."""
+  node_a = TestingNode(name='NodeA', route='go_next', wait_for_output=True)
+  node_b = TestingNode(name='NodeB', output='B_done')
+
+  agent = Workflow(
+      name='test_wait_for_output_route',
+      edges=[
+          (START, node_a),
+          (node_a, {'go_next': node_b}),
+      ],
+  )
+  app = App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  # NodeA should yield no output, and NodeB should yield its output.
+  events = await runner.run_async(testing_utils.get_user_content('start'))
+
+  assert simplify_events_with_node(events) == [
+      (
+          'test_wait_for_output_route@1/NodeA@1',
+          {'output': None},
+      ),
+      (
+          'test_wait_for_output_route@1/NodeB@1',
+          {'output': 'B_done'},
       ),
   ]
 
@@ -583,6 +614,95 @@ async def test_routing_map_fan_out_runs_both_targets(
   ]
   assert len(other) == len(expected)
   assert all(item in other for item in expected)
+
+
+@pytest.mark.asyncio
+async def test_routing_map_default_route_fan_out_runs_both_targets(
+    request: pytest.FixtureRequest,
+):
+  """Tests that fan-out on DEFAULT_ROUTE triggers both fallback targets."""
+  node_a = TestingNode(name='NodeA', output='A', route='unmatched_route')
+  node_b = TestingNode(name='NodeB', output='B')
+  node_c = TestingNode(name='NodeC', output='C')
+  gate = JoinNode(name='Gate')
+
+  agent = Workflow(
+      name='test_default_route_fan_out',
+      edges=[
+          (START, node_a),
+          (node_a, {DEFAULT_ROUTE: (node_b, node_c)}),
+          (node_b, gate),
+          (node_c, gate),
+      ],
+  )
+
+  app = App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+  events = await runner.run_async(testing_utils.get_user_content('start'))
+  simplified = simplify_events_with_node(events)
+
+  outputs = [
+      e
+      for e in simplified
+      if isinstance(e[1], dict) and e[1].get('output') is not None
+  ]
+
+  assert len(outputs) == 4
+  assert outputs[0] == (
+      'test_default_route_fan_out@1/NodeA@1',
+      {'output': 'A'},
+  )
+  assert outputs[-1] == (
+      'test_default_route_fan_out@1/Gate@1',
+      {'output': {'NodeB': 'B', 'NodeC': 'C'}},
+  )
+
+  other = outputs[1:3]
+  expected = [
+      (
+          'test_default_route_fan_out@1/NodeB@1',
+          {'output': 'B'},
+      ),
+      (
+          'test_default_route_fan_out@1/NodeC@1',
+          {'output': 'C'},
+      ),
+  ]
+  assert len(other) == len(expected)
+  assert all(item in other for item in expected)
+
+
+@pytest.mark.asyncio
+async def test_routing_map_default_route_fan_out_with_named_route(
+    request: pytest.FixtureRequest,
+):
+  """Tests that a matched named route wins over a fanned-out default."""
+  node_a = TestingNode(name='NodeA', output='A', route='route_b')
+  node_b = TestingNode(name='NodeB', output='B')
+  node_c = TestingNode(name='NodeC', output='C')
+  node_d = TestingNode(name='NodeD', output='D')
+
+  agent = Workflow(
+      name='test_default_route_fan_out_named',
+      edges=[
+          (START, node_a),
+          (node_a, {'route_b': node_b, DEFAULT_ROUTE: (node_c, node_d)}),
+      ],
+  )
+
+  app = App(name=request.function.__name__, root_agent=agent)
+  runner = testing_utils.InMemoryRunner(app=app)
+  events = await runner.run_async(testing_utils.get_user_content('start'))
+  assert simplify_events_with_node(events) == [
+      (
+          'test_default_route_fan_out_named@1/NodeA@1',
+          {'output': 'A'},
+      ),
+      (
+          'test_default_route_fan_out_named@1/NodeB@1',
+          {'output': 'B'},
+      ),
+  ]
 
 
 @pytest.mark.asyncio

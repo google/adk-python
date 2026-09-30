@@ -15,6 +15,7 @@
 from fastapi.openapi.models import MediaType
 from fastapi.openapi.models import Operation
 from fastapi.openapi.models import Parameter
+from fastapi.openapi.models import Reference
 from fastapi.openapi.models import RequestBody
 from fastapi.openapi.models import Response
 from fastapi.openapi.models import Schema
@@ -103,6 +104,31 @@ def test_process_request_body(sample_operation):
   assert parser._params[0].param_location == 'body'
   assert parser._params[1].original_name == 'prop2'
   assert parser._params[1].param_location == 'body'
+
+
+def test_required_request_body_properties_are_required_parameters():
+  """Required body properties appear in the generated parameter schema."""
+  operation = Operation(
+      operationId='createSpace',
+      requestBody=RequestBody(
+          content={
+              'application/json': MediaType(
+                  schema=Schema(
+                      type='object',
+                      required=['spaceName'],
+                      properties={
+                          'spaceName': Schema(type='string'),
+                          'description': Schema(type='string'),
+                      },
+                  )
+              )
+          }
+      ),
+  )
+
+  parser = OperationParser(operation)
+
+  assert parser.get_json_schema()['required'] == ['space_name']
 
 
 def test_process_request_body_array():
@@ -333,6 +359,13 @@ def test_get_return_type_value(sample_operation):
   assert parser.get_return_type_value() == str
 
 
+def test_get_return_value_requires_parsing(sample_operation):
+  parser = OperationParser(sample_operation, should_parse=False)
+
+  with pytest.raises(RuntimeError, match='has not been parsed'):
+    parser.get_return_value()
+
+
 def test_get_parameters(sample_operation):
   """Test get_parameters method."""
   parser = OperationParser(sample_operation)
@@ -357,6 +390,27 @@ def test_get_auth_scheme_name(sample_operation):
 def test_get_auth_scheme_name_no_security():
   """Test get_auth_scheme_name when no security is present."""
   operation = Operation(responses={})
+  parser = OperationParser(operation)
+  assert parser.get_auth_scheme_name() == ''
+
+
+def test_get_auth_scheme_name_empty_requirement():
+  operation = Operation(responses={}, security=[{}])
+  parser = OperationParser(operation)
+
+  assert parser.get_auth_scheme_name() == ''
+
+
+def test_get_auth_scheme_name_optional_security_listed_first():
+  """An empty requirement makes auth optional, so no scheme is required."""
+  operation = Operation(responses={}, security=[{}, {'apiKey': []}])
+  parser = OperationParser(operation)
+  assert parser.get_auth_scheme_name() == ''
+
+
+def test_get_auth_scheme_name_optional_security_listed_last():
+  """The empty requirement makes auth optional wherever it appears."""
+  operation = Operation(responses={}, security=[{'apiKey': []}, {}])
   parser = OperationParser(operation)
   assert parser.get_auth_scheme_name() == ''
 

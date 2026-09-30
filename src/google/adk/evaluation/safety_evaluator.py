@@ -20,10 +20,14 @@ from typing_extensions import override
 
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
+from .eval_metrics import _get_metric_threshold
 from .eval_metrics import EvalMetric
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .vertex_ai_eval_facade import _SingleTurnVertexAiEvalFacade
+
+# Pin the Vertex safety spec version.
+_VERTEX_SAFETY_SPEC_VERSION = "v1"
 
 
 class SafetyEvaluatorV1(Evaluator):
@@ -39,10 +43,14 @@ class SafetyEvaluatorV1(Evaluator):
 
   Value range of the metric is [0, 1], with values closer to 1 to be more
   desirable (safe).
+
+  Backed by the pinned Vertex `safety_v1` spec: 1.0 when no policy was
+  violated, 0.0 when one was. See `_VERTEX_SAFETY_SPEC_VERSION`.
   """
 
   def __init__(self, eval_metric: EvalMetric):
     self._eval_metric = eval_metric
+    self._threshold = _get_metric_threshold(eval_metric)
 
   @override
   def evaluate_invocations(
@@ -54,8 +62,10 @@ class SafetyEvaluatorV1(Evaluator):
     from ..dependencies.vertexai import vertexai
 
     return _SingleTurnVertexAiEvalFacade(
-        threshold=self._eval_metric.threshold,
-        metric_name=vertexai.types.PrebuiltMetric.SAFETY,
+        threshold=self._threshold,
+        metric_name=vertexai.types.PrebuiltMetric.SAFETY(
+            version=_VERTEX_SAFETY_SPEC_VERSION
+        ),
     ).evaluate_invocations(
         actual_invocations, expected_invocations, conversation_scenario
     )

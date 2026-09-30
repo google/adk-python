@@ -1,0 +1,62 @@
+{
+  "eval_set_id": "basic_criteria",
+  "name": "Basic deterministic criteria",
+  "description": "Single-turn cases scored by tool trajectory and ROUGE-1.",
+  "eval_cases": [
+    {
+      "eval_id": "turn_off_bedroom_device",
+      "conversation": [
+        {
+          "invocation_id": "basic-1",
+          "user_content": {
+            "parts": [{"text": "Turn off device_2."}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "device_2 is now turned off."}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {"name": "set_device_info",
+               "args": {"device_id": "device_2", "status": "OFF"}}
+            ],
+            "intermediate_responses": []
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "home_automation_agent",
+        "user_id": "user",
+        "state": {}
+      }
+    },
+    {
+      "eval_id": "get_living_room_temperature",
+      "conversation": [
+        {
+          "invocation_id": "basic-2",
+          "user_content": {
+            "parts": [{"text": "What is the temperature in the Living Room?"}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "The Living Room is 22 degrees Celsius."}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {"name": "get_temperature", "args": {"location": "Living Room"}}
+            ],
+            "intermediate_responses": []
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "home_automation_agent",
+        "user_id": "user",
+        "state": {}
+      }
+    }
+  ]
+}

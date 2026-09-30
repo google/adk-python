@@ -22,12 +22,51 @@ from typing import List
 from typing import Optional
 
 from adk_documentation.settings import GITHUB_BASE_URL
+from adk_documentation.settings import LOCAL_REPOS_DIR_PATH
 from adk_documentation.utils import error_response
 from adk_documentation.utils import get_paginated_request
 from adk_documentation.utils import get_request
 from adk_documentation.utils import patch_request
 from adk_documentation.utils import post_request
 import requests
+
+
+def _resolve_within_repos_dir(path: str) -> Optional[str]:
+  """Resolves `path` and verifies it stays within LOCAL_REPOS_DIR_PATH.
+
+  Returns the resolved absolute path if it is inside the sandbox, else None.
+  """
+  allowed_root = os.path.realpath(LOCAL_REPOS_DIR_PATH)
+  resolved = os.path.realpath(path)
+  if resolved == allowed_root or resolved.startswith(allowed_root + os.sep):
+    return resolved
+  return None
+
+
+def _confine_path(
+    path: str, param_name: str
+) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
+  """Resolves `path` and verifies it stays within LOCAL_REPOS_DIR_PATH.
+
+  The file/search tools are only meant to operate on the repositories cloned
+  under LOCAL_REPOS_DIR_PATH. Because these tools are driven by an LLM that
+  processes untrusted input (issue bodies, release diffs), an `os.path.isabs`
+  check alone lets a crafted instruction read or write arbitrary paths (e.g.
+  the credentials file pointed to by GOOGLE_APPLICATION_CREDENTIALS, or
+  /proc/self/environ). Resolve symlinks and `..` segments first, then require
+  the result to stay inside the managed directory.
+
+  Returns:
+      A tuple of (safe_path, error_response_dict). If the path is outside the
+      sandbox, safe_path is None and error_response_dict contains the error.
+  """
+  safe_path = _resolve_within_repos_dir(path)
+  if safe_path is None:
+    return None, error_response(
+        f"Access denied: {param_name} is outside the managed repositories "
+        f"directory ({LOCAL_REPOS_DIR_PATH}): {path}"
+    )
+  return safe_path, None
 
 
 def list_releases(repo_owner: str, repo_name: str) -> Dict[str, Any]:
@@ -135,6 +174,10 @@ def clone_or_pull_repo(
       A dictionary indicating the status of the operation, output message, and
       the head commit hash.
   """
+  local_path, err = _confine_path(local_path, "local_path")
+  if err:
+    return err
+
   repo_url = f"git@github.com:{repo_owner}/{repo_name}.git"
 
   try:
@@ -188,6 +231,10 @@ def read_local_git_repo_file_content(file_path: str) -> Dict[str, Any]:
         f"file_path must be an absolute path, got: {file_path}"
     )
 
+  file_path, err = _confine_path(file_path, "file_path")
+  if err:
+    return err
+
   try:
     dir_path = os.path.dirname(file_path)
     head_commit_sha = _find_head_commit_sha(dir_path)
@@ -229,6 +276,9 @@ def list_directory_contents(directory_path: str) -> Dict[str, Any]:
   print(
       f"Attempting to recursively list contents of directory: {directory_path}"
   )
+  directory_path, err = _confine_path(directory_path, "directory_path")
+  if err:
+    return err
   if not os.path.isdir(directory_path):
     return error_response(f"Error: Directory not found at {directory_path}")
 
@@ -276,6 +326,9 @@ def search_local_git_repo(
       f"Attempting to search for pattern: {pattern} in directory:"
       f" {directory_path}, with extensions: {extensions}"
   )
+  directory_path, err = _confine_path(directory_path, "directory_path")
+  if err:
+    return err
   try:
     grep_process = _git_grep(directory_path, pattern, extensions, ignored_dirs)
     if grep_process.returncode > 1:
@@ -350,8 +403,18 @@ def create_pull_request_from_changes(
     if not changes:
       return error_response("No changes provided to apply.")
 
+    repo_root = os.path.realpath(local_path)
     for relative_path, new_content in changes.items():
-      full_path = os.path.join(local_path, relative_path)
+      full_path = os.path.realpath(os.path.join(local_path, relative_path))
+      # Confine writes to the repository: a crafted relative_path such as
+      # "../../etc/x" would otherwise escape `local_path`.
+      if not (
+          full_path == repo_root or full_path.startswith(repo_root + os.sep)
+      ):
+        return error_response(
+            "Access denied: change path escapes the repository:"
+            f" {relative_path}"
+        )
       os.makedirs(os.path.dirname(full_path), exist_ok=True)
       with open(full_path, "w", encoding="utf-8") as f:
         f.write(new_content)

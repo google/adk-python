@@ -12,8 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from unittest import mock
+
 from google.adk import models
+from google.adk.integrations.openai import OpenAILlm
+from google.adk.models import registry
 from google.adk.models.anthropic_llm import Claude
+from google.adk.models.apigee_llm import ApigeeLlm
+from google.adk.models.base_llm import BaseLlm
 from google.adk.models.google_llm import Gemini
 from google.adk.models.lite_llm import LiteLlm
 import pytest
@@ -46,6 +52,25 @@ def test_match_gemini_family(model_name):
         'claude-3-sonnet@20240229',
         'claude-sonnet-4@20250514',
         'claude-opus-4@20250514',
+        'claude-sonnet-4-5',
+        'claude-haiku-4-5',
+        'claude-sonnet-4-6',
+        'claude-opus-4-6',
+        'claude-opus-4-7',
+        'claude-opus-4-8',
+        'claude-opus-5',
+        'claude-sonnet-5',
+        'claude-fable-5',
+        'claude-opus-5@default',
+        'claude-sonnet-5@default',
+        # Anthropic put the generation first at the 4 launch, so these ids
+        # matched nothing even though claude-opus-4 did.
+        'claude-4-opus-20250514',
+        'claude-4-sonnet-20250514',
+        # Carries no generation at all.
+        'claude-mythos-preview',
+        # A generation nobody has added a pattern for yet.
+        'claude-opus-6',
     ],
 )
 def test_match_claude_family(model_name):
@@ -69,28 +94,118 @@ def test_match_litellm_family(model_name):
   assert models.LLMRegistry.resolve(model_name) is LiteLlm
 
 
+@pytest.mark.parametrize(
+    'model_name',
+    [
+        'xai/grok-4',
+        'gemini/gemini-3.5-flash',
+        'openrouter/anthropic/claude-opus-4',
+        'cerebras/llama-3.3-70b',
+    ],
+)
+def test_match_litellm_provider_not_spelled_out_in_registry(model_name):
+  """Test that any provider LiteLLM knows about resolves to LiteLlm."""
+  assert models.LLMRegistry.resolve(model_name) is LiteLlm
+
+
+@pytest.mark.parametrize(
+    'model_name',
+    [
+        'apigee/gemini-2.5-flash',
+        'apigee/v1/gemini-2.5-flash',
+        'apigee/vertex_ai/v1beta/gemini-2.5-flash',
+    ],
+)
+def test_match_apigee_family(model_name):
+  """Test that Apigee models are resolved correctly."""
+  assert models.LLMRegistry.resolve(model_name) is ApigeeLlm
+
+
+@pytest.mark.parametrize(
+    'model_name',
+    [
+        'o1-preview',
+        'o3-mini',
+        'o4-mini',
+    ],
+)
+def test_match_openai_reasoning_family(model_name):
+  """Test that the OpenAI o-series resolves regardless of generation."""
+  assert models.LLMRegistry.resolve(model_name) is OpenAILlm
+
+
 def test_non_exist_model():
   with pytest.raises(ValueError) as e_info:
     models.LLMRegistry.resolve('non-exist-model')
   assert 'Model non-exist-model not found.' in str(e_info.value)
 
 
-def test_helpful_error_for_claude_without_extensions():
-  """Test that missing Claude models show helpful install instructions.
+def test_bare_third_party_model_name_is_told_about_the_provider_form():
+  """A bare unregistered name gets the "provider/model" hint and the install.
 
-  Note: This test may pass even when anthropic IS installed, because it
-  only checks the error message format when a model is not found.
+  Neither of the existing branches fires for it: it has no claude prefix and
+  no slash, so before this it got "Model x not found." and nothing else.
   """
-  # Use a non-existent Claude model variant to trigger error
   with pytest.raises(ValueError) as e_info:
-    models.LLMRegistry.resolve('claude-nonexistent-model-xyz')
+    models.LLMRegistry.resolve('grok-4')
+  error_msg = str(e_info.value)
+  assert 'Model grok-4 not found.' in error_msg
+  assert '"provider/model"' in error_msg
+  assert 'pip install google-adk[extensions]' in error_msg
+
+
+def test_helpful_error_for_claude_without_extensions():
+  """Test that Claude models show install instructions when anthropic is absent.
+
+  This is now the only way to reach that message. Any claude id resolves once
+  the package is installed, which is what makes the message true when it does
+  appear -- it used to fire for a mistyped id on a machine that had anthropic
+  installed the whole time.
+  """
+  # Point the lazy entry at a module that cannot be imported, which is what an
+  # uninstalled anthropic looks like to the registry.
+  with mock.patch.dict(
+      registry._llm_registry_dict,
+      {r'claude-.*': ('google.adk.models.not_installed', 'Claude')},
+  ):
+    registry.LLMRegistry.resolve.cache_clear()
+    with pytest.raises(ValueError) as e_info:
+      models.LLMRegistry.resolve('claude-opus-5')
+  registry.LLMRegistry.resolve.cache_clear()
 
   error_msg = str(e_info.value)
-  # The error should mention anthropic package and installation instructions
-  # These checks work whether or not anthropic is actually installed
-  assert 'Model claude-nonexistent-model-xyz not found' in error_msg
+  assert 'Model claude-opus-5 not found' in error_msg
   assert 'anthropic package' in error_msg
   assert 'pip install' in error_msg
+
+
+@pytest.mark.parametrize('model_name', ['gpt-4o', 'o3-mini'])
+def test_helpful_error_for_openai_without_openai_extra(model_name):
+  """OpenAI model names point at the openai extra when openai is absent.
+
+  Without this branch they fell through to the generic hint, which told the
+  user to reach the model through litellm instead of installing the package
+  the registered OpenAILlm needs.
+  """
+  # Point the lazy entries at a module that cannot be imported, which is what
+  # an uninstalled openai looks like to the registry.
+  with mock.patch.dict(
+      registry._llm_registry_dict,
+      {
+          r'gpt-.*': ('google.adk.models.not_installed', 'OpenAILlm'),
+          r'o\d+-.*': ('google.adk.models.not_installed', 'OpenAILlm'),
+      },
+  ):
+    registry.LLMRegistry.resolve.cache_clear()
+    with pytest.raises(ValueError) as e_info:
+      models.LLMRegistry.resolve(model_name)
+  registry.LLMRegistry.resolve.cache_clear()
+
+  error_msg = str(e_info.value)
+  assert f'Model {model_name} not found' in error_msg
+  assert 'openai package' in error_msg
+  assert 'pip install google-adk[openai]' in error_msg
+  assert '"provider/model"' not in error_msg
 
 
 def test_helpful_error_for_litellm_without_extensions():
@@ -117,6 +232,33 @@ def test_resolve_with_prefix():
   assert models.LLMRegistry.resolve('Claude:claude-3-opus@20240229') is Claude
   assert models.LLMRegistry.resolve('lite:openai/gpt-4o') is LiteLlm
   assert models.LLMRegistry.resolve('LiteLlm:openai/gpt-4o') is LiteLlm
+
+
+def test_register_after_resolve_returns_the_new_class():
+  """Test that registering over an already-resolved name takes effect."""
+  model_name = 'test-registry-override-model'
+
+  class FirstLlm(BaseLlm):
+
+    @classmethod
+    def supported_models(cls):
+      return [model_name]
+
+  class SecondLlm(BaseLlm):
+
+    @classmethod
+    def supported_models(cls):
+      return [model_name]
+
+  try:
+    models.LLMRegistry.register(FirstLlm)
+    assert models.LLMRegistry.resolve(model_name) is FirstLlm
+
+    models.LLMRegistry.register(SecondLlm)
+    assert models.LLMRegistry.resolve(model_name) is SecondLlm
+  finally:
+    registry._llm_registry_dict.pop(model_name, None)
+    models.LLMRegistry.resolve.cache_clear()
 
 
 def test_new_llm_with_prefix(mocker):

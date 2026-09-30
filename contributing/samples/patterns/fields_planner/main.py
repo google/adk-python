@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 from google.adk import Runner
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.cli.utils import logs
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.genai import types
 
@@ -40,7 +41,9 @@ async def main():
       artifact_service=artifact_service,
       session_service=session_service,
   )
-  session_11 = await session_service.create_session(app_name, user_id_1)
+  session_11 = await session_service.create_session(
+      app_name=app_name, user_id=user_id_1
+  )
 
   async def run_prompt(session: Session, new_message: str):
     content = types.Content(
@@ -52,7 +55,7 @@ async def main():
         session_id=session.id,
         new_message=content,
     ):
-      if event.content.parts and event.content.parts[0].text:
+      if event.content and event.content.parts and event.content.parts[0].text:
         print(f'** {event.author}: {event.content.parts[0].text}')
 
   start_time = time.time()

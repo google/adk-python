@@ -78,7 +78,7 @@ All tools modify the agent's state (`tool_context.state`) with request logs incl
 
 ```bash
 # Start the agent in interactive mode
-adk run contributing/samples/parallel_functions
+adk run contributing/samples/tools/parallel_functions
 
 # Or use the web interface
 adk web

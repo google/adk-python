@@ -1,90 +1,119 @@
 ---
 name: adk-git
-description: Use for any git operation (commit, push, pull, rebase, branch, PR, cherry-pick, etc.). Provides commit message format and conventions.
+description: >-
+  Writes commit messages and pull request descriptions for the adk-python
+  repository: Conventional Commits types and scopes, subject lines that say why
+  a change was made, and the linked-issue and testing-plan sections the PR
+  template requires. Use when writing or rewording a commit message, squashing
+  commits before a pull request, drafting a PR description, or checking that a
+  change is shaped to land. Don't use for generic git mechanics such as
+  rebasing, resolving conflicts, cherry-picking, or branch surgery; those need
+  no skill. Don't use to judge the content of a change (use adk-review) or for
+  code style and naming (use adk-style).
 ---
 
-# Git Operations for adk-python
+# Commit and Pull Request Conventions
 
-## Commit Message Format
+## Commit message format
 
-Use **Conventional Commits**:
+Conventional Commits:
 
-```
+```text
 <type>(<scope>): <description>
 ```
 
-### Types
+The type decides where the commit lands in `CHANGELOG.md`. `release-please`
+generates the changelog from merged commit subjects, so the wrong type either
+files the change under the wrong heading or drops it from the release notes
+entirely.
 
-- `feat`: New feature
-- `fix`: Bug fix
-- `docs`: Documentation only
-- `style`: Formatting, no code change
-- `refactor`: Code restructure without behavior change
-- `perf`: Performance improvement
-- `test`: Adding/updating tests
-- `chore`: Build, config, dependencies
-- `ci`: CI/CD changes
+| Type                                               | Changelog section        |
+| -------------------------------------------------- | ------------------------ |
+| `feat`                                             | Features                 |
+| `fix`                                              | Bug Fixes                |
+| `perf`                                             | Performance Improvements |
+| `docs`                                             | Documentation            |
+| `refactor`, `test`, `build`, `ci`, `style`, `chore` | hidden, no entry         |
 
-### Description Phrasing
+The mapping lives in `.github/release-please-config.json`. A type that is not
+listed there produces no changelog entry at all.
 
-**CRITICAL**: The subject line must answer **why**, not just **what**.
-A reviewer reading only the subject should understand the motivation.
+Scope is optional. Use a short module name with no underscores
+(`fix(cli):`, `feat(a2a):`, `fix(sessions):`) or leave it off.
 
-- **State the outcome**, not the mechanics:
-  - Good: `Fix race condition when two agents write to same session`
-  - Bad: `Update session.py to add lock`
-- **Name the capability added**, not the implementation:
-  - Good: `Support parallel tool execution in workflows`
-  - Bad: `Add asyncio.gather call in execute_tools_node`
-- **For refactors, state the reason**, not just the action:
-  - Good: `Make graph public for dev UI serialization`
-  - Bad: `Make graph a public field on new Workflow`
-- **For bug fixes, state what was broken**:
-  - Good: `Prevent duplicate events when resuming HITL`
-  - Bad: `Check interrupt_id before appending`
+## Subject line
 
-### Detailed Commit Messages
+Say why the change exists, not which lines moved. A reviewer who reads only the
+subject should understand the motivation.
 
-Promote detailed commit messages by including a short, concrete explanation in the body:
-- For **features**: Give a sample usage or explain the new capability.
-- For **fixes**: Explain what caused the error and how the fix addresses it.
+| Write                                                        | Not                                                            |
+| ------------------------------------------------------------ | -------------------------------------------------------------- |
+| `fix(sessions): prevent duplicate events when resuming HITL` | `fix(sessions): check interrupt_id before appending`           |
+| `feat(workflow): support parallel tool execution`            | `feat(workflow): add asyncio.gather call in execute_tools_node` |
+| `refactor: make graph public for dev UI serialization`       | `refactor: make graph a public field on Workflow`              |
 
-**Example (Feature):**
-```
-feat(workflow): Support JSON string parsing in schema validation
+Rules:
 
-Automatically parse JSON strings into dicts or Pydantic models when input_schema or output_schema is defined on a node.
-```
+1. Imperative mood: `add`, not `added`.
+2. Lowercase the first word after the colon. `release-please` copies the
+   subject into `CHANGELOG.md` verbatim, and the great majority of merged
+   commits are lowercase, so capitalizing makes one line stand out.
+3. No trailing period.
+4. Keep the subject under about 72 characters. Nothing enforces this, but each
+   commit renders as one changelog line.
+5. Reference the issue in the body, not the subject: `Fixes #1234` or
+   `Closes #1234`, or the full issue URL when the issue lives in another
+   repository.
 
-**Example (Fix):**
-```
-fix(sessions): Prevent duplicate events when resuming HITL
+Self-check: read the subject back and ask whether it says *why* someone made
+the change. If it only names the edit, rewrite it.
 
-The interrupt_id was not checked before appending, causing duplicates if the user resumed multiple times. Added a check to ignore already processed interrupts.
-```
+## Commit body
 
-Self-check before committing: read your subject line and ask "does this tell me _why_ someone made this change?" If it only describes _what_ changed, rewrite it.
+Add a blank line, then a short concrete explanation. For a feature, show the
+new capability or a usage line. For a fix, say what caused the failure and how
+the change addresses it.
 
-### Rules
+```text
+feat(workflow): support JSON string parsing in schema validation
 
-1. **Imperative mood** - "Add feature" not "Added feature".
-2. **Capitalize** first letter of description (for release-please changelog).
-3. **No period** at end of subject line.
-4. **50 char limit** on subject line when possible, max 72.
-5. **Use body for context** - Add a blank line then explain _why_,
-   not _how_, when the subject alone isn't enough.
-6. **Reference GitHub issues** - If the commit fixes a GitHub issue, include "Fixes #<issue-number>" or "Closes #<issue-number>" (or the full issue URL if cross-repository) in the commit message body.
-
-### Examples
-
-```
-feat(agents): Support App pattern with lifecycle plugins
-fix(sessions): Prevent memory leak on concurrent session cleanup
-refactor(tools): Unify env var checks across tool implementations
-docs: Add contributing guide for first-time contributors
+Parse JSON strings into dicts or Pydantic models when input_schema or
+output_schema is defined on a node.
 ```
 
-## Pre-commit Hooks
+```text
+fix(sessions): prevent duplicate events when resuming HITL
 
-> [!IMPORTANT]
-> Before performing any commit, check if `pre-commit` is installed and configured with the expected hooks (`isort`, `pyink`, `addlicense`, `mdformat`). If not, remind the user to set up pre-commit hooks using the `adk-setup` skill.
+interrupt_id was not checked before appending, so resuming twice appended the
+same event twice. Ignore interrupts that were already processed.
+
+Fixes #1234
+```
+
+## Before committing
+
+`pre-commit` reformats and checks staged files, and the same hooks run again in
+CI on every pull request, so a commit made with hooks skipped fails there.
+
+```bash
+pre-commit install                  # once per clone
+pre-commit run --files {paths}      # check only what changed
+```
+
+The hooks include `isort`, `pyink`, `addlicense`, `mdformat`, `ruff`,
+`codespell`, and repository-local compliance checks; see
+`.pre-commit-config.yaml`. If `pre-commit` is not installed, point the user at
+the `adk-setup` skill rather than committing unformatted code.
+
+## Pull requests
+
+- Every PR except a small documentation or typo fix needs a linked issue.
+  Put `Closes: #{issue_number}` in the PR description, or describe the problem
+  and solution inline following the issue templates.
+- Fill in the Testing Plan section of `.github/pull_request_template.md`,
+  including a summary of passing `pytest` results.
+- Do not merge on GitHub. The `Do Not Merge on GitHub` check fails on every PR
+  to `main` by design; a maintainer lands the change and it is synced back to
+  the repository. GitHub then shows the PR as closed with a `merged` label
+  rather than merged, and the landed commit carries the original authorship.
+  That red check is expected and is not something to fix.

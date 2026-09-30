@@ -33,7 +33,26 @@ from ..evaluator import Evaluator
 
 
 class BaseUserSimulatorConfig(BaseModel):
-  """Base class for configurations pertaining to user simulator."""
+  """Base class for configurations pertaining to user simulator.
+
+  Concrete subclasses MUST override `type` with a `Literal[...]` value
+  unique to that subclass (e.g. `Literal["llm_backed"]`).
+  """
+
+  type: Optional[str] = Field(
+      default=None,
+      description=(
+          "Discriminator for the concrete config subclass. Each concrete"
+          " subclass overrides this with a `Literal[...]` value unique to"
+          ' that subclass (e.g. `Literal["llm_backed"]`). The value is'
+          " used by `EvalConfig` to route JSON deserialization to the"
+          " correct subclass, and by `UserSimulatorProvider` to look up the"
+          " matching simulator implementation. The default is `None` on the"
+          " base -- it is *not* a valid discriminator value on its own; a"
+          " bare `BaseUserSimulatorConfig` cannot be dispatched to any"
+          " simulator and must be promoted to a concrete subclass first."
+      ),
+  )
 
   model_config = ConfigDict(
       alias_generator=alias_generators.to_camel,
@@ -114,3 +133,39 @@ class UserSimulator(ABC):
   ) -> Optional[Evaluator]:
     """Returns an instance of an Evaluator that evaluates if the user simulation was successful or not."""
     raise NotImplementedError()
+
+
+# --------------------------------------------------------------------------- #
+# Config-type -> Simulator-type registry
+# --------------------------------------------------------------------------- #
+#
+# The registry maps a concrete `BaseUserSimulatorConfig` subclass to the
+# `UserSimulator` implementation that consumes it. It lives here (on the
+# base module) rather than on the provider so that new simulator subclasses
+# can self-register from their own module at import time without creating a
+# circular dependency with `user_simulator_provider`. `UserSimulatorProvider`
+# reads from this registry to dispatch based on config type.
+_SIMULATOR_BY_CONFIG_TYPE: dict[
+    type[BaseUserSimulatorConfig], type[UserSimulator]
+] = {}
+
+
+def register_user_simulator(
+    config_type: type[BaseUserSimulatorConfig],
+    simulator_type: type[UserSimulator],
+) -> None:
+  """Register a `UserSimulator` implementation for a given config subclass.
+
+  This is the extension point for new user-simulator types. A new subclass
+  ships its own `BaseUserSimulatorConfig` subclass (with a unique
+  `Literal[...]` value for its `type` discriminator) and its own
+  `UserSimulator` subclass, then calls this function once at import time
+  (typically as an epilogue at the bottom of the simulator's own module) to
+  wire them together. `UserSimulatorProvider.provide` will then dispatch to
+  the new simulator whenever an `EvalConfig` carries a config of that type.
+
+  Args:
+    config_type: The concrete `BaseUserSimulatorConfig` subclass.
+    simulator_type: The `UserSimulator` subclass that consumes it.
+  """
+  _SIMULATOR_BY_CONFIG_TYPE[config_type] = simulator_type

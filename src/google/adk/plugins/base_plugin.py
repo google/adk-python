@@ -300,7 +300,7 @@ class BasePlugin(ABC):
       tool: BaseTool,
       tool_args: dict[str, Any],
       tool_context: ToolContext,
-  ) -> Optional[dict]:
+  ) -> Optional[dict[str, Any]]:
     """Callback executed before a tool is called.
 
     This callback is useful for logging tool usage, input validation, or
@@ -324,8 +324,8 @@ class BasePlugin(ABC):
       tool: BaseTool,
       tool_args: dict[str, Any],
       tool_context: ToolContext,
-      result: dict,
-  ) -> Optional[dict]:
+      result: dict[str, Any],
+  ) -> Optional[dict[str, Any]]:
     """Callback executed after a tool has been called.
 
     This callback allows for inspecting, logging, or modifying the result
@@ -352,7 +352,7 @@ class BasePlugin(ABC):
       tool_args: dict[str, Any],
       tool_context: ToolContext,
       error: Exception,
-  ) -> Optional[dict]:
+  ) -> Optional[dict[str, Any]]:
     """Callback executed when a tool call encounters an error.
 
     This callback provides an opportunity to handle tool errors gracefully,
@@ -368,5 +368,43 @@ class BasePlugin(ABC):
       An optional dictionary. If a dictionary is returned, it will be used as
       the tool response instead of propagating the error. Returning `None`
       allows the original error to be raised.
+    """
+    pass
+
+  async def on_agent_error_callback(
+      self,
+      *,
+      agent: BaseAgent,
+      callback_context: CallbackContext,
+      error: Exception,
+  ) -> None:
+    """Callback executed when an unhandled exception escapes agent execution.
+
+    This is a notification-only callback. The exception is always re-raised
+    after all registered plugins have been notified. Plugins should NOT
+    suppress the exception.
+
+    Args:
+      agent: The agent instance that encountered the error.
+      callback_context: The callback context for the agent invocation.
+      error: The exception that was raised during agent execution.
+    """
+    pass
+
+  async def on_run_error_callback(
+      self,
+      *,
+      invocation_context: InvocationContext,
+      error: Exception,
+  ) -> None:
+    """Callback executed when an unhandled exception escapes runner execution.
+
+    This is a notification-only callback. The exception is always re-raised
+    after all registered plugins have been notified. Plugins should NOT
+    suppress the exception.
+
+    Args:
+      invocation_context: The context for the entire invocation.
+      error: The exception that was raised during runner execution.
     """
     pass

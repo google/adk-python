@@ -20,26 +20,26 @@ import logging
 import os
 from pathlib import Path
 from pathlib import PurePosixPath
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from typing_extensions import override
 
 from ...environment._base_environment import BaseEnvironment
 from ...environment._base_environment import ExecutionResult
-from ...utils.feature_decorator import experimental
+from ...features import experimental
+from ...features import FeatureName
 
 if TYPE_CHECKING:
   from e2b import AsyncSandbox
 
-logger = logging.getLogger('google_adk.' + __name__)
+logger = logging.getLogger("google_adk." + __name__)
 
-_DEFAULT_IMAGE = 'base'
+_DEFAULT_IMAGE = "base"
 _DEFAULT_TIMEOUT = 300
-_SANDBOX_HOME = '/home/user'
+_SANDBOX_HOME = "/home/user"
 
 
-@experimental
+@experimental(FeatureName.E2B_ENVIRONMENT)
 class E2BEnvironment(BaseEnvironment):
   """A persistent remote workspace backed by an E2B sandbox.
 
@@ -62,8 +62,8 @@ class E2BEnvironment(BaseEnvironment):
       *,
       image: str = _DEFAULT_IMAGE,
       timeout: int = _DEFAULT_TIMEOUT,
-      api_key: Optional[str] = None,
-      env_vars: Optional[dict[str, str]] = None,
+      api_key: str | None = None,
+      env_vars: dict[str, str] | None = None,
   ):
     """Create an E2B environment.
 
@@ -80,13 +80,13 @@ class E2BEnvironment(BaseEnvironment):
     self._timeout = timeout
     self._api_key = api_key
     self._env_vars = env_vars
-    self._sandbox: Optional[AsyncSandbox] = None
+    self._sandbox: AsyncSandbox | None = None
 
   @property
   @override
   def working_dir(self) -> Path:
     if self._sandbox is None:
-      raise RuntimeError('Sandbox is not started. Call initialize() first.')
+      raise RuntimeError("Sandbox is not started. Call initialize() first.")
     return Path(_SANDBOX_HOME)
 
   @override
@@ -94,19 +94,21 @@ class E2BEnvironment(BaseEnvironment):
     if self._sandbox is not None:
       return
     self._sandbox = await self._create_sandbox()
+    self._is_initialized = True
 
   @override
   async def close(self) -> None:
     if self._sandbox is not None:
       await self._sandbox.kill()
       self._sandbox = None
+      self._is_initialized = False
 
   @override
   async def execute(
       self,
       command: str,
       *,
-      timeout: Optional[float] = None,
+      timeout: float | None = None,
   ) -> ExecutionResult:
     from e2b import CommandExitException
     from e2b import TimeoutException
@@ -137,7 +139,7 @@ class E2BEnvironment(BaseEnvironment):
     sandbox = await self._ensure_sandbox()
     resolved = self._resolve_path(path)
     try:
-      content = await sandbox.files.read(resolved, format='bytes')
+      content = await sandbox.files.read(resolved, format="bytes")
     except FileNotFoundException as e:
       raise FileNotFoundError(resolved) from e
     return bytes(content)
@@ -155,8 +157,8 @@ class E2BEnvironment(BaseEnvironment):
       from e2b import AsyncSandbox
     except ImportError as e:
       raise ImportError(
-          'The e2b package is required to use E2BEnvironment. Install it with'
-          ' `pip install google-adk[e2b]`.'
+          "The e2b package is required to use E2BEnvironment. Install it with"
+          " `pip install google-adk[e2b]`."
       ) from e
 
     return await AsyncSandbox.create(
@@ -168,15 +170,15 @@ class E2BEnvironment(BaseEnvironment):
 
   async def _ensure_sandbox(self) -> AsyncSandbox:
     if self._sandbox is None:
-      raise RuntimeError('Sandbox is not started. Call initialize() first.')
+      raise RuntimeError("Sandbox is not started. Call initialize() first.")
 
     if await self._sandbox.is_running():
       # Keepalive: extend the TTL while the workspace is actively used.
       await self._sandbox.set_timeout(self._timeout)
     else:
       logger.warning(
-          'E2B sandbox expired; recreating a fresh sandbox. Workspace state'
-          ' (installed packages and files) has been lost.'
+          "E2B sandbox expired; recreating a fresh sandbox. Workspace state"
+          " (installed packages and files) has been lost."
       )
       self._sandbox = await self._create_sandbox()
     return self._sandbox

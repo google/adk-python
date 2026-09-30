@@ -16,16 +16,35 @@ from __future__ import annotations
 
 import threading
 from typing import Callable
+from typing import cast
+from typing import Protocol
 
-internal_thread = None
+
+class _ThreadFactory(Protocol):
+  """Optional platform-specific thread factory."""
+
+  def create_thread(
+      self,
+      target: Callable[..., None],
+      *args: object,
+      **kwargs: object,
+  ) -> threading.Thread:
+    """Creates a thread."""
+
+
+internal_thread: _ThreadFactory | None
 try:
-  from .internal import thread as internal_thread
+  from .internal import thread as _internal_thread
 except ImportError:
   internal_thread = None
+else:
+  internal_thread = cast(_ThreadFactory, _internal_thread)
 
 
-def create_thread(target: Callable[..., None], *args, **kwargs):
+def create_thread(
+    target: Callable[..., None], *args: object, **kwargs: object
+) -> threading.Thread:
   """Creates a thread."""
-  if internal_thread:
+  if internal_thread is not None:
     return internal_thread.create_thread(target, *args, **kwargs)
   return threading.Thread(target=target, args=args, kwargs=kwargs)

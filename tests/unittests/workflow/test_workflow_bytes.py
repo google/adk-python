@@ -107,31 +107,3 @@ async def test_raw_bytes_output():
 
   assert len(b.received_inputs) == 1
   assert isinstance(b.received_inputs[0], bytes)
-
-
-@pytest.mark.xfail(reason="Checkpoint/resume not yet in new Workflow.")
-@pytest.mark.asyncio
-async def test_bytes_in_node_input_serialization():
-  """Bytes in node input survive checkpoint/resume."""
-  assert False, "TODO"
-
-
-@pytest.mark.xfail(reason="Checkpoint/resume not yet in new Workflow.")
-@pytest.mark.asyncio
-async def test_bytes_in_typed_model_input():
-  """Bytes in Pydantic model input survive round-trip."""
-  assert False, "TODO"
-
-
-@pytest.mark.xfail(reason="Checkpoint/resume not yet in new Workflow.")
-@pytest.mark.asyncio
-async def test_bytes_in_trigger_buffer():
-  """Bytes in trigger buffer survive serialization."""
-  assert False, "TODO"
-
-
-@pytest.mark.xfail(reason="Checkpoint/resume not yet in new Workflow.")
-@pytest.mark.asyncio
-async def test_bytes_full_workflow_resume():
-  """Full resume with bytes data end-to-end."""
-  assert False, "TODO"

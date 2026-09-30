@@ -14,9 +14,9 @@
 
 from __future__ import annotations
 
+from typing import Any
+from typing import cast
 from typing import List
-from typing import Optional
-from typing import Union
 
 from typing_extensions import override
 import yaml
@@ -31,6 +31,7 @@ from ..base_toolset import ToolPredicate
 from ..openapi_tool.openapi_spec_parser.openapi_toolset import OpenAPIToolset
 from ..openapi_tool.openapi_spec_parser.rest_api_tool import RestApiTool
 from .clients.apihub_client import APIHubClient
+from .clients.apihub_client import BaseAPIHubClient
 
 
 class APIHubToolset(BaseToolset):
@@ -62,18 +63,18 @@ class APIHubToolset(BaseToolset):
       *,
       # Parameters for fetching API Hub resource
       apihub_resource_name: str,
-      access_token: Optional[str] = None,
-      service_account_json: Optional[str] = None,
+      access_token: str | None = None,
+      service_account_json: str | None = None,
       # Parameters for the toolset itself
-      name: str = '',
-      description: str = '',
+      name: str = "",
+      description: str = "",
       # Parameters for generating tools
-      lazy_load_spec=False,
-      auth_scheme: Optional[AuthScheme] = None,
-      auth_credential: Optional[AuthCredential] = None,
+      lazy_load_spec: bool = False,
+      auth_scheme: AuthScheme | None = None,
+      auth_credential: AuthCredential | None = None,
       # Optionally, you can provide a custom API Hub client
-      apihub_client: Optional[APIHubClient] = None,
-      tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
+      apihub_client: BaseAPIHubClient | None = None,
+      tool_filter: ToolPredicate | list[str] | None = None,
   ):
     """Initializes the APIHubTool with the given parameters.
 
@@ -142,12 +143,12 @@ class APIHubToolset(BaseToolset):
         service_account_json=service_account_json,
     )
 
-    self._openapi_toolset = None
+    self._openapi_toolset: OpenAPIToolset | None = None
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
     # Store auth config as instance variable so ADK can populate
     # exchanged_auth_credential in-place before calling get_tools()
-    self._auth_config: Optional[AuthConfig] = (
+    self._auth_config: AuthConfig | None = (
         AuthConfig(
             auth_scheme=auth_scheme,
             raw_auth_credential=auth_credential,
@@ -160,8 +161,11 @@ class APIHubToolset(BaseToolset):
       self._prepare_toolset()
 
   @override
-  async def get_tools(
-      self, readonly_context: Optional[ReadonlyContext] = None
+  # list is invariant, so the narrower element type is not a compatible
+  # override; widening it to BaseTool would change this public signature.
+  # typing.List rather than list, so the released annotation is unchanged.
+  async def get_tools(  # type: ignore[override]
+      self, readonly_context: ReadonlyContext | None = None
   ) -> List[RestApiTool]:
     """Retrieves all available tools.
 
@@ -178,16 +182,25 @@ class APIHubToolset(BaseToolset):
     """Fetches the spec from API Hub and generates the toolset."""
     # For each API, get the first version and the first spec of that version.
     spec_str = self._apihub_client.get_spec_content(self._apihub_resource_name)
-    spec_dict = yaml.safe_load(spec_str)
+    spec_dict: dict[str, Any] | None = yaml.safe_load(spec_str)
     if not spec_dict:
       return
 
-    self.name = self.name or _to_snake_case(
-        spec_dict.get('info', {}).get('title', 'unnamed')
+    raw_info = spec_dict.get("info", {})
+    info = (
+        cast(dict[object, object], raw_info)
+        if isinstance(raw_info, dict)
+        else {}
     )
-    self.description = self.description or spec_dict.get('info', {}).get(
-        'description', ''
-    )
+    raw_title = info.get("title", "unnamed")
+    # An empty title stays empty, as it did before: only a missing or non-string
+    # title falls back to "unnamed".
+    title = raw_title if isinstance(raw_title, str) else "unnamed"
+    raw_description = info.get("description", "")
+    description = raw_description if isinstance(raw_description, str) else ""
+
+    self.name = self.name or _to_snake_case(title)
+    self.description = self.description or description
     self._openapi_toolset = OpenAPIToolset(
         spec_dict=spec_dict,
         auth_credential=self._auth_credential,
@@ -196,6 +209,6 @@ class APIHubToolset(BaseToolset):
     )
 
   @override
-  async def close(self):
+  async def close(self) -> None:
     if self._openapi_toolset:
       await self._openapi_toolset.close()

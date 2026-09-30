@@ -44,7 +44,7 @@ _LAZY_MEMBERS: dict[str, str] = {
 }
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> object:
   if name in _LAZY_MEMBERS:
     module = importlib.import_module(f'{__name__}.{_LAZY_MEMBERS[name]}')
     return vars(module)[name]
@@ -55,3 +55,7 @@ def __getattr__(name: str):
       raise missing_extra('sqlalchemy', 'db') from e
     return vars(module)['DatabaseSessionService']
   raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
+
+
+def __dir__() -> list[str]:
+  return sorted(__all__)

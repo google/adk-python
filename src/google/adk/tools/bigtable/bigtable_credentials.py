@@ -34,7 +34,9 @@ class BigtableCredentialsConfig(BaseGoogleCredentialsConfig):
 
   def __post_init__(self) -> BigtableCredentialsConfig:
     """Populate default scope if scopes is None."""
-    super().__post_init__()
+    # pydantic wraps the base @model_validator in a descriptor proxy that mypy
+    # does not treat as callable; it binds to the function normally at runtime.
+    super().__post_init__()  # type: ignore[operator]
 
     if not self.scopes:
       self.scopes = BIGTABLE_DEFAULT_SCOPE

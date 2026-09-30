@@ -16,11 +16,11 @@ from __future__ import annotations
 
 import warnings
 
-from google.adk.integrations.api_registry import ApiRegistry
+from google.adk.integrations.api_registry import ApiRegistry as ApiRegistry
 
 warnings.warn(
-    "google.adk.tools.api_registry is moved to"
-    " google.adk.integrations.api_registry",
+    "google.adk.tools.api_registry is deprecated, use"
+    " google.adk.integrations.agent_registry instead.",
     DeprecationWarning,
     stacklevel=2,
 )

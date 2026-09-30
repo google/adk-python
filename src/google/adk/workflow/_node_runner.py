@@ -28,8 +28,10 @@ import logging
 from typing import Any
 from typing import TYPE_CHECKING
 
+from ..events._branch_path import _BranchPath
 from ..events._node_path_builder import _NodePathBuilder
 from ..telemetry import node_tracing
+from ._errors import DynamicNodeFailError
 
 if TYPE_CHECKING:
   from ..agents.context import Context
@@ -38,6 +40,13 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+def _has_non_output_content(event: Event) -> bool:
+  if event.actions:
+    if event.actions.state_delta or event.actions.artifact_delta:
+      return True
+  return False
 
 
 class NodeRunner:
@@ -123,16 +132,24 @@ class NodeRunner:
       try:
         # Start the span within try-except block to record exceptions on the span
         async with node_tracing.start_as_current_node_span(
-            self._parent_ctx, self._node
+            self._parent_ctx, self._node, ctx
         ) as telemetry_context:
           ctx._telemetry_context = telemetry_context
           await self._execute_node(ctx, node_input)
-          await self._flush_output_and_deltas(ctx)
-          logger.debug("node %s end.", ctx.node_path)
-          return ctx
+          # A Workflow reports a failing child by setting an error on its own
+          # context rather than by raising, so a failure that happened inside
+          # a sub-workflow reaches the retry policy here and never through the
+          # handler below.
+          if ctx.error is None or not await self._attempt_retry(
+              ctx.error, attempt_count
+          ):
+            await self._flush_output_and_deltas(ctx)
+            logger.debug("node %s end.", ctx.node_path)
+            return ctx
+      except asyncio.CancelledError:
+        logger.debug("node %s cancelled via signal.", ctx.node_path)
+        raise
       except Exception as e:
-        from ._errors import DynamicNodeFailError
-
         if isinstance(e, DynamicNodeFailError):
           # TODO: consider to retry upon dynamic node failures later. This may
           # require thorough design to consider a workflow dynamic node and a
@@ -145,27 +162,30 @@ class NodeRunner:
         from ..events.event import Event
 
         logger.exception("Node execution failed with exception")
+        # Prefer the API's own canonical status (e.g. "PERMISSION_DENIED") over
+        # the Python class name so structured error codes reach clients. The
+        # isinstance guard matters: aiohttp's `.status`, for one, is an int
+        # while Event.error_code is Optional[str].
+        status = getattr(e, "status", None)
         error_event = Event(
-            error_code=type(e).__name__,
+            error_code=status if isinstance(status, str) else type(e).__name__,
             error_message=str(e),
         )
         await self._enqueue_event(error_event, ctx)
 
-        if not await self._attempt_retry(e, ctx, attempt_count):
+        if not await self._attempt_retry(e, attempt_count):
           ctx._error = e
           ctx._error_node_path = ctx.node_path
           logger.debug("node %s end.", ctx.node_path)
           return ctx
-        logger.warning(
-            "Node %s failed and is being retried locally. Note: retry count is"
-            " not persisted across resuming.",
-            self._node.name,
-        )
-        attempt_count += 1
+      logger.warning(
+          "Node %s failed and is being retried locally. Note: retry count is"
+          " not persisted across resuming.",
+          self._node.name,
+      )
+      attempt_count += 1
 
-  async def _attempt_retry(
-      self, e: Exception, ctx: Context, attempt_count: int
-  ) -> bool:
+  async def _attempt_retry(self, e: Exception, attempt_count: int) -> bool:
     """Checks if node should retry and sleeps if so."""
     from ._node_state import NodeState
     from .utils._retry_utils import _get_retry_delay
@@ -202,11 +222,14 @@ class NodeRunner:
     )
 
     if self._use_sub_branch:
-      segment = f"{self._node.name}@{self._run_id}"
-      branch = f"{base_branch}.{segment}" if base_branch else segment
+      branch = _BranchPath.create_sub_branch(
+          base_branch, name=self._node.name, run_id=self._run_id
+      )
       ic = ic.model_copy(update={"branch": branch})
     elif self._override_branch is not None:
       ic = ic.model_copy(update={"branch": self._override_branch})
+    else:
+      ic = ic.model_copy()
 
     ctx = Context(
         ic,
@@ -217,6 +240,43 @@ class NodeRunner:
         use_as_output=self._use_as_output,
         attempt_count=attempt_count,
     )
+
+    if ic.session and ic.session.events:
+      from ..events._rewind_events import _apply_rewinds
+
+      live_events = _apply_rewinds(ic.session.events)
+      node_path = ctx.node_path
+      node_path_builder = _NodePathBuilder.from_string(node_path)
+      has_prior_node_events = bool(self._prior_interrupt_ids)
+      if not has_prior_node_events:
+        for ev in live_events:
+          if ic.invocation_id and ev.invocation_id != ic.invocation_id:
+            continue
+          if ev.node_info is not None and ev.node_info.path:
+            ev_path = _NodePathBuilder.from_string(ev.node_info.path)
+            if ev_path == node_path_builder or ev_path.is_descendant_of(
+                node_path_builder
+            ):
+              has_prior_node_events = True
+              break
+      if has_prior_node_events:
+        from .utils._rehydration_utils import _reconstruct_node_states
+
+        states = _reconstruct_node_states(
+            events=live_events,
+            base_path=node_path,
+            invocation_id=ic.invocation_id,
+        )
+        if node_path in states:
+          rehydrated = dict(states[node_path].resolved_responses)
+          if ctx._resume_inputs:
+            rehydrated.update(ctx._resume_inputs)
+          ctx._resume_inputs = rehydrated
+          logger.debug(
+              "node %s rehydrated resume_inputs: %s",
+              node_path,
+              ctx._resume_inputs,
+          )
 
     # override the inherited isolation_scope when explicitly set.
     if self._override_isolation_scope is not None:
@@ -238,7 +298,6 @@ class NodeRunner:
   ) -> None:
     """Iterate node.run(), enqueue events, write results to ctx."""
     from ._errors import NodeInterruptedError
-    from ._errors import NodeTimeoutError
 
     try:
       timeout = self._node.timeout
@@ -260,8 +319,15 @@ class NodeRunner:
     logger.debug("node %s execute loop start.", ctx.node_path)
     async with Aclosing(self._node.run(ctx=ctx, node_input=node_input)) as agen:
       async for event in agen:
+        # Enqueue before checking abort: the event is work the node already
+        # did (a function response whose tool ran, say), so dropping it would
+        # lose a result the caller must still see.
         self._track_event_in_context(event, ctx)
         await self._enqueue_event(event, ctx)
+        # Tests wrap Context around invocation-context stubs that lack
+        # is_aborted or return a truthy Mock; neither means aborted.
+        if getattr(ctx._invocation_context, "is_aborted", False) is True:
+          break
 
     logger.debug("node %s execute loop end.", ctx.node_path)
 
@@ -312,12 +378,14 @@ class NodeRunner:
   async def _enqueue_event(self, event: Event, ctx: Context) -> None:
     """Enrich and enqueue event to the session.
 
-    Skips enqueueing if output is delegated via use_as_output —
-    the child already emitted it. Pending deltas stay in ctx for
-    _flush_output_and_deltas.
+    Suppresses output if output is delegated via use_as_output (since the child
+    already emitted it), but preserves other event details. Pending deltas stay
+    in ctx for _flush_output_and_deltas.
     """
     if event.output is not None and ctx._output_delegated:
-      return
+      if not _has_non_output_content(event):
+        return
+      event = event.model_copy(update={"output": None})
 
     self._enrich_event(event, ctx)
     if not event.partial:

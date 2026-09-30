@@ -1,0 +1,312 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Builds the release candidate and checks it does not import worse than the
+# last published release, then walks the quickstart against it. Publishing
+# otherwise never installs the wheel it is about to upload.
+#
+# This runs on the release pull request, which is where the version bump and
+# the changelog live and where the release oncaller is already looking. It is
+# not a required check until someone marks it one in the repository settings.
+name: "Release: Artifact Check"
+
+on:
+  pull_request:
+    branches:
+      - release/candidate
+      - release/v1-candidate
+  # Once the changelog pull request merges the candidate branch is renamed to
+  # release/v{version}, and cherry-picks land there afterwards. Both names
+  # have to be watched, or the tree that actually publishes is never checked.
+  push:
+    branches:
+      - release/candidate
+      - "release/v*"
+  workflow_dispatch:
+    inputs:
+      baseline:
+        description: "Version to compare against, or 'auto'"
+        required: false
+        type: string
+        default: auto
+
+concurrency:
+  group: release-artifact-check-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  artifact-check:
+    if: github.repository == 'google/adk-python'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+
+      - name: Build distributions
+        run: uv build
+
+      - name: Read candidate version
+        id: version
+        run: |
+          set -euo pipefail
+          VERSION=$(python -c "import re, pathlib; print(re.search(r'__version__ = \"([^\"]+)\"', pathlib.Path('src/google/adk/version.py').read_text()).group(1))")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Checking $VERSION"
+
+      # Exit 1 means a module regressed. Exit 2 means the check could not run,
+      # which also fails the job on purpose: a check that did not run must
+      # never read as a pass.
+      - name: Compare imports against the last release
+        env:
+          BASELINE: ${{ inputs.baseline || 'auto' }}
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          python scripts/verify_release_artifact.py \
+            --wheel 'dist/*.whl' \
+            --baseline "$BASELINE" \
+            --expected-version "$EXPECTED_VERSION" \
+            --allowlist scripts/release_import_allowlist.txt \
+            --report release-artifact-check.md
+
+      - name: Publish report to the run summary
+        if: always()
+        run: |
+          set -euo pipefail
+          if [[ -f release-artifact-check.md ]]; then
+            cat release-artifact-check.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "## Release artifact check"
+              echo
+              echo "The check did not produce a report. See the step log above."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # Edit the existing comment rather than adding one per push, so a
+      # long-lived release pull request does not accumulate a wall of reports.
+      # Reporting must never decide the verdict: if the token cannot comment,
+      # say so and leave the check's own result standing.
+      - name: Comment on the release pull request
+        if: always() && github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if [[ ! -f release-artifact-check.md ]]; then
+            echo "No report to post."
+            exit 0
+          fi
+          gh pr comment "$PR_NUMBER" --body-file release-artifact-check.md --edit-last \
+            || gh pr comment "$PR_NUMBER" --body-file release-artifact-check.md
+
+  # Does what the quickstart tells a new user to do, against a wheel built from
+  # the release candidate: create an agent, chat with it, serve it with the API
+  # server that Cloud Run, GKE and Docker deploys run, and evaluate it. Unit
+  # tests run on locked dependencies; this installs the wheel fresh, the way a
+  # user does, so a dependency release that breaks ADK shows up here instead of
+  # on a first run.
+  quickstart-smoke:
+    if: github.repository == 'google/adk-python'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+
+      - name: Build distributions
+        run: uv build
+
+      # A pull request from a fork gets no secrets. Fail with a reason instead
+      # of letting adk create stop at a prompt nobody can answer.
+      - name: Check for a model key
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        run: |
+          if [[ -z "${GOOGLE_API_KEY:-}" ]]; then
+            echo "::error::GOOGLE_API_KEY is not available to this run, so the quickstart cannot call a model."
+            exit 1
+          fi
+
+      # A plain install, as the quickstart does. The eval extra comes later, so
+      # a core path that leans on an eval-only package fails here.
+      - name: Install the candidate wheel into a fresh environment
+        run: |
+          set -euo pipefail
+          uv venv "$RUNNER_TEMP/quickstart-venv"
+          uv pip install --python "$RUNNER_TEMP/quickstart-venv/bin/python" dist/*.whl
+          echo "$RUNNER_TEMP/quickstart-venv/bin" >> "$GITHUB_PATH"
+          mkdir -p "$RUNNER_TEMP/agents"
+
+      # Picks option 1 at the model prompt, the model adk create offers first,
+      # so a default that stopped working fails here before a new user hits it.
+      # adk create writes the key into the agent's .env, which the later steps
+      # load, so only this step needs the secret.
+      - name: Create an agent
+        working-directory: ${{ runner.temp }}/agents
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        run: printf '1\n' | adk create smoke_agent --api_key "$GOOGLE_API_KEY"
+
+      # The same interactive loop `adk run smoke_agent` opens for a user. The
+      # reply prints after the `[user]: ` prompt on the same line, so the grep
+      # is not anchored.
+      - name: Chat with it in the terminal
+        working-directory: ${{ runner.temp }}/agents
+        run: |
+          set -euo pipefail
+          printf 'Reply with one short greeting.\nexit\n' | adk run smoke_agent | tee "$RUNNER_TEMP/run.log"
+          grep -q '\[root_agent\]: ' "$RUNNER_TEMP/run.log"
+
+      - name: Serve it and send it a message
+        working-directory: ${{ runner.temp }}/agents
+        run: |
+          set -euo pipefail
+          adk api_server . --port 8765 > "$RUNNER_TEMP/server.log" 2>&1 &
+          server=$!
+          trap 'status=$?; kill "$server" 2>/dev/null || true; if [[ $status -ne 0 ]]; then cat "$RUNNER_TEMP/server.log"; fi' EXIT
+          python - <<'EOF'
+          import json
+          import time
+          import urllib.request
+
+          def call(method, path, body=None):
+            request = urllib.request.Request(
+                "http://127.0.0.1:8765" + path,
+                data=None if body is None else json.dumps(body).encode(),
+                method=method,
+                headers={"Content-Type": "application/json"},
+            )
+            # The model call can stall for minutes on a 503 before its retry
+            # succeeds, so allow more than one retry cycle.
+            with urllib.request.urlopen(request, timeout=300) as response:
+              return json.load(response)
+
+          last_error = None
+          for _ in range(60):
+            try:
+              apps = call("GET", "/list-apps")
+              break
+            except OSError as error:
+              last_error = error
+              time.sleep(2)
+          else:
+            raise SystemExit(f"api_server never answered /list-apps: {last_error}")
+          assert "smoke_agent" in apps, apps
+
+          session = call("POST", "/apps/smoke_agent/users/user/sessions", {})
+          events = call("POST", "/run", {
+              "app_name": "smoke_agent",
+              "user_id": "user",
+              "session_id": session["id"],
+              "new_message": {
+                  "role": "user",
+                  "parts": [{"text": "Reply with one short greeting."}],
+              },
+          })
+          reply = "".join(
+              part.get("text") or ""
+              for event in events
+              if event.get("author") == "root_agent"
+              for part in (event.get("content") or {}).get("parts", [])
+          )
+          assert reply.strip(), events
+          print("root_agent replied:", reply)
+          EOF
+
+      - name: Add the eval extra
+        run: |
+          set -euo pipefail
+          wheel=$(ls dist/*.whl)
+          uv pip install --python "$RUNNER_TEMP/quickstart-venv/bin/python" "${wheel}[eval]"
+
+      # adk eval exits 0 even when a case fails, so the summary is the verdict.
+      # The agent has no tools, so the trajectory check is exact; the response
+      # check only has to compute, because the model's wording varies.
+      - name: Evaluate it
+        working-directory: ${{ runner.temp }}/agents
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/smoke.evalset.json" <<'EOF'
+          {
+            "eval_set_id": "quickstart_smoke",
+            "eval_cases": [
+              {
+                "eval_id": "greeting",
+                "conversation": [
+                  {
+                    "invocation_id": "greeting-1",
+                    "user_content": {
+                      "role": "user",
+                      "parts": [{"text": "Reply with one short greeting."}]
+                    },
+                    "final_response": {
+                      "role": "model",
+                      "parts": [{"text": "Hello!"}]
+                    },
+                    "intermediate_data": {
+                      "tool_uses": [],
+                      "intermediate_responses": []
+                    }
+                  }
+                ],
+                "session_input": {
+                  "app_name": "smoke_agent",
+                  "user_id": "user",
+                  "state": {}
+                }
+              }
+            ]
+          }
+          EOF
+          cat > "$RUNNER_TEMP/eval_config.json" <<'EOF'
+          {"criteria": {"tool_trajectory_avg_score": 1.0, "response_match_score": 0.0}}
+          EOF
+          adk eval smoke_agent "$RUNNER_TEMP/smoke.evalset.json" \
+            --config_file_path "$RUNNER_TEMP/eval_config.json" | tee "$RUNNER_TEMP/eval.log"
+          grep -q 'Tests passed: 1$' "$RUNNER_TEMP/eval.log"
+          grep -q 'Tests failed: 0$' "$RUNNER_TEMP/eval.log"

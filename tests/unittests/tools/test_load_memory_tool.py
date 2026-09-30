@@ -12,10 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from unittest import mock
+from unittest.mock import AsyncMock
+
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
+from google.adk.models.llm_request import LlmRequest
 from google.adk.tools.load_memory_tool import load_memory_tool
+from google.adk.tools.preload_memory_tool import PreloadMemoryTool
+from google.adk.tools.tool_context import ToolContext
 from google.genai import types
+import pytest
 
 
 def test_get_declaration_with_json_schema_feature_disabled():
@@ -44,3 +51,82 @@ def test_get_declaration_with_json_schema_feature_enabled():
       },
       'required': ['query'],
   }
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_registers_the_tool():
+  """The base class contribution: the model can actually call load_memory."""
+  tool_context = mock.Mock(spec=ToolContext)
+  llm_request = LlmRequest()
+
+  await load_memory_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert llm_request.tools_dict['load_memory'] is load_memory_tool
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_tells_the_model_it_has_memory():
+  """Without the instruction the model never knows to call the tool."""
+  tool_context = mock.Mock(spec=ToolContext)
+  llm_request = LlmRequest()
+
+  await load_memory_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert 'You have memory.' in llm_request.config.system_instruction
+  assert (
+      'call load_memory function with a query'
+      in llm_request.config.system_instruction
+  )
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request_appends_to_existing_system_instruction():
+  """The memory instruction must not clobber instructions already there."""
+  tool_context = mock.Mock(spec=ToolContext)
+  llm_request = LlmRequest()
+  llm_request.config.system_instruction = 'be terse'
+
+  await load_memory_tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert llm_request.config.system_instruction.startswith('be terse')
+  assert 'You have memory.' in llm_request.config.system_instruction
+
+
+@pytest.mark.asyncio
+async def test_preload_memory_registers_transient_user_content():
+  """Test that PreloadMemoryTool registers memory as transient user content."""
+  tool = PreloadMemoryTool()
+  tool_context = mock.Mock(spec=ToolContext)
+  tool_context.user_content = types.Content(
+      role='user', parts=[types.Part.from_text(text='my query')]
+  )
+  mock_memory = mock.Mock()
+  mock_memory.timestamp = None
+  mock_memory.author = 'user'
+  mock_memory.content = types.Content(
+      parts=[
+          types.Part.from_text(text='User prefers Python programming language.')
+      ]
+  )
+
+  tool_context.search_memory = AsyncMock(
+      return_value=mock.Mock(memories=[mock_memory])
+  )
+
+  llm_request = LlmRequest()
+
+  await tool.process_llm_request(
+      tool_context=tool_context, llm_request=llm_request
+  )
+
+  assert len(llm_request._dynamic_instructions) == 0
+  assert llm_request.config.system_instruction is None
+  assert len(llm_request.contents) == 1
+  assert llm_request.contents[0].role == 'user'
+  assert '<PAST_CONVERSATIONS>' in llm_request.contents[0].parts[0].text

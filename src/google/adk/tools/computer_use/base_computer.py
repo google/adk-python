@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import abc
 from enum import Enum
-from typing import Any
 from typing import Literal
 from typing import Optional
 from typing import TYPE_CHECKING

@@ -28,7 +28,7 @@ if not GITHUB_TOKEN:
 
 OWNER = os.getenv("OWNER", "google")
 REPO = os.getenv("REPO", "adk-python")
-LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "gemini-2.5-flash")
+LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "gemini-3.5-flash")
 
 SPAM_LABEL_NAME = os.getenv("SPAM_LABEL_NAME", "spam")
 CONCURRENCY_LIMIT = int(os.getenv("CONCURRENCY_LIMIT", 3))

@@ -112,7 +112,7 @@ class TestUtilsFunctions:
 
     result = _to_a2a_context_id(app_name, user_id, session_id)
 
-    expected = f"{ADK_CONTEXT_ID_PREFIX}/test-app@2024/user_123/session-456"
+    expected = f"{ADK_CONTEXT_ID_PREFIX}/test-app%402024/user_123/session-456"
     assert result == expected
 
   def test_from_a2a_context_id_success(self):
@@ -202,3 +202,29 @@ class TestUtilsFunctions:
     assert app_name == "test-app@2024"
     assert user_id == "user_123"
     assert session_id == "session-456"
+
+  @pytest.mark.parametrize(
+      "app_name, user_id, session_id",
+      [
+          ("app", "user", "projects/p/sessions/s"),
+          ("app", "projects/p/subscriptions/sub", "session"),
+          ("apps/a/versions/v", "user", "session"),
+          ("app", "user", "a/b/c"),
+      ],
+  )
+  def test_roundtrip_context_id_with_separator_in_ids(
+      self, app_name, user_id, session_id
+  ):
+    """Test roundtrip conversion when ids contain the separator character.
+
+    App names, user ids and session ids can legitimately contain the separator
+    (for example fully-qualified resource paths). The context id must still
+    round-trip so A2A session resolution does not silently fail.
+    """
+    context_id = _to_a2a_context_id(app_name, user_id, session_id)
+
+    parsed_app, parsed_user, parsed_session = _from_a2a_context_id(context_id)
+
+    assert parsed_app == app_name
+    assert parsed_user == user_id
+    assert parsed_session == session_id

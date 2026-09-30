@@ -18,7 +18,6 @@ from __future__ import annotations
 import argparse
 from datetime import datetime
 from datetime import timezone
-import io
 import json
 import logging
 import pickle
@@ -27,6 +26,7 @@ from typing import Any
 
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
+from google.adk.sessions import _restricted_pickle
 from google.adk.sessions import _session_util
 from google.adk.sessions.migration import _schema_check_utils
 from google.adk.sessions.schemas import v1
@@ -38,84 +38,6 @@ from sqlalchemy.orm import sessionmaker
 
 logger = logging.getLogger("google_adk." + __name__)
 
-_ALLOWED_PICKLE_GLOBALS: set[tuple[str, str]] = {
-    # Builtin containers/primitives.
-    ("builtins", "dict"),
-    ("builtins", "list"),
-    ("builtins", "set"),
-    ("builtins", "tuple"),
-    ("builtins", "str"),
-    ("builtins", "bytes"),
-    ("builtins", "bytearray"),
-    ("builtins", "int"),
-    ("builtins", "float"),
-    ("builtins", "bool"),
-    ("datetime", "datetime"),
-    ("datetime", "timedelta"),
-    ("datetime", "timezone"),
-    # Expected pickled payload for v0 session schema events.
-    ("fastapi.openapi.models", "APIKey"),
-    ("fastapi.openapi.models", "APIKeyIn"),
-    ("fastapi.openapi.models", "HTTPBase"),
-    ("fastapi.openapi.models", "HTTPBearer"),
-    ("fastapi.openapi.models", "OAuth2"),
-    ("fastapi.openapi.models", "OAuthFlow"),
-    ("fastapi.openapi.models", "OAuthFlowAuthorizationCode"),
-    ("fastapi.openapi.models", "OAuthFlowClientCredentials"),
-    ("fastapi.openapi.models", "OAuthFlowImplicit"),
-    ("fastapi.openapi.models", "OAuthFlowPassword"),
-    ("fastapi.openapi.models", "OAuthFlows"),
-    ("fastapi.openapi.models", "OpenIdConnect"),
-    ("fastapi.openapi.models", "SecurityBase"),
-    ("fastapi.openapi.models", "SecurityScheme"),
-    ("fastapi.openapi.models", "SecuritySchemeType"),
-    ("google.adk.auth.auth_credential", "AuthCredential"),
-    ("google.adk.auth.auth_credential", "AuthCredentialTypes"),
-    ("google.adk.auth.auth_credential", "HttpAuth"),
-    ("google.adk.auth.auth_credential", "HttpCredentials"),
-    ("google.adk.auth.auth_credential", "OAuth2Auth"),
-    ("google.adk.auth.auth_credential", "ServiceAccountCredential"),
-    ("google.adk.auth.auth_schemes", "CustomAuthScheme"),
-    ("google.adk.auth.auth_schemes", "ExtendedOAuth2"),
-    ("google.adk.auth.auth_schemes", "OAuthGrantType"),
-    ("google.adk.auth.auth_schemes", "OpenIdConnectWithConfig"),
-    ("google.adk.auth.auth_tool", "AuthConfig"),
-    ("google.adk.events.event_actions", "EventActions"),
-    ("google.adk.events.event_actions", "EventCompaction"),
-    ("google.adk.events.ui_widget", "UiWidget"),
-    ("google.adk.tools.tool_confirmation", "ToolConfirmation"),
-    ("google.genai.types", "Blob"),
-    ("google.genai.types", "CodeExecutionResult"),
-    ("google.genai.types", "Content"),
-    ("google.genai.types", "ExecutableCode"),
-    ("google.genai.types", "FileData"),
-    ("google.genai.types", "FunctionCall"),
-    ("google.genai.types", "FunctionResponse"),
-    ("google.genai.types", "FunctionResponseBlob"),
-    ("google.genai.types", "FunctionResponseFileData"),
-    ("google.genai.types", "FunctionResponsePart"),
-    ("google.genai.types", "Part"),
-    ("google.genai.types", "PartMediaResolution"),
-    ("google.genai.types", "VideoMetadata"),
-}
-
-
-class _RestrictedUnpickler(pickle.Unpickler):
-  """Restricted unpickler for migrating legacy v0 schema actions.
-
-  The v0 session schema stored `EventActions` as a pickled blob. During
-  migration we treat the raw bytes read from the source DB as untrusted input
-  and only allow the minimum set of safe globals needed to reconstruct
-  `EventActions`.
-  """
-
-  def find_class(self, module: str, name: str) -> Any:  # noqa: ANN001
-    if (module, name) in _ALLOWED_PICKLE_GLOBALS:
-      return super().find_class(module, name)
-    raise pickle.UnpicklingError(
-        f"Blocked global during migration unpickle: {module}.{name}"
-    )
-
 
 def _restricted_pickle_loads(
     data: bytes, *, allow_unsafe_unpickling: bool = False
@@ -123,7 +45,7 @@ def _restricted_pickle_loads(
   """Load a pickle payload using the restricted unpickler by default."""
   if allow_unsafe_unpickling:
     return pickle.loads(data)
-  return _RestrictedUnpickler(io.BytesIO(data)).load()
+  return _restricted_pickle.loads(data)
 
 
 def _to_datetime_obj(val: Any) -> datetime | Any:
@@ -148,9 +70,14 @@ def _row_to_event(
   actions = None
   if actions_val is not None:
     try:
-      if isinstance(actions_val, bytes):
+      # The source rows are read with raw SQL, so SQLAlchemy has no column
+      # type to coerce with and whatever the driver produced for the binary
+      # column arrives here untouched. psycopg2 produces a memoryview rather
+      # than bytes, so match every bytes-like form instead of one driver's.
+      if isinstance(actions_val, (bytes, bytearray, memoryview)):
         actions = _restricted_pickle_loads(
-            actions_val, allow_unsafe_unpickling=allow_unsafe_unpickling
+            bytes(actions_val),
+            allow_unsafe_unpickling=allow_unsafe_unpickling,
         )
       else:  # for spanner - it might return object directly
         actions = actions_val
@@ -220,7 +147,12 @@ def _row_to_event(
       author=row.get("author", "agent"),
       branch=row.get("branch"),
       actions=actions,
-      timestamp=timestamp.replace(tzinfo=timezone.utc).timestamp(),
+      # v0 wrote this column as a naive datetime in local time (via
+      # datetime.fromtimestamp) and read it back the same way, so interpret a
+      # naive value as local time here too. Forcing UTC would shift every
+      # migrated timestamp by the host's UTC offset. datetime.timestamp()
+      # treats naive datetimes as local and honors tzinfo when present.
+      timestamp=timestamp.timestamp(),
       long_running_tool_ids=long_running_tool_ids,
       partial=row.get("partial"),
       turn_complete=row.get("turn_complete"),
@@ -279,7 +211,10 @@ def migrate(
   source_sync_url = _schema_check_utils.to_sync_url(source_db_url)
   dest_sync_url = _schema_check_utils.to_sync_url(dest_db_url)
 
-  logger.info(f"Connecting to source database: {source_db_url}")
+  logger.info(
+      "Connecting to source database: %s",
+      _schema_check_utils._redact_db_url(source_db_url),
+  )
   if allow_unsafe_unpickling:
     logger.warning(
         "Unsafe pickle migration mode is enabled. Only use this with a trusted"
@@ -289,17 +224,31 @@ def migrate(
     source_engine = create_engine(source_sync_url)
     SourceSession = sessionmaker(bind=source_engine)
   except Exception as e:
-    logger.error(f"Failed to connect to source database: {e}")
-    raise RuntimeError(f"Failed to connect to source database: {e}") from e
+    # The parser quotes the rejected URL back, so report only the error type.
+    message = (
+        "Failed to connect to source database"
+        f" {_schema_check_utils._redact_db_url(source_db_url)}:"
+        f" {type(e).__name__}"
+    )
+    logger.error(message)
+    raise RuntimeError(message) from e
 
-  logger.info(f"Connecting to destination database: {dest_db_url}")
+  logger.info(
+      "Connecting to destination database: %s",
+      _schema_check_utils._redact_db_url(dest_db_url),
+  )
   try:
     dest_engine = create_engine(dest_sync_url)
     v1.Base.metadata.create_all(dest_engine)
     DestSession = sessionmaker(bind=dest_engine)
   except Exception as e:
-    logger.error(f"Failed to connect to destination database: {e}")
-    raise RuntimeError(f"Failed to connect to destination database: {e}") from e
+    message = (
+        "Failed to connect to destination database"
+        f" {_schema_check_utils._redact_db_url(dest_db_url)}:"
+        f" {type(e).__name__}"
+    )
+    logger.error(message)
+    raise RuntimeError(message) from e
 
   with SourceSession() as source_session, DestSession() as dest_session:
     try:

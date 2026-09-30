@@ -28,7 +28,7 @@ from .base_credential_exchanger import BaseCredentialExchanger
 class CredentialExchangerRegistry:
   """Registry for credential exchanger instances."""
 
-  def __init__(self):
+  def __init__(self) -> None:
     self._exchangers: Dict[AuthCredentialTypes, BaseCredentialExchanger] = {}
 
   def register(

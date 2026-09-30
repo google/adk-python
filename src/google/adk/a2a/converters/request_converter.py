@@ -22,7 +22,8 @@ from a2a.server.agent_execution import RequestContext
 from google.genai import types as genai_types
 from pydantic import BaseModel
 
-from ...runners import RunConfig
+from .. import _compat
+from ...agents.run_config import RunConfig
 from ..experimental import a2a_experimental
 from .part_converter import A2APartToGenAIPartConverter
 from .part_converter import convert_a2a_part_to_genai_part
@@ -98,8 +99,9 @@ def convert_a2a_request_to_agent_run_request(
     raise ValueError('Request message cannot be None')
 
   custom_metadata = {}
-  if request.metadata:
-    custom_metadata[A2A_METADATA_KEY] = request.metadata
+  request_metadata = _compat.meta_to_dict(request.metadata)
+  if request_metadata:
+    custom_metadata[A2A_METADATA_KEY] = request_metadata
 
   output_parts = []
   for a2a_part in request.message.parts:

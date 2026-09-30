@@ -29,6 +29,11 @@ Fetches Spanner database table schema and metadata information.
 
 Runs a SQL query in Spanner database.
 
+1. `similarity_search`
+
+Runs a similarity search in a Spanner database table against a text query, using
+a column that stores the embeddings of the data being searched.
+
 ## How to use
 
 Set up environment variables in your `.env` file for using
@@ -38,7 +43,7 @@ or
 for the LLM service for your agent. For example, for using Google AI Studio you
 would set:
 
-- GOOGLE_GENAI_USE_VERTEXAI=FALSE
+- GOOGLE_GENAI_USE_ENTERPRISE=FALSE
 - GOOGLE_API_KEY={your api key}
 
 ### With Application Default Credentials

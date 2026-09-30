@@ -22,6 +22,7 @@ from typing_extensions import override
 from ..errors.not_found_error import NotFoundError
 from ._eval_set_results_manager_utils import create_eval_set_result
 from ._eval_set_results_manager_utils import parse_eval_set_result_json
+from ._path_validation import validate_path_segment
 from .eval_result import EvalCaseResult
 from .eval_result import EvalSetResult
 from .eval_set_results_manager import EvalSetResultsManager
@@ -46,6 +47,8 @@ class LocalEvalSetResultsManager(EvalSetResultsManager):
       eval_case_results: list[EvalCaseResult],
   ) -> None:
     """Creates and saves a new EvalSetResult given eval_case_results."""
+    validate_path_segment(app_name, "app_name")
+    validate_path_segment(eval_set_id, "eval_set_id")
     eval_set_result = create_eval_set_result(
         app_name, eval_set_id, eval_case_results
     )
@@ -53,10 +56,13 @@ class LocalEvalSetResultsManager(EvalSetResultsManager):
     app_eval_history_dir = self._get_eval_history_dir(app_name)
     if not os.path.exists(app_eval_history_dir):
       os.makedirs(app_eval_history_dir)
+    eval_set_result_name = eval_set_result.eval_set_result_name
+    if eval_set_result_name is None:
+      raise RuntimeError("A newly created eval set result must have a name.")
     # Convert to json and write to file.
     eval_set_result_file_path = os.path.join(
         app_eval_history_dir,
-        eval_set_result.eval_set_result_name + _EVAL_SET_RESULT_FILE_EXTENSION,
+        eval_set_result_name + _EVAL_SET_RESULT_FILE_EXTENSION,
     )
     logger.info("Writing eval result to file: %s", eval_set_result_file_path)
     with open(eval_set_result_file_path, "w", encoding="utf-8") as f:
@@ -67,6 +73,7 @@ class LocalEvalSetResultsManager(EvalSetResultsManager):
       self, app_name: str, eval_set_result_id: str
   ) -> EvalSetResult:
     """Returns an EvalSetResult identified by app_name and eval_set_result_id."""
+    validate_path_segment(eval_set_result_id, "eval_set_result_id")
     # Load the eval set result file data.
     maybe_eval_result_file_path = (
         os.path.join(
@@ -97,4 +104,5 @@ class LocalEvalSetResultsManager(EvalSetResultsManager):
     return eval_result_files
 
   def _get_eval_history_dir(self, app_name: str) -> str:
+    validate_path_segment(app_name, "app_name")
     return os.path.join(self._agents_dir, app_name, _ADK_EVAL_HISTORY_DIR)

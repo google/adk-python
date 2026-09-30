@@ -57,7 +57,9 @@ class EvalSetsManager(ABC):
     """Returns an EvalCase if found; otherwise, None."""
 
   @abstractmethod
-  def add_eval_case(self, app_name: str, eval_set_id: str, eval_case: EvalCase):
+  def add_eval_case(
+      self, app_name: str, eval_set_id: str, eval_case: EvalCase
+  ) -> None:
     """Adds the given EvalCase to an existing EvalSet identified by app_name and eval_set_id.
 
     Raises:
@@ -67,7 +69,7 @@ class EvalSetsManager(ABC):
   @abstractmethod
   def update_eval_case(
       self, app_name: str, eval_set_id: str, updated_eval_case: EvalCase
-  ):
+  ) -> None:
     """Updates an existing EvalCase give the app_name and eval_set_id.
 
     Raises:
@@ -77,7 +79,7 @@ class EvalSetsManager(ABC):
   @abstractmethod
   def delete_eval_case(
       self, app_name: str, eval_set_id: str, eval_case_id: str
-  ):
+  ) -> None:
     """Deletes the given EvalCase identified by app_name, eval_set_id and eval_case_id.
 
     Raises:

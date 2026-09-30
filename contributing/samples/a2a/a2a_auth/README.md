@@ -61,14 +61,14 @@ The A2A OAuth Authentication sample consists of:
 
    ```bash
    # Start the remote a2a server that serves the BigQuery agent on port 8001
-   adk api_server --a2a --port 8001 contributing/samples/a2a_auth/remote_a2a
+   adk api_server --a2a --port 8001 contributing/samples/a2a/a2a_auth/remote_a2a
    ```
 
 1. **Run the Main Agent**:
 
    ```bash
    # In a separate terminal, run the adk web server
-   adk web contributing/samples/
+   adk web contributing/samples/a2a
    ```
 
 ### Example Interactions

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import html
 from typing import Any
+from typing import cast
 
 import graphviz
 
@@ -44,7 +45,9 @@ def plot_workflow_graph(
     nodes = [{"name": root_name, "type": "agent", "tools": tools}]
     edges = []
 
-    def _traverse_sub_agents(agent_dict, parent_name):
+    def _traverse_sub_agents(
+        agent_dict: dict[str, Any], parent_name: str
+    ) -> None:
       for sub in agent_dict.get("sub_agents", []):
         sub_name = sub.get("name")
         if sub_name:
@@ -340,7 +343,7 @@ def plot_workflow_graph(
       dot.edge(t_node, "__END__")
 
   if format == "dot":
-    return dot.source
+    return cast(str, dot.source)
   if format == "svg":
-    return dot.pipe(format="svg").decode("utf-8")
-  return dot.pipe(format=format)
+    return cast(str, dot.pipe(format="svg").decode("utf-8"))
+  return cast(bytes, dot.pipe(format=format))

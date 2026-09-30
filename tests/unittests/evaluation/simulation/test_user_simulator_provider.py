@@ -16,22 +16,28 @@ from __future__ import annotations
 
 from google.adk.evaluation import conversation_scenarios
 from google.adk.evaluation import eval_case
+from google.adk.evaluation.simulation import user_simulator as user_simulator_module
 from google.adk.evaluation.simulation import user_simulator_provider
+from google.adk.evaluation.simulation._llm_audio_user_simulator import _LlmAudioUserSimulator
+from google.adk.evaluation.simulation._llm_audio_user_simulator import LlmAudioUserSimulatorConfig
 from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBackedUserSimulator
 from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBackedUserSimulatorConfig
 from google.adk.evaluation.simulation.static_user_simulator import StaticUserSimulator
+from google.adk.evaluation.simulation.user_simulator import BaseUserSimulatorConfig
 from google.genai import types
+from pydantic import Field
 import pytest
+from typing_extensions import Literal
 
 _TEST_CONVERSATION = [
     eval_case.Invocation(
-        invocation_id='inv1',
-        user_content=types.Content(parts=[types.Part(text='Hello!')]),
+        invocation_id="inv1",
+        user_content=types.Content(parts=[types.Part(text="Hello!")]),
     ),
 ]
 
 _TEST_CONVERSATION_SCENARIO = conversation_scenarios.ConversationScenario(
-    starting_prompt='Hello!', conversation_plan='test plan'
+    starting_prompt="Hello!", conversation_plan="test plan"
 )
 
 
@@ -42,24 +48,74 @@ class TestUserSimulatorProvider:
     """Tests the case when a StaticUserSimulator should be provided."""
     provider = user_simulator_provider.UserSimulatorProvider()
     test_eval_case = eval_case.EvalCase(
-        eval_id='test_eval_id',
+        eval_id="test_eval_id",
         conversation=_TEST_CONVERSATION,
     )
     simulator = provider.provide(test_eval_case)
     assert isinstance(simulator, StaticUserSimulator)
     assert simulator.static_conversation == _TEST_CONVERSATION
 
+  def test_provide_static_user_simulator_with_audio(self, mocker):
+    """A static case + audio config wraps the StaticUserSimulator in audio."""
+    mocker.patch(
+        "google.adk.evaluation.simulation._llm_audio_user_simulator.LLMRegistry",
+        autospec=True,
+    )
+    audio_config = LlmAudioUserSimulatorConfig(audio_model="test-audio-model")
+    provider = user_simulator_provider.UserSimulatorProvider(
+        user_simulator_config=audio_config
+    )
+    test_eval_case = eval_case.EvalCase(
+        eval_id="test_eval_id",
+        conversation=_TEST_CONVERSATION,
+    )
+    simulator = provider.provide(test_eval_case)
+    assert isinstance(simulator, _LlmAudioUserSimulator)
+    # The wrapped text simulator replays the pre-authored static turns.
+    assert isinstance(simulator._text_simulator, StaticUserSimulator)
+    assert simulator._text_simulator.static_conversation == _TEST_CONVERSATION
+
+  def test_provide_llm_audio_user_simulator_for_scenario(self, mocker):
+    """A scenario case + audio config wraps an LlmBackedUserSimulator."""
+    mocker.patch(
+        "google.adk.evaluation.simulation._llm_audio_user_simulator.LLMRegistry",
+        autospec=True,
+    )
+    mock_text_registry = mocker.patch(
+        "google.adk.evaluation.simulation.llm_backed_user_simulator.LLMRegistry",
+        autospec=True,
+    )
+    mock_text_registry.return_value.resolve.return_value = mocker.Mock()
+    audio_config = LlmAudioUserSimulatorConfig(
+        model="test-model", audio_model="test-audio-model"
+    )
+    provider = user_simulator_provider.UserSimulatorProvider(
+        user_simulator_config=audio_config
+    )
+    test_eval_case = eval_case.EvalCase(
+        eval_id="test_eval_id",
+        conversation_scenario=_TEST_CONVERSATION_SCENARIO,
+    )
+    simulator = provider.provide(test_eval_case)
+    assert isinstance(simulator, _LlmAudioUserSimulator)
+    assert isinstance(simulator._text_simulator, LlmBackedUserSimulator)
+    assert simulator._text_simulator._config.model == "test-model"
+    assert (
+        simulator._text_simulator._conversation_scenario
+        == _TEST_CONVERSATION_SCENARIO
+    )
+
   def test_provide_llm_backed_user_simulator(self, mocker):
     """Tests the case when a LlmBackedUserSimulator should be provided."""
     mock_llm_registry = mocker.patch(
-        'google.adk.evaluation.simulation.llm_backed_user_simulator.LLMRegistry',
+        "google.adk.evaluation.simulation.llm_backed_user_simulator.LLMRegistry",
         autospec=True,
     )
     mock_llm_registry.return_value.resolve.return_value = mocker.Mock()
     # Test case 1: No config in provider.
     provider = user_simulator_provider.UserSimulatorProvider()
     test_eval_case = eval_case.EvalCase(
-        eval_id='test_eval_id',
+        eval_id="test_eval_id",
         conversation_scenario=_TEST_CONVERSATION_SCENARIO,
     )
     simulator = provider.provide(test_eval_case)
@@ -68,7 +124,7 @@ class TestUserSimulatorProvider:
 
     # Test case 2: Config in provider.
     llm_config = LlmBackedUserSimulatorConfig(
-        model='test_model',
+        model="test_model",
     )
     provider = user_simulator_provider.UserSimulatorProvider(
         user_simulator_config=llm_config
@@ -76,4 +132,135 @@ class TestUserSimulatorProvider:
     simulator = provider.provide(test_eval_case)
     assert isinstance(simulator, LlmBackedUserSimulator)
     assert simulator._conversation_scenario == _TEST_CONVERSATION_SCENARIO
-    assert simulator._config.model == 'test_model'
+    assert simulator._config.model == "test_model"
+
+  # ---------------------------------------------------------------------------
+  # Backward-compat + discriminator + registry
+  # ---------------------------------------------------------------------------
+
+  def test_init_accepts_bare_base_config_but_provide_raises(self):
+    """A bare `BaseUserSimulatorConfig` is a valid *instance* of the base,
+
+    so `__init__` accepts it -- but the base has no registered simulator,
+    so `provide()` should raise a clear error pointing the caller at the
+    fix. Callers wanting the default should pass `None` instead.
+    """
+    provider = user_simulator_provider.UserSimulatorProvider(
+        user_simulator_config=BaseUserSimulatorConfig()
+    )
+    # __init__ stores the bare base as-is; no silent up-conversion.
+    assert type(provider._user_simulator_config) is BaseUserSimulatorConfig
+
+    test_eval_case = eval_case.EvalCase(
+        eval_id="test_eval_id",
+        conversation_scenario=_TEST_CONVERSATION_SCENARIO,
+    )
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"No UserSimulator registered for config type"
+            r" `BaseUserSimulatorConfig`"
+        ),
+    ):
+      provider.provide(test_eval_case)
+
+  def test_init_rejects_non_config_argument(self):
+    """Passing something that isn't a `BaseUserSimulatorConfig` should raise
+
+    a clear ValueError.
+    """
+    with pytest.raises(
+        ValueError,
+        match=r"Expect config of type `.*BaseUserSimulatorConfig.*`\.",
+    ):
+      user_simulator_provider.UserSimulatorProvider(
+          user_simulator_config="not a config"  # type: ignore[arg-type]
+      )
+
+  # NOTE: The "both / neither of conversation, conversation_scenario"
+  # checks in `provide()` are defensive; `EvalCase` itself enforces the same
+  # invariant at construction time via a model_validator, so those branches
+  # in the provider are effectively unreachable and don't warrant a unit
+  # test at this layer.
+
+  def test_base_config_type_defaults_to_none(self):
+    """The base `BaseUserSimulatorConfig.type` must default to `None` -- the
+
+    base class must not hard-code a specific subclass's discriminator value.
+    Concrete subclasses supply their own `Literal[...]` default.
+    """
+    base = BaseUserSimulatorConfig()
+    assert base.type is None
+
+  def test_llm_backed_config_has_locked_type_literal(self):
+    """The `type` discriminator on `LlmBackedUserSimulatorConfig` must be a
+
+    Literal locked to `"llm_backed"`, so future subclasses can dispatch
+    correctly via pydantic's discriminated union.
+    """
+    config = LlmBackedUserSimulatorConfig()
+    assert config.type == "llm_backed"
+    # Attempting to construct with a different `type` value must fail
+    # validation (Literal constraint).
+    with pytest.raises(Exception):
+      LlmBackedUserSimulatorConfig(type="something_else")
+
+  def test_llm_backed_user_simulator_registered_by_provider_module(self):
+    """Importing `user_simulator_provider` must wire the built-in
+
+    `LlmBackedUserSimulator` into the shared registry. This is the "batteries
+    included" contract callers rely on: they can `UserSimulatorProvider()`
+    without ever touching `register_user_simulator(...)`. If the registration
+    line at the top of the provider module is removed, this test catches it
+    immediately -- otherwise dispatch would silently fall through to the
+    "unregistered config type" error path.
+    """
+    assert (
+        user_simulator_module._SIMULATOR_BY_CONFIG_TYPE.get(
+            LlmBackedUserSimulatorConfig
+        )
+        is LlmBackedUserSimulator
+    )
+
+  def test_llm_audio_user_simulator_registered_by_provider_module(self):
+    """Importing `user_simulator_provider` must also wire the built-in
+
+    `_LlmAudioUserSimulator` into the shared registry, so `provide()` can
+    dispatch the audio config to it (and then inject the inner text
+    simulator) without callers touching `register_user_simulator(...)`.
+    """
+    assert (
+        user_simulator_module._SIMULATOR_BY_CONFIG_TYPE.get(
+            LlmAudioUserSimulatorConfig
+        )
+        is _LlmAudioUserSimulator
+    )
+
+  def test_provide_raises_for_unregistered_config_type(self, mocker):
+    """If the caller supplies a config subclass that no one has registered,
+
+    provide() must raise a clear error naming the offending type.
+    """
+    mocker.patch(
+        "google.adk.evaluation.simulation.llm_backed_user_simulator.LLMRegistry",
+        autospec=True,
+    )
+
+    class _UnregisteredConfig(BaseUserSimulatorConfig):
+      type: Literal["unregistered"] = Field(default="unregistered")
+
+    provider = user_simulator_provider.UserSimulatorProvider(
+        user_simulator_config=_UnregisteredConfig()
+    )
+    test_eval_case = eval_case.EvalCase(
+        eval_id="test_eval_id",
+        conversation_scenario=_TEST_CONVERSATION_SCENARIO,
+    )
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"No UserSimulator registered for config type"
+            r" `_UnregisteredConfig`"
+        ),
+    ):
+      provider.provide(test_eval_case)

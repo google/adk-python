@@ -16,7 +16,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
+from typing import List
+from typing import Optional
 
 from google.adk.tools.tool_context import ToolContext
 
@@ -25,10 +28,10 @@ from ..utils.resolve_root_directory import resolve_file_paths
 
 
 async def cleanup_unused_files(
-    used_files: list[str],
+    used_files: List[str],
     tool_context: ToolContext,
-    file_patterns: list[str] | None = None,
-    exclude_patterns: list[str] | None = None,
+    file_patterns: Optional[List[str]] = None,
+    exclude_patterns: Optional[List[str]] = None,
 ) -> dict[str, Any]:
   """Identify and optionally delete unused files in project directories.
 
@@ -67,7 +70,7 @@ async def cleanup_unused_files(
     if exclude_patterns is None:
       exclude_patterns = ["__init__.py", "*_test.py", "test_*.py"]
 
-    result = {
+    result: dict[str, Any] = {
         "success": False,
         "unused_files": [],
         "deleted_files": [],
@@ -80,10 +83,19 @@ async def cleanup_unused_files(
       result["errors"].append(f"Root directory does not exist: {root_path}")
       return result
 
-    # Find all files matching patterns
-    all_files = []
+    # Find all files matching patterns. A glob pattern can reach outside the
+    # root directory through a parent-directory component or a symlink, so
+    # matches that land outside the root are dropped.
+    all_files: list[Any] = []
     for pattern in file_patterns:
-      all_files.extend(root_path.rglob(pattern))
+      if ".." in Path(pattern).parts:
+        result["errors"].append(
+            f"File pattern must stay within the root directory: {pattern}"
+        )
+        continue
+      for candidate in root_path.rglob(pattern):
+        if candidate.resolve().is_relative_to(root_path):
+          all_files.append(candidate)
 
     # Filter out excluded patterns
     for exclude_pattern in exclude_patterns:

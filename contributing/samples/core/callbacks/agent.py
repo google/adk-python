@@ -100,7 +100,7 @@ def after_model_callback(
         f" Output={usage.candidates_token_count}]"
     )
 
-    if not llm_response.content:
+    if not llm_response.content or not llm_response.content.parts:
       llm_response.content = types.Content(role="model", parts=[])
 
     llm_response.content.parts.append(types.Part.from_text(text=usage_text))

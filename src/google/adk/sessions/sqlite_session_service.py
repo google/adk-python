@@ -13,6 +13,8 @@
 # limitations under the License.
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from collections.abc import Iterable
 from contextlib import asynccontextmanager
 import copy
 import json
@@ -20,6 +22,7 @@ import logging
 import os
 import sqlite3
 from typing import Any
+from typing import cast
 from typing import Optional
 from urllib.parse import unquote
 from urllib.parse import urlparse
@@ -27,10 +30,13 @@ from urllib.parse import urlparse
 import aiosqlite
 from google.adk.platform import time as platform_time
 from google.adk.platform import uuid as platform_uuid
+from google.adk.utils import _json_utils
 from typing_extensions import override
 
 from . import _session_util
+from ..errors._stale_session_error import StaleSessionError
 from ..errors.already_exists_error import AlreadyExistsError
+from ..errors.session_not_found_error import SessionNotFoundError
 from ..events.event import Event
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
@@ -41,6 +47,25 @@ from .state import State
 logger = logging.getLogger("google_adk." + __name__)
 
 PRAGMA_FOREIGN_KEYS = "PRAGMA foreign_keys = ON"
+
+# Merges {delta} into {state} with dict.update() semantics: keys in the delta
+# always win with their delta value (including SQL NULL / JSON null), unlike
+# json_patch() which deep-merges dict values and treats null as "delete key".
+_MERGE_STATE_SQL = """
+        SELECT json_group_object(
+                 key,
+                 CASE
+                   WHEN type IN ('object','array') THEN json(value)
+                   WHEN type IN ('true','false') THEN json(type)
+                   ELSE value
+                 END)
+        FROM (
+          SELECT key, value, type FROM json_each({delta})
+          UNION ALL
+          SELECT key, value, type FROM json_each({state})
+           WHERE key NOT IN (SELECT key FROM json_each({delta}))
+        )
+      """
 
 APP_STATES_TABLE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS app_states (
@@ -117,9 +142,7 @@ def _parse_db_path(db_path: str) -> tuple[str, str, bool]:
     return db_path, db_path, False
 
   normalized_path = raw_path
-  if normalized_path.startswith("//"):
-    normalized_path = normalized_path[1:]
-  elif normalized_path.startswith("/"):
+  if normalized_path.startswith("/"):
     normalized_path = normalized_path[1:]
 
   if parsed.query:
@@ -127,6 +150,24 @@ def _parse_db_path(db_path: str) -> tuple[str, str, bool]:
     return normalized_path, f"file:{normalized_path}?{parsed.query}", True
 
   return normalized_path, normalized_path, False
+
+
+def _decode_state(
+    value: object, context: str = "persisted state"
+) -> dict[str, Any]:
+  """Decode a persisted state object and require string JSON keys."""
+  decoded: object = _json_utils.safe_json_loads(
+      cast("str | bytes | bytearray", value), context=context
+  )
+  if not isinstance(decoded, dict):
+    raise ValueError("Persisted session state must be a JSON object.")
+
+  state: dict[str, Any] = {}
+  for key, item in decoded.items():
+    if not isinstance(key, str):
+      raise ValueError("Persisted session state keys must be strings.")
+    state[key] = item
+  return state
 
 
 class SqliteSessionService(BaseSessionService):
@@ -141,6 +182,7 @@ class SqliteSessionService(BaseSessionService):
     self._db_path, self._db_connect_path, self._db_connect_uri = _parse_db_path(
         db_path
     )
+    self._schema_ready = False
 
     if self._is_migration_needed():
       raise RuntimeError(
@@ -180,7 +222,7 @@ class SqliteSessionService(BaseSessionService):
           )
 
       # Extract state deltas
-      state_deltas = _session_util.extract_state_delta(state)
+      state_deltas = _session_util.extract_json_safe_state_delta(state or {})
       app_state_delta = state_deltas["app"]
       user_state_delta = state_deltas["user"]
       session_state = state_deltas["session"]
@@ -198,21 +240,26 @@ class SqliteSessionService(BaseSessionService):
       storage_user_state = await self._get_user_state(db, app_name, user_id)
 
       # Store the session
-      await db.execute(
-          """
-          INSERT INTO sessions (app_name, user_id, id, state, create_time, update_time)
-          VALUES (?, ?, ?, ?, ?, ?)
-          """,
-          (
-              app_name,
-              user_id,
-              session_id,
-              json.dumps(session_state),
-              now,
-              now,
-          ),
-      )
-      await db.commit()
+      try:
+        await db.execute(
+            """
+            INSERT INTO sessions (app_name, user_id, id, state, create_time, update_time)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                app_name,
+                user_id,
+                session_id,
+                json.dumps(session_state),
+                now,
+                now,
+            ),
+        )
+        await db.commit()
+      except (sqlite3.IntegrityError, aiosqlite.IntegrityError):
+        raise AlreadyExistsError(
+            f"Session with id {session_id} already exists."
+        )
 
       # Merge states for response
       merged_state = _merge_state(
@@ -245,7 +292,9 @@ class SqliteSessionService(BaseSessionService):
         session_row = await cursor.fetchone()
         if session_row is None:
           return None
-        session_state = json.loads(session_row["state"])
+        session_state = _decode_state(
+            session_row["state"], context="session state"
+        )
         last_update_time = session_row["update_time"]
 
       # Build events query
@@ -259,14 +308,17 @@ class SqliteSessionService(BaseSessionService):
         query_parts.append("AND timestamp >= ?")
         params.append(config.after_timestamp)
 
-      query_parts.append("ORDER BY timestamp DESC")
+      # Break timestamp ties on id so tied events come back in the same order
+      # on every read; otherwise a replayed conversation shuffles and
+      # `num_recent_events` truncates at an arbitrary point in the tie.
+      query_parts.append("ORDER BY timestamp DESC, id DESC")
 
       if config and config.num_recent_events is not None:
         query_parts.append("LIMIT ?")
         params.append(config.num_recent_events)
 
       if config and config.num_recent_events == 0:
-        event_rows = []
+        event_rows: Iterable[sqlite3.Row] = []
       else:
         event_rows = await db.execute_fetchall(" ".join(query_parts), params)
       storage_events_data = [row["event_data"] for row in event_rows]
@@ -303,13 +355,13 @@ class SqliteSessionService(BaseSessionService):
       if user_id:
         session_rows = await db.execute_fetchall(
             "SELECT id, user_id, state, update_time FROM sessions WHERE"
-            " app_name=? AND user_id=?",
+            " app_name=? AND user_id=? ORDER BY update_time, user_id, id",
             (app_name, user_id),
         )
       else:
         session_rows = await db.execute_fetchall(
             "SELECT id, user_id, state, update_time FROM sessions WHERE"
-            " app_name=?",
+            " app_name=? ORDER BY update_time, user_id, id",
             (app_name,),
         )
 
@@ -317,7 +369,7 @@ class SqliteSessionService(BaseSessionService):
       app_state = await self._get_app_state(db, app_name)
 
       # Fetch user states
-      user_states_map = {}
+      user_states_map: dict[str, dict[str, Any]] = {}
       if user_id:
         user_state = await self._get_user_state(db, app_name, user_id)
         if user_state:
@@ -328,12 +380,14 @@ class SqliteSessionService(BaseSessionService):
             (app_name,),
         ) as cursor:
           async for row in cursor:
-            user_states_map[row["user_id"]] = json.loads(row["state"])
+            user_states_map[row["user_id"]] = _decode_state(
+                row["state"], context="user state"
+            )
 
       # Build session list
       for row in session_rows:
         session_user_id = row["user_id"]
-        session_state = json.loads(row["state"])
+        session_state = _decode_state(row["state"], context="session state")
         user_state = user_states_map.get(session_user_id, {})
         merged_state = _merge_state(app_state, user_state, session_state)
         sessions_list.append(
@@ -387,10 +441,10 @@ class SqliteSessionService(BaseSessionService):
       ) as cursor:
         row = await cursor.fetchone()
         if row is None:
-          raise ValueError(f"Session {session.id} not found.")
+          raise SessionNotFoundError(f"Session {session.id} not found.")
         storage_update_time = row["update_time"]
         if storage_update_time > session.last_update_time:
-          raise ValueError(
+          raise StaleSessionError(
               "The last_update_time provided in the session object is"
               " earlier than the update_time in storage."
               " Please check if it is a stale session."
@@ -399,7 +453,7 @@ class SqliteSessionService(BaseSessionService):
       # Apply state delta if present
       has_session_state_delta = False
       if event.actions.state_delta:
-        state_deltas = _session_util.extract_state_delta(
+        state_deltas = _session_util.extract_json_safe_state_delta(
             event.actions.state_delta
         )
         app_state_delta = state_deltas["app"]
@@ -462,27 +516,31 @@ class SqliteSessionService(BaseSessionService):
       session.last_update_time = event_timestamp
 
     # Also update the in-memory session
-    await super().append_event(session=session, event=event)
-    return event
+    return self._commit_event_to_session(session, event)
 
   @asynccontextmanager
-  async def _get_db_connection(self):
+  async def _get_db_connection(self) -> AsyncIterator[aiosqlite.Connection]:
     """Connects to the db and performs initial setup."""
     async with aiosqlite.connect(
         self._db_connect_path, uri=self._db_connect_uri
     ) as db:
       db.row_factory = aiosqlite.Row
       await db.execute(PRAGMA_FOREIGN_KEYS)
-      await db.executescript(CREATE_SCHEMA_SQL)
+      if not self._schema_ready:
+        await db.executescript(CREATE_SCHEMA_SQL)
+        self._schema_ready = True
       yield db
 
   async def _get_state(
-      self, db: aiosqlite.Connection, query: str, params: tuple
+      self,
+      db: aiosqlite.Connection,
+      query: str,
+      params: tuple[object, ...],
   ) -> dict[str, Any]:
     """Fetches and deserializes a JSON state column from a single row."""
     async with db.execute(query, params) as cursor:
       row = await cursor.fetchone()
-      return json.loads(row["state"]) if row else {}
+      return _decode_state(row["state"]) if row else {}
 
   async def _get_app_state(
       self, db: aiosqlite.Connection, app_name: str
@@ -500,27 +558,18 @@ class SqliteSessionService(BaseSessionService):
         (app_name, user_id),
     )
 
-  async def _get_session_state(
+  async def _upsert_app_state(
       self,
       db: aiosqlite.Connection,
       app_name: str,
-      user_id: str,
-      session_id: str,
-  ) -> dict[str, Any]:
-    return await self._get_state(
-        db,
-        "SELECT state FROM sessions WHERE app_name=? AND user_id=? AND id=?",
-        (app_name, user_id, session_id),
-    )
-
-  async def _upsert_app_state(
-      self, db: aiosqlite.Connection, app_name: str, delta: dict, now: float
+      delta: dict[str, Any],
+      now: float,
   ) -> None:
-    """Atomically inserts or updates app state using json_patch."""
+    """Atomically inserts or updates app state with dict.update() semantics."""
     await db.execute(
-        """
+        f"""
         INSERT INTO app_states (app_name, state, update_time) VALUES (?, ?, ?)
-        ON CONFLICT(app_name) DO UPDATE SET state=json_patch(state, excluded.state), update_time=excluded.update_time
+        ON CONFLICT(app_name) DO UPDATE SET state=({_MERGE_STATE_SQL.format(delta='excluded.state', state='state')}), update_time=excluded.update_time
         """,
         (app_name, json.dumps(delta), now),
     )
@@ -530,14 +579,14 @@ class SqliteSessionService(BaseSessionService):
       db: aiosqlite.Connection,
       app_name: str,
       user_id: str,
-      delta: dict,
+      delta: dict[str, Any],
       now: float,
   ) -> None:
-    """Atomically inserts or updates user state using json_patch."""
+    """Atomically inserts or updates user state with dict.update() semantics."""
     await db.execute(
-        """
+        f"""
         INSERT INTO user_states (app_name, user_id, state, update_time) VALUES (?, ?, ?, ?)
-        ON CONFLICT(app_name, user_id) DO UPDATE SET state=json_patch(state, excluded.state), update_time=excluded.update_time
+        ON CONFLICT(app_name, user_id) DO UPDATE SET state=({_MERGE_STATE_SQL.format(delta='excluded.state', state='state')}), update_time=excluded.update_time
         """,
         (app_name, user_id, json.dumps(delta), now),
     )
@@ -548,15 +597,18 @@ class SqliteSessionService(BaseSessionService):
       app_name: str,
       user_id: str,
       session_id: str,
-      delta: dict,
+      delta: dict[str, Any],
       now: float,
   ) -> None:
-    """Atomically updates session state using json_patch."""
+    """Atomically updates session state with dict.update() semantics."""
+    delta_json = json.dumps(delta)
     await db.execute(
-        "UPDATE sessions SET state=json_patch(state, ?), update_time=? WHERE"
-        " app_name=? AND user_id=? AND id=?",
+        "UPDATE sessions SET"
+        f" state=({_MERGE_STATE_SQL.format(delta='?', state='state')}),"
+        " update_time=? WHERE app_name=? AND user_id=? AND id=?",
         (
-            json.dumps(delta),
+            delta_json,
+            delta_json,
             now,
             app_name,
             user_id,
@@ -595,7 +647,11 @@ class SqliteSessionService(BaseSessionService):
       ) from e
 
 
-def _merge_state(app_state, user_state, session_state):
+def _merge_state(
+    app_state: dict[str, Any],
+    user_state: dict[str, Any],
+    session_state: dict[str, Any],
+) -> dict[str, Any]:
   """Merges app, user, and session states into a single dictionary."""
   merged_state = copy.deepcopy(session_state)
   for key, value in app_state.items():

@@ -47,7 +47,7 @@ class ScenarioGenerator:
   GOOGLE_CLOUD_LOCATION in your .env file.
   """
 
-  def __init__(self):
+  def __init__(self) -> None:
     project_id = os.environ.get("GOOGLE_CLOUD_PROJECT")
     location = os.environ.get("GOOGLE_CLOUD_LOCATION")
     api_key = os.environ.get("GOOGLE_API_KEY")

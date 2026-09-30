@@ -58,11 +58,11 @@ class EventsCompactionConfig(BaseModel):
   summarizer: Optional[BaseEventsSummarizer] = None
   """The event summarizer to use for compaction."""
 
-  compaction_interval: int
+  compaction_interval: Optional[int] = Field(default=None, gt=0)
   """The number of *new* user-initiated invocations that, once
   fully represented in the session's events, will trigger a compaction."""
 
-  overlap_size: int
+  overlap_size: Optional[int] = Field(default=None, ge=0)
   """The number of preceding invocations to include from the
   end of the last compacted range. This creates an overlap between consecutive
   compacted summaries, maintaining context."""
@@ -85,11 +85,22 @@ class EventsCompactionConfig(BaseModel):
   """
 
   @model_validator(mode="after")
-  def _validate_token_params(self) -> EventsCompactionConfig:
+  def _validate_trigger_params(self) -> EventsCompactionConfig:
     token_threshold_set = self.token_threshold is not None
     retention_size_set = self.event_retention_size is not None
     if token_threshold_set != retention_size_set:
       raise ValueError(
           "token_threshold and event_retention_size must be set together."
+      )
+    compaction_interval_set = self.compaction_interval is not None
+    overlap_size_set = self.overlap_size is not None
+    if compaction_interval_set != overlap_size_set:
+      raise ValueError(
+          "compaction_interval and overlap_size must be set together."
+      )
+    if not (token_threshold_set or compaction_interval_set):
+      raise ValueError(
+          "At least one compaction trigger must be configured: the"
+          " token-threshold pair or the sliding-window pair."
       )
     return self

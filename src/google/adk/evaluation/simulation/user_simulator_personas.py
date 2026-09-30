@@ -53,11 +53,11 @@ class UserBehavior(BaseModel):
       )
   )
 
-  def get_behavior_instructions_str(self):
+  def get_behavior_instructions_str(self) -> str:
     """Returns a string version of the violation rubrics."""
     return "\n".join(f"  * {i}" for i in self.behavior_instructions)
 
-  def get_violation_rubrics_str(self):
+  def get_violation_rubrics_str(self) -> str:
     """Returns a string version of the violation rubrics."""
     return "\n".join(f"  * {v}" for v in self.violation_rubrics)
 
@@ -90,7 +90,7 @@ class UserPersona(BaseModel):
 class UserPersonaRegistry:
   """A registry for UserPersona instances."""
 
-  def __init__(self):
+  def __init__(self) -> None:
     self._registry: dict[str, UserPersona] = {}
 
   def get_persona(self, persona_id: str) -> UserPersona:
@@ -104,7 +104,7 @@ class UserPersonaRegistry:
       self,
       persona_id: str,
       user_persona: UserPersona,
-  ):
+  ) -> None:
     """Registers a user persona given the persona id.
 
     If a mapping already exist, then it is updated.

@@ -65,7 +65,7 @@ To send messages in an ADK node, yield an `Event` object with the `message` argu
    ```
 
 1. **Stream a message in chunks**:
-   Provide the `partial=True` flag for intermediate chunks. This provides a better user experience by allowing the UI to show the response in a streaming fashion, thereby lowering the latency to see the first word. ADK automatically accumulates all partial messages and merges them into a final message for you for session storage.
+   Provide the `partial=True` flag for intermediate chunks. This provides a better user experience by allowing the UI to show the response in a streaming fashion, thereby lowering the latency to see the first word. Partial events are forwarded to the client but are not stored in the session, so finish by yielding the assembled message once without `partial=True`.
 
    > **Note**: To stream multiple messages or tokens smoothly, your node function **must be an asynchronous generator** (`async def`). This allows ADK to yield messages to the client immediately without blocking.
 
@@ -78,4 +78,5 @@ To send messages in an ADK node, yield an `Event` object with the `message` argu
        yield Event(message="may I", partial=True)
        await asyncio.sleep(0.5)
        yield Event(message=" help you?", partial=True)
+       yield Event(message="How may I help you?")
    ```

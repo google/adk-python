@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 import sys
+import types
 from typing import Any
 
 from google.adk.agents.llm_agent import Agent
@@ -119,6 +120,8 @@ def fixture_mock_gepa(mocker):
 
   mock_gepa_adapter_module.EvaluationBatch = MockEvaluationBatchSpec
   mock_gepa_adapter_module.GEPAAdapter = MockGEPAAdapterSpec
+  mock_gepa_api = types.ModuleType("gepa.api")
+  mock_gepa_api.optimize = mock_gepa_module.optimize
 
   mock_gepa_module.core = mocker.create_autospec(MockCoreSpec)
   mock_gepa_module.core.adapter = mock_gepa_adapter_module
@@ -134,6 +137,7 @@ def fixture_mock_gepa(mocker):
       sys.modules,
       {
           "gepa": mock_gepa_module,
+          "gepa.api": mock_gepa_api,
           "gepa.core": mock_gepa_module.core,
           "gepa.core.adapter": mock_gepa_adapter_module,
           "gepa.strategies": mock_gepa_module.strategies,
@@ -345,6 +349,13 @@ def test_adapter_make_reflective_dataset(mock_adapter):
   }
 
 
+def test_adapter_rejects_missing_trajectories(mock_adapter):
+  eval_batch = MockEvaluationBatchSpec(outputs=[], scores=[], trajectories=None)
+
+  with pytest.raises(ValueError, match="without captured trajectories"):
+    mock_adapter.make_reflective_dataset({}, eval_batch, [])
+
+
 def test_adapter_propose_new_texts(mock_gepa, mock_adapter):
   mock_adapter._reflection_lm.return_value = "lm output"
 
@@ -449,4 +460,42 @@ async def test_optimize_logs_warning_on_overlapping_ids(
       "The training and validation example UIDs overlap. This WILL cause"
       " aliasing issues unless each common UID refers to the same example"
       " in both sets."
+  )
+
+
+def test_adapter_evaluate_missing_example_id_in_scores(
+    mocker, mock_gepa, mock_sampler, mock_agent, caplog
+):
+  del mock_gepa  # only needed to mock gepa in background
+  loop = mocker.create_autospec(asyncio.AbstractEventLoop, instance=True)
+  mock_reflection_lm = mocker.create_autospec(Callable)
+  _AdapterClass = _create_agent_gepa_adapter_class()
+  adapter = _AdapterClass(mock_agent, mock_sampler, loop, mock_reflection_lm)
+
+  candidate = {"agent_prompt": "New prompt"}
+  batch = ["train1", "train2"]
+
+  mock_future = mocker.create_autospec(asyncio.Future, instance=True)
+  expected_result = UnstructuredSamplingResult(
+      scores={"train1": 0.8},
+      data={"train1": {"output": "result"}},
+  )
+  mock_future.result.return_value = expected_result
+
+  mocker.patch.object(
+      asyncio,
+      "run_coroutine_threadsafe",
+      return_value=mock_future,
+      autospec=True,
+  )
+  with caplog.at_level("WARNING"):
+    eval_batch = adapter.evaluate(batch, candidate, capture_traces=True)
+
+  assert isinstance(eval_batch, MockEvaluationBatchSpec)
+  assert eval_batch.scores == [0.8, 0.0]
+  assert eval_batch.outputs == [{"output": "result"}, {}]
+  assert eval_batch.trajectories == [{"output": "result"}, {}]
+  assert (
+      "Example train2 missing from sampling result; scoring it 0.0."
+      in caplog.text
   )

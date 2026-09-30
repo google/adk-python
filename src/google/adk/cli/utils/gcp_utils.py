@@ -18,11 +18,13 @@ from __future__ import annotations
 
 import subprocess
 from typing import Any
+from typing import cast
 from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Tuple
 
+from google.adk.utils import _mtls_utils
 import google.auth
 import google.auth.exceptions
 from google.auth.transport.requests import AuthorizedSession
@@ -30,6 +32,9 @@ from google.auth.transport.requests import Request
 import requests
 
 _VERTEX_AI_ENDPOINT = "https://{location}-aiplatform.googleapis.com/v1beta1"
+_VERTEX_AI_MTLS_ENDPOINT = (
+    "https://{location}-aiplatform.mtls.googleapis.com/v1beta1"
+)
 
 
 def check_adc() -> bool:
@@ -75,7 +80,18 @@ def _call_vertex_express_api(
   """Calls a Vertex AI Express API."""
   credentials, _ = google.auth.default()
   session = AuthorizedSession(credentials)
-  url = f"{_VERTEX_AI_ENDPOINT.format(location=location)}/vertexExpress{action}"
+
+  if _mtls_utils.use_client_cert_effective():
+    session.configure_mtls_channel()
+    endpoint = _mtls_utils.get_api_endpoint(
+        location=location,
+        default_template=_VERTEX_AI_ENDPOINT,
+        mtls_template=_VERTEX_AI_MTLS_ENDPOINT,
+    )
+  else:
+    endpoint = _VERTEX_AI_ENDPOINT.format(location=location)
+
+  url = f"{endpoint}/vertexExpress{action}"
   headers = {
       "Content-Type": "application/json",
   }
@@ -88,7 +104,7 @@ def _call_vertex_express_api(
     raise ValueError(f"Unsupported method: {method}")
 
   response.raise_for_status()
-  return response.json()
+  return cast(Dict[str, Any], response.json())
 
 
 def retrieve_express_project(
@@ -172,7 +188,7 @@ def list_gcp_projects(limit: int = 20) -> List[Tuple[str, str]]:
     client = resourcemanager_v3.ProjectsClient()
     search_results = client.search_projects()
 
-    projects = []
+    projects: List[Tuple[str, str]] = []
     for project in search_results:
       if len(projects) >= limit:
         break

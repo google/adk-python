@@ -55,7 +55,6 @@ Demonstrates adjusting `GenerateContentConfig` safety settings to prevent false 
 
 ```python
 root_agent = Agent(
-    model='gemini-3-flash-preview',
     name='hello_world_agent',
     ...
     generate_content_config=types.GenerateContentConfig(
@@ -75,7 +74,9 @@ You can execute the agent and inspect its session state programmatically by init
 
 ```python
 runner = InMemoryRunner(agent=agent.root_agent, app_name='my_app')
-session = await runner.session_service.create_session('my_app', 'user1')
+session = await runner.session_service.create_session(
+    app_name='my_app', user_id='user1'
+)
 
 async for event in runner.run_async(
     user_id='user1',
@@ -86,6 +87,8 @@ async for event in runner.run_async(
   pass
 
 # Inspect modified session state
-session = await runner.session_service.get_session('my_app', 'user1', session.id)
+session = await runner.session_service.get_session(
+    app_name='my_app', user_id='user1', session_id=session.id
+)
 print(session.state['rolls'])
 ```

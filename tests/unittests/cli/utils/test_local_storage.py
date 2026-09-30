@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from google.adk.artifacts import file_artifact_service
 from google.adk.artifacts.file_artifact_service import FileArtifactService
 from google.adk.cli.utils.local_storage import create_local_artifact_service
 from google.adk.cli.utils.local_storage import create_local_database_session_service
@@ -38,21 +39,36 @@ async def test_per_agent_session_service_creates_scoped_dot_adk(
   agent_a.mkdir()
   agent_b.mkdir()
 
-  service = PerAgentDatabaseSessionService(agents_root=tmp_path)
+  async with PerAgentDatabaseSessionService(agents_root=tmp_path) as service:
+    await service.create_session(app_name="agent_a", user_id="user_a")
+    await service.create_session(app_name="agent_b", user_id="user_b")
 
-  await service.create_session(app_name="agent_a", user_id="user_a")
-  await service.create_session(app_name="agent_b", user_id="user_b")
+    assert (agent_a / ".adk" / "session.db").exists()
+    assert (agent_b / ".adk" / "session.db").exists()
 
-  assert (agent_a / ".adk" / "session.db").exists()
-  assert (agent_b / ".adk" / "session.db").exists()
+    agent_a_sessions = await service.list_sessions(app_name="agent_a")
+    agent_b_sessions = await service.list_sessions(app_name="agent_b")
 
-  agent_a_sessions = await service.list_sessions(app_name="agent_a")
-  agent_b_sessions = await service.list_sessions(app_name="agent_b")
+    assert len(agent_a_sessions.sessions) == 1
+    assert agent_a_sessions.sessions[0].app_name == "agent_a"
+    assert len(agent_b_sessions.sessions) == 1
+    assert agent_b_sessions.sessions[0].app_name == "agent_b"
 
-  assert len(agent_a_sessions.sessions) == 1
-  assert agent_a_sessions.sessions[0].app_name == "agent_a"
-  assert len(agent_b_sessions.sessions) == 1
-  assert agent_b_sessions.sessions[0].app_name == "agent_b"
+
+@pytest.mark.asyncio
+async def test_per_agent_session_service_supports_nested_agent_path(
+    tmp_path: Path,
+) -> None:
+  nested_agent = tmp_path / "multi_agent" / "hello_world_ma"
+  nested_agent.mkdir(parents=True)
+
+  async with PerAgentDatabaseSessionService(agents_root=tmp_path) as service:
+    await service.create_session(
+        app_name="multi_agent.hello_world_ma", user_id="user_a"
+    )
+
+    assert (nested_agent / ".adk" / "session.db").exists()
+    assert not (tmp_path / "multi_agent.hello_world_ma").exists()
 
 
 @pytest.mark.asyncio
@@ -68,26 +84,28 @@ async def test_per_agent_session_service_respects_app_name_alias(
       per_agent=True,
       app_name_to_dir={logical_name: folder_name},
   )
+  try:
+    session = await service.create_session(
+        app_name=logical_name,
+        user_id="user",
+    )
 
-  session = await service.create_session(
-      app_name=logical_name,
-      user_id="user",
-  )
-
-  assert session.app_name == logical_name
-  assert (tmp_path / folder_name / ".adk" / "session.db").exists()
+    assert session.app_name == logical_name
+    assert (tmp_path / folder_name / ".adk" / "session.db").exists()
+  finally:
+    if isinstance(service, PerAgentDatabaseSessionService):
+      await service.close()
 
 
 @pytest.mark.asyncio
 async def test_per_agent_session_service_routes_built_in_agents_to_root_dot_adk(
     tmp_path: Path,
 ) -> None:
-  service = PerAgentDatabaseSessionService(agents_root=tmp_path)
+  async with PerAgentDatabaseSessionService(agents_root=tmp_path) as service:
+    await service.create_session(app_name="__helper", user_id="user")
 
-  await service.create_session(app_name="__helper", user_id="user")
-
-  assert not (tmp_path / "__helper").exists()
-  assert (tmp_path / ".adk" / "session.db").exists()
+    assert not (tmp_path / "__helper").exists()
+    assert (tmp_path / ".adk" / "session.db").exists()
 
 
 def test_create_local_database_session_service_returns_sqlite(
@@ -106,22 +124,25 @@ async def test_per_agent_session_service_get_user_state(tmp_path: Path) -> None:
   agent_a.mkdir()
   agent_b.mkdir()
 
-  service = PerAgentDatabaseSessionService(agents_root=tmp_path)
+  async with PerAgentDatabaseSessionService(agents_root=tmp_path) as service:
+    session_a = await service.create_session(
+        app_name="agent_a", user_id="user_a"
+    )
+    await service.append_event(
+        session_a,
+        Event(
+            author="system",
+            actions=EventActions(
+                state_delta={"user:profile": {"name": "Alice"}}
+            ),
+        ),
+    )
 
-  session_a = await service.create_session(app_name="agent_a", user_id="user_a")
-  await service.append_event(
-      session_a,
-      Event(
-          author="system",
-          actions=EventActions(state_delta={"user:profile": {"name": "Alice"}}),
-      ),
-  )
+    state_a = await service.get_user_state(app_name="agent_a", user_id="user_a")
+    state_b = await service.get_user_state(app_name="agent_b", user_id="user_b")
 
-  state_a = await service.get_user_state(app_name="agent_a", user_id="user_a")
-  state_b = await service.get_user_state(app_name="agent_b", user_id="user_b")
-
-  assert state_a == {"profile": {"name": "Alice"}}
-  assert not state_b
+    assert state_a == {"profile": {"name": "Alice"}}
+    assert not state_b
 
 
 @pytest.mark.asyncio
@@ -271,6 +292,44 @@ async def test_per_agent_artifact_service_reads_legacy_shared_root(
   assert (
       await service.get_artifact_version(filename="legacy.txt", **scope)
   ) is not None
+
+
+@pytest.mark.asyncio
+async def test_per_agent_artifact_service_ignores_unscoped_legacy_layout(
+    tmp_path: Path,
+) -> None:
+  scope = {"app_name": "agent_a", "user_id": "user", "session_id": "session"}
+  # Releases before artifacts were app-scoped wrote straight under `users`.
+  # Every agent shares this root, so that data belongs to no single agent.
+  version_dir = (
+      tmp_path
+      / ".adk"
+      / "artifacts"
+      / "users"
+      / "user"
+      / "sessions"
+      / "session"
+      / "artifacts"
+      / "legacy.txt"
+      / "versions"
+      / "0"
+  )
+  version_dir.mkdir(parents=True)
+  payload_path = version_dir / "legacy.txt"
+  payload_path.write_text("old", encoding="utf-8")
+  file_artifact_service._write_metadata(
+      version_dir / "metadata.json",
+      filename="legacy.txt",
+      mime_type=None,
+      version=0,
+      canonical_uri=payload_path.resolve().as_uri(),
+      custom_metadata=None,
+  )
+
+  service = PerAgentFileArtifactService(agents_root=tmp_path)
+
+  assert await service.load_artifact(filename="legacy.txt", **scope) is None
+  assert await service.list_artifact_keys(**scope) == []
 
 
 @pytest.mark.asyncio

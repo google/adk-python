@@ -23,18 +23,25 @@ from __future__ import annotations
 from collections.abc import Sequence
 import dataclasses
 from enum import Enum
+import os
+from typing import Annotated
 from typing import Any
 from typing import AsyncGenerator
 from typing import Generator
+from typing import get_args
+from typing import get_origin
 from typing import Literal
 from typing import Optional
+from unittest import mock
 
 from absl.testing import parameterized
+from google.adk.tools._function_tool_declarations import _resolve_annotation
 from google.adk.tools._function_tool_declarations import build_function_declaration_with_json_schema
 from google.adk.tools.tool_context import ToolContext
 from pydantic import BaseModel
 from pydantic import Field
 from pydantic.dataclasses import dataclass as pyd_dataclass
+import pytest
 
 
 class Color(Enum):
@@ -67,6 +74,20 @@ class Person(BaseModel):
   name: str
   age: int
   address: Optional[Address] = None
+
+
+class AnnotatedAddress(BaseModel):
+  """A Pydantic model whose fields carry Annotated metadata."""
+
+  city: Annotated[str, Field(description="City name")]
+  zip_code: Annotated[str, Field(description="US ZIP code", pattern=r"^\d{5}$")]
+
+
+class AliasedAddress(BaseModel):
+  """A Pydantic model with aliased fields."""
+
+  city: str = Field(alias="cityName", description="City name")
+  zip_code: str = Field(alias="postalCode", pattern=r"^\d{5}$")
 
 
 @pyd_dataclass
@@ -639,6 +660,418 @@ class TestNestedObjects(parameterized.TestCase):
     self.assertIn("status", decl.response_json_schema["properties"])
 
 
+class TestAnnotatedMetadata(parameterized.TestCase):
+  """Tests that Annotated[T, Field(...)] metadata reaches the schema."""
+
+  def test_annotated_field_metadata_in_schema(self):
+    """Test descriptions, constraints and defaults attached via Annotated."""
+
+    def configure(
+        count: Annotated[
+            int, Field(description="How many widgets", ge=1, le=10)
+        ],
+        zip_code: Annotated[str, Field(pattern=r"^\d{5}$")],
+        retries: Annotated[int, Field(description="Retry attempts")] = 3,
+    ) -> str:
+      return "ok"
+
+    decl = build_function_declaration_with_json_schema(configure)
+    schema = decl.parameters_json_schema
+
+    self.assertEqual(
+        schema["properties"],
+        {
+            "count": {
+                "description": "How many widgets",
+                "maximum": 10,
+                "minimum": 1,
+                "title": "Count",
+                "type": "integer",
+            },
+            "zip_code": {
+                "pattern": r"^\d{5}$",
+                "title": "Zip Code",
+                "type": "string",
+            },
+            "retries": {
+                "default": 3,
+                "description": "Retry attempts",
+                "title": "Retries",
+                "type": "integer",
+            },
+        },
+    )
+    self.assertEqual(set(schema["required"]), {"count", "zip_code"})
+
+  def test_annotated_optional_model(self):
+    """Test Annotated[Optional[Model], Field(...)] keeps its description."""
+
+    def save(
+        address: Annotated[
+            Optional[Address], Field(description="Where to ship")
+        ] = None,
+    ) -> str:
+      return "ok"
+
+    decl = build_function_declaration_with_json_schema(save)
+    address_schema = decl.parameters_json_schema["properties"]["address"]
+
+    self.assertEqual(address_schema["description"], "Where to ship")
+    self.assertIsNone(address_schema["default"])
+    self.assertEqual(
+        address_schema["anyOf"],
+        [{"$ref": "#/$defs/Address"}, {"type": "null"}],
+    )
+
+  def test_python_310_redundant_outer_optional_collapsed(self):
+    """Test Python 3.10 get_type_hints outer Optional wrapping is collapsed."""
+
+    def save(
+        address: Annotated[
+            Optional[Address], Field(description="Where to ship")
+        ] = None,
+    ) -> str:
+      return "ok"
+
+    # Simulate Python 3.10 get_type_hints wrapping in outer Optional
+    py310_hints = {
+        "address": Optional[
+            Annotated[Optional[Address], Field(description="Where to ship")]
+        ],
+        "return": str,
+    }
+    with mock.patch(
+        "google.adk.tools._function_tool_declarations.get_type_hints",
+        return_value=py310_hints,
+    ):
+      decl = build_function_declaration_with_json_schema(save)
+    address_schema = decl.parameters_json_schema["properties"]["address"]
+
+    self.assertEqual(address_schema["description"], "Where to ship")
+    self.assertIsNone(address_schema["default"])
+    self.assertEqual(
+        address_schema["anyOf"],
+        [{"$ref": "#/$defs/Address"}, {"type": "null"}],
+    )
+
+  def test_optional_annotated_field_metadata(self):
+    """Test Optional[Annotated[T, Field(...)]] keeps metadata inside the anyOf."""
+
+    def forecast(
+        days: Optional[
+            Annotated[int, Field(description="Number of days", ge=1)]
+        ] = None,
+    ) -> str:
+      return "ok"
+
+    decl = build_function_declaration_with_json_schema(forecast)
+    days_schema = decl.parameters_json_schema["properties"]["days"]
+
+    self.assertIsNone(days_schema["default"])
+    self.assertEqual(
+        days_schema["anyOf"],
+        [
+            {"description": "Number of days", "minimum": 1, "type": "integer"},
+            {"type": "null"},
+        ],
+    )
+
+  def test_nested_model_annotated_field_metadata(self):
+    """Test a nested model's Annotated field metadata reaches its $defs entry."""
+
+    def register(address: AnnotatedAddress) -> str:
+      return "ok"
+
+    decl = build_function_declaration_with_json_schema(register)
+    address_def = decl.parameters_json_schema["$defs"]["AnnotatedAddress"]
+    props = address_def["properties"]
+
+    self.assertEqual(props["city"]["description"], "City name")
+    self.assertEqual(props["zip_code"]["description"], "US ZIP code")
+    self.assertEqual(props["zip_code"]["pattern"], r"^\d{5}$")
+
+  def test_annotated_nested_list_constraints(self):
+    """Test Annotated metadata on both a list and its item type."""
+
+    def tally(
+        scores: Annotated[
+            list[Annotated[int, Field(ge=0)]], Field(description="Scores")
+        ],
+    ) -> int:
+      return sum(scores)
+
+    decl = build_function_declaration_with_json_schema(tally)
+    scores_schema = decl.parameters_json_schema["properties"]["scores"]
+
+    self.assertEqual(scores_schema["description"], "Scores")
+    self.assertEqual(scores_schema["type"], "array")
+    self.assertEqual(scores_schema["items"]["type"], "integer")
+    self.assertEqual(scores_schema["items"]["minimum"], 0)
+
+  def test_annotated_return_type_metadata(self):
+    """Test Annotated metadata on the return type."""
+
+    def count_items(
+        items: list[str],
+    ) -> Annotated[int, Field(description="Item count")]:
+      return len(items)
+
+    decl = build_function_declaration_with_json_schema(count_items)
+
+    self.assertEqual(
+        decl.response_json_schema,
+        {"description": "Item count", "type": "integer"},
+    )
+
+  def test_annotated_field_alias_uses_param_name(self):
+    """Test Annotated[T, Field(alias=...)] advertises parameter name, not alias."""
+
+    def process(
+        count: Annotated[int, Field(alias="n", description="Count of items")],
+    ) -> str:
+      return "ok"
+
+    decl = build_function_declaration_with_json_schema(process)
+    self.assertIn("count", decl.parameters_json_schema["properties"])
+    self.assertNotIn("n", decl.parameters_json_schema["properties"])
+    self.assertEqual(
+        decl.parameters_json_schema["properties"]["count"]["description"],
+        "Count of items",
+    )
+
+  def test_unresolvable_forward_ref_parameter_degrades_gracefully(self):
+    """Test unresolvable forward ref parameter degrades without raising error."""
+
+    def process(widget: "UndefinedWidget") -> str:
+      return "ok"
+
+    decl = build_function_declaration_with_json_schema(process)
+    self.assertIsNone(decl.parameters_json_schema)
+
+  def test_nested_model_field_alias_preserved_in_schema(self):
+    """Test that nested model field aliases are preserved in parameters schema."""
+
+    def register(
+        address: Annotated[
+            AliasedAddress, Field(description="Shipping address")
+        ],
+    ) -> str:
+      return "ok"
+
+    decl = build_function_declaration_with_json_schema(register)
+    props = decl.parameters_json_schema["$defs"]["AliasedAddress"]["properties"]
+    self.assertIn("cityName", props)
+    self.assertIn("postalCode", props)
+
+  def test_annotated_field_signature_default_preserved(self):
+    """Test signature default is preserved when using Annotated[T, Field(...)]."""
+
+    def configure(
+        count: Annotated[int, Field(description="How many widgets")] = 5,
+    ) -> str:
+      return "ok"
+
+    decl = build_function_declaration_with_json_schema(configure)
+    schema = decl.parameters_json_schema
+
+    self.assertEqual(schema["properties"]["count"]["default"], 5)
+    self.assertNotIn("count", schema.get("required", []))
+
+  def test_annotated_field_without_signature_default_remains_required(self):
+    """Test Field(default=...) without signature default remains required."""
+
+    def configure(
+        count: Annotated[int, Field(default=5, description="How many widgets")],
+    ) -> str:
+      return "ok"
+
+    decl = build_function_declaration_with_json_schema(configure)
+    schema = decl.parameters_json_schema
+
+    self.assertIn("count", schema.get("required", []))
+
+  def test_parameter_annotation_forward_ref_list(self):
+    """Test list['Model'] parameter forward reference resolution."""
+
+    def process_items(items: list["Address"]) -> str:
+      return "ok"
+
+    decl = build_function_declaration_with_json_schema(process_items)
+    schema = decl.parameters_json_schema
+    self.assertIn("items", schema["properties"])
+    self.assertEqual(schema["properties"]["items"]["type"], "array")
+    self.assertEqual(
+        schema["properties"]["items"]["items"]["$ref"], "#/$defs/Address"
+    )
+    self.assertIn("Address", schema["$defs"])
+
+  def test_parameter_annotation_forward_ref_dict(self):
+    """Test dict[str, 'Model'] parameter forward reference resolution."""
+
+    def process_mapping(mapping: dict[str, "Address"]) -> str:
+      return "ok"
+
+    decl = build_function_declaration_with_json_schema(process_mapping)
+    schema = decl.parameters_json_schema
+    self.assertIn("mapping", schema["properties"])
+    self.assertEqual(schema["properties"]["mapping"]["type"], "object")
+    self.assertEqual(
+        schema["properties"]["mapping"]["additionalProperties"]["$ref"],
+        "#/$defs/Address",
+    )
+    self.assertIn("Address", schema["$defs"])
+
+  def test_parameter_annotation_forward_ref_container_inside_annotated(self):
+    """Test Annotated[list['Model'], Field(...)] parameter forward ref resolution."""
+
+    def process_items(
+        items: Annotated[
+            list["Address"], Field(description="List of addresses")
+        ],
+    ) -> str:
+      return "ok"
+
+    decl = build_function_declaration_with_json_schema(process_items)
+    schema = decl.parameters_json_schema
+    self.assertIn("items", schema["properties"])
+    self.assertEqual(schema["properties"]["items"]["type"], "array")
+    self.assertEqual(
+        schema["properties"]["items"]["description"], "List of addresses"
+    )
+    self.assertEqual(
+        schema["properties"]["items"]["items"]["$ref"], "#/$defs/Address"
+    )
+    self.assertIn("Address", schema["$defs"])
+
+  def test_parameter_annotation_forward_ref_dict_inside_annotated(self):
+    """Test Annotated[dict[str, 'Model'], Field(...)] parameter forward ref resolution."""
+
+    def process_mapping(
+        mapping: Annotated[
+            dict[str, "Address"], Field(description="Map of addresses")
+        ],
+    ) -> str:
+      return "ok"
+
+    decl = build_function_declaration_with_json_schema(process_mapping)
+    schema = decl.parameters_json_schema
+    self.assertIn("mapping", schema["properties"])
+    self.assertEqual(schema["properties"]["mapping"]["type"], "object")
+    self.assertEqual(
+        schema["properties"]["mapping"]["description"], "Map of addresses"
+    )
+    self.assertEqual(
+        schema["properties"]["mapping"]["additionalProperties"]["$ref"],
+        "#/$defs/Address",
+    )
+    self.assertIn("Address", schema["$defs"])
+
+  def test_python_310_container_forward_ref_in_type_hints_resolved(self):
+    """Test container forward refs left unresolved by Python 3.10 get_type_hints are resolved."""
+
+    def process_items(items: list["Address"]) -> str:
+      return "ok"
+
+    # Simulate Python 3.10 get_type_hints leaving bare string inside container
+    py310_hints = {
+        "items": list["Address"],
+        "return": str,
+    }
+    with mock.patch(
+        "google.adk.tools._function_tool_declarations.get_type_hints",
+        return_value=py310_hints,
+    ):
+      decl = build_function_declaration_with_json_schema(process_items)
+    schema = decl.parameters_json_schema
+    self.assertIsNotNone(schema)
+    self.assertIn("items", schema["properties"])
+    self.assertEqual(schema["properties"]["items"]["type"], "array")
+    self.assertEqual(
+        schema["properties"]["items"]["items"]["$ref"], "#/$defs/Address"
+    )
+    self.assertIn("Address", schema["$defs"])
+
+  def test_resolve_annotation_container_forward_refs(self):
+    """Test _resolve_annotation directly on containers with forward refs."""
+    globalns = {"Address": Address}
+
+    resolved_list = _resolve_annotation(list["Address"], globalns)
+    self.assertEqual(get_origin(resolved_list), list)
+    self.assertEqual(get_args(resolved_list), (Address,))
+
+    resolved_dict = _resolve_annotation(dict[str, "Address"], globalns)
+    self.assertEqual(get_origin(resolved_dict), dict)
+    self.assertEqual(get_args(resolved_dict), (str, Address))
+
+    annotated_list = Annotated[list["Address"], Field(description="items")]
+    resolved_annotated = _resolve_annotation(annotated_list, globalns)
+    self.assertEqual(get_origin(resolved_annotated), Annotated)
+    inner_type = get_args(resolved_annotated)[0]
+    self.assertEqual(get_origin(inner_type), list)
+    self.assertEqual(get_args(inner_type), (Address,))
+
+  def test_unresolvable_return_type_preserves_parameter_schema(self):
+    """Test unresolvable return type does not drop parameter schemas."""
+
+    def fetch_user(user_id: str) -> "NonExistentUserType":
+      return None
+
+    decl = build_function_declaration_with_json_schema(fetch_user)
+    self.assertIsNotNone(decl.parameters_json_schema)
+    self.assertIn("user_id", decl.parameters_json_schema["properties"])
+
+  def test_unresolvable_return_type_preserves_optional_model_parameter_schema(
+      self,
+  ):
+    """Test unresolvable return type does not drop Optional[Model] parameters."""
+
+    def fetch_user(
+        address: Optional["Address"] = None,
+    ) -> "NonExistentUserType":
+      return None
+
+    decl = build_function_declaration_with_json_schema(fetch_user)
+    self.assertIsNotNone(decl.parameters_json_schema)
+    self.assertIn("address", decl.parameters_json_schema["properties"])
+
+  def test_unresolvable_parameter_in_multi_param_function_degrades_gracefully(
+      self,
+  ):
+    """Test unresolvable parameter in multi-param function degrades rather than omitting param."""
+
+    def process(widget: "UndefinedWidget", count: int) -> str:
+      return "ok"
+
+    decl = build_function_declaration_with_json_schema(process)
+    self.assertIsNone(decl.parameters_json_schema)
+
+  def test_annotated_field_default_factory_with_signature_default(self):
+    """Test Annotated parameter with Field(default_factory=...) and signature default builds schema."""
+
+    def process(
+        tags: Annotated[list[str], Field(default_factory=list)] = None,
+    ) -> str:
+      return "ok"
+
+    decl = build_function_declaration_with_json_schema(process)
+    self.assertIsNotNone(decl.parameters_json_schema)
+
+  def test_annotated_field_default_factory_without_signature_default_remains_required(
+      self,
+  ):
+    """Test Field(default_factory=...) without signature default remains required."""
+
+    def process(
+        tags: Annotated[list[str], Field(default_factory=list)],
+    ) -> str:
+      return "ok"
+
+    decl = build_function_declaration_with_json_schema(process)
+    schema = decl.parameters_json_schema
+
+    self.assertIn("tags", schema.get("required", []))
+
+
 class TestSpecialCases(parameterized.TestCase):
   """Tests for special cases and edge cases."""
 
@@ -835,6 +1268,97 @@ class TestComplexFunction(parameterized.TestCase):
             "type": "null",
         },
     )
+
+
+@mock.patch.dict(os.environ, {"GOOGLE_GENAI_USE_ENTERPRISE": "true"})
+class TestVertexAiAnyOfSanitization(parameterized.TestCase):
+  """Tests that `Optional`/`Union` `anyOf` schemas are made Vertex-safe.
+
+  Vertex AI rejects schemas where an `anyOf` wrapper has no top-level `type`
+  (see https://github.com/googleapis/python-genai/issues/1807), while AI
+  Studio accepts them unmodified. This is only exercised when the
+  enterprise/Vertex variant is active.
+  """
+
+  def test_optional_field_flattened_to_nullable(self):
+    """Optional[list[str]] should become a plain array schema + nullable."""
+
+    def search(query: str, sources: Optional[list[str]] = None) -> str:
+      """Search using optional sources."""
+      return query
+
+    decl = build_function_declaration_with_json_schema(search)
+    schema = decl.parameters_json_schema
+
+    sources_schema = schema["properties"]["sources"]
+    self.assertNotIn("anyOf", sources_schema)
+    self.assertEqual(sources_schema["type"], "array")
+    self.assertEqual(sources_schema["items"]["type"], "string")
+    self.assertTrue(sources_schema["nullable"])
+    self.assertIsNone(sources_schema["default"])
+
+  def test_optional_pydantic_model_field_flattened(self):
+    """Optional[BaseModel] fields should also be flattened, not just primitives."""
+
+    def save_address(address: Optional[Address] = None) -> str:
+      """Save an optional address."""
+      return "ok"
+
+    decl = build_function_declaration_with_json_schema(save_address)
+    schema = decl.parameters_json_schema
+
+    address_schema = schema["properties"]["address"]
+    self.assertNotIn("anyOf", address_schema)
+    self.assertIn("$ref", address_schema)
+    self.assertTrue(address_schema["nullable"])
+
+  def test_output_schema_pydantic_model_flattened(self):
+    """Optional fields on a BaseModel passed directly should be flattened."""
+
+    class CoordinatorResponse(BaseModel):
+      """A coordinator response."""
+
+      answer: str
+      sources: Optional[list[str]] = None
+
+    decl = build_function_declaration_with_json_schema(CoordinatorResponse)
+    schema = decl.parameters_json_schema
+
+    sources_schema = schema["properties"]["sources"]
+    self.assertNotIn("anyOf", sources_schema)
+    self.assertEqual(sources_schema["type"], "array")
+    self.assertTrue(sources_schema["nullable"])
+
+  def test_true_union_left_untouched(self):
+    """A real multi-variant union (not Optional) is not flattened."""
+
+    def process(value: int | str) -> str:
+      """Process a value."""
+      return str(value)
+
+    decl = build_function_declaration_with_json_schema(process)
+    schema = decl.parameters_json_schema
+
+    value_schema = schema["properties"]["value"]
+    self.assertIn("anyOf", value_schema)
+    self.assertLen(value_schema["anyOf"], 2)
+
+  def test_optional_union_flattened(self):
+    """Optional[Union[int, str]] should flatten to Union[int, str] + nullable."""
+
+    def process(value: Optional[int | str] = None) -> str:
+      """Process an optional union value."""
+      return str(value)
+
+    decl = build_function_declaration_with_json_schema(process)
+    schema = decl.parameters_json_schema
+
+    value_schema = schema["properties"]["value"]
+    self.assertIn("anyOf", value_schema)
+    self.assertLen(value_schema["anyOf"], 2)
+    types = {v.get("type") for v in value_schema["anyOf"]}
+    self.assertEqual(types, {"integer", "string"})
+    self.assertTrue(value_schema["nullable"])
 
 
 class TestPydanticModelAsFunction(parameterized.TestCase):

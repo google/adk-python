@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import types
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.optimization.data_types import UnstructuredSamplingResult
@@ -49,6 +50,8 @@ def fixture_mock_gepa(mocker):
 
   mock_gepa_adapter.EvaluationBatch = MockEvaluationBatch
   mock_gepa_adapter.GEPAAdapter = MockGEPAAdapter
+  mock_gepa_api = types.ModuleType("gepa.api")
+  mock_gepa_api.optimize = mock_gepa_module.optimize
 
   mock_gepa_module.core = mocker.MagicMock()
   mock_gepa_module.core.adapter = mock_gepa_adapter
@@ -57,6 +60,7 @@ def fixture_mock_gepa(mocker):
       sys.modules,
       {
           "gepa": mock_gepa_module,
+          "gepa.api": mock_gepa_api,
           "gepa.core": mock_gepa_module.core,
           "gepa.core.adapter": mock_gepa_adapter,
       },
@@ -159,6 +163,38 @@ def test_adapter_evaluate_validation(
   )
 
 
+def test_adapter_evaluate_missing_example_id_in_scores(
+    mocker, mock_gepa, mock_sampler, mock_agent, caplog
+):
+  del mock_gepa  # only needed to mock gepa in background
+  loop = mocker.MagicMock(spec=asyncio.AbstractEventLoop)
+  _AdapterClass = _create_agent_gepa_adapter_class()
+  adapter = _AdapterClass(mock_agent, mock_sampler, loop)
+
+  candidate = {"agent_prompt": "New prompt"}
+  batch = ["train1", "train2"]
+
+  mock_future = mocker.MagicMock()
+  expected_result = UnstructuredSamplingResult(
+      scores={"train1": 0.8},
+      data={"train1": {"output": "result"}},
+  )
+  mock_future.result.return_value = expected_result
+
+  mocker.patch("asyncio.run_coroutine_threadsafe", return_value=mock_future)
+  with caplog.at_level("WARNING"):
+    eval_batch = adapter.evaluate(batch, candidate, capture_traces=True)
+
+  assert isinstance(eval_batch, MockEvaluationBatch)
+  assert eval_batch.scores == [0.8, 0.0]
+  assert eval_batch.outputs == [{"output": "result"}, {}]
+  assert eval_batch.trajectories == [{"output": "result"}, {}]
+  assert (
+      "Example train2 missing from sampling result; scoring it 0.0."
+      in caplog.text
+  )
+
+
 def test_adapter_make_reflective_dataset(
     mocker, mock_gepa, mock_sampler, mock_agent
 ):
@@ -189,6 +225,22 @@ def test_adapter_make_reflective_dataset(
       "score": 0.1,
       "eval_data": {"t": 2},
   }
+
+
+def test_adapter_rejects_missing_trajectories(
+    mocker, mock_gepa, mock_sampler, mock_agent
+):
+  del mock_gepa
+  adapter_class = _create_agent_gepa_adapter_class()
+  adapter = adapter_class(
+      mock_agent,
+      mock_sampler,
+      mocker.MagicMock(spec=asyncio.AbstractEventLoop),
+  )
+  eval_batch = MockEvaluationBatch(outputs=[], scores=[], trajectories=None)
+
+  with pytest.raises(ValueError, match="without captured trajectories"):
+    adapter.make_reflective_dataset({}, eval_batch, [])
 
 
 @pytest.mark.asyncio

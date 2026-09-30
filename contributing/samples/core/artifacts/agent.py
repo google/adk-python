@@ -110,7 +110,6 @@ async def generate_report(
 
   Args:
       topic: The topic of the report.
-      ctx: The tool context for saving artifacts.
       format: The format of the report ('text' or 'html').
   """
   if format.lower() == "html":
@@ -161,7 +160,6 @@ async def generate_media_artifact(media_type: str, ctx: Context) -> dict:
 
   Args:
       media_type: One of 'image', 'audio', 'video'.
-      ctx: The tool context for saving artifacts.
   """
 
   with tempfile.TemporaryDirectory() as tmpdir:

@@ -38,7 +38,7 @@ def _get_explicit_env_keys() -> frozenset[str]:
   return frozenset(os.environ)
 
 
-def _walk_to_root_until_found(folder, filename) -> str:
+def _walk_to_root_until_found(folder: str, filename: str) -> str:
   checkpath = os.path.join(folder, filename)
   if os.path.exists(checkpath) and os.path.isfile(checkpath):
     return checkpath
@@ -52,7 +52,7 @@ def _walk_to_root_until_found(folder, filename) -> str:
 
 def load_dotenv_for_agent(
     agent_name: str, agent_parent_folder: str, filename: str = '.env'
-):
+) -> None:
   """Loads the `.env` file for the agent module.
 
   Explicit environment variables (present before the first `.env` load) are

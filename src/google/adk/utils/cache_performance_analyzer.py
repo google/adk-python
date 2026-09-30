@@ -60,6 +60,8 @@ class CachePerformanceAnalyzer:
         app_name=app_name,
         user_id=user_id,
     )
+    if session is None:
+      raise ValueError(f"Session not found: {session_id}")
     cache_history = []
 
     for event in session.events:
@@ -111,6 +113,8 @@ class CachePerformanceAnalyzer:
         app_name=app_name,
         user_id=user_id,
     )
+    if session is None:
+      raise ValueError(f"Session not found: {session_id}")
 
     # Collect token metrics from events
     total_prompt_tokens = 0

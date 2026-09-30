@@ -14,19 +14,44 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from collections.abc import Sequence
 import json
 import time
 from typing import Any
+from typing import cast
 from typing import Dict
 from typing import List
-from typing import Optional
+from typing import Protocol
 from typing import Tuple
 
 import google.auth
 from google.auth import default as default_service_credential
+from google.auth.credentials import Credentials
 from google.auth.transport.requests import Request
 from google.oauth2 import service_account
 import requests
+
+from ....utils import _mtls_utils
+
+_DEFAULT_CONNECTORS_ENDPOINT_TEMPLATE = "connectors.googleapis.com"
+_DEFAULT_MTLS_CONNECTORS_ENDPOINT_TEMPLATE = "connectors.mtls.googleapis.com"
+_DEFAULT_INTEGRATIONS_ENDPOINT_TEMPLATE = "integrations.googleapis.com"
+_DEFAULT_MTLS_INTEGRATIONS_ENDPOINT_TEMPLATE = (
+    "integrations.mtls.googleapis.com"
+)
+_DEFAULT_REQUEST_TIMEOUT_SECONDS = 30
+
+
+class _ServiceAccountCredentialsFactory(Protocol):
+
+  def __call__(
+      self,
+      info: Mapping[str, object],
+      *,
+      scopes: Sequence[str],
+  ) -> Credentials:
+    ...
 
 
 class ConnectionsClient:
@@ -37,7 +62,7 @@ class ConnectionsClient:
       project: str,
       location: str,
       connection: str,
-      service_account_json: Optional[str] = None,
+      service_account_json: str | None = None,
   ):
     """Initializes the ConnectionsClient.
 
@@ -52,9 +77,13 @@ class ConnectionsClient:
     self.project = project
     self.location = location
     self.connection = connection
-    self.connector_url = "https://connectors.googleapis.com"
+    self.connector_url = "https://" + _mtls_utils.get_api_endpoint(
+        location,
+        _DEFAULT_CONNECTORS_ENDPOINT_TEMPLATE,
+        _DEFAULT_MTLS_CONNECTORS_ENDPOINT_TEMPLATE,
+    )
     self.service_account_json = service_account_json
-    self.credential_cache = None
+    self.credential_cache: Credentials | None = None
 
   def get_connection_details(self) -> Dict[str, Any]:
     """Retrieves service details (service name and host) for a given connection.
@@ -73,7 +102,7 @@ class ConnectionsClient:
 
     response = self._execute_api_call(url)
 
-    connection_data = response.json()
+    connection_data = self._response_json(response)
     connection_name = connection_data.get("name", "")
     service_name = connection_data.get("serviceDirectory", "")
     host = connection_data.get("host", "")
@@ -106,9 +135,9 @@ class ConnectionsClient:
     url = f"{self.connector_url}/v1/projects/{self.project}/locations/{self.location}/connections/{self.connection}/connectionSchemaMetadata:getEntityType?entityId={entity}"
 
     response = self._execute_api_call(url)
-    operation_id = response.json().get("name")
+    operation_id = self._response_json(response).get("name")
 
-    if not operation_id:
+    if not isinstance(operation_id, str) or not operation_id:
       raise ValueError(
           f"Failed to get entity schema and operations for entity: {entity}"
       )
@@ -137,9 +166,9 @@ class ConnectionsClient:
 
     response = self._execute_api_call(url)
 
-    operation_id = response.json().get("name")
+    operation_id = self._response_json(response).get("name")
 
-    if not operation_id:
+    if not isinstance(operation_id, str) or not operation_id:
       raise ValueError(f"Failed to get action schema for action: {action}")
 
     operation_response = self._poll_operation(operation_id)
@@ -168,7 +197,16 @@ class ConnectionsClient:
             "description": "This tool can execute a query on connection",
             "version": "4",
         },
-        "servers": [{"url": "https://integrations.googleapis.com"}],
+        "servers": [{
+            "url": (
+                "https://"
+                + _mtls_utils.get_api_endpoint(
+                    "",
+                    _DEFAULT_INTEGRATIONS_ENDPOINT_TEMPLATE,
+                    _DEFAULT_MTLS_INTEGRATIONS_ENDPOINT_TEMPLATE,
+                )
+            )
+        }],
         "security": [
             {"google_auth": ["https://www.googleapis.com/auth/cloud-platform"]}
         ],
@@ -225,7 +263,7 @@ class ConnectionsClient:
                 "host": {
                     "type": "string",
                     "default": "",
-                    "description": "Host name incase of tls service directory",
+                    "description": "Host name in case of tls service directory",
                 },
                 "entity": {
                     "type": "string",
@@ -763,10 +801,12 @@ class ConnectionsClient:
         },
     }
 
-  def connector_payload(self, json_schema: Dict[str, Any]) -> Dict[str, Any]:
+  def connector_payload(self, json_schema: dict[str, Any]) -> dict[str, Any]:
     return self._convert_json_schema_to_openapi_schema(json_schema)
 
-  def _convert_json_schema_to_openapi_schema(self, json_schema):
+  def _convert_json_schema_to_openapi_schema(
+      self, json_schema: dict[str, Any]
+  ) -> dict[str, Any]:
     """Converts a JSON schema dictionary to an OpenAPI schema dictionary, handling variable types, properties, items, nullable, and description.
 
     Args:
@@ -775,7 +815,7 @@ class ConnectionsClient:
     Returns:
         dict: The converted OpenAPI schema dictionary.
     """
-    openapi_schema = {}
+    openapi_schema: dict[str, Any] = {}
 
     if "description" in json_schema:
       openapi_schema["description"] = json_schema["description"]
@@ -819,11 +859,20 @@ class ConnectionsClient:
         The access token.
     """
     if self.credential_cache and not self.credential_cache.expired:
-      return self.credential_cache.token
+      cached_token: object = self.credential_cache.token
+      if isinstance(cached_token, str) and cached_token:
+        return cached_token
 
     if self.service_account_json:
-      credentials = service_account.Credentials.from_service_account_info(
-          json.loads(self.service_account_json),
+      service_account_info: object = json.loads(self.service_account_json)
+      if not isinstance(service_account_info, Mapping):
+        raise ValueError("Service account JSON must contain an object.")
+      credential_factory = cast(
+          _ServiceAccountCredentialsFactory,
+          service_account.Credentials.from_service_account_info,
+      )
+      credentials: Credentials | None = credential_factory(
+          cast(Mapping[str, object], service_account_info),
           scopes=["https://www.googleapis.com/auth/cloud-platform"],
       )
     else:
@@ -842,9 +891,12 @@ class ConnectionsClient:
 
     credentials.refresh(Request())
     self.credential_cache = credentials
-    return credentials.token
+    refreshed_token: object = credentials.token
+    if not isinstance(refreshed_token, str) or not refreshed_token:
+      raise ValueError("Credential refresh did not return an access token.")
+    return refreshed_token
 
-  def _execute_api_call(self, url):
+  def _execute_api_call(self, url: str) -> requests.Response:
     """Executes an API call to the given URL.
 
     Args:
@@ -864,7 +916,9 @@ class ConnectionsClient:
           "Authorization": f"Bearer {self._get_access_token()}",
       }
 
-      response = requests.get(url, headers=headers)
+      response = requests.get(
+          url, headers=headers, timeout=_DEFAULT_REQUEST_TIMEOUT_SECONDS
+      )
       response.raise_for_status()
       return response
 
@@ -888,6 +942,15 @@ class ConnectionsClient:
     except Exception as e:
       raise Exception(f"An unexpected error occurred: {e}") from e
 
+  @staticmethod
+  def _response_json(response: requests.Response) -> dict[str, Any]:
+    payload: object = response.json()
+    if not isinstance(payload, dict) or not all(
+        isinstance(key, str) for key in payload
+    ):
+      raise ValueError("Connections API response must be a JSON object.")
+    return cast(dict[str, Any], payload)
+
   def _poll_operation(self, operation_id: str) -> Dict[str, Any]:
     """Polls an operation until it is done.
 
@@ -907,7 +970,7 @@ class ConnectionsClient:
     while not operation_done:
       get_operation_url = f"{self.connector_url}/v1/{operation_id}"
       response = self._execute_api_call(get_operation_url)
-      operation_response = response.json()
-      operation_done = operation_response.get("done", False)
+      operation_response = self._response_json(response)
+      operation_done = bool(operation_response.get("done", False))
       time.sleep(1)
     return operation_response

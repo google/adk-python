@@ -17,17 +17,20 @@ from __future__ import annotations
 """A node that wraps an ADK Tool."""
 
 from collections.abc import AsyncGenerator
+import json
 from typing import Any
-import uuid
 
+from google.genai import types
+from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 from typing_extensions import override
 
 from ..agents.context import Context
 from ..events.event import Event
+from ..platform import uuid as platform_uuid
 from ..tools.base_tool import BaseTool
-from ..tools.tool_context import ToolContext
+from ..utils.content_utils import extract_text_from_content
 from ._base_node import BaseNode
 from ._retry_config import RetryConfig
 
@@ -61,30 +64,91 @@ class _ToolNode(BaseNode):
       ctx: Context,
       node_input: Any,
   ) -> AsyncGenerator[Any, None]:
-    tool_context = ToolContext(
-        invocation_context=ctx.get_invocation_context(),
-        function_call_id=str(uuid.uuid4()),
-    )
+    # Run the tool with the node's own context (ToolContext is Context) so
+    # state and artifact deltas recorded by the tool on ctx.actions are emitted
+    # with this node.
+    ctx.function_call_id = platform_uuid.new_uuid()
 
     args = node_input
+    if isinstance(args, types.Content):
+      args = extract_text_from_content(args)
+
+    if isinstance(args, BaseModel):
+      args = args.model_dump()
+    elif isinstance(args, str):
+      args = args.strip()
+      if not args:
+        args = None
+      else:
+        try:
+          args = json.loads(args)
+        except json.JSONDecodeError:
+          pass
+
     if args is None:
       args = {}
-    elif not isinstance(args, dict):
+    elif isinstance(args, dict):
+      args = dict(args)
+    else:
       raise TypeError(
           'The input to ToolNode must be a dictionary of tool arguments or'
           f' None, but got {type(args)}.'
       )
 
-    response = await self.tool.run_async(args=args, tool_context=tool_context)
-    state_delta = (
-        dict(tool_context.actions.state_delta)
-        if tool_context.actions.state_delta
-        else None
-    )
+    # Fallback to ctx.state for missing required parameters declared in tool declaration
+    declaration = getattr(self.tool, '_get_declaration', lambda: None)()
+    if declaration is not None:
+      required_params = ()
+      if getattr(declaration, 'parameters_json_schema', None) and isinstance(
+          declaration.parameters_json_schema, dict
+      ):
+        required_params = (
+            declaration.parameters_json_schema.get('required', ()) or ()
+        )
+      elif getattr(declaration, 'parameters', None) and getattr(
+          declaration.parameters, 'required', None
+      ):
+        required_params = declaration.parameters.required or ()
+
+      for param_name in required_params:
+        if param_name not in args and param_name in ctx.state:
+          args[param_name] = ctx.state[param_name]
+
+    response = await self._run_tool_with_plugin_callbacks(ctx=ctx, args=args)
+
+    # State and artifact deltas recorded on ctx.actions by the tool are
+    # attached to emitted events by the node runner.
     if response is not None:
-      yield Event(
-          output=response,
-          state=state_delta,
-      )
-    elif state_delta:
-      yield Event(state=state_delta)
+      yield Event(output=response)
+
+  async def _run_tool_with_plugin_callbacks(
+      self, *, ctx: Context, args: dict[str, Any]
+  ) -> Any:
+    """Runs the tool between the plugin tool callbacks.
+
+    Mirrors the plugin steps of the LlmAgent tool pipeline: a before-tool
+    callback may answer the call instead of the tool, an on-tool-error
+    callback may answer a failed call, and an after-tool callback may replace
+    the result. Agent-level tool callbacks do not apply because no agent owns
+    a tool node.
+    """
+    plugin_manager = ctx.get_invocation_context().plugin_manager
+    response = await plugin_manager.run_before_tool_callback(
+        tool=self.tool, tool_args=args, tool_context=ctx
+    )
+    if response is None:
+      try:
+        response = await self.tool.run_async(args=args, tool_context=ctx)
+      except Exception as error:
+        response = await plugin_manager.run_on_tool_error_callback(
+            tool=self.tool, tool_args=args, tool_context=ctx, error=error
+        )
+        if response is None:
+          raise
+
+    altered_response = await plugin_manager.run_after_tool_callback(
+        tool=self.tool, tool_args=args, tool_context=ctx, result=response
+    )
+    if altered_response is not None:
+      response = altered_response
+    return response

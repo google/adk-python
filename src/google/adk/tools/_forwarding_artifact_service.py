@@ -23,6 +23,7 @@ from typing_extensions import override
 
 from ..artifacts.base_artifact_service import ArtifactVersion
 from ..artifacts.base_artifact_service import BaseArtifactService
+from ..artifacts.base_artifact_service import ensure_part
 
 if TYPE_CHECKING:
   from .tool_context import ToolContext
@@ -42,13 +43,13 @@ class ForwardingArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      artifact: types.Part,
+      artifact: types.Part | dict[str, Any],
       session_id: Optional[str] = None,
       custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
     return await self.tool_context.save_artifact(
         filename=filename,
-        artifact=artifact,
+        artifact=ensure_part(artifact),
         custom_metadata=custom_metadata,
     )
 
@@ -119,7 +120,17 @@ class ForwardingArtifactService(BaseArtifactService):
       filename: str,
       session_id: Optional[str] = None,
   ) -> list[ArtifactVersion]:
-    raise NotImplementedError("list_artifact_versions is not implemented yet.")
+    del app_name, user_id, session_id
+    if self._invocation_context.artifact_service is None:
+      raise ValueError("Artifact service is not initialized.")
+    return (
+        await self._invocation_context.artifact_service.list_artifact_versions(
+            app_name=self._invocation_context.app_name,
+            user_id=self._invocation_context.user_id,
+            session_id=self._invocation_context.session.id,
+            filename=filename,
+        )
+    )
 
   @override
   async def get_artifact_version(
@@ -131,4 +142,13 @@ class ForwardingArtifactService(BaseArtifactService):
       session_id: Optional[str] = None,
       version: Optional[int] = None,
   ) -> Optional[ArtifactVersion]:
-    raise NotImplementedError("get_artifact_version is not implemented yet.")
+    del app_name, user_id, session_id
+    if self._invocation_context.artifact_service is None:
+      raise ValueError("Artifact service is not initialized.")
+    return await self._invocation_context.artifact_service.get_artifact_version(
+        app_name=self._invocation_context.app_name,
+        user_id=self._invocation_context.user_id,
+        session_id=self._invocation_context.session.id,
+        filename=filename,
+        version=version,
+    )

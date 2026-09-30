@@ -13,10 +13,11 @@
 # limitations under the License.
 
 import os
+import sys
 
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
-from google.adk.tools.mcp_tool import MCPToolset
+from google.adk.tools.mcp_tool import McpToolset
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from mcp import StdioServerParameters
 
@@ -27,17 +28,20 @@ if not api_key:
   raise ValueError('The OPENAI_API_KEY environment variable must be set.')
 
 # Configure the StdioServerParameters to start the mcp_server.py script
-# as a subprocess. The OPENAI_API_KEY is passed to the server's environment.
+# as a subprocess. The script is addressed by absolute path because the
+# subprocess inherits the working directory of the ADK process, which is not
+# this directory. The OPENAI_API_KEY is passed to the server's environment.
+_current_dir = os.path.dirname(os.path.abspath(__file__))
 server_params = StdioServerParameters(
-    command='python',
-    args=['mcp_server.py'],
+    command=sys.executable,  # Use current Python interpreter
+    args=[os.path.join(_current_dir, 'mcp_server.py')],
     env={'OPENAI_API_KEY': api_key},
 )
 
-# Create the ADK MCPToolset, which connects to the FastMCP server.
+# Create the ADK McpToolset, which connects to the FastMCP server.
 # The `tool_filter` ensures that only the 'analyze_sentiment' tool is exposed
 # to the agent.
-mcp_toolset = MCPToolset(
+mcp_toolset = McpToolset(
     connection_params=StdioConnectionParams(
         server_params=server_params,
     ),

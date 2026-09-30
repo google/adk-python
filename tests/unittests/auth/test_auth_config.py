@@ -176,3 +176,41 @@ def test_credential_key_with_custom_auth_scheme():
   key = custom_config.credential_key
   assert key.startswith("adk_mock_custom_type_")
   assert len(key) > len("adk_mock_custom_type_")
+
+
+def test_credential_key_is_stable_across_redirect_uri(oauth2_auth_scheme):
+  """AuthConfig.credential_key should be invariant under redirect_uri changes.
+
+  redirect_uri is deployment configuration (which callback URL the auth
+  server should redirect to), not part of the credential identity. Two
+  AuthConfig instances built from credentials that share the same client_id,
+  client_secret, and scopes but differ only in redirect_uri should produce
+  the same credential_key.
+  """
+  credential_local = AuthCredential(
+      auth_type=AuthCredentialTypes.OAUTH2,
+      oauth2=OAuth2Auth(
+          client_id="client",
+          client_secret="secret",
+          redirect_uri="http://localhost:8001/oauth2callback",
+      ),
+  )
+  credential_deployed = AuthCredential(
+      auth_type=AuthCredentialTypes.OAUTH2,
+      oauth2=OAuth2Auth(
+          client_id="client",
+          client_secret="secret",
+          redirect_uri="https://deployed.example.com/oauth2callback",
+      ),
+  )
+
+  config_local = AuthConfig(
+      auth_scheme=oauth2_auth_scheme,
+      raw_auth_credential=credential_local,
+  )
+  config_deployed = AuthConfig(
+      auth_scheme=oauth2_auth_scheme,
+      raw_auth_credential=credential_deployed,
+  )
+
+  assert config_local.credential_key == config_deployed.credential_key

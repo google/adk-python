@@ -134,6 +134,22 @@
       "nodeInfo": {
         "path": "message@1/stream_sentence@1"
       }
+    },
+    {
+      "author": "message",
+      "content": {
+        "parts": [
+          {
+            "text": "This is a streaming message sent in chunks.\n\nYou can stream in markdown as well. For example, the table below:\n\n| Header 1 | Header 2 |\n|----------|----------|\n| Cell 1   | Cell 2   |\n| Cell 3   | Cell 4   |\n"
+          }
+        ],
+        "role": "user"
+      },
+      "id": "e-9",
+      "invocationId": "i-1",
+      "nodeInfo": {
+        "path": "message@1/stream_sentence@1"
+      }
     }
   ],
   "id": "9cfc0ef6-11d6-4260-84cf-be22731ab69e",

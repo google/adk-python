@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import AsyncGenerator
 from typing import Literal
 
 from google.adk import Agent
@@ -59,7 +60,9 @@ evaluate_headline = Agent(
 
 
 @node(rerun_on_resume=True)
-async def orchestrate(ctx: Context, node_input: str) -> str:
+async def orchestrate(
+    ctx: Context, node_input: str
+) -> AsyncGenerator[Event | str, None]:
   yield Event(state={"topic": node_input})
 
   while True:

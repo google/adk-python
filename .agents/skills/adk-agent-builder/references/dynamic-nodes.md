@@ -1,95 +1,121 @@
-# Dynamic Node Scheduling Reference
+# Dynamic Node Scheduling
 
-Schedule nodes at runtime using `ctx.run_node()`. This allows a node within a workflow to trigger the run of another node (or a callable that can be built into a node) and asynchronously wait for its result.
-
-## 📋 Agent Verification Checklist (Dynamic Nodes)
-Use this checklist when scheduling nodes dynamically:
-- [ ] **Rerun on Resume**: Does the parent node calling `run_node` have `rerun_on_resume=True`?
-- [ ] **Run ID**: If using an explicit `run_id`, does it contain non-numeric characters?
-- [ ] **Param Name**: If passing input directly to a raw function via `node_input=...`, is that function's parameter named `node_input`?
-- [ ] **Nesting**: If the child node *also* calls `run_node`, is it wrapped in `FunctionNode(..., rerun_on_resume=True)`?
-
-## 💡 Quick Reference
-- **Call**: `await ctx.run_node(node_like, node_input=...)`
-- **Output Delegation**: Set `use_as_output=True` to make child output be the parent's output.
-
-## Basic Usage
+`await ctx.run_node(...)` runs another node from inside a node and returns its
+output. It turns graph control flow into ordinary Python: loops, conditionals,
+and early exits, written as loops, conditionals, and early exits.
 
 ```python
 from google.adk import Agent, Context, Event, Workflow
-from google.adk.workflow import node
-from pydantic import BaseModel
+from google.adk.workflow import FunctionNode, node
+```
 
+## Example
+
+```python
 class Feedback(BaseModel):
   grade: str
 
+
 generate_headline = Agent(
-    name="generate_headline",
+    name='generate_headline',
     instruction='Write a headline about the topic "{topic}".',
 )
 
 evaluate_headline = Agent(
-    name="evaluate_headline",
-    instruction="Grade whether the headline is tech-related.",
+    name='evaluate_headline',
+    mode='single_turn',
+    instruction='Grade whether the headline is tech-related.',
     output_schema=Feedback,
-    mode="single_turn",
 )
+
 
 @node(rerun_on_resume=True)
 async def orchestrate(ctx: Context, node_input: str) -> str:
-  yield Event(state={"topic": node_input})
+  yield Event(state={'topic': node_input})
   while True:
     headline = await ctx.run_node(generate_headline)
     feedback = Feedback.model_validate(
         await ctx.run_node(evaluate_headline, node_input=headline)
     )
-    if feedback.grade == "tech-related":
+    if feedback.grade == 'tech-related':
       yield headline
       break
 
-root_agent = Workflow(
-    name="root_agent",
-    edges=[("START", orchestrate)],
+
+root_agent = Workflow(name='root_agent', edges=[('START', orchestrate)])
+```
+
+## `ctx.run_node` arguments
+
+```python
+await ctx.run_node(
+    node,                     # a function, Agent, BaseTool, or BaseNode
+    node_input=None,
+    *,
+    use_as_output=False,
+    run_id=None,
+    use_sub_branch=False,
+    override_branch=None,
 )
 ```
 
-## Requirements & Rules
+| Argument | Effect |
+|---|---|
+| `use_as_output` | The child's output becomes the parent's output; the parent's own output events are suppressed |
+| `run_id` | Names this execution instead of auto-numbering it |
+| `use_sub_branch` | Appends `node_name@run_id` to the branch, isolating events from sibling runs |
+| `override_branch` | Uses a specific branch instead of the parent's |
 
-- **`rerun_on_resume=True`**: The parent node calling `ctx.run_node()` must have `rerun_on_resume=True`. This is required because dynamically scheduled nodes might be interrupted (e.g., for HITL), and the workflow needs to wake up and re-run the parent node to get the child node's response.
-- **Unique Instance Names**: Each dynamic instance needs a unique name (auto-generated for Agent nodes).
-- **Node-Like Acceptable**: `ctx.run_node()` accepts any node-like object (function, Agent, BaseNode).
-- **Explicit `run_id` Constraint**: If you provide an explicit `run_id`, it **must contain non-numeric characters** (e.g., `"run_a"` instead of `"1"`) to prevent collision with auto-generated numeric IDs.
-- **`use_as_output=True`**: Suppresses the parent node's own output and uses the child's output as the parent's output. This is achieved via `outputFor` annotation in events. This can only be called ONCE per parent node execution.
-- **`use_sub_branch`**: (Optional) If set to `True`, attaches a branch segment (`node_name@run_id`) to the current execution branch to ensure event isolation for parallel or sub-agent runs.
+## Rules the framework enforces
 
-## Best Practices
+**The calling node needs `rerun_on_resume=True`.** Calling `run_node` without it
+raises immediately. The reason is resumption: a dynamically scheduled child may
+interrupt for user input, and the only way the parent can receive the answer is
+to be re-run from the top.
 
-- Always `await` `ctx.run_node()` directly. Wrapping it in `asyncio.create_task()` means the task runs unsupervised — errors are silently swallowed and the task is not cancelled if the parent node is interrupted.
+**An explicit `run_id` must contain a non-digit.** Auto-generated ids are plain
+numbers (`"1"`, `"2"`, ...), so an all-digit custom id would collide with one.
+`ValueError` names the offending id.
 
-## Imperative Workflow Construction
+**`use_as_output=True` at most once per parent execution.** A second call raises
+`Node {path} already has a use_as_output delegate.` (A `Workflow` calling
+`run_node` is exempt.)
 
-As an alternative to defining static graph edges, you can use dynamic nodes to construct workflows in an imperative style using standard Python control flow. This approach can sometimes be more intuitive for complex conditional logic or parallel execution.
+**`await` the call directly.** Wrapping it in `asyncio.create_task()` leaves the
+child unsupervised: its errors are swallowed and it is not cancelled when the
+parent is interrupted.
 
-### Replacing Graph Patterns
+## Imperative workflows
 
-#### 1. Sequences & Branching
-Instead of defining edges with routes, use standard Python `if/else`:
+Standard Python replaces routed edges entirely:
+
 ```python
 async def orchestrator(ctx: Context, node_input: str):
   res_a = await ctx.run_node(step_a, node_input=node_input)
-  if "success" in res_a:
+  if 'success' in res_a:
     return await ctx.run_node(step_b, node_input=res_a)
-  else:
-    return await ctx.run_node(step_c, node_input=res_a)
+  return await ctx.run_node(step_c, node_input=res_a)
 ```
 
+### Three traps in this style
 
-### Important Pits & Best Practices
+**A raw function's parameters bind from state, not from `node_input`.** Node
+parameter binding defaults to `'state'`, so a value passed as
+`run_node(fn, node_input=x)` reaches the function only through a parameter
+literally named `node_input`.
 
-- **Function Parameter Mapping**: When passing a raw function to `run_node`, ADK defaults to `'state'` binding mode. If you want to pass input directly via `node_input=...` in `run_node`, **the function parameter MUST be named `node_input`**!
-  ```python
-  def my_worker(node_input: str): # MUST be named 'node_input'
-    return f"Done: {node_input}"
-  ```
-- **Nested Dynamic Nodes**: If a dynamically scheduled node *itself* calls `run_node`, it acts as a parent node and **MUST have `rerun_on_resume=True`**! Since raw functions passed to `run_node` default to `False`, you must manually wrap the inner parent function in `FunctionNode(..., rerun_on_resume=True)`!
-- **Generator Returns**: In nodes that use `yield` (generators), you cannot use `return value` to produce the final output (Python syntax error in async generators). You must yield `Event(output=...)` instead.
+```python
+def my_worker(node_input: str):  # this name, or the value never arrives
+  return f'Done: {node_input}'
+```
+
+**A child that itself calls `run_node` is a parent too**, so it also needs
+`rerun_on_resume=True`. Raw functions default to `False`, so wrap it:
+
+```python
+inner = FunctionNode(func=inner_orchestrator, rerun_on_resume=True)
+```
+
+**A generator cannot `return` a value.** In a node that uses `yield`, produce
+the result with `yield Event(output=...)`; `return value` is a syntax error in
+an async generator and silently ignored in a sync one.

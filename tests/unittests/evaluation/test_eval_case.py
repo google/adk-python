@@ -19,11 +19,148 @@ from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_case import get_all_tool_calls
 from google.adk.evaluation.eval_case import get_all_tool_calls_with_responses
 from google.adk.evaluation.eval_case import get_all_tool_responses
+from google.adk.evaluation.eval_case import get_all_usage_metadata
 from google.adk.evaluation.eval_case import IntermediateData
+from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_case import InvocationEvent
 from google.adk.evaluation.eval_case import InvocationEvents
+from google.adk.evaluation.eval_case import SessionInput
 from google.genai import types as genai_types
 import pytest
+
+
+def test_eval_models_preserve_extra_metadata():
+  session_input = SessionInput(
+      app_name='app',
+      user_id='user',
+      eval_group='retrieval',
+      source='nightly',
+  )
+
+  assert session_input.model_extra == {
+      'eval_group': 'retrieval',
+      'source': 'nightly',
+  }
+  assert session_input.model_dump()['eval_group'] == 'retrieval'
+
+  eval_case = EvalCase(
+      eval_id='case_1',
+      conversation=[],
+      session_input=session_input,
+      owner='platform',
+  )
+
+  assert eval_case.model_extra == {'owner': 'platform'}
+  dumped = eval_case.model_dump()
+  assert dumped['owner'] == 'platform'
+  assert dumped['session_input']['source'] == 'nightly'
+
+
+def test_invocation_event_content_defaults_to_none():
+  """An InvocationEvent can be built and round-tripped without content."""
+  event = InvocationEvent(author='agent')
+
+  assert event.content is None
+  assert InvocationEvent.model_validate(event.model_dump()).content is None
+
+
+def test_eval_case_put_accepts_web_ui_transcript_indices():
+  """Saving an eval case ignores UI-only event indices instead of 422ing.
+
+  The adk web eval editor sends invocationIndex/toolUseIndex on each
+  InvocationEvent. Those fields are view-model state, not eval schema.
+  """
+  payload = {
+      'evalId': 'Weather_in_chicago',
+      'conversation': [{
+          'invocationId': 'e-716ee625-05b6-4a47-aeb2-d10a4a0bbdc0',
+          'userContent': {
+              'parts': [{'text': 'Weather in chicago?'}],
+              'role': 'user',
+          },
+          'finalResponse': {
+              'parts': [{
+                  'text': (
+                      'The current weather in Chicago is clear with a'
+                      ' temperature of 24.4 degrees Celsius.'
+                  )
+              }],
+              'role': 'model',
+          },
+          'intermediateData': {
+              'invocationEvents': [
+                  {
+                      'author': 'research_agent',
+                      'content': {
+                          'parts': [{
+                              'functionCall': {
+                                  'id': 'call_xvno6vyr',
+                                  'args': {'city': 'chicago'},
+                                  'name': 'get_weather',
+                              }
+                          }],
+                          'role': 'model',
+                      },
+                      'invocationIndex': 0,
+                      'toolUseIndex': 0,
+                  },
+                  {
+                      'author': 'research_agent',
+                      'content': {
+                          'parts': [{
+                              'functionResponse': {
+                                  'id': 'call_xvno6vyr',
+                                  'name': 'get_weather',
+                                  'response': {
+                                      'status': 'ok',
+                                      'location': 'Chicago, United States',
+                                  },
+                              }
+                          }],
+                          'role': 'user',
+                      },
+                      'invocationIndex': 0,
+                  },
+              ]
+          },
+          'creationTimestamp': 1788817941.870899,
+      }],
+      'sessionInput': {
+          'appName': 'research_agent',
+          'userId': 'user',
+          'state': {},
+      },
+      'creationTimestamp': 1788817991.232703,
+  }
+
+  eval_case = EvalCase.model_validate(payload)
+
+  assert eval_case.eval_id == 'Weather_in_chicago'
+  invocation = eval_case.conversation[0]
+  events = invocation.intermediate_data.invocation_events
+  assert events[0].author == 'research_agent'
+  dumped_event = events[0].model_dump(by_alias=True, exclude_none=True)
+  assert 'invocationIndex' not in dumped_event
+  assert 'toolUseIndex' not in dumped_event
+  tool_calls = get_all_tool_calls(invocation.intermediate_data)
+  assert tool_calls[0].name == 'get_weather'
+
+
+def test_session_input_accepts_session_id():
+  """Tests that SessionInput accepts a fixed session_id and round-trips it."""
+  session_input = SessionInput(app_name='a', user_id='u', session_id='s1')
+
+  assert session_input.session_id == 's1'
+
+  round_tripped = SessionInput.model_validate_json(
+      session_input.model_dump_json()
+  )
+  assert round_tripped.session_id == 's1'
+
+
+def test_session_input_session_id_defaults_to_none():
+  """Tests that session_id is optional and defaults to None."""
+  assert SessionInput(app_name='a', user_id='u').session_id is None
 
 
 def test_get_all_tool_calls_with_none_input():
@@ -281,3 +418,36 @@ def test_conversation_and_conversation_scenario_mutual_exclusion():
   # these two should not cause exceptions
   EvalCase(eval_id='test_id', conversation=[])
   EvalCase(eval_id='test_id', conversation_scenario=test_conversation_scenario)
+
+
+def test_get_all_usage_metadata():
+  """Tests get_all_usage_metadata extraction from InvocationEvents."""
+  # No intermediate data
+  inv_none = Invocation(user_content=genai_types.Content(parts=[]))
+  assert get_all_usage_metadata(inv_none) == []
+
+  # IntermediateData (legacy) returns []
+  inv_legacy = Invocation(
+      user_content=genai_types.Content(parts=[]),
+      intermediate_data=IntermediateData(tool_uses=[]),
+  )
+  assert get_all_usage_metadata(inv_legacy) == []
+
+  # InvocationEvents with usage metadata
+  usage1 = genai_types.GenerateContentResponseUsageMetadata(
+      total_token_count=10
+  )
+  usage2 = genai_types.GenerateContentResponseUsageMetadata(
+      total_token_count=20
+  )
+  inv_events = Invocation(
+      user_content=genai_types.Content(parts=[]),
+      intermediate_data=InvocationEvents(
+          invocation_events=[
+              InvocationEvent(author='agent', usage_metadata=usage1),
+              InvocationEvent(author='tool'),
+              InvocationEvent(author='agent', usage_metadata=usage2),
+          ]
+      ),
+  )
+  assert get_all_usage_metadata(inv_events) == [usage1, usage2]

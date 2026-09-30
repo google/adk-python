@@ -12,8 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from ._openai_llm import OpenAILlm
+"""Backward-compatible alias for :mod:`google.adk.integrations.openai`.
+
+The OpenAI models moved to ``google.adk.integrations.openai``. This module
+re-exports them so existing ``from google.adk.labs.openai import ...`` imports
+keep working. New code should import from ``google.adk.integrations.openai``.
+"""
+
+from ...integrations.openai import AzureOpenAIResponsesLlm
+from ...integrations.openai import OpenAIGenerateContentConfig
+from ...integrations.openai import OpenAILlm
+from ...integrations.openai import OpenAIResponsesLlm
 
 __all__ = [
+    'AzureOpenAIResponsesLlm',
+    'OpenAIGenerateContentConfig',
     'OpenAILlm',
+    'OpenAIResponsesLlm',
 ]

@@ -26,7 +26,7 @@ from .base_auth_provider import BaseAuthProvider
 class AuthProviderRegistry:
   """Registry for auth provider instances."""
 
-  def __init__(self):
+  def __init__(self) -> None:
     self._providers: dict[type[AuthScheme], BaseAuthProvider] = {}
 
   def register(

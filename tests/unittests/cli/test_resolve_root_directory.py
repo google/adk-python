@@ -24,6 +24,7 @@ from google.adk.cli.built_in_agents.tools.delete_files import delete_files
 from google.adk.cli.built_in_agents.tools.read_files import read_files
 from google.adk.cli.built_in_agents.tools.write_files import write_files
 from google.adk.cli.built_in_agents.utils.resolve_root_directory import resolve_file_path
+from google.adk.cli.built_in_agents.utils.resolve_root_directory import resolve_file_paths
 import pytest
 
 
@@ -66,6 +67,27 @@ def test_resolve_file_path_rejects_relative_traversal(tmp_path):
 def test_resolve_file_path_rejects_absolute_outside_root(tmp_path):
   with pytest.raises(ValueError):
     resolve_file_path("/etc/passwd", {"root_directory": str(tmp_path)})
+
+
+def test_resolve_file_paths_preserves_input_order(tmp_path):
+  state = {"root_directory": str(tmp_path)}
+
+  resolved = resolve_file_paths(["b.txt", "a.txt", "sub/c.txt"], state)
+
+  assert resolved == [
+      (tmp_path / "b.txt").resolve(),
+      (tmp_path / "a.txt").resolve(),
+      (tmp_path / "sub" / "c.txt").resolve(),
+  ]
+
+
+def test_resolve_file_paths_rejects_the_whole_batch_on_one_escape(tmp_path):
+  """One traversal attempt must fail the batch, not be silently dropped."""
+  with pytest.raises(ValueError):
+    resolve_file_paths(
+        ["ok.txt", "../escape.txt", "also_ok.txt"],
+        {"root_directory": str(tmp_path)},
+    )
 
 
 async def test_write_files_blocks_relative_traversal(

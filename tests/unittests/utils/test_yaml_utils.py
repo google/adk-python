@@ -18,8 +18,11 @@ from pathlib import Path
 from typing import Optional
 
 from google.adk.utils.yaml_utils import dump_pydantic_to_yaml
+from google.adk.utils.yaml_utils import load_yaml_file
 from google.genai import types
 from pydantic import BaseModel
+import pytest
+import yaml
 
 
 class SimpleModel(BaseModel):
@@ -152,3 +155,76 @@ multiline_text: |-
   Hola Mundo 🌎
 name: 你好世界
 """
+
+
+def test_load_yaml_file_missing_file_raises_file_not_found(tmp_path: Path):
+  missing = tmp_path / "absent.yaml"
+  with pytest.raises(FileNotFoundError, match=str(missing)):
+    load_yaml_file(missing)
+
+
+def test_load_yaml_file_directory_raises_file_not_found(tmp_path: Path):
+  """A directory is not a loadable config, even though the path exists."""
+  with pytest.raises(FileNotFoundError):
+    load_yaml_file(tmp_path)
+
+
+def test_load_yaml_file_parses_scalars_with_their_yaml_types(tmp_path: Path):
+  yaml_file = tmp_path / "config.yaml"
+  yaml_file.write_text(
+      "name: agent\nage: 30\nactive: true\nmissing: null\n", encoding="utf-8"
+  )
+
+  loaded = load_yaml_file(yaml_file)
+
+  assert loaded == {
+      "name": "agent",
+      "age": 30,
+      "active": True,
+      "missing": None,
+  }
+
+
+def test_load_yaml_file_parses_nested_structures(tmp_path: Path):
+  yaml_file = tmp_path / "config.yaml"
+  yaml_file.write_text(
+      "agent:\n  name: root\n  tools:\n    - one\n    - two\n",
+      encoding="utf-8",
+  )
+
+  assert load_yaml_file(yaml_file) == {
+      "agent": {"name": "root", "tools": ["one", "two"]}
+  }
+
+
+def test_load_yaml_file_accepts_a_string_path(tmp_path: Path):
+  yaml_file = tmp_path / "config.yaml"
+  yaml_file.write_text("name: agent\n", encoding="utf-8")
+
+  assert load_yaml_file(str(yaml_file)) == {"name": "agent"}
+
+
+def test_load_yaml_file_empty_file_returns_none(tmp_path: Path):
+  """An empty config parses to None, not to an empty dict."""
+  yaml_file = tmp_path / "config.yaml"
+  yaml_file.write_text("", encoding="utf-8")
+
+  assert load_yaml_file(yaml_file) is None
+
+
+def test_load_yaml_file_decodes_utf8(tmp_path: Path):
+  yaml_file = tmp_path / "config.yaml"
+  yaml_file.write_text("name: 你好世界\n", encoding="utf-8")
+
+  assert load_yaml_file(yaml_file) == {"name": "你好世界"}
+
+
+def test_load_yaml_file_refuses_arbitrary_python_tags(tmp_path: Path):
+  """Config files are untrusted input, so object construction must not run."""
+  yaml_file = tmp_path / "config.yaml"
+  yaml_file.write_text(
+      "value: !!python/object/apply:os.getcwd []\n", encoding="utf-8"
+  )
+
+  with pytest.raises(yaml.YAMLError):
+    load_yaml_file(yaml_file)

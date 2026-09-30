@@ -19,12 +19,13 @@ import ssl
 from typing import Any
 from typing import Callable
 from typing import Dict
+from typing import Final
 from typing import List
-from typing import Literal
 from typing import Optional
 from typing import Tuple
 from typing import Union
 from urllib.parse import parse_qs
+from urllib.parse import quote
 from urllib.parse import urlparse
 from urllib.parse import urlunparse
 
@@ -37,6 +38,7 @@ from typing_extensions import override
 from ....agents.readonly_context import ReadonlyContext
 from ....auth.auth_credential import AuthCredential
 from ....auth.auth_schemes import AuthScheme
+from ....errors.input_validation_error import InputValidationError
 from ....features import FeatureName
 from ....features import is_feature_enabled
 from ..._gemini_schema_util import _to_gemini_schema
@@ -50,6 +52,7 @@ from ..common.common import ApiParameter
 from .openapi_spec_parser import OperationEndpoint
 from .openapi_spec_parser import ParsedOperation
 from .operation_parser import OperationParser
+from .tool_auth_handler import AuthPreparationState as AuthPreparationState
 from .tool_auth_handler import ToolAuthHandler
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -73,19 +76,61 @@ def snake_to_lower_camel(snake_case_string: str):
   ])
 
 
-AuthPreparationState = Literal["pending", "done"]
-
 HttpxClientFactory = Callable[[], httpx.AsyncClient]
 """Type alias for a zero-argument factory returning an ``httpx.AsyncClient``.
 
 When supplied to ``RestApiTool`` or ``OpenAPIToolset``, the factory is invoked
 once per API call and its returned client is used as an async context
-manager to issue the request, in place of the default
-```httpx.AsyncClient(verify=..., timeout=None)```. Because the client is closed
-when the request completes, the factory must return a fresh client on every
-call. This unlocks knobs that the narrower ``ssl_verify`` parameter can't
-reach: proxies, HTTP/2, custom transports (e.g. request-signing), and so on.
+manager to issue the request, in place of the default ``httpx.AsyncClient``.
+Because the client is closed when the request completes, the factory must
+return a fresh client on every call. This unlocks knobs that the narrower
+``ssl_verify`` parameter can't reach: proxies, HTTP/2, custom transports
+(e.g. request-signing), timeout policy, and so on.
 """
+
+# Read and write budgets match the framework's remote-agent default so slow but
+# legitimate APIs still complete; connect and pool stay short so an unreachable
+# peer fails fast instead of occupying the invocation.
+_DEFAULT_TIMEOUT: Final[httpx.Timeout] = httpx.Timeout(
+    connect=10.0,
+    read=600.0,
+    write=600.0,
+    pool=10.0,
+)
+
+
+def _encode_path_param(*, name: str, value: str) -> str:
+  """Percent-encode a path parameter, rejecting RFC 3986 dot-segments.
+
+  ``quote(..., safe="")`` encodes reserved characters including ``/``, ``?``,
+  and ``#``, but leaves ``.`` literal because it is unreserved. A value of
+  ``.`` or ``..``, or a value whose ``/``- or ``\\``-separated segments include
+  those, is still a special path segment on the wire. Backends that decode
+  ``%2F`` and then merge dot-segments can then route the request onto a path
+  the OpenAPI spec never declared.
+
+  Slash-containing IDs (for example ``projects/p/locations/l``) are still
+  encoded as a single segment (``%2F``). Only exact ``.`` / ``..`` segments
+  are rejected, so names such as ``file..txt`` and ``.gitignore`` remain
+  valid.
+
+  Args:
+    name: Original OpenAPI parameter name, used in the error message.
+    value: Raw path parameter value from the tool call.
+
+  Returns:
+    The percent-encoded parameter value.
+
+  Raises:
+    InputValidationError: If any path segment is ``.`` or ``..``.
+  """
+  for segment in value.replace("\\", "/").split("/"):
+    if segment in (".", ".."):
+      raise InputValidationError(
+          f"Path parameter {name!r} must not contain current-directory or"
+          " parent-directory segments."
+      )
+  return quote(value, safe="")
 
 
 class RestApiTool(BaseTool):
@@ -160,10 +205,10 @@ class RestApiTool(BaseTool):
           request completes, so the factory must return a fresh client on each
           call. This lets callers configure proxies, HTTP/2, custom transports
           (e.g. request signing), or any other ``httpx.AsyncClient`` option that
-          ``ssl_verify`` can't reach. When ``None`` (default), a fresh
-          ``httpx.AsyncClient(verify=..., timeout=None)`` is created per
-          request. Mirrors the pattern exposed for MCP by
-          ``StreamableHTTPConnectionParams.httpx_client_factory``.
+          ``ssl_verify`` can't reach, including its timeout policy. When
+          ``None`` (default), a fresh ``httpx.AsyncClient`` with bounded
+          timeouts is created per request. Mirrors the pattern exposed for MCP
+          by ``StreamableHTTPConnectionParams.httpx_client_factory``.
         credential_key: Optional stable key used for interactive auth and
           credential caching.
     """
@@ -392,9 +437,20 @@ class RestApiTool(BaseTool):
       param_location = param_obj.param_location
 
       if param_location == "path":
-        path_params[original_k] = v
+        # Percent-encode path parameter values (including '/') before they
+        # are substituted into the URL template below. Path parameter
+        # values ultimately originate from the model's tool-call
+        # arguments. quote() leaves '.' literal (RFC 3986 unreserved), so
+        # '.' / '..' segments are rejected first: otherwise backends that
+        # decode '%2F' and merge dot-segments can redirect the request --
+        # with this tool's configured auth -- onto an undeclared path.
+        # Reserved characters ('/', '?', '#') are still escaped so a
+        # value cannot introduce a query string or fragment.
+        path_params[original_k] = _encode_path_param(
+            name=original_k, value=str(v)
+        )
       elif param_location == "query":
-        if v:
+        if v is not None:
           query_params[original_k] = v
       elif param_location == "header":
         header_params[original_k] = v
@@ -406,13 +462,20 @@ class RestApiTool(BaseTool):
     base_url = base_url[:-1] if base_url.endswith("/") else base_url
     url = f"{base_url}{self.endpoint.path.format(**path_params)}"
 
-    # Move query params embedded in the path into query_params, since httpx
-    # replaces (rather than merges) the URL query string when `params` is set.
+    # Move query params embedded in the path template itself (now that path
+    # parameter values are percent-encoded above, only a spec-authored
+    # literal query string in `self.endpoint.path` can still produce one
+    # here) into query_params, since httpx replaces (rather than merges)
+    # the URL query string when `params` is set.
     parsed_url = urlparse(url)
-    if parsed_url.query or parsed_url.fragment:
-      for key, values in parse_qs(parsed_url.query).items():
-        query_params.setdefault(key, values[0] if len(values) == 1 else values)
-      url = urlunparse(parsed_url._replace(query="", fragment=""))
+    for part in (parsed_url.query, parsed_url.fragment):
+      if part:
+        for key, values in parse_qs(part).items():
+          query_params.setdefault(
+              key, values[0] if len(values) == 1 else values
+          )
+    # URL without query and fragment
+    url = urlunparse(parsed_url._replace(query="", fragment=""))
 
     # Construct body
     body_kwargs: Dict[str, Any] = {}
@@ -454,7 +517,11 @@ class RestApiTool(BaseTool):
         elif mime_type == "text/plain":
           body_kwargs["data"] = body_data
 
-        if mime_type:
+        # For multipart/form-data the Content-Type is left unset so httpx can
+        # generate it from the `files` payload together with the required
+        # boundary parameter. Forcing a boundary-less header here would make the
+        # request body unparsable by the server.
+        if mime_type and mime_type != "multipart/form-data":
           header_params["Content-Type"] = mime_type
         break  # Process only the first mime_type
 
@@ -489,11 +556,13 @@ class RestApiTool(BaseTool):
 
     Args:
         args: Keyword arguments representing the operation parameters.
-        tool_context: The tool context (not used here, but required by the
-          interface).
+        tool_context: The tool context. Supplies the credential store used to
+          prepare authentication, and on an HTTP 401 it carries the recovery
+          attempt and the guard that bounds the retry.
 
     Returns:
-        The API response as a dictionary.
+        The API response as a dictionary. HTTP and authorization failures are
+        reported as an "error" entry rather than raised.
     """
     # Prepare auth credentials for the API call
     tool_auth_handler = ToolAuthHandler.from_tool_context(
@@ -538,7 +607,10 @@ class RestApiTool(BaseTool):
         api_args.update(auth_args)
 
     # Got all parameters. Call the API.
-    request_params = self._prepare_request_params(api_params, api_args)
+    try:
+      request_params = self._prepare_request_params(api_params, api_args)
+    except InputValidationError as e:
+      return self._format_error_response(str(e))
     if self._ssl_verify is not None:
       request_params["verify"] = self._ssl_verify
 
@@ -548,9 +620,20 @@ class RestApiTool(BaseTool):
       if provider_headers:
         request_params.setdefault("headers", {}).update(provider_headers)
 
-    response = await _request(
-        httpx_client_factory=self._httpx_client_factory, **request_params
-    )
+    try:
+      response = await _request(
+          httpx_client_factory=self._httpx_client_factory, **request_params
+      )
+    except httpx.TimeoutException as e:
+      self._logger.warning(
+          "API call timed out for tool %s: %s %s",
+          self.name,
+          request_params.get("method", "").upper(),
+          request_params.get("url", ""),
+      )
+      return self._format_error_response(
+          f"Request timed out ({type(e).__name__})."
+      )
 
     # Log the API response
     self._logger.debug(
@@ -559,6 +642,32 @@ class RestApiTool(BaseTool):
         request_params.get("url", ""),
         response.status_code,
     )
+
+    # A 401 must carry a WWW-Authenticate challenge, so key the recovery on
+    # the challenge rather than on the status code alone. RFC 6750 pairs
+    # insufficient_scope with 403, but a fair number of APIs return it as a
+    # 401; recovering from those would evict a working credential and
+    # ask the user again for the same scopes that just failed, since the
+    # request is rebuilt from the same auth scheme. A server that omits the
+    # challenge leaves nothing to key on and keeps the benefit of the doubt.
+    token_rejected = False
+    if response.status_code == 401:
+      www_authenticate = response.headers.get("www-authenticate", "").lower()
+      token_rejected = (
+          "invalid_token" in www_authenticate or not www_authenticate
+      )
+
+    # A 401 of any flavour means the request was not authenticated, so none of
+    # them are evidence that the credential works -- not even one whose
+    # challenge avoids naming the token, which may simply be a server asking
+    # for a different scheme entirely. Every other status did get past the
+    # authentication gate, so each refills the recovery budgets exactly as a
+    # 200 does: counting only 2xx would let one bad argument from the model, or
+    # one server-side 500, strand a working credential with its budgets spent.
+    # Placed above the decode for the same reason, since a response the API
+    # meant as a success but did not encode as JSON still counts.
+    if response.status_code != 401:
+      tool_auth_handler.note_successful_call()
 
     # Parse API response
     try:
@@ -572,17 +681,61 @@ class RestApiTool(BaseTool):
           response.status_code,
           error_details,
       )
-      return {
-          "error": (
-              f"Tool {self.name} execution failed. Analyze this execution error"
-              " and your inputs. Retry with adjustments if applicable. But"
-              " make sure don't retry more than 3 times. Execution Error:"
-              f" Status Code: {response.status_code}, {error_details}"
-          )
-      }
+      if token_rejected and auth_credential and tool_context:
+        # The claim covers the retry below, not just the recovery call: the
+        # retried call builds its own handler, which must find the claim taken
+        # so that a persistently failing endpoint cannot recurse.
+        with tool_auth_handler.claim_recovery() as claimed:
+          if claimed:
+            recovery = await tool_auth_handler.handle_unauthorized_error()
+            if recovery == "refreshed":
+              self._logger.info(
+                  "Successfully refreshed OAuth2 token for tool %s after 401."
+                  " Retrying call.",
+                  self.name,
+              )
+              return await self.call(args=args, tool_context=tool_context)
+
+            if recovery == "reauth_requested":
+              return {
+                  "pending": True,
+                  "message": "Needs your authorization to access your data.",
+              }
+
+            if recovery == "reauth_limit_reached":
+              # Distinct from the generic error below, which invites the model
+              # to retry: re-authorizing has already been tried for this
+              # credential and did not help, so the useful next step is to tell
+              # the user rather than to call the tool again.
+              return {
+                  "error": (
+                      f"Tool {self.name} execution failed. The user already"
+                      " re-authorized this connection and the API still"
+                      " rejected the credential, so retrying will not help."
+                      " Report this to the user and suggest checking the"
+                      " application's access or permission settings."
+                      f" Status Code: {response.status_code}, {error_details}"
+                  )
+              }
+            # "failed": fall through to the generic error below.
+
+      return self._format_error_response(
+          f"Status Code: {response.status_code}, {error_details}"
+      )
     except ValueError:
       self._logger.debug("API Response (non-JSON): %s", response.text)
       return {"text": response.text}  # Return text if not JSON
+
+  def _format_error_response(self, error_message: str) -> dict[str, str]:
+    """Formats a tool execution error response dict."""
+    return {
+        "error": (
+            f"Tool {self.name} execution failed. Analyze this execution error"
+            " and your inputs. Retry with adjustments if applicable. But"
+            " make sure don't retry more than 3 times. Execution Error:"
+            f" {error_message}"
+        )
+    }
 
   def _detect_error_in_response(self, response: Any) -> Optional[str]:
     """Telemetry hook: returns an error type if the response indicates an error."""
@@ -600,8 +753,7 @@ class RestApiTool(BaseTool):
     return (
         f'RestApiTool(name="{self.name}", description="{self.description}",'
         f' endpoint="{self.endpoint}", operation="{self.operation}",'
-        f' auth_scheme="{self.auth_scheme}",'
-        f' auth_credential="{self.auth_credential}")'
+        f' auth_scheme="{self.auth_scheme}")'
     )
 
 
@@ -614,5 +766,7 @@ async def _request(
   if httpx_client_factory is not None:
     async with httpx_client_factory() as client:
       return await client.request(**request_params)
-  async with httpx.AsyncClient(verify=verify, timeout=None) as client:
+  async with httpx.AsyncClient(
+      verify=verify, timeout=_DEFAULT_TIMEOUT
+  ) as client:
     return await client.request(**request_params)

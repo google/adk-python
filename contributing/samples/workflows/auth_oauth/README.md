@@ -20,7 +20,7 @@ To run this sample and actually log in, you need to:
      export GITHUB_CLIENT_ID="your_actual_client_id"
      export GITHUB_CLIENT_SECRET="your_actual_client_secret"
      ```
-   - Alternatively, you can create a `.env` file in the sample directory (`contributing/workflow_samples/auth_oauth/.env`) with the following content:
+   - Alternatively, you can create a `.env` file in the sample directory (`contributing/samples/workflows/auth_oauth/.env`) with the following content:
      ```env
      GITHUB_CLIENT_ID="your_actual_client_id"
      GITHUB_CLIENT_SECRET="your_actual_client_secret"
@@ -102,11 +102,11 @@ Inside the node, we retrieve the token and use the `requests` library to call th
 To run this sample interactively, use the ADK CLI:
 
 ```bash
-adk run contributing/workflow_samples/auth_oauth
+adk run contributing/samples/workflows/auth_oauth
 ```
 
 Or use the Web UI:
 
 ```bash
-adk web contributing/workflow_samples/
+adk web contributing/samples/workflows/
 ```

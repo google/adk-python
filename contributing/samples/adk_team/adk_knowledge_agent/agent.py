@@ -13,19 +13,26 @@
 # limitations under the License.
 
 import json
+import os
 from typing import Optional
 
 from google.adk.agents import LlmAgent
-from google.adk.agents.callback_context import CallbackContext
+from google.adk.agents.context import Context
 from google.adk.models import LlmResponse
 from google.adk.tools.vertex_ai_search_tool import VertexAiSearchTool
 from google.genai import types
 
-VERTEXAI_DATASTORE_ID = "projects/adk-agent-builder-assistant/locations/global/collections/default_collection/dataStores/adk-agent-builder-sample-datastore_1758230446136"
+VERTEXAI_DATASTORE_ID = os.environ.get("VERTEXAI_DATASTORE_ID")
+if not VERTEXAI_DATASTORE_ID:
+  raise ValueError(
+      "VERTEXAI_DATASTORE_ID environment variable not set. Set it to the"
+      " full resource name of your own Vertex AI Search data store, as"
+      " projects/.../locations/.../collections/.../dataStores/... ."
+  )
 
 
 def citation_retrieval_after_model_callback(
-    callback_context: CallbackContext,
+    callback_context: Context,
     llm_response: LlmResponse,
 ) -> Optional[LlmResponse]:
   """Callback function to retrieve citations after model response is generated."""
@@ -41,9 +48,10 @@ def citation_retrieval_after_model_callback(
   if not parts:
     return None
 
-  # Add citations to the response as JSON objects.
-  parts.append(types.Part(text="References:\n"))
-  for grounding_chunk in grounding_metadata.grounding_chunks:
+  # Collect the citations as JSON objects. `grounding_chunks` is optional, and
+  # is absent when the metadata only carries e.g. search queries.
+  citations = []
+  for grounding_chunk in grounding_metadata.grounding_chunks or []:
     retrieved_context = grounding_chunk.retrieved_context
     if not retrieved_context:
       continue
@@ -53,9 +61,20 @@ def citation_retrieval_after_model_callback(
         "uri": retrieved_context.uri,
         "snippet": retrieved_context.text,
     }
-    parts.append(types.Part(text=json.dumps(citation)))
+    citations.append(types.Part(text=json.dumps(citation)))
 
-  return LlmResponse(content=types.Content(parts=parts))
+  if not citations:
+    return None
+
+  # Copy the response so the rest of it (role, grounding and usage metadata,
+  # finish reason, ...) survives, instead of building a bare one. A content
+  # without a role is treated as empty and dropped from the conversation
+  # history.
+  new_content = types.Content(
+      role=content.role or "model",
+      parts=[*parts, types.Part(text="References:\n"), *citations],
+  )
+  return llm_response.model_copy(update={"content": new_content})
 
 
 root_agent = LlmAgent(

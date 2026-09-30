@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from typing import Any
+from typing import cast
 import uuid
 
 import requests
@@ -84,4 +85,4 @@ def post_request(url: str, payload: dict[str, Any]) -> dict[str, Any]:
   """Executes a POST request."""
   response = requests.post(url, headers=HEADERS, json=payload, timeout=60)
   response.raise_for_status()
-  return response.json()
+  return cast(dict[str, Any], response.json())

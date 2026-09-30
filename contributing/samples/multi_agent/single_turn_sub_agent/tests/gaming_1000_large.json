@@ -34,7 +34,6 @@
         ],
         "role": "model"
       },
-      "finishReason": "STOP",
       "id": "e-2",
       "invocationId": "i-1",
       "longRunningToolIds": [],
@@ -44,7 +43,7 @@
     },
     {
       "author": "phone_recommender",
-      "branch": "phone_recommender@1",
+      "branch": "phone_recommender@fc-1",
       "content": {
         "parts": [
           {
@@ -59,7 +58,6 @@
         ],
         "role": "model"
       },
-      "finishReason": "STOP",
       "id": "e-3",
       "invocationId": "i-1",
       "longRunningToolIds": [],
@@ -69,7 +67,7 @@
     },
     {
       "author": "phone_recommender",
-      "branch": "phone_recommender@1",
+      "branch": "phone_recommender@fc-1",
       "content": {
         "parts": [
           {
@@ -92,7 +90,7 @@
     },
     {
       "author": "phone_recommender",
-      "branch": "phone_recommender@1",
+      "branch": "phone_recommender@fc-1",
       "content": {
         "parts": [
           {
@@ -107,7 +105,6 @@
         ],
         "role": "model"
       },
-      "finishReason": "STOP",
       "id": "e-5",
       "invocationId": "i-1",
       "longRunningToolIds": [],
@@ -117,7 +114,7 @@
     },
     {
       "author": "phone_recommender",
-      "branch": "phone_recommender@1",
+      "branch": "phone_recommender@fc-1",
       "content": {
         "parts": [
           {
@@ -140,7 +137,7 @@
     },
     {
       "author": "phone_recommender",
-      "branch": "phone_recommender@1",
+      "branch": "phone_recommender@fc-1",
       "content": {
         "parts": [
           {
@@ -155,7 +152,6 @@
         ],
         "role": "model"
       },
-      "finishReason": "STOP",
       "id": "e-7",
       "invocationId": "i-1",
       "longRunningToolIds": [],
@@ -165,7 +161,7 @@
     },
     {
       "author": "phone_recommender",
-      "branch": "phone_recommender@1",
+      "branch": "phone_recommender@fc-1",
       "content": {
         "parts": [
           {
@@ -188,7 +184,7 @@
     },
     {
       "author": "phone_recommender",
-      "branch": "phone_recommender@1",
+      "branch": "phone_recommender@fc-1",
       "content": {
         "parts": [
           {
@@ -203,7 +199,6 @@
         ],
         "role": "model"
       },
-      "finishReason": "STOP",
       "id": "e-9",
       "invocationId": "i-1",
       "longRunningToolIds": [],
@@ -213,7 +208,7 @@
     },
     {
       "author": "phone_recommender",
-      "branch": "phone_recommender@1",
+      "branch": "phone_recommender@fc-1",
       "content": {
         "parts": [
           {
@@ -236,7 +231,7 @@
     },
     {
       "author": "phone_recommender",
-      "branch": "phone_recommender@1",
+      "branch": "phone_recommender@fc-1",
       "content": {
         "parts": [
           {
@@ -253,7 +248,6 @@
         ],
         "role": "model"
       },
-      "finishReason": "STOP",
       "id": "e-11",
       "invocationId": "i-1",
       "longRunningToolIds": [],
@@ -270,7 +264,7 @@
         }
       },
       "author": "phone_recommender",
-      "branch": "phone_recommender@1",
+      "branch": "phone_recommender@fc-1",
       "content": {
         "parts": [
           {
@@ -295,7 +289,7 @@
     },
     {
       "author": "phone_recommender",
-      "branch": "phone_recommender@1",
+      "branch": "phone_recommender@fc-1",
       "content": {
         "parts": [
           {
@@ -307,11 +301,15 @@
       "id": "e-13",
       "invocationId": "i-1",
       "nodeInfo": {
-        "messageAsOutput": true,
         "outputFor": [
           "root_agent@1/phone_recommender@1"
         ],
         "path": "root_agent@1/phone_recommender@1"
+      },
+      "output": {
+        "model_name": "Pixel 10 Pro XL",
+        "price": 799.0,
+        "reason": "The Pixel 10 Pro XL is the best choice for gaming due to its large screen and high performance. It fits perfectly within your $1000 budget and satisfies your preference for a large device."
       }
     },
     {
@@ -348,7 +346,6 @@
         ],
         "role": "model"
       },
-      "finishReason": "STOP",
       "id": "e-15",
       "invocationId": "i-1",
       "nodeInfo": {

@@ -1,6 +1,6 @@
 # Visibility Style Guide
 
-Python does not have native access modifiers (like `public`, `private`, or `package-private`). ADK relies on naming conventions and module structure to define visibility boundaries.
+ADK defines its visibility boundaries with naming conventions and module structure, since Python has no access modifiers to enforce them.
 
 ## Conventions
 
@@ -23,7 +23,7 @@ Since Python lacks true package-private access, we simulate it by:
 - **Not exporting** the symbol in the package's `__init__.py`.
 - Using `_`-prefixed modules for internal implementation details.
 - Code within the same package can import from these `_` modules, but code outside should not.
-- **Direct Imports Required**: Within the ADK framework, importing from `__init__.py` is **not allowed**. You must import from the specific module directly. This helps keep `__init__.py` minimal and keeps packages as self-contained as possible.
+- **Direct Imports Required**: Within the ADK framework, import from the specific module, never from a package's `__init__.py` — see the imports reference.
 
 ### 4. Public API Export
 

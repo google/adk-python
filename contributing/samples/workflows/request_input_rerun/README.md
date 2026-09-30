@@ -25,7 +25,8 @@ This allows you to combine the requesting and handling of human input into a sin
 
 ```mermaid
 graph TD
-    START --> draft_email
+    START --> process_input
+    process_input --> draft_email
     draft_email --> human_review[human_review <br/>reruns on resume]
     human_review -->|revise| draft_email
     human_review -->|approved| send_email

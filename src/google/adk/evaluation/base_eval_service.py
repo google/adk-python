@@ -191,7 +191,7 @@ class BaseEvalService(ABC):
   """A service to run Evals for an ADK agent."""
 
   @abstractmethod
-  async def perform_inference(
+  def perform_inference(
       self,
       inference_request: InferenceRequest,
   ) -> AsyncGenerator[InferenceResult, None]:
@@ -202,7 +202,7 @@ class BaseEvalService(ABC):
     """
 
   @abstractmethod
-  async def evaluate(
+  def evaluate(
       self,
       evaluate_request: EvaluateRequest,
   ) -> AsyncGenerator[EvalCaseResult, None]:

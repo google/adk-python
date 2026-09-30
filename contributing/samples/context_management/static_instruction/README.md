@@ -30,7 +30,7 @@ Create a `.env` file in the project root with your API credentials:
 
 ```bash
 # Choose Model Backend: 0 -> ML Dev, 1 -> Vertex
-GOOGLE_GENAI_USE_VERTEXAI=1
+GOOGLE_GENAI_USE_ENTERPRISE=1
 
 # ML Dev backend config
 GOOGLE_API_KEY=your_google_api_key_here
@@ -47,8 +47,8 @@ The agent will automatically load environment variables on startup.
 Run the agent to see Bingo in different hunger states:
 
 ```bash
-cd contributing/samples
-PYTHONPATH=../../src python -m static_instruction.main
+cd contributing/samples/context_management
+PYTHONPATH=../../../src python -m static_instruction.main
 ```
 
 This will demonstrate all hunger states by simulating different feeding times and showing how Bingo's mood changes while his core personality remains cached.
@@ -58,8 +58,8 @@ This will demonstrate all hunger states by simulating different feeding times an
 For a more interactive experience, use the ADK web interface to chat with Bingo in real-time:
 
 ```bash
-cd contributing/samples
-PYTHONPATH=../../src adk web .
+cd contributing/samples/context_management
+PYTHONPATH=../../../src adk web .
 ```
 
 This will start a web interface where you can:

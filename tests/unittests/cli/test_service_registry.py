@@ -12,8 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 from unittest.mock import patch
 
+from google.adk.cli import service_registry
 import pytest
 
 
@@ -39,6 +43,9 @@ def mock_services():
       patch(
           "google.adk.memory.vertex_ai_memory_bank_service.VertexAiMemoryBankService"
       ) as mock_agentengine_memory,
+      patch(
+          "google.adk.memory._sqlite_memory_service.SqliteMemoryService"
+      ) as mock_sqlite_memory,
   ):
     yield {
         "vertex_session": mock_vertex_session,
@@ -47,6 +54,7 @@ def mock_services():
         "gcs_artifact": mock_gcs_artifact,
         "rag_memory": mock_rag_memory,
         "agentengine_memory": mock_agentengine_memory,
+        "sqlite_memory": mock_sqlite_memory,
     }
 
 
@@ -124,6 +132,33 @@ def test_create_artifact_service_gcs(registry, mock_services):
   )
 
 
+def test_file_artifact_factory_normalizes_windows_file_uri(monkeypatch):
+  monkeypatch.setattr(service_registry, "os", SimpleNamespace(name="nt"))
+  mocked_url2pathname = mock.Mock(return_value=r"C:\tmp\adk artifacts")
+  monkeypatch.setattr(service_registry, "url2pathname", mocked_url2pathname)
+
+  registry = service_registry.ServiceRegistry()
+  service_registry._register_builtin_services(registry)
+
+  with mock.patch(
+      "google.adk.artifacts.file_artifact_service.FileArtifactService"
+  ) as mock_file_artifact_service:
+    registry.create_artifact_service("file:///C:/tmp/adk%20artifacts")
+
+  mocked_url2pathname.assert_called_once_with("/C:/tmp/adk artifacts")
+  mock_file_artifact_service.assert_called_once_with(
+      root_dir=Path(r"C:\tmp\adk artifacts")
+  )
+
+
+def test_file_artifact_factory_rejects_non_local_authority():
+  registry = service_registry.ServiceRegistry()
+  service_registry._register_builtin_services(registry)
+
+  with pytest.raises(ValueError, match="local filesystem"):
+    registry.create_artifact_service("file://example.com/tmp/adk_artifacts")
+
+
 # Memory Service Tests
 @patch("google.adk.cli.utils.envs.load_dotenv_for_agent")
 def test_create_memory_service_rag(
@@ -193,6 +228,21 @@ def test_create_task_store_postgresql(
   mock_db_task_store.assert_called_once_with(engine=mock_engine)
 
 
+def test_create_memory_service_sqlite(registry, mock_services):
+  registry.create_memory_service("sqlite:///test.db")
+  mock_services["sqlite_memory"].assert_called_with(db_path="sqlite:///test.db")
+
+  registry.create_memory_service("sqlite:////test.db")
+  mock_services["sqlite_memory"].assert_called_with(
+      db_path="sqlite:////test.db"
+  )
+
+  registry.create_memory_service("sqlite:///test.db?mode=ro")
+  mock_services["sqlite_memory"].assert_called_with(
+      db_path="sqlite:///test.db?mode=ro"
+  )
+
+
 # General Tests
 def test_unsupported_scheme(registry, mock_services):
   session_service = registry.create_session_service("unsupported://foo")
@@ -211,3 +261,76 @@ def test_unsupported_scheme(registry, mock_services):
       "agentengine_memory",
   ]:
     mock_services[service].assert_not_called()
+
+
+# Custom scheme registration
+def _recording_factory(return_value):
+  """Returns a (factory, calls) pair; the factory records how it was called."""
+  calls = []
+
+  def factory(uri, **kwargs):
+    calls.append((uri, kwargs))
+    return return_value
+
+  return factory, calls
+
+
+@pytest.mark.parametrize(
+    "register_method,create_method",
+    [
+        ("register_session_service", "create_session_service"),
+        ("register_artifact_service", "create_artifact_service"),
+        ("register_memory_service", "create_memory_service"),
+    ],
+)
+def test_register_service_routes_matching_scheme_with_full_uri(
+    register_method, create_method
+):
+  """A registered factory owns its scheme and receives the URI unmodified.
+
+  Built-in factories re-parse the URI themselves (bucket name, db path, agent
+  engine id), so the registry must hand over the whole string rather than the
+  scheme-stripped remainder.
+  """
+  registry = service_registry.ServiceRegistry()
+  service = object()
+  factory, calls = _recording_factory(service)
+
+  getattr(registry, register_method)("custom", factory)
+  created = getattr(registry, create_method)(
+      "custom://host/path?flag=1", agents_dir="/agents"
+  )
+
+  assert created is service
+  assert calls == [("custom://host/path?flag=1", {"agents_dir": "/agents"})]
+  # A different scheme is not routed to this factory.
+  assert getattr(registry, create_method)("other://host") is None
+  assert len(calls) == 1
+
+
+def test_register_session_service_last_registration_wins():
+  """Re-registering a scheme replaces it: services.py beats services.yaml."""
+  registry = service_registry.ServiceRegistry()
+  yaml_factory, yaml_calls = _recording_factory("from-yaml")
+  python_factory, _ = _recording_factory("from-python")
+
+  registry.register_session_service("dup", yaml_factory)
+  registry.register_session_service("dup", python_factory)
+
+  assert registry.create_session_service("dup://x") == "from-python"
+  assert yaml_calls == []
+
+
+def test_register_service_schemes_are_namespaced_per_service_type():
+  """A scheme registered for one service type is unknown to the others."""
+  registry = service_registry.ServiceRegistry()
+  factory, calls = _recording_factory("session-service")
+
+  registry.register_session_service("shared", factory)
+
+  assert registry.create_artifact_service("shared://x") is None
+  assert registry.create_memory_service("shared://x") is None
+  with pytest.raises(ValueError, match="Unsupported A2A task store URI scheme"):
+    registry._create_task_store_service("shared://x")
+  assert calls == []
+  assert registry.create_session_service("shared://x") == "session-service"

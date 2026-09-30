@@ -19,9 +19,20 @@ from unittest import mock
 
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.context import Context
+from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 from google.adk.utils import context_utils
 from google.adk.utils.context_utils import find_context_parameter
+from google.genai import types
+
+
+def _declared_parameters(
+    declaration: types.FunctionDeclaration,
+) -> dict[str, object]:
+  """Returns the declared parameters whichever schema field is populated."""
+  if declaration.parameters_json_schema is not None:
+    return declaration.parameters_json_schema['properties']
+  return declaration.parameters.properties
 
 
 class TestFindContextParameter:
@@ -83,6 +94,22 @@ class TestFindContextParameter:
 
     assert find_context_parameter(my_tool) == 'context'
 
+  def test_find_context_parameter_with_pep604_optional_context(self):
+    """Test detection of the `Context | None` spelling of Optional."""
+
+    def my_tool(query: str, context: Context | None = None) -> str:
+      return query
+
+    assert find_context_parameter(my_tool) == 'context'
+
+  def test_find_context_parameter_with_pep604_optional_tool_context(self):
+    """Test detection of the `ToolContext | None` spelling of Optional."""
+
+    def my_tool(query: str, ctx: ToolContext | None = None) -> str:
+      return query
+
+    assert find_context_parameter(my_tool) == 'ctx'
+
   def test_find_context_parameter_with_custom_name(self):
     """Test that any parameter name works with Context type."""
 
@@ -131,6 +158,23 @@ class TestFindContextParameter:
       return query
 
     assert find_context_parameter(my_tool) == 'ctx'
+
+
+class TestContextParameterExcludedFromDeclaration:
+  """Tests that the detected context parameter never reaches the model."""
+
+  def test_pep604_optional_tool_context_is_not_declared(self):
+    """A `ToolContext | None` parameter is dropped from the tool schema."""
+
+    def my_tool(query: str, ctx: ToolContext | None = None) -> str:
+      """A tool taking an optional context."""
+      return query
+
+    declaration = FunctionTool(my_tool)._get_declaration()
+
+    parameters = _declared_parameters(declaration)
+    assert 'query' in parameters
+    assert 'ctx' not in parameters
 
 
 class TestFindContextParameterCaching:

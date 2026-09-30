@@ -15,8 +15,8 @@
 from __future__ import annotations
 
 from .context import Context
+
 # Keep ReadonlyContext for backward compatibility
-from .readonly_context import ReadonlyContext
 
 # CallbackContext is unified into Context
 CallbackContext = Context

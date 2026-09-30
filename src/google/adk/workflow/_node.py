@@ -18,12 +18,15 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from collections.abc import Callable
+from collections.abc import Mapping
 from typing import Any
+from typing import Literal
 from typing import overload
 from typing import TYPE_CHECKING
 from typing import TypeVar
 
 from pydantic import Field
+from pydantic import model_validator
 from pydantic import PrivateAttr
 from typing_extensions import override
 
@@ -31,6 +34,8 @@ from . import _base_node as base_node
 from . import _function_node as function_node
 from . import _graph as definitions
 from . import _parallel_worker as parallel_worker_lib
+from ._errors import WorkflowConfigurationError
+from ._errors import WorkflowInvariantError
 from ._retry_config import RetryConfig
 from .utils import _workflow_graph_utils as workflow_graph_utils
 
@@ -38,7 +43,7 @@ if TYPE_CHECKING:
   from ..agents.context import Context
   from ..auth.auth_tool import AuthConfig
 
-T = TypeVar("T", bound=Callable[..., Any])
+T = TypeVar('T', bound=Callable[..., Any])
 
 
 @overload
@@ -49,7 +54,9 @@ def node(
     retry_config: RetryConfig | None = None,
     timeout: float | None = None,
     parallel_worker: bool = False,
+    max_parallel_workers: int | None = None,
     auth_config: AuthConfig | None = None,
+    parameter_binding: Literal['state', 'node_input'] = 'state',
 ) -> Callable[
     [T], function_node.FunctionNode | parallel_worker_lib._ParallelWorker
 ]:
@@ -65,7 +72,9 @@ def node(
     retry_config: RetryConfig | None = None,
     timeout: float | None = None,
     parallel_worker: bool = False,
+    max_parallel_workers: int | None = None,
     auth_config: AuthConfig | None = None,
+    parameter_binding: Literal['state', 'node_input'] = 'state',
 ) -> base_node.BaseNode:
   ...
 
@@ -78,7 +87,9 @@ def node(
     retry_config: RetryConfig | None = None,
     timeout: float | None = None,
     parallel_worker: bool = False,
+    max_parallel_workers: int | None = None,
     auth_config: AuthConfig | None = None,
+    parameter_binding: Literal['state', 'node_input'] = 'state',
 ) -> Any:
   """Decorator or function to wrap a NodeLike in a node or override its properties.
 
@@ -105,14 +116,32 @@ def node(
       wrapped node.
     timeout: If provided, overrides the timeout property of the wrapped node.
     parallel_worker: If True, wraps the node in a _ParallelWorker.
-    auth_config: If provided, the framework requests user authentication
-      before running the node. Requires rerun_on_resume=True.
+    auth_config: If provided, the framework requests user authentication before
+      running the node. Requires rerun_on_resume=True.
+    parameter_binding: How function parameters are bound. ``'state'`` (default)
+      binds parameters from ``ctx.state``. ``'node_input'`` binds parameters
+      from ``node_input`` dict and infers ``input_schema`` / ``output_schema``
+      from the function signature (used when the node acts as an agent's tool).
 
   Returns:
     If used as a decorator factory (@node() or @node(...)), returns a decorator.
     If used as a decorator (@node) or function (node(node_like, ...)), returns
     a BaseNode instance.
+
+  Raises:
+    WorkflowConfigurationError: If max_parallel_workers is set without
+      parallel_worker=True, or is less than 1.
   """
+
+  if max_parallel_workers is not None:
+    if not parallel_worker:
+      raise WorkflowConfigurationError(
+          'max_parallel_workers can only be set when parallel_worker is True.'
+      )
+    if max_parallel_workers < 1:
+      raise WorkflowConfigurationError(
+          'max_parallel_workers must be greater than or equal to 1.'
+      )
 
   def wrapper(
       func: T,
@@ -126,9 +155,12 @@ def node(
         retry_config=retry_config,
         timeout=timeout,
         auth_config=auth_config,
+        parameter_binding=parameter_binding,
     )
     if parallel_worker:
-      return parallel_worker_lib._ParallelWorker(node=built_node)
+      return parallel_worker_lib._ParallelWorker(
+          node=built_node, max_parallel_workers=max_parallel_workers
+      )
     return built_node
 
   if node_like is None:
@@ -142,9 +174,12 @@ def node(
         retry_config=retry_config,
         timeout=timeout,
         auth_config=auth_config,
+        parameter_binding=parameter_binding,
     )
     if parallel_worker:
-      return parallel_worker_lib._ParallelWorker(node=built_node)
+      return parallel_worker_lib._ParallelWorker(
+          node=built_node, max_parallel_workers=max_parallel_workers
+      )
     return built_node
 
 
@@ -153,10 +188,33 @@ class Node(base_node.BaseNode):
 
   Subclasses can directly benefit from advanced flags like parallel_worker
   by implementing the run_node_impl() method.
+
+  Attributes:
+    parallel_worker: Whether to run this node once per item of a list input.
+    max_parallel_workers: The maximum number of items to run at once. None is
+      not an unset value waiting to be filled in later: it means no limit on
+      concurrency, so the field stays optional.
   """
 
   parallel_worker: bool = Field(default=False, frozen=True)
+  max_parallel_workers: int | None = Field(default=None, frozen=True)
+  # None until model_post_init runs, and set there only when parallel_worker
+  # is True. A node that is not a parallel worker never has an inner node, so
+  # this cannot be made required.
   _inner_node: base_node.BaseNode | None = PrivateAttr(default=None)
+
+  @model_validator(mode='after')
+  def _validate_parallel_worker_config(self) -> Node:
+    if self.max_parallel_workers is not None:
+      if not self.parallel_worker:
+        raise WorkflowConfigurationError(
+            'max_parallel_workers can only be set when parallel_worker is True.'
+        )
+      if self.max_parallel_workers < 1:
+        raise WorkflowConfigurationError(
+            'max_parallel_workers must be greater than or equal to 1.'
+        )
+    return self
 
   def model_post_init(self, __context: Any) -> None:
     super().model_post_init(__context)
@@ -166,23 +224,27 @@ class Node(base_node.BaseNode):
       # to avoid infinite recursion when its run() method is called.
       # The cloned node preserves the class identity and behavior of the
       # original (essential for LlmAgent and Workflow subclasses).
-      worker_node = self.model_copy(update={"parallel_worker": False})
+      worker_node = self.model_copy(update={'parallel_worker': False})
 
-      inner = parallel_worker_lib._ParallelWorker(node=worker_node)
+      inner = parallel_worker_lib._ParallelWorker(
+          node=worker_node, max_parallel_workers=self.max_parallel_workers
+      )
       self._inner_node = inner
       # Synchronize rerun_on_resume with the inner node.
       self.rerun_on_resume = inner.rerun_on_resume
 
   @override
   def model_copy(
-      self, *, update: dict[str, Any] | None = None, deep: bool = False
-  ) -> Any:
+      self, *, update: Mapping[str, Any] | None = None, deep: bool = False
+  ) -> Node:
     """Clones the node with updated fields."""
     copied = super().model_copy(update=update, deep=deep)
 
     if copied.parallel_worker:
-      worker_node = copied.model_copy(update={"parallel_worker": False})
-      copied._inner_node = parallel_worker_lib._ParallelWorker(node=worker_node)
+      worker_node = copied.model_copy(update={'parallel_worker': False})
+      copied._inner_node = parallel_worker_lib._ParallelWorker(
+          node=worker_node, max_parallel_workers=copied.max_parallel_workers
+      )
       copied.rerun_on_resume = copied._inner_node.rerun_on_resume
 
     return copied
@@ -195,7 +257,7 @@ class Node(base_node.BaseNode):
     Subclasses can directly benefit from advanced flags like parallel_worker
     by providing their custom execution logic here.
     """
-    raise NotImplementedError("run_node_impl must be implemented.")
+    raise NotImplementedError('run_node_impl must be implemented.')
     yield
 
   @override
@@ -205,7 +267,9 @@ class Node(base_node.BaseNode):
     """Dispatches to run_node_impl() or parallel_worker inner node."""
     if self.parallel_worker:
       if self._inner_node is None:
-        raise ValueError("inner_node is not initialized for parallel worker.")
+        raise WorkflowInvariantError(
+            'inner_node is not initialized for parallel worker.'
+        )
       async for output in self._inner_node.run(ctx=ctx, node_input=node_input):
         yield output
     else:

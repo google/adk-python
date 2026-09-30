@@ -14,8 +14,8 @@
 
 from __future__ import annotations
 
-import enum
 import logging
+from typing import Any
 
 from google.auth.credentials import Credentials
 from google.cloud.bigtable import enums
@@ -25,7 +25,7 @@ from . import client
 logger = logging.getLogger(f"google_adk.{__name__}")
 
 
-def list_instances(project_id: str, credentials: Credentials) -> dict:
+def list_instances(project_id: str, credentials: Credentials) -> dict[str, Any]:
   """List Bigtable instance ids in a Google Cloud project.
 
   Args:
@@ -86,7 +86,7 @@ def list_instances(project_id: str, credentials: Credentials) -> dict:
 
 def get_instance_info(
     project_id: str, instance_id: str, credentials: Credentials
-) -> dict:
+) -> dict[str, Any]:
   """Get metadata information about a Bigtable instance.
 
   Args:
@@ -128,7 +128,7 @@ def get_instance_info(
 
 def list_tables(
     project_id: str, instance_id: str, credentials: Credentials
-) -> dict:
+) -> dict[str, Any]:
   """List tables and their metadata in a Bigtable instance.
 
   Args:
@@ -182,7 +182,7 @@ def get_table_info(
     instance_id: str,
     table_id: str,
     credentials: Credentials,
-) -> dict:
+) -> dict[str, Any]:
   """Get metadata information about a Bigtable table.
 
   Args:
@@ -230,7 +230,7 @@ def get_table_info(
 
 
 def _enum_name_from_value(
-    enum_class: type[enum.Enum], value: int, prefix: str = "UNKNOWN"
+    enum_class: type[object], value: int, prefix: str = "UNKNOWN"
 ) -> str:
   for attr_name in dir(enum_class):
     if not attr_name.startswith("_"):
@@ -241,7 +241,7 @@ def _enum_name_from_value(
 
 def list_clusters(
     project_id: str, instance_id: str, credentials: Credentials
-) -> dict:
+) -> dict[str, Any]:
   """List clusters and their metadata in a Bigtable instance.
 
   Args:
@@ -315,7 +315,7 @@ def get_cluster_info(
     instance_id: str,
     cluster_id: str,
     credentials: Credentials,
-) -> dict:
+) -> dict[str, Any]:
   """Get detailed metadata information about a Bigtable cluster.
 
   Args:

@@ -22,13 +22,13 @@ from typing import Optional
 
 from google.adk.agents.context import Context as WorkflowContext
 from google.adk.agents.invocation_context import InvocationContext as BaseInvocationContext
-from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import App
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
+from google.adk.live import LiveRequestQueue
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.base_llm_connection import BaseLlmConnection

@@ -28,6 +28,8 @@ from ...apps.app import App
 class BaseAgentLoader(ABC):
   """Abstract base class for agent loaders."""
 
+  _allow_special_agents: bool = False
+
   @abstractmethod
   def load_agent(self, agent_name: str) -> Union[BaseAgent, App]:
     """Loads an instance of an agent with the given name."""

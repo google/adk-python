@@ -14,12 +14,19 @@
 
 from __future__ import annotations
 
+from google.adk.evaluation.eval_config import _DEFAULT_EFFICIENCY_METRICS
 from google.adk.evaluation.eval_config import _DEFAULT_EVAL_CONFIG
 from google.adk.evaluation.eval_config import EvalConfig
 from google.adk.evaluation.eval_config import get_eval_metrics_from_config
 from google.adk.evaluation.eval_config import get_evaluation_criteria_or_default
+from google.adk.evaluation.eval_metrics import EvalMetric
+from google.adk.evaluation.eval_metrics import JudgeModelOptions
+from google.adk.evaluation.eval_metrics import LlmAsAJudgeCriterion
 from google.adk.evaluation.eval_rubrics import Rubric
 from google.adk.evaluation.eval_rubrics import RubricContent
+from google.adk.evaluation.simulation._llm_audio_user_simulator import LlmAudioUserSimulatorConfig
+from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBackedUserSimulatorConfig
+from pydantic import ValidationError
 import pytest
 
 
@@ -75,7 +82,9 @@ def test_get_eval_metrics_from_config():
   )
   eval_metrics = get_eval_metrics_from_config(eval_config)
 
-  assert len(eval_metrics) == 4
+  # The configured metrics come first, in declaration order, followed by the
+  # auto-appended informational efficiency metrics.
+  assert len(eval_metrics) == 4 + len(_DEFAULT_EFFICIENCY_METRICS)
   assert eval_metrics[0].metric_name == "tool_trajectory_avg_score"
   assert eval_metrics[0].threshold == 1.0
   assert eval_metrics[0].criterion.threshold == 1.0
@@ -98,6 +107,9 @@ def test_get_eval_metrics_from_config():
   )
   assert len(eval_metrics[3].criterion.rubrics) == 1
   assert eval_metrics[3].criterion.rubrics[0] == rubric_1
+  assert [m.metric_name for m in eval_metrics[4:]] == list(
+      _DEFAULT_EFFICIENCY_METRICS
+  )
 
 
 def test_get_eval_metrics_from_config_with_custom_metrics():
@@ -119,7 +131,9 @@ def test_get_eval_metrics_from_config_with_custom_metrics():
   )
   eval_metrics = get_eval_metrics_from_config(eval_config)
 
-  assert len(eval_metrics) == 2
+  # The 2 configured custom metrics come first, then the auto-appended
+  # informational efficiency metrics (which carry no custom function path).
+  assert len(eval_metrics) == 2 + len(_DEFAULT_EFFICIENCY_METRICS)
   assert eval_metrics[0].metric_name == "custom_metric_1"
   assert eval_metrics[0].threshold == 1.0
   assert eval_metrics[0].criterion.threshold == 1.0
@@ -128,9 +142,291 @@ def test_get_eval_metrics_from_config_with_custom_metrics():
   assert eval_metrics[1].threshold == 0.5
   assert eval_metrics[1].criterion.threshold == 0.5
   assert eval_metrics[1].custom_function_path == "path/to/custom/metric_2"
+  assert [m.metric_name for m in eval_metrics[2:]] == list(
+      _DEFAULT_EFFICIENCY_METRICS
+  )
+  assert all(m.custom_function_path is None for m in eval_metrics[2:])
 
 
 def test_get_eval_metrics_from_config_empty_criteria():
   eval_config = EvalConfig(criteria={})
   eval_metrics = get_eval_metrics_from_config(eval_config)
-  assert not eval_metrics
+  # Even with no criteria, the informational efficiency metrics are reported.
+  assert [m.metric_name for m in eval_metrics] == list(
+      _DEFAULT_EFFICIENCY_METRICS
+  )
+
+
+def test_efficiency_metrics_are_appended_and_informational():
+  """The efficiency metrics are always added, with no threshold or criterion."""
+  eval_metrics = get_eval_metrics_from_config(
+      EvalConfig(criteria={"response_match_score": 0.8})
+  )
+
+  names = [m.metric_name for m in eval_metrics]
+  for metric_name in _DEFAULT_EFFICIENCY_METRICS:
+    assert metric_name in names
+
+  efficiency_metrics = [
+      m for m in eval_metrics if m.metric_name in _DEFAULT_EFFICIENCY_METRICS
+  ]
+  # Informational: no threshold or criterion is attached, so they never gate
+  # pass/fail.
+  assert all(m.threshold is None for m in efficiency_metrics)
+  assert all(m.criterion is None for m in efficiency_metrics)
+
+
+def test_named_efficiency_metric_is_not_duplicated():
+  """Naming an always-on metric in the config does not add a second copy.
+
+  The threshold is what makes the entry parse; the metric rejects one later,
+  at evaluator construction, which is not what this test covers.
+  """
+  eval_config = EvalConfig(criteria={"token_usage_v1": 1.0})
+
+  eval_metrics = get_eval_metrics_from_config(eval_config)
+
+  token_usage_metrics = [
+      m for m in eval_metrics if m.metric_name == "token_usage_v1"
+  ]
+  assert len(token_usage_metrics) == 1
+  # The other efficiency metrics are still auto-appended.
+  names = [m.metric_name for m in eval_metrics]
+  for metric_name in _DEFAULT_EFFICIENCY_METRICS:
+    assert metric_name in names
+
+
+def test_eval_metric_dump_preserves_concrete_criterion_fields():
+  """Serializing a metric must not degrade its criterion to the base class."""
+  eval_metric = EvalMetric(
+      metric_name="final_response_match_v2",
+      criterion=LlmAsAJudgeCriterion(
+          threshold=0.8,
+          judge_model_options=JudgeModelOptions(
+              judge_model="my-judge", num_samples=3
+          ),
+      ),
+  )
+
+  dumped = eval_metric.model_dump()
+
+  assert dumped["criterion"]["judge_model_options"]["judge_model"] == "my-judge"
+  assert dumped["criterion"]["judge_model_options"]["num_samples"] == 3
+
+
+def test_eval_metric_criterion_survives_json_round_trip():
+  """A serialized metric still yields its concrete criterion when reloaded."""
+  eval_metric = EvalMetric(
+      metric_name="final_response_match_v2",
+      criterion=LlmAsAJudgeCriterion(
+          threshold=0.8,
+          judge_model_options=JudgeModelOptions(judge_model="my-judge"),
+      ),
+  )
+
+  restored = EvalMetric.model_validate_json(eval_metric.model_dump_json())
+  criterion = LlmAsAJudgeCriterion.model_validate(
+      restored.criterion.model_dump()
+  )
+
+  assert criterion.judge_model_options.judge_model == "my-judge"
+
+
+@pytest.mark.parametrize("num_samples", [0, -1])
+def test_judge_model_options_rejects_non_positive_num_samples(num_samples):
+  """num_samples <= 0 must be rejected, matching parallelism_limit's own ge=1.
+
+  A non-positive judge sample count is never a legitimate value -- it causes
+  LlmAsJudge.evaluate_invocations to silently drop the invocation from the
+  aggregated result with no error and no NOT_EVALUATED marker.
+  """
+  with pytest.raises(ValidationError, match="greater than or equal to 1"):
+    JudgeModelOptions(num_samples=num_samples)
+
+
+def test_eval_config_dump_preserves_concrete_criterion_fields():
+  """Criteria values keep their subclass fields, and plain thresholds survive."""
+  eval_config = EvalConfig(
+      criteria={
+          "tool_trajectory_avg_score": 1.0,
+          "final_response_match_v2": LlmAsAJudgeCriterion(
+              threshold=0.8,
+              judge_model_options=JudgeModelOptions(judge_model="my-judge"),
+          ),
+      }
+  )
+
+  dumped = eval_config.model_dump()
+
+  assert dumped["criteria"]["tool_trajectory_avg_score"] == 1.0
+  assert (
+      dumped["criteria"]["final_response_match_v2"]["judge_model_options"][
+          "judge_model"
+      ]
+      == "my-judge"
+  )
+
+
+# -----------------------------------------------------------------------------
+# `user_simulator_config` discriminator + backward-compat coverage
+# -----------------------------------------------------------------------------
+
+
+def test_user_simulator_config_default_is_none():
+  """A brand-new EvalConfig has no user simulator config by default."""
+  eval_config = EvalConfig()
+  assert eval_config.user_simulator_config is None
+
+
+def test_user_simulator_config_json_with_explicit_type():
+  """A JSON config that carries `type=llm_backed` should deserialize to the
+
+  concrete subclass, not just the base.
+  """
+  payload = (
+      '{"criteria": {"tool_trajectory_avg_score": 1.0},'
+      ' "userSimulatorConfig": {"type": "llm_backed",'
+      ' "model": "my-model", "maxAllowedInvocations": 5}}'
+  )
+  eval_config = EvalConfig.model_validate_json(payload)
+
+  assert isinstance(
+      eval_config.user_simulator_config, LlmBackedUserSimulatorConfig
+  )
+  assert eval_config.user_simulator_config.type == "llm_backed"
+  assert eval_config.user_simulator_config.model == "my-model"
+  assert eval_config.user_simulator_config.max_allowed_invocations == 5
+
+
+def test_user_simulator_config_json_with_llm_audio_type():
+  """A JSON config that carries `type=llm_audio` should deserialize to the
+
+  `LlmAudioUserSimulatorConfig` subclass via the `type` discriminator.
+  """
+  payload = (
+      '{"criteria": {"tool_trajectory_avg_score": 1.0},'
+      ' "userSimulatorConfig": {"type": "llm_audio",'
+      ' "model": "my-model", "maxAllowedInvocations": 5}}'
+  )
+  eval_config = EvalConfig.model_validate_json(payload)
+
+  assert isinstance(
+      eval_config.user_simulator_config, LlmAudioUserSimulatorConfig
+  )
+  assert eval_config.user_simulator_config.type == "llm_audio"
+  assert eval_config.user_simulator_config.model == "my-model"
+  assert eval_config.user_simulator_config.max_allowed_invocations == 5
+
+
+def test_user_simulator_config_json_without_type_backward_compat():
+  """Pre-discriminator JSON (no `type` field) must still deserialize into
+
+  `LlmBackedUserSimulatorConfig` -- this is the backward-compat contract.
+  """
+  # Note the ABSENCE of `type`: this shape is what existing configs on disk
+  # look like today.
+  payload = (
+      '{"criteria": {"tool_trajectory_avg_score": 1.0},'
+      ' "userSimulatorConfig": {"model": "legacy-model"}}'
+  )
+  eval_config = EvalConfig.model_validate_json(payload)
+
+  assert isinstance(
+      eval_config.user_simulator_config, LlmBackedUserSimulatorConfig
+  )
+  assert eval_config.user_simulator_config.type == "llm_backed"
+  assert eval_config.user_simulator_config.model == "legacy-model"
+
+
+def test_user_simulator_config_json_without_type_snake_case():
+  """The default-type injector must handle snake_case JSON keys too, since
+
+  users may serialize with `by_alias=False`.
+  """
+  payload = (
+      '{"criteria": {"tool_trajectory_avg_score": 1.0},'
+      ' "user_simulator_config": {"model": "legacy-model-snake"}}'
+  )
+  eval_config = EvalConfig.model_validate_json(payload)
+
+  assert isinstance(
+      eval_config.user_simulator_config, LlmBackedUserSimulatorConfig
+  )
+  assert eval_config.user_simulator_config.model == "legacy-model-snake"
+
+
+def test_user_simulator_config_json_with_explicit_null_type():
+  """`type: null` in JSON (the shape produced by a `BaseUserSimulatorConfig`
+
+  whose default `type=None` gets serialized) must be treated the same as a
+  missing `type` key: default to the legacy subclass.
+  """
+  payload = (
+      '{"criteria": {},'
+      ' "userSimulatorConfig": {"type": null, "model": "explicit-null"}}'
+  )
+  eval_config = EvalConfig.model_validate_json(payload)
+
+  assert isinstance(
+      eval_config.user_simulator_config, LlmBackedUserSimulatorConfig
+  )
+  assert eval_config.user_simulator_config.type == "llm_backed"
+  assert eval_config.user_simulator_config.model == "explicit-null"
+
+
+def test_user_simulator_config_json_with_unknown_type_raises():
+  """An unknown discriminator value must fail validation loudly."""
+  payload = (
+      '{"criteria": {}, "userSimulatorConfig": {"type": "typo_type_name"}}'
+  )
+  with pytest.raises(ValidationError):
+    EvalConfig.model_validate_json(payload)
+
+
+def test_user_simulator_config_round_trip_via_model_dump_json():
+  """Serialize -> deserialize preserves the concrete subclass (and the
+
+  `type` tag survives the round-trip).
+  """
+  original = EvalConfig(
+      user_simulator_config=LlmBackedUserSimulatorConfig(
+          model="round-trip-model"
+      )
+  )
+  restored = EvalConfig.model_validate_json(original.model_dump_json())
+  assert isinstance(
+      restored.user_simulator_config, LlmBackedUserSimulatorConfig
+  )
+  assert restored.user_simulator_config.model == "round-trip-model"
+  assert restored.user_simulator_config.type == "llm_backed"
+
+
+def test_user_simulator_config_python_construction():
+  """Direct Python construction with a concrete subclass instance also
+
+  works -- the discriminator on `Field` doesn't interfere with that path.
+  """
+  eval_config = EvalConfig(
+      user_simulator_config=LlmBackedUserSimulatorConfig(model="py-model"),
+  )
+  assert isinstance(
+      eval_config.user_simulator_config, LlmBackedUserSimulatorConfig
+  )
+  assert eval_config.user_simulator_config.model == "py-model"
+
+
+from google.adk.evaluation.eval_config import LiveModelConfig
+
+
+def test_live_model_config_defaults_to_none():
+  eval_config = EvalConfig(criteria={})
+  assert eval_config.live_model_config is None
+
+
+def test_live_model_config_from_json():
+  eval_config = EvalConfig.model_validate({
+      "criteria": {},
+      "liveModelConfig": {"timeoutSeconds": 600},
+  })
+  assert isinstance(eval_config.live_model_config, LiveModelConfig)
+  assert eval_config.live_model_config.timeout_seconds == 600

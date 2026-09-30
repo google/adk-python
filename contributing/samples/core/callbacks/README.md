@@ -90,7 +90,7 @@ def after_model_callback(
     usage = llm_response.usage_metadata
     usage_text = f"\n\nafter_model_callback: [Token Usage: Input={usage.prompt_token_count}, Output={usage.candidates_token_count}]"
 
-    if not llm_response.content:
+    if not llm_response.content or not llm_response.content.parts:
       llm_response.content = types.Content(role="model", parts=[])
 
     llm_response.content.parts.append(types.Part.from_text(text=usage_text))

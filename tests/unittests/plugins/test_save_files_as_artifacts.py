@@ -14,7 +14,9 @@
 from __future__ import annotations
 
 from unittest.mock import AsyncMock
+from unittest.mock import MagicMock
 from unittest.mock import Mock
+from unittest.mock import patch
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
@@ -336,6 +338,126 @@ class TestSaveFilesAsArtifactsPlugin:
     assert plugin.name == "save_files_as_artifacts_plugin"
 
   @pytest.mark.asyncio
+  async def test_file_size_exceeds_limit(self):
+    """Test that files exceeding 20MB limit are rejected."""
+    # Create a file larger than 20MB (20 * 1024 * 1024 bytes)
+    large_file_data = b"x" * (21 * 1024 * 1024)  # 21 MB
+    inline_data = types.Blob(
+        display_name="large_file.pdf",
+        data=large_file_data,
+        mime_type="application/pdf",
+    )
+
+    user_message = types.Content(parts=[types.Part(inline_data=inline_data)])
+
+    result = await self.plugin.on_user_message_callback(
+        invocation_context=self.mock_context, user_message=user_message
+    )
+
+    # Should not save the artifact
+    self.mock_context.artifact_service.save_artifact.assert_not_called()
+
+    # Should return error message
+    assert result is not None
+    assert len(result.parts) == 1
+    assert "[Upload Error:" in result.parts[0].text
+    assert "large_file.pdf" in result.parts[0].text
+    assert "exceeds the maximum supported size of 20MB" in result.parts[0].text
+
+  @pytest.mark.asyncio
+  async def test_file_size_at_limit(self):
+    """Test that files exactly at 20MB limit are processed successfully."""
+    # Create a file exactly 20MB (20 * 1024 * 1024 bytes)
+    file_data = b"x" * (20 * 1024 * 1024)  # Exactly 20 MB
+    inline_data = types.Blob(
+        display_name="max_size_file.pdf",
+        data=file_data,
+        mime_type="application/pdf",
+    )
+
+    user_message = types.Content(parts=[types.Part(inline_data=inline_data)])
+
+    result = await self.plugin.on_user_message_callback(
+        invocation_context=self.mock_context, user_message=user_message
+    )
+
+    # Should save the artifact since it's at the limit
+    self.mock_context.artifact_service.save_artifact.assert_called_once()
+    assert result is not None
+    assert len(result.parts) == 2
+    assert result.parts[0].text == '[Uploaded Artifact: "max_size_file.pdf"]'
+    assert result.parts[1].file_data is not None
+
+  @pytest.mark.asyncio
+  async def test_file_size_just_over_limit(self):
+    """Test that files just over 20MB limit are rejected."""
+    # Create a file just over 20MB
+    large_file_data = b"x" * (20 * 1024 * 1024 + 1)  # 20 MB + 1 byte
+    inline_data = types.Blob(
+        display_name="slightly_too_large.pdf",
+        data=large_file_data,
+        mime_type="application/pdf",
+    )
+
+    user_message = types.Content(parts=[types.Part(inline_data=inline_data)])
+
+    result = await self.plugin.on_user_message_callback(
+        invocation_context=self.mock_context, user_message=user_message
+    )
+
+    # Should not save the artifact
+    self.mock_context.artifact_service.save_artifact.assert_not_called()
+
+    # Should return error
+    assert result is not None
+    assert len(result.parts) == 1
+    assert "[Upload Error:" in result.parts[0].text
+    assert "slightly_too_large.pdf" in result.parts[0].text
+    assert "exceeds the maximum supported size of 20MB" in result.parts[0].text
+
+  @pytest.mark.asyncio
+  async def test_mixed_file_sizes(self):
+    """Test processing multiple files with mixed sizes."""
+    # Small file (should succeed with inline_data)
+    small_file_data = b"x" * (5 * 1024 * 1024)  # 5 MB
+    small_inline_data = types.Blob(
+        display_name="small.pdf",
+        data=small_file_data,
+        mime_type="application/pdf",
+    )
+
+    # Large file (should fail)
+    large_file_data = b"x" * (25 * 1024 * 1024)  # 25 MB
+    large_inline_data = types.Blob(
+        display_name="large.pdf",
+        data=large_file_data,
+        mime_type="application/pdf",
+    )
+
+    user_message = types.Content(
+        parts=[
+            types.Part(inline_data=small_inline_data),
+            types.Part(inline_data=large_inline_data),
+        ]
+    )
+
+    result = await self.plugin.on_user_message_callback(
+        invocation_context=self.mock_context, user_message=user_message
+    )
+
+    # Should only save the small file
+    self.mock_context.artifact_service.save_artifact.assert_called_once()
+
+    # Should return success messages for small file and error for large file
+    assert result is not None
+    assert (
+        len(result.parts) == 3
+    )  # [small placeholder, small file_data, large error]
+    assert '[Uploaded Artifact: "small.pdf"]' in result.parts[0].text
+    assert result.parts[1].file_data is not None
+    assert "[Upload Error:" in result.parts[2].text
+    assert "large.pdf" in result.parts[2].text
+
   async def test_artifact_delta_reporting(self):
     """Test that the artifact delta is written to state then event actions."""
 

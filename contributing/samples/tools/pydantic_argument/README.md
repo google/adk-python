@@ -94,7 +94,7 @@ def create_entity_profile(entity: Union[UserProfile, CompanyProfile]) -> dict:
 
    ```bash
    cd contributing/samples
-   python -m pydantic_argument.main
+   python -m tools.pydantic_argument.main
    ```
 
 ## Expected Output

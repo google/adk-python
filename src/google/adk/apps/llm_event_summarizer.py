@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from typing import Optional
 
-from google.genai import types
 from google.genai.types import Content
 from google.genai.types import Part
 
@@ -51,7 +50,13 @@ class LlmEventSummarizer(BaseEventsSummarizer):
       ' It may or may not start from a compacted history. Please identify and'
       ' reiterate the user request, summarize the context so far, focusing on'
       ' key decisions made and information obtained, as well as any unresolved'
-      ' questions or tasks. The summary should be concise and capture the'
+      ' questions or tasks. '
+      'CRITICAL INSTRUCTIONS: '
+      '1. Explicitly identify and state the primary language used by the user '
+      'at the top of your summary (e.g., "Conversation Language: English"). '
+      '2. If the agent called any tools, accurately list the exact tool names '
+      'used to maintain tool grounding. '
+      'The rest of the summary should be concise and capture the'
       ' essence of the interaction.\n\n{conversation_history}'
   )
 
@@ -82,11 +87,18 @@ class LlmEventSummarizer(BaseEventsSummarizer):
     Thoughts carry the agent's analysis of tool responses, and tool calls and
     responses carry the evidence retrieved so far, so all three are included.
     Thoughts emitted by a compaction event are skipped so a prior summary's
-    reasoning does not leak into the next summary.
+    reasoning does not leak into the next summary. Credential-request events
+    are skipped because their payload is the end user's credential rather than
+    conversation context, which is why the request path drops them too.
     """
+    # Deferred: the context package imports this module via apps.compaction.
+    from ..flows.llm_flows.context._contents import _is_auth_event
+
     formatted_history = []
     for event in events:
       if not (event.content and event.content.parts):
+        continue
+      if _is_auth_event(event):
         continue
       is_compaction = bool(event.actions and event.actions.compaction)
       for part in event.content.parts:

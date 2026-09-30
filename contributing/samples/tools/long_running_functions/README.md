@@ -24,8 +24,8 @@ sequenceDiagram
 
     User->>Agent: "Export my data to CSV"
     Agent->>Tool: export_data(export_type="csv")
-    Tool-->>Agent: {"status": "pending", ...}
-    Agent-->>User: "Started csv export. Ticket ID: export-12345"
+    Tool-->>Agent: {"status": "in-progress", "progress": "0%", ...}
+    Agent-->>User: "Started the csv export. This may take some time."
 ```
 
 ## How To

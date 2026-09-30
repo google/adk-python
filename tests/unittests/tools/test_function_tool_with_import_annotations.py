@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 from typing import Dict
+from typing import Optional
 
 from google.adk.tools import _automatic_function_calling_util
 from google.adk.tools.function_tool import FunctionTool
@@ -159,6 +160,26 @@ def test_string_annotation_mixed_parameters_vertex():
   assert declaration.response.type == types.Type.STRING
 
 
+def test_pipe_union_list_annotation_parameter_vertex():
+  """Test function with pipe union list parameter annotation."""
+
+  def test_function(file_patterns: list[str] | None = None) -> None:
+    """A test function that accepts optional file patterns."""
+    pass
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      test_function, GoogleLLMVariant.VERTEX_AI
+  )
+
+  assert declaration.name == 'test_function'
+  assert declaration.parameters.type == 'OBJECT'
+  file_patterns_schema = declaration.parameters.properties['file_patterns']
+  assert file_patterns_schema.type == types.Type.ARRAY
+  assert file_patterns_schema.items.type == types.Type.STRING
+  assert file_patterns_schema.nullable
+  assert declaration.parameters.required == []
+
+
 def test_string_annotation_no_params_vertex():
   """Test function with no parameters but string annotation return."""
 
@@ -207,5 +228,59 @@ def test_preprocess_args_with_list_of_pydantic_models_and_annotations():
   assert len(processed_args['items']) == 2
   assert all(isinstance(item, ItemModel) for item in processed_args['items'])
   assert processed_args['items'][0].name == 'Burger'
+  assert processed_args['items'][0].quantity == 10
+  assert processed_args['items'][1].quantity == 5
+
+
+def test_preprocess_args_with_optional_pydantic_model_and_annotations():
+  """Test _preprocess_args converts dict to Optional[Pydantic] model with string annotations."""
+
+  def function_with_optional(item: Optional[ItemModel] = None) -> int:
+    return item.quantity if item else 0
+
+  tool = FunctionTool(function_with_optional)
+  input_args = {'item': {'name': 'Burger', 'quantity': 10}}
+  processed_args = tool._preprocess_args(input_args)
+
+  assert isinstance(processed_args['item'], ItemModel)
+  assert processed_args['item'].name == 'Burger'
+  assert processed_args['item'].quantity == 10
+
+
+def test_preprocess_args_with_pipe_union_pydantic_model_and_annotations():
+  """Test _preprocess_args converts dict to BaseModel | None with string annotations."""
+
+  def function_with_pipe_union(item: ItemModel | None = None) -> int:
+    return item.quantity if item else 0
+
+  tool = FunctionTool(function_with_pipe_union)
+  input_args = {'item': {'name': 'Pizza', 'quantity': 5}}
+  processed_args = tool._preprocess_args(input_args)
+
+  assert isinstance(processed_args['item'], ItemModel)
+  assert processed_args['item'].name == 'Pizza'
+  assert processed_args['item'].quantity == 5
+
+
+def test_preprocess_args_with_optional_list_of_pydantic_models_and_annotations():
+  """Test _preprocess_args converts dicts in Optional[list[BaseModel]] with string annotations."""
+
+  def function_with_optional_list(
+      items: Optional[list[ItemModel]] = None,
+  ) -> int:
+    return sum(item.quantity for item in items) if items else 0
+
+  tool = FunctionTool(function_with_optional_list)
+  input_args = {
+      'items': [
+          {'name': 'Burger', 'quantity': 10},
+          {'name': 'Pizza', 'quantity': 5},
+      ]
+  }
+  processed_args = tool._preprocess_args(input_args)
+
+  assert isinstance(processed_args['items'], list)
+  assert len(processed_args['items']) == 2
+  assert all(isinstance(item, ItemModel) for item in processed_args['items'])
   assert processed_args['items'][0].quantity == 10
   assert processed_args['items'][1].quantity == 5

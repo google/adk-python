@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import importlib
 from typing import TYPE_CHECKING
 
 from .auth_credential import AuthCredential
@@ -30,7 +29,9 @@ if TYPE_CHECKING:
   from .auth_handler import AuthHandler
 
 
-def __getattr__(name: str):
-  if name == 'AuthHandler':
-    return importlib.import_module(f'{__name__}.auth_handler').AuthHandler
-  raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
+def __getattr__(name: str) -> type[AuthHandler]:
+  if name == "AuthHandler":
+    from .auth_handler import AuthHandler
+
+    return AuthHandler
+  raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -14,6 +14,6 @@
 
 from __future__ import annotations
 
-import vertexai
-from vertexai.preview import example_stores
-from vertexai.preview import rag
+import vertexai as vertexai
+from vertexai.preview import example_stores as example_stores
+from vertexai.preview import rag as rag

@@ -54,16 +54,16 @@ graph TD
        approved_days: Optional[int] = Field(None)
    ```
 
-1. **Yield a RequestInput:** Pass the schema and optionally a `payload` for the client to display.
+1. **Return a RequestInput:** Pass the schema and optionally a `payload` for the client to display.
 
    ```python
    def evaluate_request(request: TimeOffRequest):
        # ... logic to check if manager review is needed ...
-       yield RequestInput(
+       return RequestInput(
            interrupt_id="manager_approval",
            message="Please review this time off request.",
            payload=request,
-           response_schema=TimeOffDecision.model_json_schema()
+           response_schema=TimeOffDecision,
        )
    ```
 

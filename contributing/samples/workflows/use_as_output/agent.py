@@ -15,8 +15,8 @@
 from google.adk import Agent
 from google.adk import Context
 from google.adk.workflow import node
+from google.adk.workflow import START
 from google.adk.workflow import Workflow
-from google.adk.workflow._base_node import START
 
 summarizer = Agent(
     name='summarizer',

@@ -56,9 +56,9 @@ def _make_litellm(model: str):
         ("gemini-2.5-flash", "1", True),
         ("gemini-2.5-flash", "0", False),
         ("gemini-2.5-flash", None, False),
-        ("gemini-1.5-pro", "1", False),
         ("gemini-1.5-pro", "0", False),
         ("gemini-1.5-pro", None, False),
+        ("gemini-early-exp", "1", True),
     ],
 )
 def test_can_use_output_schema_with_tools(
@@ -103,14 +103,35 @@ def test_can_use_output_schema_with_tools_claude(
         ("openai/gpt-4o", "1", True),
         ("openai/gpt-4o", "0", True),
         ("openai/gpt-4o", None, True),
-        ("anthropic/claude-3.7-sonnet", None, True),
+        ("anthropic/claude-3-opus-20240229", None, False),
+        ("bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0", None, False),
+        ("vertex_ai/claude-3-7-sonnet@20250219", None, False),
         ("fireworks_ai/llama-v3p1-70b", None, True),
+        ("openrouter/google/gemini-3.1-flash-lite", "1", False),
+        ("vertex_ai/gemini-2.5-flash", None, True),
+        ("azure/my-deployment", None, True),
+        ("azure/claude-migration", None, True),
+        ("openai/claude-replacement", None, True),
+        ("litellm_proxy/my-deployment", None, False),
+        ("litellm_proxy/azure/my-deployment", None, True),
+        ("openrouter/anthropic/claude-opus-4.7", None, False),
+        ("azure_ai/claude-opus-4-5", None, False),
+        ("openai/gpt-3.5-turbo", None, False),
     ],
 )
 def test_can_use_output_schema_with_tools_litellm(
     monkeypatch, model, env_value, expected
 ):
   """Test can_use_output_schema_with_tools with LiteLLM models."""
+  if "gpt-3.5-turbo" in model:
+    import litellm
+
+    monkeypatch.setattr(
+        litellm, "supports_response_schema", lambda *a, **kw: False
+    )
+    monkeypatch.setattr(
+        litellm, "get_model_info", lambda *a, **kw: {"mode": "chat"}
+    )
   litellm_model = _make_litellm(model)
   if env_value is not None:
     monkeypatch.setenv("GOOGLE_GENAI_USE_ENTERPRISE", env_value)

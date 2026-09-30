@@ -12,13 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from google.adk.sessions import database_session_service
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.migration import _schema_check_utils
 from google.adk.sessions.schemas import v0
+from google.adk.sessions.schemas import v1
 import pytest
+from sqlalchemy import create_engine
 from sqlalchemy import inspect
 from sqlalchemy import text
+from sqlalchemy.dialects import mysql
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.dialects import sqlite
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.schema import CreateIndex
+from sqlalchemy.schema import Index
 
 
 async def create_v0_db(db_path):
@@ -77,11 +86,19 @@ async def test_new_db_uses_latest_schema(tmp_path):
         lambda sync_conn: inspect(sync_conn).get_indexes('events')
     )
     assert any(
-        index['name'] == 'idx_events_app_user_session_ts'
+        index['name'] == 'idx_events_app_user_session_ts_id'
         and index['column_names']
-        == ['app_name', 'user_id', 'session_id', 'timestamp']
+        == ['app_name', 'user_id', 'session_id', 'timestamp', 'id']
         for index in event_indexes
     )
+    xinfo = await conn.run_sync(
+        lambda sync_conn: sync_conn.execute(
+            text("PRAGMA index_xinfo('idx_events_app_user_session_ts_id')")
+        ).fetchall()
+    )
+    col_desc = {row[2]: row[3] for row in xinfo if row[2]}
+    assert col_desc['timestamp'] == 1
+    assert col_desc['id'] == 1
   await engine.dispose()
 
 
@@ -192,7 +209,7 @@ async def test_prepare_tables_recreates_missing_latest_events_index(tmp_path):
 
   engine = create_async_engine(db_url)
   async with engine.begin() as conn:
-    await conn.execute(text('DROP INDEX idx_events_app_user_session_ts'))
+    await conn.execute(text('DROP INDEX idx_events_app_user_session_ts_id'))
   await engine.dispose()
 
   async with DatabaseSessionService(db_url) as session_service:
@@ -209,9 +226,9 @@ async def test_prepare_tables_recreates_missing_latest_events_index(tmp_path):
   await engine.dispose()
 
   assert any(
-      index['name'] == 'idx_events_app_user_session_ts'
+      index['name'] == 'idx_events_app_user_session_ts_id'
       and index['column_names']
-      == ['app_name', 'user_id', 'session_id', 'timestamp']
+      == ['app_name', 'user_id', 'session_id', 'timestamp', 'id']
       for index in event_indexes
   )
 
@@ -224,7 +241,7 @@ async def test_prepare_tables_recreates_missing_v0_events_index(tmp_path):
 
   engine = create_async_engine(db_url)
   async with engine.begin() as conn:
-    await conn.execute(text('DROP INDEX idx_events_app_user_session_ts'))
+    await conn.execute(text('DROP INDEX idx_events_app_user_session_ts_id'))
   await engine.dispose()
 
   async with DatabaseSessionService(db_url) as session_service:
@@ -244,8 +261,293 @@ async def test_prepare_tables_recreates_missing_v0_events_index(tmp_path):
   await engine.dispose()
 
   assert any(
-      index['name'] == 'idx_events_app_user_session_ts'
+      index['name'] == 'idx_events_app_user_session_ts_id'
       and index['column_names']
-      == ['app_name', 'user_id', 'session_id', 'timestamp']
+      == ['app_name', 'user_id', 'session_id', 'timestamp', 'id']
       for index in event_indexes
   )
+
+
+@pytest.mark.asyncio
+async def test_prepare_tables_adds_new_events_index_to_existing_db(tmp_path):
+  db_path = tmp_path / 'legacy_index.db'
+  db_url = f'sqlite+aiosqlite:///{db_path}'
+
+  # First create the db properly with DatabaseSessionService
+  async with DatabaseSessionService(db_url) as session_service:
+    await session_service.create_session(
+        app_name='my_app', user_id='test_user', session_id='s1'
+    )
+
+  # Simulate an existing database that had the old 4-column index
+  engine = create_async_engine(db_url)
+  async with engine.begin() as conn:
+    await conn.execute(text('DROP INDEX idx_events_app_user_session_ts_id'))
+    await conn.execute(
+        text(
+            'CREATE INDEX idx_events_app_user_session_ts ON events ('
+            'app_name, user_id, session_id, timestamp DESC)'
+        )
+    )
+  await engine.dispose()
+
+  # Connecting with DatabaseSessionService should create the new composite index
+  async with DatabaseSessionService(db_url) as session_service:
+    await session_service.create_session(
+        app_name='my_app', user_id='test_user', session_id='s2'
+    )
+
+  engine = create_async_engine(db_url)
+  async with engine.connect() as conn:
+    event_indexes = await conn.run_sync(
+        lambda sync_conn: inspect(sync_conn).get_indexes('events')
+    )
+  await engine.dispose()
+
+  index_names = {idx['name'] for idx in event_indexes}
+  assert 'idx_events_app_user_session_ts' in index_names
+  assert 'idx_events_app_user_session_ts_id' in index_names
+  composite_idx = next(
+      idx
+      for idx in event_indexes
+      if idx['name'] == 'idx_events_app_user_session_ts_id'
+  )
+  assert composite_idx['column_names'] == [
+      'app_name',
+      'user_id',
+      'session_id',
+      'timestamp',
+      'id',
+  ]
+
+  # Verify column sort directions in SQLite: 1 indicates DESC, 0 indicates ASC
+  async with engine.connect() as conn:
+    xinfo = await conn.run_sync(
+        lambda sync_conn: sync_conn.execute(
+            text("PRAGMA index_xinfo('idx_events_app_user_session_ts_id')")
+        ).fetchall()
+    )
+  col_desc = {row[2]: row[3] for row in xinfo if row[2]}
+  assert col_desc['timestamp'] == 1
+  assert col_desc['id'] == 1
+
+
+@pytest.mark.parametrize('dialect_name', ['mysql', 'postgresql', 'sqlite'])
+def test_storage_event_composite_index_preserves_desc_across_dialects(
+    dialect_name,
+):
+  """Ensures composite index compiles both timestamp and id as DESC across dialects."""
+  dialects = {
+      'mysql': mysql.dialect(),
+      'postgresql': postgresql.dialect(),
+      'sqlite': sqlite.dialect(),
+  }
+  dialect = dialects[dialect_name]
+  for schema_module in (v0, v1):
+    idx = next(
+        i
+        for i in schema_module.StorageEvent.__table__.indexes
+        if i.name == 'idx_events_app_user_session_ts_id'
+    )
+    ddl = str(CreateIndex(idx).compile(dialect=dialect))
+    assert 'timestamp DESC' in ddl
+    assert 'id DESC' in ddl
+
+
+def _run_sqlite_ddl(db_path, statements):
+  """Creates a local SQLite file and applies the given DDL statements."""
+  engine = create_engine(f'sqlite:///{db_path}')
+  try:
+    with engine.begin() as conn:
+      for statement in statements:
+        conn.execute(text(statement))
+  finally:
+    engine.dispose()
+
+
+_V0_EVENTS_TABLE_DDL = (
+    'CREATE TABLE events (id VARCHAR(128) PRIMARY KEY, actions BLOB)'
+)
+_V1_EVENTS_TABLE_DDL = (
+    'CREATE TABLE events (id VARCHAR(128) PRIMARY KEY, event_data TEXT)'
+)
+_METADATA_TABLE_DDL = (
+    'CREATE TABLE adk_internal_metadata ("key" VARCHAR(128) PRIMARY KEY,'
+    ' value VARCHAR(128))'
+)
+
+
+def test_get_db_schema_version_empty_db_defaults_to_latest(tmp_path):
+  """A database with neither marker is treated as brand new."""
+  db_path = tmp_path / 'empty.db'
+  _run_sqlite_ddl(db_path, ['CREATE TABLE unrelated (id INTEGER PRIMARY KEY)'])
+
+  assert (
+      _schema_check_utils.get_db_schema_version(f'sqlite:///{db_path}')
+      == _schema_check_utils.LATEST_SCHEMA_VERSION
+  )
+
+
+def test_get_db_schema_version_legacy_events_table_detects_v0(tmp_path):
+  """An events table with `actions` and no `event_data` is the pickle schema."""
+  db_path = tmp_path / 'legacy.db'
+  _run_sqlite_ddl(db_path, [_V0_EVENTS_TABLE_DDL])
+
+  assert (
+      _schema_check_utils.get_db_schema_version(f'sqlite:///{db_path}')
+      == _schema_check_utils.SCHEMA_VERSION_0_PICKLE
+  )
+
+
+@pytest.mark.parametrize(
+    'events_ddl',
+    [
+        _V1_EVENTS_TABLE_DDL,
+        # A table carrying both columns still has the JSON column, so it is
+        # not the pickle-only schema.
+        (
+            'CREATE TABLE events (id VARCHAR(128) PRIMARY KEY, actions BLOB,'
+            ' event_data TEXT)'
+        ),
+    ],
+)
+def test_get_db_schema_version_events_table_with_event_data_is_not_v0(
+    tmp_path, events_ddl
+):
+  """Only the `actions`-without-`event_data` shape counts as the v0 schema."""
+  db_path = tmp_path / 'json_events.db'
+  _run_sqlite_ddl(db_path, [events_ddl])
+
+  assert (
+      _schema_check_utils.get_db_schema_version(f'sqlite:///{db_path}')
+      == _schema_check_utils.LATEST_SCHEMA_VERSION
+  )
+
+
+def test_get_db_schema_version_metadata_row_wins_over_table_shape(tmp_path):
+  """The recorded version is authoritative even when the tables disagree."""
+  db_path = tmp_path / 'metadata_wins.db'
+  # v1-shaped events table, but the metadata table still records v0.
+  _run_sqlite_ddl(
+      db_path,
+      [
+          _V1_EVENTS_TABLE_DDL,
+          _METADATA_TABLE_DDL,
+          'INSERT INTO adk_internal_metadata ("key", value) VALUES'
+          f" ('{_schema_check_utils.SCHEMA_VERSION_KEY}',"
+          f" '{_schema_check_utils.SCHEMA_VERSION_0_PICKLE}')",
+      ],
+  )
+
+  assert (
+      _schema_check_utils.get_db_schema_version(f'sqlite:///{db_path}')
+      == _schema_check_utils.SCHEMA_VERSION_0_PICKLE
+  )
+
+
+def test_get_db_schema_version_metadata_without_version_row_raises(tmp_path):
+  """A metadata table missing the version row means a malformed database."""
+  db_path = tmp_path / 'malformed.db'
+  _run_sqlite_ddl(db_path, [_V0_EVENTS_TABLE_DDL, _METADATA_TABLE_DDL])
+
+  with pytest.raises(ValueError, match='Schema version not found'):
+    _schema_check_utils.get_db_schema_version(f'sqlite:///{db_path}')
+
+
+def test_get_db_schema_version_accepts_async_driver_url(tmp_path):
+  """An async driver URL is downgraded to its sync form before connecting."""
+  db_path = tmp_path / 'async_url.db'
+  _run_sqlite_ddl(db_path, [_V0_EVENTS_TABLE_DDL])
+
+  assert (
+      _schema_check_utils.get_db_schema_version(
+          f'sqlite+aiosqlite:///{db_path}'
+      )
+      == _schema_check_utils.SCHEMA_VERSION_0_PICKLE
+  )
+
+
+def test_get_db_schema_version_from_connection_uses_open_connection(tmp_path):
+  """The connection variant reports the same version without a new engine."""
+  db_path = tmp_path / 'from_connection.db'
+  _run_sqlite_ddl(db_path, [_V0_EVENTS_TABLE_DDL])
+
+  engine = create_engine(f'sqlite:///{db_path}')
+  try:
+    with engine.connect() as connection:
+      version = _schema_check_utils.get_db_schema_version_from_connection(
+          connection
+      )
+  finally:
+    engine.dispose()
+
+  assert version == _schema_check_utils.SCHEMA_VERSION_0_PICKLE
+
+
+def test_ensure_schema_indexes_exist_tolerates_concurrent_index_creation(
+    tmp_path, monkeypatch
+):
+  """If another container creates the index between checkfirst and DDL, it succeeds."""
+  db_path = tmp_path / 'concurrent_index.db'
+  engine = create_engine(f'sqlite:///{db_path}')
+  try:
+    with engine.begin() as connection:
+      v1.Base.metadata.create_all(bind=connection)
+
+    original_create = Index.create
+    raised_once = False
+
+    def racing_create(self, bind=None, checkfirst=False):
+      nonlocal raised_once
+      if not raised_once and self.name == 'idx_events_app_user_session_ts_id':
+        raised_once = True
+        assert bind is not None and bind.in_nested_transaction()
+        return original_create(self, bind=bind, checkfirst=False)
+      return original_create(self, bind=bind, checkfirst=checkfirst)
+
+    monkeypatch.setattr(Index, 'create', racing_create)
+
+    with engine.begin() as connection:
+      database_session_service._ensure_schema_indexes_exist(
+          connection, v1.Base.metadata
+      )
+    assert raised_once
+  finally:
+    engine.dispose()
+
+
+def test_ensure_schema_indexes_exist_reraises_when_index_missing(
+    tmp_path, monkeypatch
+):
+  """If index DDL fails and the index is still missing, the error is re-raised."""
+  db_path = tmp_path / 'failed_index.db'
+  engine = create_engine(f'sqlite:///{db_path}')
+  try:
+    with engine.begin() as connection:
+      v1.Base.metadata.create_all(bind=connection)
+      connection.execute(text('DROP INDEX idx_events_app_user_session_ts_id'))
+
+    original_create = Index.create
+
+    def failing_create(self, bind=None, checkfirst=False):
+      if self.name == 'idx_events_app_user_session_ts_id':
+        assert bind is not None and bind.in_nested_transaction()
+        bind.execute(
+            text(
+                'CREATE INDEX idx_events_app_user_session_ts_id '
+                'ON events (nonexistent_column)'
+            )
+        )
+      return original_create(self, bind=bind, checkfirst=checkfirst)
+
+    monkeypatch.setattr(Index, 'create', failing_create)
+
+    with (
+        pytest.raises(OperationalError, match='nonexistent_column'),
+        engine.begin() as connection,
+    ):
+      database_session_service._ensure_schema_indexes_exist(
+          connection, v1.Base.metadata
+      )
+  finally:
+    engine.dispose()

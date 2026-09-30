@@ -1,0 +1,4 @@
+# Workspace the Antigravity agent writes generated games into at runtime.
+game_repo/
+# Scratch files the Antigravity SDK harness writes under save_dir.
+trajectories/

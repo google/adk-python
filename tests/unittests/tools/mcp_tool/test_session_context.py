@@ -17,13 +17,21 @@ from __future__ import annotations
 import asyncio
 from contextlib import AsyncExitStack
 from datetime import timedelta
+import logging
+import time
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
+from google.adk.tools.mcp_tool.session_context import _connect
+from google.adk.tools.mcp_tool.session_context import _format_exception
+from google.adk.tools.mcp_tool.session_context import _read_timeout
+from google.adk.tools.mcp_tool.session_context import _warn_probe_unavailable
 from google.adk.tools.mcp_tool.session_context import SessionContext
+from google.adk.version import __version__
+import httpx
 from mcp import ClientSession
 import pytest
 
@@ -264,10 +272,13 @@ class TestSessionContext:
         mock_client, timeout=0.1, sse_read_timeout=None
     )
 
+    started = time.monotonic()
     with pytest.raises(ConnectionError) as exc_info:
       await session_context.start()
+    elapsed = time.monotonic() - started
 
     assert 'Failed to create MCP session' in str(exc_info.value)
+    assert elapsed < 1.0, f'start() took {elapsed:.1f}s; timeout was 0.1s'
 
   @pytest.mark.asyncio
   async def test_timeout_during_initialization(self):
@@ -415,10 +426,41 @@ class TestSessionContext:
 
       await session_context.start()
 
-      # Verify ClientSession was called with read_timeout_seconds for stdio
+      # _read_timeout, not a literal: TestReadTimeout owns the concrete type.
       call_args = mock_session_class.call_args
       assert 'read_timeout_seconds' in call_args.kwargs
-      assert call_args.kwargs['read_timeout_seconds'] == timedelta(seconds=5.0)
+      assert call_args.kwargs['read_timeout_seconds'] == _read_timeout(5.0)
+
+      await session_context.close()
+
+  @pytest.mark.asyncio
+  async def test_extra_transport_values_are_ignored(self):
+    """Extra transport values are ignored.
+
+    The streamable HTTP client yields a session-id callback after the read
+    and write streams, so the session takes only the first two values.
+    """
+    mock_client = MockClient(
+        transports=('read_stream', 'write_stream', 'get_session_id')
+    )
+    session_context = SessionContext(
+        mock_client, timeout=5.0, sse_read_timeout=None, is_stdio=False
+    )
+
+    mock_session = MockClientSession()
+
+    with patch(
+        'google.adk.tools.mcp_tool.session_context.ClientSession'
+    ) as mock_session_class:
+      mock_session_class.return_value = mock_session
+
+      session = await session_context.start()
+
+      assert session == mock_session
+      assert mock_session_class.call_args.args == (
+          'read_stream',
+          'write_stream',
+      )
 
       await session_context.close()
 
@@ -464,12 +506,10 @@ class TestSessionContext:
 
       await session_context.start()
 
-      # Verify ClientSession was called with sse_read_timeout
+      # _read_timeout again, for the same reason.
       call_args = mock_session_class.call_args
       assert 'read_timeout_seconds' in call_args.kwargs
-      assert call_args.kwargs['read_timeout_seconds'] == timedelta(
-          seconds=300.0
-      )
+      assert call_args.kwargs['read_timeout_seconds'] == _read_timeout(300.0)
 
       await session_context.close()
 
@@ -607,9 +647,14 @@ class TestSessionContext:
 
     mock_session = MockClientSession()
 
-    with patch(
-        'google.adk.tools.mcp_tool.session_context.ClientSession'
-    ) as mock_session_class:
+    with (
+        patch(
+            'google.adk.tools.mcp_tool.session_context.ClientSession'
+        ) as mock_session_class,
+        patch(
+            'google.adk.tools.mcp_tool.session_context.logger'
+        ) as mock_logger,
+    ):
       mock_session_class.return_value = mock_session
 
       await session_context.start()
@@ -623,6 +668,9 @@ class TestSessionContext:
 
       # Should not raise exception
       assert session_context._close_event.is_set()
+
+      # Verify no warning logs were generated
+      mock_logger.warning.assert_not_called()
 
   @pytest.mark.asyncio
   async def test_close_handles_exception_during_cleanup(self):
@@ -652,6 +700,128 @@ class TestSessionContext:
 
       # Should not raise exception
       assert session_context._close_event.is_set()
+
+  @pytest.mark.asyncio
+  async def test_passes_elicitation_callback_to_client_session(self):
+    """Elicitation callback is forwarded to ClientSession."""
+
+    async def elicitation_callback(context, params):
+      del context, params
+      return {'action': 'decline'}
+
+    mock_client = MockClient()
+    context = SessionContext(
+        client=mock_client,
+        timeout=5.0,
+        sse_read_timeout=None,
+        elicitation_callback=elicitation_callback,
+    )
+    with patch(
+        'google.adk.tools.mcp_tool.session_context.ClientSession',
+        autospec=True,
+    ) as mock_client_session_class:
+      mock_client_session = mock_client_session_class.return_value
+      mock_client_session.initialize = AsyncMock()
+      mock_client_session.send_ping = AsyncMock()
+      async with context:
+        pass
+      _, kwargs = mock_client_session_class.call_args
+      assert kwargs['elicitation_callback'] is elicitation_callback
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize('is_stdio', [False, True])
+  async def test_names_adk_in_client_info(self, is_stdio):
+    """ADK identifies itself rather than leaving the SDK's `mcp` default."""
+    context = SessionContext(
+        client=MockClient(),
+        timeout=5.0,
+        sse_read_timeout=None,
+        is_stdio=is_stdio,
+    )
+    with patch(
+        'google.adk.tools.mcp_tool.session_context.ClientSession',
+        autospec=True,
+    ) as mock_client_session_class:
+      mock_client_session = mock_client_session_class.return_value
+      mock_client_session.initialize = AsyncMock()
+      async with context:
+        pass
+      _, kwargs = mock_client_session_class.call_args
+      assert kwargs['client_info'].name == 'google-adk'
+      assert kwargs['client_info'].version == __version__
+
+
+class TestConnect:
+  """Tests for `_connect`."""
+
+  @pytest.fixture(autouse=True)
+  def _reset_probe_warning(self):
+    _warn_probe_unavailable.cache_clear()
+
+  @pytest.mark.asyncio
+  async def test_uses_handshake_by_default(self):
+    """Uses `initialize` when the flag is off."""
+    session = Mock()
+    session.initialize = AsyncMock()
+    probe = AsyncMock()
+
+    with patch(
+        'google.adk.tools.mcp_tool.session_context.negotiate_auto', probe
+    ):
+      await _connect(session)
+
+    session.initialize.assert_awaited_once()
+    probe.assert_not_awaited()
+
+  @pytest.mark.asyncio
+  async def test_probes_when_enabled(self):
+    """Uses `negotiate_auto` when the flag is on."""
+    session = Mock()
+    session.initialize = AsyncMock()
+    probe = AsyncMock()
+
+    with (
+        patch(
+            'google.adk.tools.mcp_tool.session_context.negotiate_auto', probe
+        ),
+        temporary_feature_override(FeatureName._MCP_MODERN_PROTOCOL, True),
+    ):
+      await _connect(session)
+
+    probe.assert_awaited_once_with(session)
+    session.initialize.assert_not_awaited()
+
+  @pytest.mark.asyncio
+  async def test_falls_back_when_probe_unavailable(self, caplog):
+    """Falls back to `initialize` and warns once if the SDK lacks the probe."""
+    session = Mock()
+    session.initialize = AsyncMock()
+
+    with (
+        patch('google.adk.tools.mcp_tool.session_context.negotiate_auto', None),
+        temporary_feature_override(FeatureName._MCP_MODERN_PROTOCOL, True),
+        caplog.at_level(logging.WARNING),
+    ):
+      await _connect(session)
+      await _connect(session)
+
+    assert session.initialize.await_count == 2
+    assert caplog.text.count('no era probe') == 1
+
+  @pytest.mark.asyncio
+  async def test_no_probe_warning_when_disabled(self, caplog):
+    """No warning about a missing probe when the flag is off."""
+    session = Mock()
+    session.initialize = AsyncMock()
+
+    with (
+        patch('google.adk.tools.mcp_tool.session_context.negotiate_auto', None),
+        caplog.at_level(logging.WARNING),
+    ):
+      await _connect(session)
+
+    session.initialize.assert_awaited_once()
+    assert 'no era probe' not in caplog.text
 
 
 class TestSessionContextIsTaskAlive:
@@ -896,3 +1066,79 @@ class TestSessionContextFlagOffPreservesPreFixBehavior:
           assert result is not None
         finally:
           await session_context.close()
+
+
+class TestFormatException:
+  """Test suite for _format_exception helper."""
+
+  def test_format_exception_normal(self):
+    exc = ValueError('normal error')
+    assert _format_exception(exc) == 'normal error'
+
+  def test_format_exception_http_status_error(self):
+    request = httpx.Request('GET', 'http://test')
+    response = httpx.Response(403, request=request, text='Forbidden access')
+    exc = httpx.HTTPStatusError(
+        '403 Forbidden', request=request, response=response
+    )
+
+    formatted = _format_exception(exc)
+    assert '403 Forbidden' in formatted
+    assert 'Forbidden access' in formatted
+
+  def test_format_exception_group(self):
+    class MockExceptionGroup(Exception):
+
+      def __init__(self, message, exceptions):
+        super().__init__(message)
+        self.exceptions = exceptions
+
+    request = httpx.Request('GET', 'http://test')
+    response = httpx.Response(403, request=request, text='Forbidden access')
+    exc1 = httpx.HTTPStatusError(
+        '403 Forbidden', request=request, response=response
+    )
+    exc2 = ValueError('another error')
+
+    eg = MockExceptionGroup('Group', [exc1, exc2])
+    formatted = _format_exception(eg)
+
+    assert '403 Forbidden' in formatted
+    assert 'Forbidden access' in formatted
+    assert 'another error' in formatted
+
+
+_SDK_FLAG = 'google.adk.tools.mcp_tool.session_context.IS_MCP_SDK_V2'
+
+
+class TestReadTimeout:
+  """ADK carries timeouts as float seconds and converts at the SDK boundary.
+
+  The flag is patched rather than read. Mirroring it in the expectation would
+  make every assertion hold whichever way the production branch went, and the
+  2.x branch would never execute where the lock resolves 1.x.
+  """
+
+  def test_none_stays_none(self):
+    assert _read_timeout(None) is None
+
+  # 0 is here because it is a real timeout, not a missing one, and 0.5 because
+  # sub-second timeouts must not be rounded away.
+  @pytest.mark.parametrize('seconds', [30, 0, 0.5])
+  def test_1x_gets_a_timedelta(self, seconds):
+    with patch(_SDK_FLAG, False):
+      converted = _read_timeout(seconds)
+
+    assert converted == timedelta(seconds=seconds)
+    # The two majors accept disjoint types here, so pin the type itself:
+    # handing a 2.x SDK a `timedelta` fails much later, in its own arithmetic.
+    assert isinstance(converted, timedelta)
+
+  @pytest.mark.parametrize('seconds', [30, 0, 0.5])
+  def test_2x_gets_plain_seconds(self, seconds):
+    with patch(_SDK_FLAG, True):
+      converted = _read_timeout(seconds)
+
+    assert converted == seconds
+    assert isinstance(converted, (int, float))
+    assert not isinstance(converted, timedelta)

@@ -23,6 +23,7 @@ from typing import Dict
 from typing import List
 
 from google.auth.credentials import Credentials
+from google.cloud.bigtable import data
 
 from . import client
 from ..tool_context import ToolContext
@@ -42,7 +43,8 @@ async def execute_sql(
     tool_context: ToolContext,
     parameters: Dict[str, Any] | None = None,
     parameter_types: Dict[str, Any] | None = None,
-) -> dict:
+    _view_parameters: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
   """Execute a GoogleSQL query from a Bigtable table.
 
   Args:
@@ -56,6 +58,7 @@ async def execute_sql(
       parameters (dict): properties for parameter replacement. Keys must match
         the names used in ``query``.
       parameter_types (dict): maps explicit types for one or more param values.
+      _view_parameters (dict): maps properties for parameterized views.
 
   Returns:
       dict: Dictionary containing the status and the rows read.
@@ -81,7 +84,8 @@ async def execute_sql(
   """
   del tool_context  # Unused for now
 
-  def _execute_sql():
+  def _execute_sql() -> Dict[str, Any]:
+    bt_client: data.BigtableDataClient | None = None
     try:
       bt_client = client.get_bigtable_data_client(
           project=project_id, credentials=credentials
@@ -91,6 +95,7 @@ async def execute_sql(
           instance_id=instance_id,
           parameters=parameters,
           parameter_types=parameter_types,
+          view_parameters=_view_parameters,
       )
 
       rows: List[Dict[str, Any]] = []
@@ -119,7 +124,7 @@ async def execute_sql(
       finally:
         eqi.close()
 
-      result = {"status": "SUCCESS", "rows": rows}
+      result: Dict[str, Any] = {"status": "SUCCESS", "rows": rows}
       if truncated:
         result["result_is_likely_truncated"] = True
       return result
@@ -130,5 +135,12 @@ async def execute_sql(
           "status": "ERROR",
           "error_details": str(ex),
       }
+    finally:
+      if bt_client is not None:
+        try:
+          bt_client.close()
+        except Exception:
+          # Failing to release the client must not discard the tool's result.
+          logger.exception("Failed to close the Bigtable client")
 
   return await asyncio.to_thread(_execute_sql)
