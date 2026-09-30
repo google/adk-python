@@ -79,6 +79,52 @@ def finalize_model_response_event(
   return finalized_event
 
 
+def has_meaningful_content(llm_response: Optional[LlmResponse]) -> bool:
+  """Returns whether the LLM response contains meaningful, actionable content.
+
+  A response is considered to have meaningful content if it contains at least
+  one part with:
+  - An active function call or function response
+  - Executable code or a code execution result
+  - Inline data or file data
+  - Non-thought, non-whitespace text
+
+  Responses that are None, have no content, have empty parts, or contain only
+  thought parts (reasoning tokens) or whitespace-only text return False.
+
+  Args:
+    llm_response: The LLM response to check.
+
+  Returns:
+    True if the response contains meaningful content, False otherwise.
+  """
+  if (
+      not llm_response
+      or not llm_response.content
+      or not llm_response.content.parts
+  ):
+    return False
+
+  for part in llm_response.content.parts:
+    if part.function_call is not None:
+      return True
+    if part.function_response is not None:
+      return True
+    if part.executable_code is not None:
+      return True
+    if part.code_execution_result is not None:
+      return True
+    if part.inline_data is not None:
+      return True
+    if part.file_data is not None:
+      return True
+    is_thought = getattr(part, 'thought', False) or False
+    if not is_thought and part.text and part.text.strip():
+      return True
+
+  return False
+
+
 async def handle_before_model_callback(
     invocation_context: InvocationContext,
     llm_request: LlmRequest,
@@ -169,8 +215,9 @@ async def handle_after_model_callback(
 ) -> Optional[LlmResponse]:
   """Runs after-model callbacks (plugins then agent callbacks).
 
-  Also handles grounding metadata injection when google_search_agent is
-  among the agent's tools.
+  Also handles grounding metadata injection when a tool sets
+  ``propagate_grounding_metadata`` and ``temp:_adk_grounding_metadata``
+  is present on the session.
 
   Args:
     invocation_context: The invocation context.
@@ -192,7 +239,9 @@ async def handle_after_model_callback(
       tools = await agent.canonical_tools(readonly_context)
       invocation_context.canonical_tools_cache = tools
 
-    if not any(tool.name == 'google_search_agent' for tool in tools):
+    if not any(
+        getattr(tool, 'propagate_grounding_metadata', False) for tool in tools
+    ):
       return response
     ground_metadata = invocation_context.session.state.get(
         'temp:_adk_grounding_metadata', None

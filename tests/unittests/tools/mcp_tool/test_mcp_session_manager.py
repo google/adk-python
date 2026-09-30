@@ -25,7 +25,9 @@ from unittest.mock import Mock
 from unittest.mock import patch
 import urllib.parse
 
+import anyio
 from google.adk.dependencies import _httpx as httpx
+from google.adk.dependencies._mcp import ClientSession
 from google.adk.dependencies._mcp import IS_MCP_SDK_V2
 from google.adk.dependencies._mcp import McpError
 from google.adk.features import FeatureName
@@ -466,13 +468,14 @@ class TestMCPSessionManager:
     session._write_stream._closed = True
     assert manager._is_session_disconnected(session)
 
-  def test_is_session_disconnected_without_streams(self):
+  def test_is_session_disconnected_without_streams(self, caplog):
     """A session that holds no streams reads as connected, and does not raise.
 
     Both attributes are private to the SDK. A release is free to move the
     streams off `ClientSession`, and this must degrade to the
     `SessionContext` task check rather than take down every tool call with an
-    `AttributeError`.
+    `AttributeError`. It logs on the way, so the next SDK bump leaving this
+    probe nothing to read shows up instead of going quiet.
 
     The stand-in is a bare class on purpose: a `Mock` would answer to
     `_read_stream` and pass this vacuously.
@@ -482,7 +485,12 @@ class TestMCPSessionManager:
       pass
 
     manager = MCPSessionManager(self.mock_stdio_connection_params)
-    assert not manager._is_session_disconnected(SessionWithoutStreams())
+    with caplog.at_level(logging.DEBUG):
+      assert not manager._is_session_disconnected(SessionWithoutStreams())
+    assert any(
+        "SessionWithoutStreams" in record.getMessage()
+        for record in caplog.records
+    )
 
   def test_is_session_disconnected_with_streams_that_have_no_flag(self):
     """A stream that stops reporting a closed flag reads as connected too."""
@@ -498,6 +506,77 @@ class TestMCPSessionManager:
 
     manager = MCPSessionManager(self.mock_stdio_connection_params)
     assert not manager._is_session_disconnected(SessionWithBareStreams())
+
+  def test_is_session_disconnected_reads_a_dispatcher_closed_flag(self):
+    """A session whose transport sits behind a dispatcher is still probed.
+
+    The SDK moved the transport off `ClientSession` and behind a dispatcher in
+    its 2.x line. Looking only at the session reads a dead transport as live
+    and leaves the pooled session wedged for every later call. The dispatcher
+    need not hold streams at all, so its own flag is what gets read.
+    """
+
+    class Dispatcher:
+
+      def __init__(self):
+        self._closed = False
+
+    class SessionWithDispatcher:
+
+      def __init__(self):
+        self._dispatcher = Dispatcher()
+
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+
+    session = SessionWithDispatcher()
+    assert not manager._is_session_disconnected(session)
+
+    session._dispatcher._closed = True
+    assert manager._is_session_disconnected(session)
+
+  def test_is_session_disconnected_prefers_the_session_over_a_dispatcher(self):
+    """A session holding its own streams is read there, dispatcher or not."""
+
+    class Stream:
+
+      def __init__(self):
+        self._closed = False
+
+    class Dispatcher:
+
+      def __init__(self):
+        self._closed = True
+
+    class SessionWithBoth:
+
+      def __init__(self):
+        self._read_stream = Stream()
+        self._write_stream = Stream()
+        self._dispatcher = Dispatcher()
+
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+    assert not manager._is_session_disconnected(SessionWithBoth())
+
+  def test_is_session_disconnected_reads_a_real_client_session(self):
+    """The probe finds its flag on a real session, not only on a stand-in.
+
+    The classes above are written here, so they prove the branching and not
+    the layout. This one builds the installed SDK's own `ClientSession` and
+    fails if the attribute the probe reads is not where it looks.
+    """
+    write_stream, read_stream = anyio.create_memory_object_stream(1)
+    session = ClientSession(read_stream, write_stream)
+
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+    assert not manager._is_session_disconnected(session)
+
+    if hasattr(session, "_read_stream"):
+      assert hasattr(session._read_stream, "_closed")
+      session._read_stream._closed = True
+    else:
+      assert hasattr(session._dispatcher, "_closed")
+      session._dispatcher._closed = True
+    assert manager._is_session_disconnected(session)
 
   @pytest.mark.asyncio
   async def test_discard_session_drops_a_session_that_still_looks_healthy(self):
