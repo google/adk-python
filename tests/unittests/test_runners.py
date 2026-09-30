@@ -19,6 +19,7 @@ import logging
 from pathlib import Path
 import sys
 import textwrap
+from typing import Any
 from typing import AsyncGenerator
 from typing import Optional
 from unittest import mock
@@ -28,6 +29,7 @@ from unittest.mock import patch
 
 from google.adk import runners
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.context import Context
 from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_ERROR_RESULT
@@ -49,8 +51,10 @@ from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
+from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.base_toolset import BaseToolset
-from google.adk.workflow._base_node import START
+from google.adk.workflow import BaseNode
+from google.adk.workflow import START
 from google.adk.workflow._workflow import Workflow
 from google.genai import types
 from opentelemetry import trace
@@ -1715,6 +1719,22 @@ class TestRunnerWithPlugins:
     assert not toolset.closed
     await runner.close()
     assert toolset.closed
+
+  @pytest.mark.asyncio
+  async def test_runner_close_with_bare_magic_mock_agent(self):
+    """Runner.close() does not recurse infinitely when agent is a bare MagicMock."""
+    runner = Runner(
+        app_name="test_app",
+        agent=mock.MagicMock(),
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+    runner.plugin_manager.close = AsyncMock()
+
+    assert runner._collect_toolset(runner.agent) == set()
+    await runner.close()
+
+    runner.plugin_manager.close.assert_awaited_once()
 
   @pytest.mark.asyncio
   async def test_runner_passes_plugin_close_timeout(self):
@@ -4434,6 +4454,65 @@ def test_run_sync_early_break_executes_after_run_plugin():
   for _ in runner.run(
       user_id=TEST_USER_ID,
       session_id="session_sync_break",
+      new_message=types.Content(role="user", parts=[types.Part(text="go")]),
+  ):
+    consumed += 1
+    break
+
+  assert consumed == 1
+  assert after_run_called is True
+
+
+def test_run_sync_early_break_on_root_node_executes_after_run_plugin():
+  """Breaking out of synchronous run() on a root node executes after_run.
+
+  A root node runs through the node runtime path rather than
+  `_exec_with_plugin`, and sync `run()` stops it by cancelling with
+  `_CALLER_CLOSED_EARLY_MSG`. That cancellation is an ordinary early stop, so
+  after_run must still fire, matching the agent path.
+  """
+  after_run_called = False
+
+  class _TestPlugin(BasePlugin):
+
+    async def after_run_callback(
+        self, *, invocation_context: InvocationContext
+    ) -> None:
+      nonlocal after_run_called
+      after_run_called = True
+
+  class _SteppingNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      for i in range(5):
+        yield Event(
+            author=self.name,
+            content=types.Content(
+                role="model", parts=[types.Part(text=f"step {i}")]
+            ),
+        )
+        await asyncio.sleep(0.05)
+
+  workflow = Workflow(
+      name="stepping_wf", edges=[(START, _SteppingNode(name="stepping_node"))]
+  )
+  app = App(
+      name="test_app",
+      root_agent=workflow,
+      plugins=[_TestPlugin(name="test_plugin")],
+  )
+  runner = Runner(
+      app=app,
+      session_service=InMemorySessionService(),
+      auto_create_session=True,
+  )
+
+  consumed = 0
+  for _ in runner.run(
+      user_id=TEST_USER_ID,
+      session_id="session_sync_break_node",
       new_message=types.Content(role="user", parts=[types.Part(text="go")]),
   ):
     consumed += 1
