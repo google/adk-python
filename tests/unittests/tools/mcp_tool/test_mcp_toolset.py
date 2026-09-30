@@ -724,6 +724,28 @@ class TestMcpToolset:
     for tool in tools:
       assert tool._progress_callback == my_progress_callback
 
+  @pytest.mark.asyncio
+  async def test_get_tools_passes_propagate_grounding_metadata_to_mcp_tools(
+      self,
+  ):
+    """Test that get_tools passes propagate_grounding_metadata to created MCPTool instances."""
+    mock_tools = [MockMCPTool("tool1"), MockMCPTool("tool2")]
+    self.mock_session.list_tools = AsyncMock(
+        return_value=MockListToolsResult(mock_tools)
+    )
+
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        propagate_grounding_metadata=True,
+    )
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    tools = await toolset.get_tools()
+
+    assert len(tools) == 2
+    for tool in tools:
+      assert tool.propagate_grounding_metadata is True
+
   def test_init_with_progress_callback_factory(self):
     """Test initialization with a ProgressCallbackFactory."""
 

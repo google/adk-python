@@ -146,6 +146,9 @@ class NodeRunner:
             await self._flush_output_and_deltas(ctx)
             logger.debug("node %s end.", ctx.node_path)
             return ctx
+      except asyncio.CancelledError:
+        logger.debug("node %s cancelled via signal.", ctx.node_path)
+        raise
       except Exception as e:
         if isinstance(e, DynamicNodeFailError):
           # TODO: consider to retry upon dynamic node failures later. This may
@@ -316,8 +319,15 @@ class NodeRunner:
     logger.debug("node %s execute loop start.", ctx.node_path)
     async with Aclosing(self._node.run(ctx=ctx, node_input=node_input)) as agen:
       async for event in agen:
+        # Enqueue before checking abort: the event is work the node already
+        # did (a function response whose tool ran, say), so dropping it would
+        # lose a result the caller must still see.
         self._track_event_in_context(event, ctx)
         await self._enqueue_event(event, ctx)
+        # Tests wrap Context around invocation-context stubs that lack
+        # is_aborted or return a truthy Mock; neither means aborted.
+        if getattr(ctx._invocation_context, "is_aborted", False) is True:
+          break
 
     logger.debug("node %s execute loop end.", ctx.node_path)
 

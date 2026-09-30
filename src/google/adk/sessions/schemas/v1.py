@@ -92,8 +92,15 @@ class StorageSession(Base):
   create_time: Mapped[datetime] = mapped_column(
       PreciseTimestamp, default=func.now()
   )
+  # No `onupdate=func.now()` here: `DatabaseSessionService.append_event`
+  # always sets this column explicitly. An `onupdate` default would only
+  # fire when SQLAlchemy considers the column unchanged (the new event's
+  # timestamp equals the one already stored) but another column, such as
+  # `state`, did change -- writing the database's own clock over the
+  # explicit value and desynchronizing the in-memory revision marker read
+  # before commit from what is actually in storage.
   update_time: Mapped[datetime] = mapped_column(
-      PreciseTimestamp, default=func.now(), onupdate=func.now()
+      PreciseTimestamp, default=func.now()
   )
 
   storage_events: Mapped[list[StorageEvent]] = relationship(
