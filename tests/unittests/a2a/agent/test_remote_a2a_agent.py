@@ -4302,7 +4302,8 @@ class TestRemoteA2aAgentExecution:
         self.mock_session
     )
 
-    assert context_id_for_user_a != context_id_for_user_b
+    assert context_id_for_user_a == "test-app/user-a/session-123"
+    assert context_id_for_user_b == "test-app/user-b/session-123"
 
   @pytest.mark.asyncio
   async def test_run_async_impl_preserves_existing_context_id(self):

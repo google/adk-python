@@ -141,9 +141,10 @@ class A2aRemoteAgentConfig(BaseModel):
   forward_session_id_as_context_id: bool = False
   """Whether to derive context_id from the local session when no context_id is present.
 
-  The derived value namespaces the session ID with the app name and user ID
-  so that distinct local users or apps never collapse onto the same remote
-  context, even if they happen to share a session ID.
+  The derived value is ``app_name/user_id/session_id`` (each part
+  percent-encoded), so it stays correlatable across agents and distinct local
+  users or apps never collapse onto the same remote context, even if they
+  happen to share a session ID.
   """
 
   def __deepcopy__(

@@ -25,6 +25,7 @@ from typing import Callable
 from typing import Literal
 from typing import Optional
 from typing import Union
+from urllib.parse import quote
 from urllib.parse import urlparse
 
 from a2a.client import Client as A2AClient
@@ -592,8 +593,8 @@ def _namespaced_session_context_id(session: Any) -> Optional[str]:
     return None
   app_name = getattr(session, "app_name", "") or ""
   user_id = getattr(session, "user_id", "") or ""
-  digest_input = "\x1f".join((app_name, user_id, session_id))
-  return hashlib.sha256(digest_input.encode("utf-8")).hexdigest()
+  # Percent-encoding keeps "/" unambiguous, so the parts can be split back out.
+  return "/".join(quote(p, safe="") for p in (app_name, user_id, session_id))
 
 
 def _names_its_own_credential_key(
