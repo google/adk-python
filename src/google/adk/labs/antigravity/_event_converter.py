@@ -200,6 +200,18 @@ def _function_response_event(
   )
 
 
+_BUILTIN_OUTPUT_KEYS: dict[str, tuple[str, ...]] = {
+    'run_command': ('combined_output', 'exit_code'),
+    'find_file': ('output',),
+    'list_dir': ('results',),
+    'search_dir': ('num_results',),
+    'search_web': ('summary',),
+    'read_url_content': ('title', 'summary', 'content_path'),
+    'generate_image': ('image_name', 'aspect_ratio', 'output_path'),
+    'edit_file': ('diff_block',),
+}
+
+
 def _buffered_result_payload(
     result: _tool_result_capture.ToolResult,
 ) -> dict[str, JsonValue]:
@@ -209,7 +221,10 @@ def _buffered_result_payload(
 
   # The harness hands back a client tool's value as the JSON string
   # ``json.dumps(tool_result_to_dict(...))``, so it usually needs unwrapping.
+  # Built-in tools pass a Pydantic model instance (e.g. ``RunCommandResult``).
   value = result.result
+  if hasattr(value, 'model_dump'):
+    value = value.model_dump(mode='json')
   if isinstance(value, str):
     try:
       value = json.loads(value)
@@ -218,6 +233,19 @@ def _buffered_result_payload(
   if isinstance(value, dict):
     return value
   return {'result': 'success' if value is None else value}
+
+
+def _extract_builtin_step_output(
+    step: sdk_types.Step,
+    call: sdk_types.ToolCall,
+) -> dict[str, JsonValue]:
+  """Extracts the completed output payload from a built-in tool step."""
+  output_keys = _BUILTIN_OUTPUT_KEYS.get(call.name, ())
+  if output_keys and isinstance(call.args, dict):
+    extracted = {key: call.args[key] for key in output_keys if key in call.args}
+    if extracted:
+      return extracted
+  return {'result': step.content or 'success'}
 
 
 def _convert_function_responses(
@@ -251,19 +279,6 @@ def _convert_function_responses(
         tool_results=tool_results,
     )
 
-  # The hook fires for these tools too, but its copy is keyed by an id this
-  # side never sees: the Antigravity SDK gives a built-in's ``ToolCall.id``
-  # the step id
-  # ``f'{trajectory_id}:{step_index}'``, while the hook is handed the model's
-  # own call id, or a SHA-256 of that step id when there is none
-  # (``localharness/tool_metadata.go``, ``ResolveStepCallID``). That copy
-  # therefore cannot be dropped by id here -- and need not be: the same
-  # mismatch keeps it out of ``drain_tool_results``, which only takes ids in
-  # ``seen_tool_calls``. The turn clears the buffer at its end.
-  # ``ToolResult.step_id`` would be the key that does match -- at head the
-  # Antigravity SDK
-  # already sets it to that same ``f'{trajectory_id}:{step_index}'`` -- but the
-  # copy vendored here predates the field.
   events = []
   for call in step.tool_calls:
     call_id = _build_tool_call_id(step, call)
@@ -271,8 +286,11 @@ def _convert_function_responses(
       continue
     seen_tool_results.add(call_id)
 
+    captured = tool_results.take({call_id}) if tool_results is not None else []
     response: dict[str, JsonValue]
-    if step.status == sdk_types.StepStatus.ERROR:
+    if captured:
+      response = _buffered_result_payload(captured[0][1])
+    elif step.status == sdk_types.StepStatus.ERROR:
       response = {
           'error': (
               step.error
@@ -280,7 +298,7 @@ def _convert_function_responses(
           )
       }
     else:
-      response = {'result': step.content or 'success'}
+      response = _extract_builtin_step_output(step, call)
 
     events.append(
         _function_response_event(
