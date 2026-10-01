@@ -30,6 +30,7 @@ from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
 from google.adk.events.request_input import RequestInput
+from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.workflow._base_node import BaseNode
@@ -2745,3 +2746,49 @@ async def test_workflow_error_drain_marks_errored_sibling_failed_in_checkpoint()
   assert last_checkpoint['failing_1']['status'] == NodeStatus.FAILED.value
   assert last_checkpoint['failing_2']['status'] == NodeStatus.FAILED.value
   assert last_checkpoint['second_ok']['status'] == NodeStatus.COMPLETED.value
+
+
+@pytest.mark.asyncio
+async def test_workflow_abort_yields_abort_event_and_runs_after_run():
+  """Aborting a workflow yields one abort event; breaking out still runs after_run."""
+  after_run_called = False
+
+  class _TestPlugin(BasePlugin):
+
+    async def after_run_callback(self, *, invocation_context) -> None:
+      nonlocal after_run_called
+      after_run_called = True
+
+  class _LongRunningNode(BaseNode):
+
+    async def _run_impl(
+        self, *, ctx: Context, node_input: Any
+    ) -> AsyncGenerator[Any, None]:
+      await asyncio.sleep(5.0)
+      yield Event(output='should_not_reach_here')
+
+  wf = Workflow(name='wf', edges=[(START, _LongRunningNode(name='LongNode'))])
+  ss = InMemorySessionService()
+  runner = Runner(
+      app=App(name='test_app', root_agent=wf, plugins=[_TestPlugin(name='p')]),
+      session_service=ss,
+  )
+  session = await ss.create_session(app_name='test_app', user_id='u')
+  abort_signal = asyncio.Event()
+  asyncio.get_running_loop().call_later(0.05, abort_signal.set)
+
+  events = []
+  agen = runner.run_async(
+      user_id='u',
+      session_id=session.id,
+      new_message=types.Content(parts=[types.Part(text='go')], role='user'),
+      abort_signal=abort_signal,
+  )
+  async for event in agen:
+    events.append(event)
+    if event.error_code == 'INVOCATION_ABORTED':
+      break
+  await agen.aclose()
+
+  assert [e.error_code for e in events] == ['INVOCATION_ABORTED']
+  assert after_run_called is True

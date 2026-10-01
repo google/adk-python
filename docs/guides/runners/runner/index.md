@@ -154,6 +154,7 @@ runner = InMemoryRunner(app=app, auto_create_session=True)
 ## Related guides & samples
 
 *   [App Container](../../apps/app/index.md) — Guide on `App` configuration, plugins, and cross-cutting features.
+*   [Runner Execution Cancellation](abort.md) — Guide on halting agent and workflow execution cleanly using abort signals.
 *   [Runner Live Streaming](live.md) — Guide on real-time bidirectional streaming with `run_live` and `LiveRequestQueue`.
 *   [Session and BaseSessionService](../../sessions/session/index.md) — Guide on session storage backends and state scoping.
 *   [Agent-to-Agent Sample](../../../../contributing/samples/a2a/a2a_basic/agent.py) — Multi-agent application executed via `Runner`.

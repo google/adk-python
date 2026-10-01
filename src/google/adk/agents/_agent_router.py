@@ -21,6 +21,7 @@ from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from ..events._abort_events import _is_abort_event
 from ..events._branch_path import _BranchPath
 from ..events._node_path_builder import _NodePathBuilder
 from ..events._rewind_events import _apply_rewinds
@@ -116,7 +117,11 @@ def find_agent_to_run(
   # type of the agent. e.g. a remote a2a agent may surface a credential
   # request as a special long-running function tool call.
   filtered_events = _apply_rewinds(session.events)
-  event = find_matching_function_call(filtered_events)
+  event = (
+      find_matching_function_call(filtered_events)
+      if filtered_events and not _is_abort_event(filtered_events[-1])
+      else None
+  )
   is_resumable = resumability_config and resumability_config.is_resumable
   # Only route based on a past function response if resumability is enabled.
   # In non-resumable scenarios, a turn ending with function call response
@@ -134,8 +139,8 @@ def find_agent_to_run(
       return resumed_agent
 
   def _event_filter(event: Event) -> bool:
-    """Filters out user-authored events and agent state change events."""
-    if event.author == "user":
+    """Filters out user, abort-sealing and agent state change events."""
+    if event.author == "user" or _is_abort_event(event):
       return False
     if event.actions.agent_state is not None or event.actions.end_of_agent:
       return False

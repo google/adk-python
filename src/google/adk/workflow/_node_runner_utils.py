@@ -283,6 +283,12 @@ async def run_node_async(
               await runner._cleanup_root_task(  # pylint: disable=protected-access
                   task, runner.agent.name
               )
+            if ic.is_aborted:
+              abort_events = await runner._synthesize_abort_events_if_needed(  # pylint: disable=protected-access
+                  ic
+              )
+              for abort_event in abort_events:
+                yield abort_event
         except GeneratorExit:
           # Caller cancelled or broke out of the generator early (e.g. via aclosing).
           # GeneratorExit is a BaseException, but early generator close is considered
@@ -314,6 +320,17 @@ async def run_node_async(
         # after_run plugin raising, which PluginManager surfaces as a
         # RuntimeError) is itself an unhandled runner error, so notify
         # on_run_error_callback once and re-raise (unless closing_early).
+        if ic.is_aborted:
+          # Best-effort: only reached on early close or error, where raising
+          # would mask the in-flight exception and skip after_run.
+          try:
+            await runner._synthesize_abort_events_if_needed(ic)  # pylint: disable=protected-access
+          except Exception:  # pylint: disable=broad-exception-caught
+            logger.error(
+                "Failed to seal aborted invocation %s.",
+                ic.invocation_id,
+                exc_info=True,
+            )
         if run_error is None:
           try:
             await ic.plugin_manager.run_after_run_callback(

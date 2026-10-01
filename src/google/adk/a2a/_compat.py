@@ -763,7 +763,8 @@ async def send_message(
   1.x: ``send_message(request, *, context)`` takes no ``request_metadata``
   kwarg; metadata is embedded in ``SendMessageRequest.metadata`` (a proto
   ``Struct``).
-  0.3.x: ``send_message`` accepts ``request_metadata`` directly as a kwarg.
+  0.3.x: ``request_metadata`` is passed as a kwarg only when set, because
+  clients before a2a-sdk 0.3.11 do not accept it.
   """
   if IS_A2A_V1:
     from a2a.types import SendMessageRequest
@@ -776,10 +777,11 @@ async def send_message(
       async for item in agen:
         yield item
   else:
+    kwargs: dict[str, Any] = {}
+    if request_metadata:
+      kwargs["request_metadata"] = request_metadata
     async with Aclosing(
-        client.send_message(
-            request=request, request_metadata=request_metadata, context=context
-        )
+        client.send_message(request=request, context=context, **kwargs)
     ) as agen:
       async for item in agen:
         yield item

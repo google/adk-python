@@ -1303,6 +1303,42 @@ async def test_create_session_with_blank_id_generates_one():
 
 
 @pytest.mark.asyncio
+async def test_get_session_finds_session_by_id_passed_to_create(
+    session_service,
+):
+  created = await session_service.create_session(
+      app_name='my_app', user_id='test_user', session_id='order-42\n'
+  )
+
+  session = await session_service.get_session(
+      app_name='my_app', user_id='test_user', session_id='order-42\n'
+  )
+
+  assert session is not None
+  assert session.id == created.id
+
+
+@pytest.mark.asyncio
+async def test_delete_session_removes_session_by_id_passed_to_create(
+    session_service,
+):
+  created = await session_service.create_session(
+      app_name='my_app', user_id='test_user', session_id='order-42\n'
+  )
+
+  await session_service.delete_session(
+      app_name='my_app', user_id='test_user', session_id='order-42\n'
+  )
+
+  assert (
+      await session_service.get_session(
+          app_name='my_app', user_id='test_user', session_id=created.id
+      )
+      is None
+  )
+
+
+@pytest.mark.asyncio
 async def test_create_session_concurrent_same_id_raises_already_exists_error(
     tmp_path,
 ):
@@ -1402,6 +1438,63 @@ async def test_sqlite_create_session_concurrent_same_id_raises_already_exists_er
     )
     assert final_session is not None
     assert final_session.id == successes[0].id
+
+
+async def _sqlite_service_with_migrated_padded_row(
+    tmp_path,
+) -> SqliteSessionService:
+  """Stores 'order-42 ' verbatim, as the DatabaseSessionService migration does."""
+  db_path = str(tmp_path / 'sqlite.db')
+  service = SqliteSessionService(db_path)
+  await service.list_sessions(app_name='my_app')  # Creates the schema.
+  with sqlite3.connect(db_path) as conn:
+    conn.execute(
+        'INSERT INTO sessions (app_name, user_id, id, state, create_time,'
+        " update_time) VALUES ('my_app', 'user', 'order-42 ', '{}', 0, 0)"
+    )
+  return service
+
+
+@pytest.mark.asyncio
+async def test_sqlite_create_session_rejects_id_stored_padded(tmp_path):
+  service = await _sqlite_service_with_migrated_padded_row(tmp_path)
+
+  with pytest.raises(AlreadyExistsError):
+    await service.create_session(
+        app_name='my_app', user_id='user', session_id='order-42 '
+    )
+
+
+@pytest.mark.asyncio
+async def test_sqlite_get_session_prefers_row_stored_under_padded_id(tmp_path):
+  service = await _sqlite_service_with_migrated_padded_row(tmp_path)
+  await service.create_session(
+      app_name='my_app', user_id='user', session_id='order-42'
+  )
+
+  session = await service.get_session(
+      app_name='my_app', user_id='user', session_id='order-42 '
+  )
+
+  assert session is not None
+  assert session.id == 'order-42 '
+
+
+@pytest.mark.asyncio
+async def test_sqlite_delete_session_prefers_row_stored_under_padded_id(
+    tmp_path,
+):
+  service = await _sqlite_service_with_migrated_padded_row(tmp_path)
+  await service.create_session(
+      app_name='my_app', user_id='user', session_id='order-42'
+  )
+
+  await service.delete_session(
+      app_name='my_app', user_id='user', session_id='order-42 '
+  )
+
+  response = await service.list_sessions(app_name='my_app', user_id='user')
+  assert [session.id for session in response.sessions] == ['order-42']
 
 
 @pytest.mark.asyncio
