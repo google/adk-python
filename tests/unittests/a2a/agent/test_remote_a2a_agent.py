@@ -7589,3 +7589,23 @@ class TestRemoteA2aAgentAuth:
 
     assert events == [auth_request_event]
     ctx.set_agent_state.assert_not_called()
+
+
+class TestNewIntegrationExtensionInterceptor:
+  """The extension header must land where the active a2a-sdk reads it."""
+
+  @pytest.mark.asyncio
+  async def test_header_is_merged_with_existing_headers(self):
+    from google.adk.a2a.agent.interceptors import new_integration_extension as nie
+
+    parameters = ParametersConfig()
+    _add = remote_a2a_agent._add_request_headers
+    _add(parameters, {"Authorization": "Bearer t"})
+
+    await nie._before_request(None, A2AMessage(), parameters)
+
+    headers = _request_headers(parameters.client_call_context)
+    assert headers["Authorization"] == "Bearer t"
+    assert (
+        headers["A2A-Extensions"] == nie._NEW_A2A_ADK_INTEGRATION_EXTENSION
+    )
