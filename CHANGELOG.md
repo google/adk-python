@@ -3,6 +3,22 @@
 ## [2.11.0](https://github.com/google/adk-python/compare/v2.10.0...v2.11.0) (2026-10-01)
 
 
+### Highlights
+
+This release focuses on improving agent resilience and extensibility by introducing execution cancellation, local SQLite memory storage, structured model consultation tools, and support for the latest Model Context Protocol (MCP) SDK.
+
+* **Workflows**: Cancel long-running tasks, workflows, and nodes gracefully using new optional abort signal propagation. ([ef5bbcf](https://github.com/google/adk-python/commit/ef5bbcfe51670bd211645a043914c162e7c1cd60))
+* **Memory**: Persist agent memories locally without external dependencies using the new SQLite memory service. ([9625b06](https://github.com/google/adk-python/commit/9625b06c9a1be6b9ecd85225657690ae5c0e9d3e))
+* **Tools**: Direct agents to consult specialized advisor models with strict turn and session budgets using the ModelConsultTool. ([84cc99a](https://github.com/google/adk-python/commit/84cc99abd53010817a85b51fdcdc5d4f48366769))
+* **MCP**: Connect to external tools and data sources using the modern Model Context Protocol (MCP) SDK 2.x protocol. ([e738c26](https://github.com/google/adk-python/commit/e738c26fe5abcecffe2fbeba31f8d837086aad8a))
+
+#### Breaking changes
+
+* The dev UI runtime configuration is now served directly from the server rather than a local file; update hosting setups to fetch the configuration dynamically from the server endpoint.
+
+<details>
+<summary>All changes</summary>
+
 ### ⚠ BREAKING CHANGES
 
 * serve the dev UI runtime config from the server instead of a file
@@ -59,7 +75,7 @@
 * make conformance runs report replay and recording failures ([5355c7c](https://github.com/google/adk-python/commit/5355c7c60684e38e9ea158e34a41974e525be90f))
 * normalize jj and hg added paths on Windows ([fe69c0b](https://github.com/google/adk-python/commit/fe69c0b94f6c90ee342f87b9eba2663fa2abb3aa))
 * only apply --avatar_config to live sessions requesting video ([4d241bf](https://github.com/google/adk-python/commit/4d241bff1bdf63ddf5ef947a2aa5d145b008c013))
-* Persist sibling tool results before a tool confirmation request ([67d3e49](https://github.com/google/adk-python/commit/67d3e494b610c6962ca8290dcb66c9f6b8b08735)), closes [#6732](https://github.com/google/adk-python/issues/6732)
+* persist sibling tool results before a tool confirmation request ([67d3e49](https://github.com/google/adk-python/commit/67d3e494b610c6962ca8290dcb66c9f6b8b08735)), closes [#6732](https://github.com/google/adk-python/issues/6732)
 * **plugins:** let tools run as workflow nodes under ToolCallIntegrityPlugin ([b057697](https://github.com/google/adk-python/commit/b0576978ec1f341980abdf385cf47f8b22da4178))
 * **plugins:** record content_formatter failure class in error_message ([e5a24b6](https://github.com/google/adk-python/commit/e5a24b6f168581a1904049a8896a6939cdb88e30))
 * preserve single-turn structured output ([6b96ba1](https://github.com/google/adk-python/commit/6b96ba199b3e2684272fad870d9e0ab45b79ec33)), closes [#6089](https://github.com/google/adk-python/issues/6089)
@@ -92,7 +108,6 @@
 
 ### Code Refactoring
 
-* serve the dev UI runtime config from the server instead of a file ([3722746](https://github.com/google/adk-python/commit/3722746568a33226d54ba51876801c5948479eb5))
 
 
 ### Documentation
@@ -108,6 +123,8 @@
 ### Miscellaneous Chores
 
 * release 2.11.0 ([a6dd105](https://github.com/google/adk-python/commit/a6dd10509047475c629c03e260c1d5e02092be6b))
+
+</details>
 
 ## [2.10.0](https://github.com/google/adk-python/compare/v2.9.2...v2.10.0) (2026-09-24)
 
