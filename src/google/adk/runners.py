@@ -2160,25 +2160,6 @@ class Runner:
         resumability_config=self.resumability_config,
     )
 
-  def _new_invocation_context_for_live(
-      self,
-      session: Session,
-      *,
-      live_request_queue: LiveRequestQueue,
-      run_config: Optional[RunConfig] = None,
-  ) -> InvocationContext:
-    """Creates a new invocation context for live multi-agent.
-
-    TODO: Deprecate or remove in follow-up CLs as live runner logic is
-    extracted.
-    """
-    return _live_runner_utils.new_invocation_context_for_live(
-        self,
-        session,
-        live_request_queue=live_request_queue,
-        run_config=run_config,
-    )
-
   async def _handle_new_message(
       self,
       *,

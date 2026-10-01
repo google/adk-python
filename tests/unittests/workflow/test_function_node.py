@@ -1251,6 +1251,180 @@ def test_output_schema_no_inference_for_non_basemodel():
 
 
 @pytest.mark.asyncio
+async def test_output_schema_unset_returns_basemodel_with_json_mode(
+    request: pytest.FixtureRequest,
+):
+  """FunctionNode without output_schema dumps returned BaseModel in JSON mode."""
+  from datetime import datetime
+  from decimal import Decimal
+  from enum import Enum
+  import json
+  from typing import Annotated
+
+  from pydantic import PlainSerializer
+
+  JsonDecimal = Annotated[
+      Decimal, PlainSerializer(float, return_type=float, when_used='json')
+  ]
+
+  class Color(Enum):
+    RED = 1
+
+  class Payload(BaseModel):
+    price: JsonDecimal
+    stamped_at: datetime
+    color: Color
+
+  def produce(ctx: Context) -> Any:
+    return Payload(
+        price=Decimal('29.99'),
+        stamped_at=datetime(2026, 1, 2, 3, 4, 5),
+        color=Color.RED,
+    )
+
+  node = FunctionNode(func=produce)
+  assert node.output_schema is None
+
+  agent = Workflow(name='wf', edges=[(START, node)])
+  events, _, _ = await run_workflow(agent)
+
+  data_events = [
+      e
+      for e in events
+      if isinstance(e, Event)
+      and e.output is not None
+      and _NodePathBuilder.from_string(e.node_info.path).is_direct_child_of(
+          _NodePathBuilder.from_string('wf@1')
+      )
+  ]
+  assert len(data_events) == 1
+  output = data_events[0].output
+  assert output == {
+      'price': 29.99,
+      'stamped_at': '2026-01-02T03:04:05',
+      'color': 1,
+  }
+  assert isinstance(output['price'], float)
+  assert isinstance(output['stamped_at'], str)
+  assert json.dumps(output) == (
+      '{"price": 29.99, "stamped_at": "2026-01-02T03:04:05", "color": 1}'
+  )
+
+
+@pytest.mark.asyncio
+async def test_output_schema_unset_returns_event_with_basemodel_in_json_mode(
+    request: pytest.FixtureRequest,
+):
+  """FunctionNode without output_schema dumps Event.output BaseModel in JSON mode."""
+  from datetime import datetime
+  from decimal import Decimal
+  from enum import Enum
+  import json
+  from typing import Annotated
+
+  from pydantic import PlainSerializer
+
+  JsonDecimal = Annotated[
+      Decimal, PlainSerializer(float, return_type=float, when_used='json')
+  ]
+
+  class Color(Enum):
+    RED = 1
+
+  class Payload(BaseModel):
+    price: JsonDecimal
+    stamped_at: datetime
+    color: Color
+
+  def produce(ctx: Context) -> Any:
+    return Event(
+        output=Payload(
+            price=Decimal('29.99'),
+            stamped_at=datetime(2026, 1, 2, 3, 4, 5),
+            color=Color.RED,
+        )
+    )
+
+  node = FunctionNode(func=produce)
+  assert node.output_schema is None
+
+  agent = Workflow(name='wf', edges=[(START, node)])
+  events, _, _ = await run_workflow(agent)
+
+  data_events = [
+      e
+      for e in events
+      if isinstance(e, Event)
+      and e.output is not None
+      and _NodePathBuilder.from_string(e.node_info.path).is_direct_child_of(
+          _NodePathBuilder.from_string('wf@1')
+      )
+  ]
+  assert len(data_events) == 1
+  output = data_events[0].output
+  assert isinstance(output, dict)
+  assert output == {
+      'price': 29.99,
+      'stamped_at': '2026-01-02T03:04:05',
+      'color': 1,
+  }
+
+
+def test_to_event_with_output_schema_does_not_predump_event_output_basemodel():
+  """FunctionNode with output_schema does not pre-dump Event.output before validation."""
+  from unittest.mock import MagicMock
+  from unittest.mock import patch
+
+  class Payload(BaseModel):
+    x: int
+
+  instance = Payload(x=10)
+
+  def produce(ctx: Context) -> Payload:
+    return Event(output=instance)
+
+  node = FunctionNode(func=produce)
+  assert node.output_schema is Payload
+
+  ctx = MagicMock()
+  ctx.actions.state_delta = None
+
+  with patch.object(
+      Payload, 'model_dump', wraps=instance.model_dump
+  ) as mock_dump:
+    event = node._to_event(ctx, Event(output=instance))
+    assert mock_dump.call_count == 0
+    assert event.output is instance
+
+
+def test_to_event_with_output_schema_does_not_predump_returned_basemodel():
+  """FunctionNode with output_schema does not pre-dump returned BaseModel before validation."""
+  from unittest.mock import MagicMock
+  from unittest.mock import patch
+
+  class Payload(BaseModel):
+    x: int
+
+  instance = Payload(x=10)
+
+  def produce(ctx: Context) -> Payload:
+    return instance
+
+  node = FunctionNode(func=produce)
+  assert node.output_schema is Payload
+
+  ctx = MagicMock()
+  ctx.actions.state_delta = None
+
+  with patch.object(
+      Payload, 'model_dump', wraps=instance.model_dump
+  ) as mock_dump:
+    event = node._to_event(ctx, instance)
+    assert mock_dump.call_count == 0
+    assert event.output is instance
+
+
+@pytest.mark.asyncio
 async def test_output_schema_inferred_type_coercion(
     request: pytest.FixtureRequest,
 ):
@@ -1815,3 +1989,96 @@ async def test_function_node_directly_after_start_coerces_json_content(
       and e.output is not None
   ]
   assert outputs == [[10, 20]]
+
+
+@pytest.mark.asyncio
+async def test_to_event_preserves_content_in_event_output(
+    request: pytest.FixtureRequest,
+):
+  """FunctionNode._to_event preserves types.Content in Event.output."""
+  content = types.Content(
+      parts=[types.Part.from_text(text='test')], role='user'
+  )
+
+  def produce(ctx: Context) -> Any:
+    return Event(output=content)
+
+  node = FunctionNode(func=produce)
+  agent = Workflow(name='wf', edges=[(START, node)])
+  events, _, _ = await run_workflow(agent)
+  data_events = [
+      e
+      for e in events
+      if isinstance(e, Event)
+      and e.output is not None
+      and _NodePathBuilder.from_string(e.node_info.path).is_direct_child_of(
+          _NodePathBuilder.from_string('wf@1')
+      )
+  ]
+  assert len(data_events) == 1
+  assert isinstance(data_events[0].output, types.Content)
+
+
+@pytest.mark.asyncio
+async def test_node_input_mode_dumps_returned_basemodel_in_json_mode(
+    request: pytest.FixtureRequest,
+):
+  """FunctionNode with parameter_binding='node_input' dumps returned BaseModel in JSON mode."""
+  from decimal import Decimal
+  import json
+
+  class Payload(BaseModel):
+    price: Decimal
+    note: str | None = None
+
+  def produce(x: int = 1) -> Payload:
+    return Payload(price=Decimal('29.99'))
+
+  node = FunctionNode(func=produce, parameter_binding='node_input')
+  agent = Workflow(name='wf', edges=[(START, node)])
+  events, _, _ = await run_workflow(agent)
+  data_events = [
+      e
+      for e in events
+      if isinstance(e, Event)
+      and e.output is not None
+      and _NodePathBuilder.from_string(e.node_info.path).is_direct_child_of(
+          _NodePathBuilder.from_string('wf@1')
+      )
+  ]
+  assert len(data_events) == 1
+  output = data_events[0].output
+  assert isinstance(output, dict)
+  assert output == {'price': '29.99', 'note': None}
+  assert json.dumps(output) == '{"price": "29.99", "note": null}'
+
+
+@pytest.mark.asyncio
+async def test_node_input_mode_coerces_node_input_in_json_mode(
+    request: pytest.FixtureRequest,
+):
+  """FunctionNode with parameter_binding='node_input' coerces dict schema node inputs in JSON mode."""
+  from decimal import Decimal
+  from enum import Enum
+
+  class Color(Enum):
+    RED = 1
+
+  received: dict[str, Any] = {}
+
+  def producer() -> dict[str, Any]:
+    return {'price': Decimal('29.99'), 'color': Color.RED}
+
+  def consumer(price: Any, color: Any) -> str:
+    received['price'] = price
+    received['color'] = color
+    return 'done'
+
+  prod_node = FunctionNode(func=producer)
+  cons_node = FunctionNode(func=consumer, parameter_binding='node_input')
+  agent = Workflow(
+      name='wf', edges=[(START, prod_node), (prod_node, cons_node)]
+  )
+  await run_workflow(agent)
+  assert received == {'price': '29.99', 'color': 1}
+  assert isinstance(received['price'], str)

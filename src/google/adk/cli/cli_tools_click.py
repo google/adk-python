@@ -2088,7 +2088,8 @@ def fast_api_common_options():
             "Optional. AvatarConfig as an inline JSON object or a path to a"
             " JSON file. Applied only to /run_live sessions whose client"
             " requests video output (modalities=VIDEO); other live sessions"
-            " ignore it."
+            " ignore it. If unset, video sessions use the pre-built 'Kai'"
+            " avatar."
         ),
         default=None,
     )

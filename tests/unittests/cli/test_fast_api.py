@@ -5723,5 +5723,67 @@ def test_runtime_config_rejects_half_specified_logo(tmp_path):
     get_fast_api_app(agents_dir=str(tmp_path), web=True, logo_text="ACME")
 
 
+@pytest.mark.parametrize(
+    ("url_prefix", "expected_root_path"),
+    [
+        (None, ""),
+        ("", ""),
+        ("adk", "/adk"),
+        ("adk/", "/adk"),
+        ("/adk", "/adk"),
+        ("/adk/", "/adk"),
+        ("host:8000/adk", "/host:8000/adk"),
+        ("https://host", ""),
+        ("https://host/", ""),
+        ("https://host/adk", "/adk"),
+        ("https://host/adk/", "/adk"),
+    ],
+)
+def test_url_prefix_propagated_to_fastapi_root_path(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    url_prefix: str | None,
+    expected_root_path: str,
+):
+  """FastAPI root_path is extracted from url_prefix."""
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      url_prefix=url_prefix,
+  )
+  assert client.app.root_path == expected_root_path
+
+
+def test_url_prefix_propagated_to_docs_openapi_url(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Swagger UI /docs references the prefix-qualified openapi.json."""
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      url_prefix="/adk",
+  )
+  response = client.get("/docs")
+  assert response.status_code == 200
+  assert "/adk/openapi.json" in response.text
+
+
 if __name__ == "__main__":
   pytest.main(["-xvs", __file__])

@@ -248,12 +248,16 @@ def validate_schema(schema: SchemaType, json_text: str) -> Any:
 
   if is_basemodel_schema(schema):
     # For regular BaseModel, use model_validate_json
-    return schema.model_validate_json(json_text).model_dump(exclude_none=True)
+    return schema.model_validate_json(json_text).model_dump(
+        mode="json", exclude_none=True
+    )
   elif is_list_of_basemodel(schema):
     # For list[BaseModel], use TypeAdapter to validate
     type_adapter = TypeAdapter(schema)
     validated: list[Any] = type_adapter.validate_json(json_text)
-    return [item.model_dump(exclude_none=True) for item in validated]
+    return [
+        item.model_dump(mode="json", exclude_none=True) for item in validated
+    ]
   else:
     # For other schema types (list[str], dict, Schema, etc.),
     return _json_utils.safe_json_loads(json_text, context="schema value")
@@ -291,21 +295,29 @@ def validate_node_data(
   if data is None or schema is None:
     return data
 
-  if isinstance(schema, (dict, types.Schema)):
-    return data
-
   def _to_serializable(val: Any) -> Any:
+    if isinstance(val, types.Content):
+      return val
     if isinstance(val, BaseModel):
-      return val.model_dump(exclude_none=True)
+      return val.model_dump(mode="json")
     if isinstance(val, list):
       return [_to_serializable(item) for item in val]
     if isinstance(val, dict):
-      return {k: _to_serializable(v) for k, v in val.items()}
-    return val
+      return {
+          next(
+              iter(TypeAdapter[Any](Any).dump_python({k: None}, mode="json"))
+          ): _to_serializable(v)
+          for k, v in val.items()
+      }
+    return TypeAdapter[Any](Any).dump_python(val, mode="json")
+
+  if isinstance(schema, (dict, types.Schema)):
+    return _to_serializable(data)
 
   def _validate_python_object(val: Any) -> Any:
-    validated: Any = TypeAdapter(schema).validate_python(val)
-    return _to_serializable(validated)
+    type_adapter = TypeAdapter[Any](schema)
+    validated: Any = type_adapter.validate_python(val)
+    return type_adapter.dump_python(validated, mode="json", exclude_none=True)
 
   # If schema expects Content, do not unwrap
   if annotation_accepts_content(schema):

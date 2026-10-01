@@ -1315,10 +1315,10 @@ class TestLiveSessionCallbacks:
     mock_plugin_manager = mocker.MagicMock()
     mock_plugin_manager.run_before_model_callback = mocker.AsyncMock()
     mock_plugin_manager.run_after_model_callback = mocker.AsyncMock()
-    mock_runner._new_invocation_context_for_live.return_value.plugin_manager = (
+    mock_runner._new_invocation_context.return_value.plugin_manager = (
         mock_plugin_manager
     )
-    mock_runner._new_invocation_context_for_live.return_value.agent = mock_agent
+    mock_runner._new_invocation_context.return_value.agent = mock_agent
 
     # 2. Instantiate and enter _LiveSession
     live_session = _LiveSession(
@@ -1405,10 +1405,10 @@ class TestLiveSessionCallbacks:
     mock_plugin_manager = mocker.MagicMock()
     mock_plugin_manager.run_before_model_callback = mocker.AsyncMock()
     mock_plugin_manager.run_after_model_callback = mocker.AsyncMock()
-    mock_runner._new_invocation_context_for_live.return_value.plugin_manager = (
+    mock_runner._new_invocation_context.return_value.plugin_manager = (
         mock_plugin_manager
     )
-    mock_runner._new_invocation_context_for_live.return_value.agent = mock_agent
+    mock_runner._new_invocation_context.return_value.agent = mock_agent
 
     # 2. Instantiate and enter _LiveSession
     live_session = _LiveSession(
@@ -1483,7 +1483,7 @@ class TestLiveSessionNodeRouting:
     await live_session._consume_events()
 
     # The Agent-only driver must not be touched for a Workflow root.
-    mock_runner._new_invocation_context_for_live.assert_not_called()
+    mock_runner._new_invocation_context.assert_not_called()
     mock_runner.run_live.assert_called_once()
     call_kwargs = mock_runner.run_live.call_args.kwargs
     assert call_kwargs["user_id"] == "test_user"
@@ -1742,7 +1742,7 @@ class TestLiveSessionNodeAppDetails:
     mock_runner.agent = mock_workflow
     # `model_copy` carries the target agent onto the per-agent context so
     # `_record_app_details_for_agent` sees the right agent.
-    base_ic = mock_runner._new_invocation_context_for_live.return_value
+    base_ic = mock_runner._new_invocation_context.return_value
     base_ic.model_copy.side_effect = lambda update: mocker.MagicMock(
         agent=update["agent"]
     )

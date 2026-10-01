@@ -183,6 +183,21 @@ class TestProcessRehydratedOutput:
     ):
       _process_rehydrated_output(node, content)
 
+  def test_rehydrated_output_dumps_native_types_in_json_mode(self):
+    from decimal import Decimal
+
+    class Payload(BaseModel):
+      price: Decimal
+      note: str | None = None
+
+    node = BaseNode(name="dummy", output_schema=Payload)
+    content = types.Content(
+        parts=[types.Part(text='{"price": "29.99", "note": null}')]
+    )
+    result = _process_rehydrated_output(node, content)
+    assert result == {"price": "29.99", "note": None}
+    assert isinstance(result["price"], str)
+
 
 # --- _validate_resume_response ---
 
@@ -218,6 +233,29 @@ class TestValidateResumeResponse:
 
     with pytest.raises(ValueError, match="Failed to coerce data to object"):
       _validate_resume_response("not a dict", schema)
+
+  def test_object_schema_with_properties_builds_dynamic_model_and_dumps_in_json_mode(
+      self,
+  ):
+    from decimal import Decimal
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "price": {},
+            "age": {"type": "integer"},
+        },
+        "required": ["name"],
+    }
+    result = _validate_resume_response(
+        {"name": "Alice", "price": Decimal("29.99"), "age": 30}, schema
+    )
+    assert result == {"name": "Alice", "price": "29.99", "age": 30}
+    assert isinstance(result["price"], str)
+
+    with pytest.raises(ValueError, match="Validation failed for object schema"):
+      _validate_resume_response({"name": "Alice", "age": "not_an_int"}, schema)
 
   def test_array_schema_validates_list_type(self):
     schema = {"type": "array"}
