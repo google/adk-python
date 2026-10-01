@@ -177,7 +177,7 @@ Primitives for executing child nodes dynamically and signaling edge routing in w
 
 | Member | Kind | Return or Signature | Description |
 | :--- | :--- | :--- | :--- |
-| `run_node` | Method | `async (node, node_input, *, use_sub_branch) -> Any` | Dynamically executes a child node within a workflow graph. |
+| `run_node` | Method | `async (node, node_input=None, *, use_as_output=False, run_id=None, use_sub_branch=False, override_branch=None, override_isolation_scope=None, raise_on_wait=False) -> Any` | Dynamically executes a child node within a workflow graph. |
 | `output` | Property | `Any` | Execution output value for a node in a workflow graph. |
 | `route` | Property | `RouteValue \| list[RouteValue] \| None` | Routing signal for conditional edge traversal in workflows. |
 
@@ -297,11 +297,11 @@ The example below executes a calculation node dynamically and assigns its result
 from google.adk.agents import Context
 from google.adk.agents import LlmAgent
 from google.adk.workflow import node
+from google.adk.workflow import START
 from google.adk.workflow import Workflow
 
 calculator = LlmAgent(
     name="calculator",
-    model="gemini-2.5-flash",
     instruction="Perform calculations requested by the caller.",
 )
 
@@ -324,7 +324,7 @@ async def process_order_node(
 
 root_workflow = Workflow(
     name="order_workflow",
-    edges=[("START", process_order_node)],
+    edges=[(START, process_order_node)],
 )
 ```
 

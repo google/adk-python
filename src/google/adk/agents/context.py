@@ -194,10 +194,18 @@ class Context(ReadonlyContext):
     self._tool_confirmation = tool_confirmation
 
     # Workflow Execution
+    effective_node_path = node_path
+    if (
+        effective_node_path is None
+        and parent_ctx is None
+        and node is None
+        and isinstance(getattr(invocation_context, 'node_path', None), str)
+    ):
+      effective_node_path = invocation_context.node_path
     self._node_path, self._run_id = _derive_node_path(
         node.name if node else None,
         run_id,
-        node_path,
+        effective_node_path,
         parent_ctx.node_path if parent_ctx else None,
         node=node,
     )
@@ -211,11 +219,13 @@ class Context(ReadonlyContext):
     self._route_value: RouteValue | list[RouteValue] | None = None
     self._route_emitted: bool = False
     self._interrupt_ids: set[str] = set()
-    # scope tag inherited from parent ctx by default;
+    # scope tag inherited from parent ctx or invocation_context by default;
     # NodeRunner / Workflow may override before the node runs.
-    self._isolation_scope: str | None = (
-        parent_ctx.isolation_scope if parent_ctx else None
-    )
+    if parent_ctx is not None:
+      self._isolation_scope: str | None = parent_ctx.isolation_scope
+    else:
+      inv_iso = getattr(invocation_context, 'isolation_scope', None)
+      self._isolation_scope = inv_iso if isinstance(inv_iso, str) else None
 
     self._output_for_ancestors: list[str]
     if use_as_output and parent_ctx:
@@ -410,12 +420,13 @@ class Context(ReadonlyContext):
   def get_invocation_context(self) -> InvocationContext:
     """Returns a copy of the invocation context with the proxy session."""
     ctx = self._invocation_context
-    ctx_with_proxy = ctx.model_copy(
-        update={
-            'session': self.session,
-            'isolation_scope': self.isolation_scope,
-        }
-    )
+    update: dict[str, Any] = {
+        'session': self.session,
+        'isolation_scope': self.isolation_scope,
+    }
+    if self.node_path:
+      update['node_path'] = self.node_path
+    ctx_with_proxy = ctx.model_copy(update=update)
     return ctx_with_proxy
 
   async def run_node(

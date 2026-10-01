@@ -54,6 +54,7 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_NAME
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_TYPE
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GenAiSystemValues
+from opentelemetry.semconv._incubating.attributes.process_attributes import PROCESS_EXIT_CODE
 from opentelemetry.semconv._incubating.attributes.user_attributes import USER_ID
 from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
 from opentelemetry.semconv.attributes.http_attributes import HTTP_REQUEST_METHOD
@@ -76,6 +77,7 @@ from ._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_CONTENTS_COUNT
 from ._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_FINGERPRINT
 from ._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_HIT
 from ._adk_attributes import ADK_EXPERIMENTAL_CONTEXT_CACHE_INVOCATIONS_USED
+from ._adk_attributes import ADK_SKILL_ADDITIONAL_TOOLS
 from ._decorators import experimental_telemetry
 from ._experimental_semconv import maybe_log_completion_details
 from ._experimental_semconv import set_operation_details_attributes_from_request
@@ -150,6 +152,12 @@ _OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_RESPONSE: Final[str] = (
     "OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_CLIENT_RESPONSE"
 )
 
+# Skill telemetry attributes.
+GEN_AI_SKILL_NAME = "gen_ai.skill.name"
+GEN_AI_SKILL_DESCRIPTION = "gen_ai.skill.description"
+GEN_AI_SKILL_SOURCE_URI = "gen_ai.skill.source.uri"
+GEN_AI_SKILL_RESOURCE_NAME = "gen_ai.skill.resource.name"
+
 # Silence unused warnings, but keep the public interface the same.
 _ = OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT
 
@@ -164,6 +172,9 @@ if TYPE_CHECKING:
   from ..models.llm_response import LlmResponse
   from ..tools.base_tool import BaseTool
   from ..workflow._base_node import BaseNode
+  from ._instrumentation import SkillLoadTelemetry
+  from ._instrumentation import SkillResourceLoadTelemetry
+  from ._instrumentation import SkillScriptExecutionTelemetry
 
 tracer = trace.get_tracer(
     instrumenting_module_name="gcp.vertex.agent",
@@ -1351,3 +1362,77 @@ def _inference_system_name(
     if agent is not None:
       model = _agent_model_name(agent)
   return _resolve_gen_ai_system_name(model)
+
+
+def _trace_skill_load(
+    span: trace.Span,
+    skill_telemetry: SkillLoadTelemetry,
+) -> None:
+  """Stamps the skill load attributes onto the ``execute_tool`` span."""
+  attributes: dict[str, AttributeValue] = {}
+  attributes[GEN_AI_SKILL_NAME] = (
+      skill_telemetry.skill_name.maybe_hallucinated_value
+  )
+  skill = skill_telemetry.skill
+
+  if skill is not None:
+    attributes[GEN_AI_SKILL_DESCRIPTION] = skill.description
+
+    if (uri := skill._uri) is not None:
+      attributes[GEN_AI_SKILL_SOURCE_URI] = uri
+
+    if (additional_tools := skill_telemetry.additional_tools) is not None:
+      attributes[ADK_SKILL_ADDITIONAL_TOOLS] = additional_tools
+
+  span.set_attributes(attributes)
+
+
+def _trace_skill_resource_load(
+    span: trace.Span,
+    skill_telemetry: SkillResourceLoadTelemetry,
+) -> None:
+  """Stamps the skill resource loading information in the ``execute_tool load_skill_resource`` span."""
+  attributes: dict[str, AttributeValue] = {}
+  attributes[GEN_AI_SKILL_NAME] = (
+      skill_telemetry.skill_name.maybe_hallucinated_value
+  )
+  if (skill := skill_telemetry.skill) is not None:
+    if (uri := skill._uri) is not None:
+      attributes[GEN_AI_SKILL_SOURCE_URI] = uri
+    attributes[GEN_AI_SKILL_DESCRIPTION] = skill.description
+
+  attributes[GEN_AI_SKILL_RESOURCE_NAME] = (
+      skill_telemetry.resource_path.maybe_hallucinated_value
+  )
+
+  span.set_attributes(attributes)
+
+
+def _trace_skill_script_execution(
+    span: trace.Span,
+    skill_telemetry: SkillScriptExecutionTelemetry,
+) -> None:
+  """Stamps the skill script execution information in the ``execute_tool run_skill_script`` span."""
+  attributes: dict[str, AttributeValue] = {}
+  attributes[GEN_AI_SKILL_NAME] = (
+      skill_telemetry.skill_name.maybe_hallucinated_value
+  )
+  attributes[GEN_AI_SKILL_RESOURCE_NAME] = (
+      skill_telemetry.script_path.maybe_hallucinated_value
+  )
+
+  if (script_exit_code := skill_telemetry.script_exit_code) is not None:
+    attributes[PROCESS_EXIT_CODE] = script_exit_code
+
+    if script_exit_code != 0:
+      span.set_status(
+          trace.Status(trace.StatusCode.ERROR, "SKILL_SCRIPT_EXECUTION_ERROR")
+      )
+      span.set_attribute(ERROR_TYPE, "SKILL_SCRIPT_EXECUTION_ERROR")
+
+  if (skill := skill_telemetry.skill) is not None:
+    if (uri := skill._uri) is not None:
+      attributes[GEN_AI_SKILL_SOURCE_URI] = uri
+    attributes[GEN_AI_SKILL_DESCRIPTION] = skill.description
+
+  span.set_attributes(attributes)

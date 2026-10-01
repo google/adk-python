@@ -256,6 +256,7 @@ async def test_list_sessions_glob_metacharacters_match_literally(
       ("app1", "*", r"test:session:app1:\*:*"),
       ("app1", "u?", r"test:session:app1:u\?:*"),
       ("app1", "[u]1", r"test:session:app1:\[u\]1:*"),
+      ("app1", "u\\1", r"test:session:app1:u\\1:*"),
       ("*", "u1", r"test:session:\*:u1:*"),
   ):
     fake_redis.scan_patterns.clear()
@@ -377,6 +378,48 @@ async def test_append_event_and_state_delta(session_service):
   assert fetched.state["count"] == 1
   assert fetched.state["user:score"] == 100
   assert fetched.state["app:status"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_append_event_stamps_session_with_event_timestamp(
+    session_service,
+):
+  """The session records when the event happened, not when it was appended.
+
+  `last_update_time` is what `list_sessions` orders by, so stamping it with the
+  wall clock makes an event that is replayed, re-delivered or imported push a
+  session forward to its append time instead of its own. Every other backend
+  stores `event.timestamp`; the shared contract test asserts the same.
+  """
+  session = await session_service.create_session(
+      app_name="app1",
+      user_id="u1",
+  )
+
+  event_timestamp = session.last_update_time + 10
+  event = Event(
+      author="agent",
+      invocation_id="inv1",
+      timestamp=event_timestamp,
+  )
+
+  # Pin the wall clock far from the event's own timestamp so the current
+  # implementation cannot agree with the expected value by coincidence.
+  with mock.patch(
+      "google.adk.integrations.redis._redis_session_service.time"
+  ) as clock:
+    clock.time.return_value = event_timestamp + 100
+    await session_service.append_event(session, event)
+
+  assert session.last_update_time == pytest.approx(event_timestamp, abs=1e-6)
+
+  fetched = await session_service.get_session(
+      app_name="app1",
+      user_id="u1",
+      session_id=session.id,
+  )
+  assert fetched is not None
+  assert fetched.last_update_time == pytest.approx(event_timestamp, abs=1e-6)
 
 
 @pytest.mark.asyncio

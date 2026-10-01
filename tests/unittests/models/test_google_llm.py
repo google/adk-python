@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
+import concurrent.futures
+from functools import cached_property
 import logging
 import sys
 from typing import Optional
@@ -216,6 +219,257 @@ def test_gemini_api_client_creation_with_client_kwargs():
     assert kwargs["credentials"] == mock_credentials
 
 
+def test_gemini_api_client_skips_gcp_defaults_when_client_kwargs_has_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+  monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+  monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+  monkeypatch.delenv("GOOGLE_GENAI_USE_ENTERPRISE", raising=False)
+  monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+  monkeypatch.setattr(
+      "google.adk.utils._gcp_metadata.get_project_id_from_metadata",
+      lambda: "meta-project",
+  )
+  model = Gemini(
+      model="gemini-2.5-flash",
+      client_kwargs={"api_key": "my-key", "enterprise": True},
+  )
+  with mock.patch("google.genai.Client", autospec=True) as mock_client:
+    _ = model.api_client
+  mock_client.assert_called_once()
+  _, kwargs = mock_client.call_args
+  assert kwargs.get("api_key") == "my-key"
+  assert kwargs.get("enterprise") is True
+  assert "project" not in kwargs
+
+
+def test_gemini_api_client_skips_gcp_defaults_without_enterprise_mode(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+  monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+  monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+  monkeypatch.delenv("GOOGLE_GENAI_USE_ENTERPRISE", raising=False)
+  monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+  monkeypatch.setattr(
+      "google.adk.utils._gcp_metadata.get_project_id_from_metadata",
+      lambda: "meta-project",
+  )
+  model = Gemini(
+      model="gemini-2.5-flash",
+      client_kwargs={"location": "us-central1"},
+  )
+  with mock.patch("google.genai.Client", autospec=True) as mock_client:
+    _ = model.api_client
+  mock_client.assert_called_once()
+  _, kwargs = mock_client.call_args
+  assert "enterprise" not in kwargs
+  assert "project" not in kwargs
+  assert kwargs.get("location") == "us-central1"
+
+
+def test_gemini_api_client_calls_gcp_defaults_with_enterprise_mode(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+  monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+  monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+  monkeypatch.delenv("GOOGLE_GENAI_USE_ENTERPRISE", raising=False)
+  monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+  monkeypatch.setattr(
+      "google.adk.utils._gcp_metadata.get_project_id_from_metadata",
+      lambda: "meta-project",
+  )
+  model = Gemini(
+      model="gemini-2.5-flash",
+      client_kwargs={"enterprise": True, "location": "us-central1"},
+  )
+  with mock.patch("google.genai.Client", autospec=True) as mock_client:
+    _ = model.api_client
+  mock_client.assert_called_once()
+  _, kwargs = mock_client.call_args
+  assert kwargs.get("enterprise") is True
+  assert kwargs.get("project") == "meta-project"
+  assert kwargs.get("location") == "us-central1"
+
+
+def test_gemini_api_client_skips_gcp_defaults_when_client_kwargs_has_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+  monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+  monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+  monkeypatch.delenv("GOOGLE_GENAI_USE_ENTERPRISE", raising=False)
+  monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+  monkeypatch.setattr(
+      "google.adk.utils._gcp_metadata.get_project_id_from_metadata",
+      lambda: "meta-project",
+  )
+  mock_creds = mock.MagicMock()
+  model = Gemini(
+      model="gemini-2.5-flash",
+      client_kwargs={"credentials": mock_creds, "enterprise": True},
+  )
+  with mock.patch("google.genai.Client", autospec=True) as mock_client:
+    _ = model.api_client
+  mock_client.assert_called_once()
+  _, kwargs = mock_client.call_args
+  assert kwargs.get("credentials") == mock_creds
+  assert kwargs.get("enterprise") is True
+  assert "project" not in kwargs
+
+
+def test_gemini_api_client_skips_gcp_defaults_when_application_credentials_in_env(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+  monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+  monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+  monkeypatch.delenv("GOOGLE_GENAI_USE_ENTERPRISE", raising=False)
+  monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/path/to/key.json")
+  monkeypatch.setattr(
+      "google.adk.utils._gcp_metadata.get_project_id_from_metadata",
+      lambda: "meta-project",
+  )
+  model = Gemini(
+      model="gemini-2.5-flash",
+      client_kwargs={"enterprise": True},
+  )
+  with mock.patch("google.genai.Client", autospec=True) as mock_client:
+    _ = model.api_client
+  mock_client.assert_called_once()
+  _, kwargs = mock_client.call_args
+  assert kwargs.get("enterprise") is True
+  assert "project" not in kwargs
+
+
+def test_gemini_live_api_client_skips_gcp_defaults_when_client_kwargs_has_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+  monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+  monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+  monkeypatch.delenv("GOOGLE_GENAI_USE_ENTERPRISE", raising=False)
+  monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+  monkeypatch.setattr(
+      "google.adk.utils._gcp_metadata.get_project_id_from_metadata",
+      lambda: "meta-project",
+  )
+  model = Gemini(
+      model="gemini-2.5-flash",
+      base_url="https://generativelanguage.googleapis.com/v1alpha",
+      client_kwargs={"api_key": "my-key", "enterprise": True},
+  )
+  with mock.patch("google.genai.Client", autospec=True) as mock_client:
+    _ = model._live_api_client
+  mock_client.assert_called_once()
+  _, kwargs = mock_client.call_args
+  assert kwargs.get("api_key") == "my-key"
+  assert kwargs.get("enterprise") is True
+  assert "project" not in kwargs
+
+
+def test_gemini_live_api_client_skips_gcp_defaults_without_enterprise_mode(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+  monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+  monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+  monkeypatch.delenv("GOOGLE_GENAI_USE_ENTERPRISE", raising=False)
+  monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+  monkeypatch.setattr(
+      "google.adk.utils._gcp_metadata.get_project_id_from_metadata",
+      lambda: "meta-project",
+  )
+  model = Gemini(
+      model="gemini-2.5-flash",
+      client_kwargs={"location": "us-central1"},
+  )
+  with mock.patch("google.genai.Client", autospec=True) as mock_client:
+    _ = model._live_api_client
+  assert mock_client.call_count == 2
+  _, kwargs = mock_client.call_args_list[1]
+  assert "enterprise" not in kwargs
+  assert "project" not in kwargs
+  assert kwargs.get("location") == "us-central1"
+
+
+def test_gemini_live_api_client_calls_gcp_defaults_with_enterprise_mode(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+  monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+  monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+  monkeypatch.delenv("GOOGLE_GENAI_USE_ENTERPRISE", raising=False)
+  monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+  monkeypatch.setattr(
+      "google.adk.utils._gcp_metadata.get_project_id_from_metadata",
+      lambda: "meta-project",
+  )
+  model = Gemini(
+      model="gemini-2.5-flash",
+      client_kwargs={"enterprise": True, "location": "us-central1"},
+  )
+  with mock.patch("google.genai.Client", autospec=True) as mock_client:
+    _ = model._live_api_client
+  assert mock_client.call_count == 2
+  _, kwargs = mock_client.call_args_list[1]
+  assert kwargs.get("enterprise") is True
+  assert kwargs.get("project") == "meta-project"
+  assert kwargs.get("location") == "us-central1"
+
+
+def test_gemini_live_api_client_skips_gcp_defaults_when_client_kwargs_has_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+  monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+  monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+  monkeypatch.delenv("GOOGLE_GENAI_USE_ENTERPRISE", raising=False)
+  monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+  monkeypatch.setattr(
+      "google.adk.utils._gcp_metadata.get_project_id_from_metadata",
+      lambda: "meta-project",
+  )
+  mock_creds = mock.MagicMock()
+  model = Gemini(
+      model="gemini-2.5-flash",
+      client_kwargs={"credentials": mock_creds, "enterprise": True},
+  )
+  with mock.patch("google.genai.Client", autospec=True) as mock_client:
+    _ = model._live_api_client
+  assert mock_client.call_count == 2
+  _, kwargs = mock_client.call_args_list[1]
+  assert kwargs.get("credentials") == mock_creds
+  assert kwargs.get("enterprise") is True
+  assert "project" not in kwargs
+
+
+def test_gemini_live_api_client_skips_gcp_defaults_when_application_credentials_in_env(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+  monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+  monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+  monkeypatch.delenv("GOOGLE_GENAI_USE_ENTERPRISE", raising=False)
+  monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/path/to/key.json")
+  monkeypatch.setattr(
+      "google.adk.utils._gcp_metadata.get_project_id_from_metadata",
+      lambda: "meta-project",
+  )
+  model = Gemini(
+      model="gemini-2.5-flash",
+      client_kwargs={"enterprise": True},
+  )
+  with mock.patch("google.genai.Client", autospec=True) as mock_client:
+    _ = model._live_api_client
+  assert mock_client.call_count == 2
+  _, kwargs = mock_client.call_args_list[1]
+  assert kwargs.get("enterprise") is True
+  assert "project" not in kwargs
+
+
 def test_gemini_serialization_excludes_client_kwargs():
   mock_credentials = mock.MagicMock()
   model = Gemini(
@@ -254,6 +508,88 @@ def test_gemini_api_client_when_client_kwargs_missing_from_dict():
   with mock.patch("google.genai.Client", autospec=True) as mock_client:
     _ = model._live_api_client
     mock_client.assert_called_once()
+
+
+def _in_new_event_loop(read):
+  """Reads inside a fresh event loop, the way the synchronous Runner does."""
+
+  async def _call():
+    return read()
+
+  return asyncio.run(_call())
+
+
+@pytest.mark.parametrize("attribute", ["api_client", "_live_api_client"])
+def test_client_is_built_once_per_event_loop(attribute):
+  model = Gemini(model="gemini-2.5-flash")
+
+  def read():
+    return getattr(model, attribute)
+
+  with mock.patch(
+      "google.genai.Client", side_effect=lambda **kwargs: mock.MagicMock()
+  ):
+    first = _in_new_event_loop(read)
+    second = _in_new_event_loop(read)
+    within_one_loop = _in_new_event_loop(lambda: (read(), read()))
+
+  assert first is not second
+  assert within_one_loop[0] is within_one_loop[1]
+
+
+def test_api_client_survives_concurrent_reads_from_many_threads():
+  model = Gemini(model="gemini-2.5-flash")
+  thread_count = 8
+  without_a_loop = []
+
+  def hammer():
+    for _ in range(20):
+      # A read with no running loop shares one entry with every other
+      # thread, so these contend on a single key while the reads below
+      # insert and evict keys of their own.
+      without_a_loop.append(model.api_client)
+      _in_new_event_loop(lambda: model.api_client)
+
+  with mock.patch(
+      "google.genai.Client", side_effect=lambda **kwargs: mock.MagicMock()
+  ):
+    # One worker per hammer, so all of them really do run at once.
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=thread_count
+    ) as executor:
+      futures = [executor.submit(hammer) for _ in range(thread_count)]
+      # Every result is retrieved, so an exception in any thread fails
+      # the test.
+      for future in futures:
+        future.result()
+
+  assert len(set(id(client) for client in without_a_loop)) == 1
+
+
+def test_api_client_can_be_overridden_on_the_instance():
+  model = Gemini(model="gemini-2.5-flash")
+  with mock.patch(
+      "google.genai.Client", side_effect=lambda **kwargs: mock.MagicMock()
+  ):
+    with mock.patch.object(model, "api_client") as replacement:
+      assert model.api_client is replacement
+      assert _in_new_event_loop(lambda: model.api_client) is replacement
+
+    assert model.api_client is not replacement
+    assert model.api_client is model.api_client
+
+
+def test_api_client_can_be_overridden_by_a_subclass():
+
+  class SubclassGemini(Gemini):
+
+    @cached_property
+    def api_client(self):
+      return mock.MagicMock()
+
+  model = SubclassGemini(model="gemini-2.5-flash")
+  assert model.api_client is model.api_client
+  assert _in_new_event_loop(lambda: model.api_client) is model.api_client
 
 
 def test_client_version_header():
@@ -3372,3 +3708,75 @@ async def test_interactions_api_forwards_no_tier_when_unset(llm_request):
     ]
 
   assert captured["service_tier"] is None
+
+
+@pytest.mark.parametrize(
+    "enterprise_env,client_kwargs",
+    [
+        ("true", None),
+        (None, {"enterprise": True}),
+    ],
+)
+def test_gemini_api_client_with_projects_prefix_does_not_inject_metadata_project(
+    monkeypatch: pytest.MonkeyPatch,
+    enterprise_env: str | None,
+    client_kwargs: dict | None,
+):
+  monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+  monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+  monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+  if enterprise_env:
+    monkeypatch.setenv("GOOGLE_GENAI_USE_ENTERPRISE", enterprise_env)
+  else:
+    monkeypatch.delenv("GOOGLE_GENAI_USE_ENTERPRISE", raising=False)
+  monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+  monkeypatch.setattr(
+      "google.adk.utils._gcp_metadata.get_project_id_from_metadata",
+      lambda: "host-metadata-project",
+  )
+  model = Gemini(
+      model="projects/test-project/locations/test-location/publishers/google/models/gemini-2.5-pro",
+      client_kwargs=client_kwargs,
+  )
+  with mock.patch("google.genai.Client", autospec=True) as mock_client:
+    _ = model.api_client
+  mock_client.assert_called_once()
+  _, kwargs = mock_client.call_args
+  assert kwargs.get("enterprise") is True
+  assert "project" not in kwargs
+
+
+@pytest.mark.parametrize(
+    "enterprise_env,client_kwargs",
+    [
+        ("true", None),
+        (None, {"enterprise": True}),
+    ],
+)
+def test_gemini_live_api_client_with_projects_prefix_does_not_inject_metadata_project(
+    monkeypatch: pytest.MonkeyPatch,
+    enterprise_env: str | None,
+    client_kwargs: dict | None,
+):
+  monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+  monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+  monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+  if enterprise_env:
+    monkeypatch.setenv("GOOGLE_GENAI_USE_ENTERPRISE", enterprise_env)
+  else:
+    monkeypatch.delenv("GOOGLE_GENAI_USE_ENTERPRISE", raising=False)
+  monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+  monkeypatch.setattr(
+      "google.adk.utils._gcp_metadata.get_project_id_from_metadata",
+      lambda: "host-metadata-project",
+  )
+  model = Gemini(
+      model="projects/test-project/locations/test-location/publishers/google/models/gemini-2.5-pro",
+      client_kwargs=client_kwargs,
+  )
+  with mock.patch("google.genai.Client", autospec=True) as mock_client:
+    _ = model._live_api_client
+  assert mock_client.call_count == 2
+  _, kwargs = mock_client.call_args_list[1]
+  assert kwargs.get("enterprise") is True
+  assert "project" not in kwargs

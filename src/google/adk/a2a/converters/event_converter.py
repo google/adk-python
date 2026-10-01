@@ -31,6 +31,7 @@ from google.genai import types as genai_types
 
 from .. import _compat
 from ...agents.invocation_context import InvocationContext
+from ...events._internal_metadata import public_metadata
 from ...events.event import Event
 from ...flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from ..experimental import a2a_experimental
@@ -140,7 +141,10 @@ def _get_context_metadata(
     optional_fields = [
         ("branch", event.branch),
         ("grounding_metadata", event.grounding_metadata),
-        ("custom_metadata", event.custom_metadata),
+        (
+            "custom_metadata",
+            public_metadata(event.custom_metadata),
+        ),
         ("usage_metadata", event.usage_metadata),
         ("error_code", event.error_code),
         ("actions", event.actions),

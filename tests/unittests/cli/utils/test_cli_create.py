@@ -287,10 +287,8 @@ def test_run_cmd_with_type_config(
   assert "model: gemini-2.5-flash" in yaml_content
   assert "description: A helpful assistant for user questions." in yaml_content
 
-  # Should create empty __init__.py
-  init_file = agent_dir / "__init__.py"
-  assert init_file.exists()
-  assert init_file.read_text().strip() == ""
+  # Config agents are YAML-loaded; do not emit a package marker.
+  assert not (agent_dir / "__init__.py").exists()
 
   # Should still create .env file
   env_file = agent_dir / ".env"
@@ -326,11 +324,19 @@ def test_prompt_for_model_gemini(monkeypatch: pytest.MonkeyPatch) -> None:
   assert cli_create._prompt_for_model() == "gemini-3.5-flash"
 
 
+def test_prompt_for_model_gemini_38_flash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """Selecting option '2' should return the gemini-3.8-flash model string."""
+  monkeypatch.setattr(click, "prompt", lambda *a, **k: "2")
+  assert cli_create._prompt_for_model() == "gemini-3.8-flash"
+
+
 def test_prompt_for_model_other(monkeypatch: pytest.MonkeyPatch) -> None:
-  """Selecting option '2' should return placeholder and call secho."""
+  """Selecting option '3' should return placeholder and call secho."""
   called: Dict[str, bool] = {}
 
-  monkeypatch.setattr(click, "prompt", lambda *a, **k: "2")
+  monkeypatch.setattr(click, "prompt", lambda *a, **k: "3")
 
   def _fake_secho(*_a: Any, **_k: Any) -> None:
     called["secho"] = True

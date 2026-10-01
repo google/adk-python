@@ -24,6 +24,7 @@ from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.events._abort_events import _build_abort_events
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -473,6 +474,69 @@ def test_find_agent_to_run_resumable_stale_function_call_author_falls_back():
   )
 
 
+def test_find_agent_to_run_skips_synthetic_abort_function_response_when_resumable():
+  """Synthetic abort FunctionResponse does not trap next turn on non-transferable sub-agent."""
+  root, _, _, _ = _make_agent_tree()
+  call_event = Event(
+      invocation_id="inv1",
+      author="non_transferable",
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="func_456", name="test_func", args={}
+                  )
+              )
+          ],
+      ),
+  )
+  abort_events = _build_abort_events(
+      [call_event],
+      invocation_id="inv1",
+      root_agent_name="root_agent",
+      branch=None,
+  )
+  session = Session(
+      id="s1",
+      app_name="app",
+      user_id="u1",
+      events=[call_event, *abort_events],
+  )
+  resumability_config = ResumabilityConfig(is_resumable=True)
+
+  assert (
+      _agent_router.find_agent_to_run(session, root, resumability_config)
+      == root
+  )
+
+
+def test_find_agent_to_run_skips_root_authored_abort_event():
+  """The root-authored abort event does not route the next turn back to root."""
+  root, sub1, _, _ = _make_agent_tree()
+  reply_event = Event(
+      invocation_id="inv1",
+      author="sub_agent1",
+      content=types.Content(
+          role="model", parts=[types.Part(text="Sub response")]
+      ),
+  )
+  abort_events = _build_abort_events(
+      [reply_event],
+      invocation_id="inv1",
+      root_agent_name="root_agent",
+      branch=None,
+  )
+  session = Session(
+      id="s1",
+      app_name="app",
+      user_id="u1",
+      events=[reply_event, *abort_events],
+  )
+
+  assert _agent_router.find_agent_to_run(session, root) == sub1
+
+
 def test_restore_branch_from_history():
   """Invocation context restores branch from latest matching non-tool event."""
   session_service = InMemorySessionService()
@@ -562,6 +626,7 @@ def test_incoming_auth_response_resumes_owner(resumable, node_path):
         "unknown_author",
         "foreign_path",
         "answered",
+        "cancelled",
         "rewound",
     ],
 )
@@ -595,6 +660,15 @@ def test_invalid_auth_response_does_not_select_restricted_agent(
             content=types.Content(parts=[types.Part(text="done")]),
         ),
     ])
+  elif case == "cancelled":
+    events.extend(
+        _build_abort_events(
+            events,
+            invocation_id="inv1",
+            root_agent_name=root.name,
+            branch=None,
+        )
+    )
   elif case == "rewound":
     events.append(
         Event(
@@ -658,3 +732,78 @@ def test_auth_response_batch_requires_one_owner_and_invocation(second_request):
   assert _agent_router.find_agent_to_run(
       session, root, new_message=message
   ) is (child if second_request == "same_owner" else root)
+
+
+def test_restore_branch_from_history_skips_rewound_events():
+  """restore_branch_from_history ignores branches authored in rewound invocations."""
+  session_service = InMemorySessionService()
+  session = Session(
+      id="s1",
+      app_name="app",
+      user_id="u1",
+      events=[
+          Event(
+              author="sub_agent1",
+              branch="root@1.sub_agent1@1",
+              invocation_id="inv_1",
+          ),
+          Event(
+              author="sub_agent1",
+              branch="root@1.sub_agent1@2",
+              invocation_id="inv_2",
+          ),
+          Event(
+              author="user",
+              invocation_id="inv_3",
+              actions=EventActions(rewind_before_invocation_id="inv_2"),
+          ),
+      ],
+  )
+  root, sub1, _, _ = _make_agent_tree()
+
+  ic = InvocationContext(
+      session_service=session_service,
+      invocation_id="inv_3",
+      agent=sub1,
+      session=session,
+      run_config=RunConfig(),
+  )
+  ic.branch = None
+
+  _agent_router.restore_branch_from_history(ic, sub1, root=root)
+  assert ic.branch == "root@1.sub_agent1@1"
+
+
+def test_restore_branch_from_history_all_rewound_leaves_branch_none():
+  """restore_branch_from_history leaves branch as None if all matches are rewound."""
+  session_service = InMemorySessionService()
+  session = Session(
+      id="s1",
+      app_name="app",
+      user_id="u1",
+      events=[
+          Event(
+              author="sub_agent1",
+              branch="root@1.sub_agent1@1",
+              invocation_id="inv_1",
+          ),
+          Event(
+              author="user",
+              invocation_id="inv_2",
+              actions=EventActions(rewind_before_invocation_id="inv_1"),
+          ),
+      ],
+  )
+  root, sub1, _, _ = _make_agent_tree()
+
+  ic = InvocationContext(
+      session_service=session_service,
+      invocation_id="inv_2",
+      agent=sub1,
+      session=session,
+      run_config=RunConfig(),
+  )
+  ic.branch = None
+
+  _agent_router.restore_branch_from_history(ic, sub1, root=root)
+  assert ic.branch is None

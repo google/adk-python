@@ -52,6 +52,7 @@ from google.oauth2 import id_token as google_id_token
 from pydantic import BaseModel
 from pydantic import Field
 
+from ..agents.run_config import RunConfig
 from ..events.event import Event
 from ..utils.context_utils import Aclosing
 
@@ -377,12 +378,20 @@ class TriggerRouter:
           parts=[types.Part(text=message_text)],
       )
 
+      max_llm_calls = getattr(self._server, "max_llm_calls", None)
+      run_config = (
+          RunConfig(max_llm_calls=max_llm_calls)
+          if max_llm_calls is not None
+          else None
+      )
+
       events: list[Event] = []
       async with Aclosing(
           runner.run_async(
               user_id=user_id,
               session_id=session.id,
               new_message=new_message,
+              run_config=run_config,
           )
       ) as agen:
         async for event in agen:

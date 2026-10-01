@@ -27,13 +27,17 @@ from ....agents._streaming_mode import StreamingMode
 from ....agents.invocation_context import InvocationContext
 from ....agents.readonly_context import ReadonlyContext
 from ....events.event import Event
+from ....features import FeatureName
+from ....features import is_feature_enabled
 from ....live.live_request_queue import LiveRequestQueue
 from ....models.llm_request import LlmRequest
 from ....models.llm_response import LlmResponse
+from ....telemetry import _instrumentation
 from ....telemetry.tracing import trace_call_llm
 from ....telemetry.tracing import tracer
 from ....utils._runner_utils import _with_caller_context
 from ....utils.context_utils import Aclosing
+from ._finalizer import has_meaningful_content
 from ._utils import as_llm_agent as _as_llm_agent
 from ._utils import require_run_config as _require_run_config
 
@@ -47,19 +51,27 @@ NO_CONTENT_ERROR_CODE = 'MODEL_RETURNED_NO_CONTENT'
 NO_CONTENT_ERROR_MESSAGE = (
     'The model returned no content (finish_reason=STOP with empty parts).'
 )
+NO_MEANINGFUL_CONTENT_ERROR_MESSAGE = (
+    'The model returned no actionable content (finish_reason=STOP with'
+    ' thought-only or whitespace-only parts).'
+)
 
 
 def apply_empty_response_policy(
     invocation_context: InvocationContext,
     llm_response: LlmResponse,
 ) -> None:
-  """Marks non-streaming empty STOP responses with NO_CONTENT_ERROR_CODE.
+  """Marks terminal STOP responses that lack meaningful content as errors.
 
-  A non-streaming turn that finishes with STOP but has no content parts would
-  otherwise be skipped and become a silent empty final response; surface it as
-  an actionable error instead. Streaming is excluded because a terminal
-  finish-only chunk legitimately follows content already streamed in earlier
-  chunks.
+  A turn that finishes with STOP but has no meaningful content (empty parts,
+  thought-only parts, or whitespace-only text) would otherwise be skipped or
+  treated as a complete answer; surface it as an actionable error instead.
+  In SSE streaming, progressive SSE aggregates the entire turn into a single
+  non-partial response, so a non-partial response carrying only thought or
+  whitespace parts represents a completed turn with no answer, whereas empty
+  parts (a terminal finish-only chunk) and non-progressive SSE (where the
+  aggregator emits a non-partial thought-only chunk before a function call)
+  are excluded.
 
   This must run before the response processors. Emptiness is a property of
   what the model returned, so it can only be judged before local processing
@@ -68,17 +80,27 @@ def apply_empty_response_policy(
   once it has run the code and emitted its result.
   """
   run_config = _require_run_config(invocation_context)
+  has_parts = bool(llm_response.content and llm_response.content.parts)
   if (
       not llm_response.partial
       and llm_response.error_code is None
       and llm_response.finish_reason == types.FinishReason.STOP
-      and (not llm_response.content or not llm_response.content.parts)
-      and run_config.streaming_mode != StreamingMode.SSE
+      and not has_meaningful_content(llm_response)
+      and (
+          run_config.streaming_mode != StreamingMode.SSE
+          or (
+              has_parts
+              and is_feature_enabled(FeatureName.PROGRESSIVE_SSE_STREAMING)
+          )
+      )
   ):
     llm_response.error_code = NO_CONTENT_ERROR_CODE
-    llm_response.error_message = (
-        llm_response.error_message or NO_CONTENT_ERROR_MESSAGE
+    default_message = (
+        NO_MEANINGFUL_CONTENT_ERROR_MESSAGE
+        if has_parts
+        else NO_CONTENT_ERROR_MESSAGE
     )
+    llm_response.error_message = llm_response.error_message or default_message
 
 
 async def resolve_llm(invocation_context: InvocationContext) -> BaseLlm:
@@ -178,6 +200,9 @@ async def call_llm_async(
             response,
             span,
         )
+        _instrumentation.record_response_source(
+            span, 'before_model_callback', invocation_context
+        )
         yield response
         return
 
@@ -242,24 +267,41 @@ async def call_llm_async(
                 call_llm_span=span,
             )
         ) as agen:
-          async for llm_response in agen:
-            trace_call_llm(
-                invocation_context,
-                model_response_event.id,
-                llm_request,
-                llm_response,
-                span,
-            )
-            # Rebind to call_llm span for after_model_callback.
-            with trace.use_span(span, end_on_exit=False):
-              if altered := await flow._handle_after_model_callback(
-                  invocation_context,
-                  llm_response,
-                  model_response_event,
-              ):
-                llm_response = altered
+          # Partials overwrite each other on the span; trace only the last one.
+          deferred_partial: tuple[str, LlmResponse] | None = None
+          try:
+            async for llm_response in agen:
+              if llm_response.partial:
+                deferred_partial = (model_response_event.id, llm_response)
+              else:
+                deferred_partial = None
+                trace_call_llm(
+                    invocation_context,
+                    model_response_event.id,
+                    llm_request,
+                    llm_response,
+                    span,
+                )
+              # Rebind to call_llm span for after_model_callback.
+              with trace.use_span(span, end_on_exit=False):
+                if altered := await flow._handle_after_model_callback(
+                    invocation_context,
+                    llm_response,
+                    model_response_event,
+                ):
+                  llm_response = altered
 
-            yield llm_response
+              yield llm_response
+          finally:
+            if deferred_partial is not None:
+              deferred_event_id, partial_response = deferred_partial
+              trace_call_llm(
+                  invocation_context,
+                  deferred_event_id,
+                  llm_request,
+                  partial_response,
+                  span,
+              )
 
   async with Aclosing(
       _with_caller_context(_call_llm_with_tracing(), caller_context)

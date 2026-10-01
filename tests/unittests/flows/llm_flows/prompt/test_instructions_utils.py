@@ -514,3 +514,55 @@ async def test_inject_session_state_preserves_dollar_double_brace_patterns():
       instruction_template_with_state, invocation_context_with_state
   )
   assert populated_with_state == "Workflow syntax: ${{expression}} and bar."
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_jinja2_state_mapping():
+  """Exposes session state under the state mapping for colon-prefixed keys."""
+  instruction_template = "Hello {{ state['user:name'] }}."
+  invocation_context = await _create_test_readonly_context(
+      state={"user:name": "Foo"}
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context, use_jinja2=True
+  )
+  assert populated_instruction == "Hello Foo."
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_jinja2_sandbox_blocks_unsafe_access():
+  """Blocks unsafe dunder attribute access in the Jinja2 sandbox."""
+  from jinja2.exceptions import SecurityError
+
+  instruction_template = "{{ ''.__class__.__mro__ }}"
+  invocation_context = await _create_test_readonly_context()
+
+  with pytest.raises(SecurityError):
+    await instructions_utils.inject_session_state(
+        instruction_template, invocation_context, use_jinja2=True
+    )
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_jinja2_state_mapping_is_read_only():
+  """Prevents mutating session state through the Jinja2 state mapping."""
+  from jinja2.exceptions import UndefinedError
+
+  invocation_context = await _create_test_readonly_context(
+      state={"user:name": "Foo", "count": 1}
+  )
+
+  with pytest.raises(UndefinedError):
+    await instructions_utils.inject_session_state(
+        "{{ state.pop('count') }}", invocation_context, use_jinja2=True
+    )
+  assert invocation_context.session.state == {"user:name": "Foo", "count": 1}
+
+  with pytest.raises(UndefinedError):
+    await instructions_utils.inject_session_state(
+        "{{ state.update({'user:name': 'Bar'}) }}",
+        invocation_context,
+        use_jinja2=True,
+    )
+  assert invocation_context.session.state == {"user:name": "Foo", "count": 1}

@@ -21,6 +21,7 @@ from typing import Any
 from google.adk.agents.context import Context
 from google.adk.events.event import Event
 from google.adk.platform import uuid as platform_uuid
+from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.workflow import START
@@ -360,3 +361,199 @@ async def test_tool_node_does_not_override_optional_parameters_with_ctx_state():
       "tool_node_optional_state_wf@1/mock_tool_with_decl@1",
       {"output": {"city": "Paris"}},
   ) in simplified
+
+
+class _ArtifactAndStateTool(BaseTool):
+  """A tool that saves an artifact and writes state through its context."""
+
+  def __init__(self):
+    super().__init__(name="artifact_tool", description="Saves an artifact")
+
+  async def run_async(self, *, args: dict[str, Any], tool_context) -> Any:
+    await tool_context.save_artifact(
+        "report.txt", types.Part.from_text(text="hello")
+    )
+    tool_context.state["report_status"] = "saved"
+    return {"saved": True}
+
+
+@pytest.mark.asyncio
+async def test_tool_node_propagates_artifact_and_state_delta():
+  """Tests that artifact and state deltas recorded by the tool are emitted."""
+  seen_downstream: list[Any] = []
+
+  def start_node():
+    return Event(output={})
+
+  async def after(ctx: Context, node_input: Any):
+    artifact = await ctx.load_artifact("report.txt")
+    seen_downstream.append(
+        (node_input, ctx.state.get("report_status"), artifact.text)
+    )
+    return node_input
+
+  tool_node = ToolNode(tool=_ArtifactAndStateTool())
+  wf = Workflow(
+      name="tool_node_artifact_wf",
+      edges=[
+          (START, start_node),
+          (start_node, tool_node),
+          (tool_node, after),
+      ],
+  )
+  app_instance = testing_utils.App(name="test_app", root_agent=wf)
+  runner = testing_utils.InMemoryRunner(app=app_instance)
+  events = await runner.run_async("start")
+
+  tool_events = [
+      e
+      for e in events
+      if e.node_info.path == "tool_node_artifact_wf@1/artifact_tool@1"
+  ]
+  artifact_deltas = [e.actions.artifact_delta for e in tool_events]
+  state_deltas = [e.actions.state_delta for e in tool_events]
+  assert any("report.txt" in d for d in artifact_deltas), artifact_deltas
+  assert any(
+      d.get("report_status") == "saved" for d in state_deltas
+  ), state_deltas
+  assert seen_downstream == [({"saved": True}, "saved", "hello")]
+
+
+class _RecordingToolPlugin(BasePlugin):
+  """A plugin that records tool callbacks and can answer them."""
+
+  def __init__(
+      self,
+      *,
+      before_response: Any = None,
+      after_response: Any = None,
+      error_response: Any = None,
+  ):
+    super().__init__(name="recording_tool_plugin")
+    self.calls: list[tuple[str, str, Any]] = []
+    self._before_response = before_response
+    self._after_response = after_response
+    self._error_response = error_response
+
+  async def before_tool_callback(self, *, tool, tool_args, tool_context):
+    self.calls.append(("before", tool.name, dict(tool_args)))
+    return self._before_response
+
+  async def after_tool_callback(self, *, tool, tool_args, tool_context, result):
+    self.calls.append(("after", tool.name, result))
+    return self._after_response
+
+  async def on_tool_error_callback(
+      self, *, tool, tool_args, tool_context, error
+  ):
+    self.calls.append(("error", tool.name, str(error)))
+    return self._error_response
+
+
+async def _run_tool_node_with_plugin(
+    tool: BaseTool, plugin: BasePlugin
+) -> list[Any]:
+  """Runs start -> tool node -> downstream and returns downstream inputs."""
+  seen_downstream: list[Any] = []
+
+  def start_node():
+    return Event(output={"city": "Paris"})
+
+  def after(node_input: Any):
+    seen_downstream.append(node_input)
+    return node_input
+
+  tool_node = ToolNode(tool=tool)
+  wf = Workflow(
+      name="tool_node_plugin_wf",
+      edges=[
+          (START, start_node),
+          (start_node, tool_node),
+          (tool_node, after),
+      ],
+  )
+  app_instance = testing_utils.App(
+      name="test_app", root_agent=wf, plugins=[plugin]
+  )
+  runner = testing_utils.InMemoryRunner(app=app_instance)
+  await runner.run_async("start")
+  return seen_downstream
+
+
+@pytest.mark.asyncio
+async def test_tool_node_runs_plugin_before_and_after_tool_callbacks():
+  """Tests that plugins observe a tool node call like an agent tool call."""
+  plugin = _RecordingToolPlugin()
+
+  seen_downstream = await _run_tool_node_with_plugin(
+      MockTool(name="lookup"), plugin
+  )
+
+  assert plugin.calls == [
+      ("before", "lookup", {"city": "Paris"}),
+      ("after", "lookup", {"city": "Paris"}),
+  ]
+  assert seen_downstream == [{"city": "Paris"}]
+
+
+@pytest.mark.asyncio
+async def test_tool_node_plugin_before_callback_short_circuits_tool():
+  """Tests that a before-tool callback answer replaces the tool call."""
+  tool_calls: list[Any] = []
+
+  def lookup(city: str) -> dict[str, str]:
+    tool_calls.append(city)
+    return {"city": city}
+
+  plugin = _RecordingToolPlugin(before_response={"cached": True})
+
+  seen_downstream = await _run_tool_node_with_plugin(
+      FunctionTool(func=lookup), plugin
+  )
+
+  assert not tool_calls
+  assert plugin.calls[-1] == ("after", "lookup", {"cached": True})
+  assert seen_downstream == [{"cached": True}]
+
+
+@pytest.mark.asyncio
+async def test_tool_node_plugin_after_callback_replaces_result():
+  """Tests that an after-tool callback answer replaces the node output."""
+  plugin = _RecordingToolPlugin(after_response={"redacted": True})
+
+  seen_downstream = await _run_tool_node_with_plugin(
+      MockTool(name="lookup"), plugin
+  )
+
+  assert seen_downstream == [{"redacted": True}]
+
+
+@pytest.mark.asyncio
+async def test_tool_node_plugin_on_tool_error_callback_handles_failure():
+  """Tests that an on-tool-error callback answer becomes the node output."""
+
+  def lookup(city: str) -> dict[str, str]:
+    raise ValueError(f"no data for {city}")
+
+  plugin = _RecordingToolPlugin(error_response={"error": "handled"})
+
+  seen_downstream = await _run_tool_node_with_plugin(
+      FunctionTool(func=lookup), plugin
+  )
+
+  assert ("error", "lookup", "no data for Paris") in plugin.calls
+  assert seen_downstream == [{"error": "handled"}]
+
+
+@pytest.mark.asyncio
+async def test_tool_node_failure_propagates_when_no_plugin_handles_it():
+  """Tests that a tool failure no plugin answers still fails the workflow."""
+
+  def lookup(city: str) -> dict[str, str]:
+    raise ValueError(f"no data for {city}")
+
+  plugin = _RecordingToolPlugin()
+
+  with pytest.raises(ValueError, match="no data for Paris"):
+    await _run_tool_node_with_plugin(FunctionTool(func=lookup), plugin)
+  assert ("error", "lookup", "no data for Paris") in plugin.calls

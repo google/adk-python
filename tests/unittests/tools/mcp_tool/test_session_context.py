@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import AsyncExitStack
 from datetime import timedelta
+import logging
 import time
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
@@ -24,9 +25,12 @@ from unittest.mock import patch
 
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
+from google.adk.tools.mcp_tool.session_context import _connect
 from google.adk.tools.mcp_tool.session_context import _format_exception
 from google.adk.tools.mcp_tool.session_context import _read_timeout
+from google.adk.tools.mcp_tool.session_context import _warn_probe_unavailable
 from google.adk.tools.mcp_tool.session_context import SessionContext
+from google.adk.version import __version__
 import httpx
 from mcp import ClientSession
 import pytest
@@ -723,6 +727,101 @@ class TestSessionContext:
         pass
       _, kwargs = mock_client_session_class.call_args
       assert kwargs['elicitation_callback'] is elicitation_callback
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize('is_stdio', [False, True])
+  async def test_names_adk_in_client_info(self, is_stdio):
+    """ADK identifies itself rather than leaving the SDK's `mcp` default."""
+    context = SessionContext(
+        client=MockClient(),
+        timeout=5.0,
+        sse_read_timeout=None,
+        is_stdio=is_stdio,
+    )
+    with patch(
+        'google.adk.tools.mcp_tool.session_context.ClientSession',
+        autospec=True,
+    ) as mock_client_session_class:
+      mock_client_session = mock_client_session_class.return_value
+      mock_client_session.initialize = AsyncMock()
+      async with context:
+        pass
+      _, kwargs = mock_client_session_class.call_args
+      assert kwargs['client_info'].name == 'google-adk'
+      assert kwargs['client_info'].version == __version__
+
+
+class TestConnect:
+  """Tests for `_connect`."""
+
+  @pytest.fixture(autouse=True)
+  def _reset_probe_warning(self):
+    _warn_probe_unavailable.cache_clear()
+
+  @pytest.mark.asyncio
+  async def test_uses_handshake_by_default(self):
+    """Uses `initialize` when the flag is off."""
+    session = Mock()
+    session.initialize = AsyncMock()
+    probe = AsyncMock()
+
+    with patch(
+        'google.adk.tools.mcp_tool.session_context.negotiate_auto', probe
+    ):
+      await _connect(session)
+
+    session.initialize.assert_awaited_once()
+    probe.assert_not_awaited()
+
+  @pytest.mark.asyncio
+  async def test_probes_when_enabled(self):
+    """Uses `negotiate_auto` when the flag is on."""
+    session = Mock()
+    session.initialize = AsyncMock()
+    probe = AsyncMock()
+
+    with (
+        patch(
+            'google.adk.tools.mcp_tool.session_context.negotiate_auto', probe
+        ),
+        temporary_feature_override(FeatureName._MCP_MODERN_PROTOCOL, True),
+    ):
+      await _connect(session)
+
+    probe.assert_awaited_once_with(session)
+    session.initialize.assert_not_awaited()
+
+  @pytest.mark.asyncio
+  async def test_falls_back_when_probe_unavailable(self, caplog):
+    """Falls back to `initialize` and warns once if the SDK lacks the probe."""
+    session = Mock()
+    session.initialize = AsyncMock()
+
+    with (
+        patch('google.adk.tools.mcp_tool.session_context.negotiate_auto', None),
+        temporary_feature_override(FeatureName._MCP_MODERN_PROTOCOL, True),
+        caplog.at_level(logging.WARNING),
+    ):
+      await _connect(session)
+      await _connect(session)
+
+    assert session.initialize.await_count == 2
+    assert caplog.text.count('no era probe') == 1
+
+  @pytest.mark.asyncio
+  async def test_no_probe_warning_when_disabled(self, caplog):
+    """No warning about a missing probe when the flag is off."""
+    session = Mock()
+    session.initialize = AsyncMock()
+
+    with (
+        patch('google.adk.tools.mcp_tool.session_context.negotiate_auto', None),
+        caplog.at_level(logging.WARNING),
+    ):
+      await _connect(session)
+
+    session.initialize.assert_awaited_once()
+    assert 'no era probe' not in caplog.text
 
 
 class TestSessionContextIsTaskAlive:

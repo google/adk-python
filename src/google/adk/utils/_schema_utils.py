@@ -259,6 +259,28 @@ def validate_schema(schema: SchemaType, json_text: str) -> Any:
     return _json_utils.safe_json_loads(json_text, context="schema value")
 
 
+def annotation_expects_str(annotated_type: Any) -> bool:
+  """Returns True if the annotation is or contains ``str``."""
+  if annotated_type is str:
+    return True
+  if get_origin(annotated_type) in (Union, UnionType):
+    return any(annotation_expects_str(a) for a in get_args(annotated_type))
+  return False
+
+
+def annotation_accepts_content(annotated_type: Any) -> bool:
+  """Returns True if the annotation accepts ``types.Content`` as-is."""
+  if annotated_type in (Any, object, types.Content):
+    return True
+  if isinstance(annotated_type, type) and issubclass(
+      annotated_type, types.Content
+  ):
+    return True
+  if get_origin(annotated_type) in (Union, UnionType):
+    return any(annotation_accepts_content(a) for a in get_args(annotated_type))
+  return False
+
+
 def validate_node_data(
     schema: Optional[SchemaType],
     data: Any,
@@ -286,9 +308,7 @@ def validate_node_data(
     return _to_serializable(validated)
 
   # If schema expects Content, do not unwrap
-  if isinstance(schema, type) and issubclass(schema, types.Content):
-    return _validate_python_object(data)
-  if schema is types.Content:
+  if annotation_accepts_content(schema):
     return _validate_python_object(data)
 
   if isinstance(data, types.Content):
@@ -415,6 +435,35 @@ def preprocess_args(
                 param_name,
                 args[param_name],
             )
+          continue
+
+        # The same round-trip turns every element of a list[int] argument
+        # into a float, so coerce integral elements back as well. Only
+        # concrete list[int] is coerced here; other int containers are not.
+        # TODO: Consolidate ad-hoc container coercion once
+        # FUNCTION_TOOL_ARG_VALIDATION graduates.
+        if (
+            get_origin(target_type) is list
+            and get_args(target_type)[:1] == (int,)
+            and isinstance(args[param_name], list)
+        ):
+          coerced_items = []
+          non_integral_items = []
+          for item in args[param_name]:
+            if type(item) is float:
+              if item.is_integer():
+                item = int(item)
+              else:
+                non_integral_items.append(item)
+            coerced_items.append(item)
+          if non_integral_items:
+            logger.warning(
+                "Argument '%s' is typed list[int] but contains non-integral"
+                " %r; passing through unchanged.",
+                param_name,
+                non_integral_items,
+            )
+          converted_args[param_name] = coerced_items
           continue
 
         if inspect.isclass(target_type) and issubclass(target_type, BaseModel):

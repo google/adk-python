@@ -25,9 +25,11 @@ from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.agents.sequential_agent import SequentialAgentState
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.events.ui_widget import UiWidget
 from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
+from google.adk.utils.context_utils import Aclosing
 from google.genai.types import FunctionCall
 from google.genai.types import FunctionResponse
 from google.genai.types import GenerateContentResponse
@@ -1019,3 +1021,102 @@ class TestHITLConfirmationFlowWithParallelAgentAndResumableApp:
         (sub_agent2.name, testing_utils.END_OF_AGENT),
         (agent.name, testing_utils.END_OF_AGENT),
     ]
+
+
+class TestHITLConfirmationWithUngatedParallelSibling:
+  """Tests a gated call issued in parallel with an ungated sibling call."""
+
+  @pytest.mark.parametrize("confirmed", [True, False])
+  @pytest.mark.asyncio
+  async def test_sibling_result_survives_caller_stopping_at_pause(
+      self, confirmed: bool
+  ):
+    """The sibling runs once and its result reaches the model on resume."""
+    sibling_calls = []
+    widget = UiWidget(id="w1", provider="mcp")
+
+    def _gated_tool() -> dict[str, str]:
+      return {"result": "gated ran"}
+
+    def _sibling_tool(tool_context: ToolContext) -> dict[str, str]:
+      sibling_calls.append(tool_context.function_call_id)
+      tool_context.state["sibling_ran"] = True
+      tool_context.actions.render_ui_widgets = [widget]
+      return {"result": "sibling ran"}
+
+    gated_tool = FunctionTool(func=_gated_tool, require_confirmation=True)
+    sibling_tool = FunctionTool(func=_sibling_tool)
+    mock_model = testing_utils.MockModel(
+        responses=[
+            _create_llm_response_from_tools([gated_tool, sibling_tool]),
+            _create_llm_response_from_text("final response"),
+        ]
+    )
+    agent = LlmAgent(
+        name="root_agent",
+        model=mock_model,
+        tools=[gated_tool, sibling_tool],
+    )
+    runner = testing_utils.InMemoryRunner(root_agent=agent)
+    session = runner.session
+
+    pause_event = None
+    async with Aclosing(
+        runner.runner.run_async(
+            user_id=session.user_id,
+            session_id=session.id,
+            new_message=testing_utils.UserContent("test user query"),
+        )
+    ) as agen:
+      async for event in agen:
+        if event.is_final_response():
+          pause_event = event
+          break
+
+    assert pause_event is not None
+    confirmation_calls = pause_event.get_function_calls()
+    assert [fc.name for fc in confirmation_calls] == [
+        REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+    ]
+    assert len(sibling_calls) == 1
+    assert runner.session.state["sibling_ran"] is True
+    settled_event = runner.session.events[-2]
+    assert settled_event.actions.render_ui_widgets == [widget]
+    assert settled_event.timestamp <= pause_event.timestamp
+
+    user_confirmation = testing_utils.UserContent(
+        Part(
+            function_response=FunctionResponse(
+                id=confirmation_calls[0].id,
+                name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                response={"confirmed": confirmed},
+            )
+        )
+    )
+    events = await runner.run_async(user_confirmation)
+
+    assert len(sibling_calls) == 1
+    assert testing_utils.simplify_events(copy.deepcopy(events))[-1] == (
+        agent.name,
+        "final response",
+    )
+    responses_sent_to_model = [
+        {fr.name: fr.response for fr in content_responses}
+        for content in mock_model.requests[-1].contents
+        if (
+            content_responses := [
+                part.function_response
+                for part in content.parts or []
+                if part.function_response
+            ]
+        )
+    ]
+    expected_gated_response = (
+        {"result": "gated ran"}
+        if confirmed
+        else {"error": "This tool call is rejected."}
+    )
+    assert responses_sent_to_model == [{
+        gated_tool.name: expected_gated_response,
+        sibling_tool.name: {"result": "sibling ran"},
+    }]
