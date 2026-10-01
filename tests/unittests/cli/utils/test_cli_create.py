@@ -287,10 +287,8 @@ def test_run_cmd_with_type_config(
   assert "model: gemini-2.5-flash" in yaml_content
   assert "description: A helpful assistant for user questions." in yaml_content
 
-  # Should create empty __init__.py
-  init_file = agent_dir / "__init__.py"
-  assert init_file.exists()
-  assert init_file.read_text().strip() == ""
+  # Config agents are YAML-loaded; do not emit a package marker.
+  assert not (agent_dir / "__init__.py").exists()
 
   # Should still create .env file
   env_file = agent_dir / ".env"

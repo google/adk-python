@@ -167,10 +167,6 @@ async def run_live(
     run_config.response_modalities = [types.Modality.AUDIO]
 
   caller_ctx = context.get_current()
-  if session is None and (user_id is None or session_id is None):
-    raise ValueError(
-        "Either session or user_id and session_id must be provided."
-    )
   if live_request_queue is None:
     raise ValueError("live_request_queue is required for run_live.")
   if session is not None:
@@ -180,10 +176,10 @@ async def run_live(
         DeprecationWarning,
         stacklevel=3,
     )
-  if session is None:
+  else:
     if user_id is None or session_id is None:
       raise ValueError(
-          "user_id and session_id are required when session is not provided."
+          "Either session or user_id and session_id must be provided."
       )
     session = await runner._get_or_create_session(  # pylint: disable=protected-access
         user_id=user_id,

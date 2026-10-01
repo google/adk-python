@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 from unittest.mock import Mock
+from unittest.mock import patch
 
 from a2a.types import Message
 from a2a.types import Part as A2APart
@@ -28,6 +29,7 @@ from google.adk.a2a.converters.part_converter import A2A_DATA_PART_END_TAG
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_START_TAG
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_TEXT_MIME_TYPE
+from google.adk.a2a.converters.to_adk_event import _extract_all_metadata_fields
 from google.adk.a2a.converters.to_adk_event import _extract_genai_metadata
 from google.adk.a2a.converters.to_adk_event import _PEER_SETTABLE_ACTION_FIELDS
 from google.adk.a2a.converters.to_adk_event import convert_a2a_artifact_update_to_event
@@ -38,7 +40,10 @@ from google.adk.a2a.converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIR
 from google.adk.a2a.converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
 from google.adk.a2a.converters.utils import _get_adk_metadata_key
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.events import _internal_metadata
 from google.adk.events import Event
+from google.adk.events._internal_metadata import INTERNAL_METADATA_PREFIX
+from google.adk.events._internal_metadata import RESTORED_EVENT_KEY
 from google.adk.events.event_actions import EventActions
 from google.genai import types as genai_types
 import pytest
@@ -930,6 +935,24 @@ class TestExtractGenaiMetadata:
     result = _extract_genai_metadata(metadata_dict, "custom_metadata", dict)
     assert isinstance(result, dict)
     assert result == {"key": "value"}
+
+  def test_extract_all_metadata_fields_drops_internal_custom_metadata_keys(
+      self,
+  ) -> None:
+    """A remote agent cannot set ADK-internal custom_metadata keys."""
+    metadata_dict = {
+        _get_adk_metadata_key("custom_metadata"): json.dumps({
+            "keep": 1,
+            INTERNAL_METADATA_PREFIX + "planted": "x",
+            RESTORED_EVENT_KEY: True,
+        })
+    }
+
+    with patch.object(_internal_metadata.logger, "debug") as debug:
+      fields = _extract_all_metadata_fields(metadata_dict)
+
+    assert fields["custom_metadata"] == {"keep": 1}
+    debug.assert_called_once()
 
   def test_extract_genai_metadata_dict_invalid_string(self) -> None:
     metadata_dict = {

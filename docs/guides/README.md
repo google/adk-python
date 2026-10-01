@@ -102,6 +102,7 @@ This directory contains specific developer guides for the ADK Python implementat
 
 ### Runners
 * [Runner and InMemoryRunner](runners/runner/index.md) - Managing session lifecycles, state resolution, and streaming agent execution events.
+* [Runner Execution Cancellation](runners/runner/abort.md) - Halting agent and workflow execution cleanly using abort signals.
 * [Runner Live Streaming](runners/runner/live.md) - Real-time bidirectional audio/text streaming and non-blocking background tool execution with Gemini Multimodal Live API.
 
 ### Sessions
@@ -116,6 +117,7 @@ This directory contains specific developer guides for the ADK Python implementat
 * [TelemetryConfig](telemetry/telemetry_config/index.md) - What ADK puts in its OpenTelemetry traces, and whether the text of prompts and replies is copied onto exported spans.
 
 ### Tools
+* [ModelConsultTool and ModelConsultContextConfig](tools/model_consult/model_consult_tool/index.md) - Escalating hard decisions mid-generation to a stronger advisor model, with per-turn and session budgets.
 * [Node as tool](tools/node_tool/index.md) - Exposing workflows and deterministic nodes as agent tools with isolated runtime branching and resume support.
 * [to_mcp_server](tools/mcp_tool/agent_to_mcp/index.md) - Expose an ADK agent as an MCP server so any MCP host can drive it as a single tool (the MCP counterpart of to_a2a).
 

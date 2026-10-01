@@ -275,6 +275,35 @@ def test_stream_item_kind_v1_without_payload_raises(monkeypatch):
 
 
 # -----------------------------------------------------------------------------
+# send_message
+# -----------------------------------------------------------------------------
+class _ClientWithoutRequestMetadata:
+  """A 0.3.x client whose ``send_message`` predates ``request_metadata``."""
+
+  async def send_message(self, request, *, context=None):
+    yield (request, context)
+
+
+@v03_only
+@pytest.mark.parametrize('request_metadata', [None, {}])
+async def test_send_message_without_metadata_skips_the_kwarg(request_metadata):
+  message = _compat.make_message(message_id='m-1', role='user')
+  context = object()
+
+  items = [
+      item
+      async for item in _compat.send_message(
+          _ClientWithoutRequestMetadata(),
+          request=message,
+          request_metadata=request_metadata,
+          context=context,
+      )
+  ]
+
+  assert items == [(message, context)]
+
+
+# -----------------------------------------------------------------------------
 # data_part_blob_bytes / make_data_part_from_blob
 # -----------------------------------------------------------------------------
 @v03_only
