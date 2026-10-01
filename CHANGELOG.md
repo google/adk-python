@@ -3,10 +3,25 @@
 ## [2.11.0](https://github.com/google/adk-python/compare/v2.10.0...v2.11.0) (2026-10-01)
 
 
+### Highlights
+
+This release introduces enhanced workflow control with cancellation signals and tool confirmation pausing, along with robust model consultation tools and support for the latest MCP SDK protocol.
+
+* **Workflows**: Cancel running workflows, runners, and nodes gracefully when clients disconnect or an abort signal is triggered. ([ef5bbcf](https://github.com/google/adk-python/commit/ef5bbcfe51670bd211645a043914c162e7c1cd60))
+* **Workflows**: Pause tool nodes for human-in-the-loop validation and explicit confirmation via RequestInput. ([ce132b9](https://github.com/google/adk-python/commit/ce132b92d471b8df903524593d863171b000a764))
+* **Tools**: Manage token costs and usage limit risks in model consultation layers using dedicated turn and session budgets. ([84cc99a](https://github.com/google/adk-python/commit/84cc99abd53010817a85b51fdcdc5d4f48366769))
+* **MCP Integration**: Leverage the latest MCP SDK 2.x features via an opt-in modern-protocol connect path. ([e738c26](https://github.com/google/adk-python/commit/e738c26fe5abcecffe2fbeba31f8d837086aad8a))
+
+#### Breaking changes
+* Node inputs and outputs are now strictly coerced to JSON primitives (mode='json'); ensure your application handles standard JSON types (e.g. strings instead of Decimals) and catches PydanticSerializationError for un-coercible values.
+* The dev UI runtime configuration is now served directly from the server, meaning you should run the server to access the config rather than reading it from a static local file.
+
+<details>
+<summary>All changes</summary>
+
 ### ⚠ BREAKING CHANGES
 
-* Coerces validated schema inputs and outputs (Decimal, datetime, UUID, Enum) to JSON primitives (str, int) via mode='json'. This affects in-memory node outputs as well as llm_agent output_key state and agent_tool results (bare Decimal dumps to str), as well as node inputs when a dict input_schema is used (such as with parameter_binding='node_input'). Additionally, validating against a dict or types.Schema now raises a hard failure (PydanticSerializationError) on values that Pydantic cannot coerce, where un-coercible values passed through before.
-* Coerces validated schema inputs and outputs (Decimal, datetime, UUID, Enum) to JSON primitives (str, int) via mode='json'. This affects in-memory node outputs as well as llm_agent output_key state and agent_tool results (bare Decimal dumps to str), as well as node inputs when a dict input_schema is used (such as with parameter_binding='node_input'). Additionally, validating against a dict or types.Schema now raises a hard failure (PydanticSerializationError) on values that Pydantic cannot coerce, where un-coercible values passed through before.
+* coerces validated schema inputs and outputs (Decimal, datetime, UUID, Enum) to JSON primitives (str, int) via mode='json'. This affects in-memory node outputs as well as llm_agent output_key state and agent_tool results (bare Decimal dumps to str), as well as node inputs when a dict input_schema is used (such as with parameter_binding='node_input'). Additionally, validating against a dict or types.Schema now raises a hard failure (PydanticSerializationError) on values that Pydantic cannot coerce, where un-coercible values passed through before.
 * serve the dev UI runtime config from the server instead of a file
 
 ### Features
@@ -50,7 +65,6 @@
 * drop stale replies to superseded tool updates ([fdca5e7](https://github.com/google/adk-python/commit/fdca5e7b20db78347a19966354af4219c2bd012a))
 * drop unpairable trailing FRs in rearrange ([643df96](https://github.com/google/adk-python/commit/643df966a0fa223454e34a4eee1eddd68931ffa3)), closes [#6751](https://github.com/google/adk-python/issues/6751)
 * dump validated schemas in JSON mode ([731ea30](https://github.com/google/adk-python/commit/731ea30ecb63ea54ea1b51a81635b3016e9c8f55)), closes [#6747](https://github.com/google/adk-python/issues/6747)
-* dump validated schemas in JSON mode ([d1e61e5](https://github.com/google/adk-python/commit/d1e61e5a461bc47bb9487355c12b0027d4926978)), closes [#6747](https://github.com/google/adk-python/issues/6747)
 * **eval:** skip content-less events when mapping Vertex multi-turn turns ([fd2ca87](https://github.com/google/adk-python/commit/fd2ca8773ed51ec13a96670fdeb11f333727217a))
 * **flows:** detect thought-only and whitespace turns as empty content ([dea8110](https://github.com/google/adk-python/commit/dea81109d15066b89dd3447f7c20523cc06d5e6a))
 * follow redirects when downloading skills in GcpSkillRegistry ([fd14aec](https://github.com/google/adk-python/commit/fd14aec26534adb9743e963f39af468f1f0c329f))
@@ -65,7 +79,7 @@
 * make conformance runs report replay and recording failures ([5355c7c](https://github.com/google/adk-python/commit/5355c7c60684e38e9ea158e34a41974e525be90f))
 * normalize jj and hg added paths on Windows ([fe69c0b](https://github.com/google/adk-python/commit/fe69c0b94f6c90ee342f87b9eba2663fa2abb3aa))
 * only apply --avatar_config to live sessions requesting video ([4d241bf](https://github.com/google/adk-python/commit/4d241bff1bdf63ddf5ef947a2aa5d145b008c013))
-* Persist sibling tool results before a tool confirmation request ([67d3e49](https://github.com/google/adk-python/commit/67d3e494b610c6962ca8290dcb66c9f6b8b08735)), closes [#6732](https://github.com/google/adk-python/issues/6732)
+* persist sibling tool results before a tool confirmation request ([67d3e49](https://github.com/google/adk-python/commit/67d3e494b610c6962ca8290dcb66c9f6b8b08735)), closes [#6732](https://github.com/google/adk-python/issues/6732)
 * **plugins:** let tools run as workflow nodes under ToolCallIntegrityPlugin ([b057697](https://github.com/google/adk-python/commit/b0576978ec1f341980abdf385cf47f8b22da4178))
 * **plugins:** record content_formatter failure class in error_message ([e5a24b6](https://github.com/google/adk-python/commit/e5a24b6f168581a1904049a8896a6939cdb88e30))
 * preserve single-turn structured output ([6b96ba1](https://github.com/google/adk-python/commit/6b96ba199b3e2684272fad870d9e0ab45b79ec33)), closes [#6089](https://github.com/google/adk-python/issues/6089)
@@ -99,13 +113,12 @@
 
 ### Code Refactoring
 
-* serve the dev UI runtime config from the server instead of a file ([3722746](https://github.com/google/adk-python/commit/3722746568a33226d54ba51876801c5948479eb5))
 
 
 ### Documentation
 
 * add known issues for A2A workflow output schema and serialization ([f7967c3](https://github.com/google/adk-python/commit/f7967c35fecbd2080953d28d0f9f9a8d71674fc2))
-* add unit guide for Node and [@node](https://github.com/node) ([3e59f4d](https://github.com/google/adk-python/commit/3e59f4dd18391cd9d56cc712c64ec030cba9fab7))
+* add unit guide for Node and `@node` ([3e59f4d](https://github.com/google/adk-python/commit/3e59f4dd18391cd9d56cc712c64ec030cba9fab7))
 * document execution cancellation, node tool direct output, and span provenance ([76af4b0](https://github.com/google/adk-python/commit/76af4b08cbc81e46c933d1558305f7336d876cc0))
 * explain local lockfile needed by tox in adk-setup skill ([96319fc](https://github.com/google/adk-python/commit/96319fc85d01c64137610de85250f950055e9747))
 * explain why live audio is not flushed on generation_complete ([dcd5d76](https://github.com/google/adk-python/commit/dcd5d76036aa28048cf52c1fb902082290d20c90))
@@ -117,6 +130,8 @@
 ### Miscellaneous Chores
 
 * pin this release to 2.11.0 ([adff14a](https://github.com/google/adk-python/commit/adff14ab879fee222509d3d26d19ce5245ba5e22))
+
+</details>
 
 ## [2.10.0](https://github.com/google/adk-python/compare/v2.9.2...v2.10.0) (2026-09-24)
 
