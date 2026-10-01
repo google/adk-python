@@ -41,6 +41,7 @@ from typing import Mapping
 from typing import Optional
 import urllib.parse
 
+import anyio
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi import Query
@@ -2018,53 +2019,101 @@ class ApiServer:
       # Convert the events to properly formatted SSE
       async def event_generator():
         is_closing = False
-        original_exc = None
-        try:
-          async with Aclosing(
-              runner.run_async(
-                  user_id=req.user_id,
-                  session_id=req.session_id,
-                  new_message=req.new_message,
-                  state_delta=req.state_delta,
-                  run_config=run_config,
-                  invocation_id=req.invocation_id,
-              )
-          ) as agen:
-            try:
-              async for event in agen:
-                # ADK Web renders artifacts from `actions.artifactDelta`
-                # during part processing *and* during action processing
-                # 1) the original event with `artifactDelta` cleared (content)
-                # 2) a content-less "action-only" event carrying `artifactDelta`
-                events_to_stream = [event]
-                if (
-                    not req.function_call_event_id
-                    and event.actions.artifact_delta
-                    and event.content
-                    and event.content.parts
-                ):
-                  content_event = event.model_copy(deep=True)
-                  content_event.actions.artifact_delta = {}
-                  artifact_event = event.model_copy(deep=True)
-                  artifact_event.content = None
-                  events_to_stream = [content_event, artifact_event]
+        original_exc: Optional[BaseException] = None
+        abort_signal = asyncio.Event()
+        event_queue: asyncio.Queue[Optional[Event]] = asyncio.Queue()
+        next_step_event = asyncio.Event()
 
-                for event_to_stream in events_to_stream:
-                  sse_event = public_event(event_to_stream).model_dump_json(
-                      exclude_none=True,
-                      by_alias=True,
-                  )
-                  logger.debug(
-                      "Generated event in agent run streaming: %s", sse_event
-                  )
-                  yield f"data: {sse_event}\n\n"
-            except (GeneratorExit, asyncio.CancelledError) as e:
-              is_closing = True
-              original_exc = e
-              raise
-            except Exception as e:
-              original_exc = e
-              raise
+        async def _produce_events() -> None:
+          nonlocal is_closing, original_exc
+          run_async_kwargs: dict[str, Any] = {
+              "user_id": req.user_id,
+              "session_id": req.session_id,
+              "new_message": req.new_message,
+              "state_delta": req.state_delta,
+              "run_config": run_config,
+              "invocation_id": req.invocation_id,
+          }
+          try:
+            params = inspect.signature(runner.run_async).parameters
+            if "abort_signal" in params or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+            ):
+              run_async_kwargs["abort_signal"] = abort_signal
+          except (ValueError, TypeError):
+            run_async_kwargs["abort_signal"] = abort_signal
+
+          try:
+            async with Aclosing(runner.run_async(**run_async_kwargs)) as agen:
+              try:
+                async for event in agen:
+                  await event_queue.put(event)
+                  await next_step_event.wait()
+                  next_step_event.clear()
+              except (GeneratorExit, asyncio.CancelledError) as e:
+                if not is_closing and original_exc is None:
+                  is_closing = True
+                  original_exc = e
+                  abort_signal.set()
+                raise
+              except Exception as e:
+                original_exc = e
+                raise
+          finally:
+            await event_queue.put(None)
+
+        producer_task = asyncio.create_task(_produce_events())
+        try:
+          try:
+            while True:
+              event = await event_queue.get()
+              if event is None:
+                break
+              # ADK Web renders artifacts from `actions.artifactDelta`
+              # during part processing *and* during action processing
+              # 1) the original event with `artifactDelta` cleared (content)
+              # 2) a content-less "action-only" event carrying `artifactDelta`
+              events_to_stream = [event]
+              if (
+                  not req.function_call_event_id
+                  and event.actions.artifact_delta
+                  and event.content
+                  and event.content.parts
+              ):
+                content_event = event.model_copy(deep=True)
+                content_event.actions.artifact_delta = {}
+                artifact_event = event.model_copy(deep=True)
+                artifact_event.content = None
+                events_to_stream = [content_event, artifact_event]
+
+              for event_to_stream in events_to_stream:
+                sse_event = public_event(event_to_stream).model_dump_json(
+                    exclude_none=True,
+                    by_alias=True,
+                )
+                logger.debug(
+                    "Generated event in agent run streaming: %s", sse_event
+                )
+                yield f"data: {sse_event}\n\n"
+              next_step_event.set()
+          except (GeneratorExit, asyncio.CancelledError) as e:
+            is_closing = True
+            original_exc = e
+            abort_signal.set()
+            raise
+          except Exception as e:
+            original_exc = e
+            abort_signal.set()
+            raise
+          finally:
+            with anyio.CancelScope(shield=True):
+              if not producer_task.done():
+                producer_task.cancel()
+              try:
+                await producer_task
+              except asyncio.CancelledError:
+                if not is_closing and original_exc is None:
+                  raise
         except Exception as e:
           if original_exc:
             if e is not original_exc:
