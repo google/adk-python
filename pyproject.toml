@@ -131,7 +131,7 @@ optional-dependencies.all = [
   "redis>=4.2",
   "rouge-score>=0.1.2",
   "slack-bolt>=1.22",
-  "sqlalchemy>=2,<3",
+  "sqlalchemy[asyncio]>=2,<3",
   "sqlalchemy-spanner>=1.14",
   "tabulate>=0.9",
   "toolbox-adk>=1,<2",
@@ -159,7 +159,7 @@ optional-dependencies.daytona = [
   "daytona>=0.191", # For DaytonaEnvironment remote sandbox.
 ]
 optional-dependencies.db = [
-  "sqlalchemy>=2,<3",
+  "sqlalchemy[asyncio]>=2,<3",
   "sqlalchemy-spanner>=1.14",
 ]
 optional-dependencies.dev = [
@@ -349,7 +349,7 @@ optional-dependencies.test = [
   "python-multipart>=0.0.9",
   "rouge-score>=0.1.2",
   "slack-bolt>=1.22",
-  "sqlalchemy>=2,<3",
+  "sqlalchemy[asyncio]>=2,<3",
   "sqlalchemy-spanner>=1.14",
   "tabulate>=0.9",
   "tomli>=2,<3; python_version<'3.11'",

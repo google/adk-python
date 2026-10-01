@@ -102,6 +102,7 @@ This directory contains specific developer guides for the ADK Python implementat
 
 ### Runners
 * [Runner and InMemoryRunner](runners/runner/index.md) - Managing session lifecycles, state resolution, and streaming agent execution events.
+* [Runner Execution Cancellation](runners/runner/abort.md) - Halting agent and workflow execution cleanly using abort signals.
 * [Runner Live Streaming](runners/runner/live.md) - Real-time bidirectional audio/text streaming and non-blocking background tool execution with Gemini Multimodal Live API.
 
 ### Sessions
