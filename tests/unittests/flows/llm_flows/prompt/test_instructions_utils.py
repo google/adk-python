@@ -23,6 +23,7 @@ from google.adk.flows.llm_flows.prompt import _instructions_utils as instruction
 from google.adk.flows.llm_flows.prompt._instructions_utils import _is_valid_state_name
 from google.adk.flows.llm_flows.prompt._instructions_utils import InstructionProvider
 from google.adk.sessions.session import Session
+from jinja2.exceptions import SecurityError
 import pytest
 
 from .... import testing_utils
@@ -432,6 +433,44 @@ async def test_inject_session_state_jinja2_artifact_with_filter():
       instruction_template, invocation_context, use_jinja2=True
   )
   assert populated_instruction == "Content: ARTIFACT DATA"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "instruction_template",
+    [
+        "{{ ''.__class__.__mro__[1].__subclasses__() }}",
+        "{{ artifact.__globals__['__builtins__'] }}",
+    ],
+)
+async def test_inject_session_state_jinja2_blocks_python_internals(
+    instruction_template,
+):
+  invocation_context = await _create_test_readonly_context(
+      artifact_service=MockArtifactService({})
+  )
+
+  with pytest.raises(SecurityError):
+    await instructions_utils.inject_session_state(
+        instruction_template, invocation_context, use_jinja2=True
+    )
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_jinja2_cannot_mutate_state():
+  state = {"items": ["a"], "user": {"name": "Foo"}}
+  invocation_context = await _create_test_readonly_context(state=state)
+
+  for instruction_template in (
+      "{{ items.append('b') }}",
+      "{{ user.update(name='Bar') }}",
+  ):
+    with pytest.raises(SecurityError):
+      await instructions_utils.inject_session_state(
+          instruction_template, invocation_context, use_jinja2=True
+      )
+
+  assert state == {"items": ["a"], "user": {"name": "Foo"}}
 
 
 def test_module_imports_without_jinja2_installed():

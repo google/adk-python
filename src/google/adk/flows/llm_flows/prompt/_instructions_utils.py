@@ -97,7 +97,8 @@ async def inject_session_state(
     use_jinja2: If True, render the template with Jinja2 instead of the
       default regex-based engine.  Defaults to False for backward
       compatibility.  Jinja2 is an optional dependency and must be installed
-      separately to use this.
+      separately to use this.  Templates are rendered in Jinja2's immutable
+      sandbox, so they cannot reach Python internals or modify session state.
 
   Returns:
     The instruction template with values populated.
@@ -192,7 +193,7 @@ async def _render_with_jinja2(
     template: str,
     readonly_context: ReadonlyContext,
 ) -> str:
-  """Renders *template* using a Jinja2 environment.
+  """Renders *template* using a sandboxed Jinja2 environment.
 
   Session state variables are exposed as top-level template variables.
   Artifacts can be loaded with the ``artifact(filename)`` async callable
@@ -213,6 +214,7 @@ async def _render_with_jinja2(
   """
   try:
     import jinja2
+    from jinja2.sandbox import ImmutableSandboxedEnvironment
   except ImportError as e:
     raise ImportError(
         'Rendering an instruction with Jinja2 requires the optional jinja2'
@@ -237,7 +239,10 @@ async def _render_with_jinja2(
       )
     return str(artifact)
 
-  env = jinja2.Environment(
+  # Template text is not always fully trusted, and the context holds the live
+  # session state objects. The immutable sandbox blocks access to Python
+  # internals and in-place mutation of those objects.
+  env = ImmutableSandboxedEnvironment(
       enable_async=True,
       undefined=jinja2.StrictUndefined,
       autoescape=False,
