@@ -3,7 +3,6 @@
   "packages": {
     ".": {
       "release-type": "python",
-      "release-as": "2.11.0",
       "package-name": "google-adk",
       "include-component-in-tag": false,
       "skip-github-release": true,
