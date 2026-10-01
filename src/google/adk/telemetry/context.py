@@ -71,6 +71,7 @@ _ExperimentalFeature: TypeAlias = Literal[
     'skills',
     'workflow',
     'context_cache',
+    'grounding',
     'mcp',
     'token_usage',
 ]
