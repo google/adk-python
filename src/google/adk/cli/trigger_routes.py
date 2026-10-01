@@ -91,9 +91,18 @@ Pub/Sub and Eventarc redeliver a message whenever the endpoint does not
 acknowledge it, and every delivery runs the agent in a new session with fresh
 state, so nothing an earlier attempt wrote to session state is visible to the
 redelivery. A tool with side effects should instead derive an idempotency key
-from this value and deduplicate where the side effect happens: pass the key to
-the provider (for example a payment API's idempotency key) or check it against
-an external store.
+from this value and deduplicate where the side effect happens:
+
+  - Prefer the provider's idempotency key (for example a payment API's). Only
+    the provider knows whether the effect happened.
+  - If you use your own store instead, reserve the key atomically before the
+    effect, and plan for reconciling an ambiguous attempt, such as a call that
+    timed out after the provider committed. Checking the store, acting and
+    then recording the key repeats the effect in that case, and when a
+    redelivery overlaps a run still in flight.
+  - If the provider answers that the key is still in use by another attempt
+    (for example an HTTP 409), raise from the tool instead of returning the
+    error to the model, so the message is nacked and redelivered.
 
 The value is a dict with:
 
