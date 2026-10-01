@@ -266,6 +266,37 @@ def test_cross_turn_all_resolved_rerun():
   assert result.resume_inputs == {'fc-1': 'ans'}
 
 
+def test_cross_turn_no_outcome_static_vs_dynamic_run():
+  """Case 6 fast-forwards static runs with no outcome but reruns dynamic runs."""
+  recovered = _ChildScanState(run_id='1')
+  node = BaseNode(name='node', rerun_on_resume=False, wait_for_output=False)
+
+  static_run = DynamicNodeRun(
+      state=NodeState(run_id='1'),
+      recovered_state=recovered,
+      is_static=True,
+  )
+  dynamic_run = DynamicNodeRun(
+      state=NodeState(run_id='1'),
+      recovered_state=recovered,
+      is_static=False,
+  )
+
+  static_result = check_interception(
+      node=node,
+      recovered=recovered,
+      current_run=static_run,
+  )
+  dynamic_result = check_interception(
+      node=node,
+      recovered=recovered,
+      current_run=dynamic_run,
+  )
+
+  assert not static_result.should_run
+  assert dynamic_result.should_run
+
+
 # --- create_mock_context ---
 
 

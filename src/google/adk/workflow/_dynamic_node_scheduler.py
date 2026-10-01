@@ -439,7 +439,7 @@ class DynamicNodeScheduler:
     result = check_interception(
         node=curr_node,
         recovered=run.recovered_state,
-        current_run=None if run.is_static else run,
+        current_run=run,
     )
 
     if not result.should_run:

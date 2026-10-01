@@ -1537,6 +1537,30 @@ async def test_e2e_fresh_call_runs_in_workflow_node():
 
 
 @pytest.mark.asyncio
+async def test_e2e_tool_as_workflow_node_runs():
+  """A tool node has no stored call, so the plugin lets it run."""
+  bank = _Bank()
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app=App(
+          name=_APP,
+          root_agent=Workflow(
+              name="wf", edges=[(START, FunctionTool(bank.transfer_money))]
+          ),
+          plugins=[ToolCallIntegrityPlugin(secret_key=_KEY)],
+      ),
+      session_service=session_service,
+  )
+  session = await session_service.create_session(app_name=_APP, user_id=_USER)
+
+  await _run(
+      runner, session.id, _user_message('{"amount": 2, "recipient": "bob"}')
+  )
+
+  assert bank.transfers == [{"amount": 2, "recipient": "bob", "memo": None}]
+
+
+@pytest.mark.asyncio
 async def test_e2e_fresh_call_runs_through_agent_tool():
   bank = _Bank()
   inner = LlmAgent(

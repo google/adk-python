@@ -84,6 +84,7 @@ def test_run_live_applies_server_and_query_run_config_options():
       eval_set_results_manager=types.SimpleNamespace(),
       agents_dir=".",
       avatar_config=genai_types.AvatarConfig(avatar_name="Kai"),
+      max_llm_calls=37,
   )
 
   async def _get_runner_async(_self, _app_name: str):
@@ -126,6 +127,7 @@ def test_run_live_applies_server_and_query_run_config_options():
   assert run_config.explicit_vad_signal is True
   # No VIDEO modality was requested, so the server avatar config is skipped.
   assert run_config.avatar_config is None
+  assert run_config.max_llm_calls == 37
 
 
 @pytest.mark.parametrize(

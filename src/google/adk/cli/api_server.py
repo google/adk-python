@@ -906,6 +906,7 @@ class ApiServer:
       ] = None,
       default_llm_model: Optional[str] = None,
       avatar_config: Optional[types.AvatarConfig] = None,
+      max_llm_calls: Optional[int] = None,
   ):
     self.agent_loader = agent_loader
     self.session_service = session_service
@@ -939,6 +940,7 @@ class ApiServer:
     self.trigger_auth_verifier = trigger_auth_verifier
     self.default_llm_model = default_llm_model
     self.avatar_config = avatar_config
+    self.max_llm_calls = max_llm_calls
     self.default_app_name = os.getenv("ADK_DEFAULT_APP_NAME")
 
   async def get_runner_async(self, app_name: str) -> Runner:
@@ -1917,10 +1919,19 @@ class ApiServer:
       runner = await self.get_runner_async(req.app_name)
       _set_telemetry_context_if_needed(runner)
       run_config = None
-      if req.custom_metadata or req.service_tier:
+      if (
+          req.custom_metadata
+          or req.service_tier
+          or self.max_llm_calls is not None
+      ):
         run_config = RunConfig(
             custom_metadata=req.custom_metadata,
             service_tier=req.service_tier,
+            **(
+                {"max_llm_calls": self.max_llm_calls}
+                if self.max_llm_calls is not None
+                else {}
+            ),
         )
 
       async def worker():
@@ -1994,6 +2005,11 @@ class ApiServer:
             streaming_mode=stream_mode,
             custom_metadata=req.custom_metadata,
             service_tier=req.service_tier,
+            **(
+                {"max_llm_calls": self.max_llm_calls}
+                if self.max_llm_calls is not None
+                else {}
+            ),
         )
       except ValidationError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
@@ -2233,6 +2249,11 @@ class ApiServer:
             # avatar config to sessions that request VIDEO output.
             avatar_config=(
                 self.avatar_config if "VIDEO" in modalities else None
+            ),
+            **(
+                {"max_llm_calls": self.max_llm_calls}
+                if self.max_llm_calls is not None
+                else {}
             ),
         )
         async with Aclosing(

@@ -66,7 +66,7 @@ def check_interception(
   # Case 1: Same-turn completed or waiting interception (dynamic nodes only).
   # If a node already successfully executed or is currently blocked in the
   # current turn, bypass execution and return its current turn results.
-  if current_run:
+  if current_run and not current_run.is_static:
     if current_run.state.status == NodeStatus.COMPLETED:
       return InterceptionResult(
           should_run=False,
@@ -148,7 +148,7 @@ def check_interception(
     else:
       # Allow fresh execution for crashed/timeout dynamic nodes;
       # static nodes with no outcome (e.g. return None) should be fast-forwarded.
-      should_run = current_run is not None
+      should_run = current_run is not None and not current_run.is_static
 
   return InterceptionResult(
       should_run=should_run,

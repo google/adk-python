@@ -129,6 +129,7 @@ def get_fast_api_app(
     gemini_enterprise_app_name: str | None = None,
     express_mode: bool = False,
     avatar_config: types.AvatarConfig | None = None,
+    max_llm_calls: int | None = None,
 ) -> FastAPI:
   """Constructs and returns a FastAPI application for serving ADK agents.
 
@@ -197,6 +198,8 @@ def get_fast_api_app(
     express_mode: Whether to enable express mode.
     avatar_config: Avatar configuration to apply to live agent runs that
       request VIDEO output.
+    max_llm_calls: Maximum number of LLM calls allowed for each agent run.
+      When None, ``RunConfig`` resolves its normal default.
 
   Returns:
     The configured FastAPI application instance.
@@ -323,6 +326,7 @@ def get_fast_api_app(
       trigger_auth_verifier=trigger_auth_verifier,
       default_llm_model=default_llm_model,
       avatar_config=avatar_config,
+      max_llm_calls=max_llm_calls,
   )
 
   # In single agent mode, use that agent as the default app.

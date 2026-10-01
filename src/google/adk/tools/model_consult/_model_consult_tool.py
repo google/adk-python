@@ -35,10 +35,8 @@ from ._advisor import AdvisorResult
 from ._advisor import call_advisor
 from ._advisor import resolve_advisor_llm
 from ._advisor import resolve_thinking_level
-from ._context import _merge_adjacent
 from ._context import build_advisor_contents
 from ._context import ModelConsultContextConfig
-from ._context import render_transcript
 from ._prompts import ADVISOR_HANDOFF_TEMPLATE
 from ._prompts import ADVISOR_SYSTEM_INSTRUCTION
 from ._prompts import CONTEXT_BLOCK_TEMPLATE
@@ -383,7 +381,14 @@ class ModelConsultTool(BaseTool):
   def has_remaining_budget(
       self, context: ToolContext | CallbackContext
   ) -> bool:
-    """Returns whether at least one consult remains in the turn and session."""
+    """Returns whether at least one consult remains in the turn and session.
+
+    Args:
+      context: The tool or callback context holding the session state.
+
+    Returns:
+      True if neither `max_uses` nor `session_max_uses` has been reached.
+    """
     if (
         self.session_max_uses is not None
         and self._session_uses_so_far(context) >= self.session_max_uses
@@ -525,33 +530,9 @@ class ModelConsultTool(BaseTool):
     name = raw_name.strip()
     return name if name and name != 'unknown' else None
 
-  def _system_instruction(
-      self,
-      executor_instruction: str | None,
-      tool_inventory: str | None,
-      agent_name: str | None,
-  ) -> str:
-    blocks = [self._advisor_instruction]
-    if executor_instruction:
-      agent_label = agent_name or 'the executor'
-      blocks.append(
-          '--- EXECUTOR AGENT INSTRUCTION'
-          f' ({agent_label}) ---\nThe executor operates under the following'
-          ' instruction. Your guidance must respect'
-          f' it.\n\n{executor_instruction}'
-      )
-    if tool_inventory:
-      blocks.append(
-          '--- TOOLS AVAILABLE TO THE EXECUTOR ---\nThese are the only tools'
-          ' the executor can call. Name them explicitly in your plan, with'
-          ' concrete arguments. Do not propose steps that require tools not'
-          f' listed here.\n\n{tool_inventory}'
-      )
-    return '\n\n'.join(blocks)
-
-  def _handoff_content(
+  def _handoff_part(
       self, question: str, context: str | None, agent_name: str | None
-  ) -> types.Content:
+  ) -> types.Part:
     context_block = (
         CONTEXT_BLOCK_TEMPLATE.format(context=context.strip())
         if context and context.strip()
@@ -563,7 +544,7 @@ class ModelConsultTool(BaseTool):
         question=question.strip(),
         context_block=context_block,
     )
-    return types.Content(role='user', parts=[types.Part(text=text)])
+    return types.Part(text=text)
 
   def _in_flight_consult_call_ids(self, events: list[Event]) -> list[str]:
     """Returns unanswered model_consult function call ids in the event log."""
@@ -582,8 +563,40 @@ class ModelConsultTool(BaseTool):
     return [cid for cid in consult_call_ids if cid not in answered_ids]
 
   def _build_contents(
-      self, tool_context: ToolContext, question: str, context: str | None
+      self,
+      tool_context: ToolContext,
+      question: str,
+      context: str | None,
+      *,
+      executor_instruction: str | None = None,
+      tool_inventory: str | None = None,
   ) -> list[types.Content]:
+    agent_name = self._normalized_agent_name(tool_context)
+    parts: list[types.Part] = []
+    if executor_instruction:
+      agent_label = agent_name or 'the executor'
+      parts.append(
+          types.Part(
+              text=(
+                  '--- EXECUTOR AGENT INSTRUCTION'
+                  f' ({agent_label}) ---\nThe executor operates under the'
+                  ' following instruction. Your guidance must respect'
+                  f' it.\n\n{executor_instruction}'
+              )
+          )
+      )
+    if tool_inventory:
+      parts.append(
+          types.Part(
+              text=(
+                  '--- TOOLS AVAILABLE TO THE EXECUTOR ---\nThese are the only'
+                  ' tools the executor can call. Name them explicitly in your'
+                  ' plan, with concrete arguments. Do not propose steps that'
+                  f' require tools not listed here.\n\n{tool_inventory}'
+              )
+          )
+      )
+
     events = list(tool_context.session.events)
     in_flight_consult_ids = self._in_flight_consult_call_ids(events)
     skip_ids = [
@@ -597,24 +610,11 @@ class ModelConsultTool(BaseTool):
     session_contents = build_advisor_contents(
         events, config=self._context_config, skip_function_call_ids=skip_ids
     )
-    agent_name = self._normalized_agent_name(tool_context)
-    handoff = self._handoff_content(question, context, agent_name)
+    for content in session_contents:
+      parts.extend(content.parts or [])
 
-    if self._context_config.mode == 'transcript' and session_contents:
-      transcript = render_transcript(session_contents)
-      session_contents = [
-          types.Content(
-              role='user',
-              parts=[
-                  types.Part(
-                      text=(
-                          f'--- EXECUTOR SESSION TRANSCRIPT ---\n\n{transcript}'
-                      )
-                  )
-              ],
-          )
-      ]
-    return _merge_adjacent([*session_contents, handoff])
+    parts.append(self._handoff_part(question, context, agent_name))
+    return [types.Content(role='user', parts=parts)]
 
   async def run_async(
       self, *, args: dict[str, Any], tool_context: ToolContext
@@ -724,20 +724,21 @@ class ModelConsultTool(BaseTool):
           if isinstance(raw_context, str)
           else (str(raw_context).strip() if raw_context is not None else None)
       )
-      contents = self._build_contents(tool_context, question, extra_context)
       executor_instruction = await self._executor_instruction(tool_context)
       tool_inventory = await self._tool_inventory(tool_context)
-      system_instruction = self._system_instruction(
-          executor_instruction,
-          tool_inventory,
-          self._normalized_agent_name(tool_context),
+      contents = self._build_contents(
+          tool_context,
+          question,
+          extra_context,
+          executor_instruction=executor_instruction,
+          tool_inventory=tool_inventory,
       )
 
       try:
         result = await call_advisor(
             self.advisor_model,
             contents=contents,
-            system_instruction=system_instruction,
+            system_instruction=self._advisor_instruction,
             thinking_level=self._thinking_level,
             generate_content_config=self._generate_content_config,
             timeout_seconds=self._timeout_seconds,

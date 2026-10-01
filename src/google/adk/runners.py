@@ -1159,8 +1159,12 @@ class Runner:
     """
     run_config = run_config or RunConfig()
 
-    if new_message and not new_message.role:
-      new_message.role = 'user'
+    # An inbound message is always a user turn, whatever role the caller set,
+    # matching the A2A request converter. Build a new Content instead of
+    # assigning the role, so the caller's object is left unchanged and a
+    # types.UserContent (whose role field is frozen) is accepted.
+    if new_message and new_message.role != 'user':
+      new_message = types.Content(role='user', parts=new_message.parts)
 
     from .agents.llm_agent import LlmAgent
     from .workflow._base_node import BaseNode

@@ -2927,6 +2927,95 @@ async def test_run_async_rejects_user_function_call():
         pass
 
 
+def _llm_runner(mock_model: testing_utils.MockModel) -> Runner:
+  return Runner(
+      app_name=TEST_APP_ID,
+      agent=LlmAgent(name="root_agent", model=mock_model),
+      session_service=InMemorySessionService(),
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+
+async def _stored_user_event_roles(runner: Runner) -> list[Optional[str]]:
+  session = await runner.session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  return [
+      event.content.role for event in session.events if event.author == "user"
+  ]
+
+
+@pytest.mark.parametrize("role", [None, "model", "system"])
+async def test_run_async_stores_new_message_as_user_turn(role):
+  """new_message is persisted as a user turn whatever role the caller set."""
+  runner = _llm_runner(testing_utils.MockModel.create(responses=["ok"]))
+
+  await _drain_events(
+      runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=types.Content(role=role, parts=[types.Part(text="hi")]),
+      )
+  )
+
+  assert await _stored_user_event_roles(runner) == ["user"]
+
+
+@pytest.mark.parametrize("role", ["model", "system"])
+async def test_run_async_sends_new_message_to_model_as_user_turn(role):
+  """The model receives new_message as a user turn, not as its own output."""
+  mock_model = testing_utils.MockModel.create(responses=["ok"])
+  runner = _llm_runner(mock_model)
+
+  await _drain_events(
+      runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=types.Content(role=role, parts=[types.Part(text="hi")]),
+      )
+  )
+
+  assert [content.role for content in mock_model.requests[0].contents] == [
+      "user"
+  ]
+
+
+@pytest.mark.parametrize("role", [None, "model"])
+async def test_run_async_leaves_caller_new_message_unchanged(role):
+  """Canonicalizing new_message leaves the caller's Content unchanged."""
+  runner = _llm_runner(testing_utils.MockModel.create(responses=["ok"]))
+  new_message = types.Content(role=role, parts=[types.Part(text="hi")])
+
+  await _drain_events(
+      runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=new_message,
+      )
+  )
+
+  assert new_message.role == role
+
+
+async def test_run_async_accepts_user_content_new_message():
+  """A types.UserContent new_message, whose role is frozen, runs normally."""
+  runner = _llm_runner(testing_utils.MockModel.create(responses=["ok"]))
+
+  events = [
+      event
+      async for event in runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=types.UserContent(parts=[types.Part(text="hi")]),
+      )
+  ]
+
+  assert [part.text for event in events for part in event.content.parts] == [
+      "ok"
+  ]
+
+
 def test_runner_agent_is_a_class_attribute():
   """``agent`` must stay in ``dir(Runner)`` for callers that mock a Runner."""
   assert "agent" in dir(Runner)
