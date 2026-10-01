@@ -214,6 +214,7 @@ One difference from a function node is worth planning for. A function node coerc
 - **`BaseNode.run()` is not an extension point.** It is declared `@final`, and the validation and normalization it performs are not optional for a node in a graph. Python does not enforce `@final` at runtime, but overriding it means the workflow no longer gets `Event` objects it can rely on. Implement `run_node_impl` on a `Node` subclass instead.
 - **A schema does not make a value required.** `None` passes any schema, in either direction.
 - **Dictionary and `types.Schema` schemas are inert locally.** They are accepted and never checked.
+- **Schema validation dumps models in Python mode rather than JSON mode.** In `BaseNode._validate_schema`, validated Pydantic `BaseModel` instances are converted using `model_dump()` in Python mode rather than JSON mode. Fields containing non-primitive types such as `Decimal`, `datetime`, or `UUID` remain Python objects and can cause errors when downstream components attempt standard JSON serialization.
 - **`wait_for_output=True` fails silently.** A node that never yields does not hang the run. The workflow completes immediately with no output, and everything downstream of that node is skipped without an error.
 - **`name` cannot be changed meaningfully after the graph is built.** The graph holds node objects by identity and refers to them by name; rename one afterwards and the edges no longer describe what runs.
 

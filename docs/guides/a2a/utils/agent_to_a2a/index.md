@@ -313,8 +313,10 @@ because the URL was set correctly by hand.
     content, and an `Event(output=...)` carries none. That is exactly what a
     function node produces when it returns a value, so nothing is published, no
     artifact is built, and no `completed` status is sent. The client is left
-    holding a task stuck in `working` and will poll forever. Have at least one
-    node also yield
+    holding a task stuck in `working` and will poll forever. For the same
+    reason, the structured object validated against `Workflow.output_schema` is
+    not placed into the A2A response artifact, which contains only the raw text
+    emitted by the executed nodes. Have at least one node also yield
     `Event(message=...)` with the text the caller should receive. The mechanism
     is in [A2aAgentExecutor](../../executor/a2a_agent_executor/index.md).
 

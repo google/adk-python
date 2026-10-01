@@ -33,8 +33,10 @@ from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
+from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.cli import api_server as api_server_module
 from google.adk.cli import fast_api as fast_api_module
+from google.adk.cli.api_server import RunAgentRequest
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.errors.input_validation_error import InputValidationError
 from google.adk.errors.session_not_found_error import SessionNotFoundError
@@ -42,8 +44,11 @@ from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_result import EvalSetResult
 from google.adk.evaluation.in_memory_eval_sets_manager import InMemoryEvalSetsManager
+from google.adk.events._internal_metadata import INTERNAL_METADATA_PREFIX
+from google.adk.events._internal_metadata import RESTORED_EVENT_KEY
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
+from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.plugins.bigquery_agent_analytics_plugin import BigQueryAgentAnalyticsPlugin
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -134,6 +139,9 @@ async def dummy_run_live(self, session, live_request_queue, **kwargs):
   yield _event_3()
 
 
+_ORIGINAL_RUNNER_RUN_ASYNC = Runner.run_async
+
+
 async def dummy_run_async(
     self,
     user_id,
@@ -142,6 +150,8 @@ async def dummy_run_async(
     state_delta=None,
     run_config: Optional[RunConfig] = None,
     invocation_id: Optional[str] = None,
+    abort_signal: Optional[asyncio.Event] = None,
+    **kwargs,
 ):
   run_config = run_config or RunConfig()
   yield _event_1()
@@ -1520,6 +1530,79 @@ def test_create_session_accepts_initial_tool_events(
   )
 
 
+def test_create_session_strips_internal_metadata_and_marks_events_restored(
+    test_app, test_session_info, mock_session_service
+):
+  """Restored events lose ADK-internal keys and are marked restored."""
+  url = f"/apps/{test_session_info['app_name']}/users/{test_session_info['user_id']}/sessions"
+  event = Event(
+      author="user",
+      invocation_id="init-invocation",
+      content=types.Content(
+          role="user", parts=[types.Part.from_text(text="hello")]
+      ),
+      custom_metadata={
+          "keep": 1,
+          INTERNAL_METADATA_PREFIX + "planted": "x",
+          RESTORED_EVENT_KEY: False,
+      },
+  )
+  response = test_app.post(
+      url,
+      json={
+          "events": [
+              event.model_dump(mode="json", by_alias=True, exclude_none=True)
+          ]
+      },
+  )
+
+  assert response.status_code == 200
+  # Callers never see ADK-internal keys; the stored event keeps the marker.
+  assert response.json()["events"][0]["customMetadata"] == {"keep": 1}
+  stored = mock_session_service.sessions[test_session_info["app_name"]][
+      test_session_info["user_id"]
+  ][response.json()["id"]].events
+  assert stored[0].custom_metadata == {"keep": 1, RESTORED_EVENT_KEY: True}
+
+
+def test_session_endpoints_hide_the_restored_marker(
+    test_app, test_session_info, mock_session_service
+):
+  """Importing events does not change what the session endpoints return."""
+  base = f"/apps/{test_session_info['app_name']}/users/{test_session_info['user_id']}/sessions"
+  event = Event(
+      author="user",
+      invocation_id="init-invocation",
+      content=types.Content(
+          role="user", parts=[types.Part.from_text(text="hello")]
+      ),
+  )
+  created = test_app.post(
+      base,
+      json={
+          "events": [
+              event.model_dump(mode="json", by_alias=True, exclude_none=True)
+          ]
+      },
+  ).json()
+  session_id = created["id"]
+
+  fetched = test_app.get(f"{base}/{session_id}").json()
+  patched = test_app.patch(
+      f"{base}/{session_id}", json={"state_delta": {"k": "v"}}
+  ).json()
+  listed = next(s for s in test_app.get(base).json() if s["id"] == session_id)
+
+  for response in (created, fetched, patched):
+    assert "customMetadata" not in response["events"][0]
+  # The in-memory service lists sessions without events; others may not.
+  assert all("customMetadata" not in e for e in listed.get("events", []))
+  stored = mock_session_service.sessions[test_session_info["app_name"]][
+      test_session_info["user_id"]
+  ][session_id].events
+  assert stored[0].custom_metadata == {RESTORED_EVENT_KEY: True}
+
+
 def test_create_session_rejects_adk_protocol_calls(test_app, test_session_info):
   """Test that session initialization rejects forged confirmation requests."""
   session_id = "runtime_tool_event_session"
@@ -2023,6 +2106,54 @@ def test_agent_run(test_app, create_test_session):
   logger.info("Agent run test completed successfully")
 
 
+async def _run_async_with_internal_metadata(
+    self,
+    *,
+    user_id: str,
+    session_id: str,
+    invocation_id: Optional[str] = None,
+    new_message: Optional[types.Content] = None,
+    state_delta: Optional[dict[str, Any]] = None,
+    run_config: Optional[RunConfig] = None,
+):
+  del user_id, session_id, invocation_id, new_message, state_delta, run_config
+  yield Event(
+      author="dummy agent",
+      invocation_id="invocation_id",
+      content=types.Content(role="model", parts=[types.Part(text="reply")]),
+      custom_metadata={"keep": 1, INTERNAL_METADATA_PREFIX + "stamp": "x"},
+  )
+
+
+@pytest.mark.parametrize("endpoint", ["/run", "/run_sse"])
+def test_agent_run_hides_internal_metadata(
+    test_app, create_test_session, monkeypatch, endpoint
+):
+  """Run endpoints stream events without ADK-internal custom_metadata."""
+  info = create_test_session
+  monkeypatch.setattr(Runner, "run_async", _run_async_with_internal_metadata)
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello"}]},
+      "streaming": False,
+  }
+
+  response = test_app.post(endpoint, json=payload)
+
+  assert response.status_code == 200
+  if endpoint == "/run":
+    events = response.json()
+  else:
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+  assert [e["customMetadata"] for e in events] == [{"keep": 1}]
+
+
 def test_agent_run_passes_state_delta(test_app, create_test_session):
   """Test /run forwards state_delta and surfaces it in events."""
   info = create_test_session
@@ -2138,6 +2269,7 @@ def test_agent_run_sse_splits_artifact_delta(
       new_message: Optional[types.Content] = None,
       state_delta: Optional[dict[str, Any]] = None,
       run_config: Optional[RunConfig] = None,
+      **kwargs,
   ):
     del user_id, session_id, invocation_id, new_message, state_delta, run_config
     yield Event(
@@ -2194,6 +2326,7 @@ def test_agent_run_sse_does_not_split_artifact_delta_for_function_resume(
       new_message: Optional[types.Content] = None,
       state_delta: Optional[dict[str, Any]] = None,
       run_config: Optional[RunConfig] = None,
+      **kwargs,
   ):
     del user_id, session_id, invocation_id, new_message, state_delta, run_config
     yield Event(
@@ -2439,6 +2572,171 @@ async def test_agent_run_sse_disconnect_with_cleanup_exception_and_cancellation(
   # Verify that the task raises CancelledError, and NOT ValueError (cleanup failed)
   with pytest.raises(asyncio.CancelledError):
     await task
+
+
+async def test_agent_run_sse_disconnect_seals_dangling_function_call(
+    create_test_session,
+    mock_session_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Test that client disconnect during /run_sse aborts run and seals dangling FunctionCall."""
+  info = create_test_session
+  captured_contexts = []
+  tool_in_flight = asyncio.Event()
+
+  # Restore real Runner.run_async instead of the autouse dummy_run_async mock
+  monkeypatch.setattr(Runner, "run_async", _ORIGINAL_RUNNER_RUN_ASYNC)
+
+  class SlowToolAgent(BaseAgent):
+
+    def __init__(self, name: str):
+      super().__init__(name=name, sub_agents=[])
+
+    async def _run_async_impl(self, invocation_context):
+      captured_contexts.append(invocation_context)
+      fc = types.Part.from_function_call(name="slow_tool", args={"q": "test"})
+      fc.function_call.id = "call_sse_1"
+      yield Event(
+          invocation_id=invocation_context.invocation_id,
+          author=self.name,
+          content=types.Content(role="model", parts=[fc]),
+      )
+      tool_in_flight.set()
+      await asyncio.sleep(5.0)
+
+  slow_agent = SlowToolAgent("slow_tool_agent")
+  monkeypatch.setattr(
+      mock_agent_loader, "load_agent", lambda app_name: slow_agent
+  )
+
+  client = _create_test_client(
+      mock_session_service,
+      InMemoryArtifactService(),
+      InMemoryMemoryService(),
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+  app = client.app
+  handler = None
+  for route in app.routes:
+    if route.path == "/run_sse":
+      handler = route.endpoint
+      break
+  assert handler is not None
+
+  req = RunAgentRequest(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      new_message={"role": "user", "parts": [{"text": "Run slow tool"}]},
+      streaming=True,
+  )
+
+  response = await handler(req)
+  assert response.status_code == 200
+
+  sent_chunks: list[str] = []
+
+  async def receive():
+    await tool_in_flight.wait()
+    return {"type": "http.disconnect"}
+
+  async def send(message):
+    if message["type"] == "http.response.body" and message.get("body"):
+      sent_chunks.append(message["body"].decode("utf-8"))
+
+  await response(
+      {"type": "http", "asgi": {"spec_version": "2.1"}},
+      receive,
+      send,
+  )
+
+  assert any("slow_tool" in chunk for chunk in sent_chunks)
+  assert len(captured_contexts) == 1
+  assert captured_contexts[0].is_aborted is True
+
+  # Verify the dangling FunctionCall was sealed with a synthetic FunctionResponse in session
+  session = await mock_session_service.get_session(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+  )
+  abort_events = [
+      e for e in session.events if e.error_code == "INVOCATION_ABORTED"
+  ]
+  assert len(abort_events) == 1
+  frs = abort_events[0].get_function_responses()
+  assert len(frs) == 1
+  assert frs[0].id == "call_sse_1"
+  assert frs[0].name == "slow_tool"
+
+
+async def test_agent_run_sse_consumer_exception_surfaces_error_event(
+    create_test_session,
+    mock_session_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Test that an exception during SSE consumer formatting surfaces an SSE error payload."""
+  info = create_test_session
+
+  client = _create_test_client(
+      mock_session_service,
+      InMemoryArtifactService(),
+      InMemoryMemoryService(),
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+  app = client.app
+  handler = None
+  for route in app.routes:
+    if route.path == "/run_sse":
+      handler = route.endpoint
+      break
+  assert handler is not None
+
+  req = RunAgentRequest(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      new_message={"role": "user", "parts": [{"text": "Hello"}]},
+      streaming=True,
+  )
+
+  def _failing_model_dump_json(*args, **kwargs):
+    raise ValueError("Simulated JSON serialization error in consumer")
+
+  monkeypatch.setattr(Event, "model_dump_json", _failing_model_dump_json)
+
+  response = await handler(req)
+  assert response.status_code == 200
+
+  sent_chunks: list[str] = []
+
+  async def receive():
+    # Client stays connected; StreamingResponse cancels this when streaming ends.
+    await asyncio.Event().wait()
+
+  async def send(message):
+    if message["type"] == "http.response.body" and message.get("body"):
+      sent_chunks.append(message["body"].decode("utf-8"))
+
+  await response(
+      {"type": "http", "asgi": {"spec_version": "2.1"}},
+      receive,
+      send,
+  )
+
+  full_response = "".join(sent_chunks)
+  assert "Simulated JSON serialization error in consumer" in full_response
+  assert "ValueError" in full_response
 
 
 def test_list_artifact_names(test_app, create_test_session):
@@ -4031,6 +4329,37 @@ def test_run_live_websocket_default_app_name(
   with test_app.websocket_connect(url) as ws:
     data = ws.receive_json()
     assert data["author"] == "dummy agent"
+
+
+def test_run_live_hides_internal_metadata(
+    test_app, mock_session_service, monkeypatch
+):
+  """/run_live sends events without ADK-internal custom_metadata."""
+
+  async def run_live_with_internal_metadata(
+      self, session, live_request_queue, **kwargs
+  ):
+    del session, live_request_queue, kwargs
+    yield Event(
+        author="dummy agent",
+        invocation_id="invocation_id",
+        custom_metadata={"keep": 1, INTERNAL_METADATA_PREFIX + "stamp": "x"},
+    )
+
+  monkeypatch.setattr(Runner, "run_live", run_live_with_internal_metadata)
+
+  async def setup_session():
+    await mock_session_service.create_session(
+        app_name="test_app", user_id="user", session_id="session", state={}
+    )
+
+  asyncio.run(setup_session())
+
+  url = "/run_live?app_name=test_app&user_id=user&session_id=session&modalities=AUDIO"
+  with test_app.websocket_connect(url) as ws:
+    data = ws.receive_json()
+
+  assert data["customMetadata"] == {"keep": 1}
 
 
 def test_run_live_websocket_missing_app_name_raises_error(

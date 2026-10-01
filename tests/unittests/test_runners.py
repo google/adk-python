@@ -43,6 +43,8 @@ from google.adk.apps.app import ResumabilityConfig
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.cli.utils.agent_loader import AgentLoader
 from google.adk.errors.session_not_found_error import SessionNotFoundError
+from google.adk.events._internal_metadata import INTERNAL_METADATA_PREFIX
+from google.adk.events._internal_metadata import RESTORED_EVENT_KEY
 from google.adk.events.event import Event
 from google.adk.events.event import EventActions
 from google.adk.plugins.base_plugin import BasePlugin
@@ -1103,6 +1105,132 @@ async def test_run_config_custom_metadata_propagates_to_events():
   )
   user_event = next(event for event in session.events if event.author == "user")
   assert user_event.custom_metadata == {"request_id": "req-1"}
+
+
+class MockAgentWithInternalMetadata(BaseAgent):
+  """Mock agent that sets an ADK-internal key on its own event."""
+
+  def __init__(self, name: str):
+    super().__init__(name=name, sub_agents=[])
+
+  async def _run_async_impl(
+      self, invocation_context: InvocationContext
+  ) -> AsyncGenerator[Event, None]:
+    yield Event(
+        invocation_id=invocation_context.invocation_id,
+        author=self.name,
+        content=types.Content(
+            role="model", parts=[types.Part(text="Test response")]
+        ),
+        custom_metadata={
+            "event_key": "event_value",
+            INTERNAL_METADATA_PREFIX + "agent": "kept",
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_config_custom_metadata_drops_internal_keys():
+  """Callers cannot set ADK-internal keys through RunConfig; agents can."""
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockAgentWithInternalMetadata("metadata_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+  )
+  await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  run_config = RunConfig(
+      custom_metadata={
+          "request_id": "req-1",
+          INTERNAL_METADATA_PREFIX + "planted": "x",
+          RESTORED_EVENT_KEY: True,
+      }
+  )
+  events = [
+      event
+      async for event in runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=types.Content(role="user", parts=[types.Part(text="hi")]),
+          run_config=run_config,
+      )
+  ]
+
+  assert events[0].custom_metadata == {
+      "request_id": "req-1",
+      "event_key": "event_value",
+      INTERNAL_METADATA_PREFIX + "agent": "kept",
+  }
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  user_event = next(event for event in session.events if event.author == "user")
+  assert user_event.custom_metadata == {"request_id": "req-1"}
+
+
+class _ReplacingPlugin(BasePlugin):
+  """Returns a replacement event with its own custom_metadata."""
+
+  async def on_event_callback(
+      self, *, invocation_context: InvocationContext, event: Event
+  ) -> Optional[Event]:
+    del invocation_context
+    return Event(
+        invocation_id=event.invocation_id,
+        author=event.author,
+        content=event.content,
+        custom_metadata={"plugin_key": 1},
+    )
+
+
+@pytest.mark.parametrize(
+    "run_metadata, expected_public",
+    [
+        (None, {"plugin_key": 1}),
+        ({"request_id": "req-1"}, {"request_id": "req-1", "plugin_key": 1}),
+    ],
+    ids=["no_run_metadata", "run_metadata"],
+)
+@pytest.mark.asyncio
+async def test_plugin_replacement_event_keeps_internal_metadata(
+    run_metadata, expected_public
+):
+  """A plugin's replacement event cannot drop ADK-internal keys."""
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=MockAgentWithInternalMetadata("metadata_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      plugins=[_ReplacingPlugin(name="replacing")],
+  )
+  await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+
+  events = [
+      event
+      async for event in runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=types.Content(role="user", parts=[types.Part(text="hi")]),
+          run_config=RunConfig(custom_metadata=run_metadata),
+      )
+  ]
+
+  assert events[0].custom_metadata == {
+      **expected_public,
+      INTERNAL_METADATA_PREFIX + "agent": "kept",
+  }
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  agent_event = next(e for e in session.events if e.author == "metadata_agent")
+  assert agent_event.custom_metadata == events[0].custom_metadata
 
 
 @pytest.mark.asyncio
@@ -4967,6 +5095,511 @@ async def test_run_live_filters_media_after_event_callback(
   if stored.events:
     assert stored.events[0].id == events[0].id
     assert stored.events[0].content == events[0].content
+
+
+def _fc_part(name: str, call_id: str) -> types.Part:
+  part = types.Part.from_function_call(name=name, args={})
+  part.function_call.id = call_id
+  return part
+
+
+def _model_event(author: str, *parts: types.Part, **kwargs: Any) -> Event:
+  return Event(
+      author=author,
+      content=types.Content(role="model", parts=list(parts)),
+      **kwargs,
+  )
+
+
+def _is_fc(call_id: str):
+  return lambda e: any(fc.id == call_id for fc in e.get_function_calls())
+
+
+class _AbortableAgent(BaseAgent):
+  """Yields `script` then blocks until aborted; later turns reply with text."""
+
+  script: list[Event] = []
+  follow_up_text: str = "Follow-up complete"
+  _runs: int = 0
+
+  async def _run_async_impl(
+      self, ctx: InvocationContext
+  ) -> AsyncGenerator[Event, None]:
+    self._runs += 1
+    if self._runs > 1:
+      yield _model_event(
+          self.name,
+          types.Part(text=self.follow_up_text),
+          invocation_id=ctx.invocation_id,
+      )
+      return
+    for event in self.script:
+      yield event.model_copy(update={"invocation_id": ctx.invocation_id})
+    await asyncio.sleep(5.0)
+
+
+def _abort_runner(
+    agent: BaseAgent,
+    *,
+    plugins: Optional[list[BasePlugin]] = None,
+    session_service: Optional[BaseSessionService] = None,
+    resumable: bool = False,
+) -> Runner:
+  return Runner(
+      app=App(
+          name=TEST_APP_ID,
+          root_agent=agent,
+          plugins=plugins or [],
+          resumability_config=ResumabilityConfig(is_resumable=resumable),
+      ),
+      session_service=session_service or InMemorySessionService(),
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+
+async def _run_turn(
+    runner: Runner,
+    session_id: str,
+    text: str,
+    *,
+    abort_when=None,
+    close_on_abort: bool = False,
+    run_config: Optional[RunConfig] = None,
+) -> tuple[list[Event], Session]:
+  """Runs one turn, setting the abort signal on the first matching event.
+
+  With ``close_on_abort``, the caller also stops reading right away, as a Stop
+  button would.
+  """
+  abort_signal = asyncio.Event()
+  events = []
+  async with aclosing(
+      runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=session_id,
+          new_message=types.Content(role="user", parts=[types.Part(text=text)]),
+          run_config=run_config,
+          abort_signal=abort_signal,
+      )
+  ) as agen:
+    async for event in agen:
+      events.append(event)
+      if abort_when and abort_when(event):
+        abort_signal.set()
+        if close_on_abort:
+          break
+  session = await runner.session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=session_id
+  )
+  return events, session
+
+
+def _abort_events(events: list[Event]) -> list[Event]:
+  return [e for e in events if e.error_code == "INVOCATION_ABORTED"]
+
+
+@pytest.mark.asyncio
+async def test_run_async_aborted_synthesizes_function_response_for_dangling_calls():
+  """A dangling function call is sealed with a synthetic response; the next turn runs cleanly."""
+  runner = _abort_runner(
+      _AbortableAgent(
+          name="tool_agent",
+          script=[_model_event("tool_agent", _fc_part("compute", "call_1"))],
+      )
+  )
+
+  events, session = await _run_turn(
+      runner, "s", "Run", abort_when=_is_fc("call_1")
+  )
+
+  assert len(_abort_events(events)) == 1
+  fr_events = [e for e in session.events if e.get_function_responses()]
+  assert [fr.id for e in fr_events for fr in e.get_function_responses()] == [
+      "call_1"
+  ]
+  assert _abort_events(fr_events) == fr_events
+
+  events, _ = await _run_turn(runner, "s", "Next question")
+  assert [e.content.parts[0].text for e in events] == ["Follow-up complete"]
+
+
+@pytest.mark.asyncio
+async def test_run_async_aborted_without_calls_records_abort_event():
+  """An abort with no pending function calls records a single abort event from the root agent."""
+  runner = _abort_runner(
+      _AbortableAgent(
+          name="text_agent",
+          script=[_model_event("text_agent", types.Part(text="Generating"))],
+      )
+  )
+
+  _, session = await _run_turn(
+      runner, "s", "Start", abort_when=lambda e: e.author == "text_agent"
+  )
+
+  abort_events = _abort_events(session.events)
+  assert len(abort_events) == 1
+  assert abort_events[0].author == "text_agent"
+  assert abort_events[0].error_message == "Invocation was aborted by client."
+  assert abort_events[0].content is None
+
+
+@pytest.mark.asyncio
+async def test_run_async_aborted_runs_plugin_callbacks_in_order_with_metadata():
+  """Abort events go through on_event (with custom metadata) before after_run."""
+  callback_log = []
+  plugin_abort_events = []
+
+  class _LifecyclePlugin(BasePlugin):
+
+    async def before_run_callback(self, *, invocation_context):
+      callback_log.append("before_run")
+
+    async def on_event_callback(self, *, invocation_context, event):
+      if event.error_code == "INVOCATION_ABORTED":
+        callback_log.append("on_event:abort")
+        plugin_abort_events.append(event)
+      else:
+        callback_log.append("on_event:normal")
+
+    async def after_run_callback(self, *, invocation_context):
+      callback_log.append("after_run")
+
+  runner = _abort_runner(
+      _AbortableAgent(
+          name="tool_agent",
+          script=[_model_event("tool_agent", _fc_part("tool_a", "call_1"))],
+      ),
+      plugins=[_LifecyclePlugin(name="lifecycle")],
+  )
+
+  events, _ = await _run_turn(
+      runner,
+      "s",
+      "Go",
+      abort_when=_is_fc("call_1"),
+      run_config=RunConfig(custom_metadata={"label": "value"}),
+  )
+
+  assert callback_log == [
+      "before_run",
+      "on_event:normal",
+      "on_event:abort",
+      "after_run",
+  ]
+  assert plugin_abort_events[0].custom_metadata == {"label": "value"}
+  assert _abort_events(events)[0].custom_metadata == {"label": "value"}
+
+
+@pytest.mark.asyncio
+async def test_run_async_aborted_session_append_failure_propagates():
+  """A failure appending the synthesized abort event is raised, not swallowed."""
+  session_service = InMemorySessionService()
+  orig_append = session_service.append_event
+
+  async def failing_append(session, event):
+    if event.error_code == "INVOCATION_ABORTED":
+      raise RuntimeError("Simulated DB failure on abort event")
+    return await orig_append(session=session, event=event)
+
+  session_service.append_event = failing_append
+  runner = _abort_runner(
+      _AbortableAgent(
+          name="simple_agent",
+          script=[_model_event("simple_agent", types.Part(text="First"))],
+      ),
+      session_service=session_service,
+  )
+
+  with pytest.raises(RuntimeError, match="Simulated DB failure on abort event"):
+    await _run_turn(runner, "s", "Start", abort_when=lambda e: True)
+
+
+async def _slow_tool() -> dict[str, str]:
+  """Blocks until the invocation is aborted."""
+  await asyncio.sleep(5.0)
+  return {}
+
+
+def _slow_tool_call() -> types.Part:
+  return types.Part.from_function_call(name="_slow_tool", args={})
+
+
+def _legacy_tool_agent() -> BaseAgent:
+  return _AbortableAgent(
+      name="tool_agent",
+      script=[_model_event("tool_agent", _fc_part("_slow_tool", "call_1"))],
+  )
+
+
+def _llm_tool_agent() -> BaseAgent:
+  return LlmAgent(
+      name="tool_agent",
+      model=testing_utils.MockModel.create(
+          responses=[_slow_tool_call(), "Recovered"]
+      ),
+      tools=[_slow_tool],
+  )
+
+
+def _has_fc(event: Event) -> bool:
+  return bool(event.get_function_calls())
+
+
+def _texts(contents: list[Optional[types.Content]]) -> list[str]:
+  return [p.text for c in contents if c for p in c.parts or [] if p.text]
+
+
+@pytest.mark.asyncio
+async def test_run_async_aborted_llm_agent_root_sends_abort_error_to_model():
+  """An LlmAgent root's dangling call is answered, so the next request carries the abort error."""
+  agent = _llm_tool_agent()
+  runner = _abort_runner(agent)
+
+  await _run_turn(runner, "s", "Run", abort_when=_has_fc)
+  events, _ = await _run_turn(runner, "s", "Next question")
+
+  assert _texts([e.content for e in events]) == ["Recovered"]
+  responses = [
+      p.function_response.response
+      for c in agent.model.requests[-1].contents
+      for p in c.parts or []
+      if p.function_response
+  ]
+  assert responses == [{"error": "Invocation was aborted by client."}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "make_agent", [_legacy_tool_agent, _llm_tool_agent], ids=["legacy", "llm"]
+)
+async def test_run_async_aborted_then_closed_seals_dangling_call(make_agent):
+  """A caller that sets the abort signal and stops reading still gets the call sealed."""
+  runner = _abort_runner(make_agent())
+
+  events, session = await _run_turn(
+      runner, "s", "Run", abort_when=_has_fc, close_on_abort=True
+  )
+
+  assert not _abort_events(events)
+  sealed = _abort_events(session.events)
+  assert [fr.name for e in sealed for fr in e.get_function_responses()] == [
+      "_slow_tool"
+  ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "make_agent", [_legacy_tool_agent, _llm_tool_agent], ids=["legacy", "llm"]
+)
+async def test_run_async_aborted_then_closed_seal_failure_is_logged(
+    make_agent, caplog
+):
+  """Sealing after an early close is best-effort: a failure is logged and after_run still runs."""
+  after_run_calls = []
+
+  class _AfterRunPlugin(BasePlugin):
+
+    async def after_run_callback(self, *, invocation_context):
+      after_run_calls.append(invocation_context.invocation_id)
+
+  session_service = InMemorySessionService()
+  orig_append = session_service.append_event
+
+  async def failing_append(session, event):
+    if event.error_code == "INVOCATION_ABORTED":
+      raise RuntimeError("Simulated DB failure on abort event")
+    return await orig_append(session=session, event=event)
+
+  session_service.append_event = failing_append
+  runner = _abort_runner(
+      make_agent(),
+      plugins=[_AfterRunPlugin(name="after_run")],
+      session_service=session_service,
+  )
+
+  with caplog.at_level(logging.ERROR):
+    await _run_turn(runner, "s", "Run", abort_when=_has_fc, close_on_abort=True)
+
+  assert "Failed to seal aborted invocation" in caplog.text
+  assert len(after_run_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_run_async_aborted_task_sub_agent_does_not_capture_next_turn():
+  """Aborting inside a task sub-agent seals both scopes; the next turn reaches the coordinator."""
+  worker = LlmAgent(
+      name="task_worker",
+      mode="task",
+      model=testing_utils.MockModel.create(responses=[_slow_tool_call()]),
+      tools=[_slow_tool],
+  )
+  coordinator = LlmAgent(
+      name="coordinator",
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name="task_worker", args={"request": "look it up"}
+              ),
+              "Coordinator reply",
+          ]
+      ),
+      sub_agents=[worker],
+  )
+  runner = _abort_runner(coordinator)
+
+  events, _ = await _run_turn(
+      runner,
+      "s",
+      "Run task",
+      abort_when=lambda e: e.author == "task_worker" and _has_fc(e),
+  )
+
+  (delegation,) = [
+      fc
+      for e in events
+      if e.author == "coordinator"
+      for fc in e.get_function_calls()
+  ]
+  assert {(e.author, e.isolation_scope) for e in _abort_events(events)} == {
+      ("coordinator", None),
+      ("task_worker", delegation.id),
+  }
+
+  events, _ = await _run_turn(runner, "s", "Follow up")
+
+  assert _texts([e.content for e in events]) == ["Coordinator reply"]
+  assert "Follow up" in _texts(coordinator.model.requests[-1].contents)
+
+
+@pytest.mark.asyncio
+async def test_run_async_aborted_task_sub_agent_on_later_turn_does_not_capture_next_turn():
+  """A task aborted on a turn after the one that opened it no longer captures the next turn."""
+  worker = LlmAgent(
+      name="task_worker",
+      mode="task",
+      model=testing_utils.MockModel.create(
+          responses=["Which city?", _slow_tool_call()]
+      ),
+      tools=[_slow_tool],
+  )
+  coordinator = LlmAgent(
+      name="coordinator",
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name="task_worker", args={"request": "check the weather"}
+              ),
+              "Coordinator reply",
+          ]
+      ),
+      sub_agents=[worker],
+  )
+  runner = _abort_runner(coordinator)
+
+  events, _ = await _run_turn(runner, "s", "Run task")
+  assert _texts([e.content for e in events if e.author == "task_worker"]) == [
+      "Which city?"
+  ]
+
+  events, _ = await _run_turn(
+      runner,
+      "s",
+      "Paris",
+      abort_when=lambda e: e.author == "task_worker" and _has_fc(e),
+  )
+  assert _abort_events(events)
+
+  events, _ = await _run_turn(runner, "s", "Follow up")
+
+  assert _texts([e.content for e in events]) == ["Coordinator reply"]
+  assert "Follow up" in _texts(coordinator.model.requests[-1].contents)
+
+
+@pytest.mark.asyncio
+async def test_run_async_abort_after_paused_task_reply_keeps_task_active():
+  """An abort landing after a task agent already paused for user input does not seal the task."""
+  worker = LlmAgent(
+      name="task_worker",
+      mode="task",
+      model=testing_utils.MockModel.create(
+          responses=["Which city?", "Sunny in Paris"]
+      ),
+  )
+  coordinator = LlmAgent(
+      name="coordinator",
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name="task_worker", args={"request": "check the weather"}
+              ),
+              "Coordinator reply",
+          ]
+      ),
+      sub_agents=[worker],
+  )
+  runner = _abort_runner(coordinator)
+
+  events, _ = await _run_turn(
+      runner,
+      "s",
+      "Run task",
+      abort_when=lambda e: e.author == "task_worker",
+  )
+  assert not _abort_events(events)
+
+  events, _ = await _run_turn(runner, "s", "Paris")
+
+  assert _texts([e.content for e in events if e.author == "task_worker"]) == [
+      "Sunny in Paris"
+  ]
+  assert "Paris" in _texts(worker.model.requests[-1].contents)
+
+
+@pytest.mark.asyncio
+async def test_run_async_aborted_then_resumed_does_not_replay_tool():
+  """Resuming an aborted invocation continues to the model instead of re-running the cancelled tool."""
+  tool_calls = 0
+
+  async def _counted_tool() -> dict[str, str]:
+    """Records that it ran."""
+    nonlocal tool_calls
+    tool_calls += 1
+    return {}
+
+  agent = LlmAgent(
+      name="tool_agent",
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(name="_counted_tool", args={}),
+              "Recovered",
+          ]
+      ),
+      tools=[_counted_tool],
+  )
+  runner = _abort_runner(agent, resumable=True)
+
+  events, _ = await _run_turn(runner, "s", "Run", abort_when=_has_fc)
+  invocation_id = events[0].invocation_id
+
+  resumed = [
+      event
+      async for event in runner.run_async(
+          user_id=TEST_USER_ID, session_id="s", invocation_id=invocation_id
+      )
+  ]
+
+  # The abort landed before the tool started, and resume must not start it.
+  assert tool_calls == 0
+  assert _texts([e.content for e in resumed]) == ["Recovered"]
+  responses = [
+      p.function_response.response
+      for c in agent.model.requests[-1].contents
+      for p in c.parts or []
+      if p.function_response
+  ]
+  assert responses == [{"error": "Invocation was aborted by client."}]
 
 
 if __name__ == "__main__":
