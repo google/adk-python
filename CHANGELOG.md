@@ -5,23 +5,23 @@
 
 ### Highlights
 
-This release introduces enhanced workflow control with cancellation signals and tool confirmation pausing, along with robust model consultation tools and support for the latest MCP SDK protocol.
+This release adds graceful cancellation and tool confirmation to workflows, a tool for consulting another model mid-task, and a built-in SQLite memory service.
 
-* **Workflows**: Cancel running workflows, runners, and nodes gracefully when clients disconnect or an abort signal is triggered. ([ef5bbcf](https://github.com/google/adk-python/commit/ef5bbcfe51670bd211645a043914c162e7c1cd60))
-* **Workflows**: Pause tool nodes for human-in-the-loop validation and explicit confirmation via RequestInput. ([ce132b9](https://github.com/google/adk-python/commit/ce132b92d471b8df903524593d863171b000a764))
-* **Tools**: Manage token costs and usage limit risks in model consultation layers using dedicated turn and session budgets. ([84cc99a](https://github.com/google/adk-python/commit/84cc99abd53010817a85b51fdcdc5d4f48366769))
-* **MCP Integration**: Leverage the latest MCP SDK 2.x features via an opt-in modern-protocol connect path. ([e738c26](https://github.com/google/adk-python/commit/e738c26fe5abcecffe2fbeba31f8d837086aad8a))
+* **Execution cancellation**: Pass an `abort_signal` to `Runner`, `Workflow`, and nodes to stop a run gracefully; `/run_sse` now cancels the run when the client disconnects. ([ef5bbcf](https://github.com/google/adk-python/commit/ef5bbcfe51670bd211645a043914c162e7c1cd60), [3d73603](https://github.com/google/adk-python/commit/3d73603deb180a6518982b2b60f036c764f0cf7e))
+* **Tool confirmation in workflows**: Tool nodes now pause for user approval via `RequestInput`, the same way an `LlmAgent` does, instead of passing an error downstream. ([ce132b9](https://github.com/google/adk-python/commit/ce132b92d471b8df903524593d863171b000a764))
+* **ModelConsultTool**: Let an agent consult another model mid-task, capped by per-turn and per-session budgets. ([84cc99a](https://github.com/google/adk-python/commit/84cc99abd53010817a85b51fdcdc5d4f48366769))
+* **SQLite memory service**: Keep agent memory in a local SQLite database, selected with a `sqlite://` memory service URI. ([9625b06](https://github.com/google/adk-python/commit/9625b06c9a1be6b9ecd85225657690ae5c0e9d3e))
+* **MCP SDK 2.x**: Connect to MCP servers over the modern protocol through a new opt-in path. ([e738c26](https://github.com/google/adk-python/commit/e738c26fe5abcecffe2fbeba31f8d837086aad8a))
 
 #### Breaking changes
-* Node inputs and outputs are now strictly coerced to JSON primitives (mode='json'); ensure your application handles standard JSON types (e.g. strings instead of Decimals) and catches PydanticSerializationError for un-coercible values.
-* The dev UI runtime configuration is now served directly from the server, meaning you should run the server to access the config rather than reading it from a static local file.
+
+* **Dev UI runtime config is served by the server**: The web server now serves `/dev-ui/assets/config/runtime-config.json` per request and no longer writes `runtime-config.json` into the installed package. If you edited or read that file, set the logo with `--logo-text` and `--logo-image-url` and fetch the config from the server instead. ([3722746](https://github.com/google/adk-python/commit/3722746568a33226d54ba51876801c5948479eb5))
 
 <details>
 <summary>All changes</summary>
 
 ### ⚠ BREAKING CHANGES
 
-* coerces validated schema inputs and outputs (Decimal, datetime, UUID, Enum) to JSON primitives (str, int) via mode='json'. This affects in-memory node outputs as well as llm_agent output_key state and agent_tool results (bare Decimal dumps to str), as well as node inputs when a dict input_schema is used (such as with parameter_binding='node_input'). Additionally, validating against a dict or types.Schema now raises a hard failure (PydanticSerializationError) on values that Pydantic cannot coerce, where un-coercible values passed through before.
 * serve the dev UI runtime config from the server instead of a file
 
 ### Features
@@ -64,7 +64,6 @@ This release introduces enhanced workflow control with cancellation signals and 
 * detect a dead MCP session whose transport sits behind a dispatcher ([8632980](https://github.com/google/adk-python/commit/86329806d1eb5c4cc767ab291730ccdf338d5ae5))
 * drop stale replies to superseded tool updates ([fdca5e7](https://github.com/google/adk-python/commit/fdca5e7b20db78347a19966354af4219c2bd012a))
 * drop unpairable trailing FRs in rearrange ([643df96](https://github.com/google/adk-python/commit/643df966a0fa223454e34a4eee1eddd68931ffa3)), closes [#6751](https://github.com/google/adk-python/issues/6751)
-* dump validated schemas in JSON mode ([731ea30](https://github.com/google/adk-python/commit/731ea30ecb63ea54ea1b51a81635b3016e9c8f55)), closes [#6747](https://github.com/google/adk-python/issues/6747)
 * **eval:** skip content-less events when mapping Vertex multi-turn turns ([fd2ca87](https://github.com/google/adk-python/commit/fd2ca8773ed51ec13a96670fdeb11f333727217a))
 * **flows:** detect thought-only and whitespace turns as empty content ([dea8110](https://github.com/google/adk-python/commit/dea81109d15066b89dd3447f7c20523cc06d5e6a))
 * follow redirects when downloading skills in GcpSkillRegistry ([fd14aec](https://github.com/google/adk-python/commit/fd14aec26534adb9743e963f39af468f1f0c329f))
@@ -77,7 +76,6 @@ This release introduces enhanced workflow control with cancellation signals and 
 * load validated MCP toolsets under adk web ([f44d512](https://github.com/google/adk-python/commit/f44d51244a59a6a05210d45d23e1f6e75148a7df)), closes [#6735](https://github.com/google/adk-python/issues/6735)
 * look up padded session ids the same way create_session stores them ([eef75de](https://github.com/google/adk-python/commit/eef75de8db16f3aea98e7a99e068046b66822313)), closes [#6941](https://github.com/google/adk-python/issues/6941)
 * make conformance runs report replay and recording failures ([5355c7c](https://github.com/google/adk-python/commit/5355c7c60684e38e9ea158e34a41974e525be90f))
-* normalize jj and hg added paths on Windows ([fe69c0b](https://github.com/google/adk-python/commit/fe69c0b94f6c90ee342f87b9eba2663fa2abb3aa))
 * only apply --avatar_config to live sessions requesting video ([4d241bf](https://github.com/google/adk-python/commit/4d241bff1bdf63ddf5ef947a2aa5d145b008c013))
 * persist sibling tool results before a tool confirmation request ([67d3e49](https://github.com/google/adk-python/commit/67d3e494b610c6962ca8290dcb66c9f6b8b08735)), closes [#6732](https://github.com/google/adk-python/issues/6732)
 * **plugins:** let tools run as workflow nodes under ToolCallIntegrityPlugin ([b057697](https://github.com/google/adk-python/commit/b0576978ec1f341980abdf385cf47f8b22da4178))
@@ -101,7 +99,6 @@ This release introduces enhanced workflow control with cancellation signals and 
 * stop live session teardown hanging and lazy-load the auth transport ([41bebdc](https://github.com/google/adk-python/commit/41bebdc0ad5bb53fd07827643a01c0a7591a2417))
 * stop RemoteA2aAgent failing on a2a-sdk 0.3.4 to 0.3.10 ([5b079ee](https://github.com/google/adk-python/commit/5b079eedbfbbe44441a537741acc3477e6118b8d))
 * stop update_time onupdate from overriding explicit writes ([aec7c0a](https://github.com/google/adk-python/commit/aec7c0ad09af620c837c4ba7bbb596219bf3cc07)), closes [#7276](https://github.com/google/adk-python/issues/7276)
-* strip trailing whitespace in guides and check docs in precommit ([86fa11c](https://github.com/google/adk-python/commit/86fa11c060310b4dc16fdb70eb2b8a66805ef1a2))
 * **tools:** apply the load_web_page SSRF checks on the proxy path ([d7a7c3c](https://github.com/google/adk-python/commit/d7a7c3c6881785420fc9a25374629b08c18aad25))
 * **tools:** package model_consult advisor prompt as a single user content block ([ecb429c](https://github.com/google/adk-python/commit/ecb429c941d213a1a44f739bb2ec46a23973f307))
 * **tools:** stop marking every NodeTool as long-running ([0478224](https://github.com/google/adk-python/commit/0478224ba50d4044325fbccb474aa6aaf46987d5))
@@ -109,10 +106,6 @@ This release introduces enhanced workflow control with cancellation signals and 
 * treat inbound new_message in Runner.run_async as a user turn ([15ec279](https://github.com/google/adk-python/commit/15ec2791315db8d63a700c1ae2ad87a58b0bcaec))
 * **workflow:** keep outputs of sibling nodes that finished in the same tick as a failing node ([2c759e9](https://github.com/google/adk-python/commit/2c759e9e6e0a12e74e2d114a962559e1152d9f26))
 * **workflow:** run ToolNode tools with the node context so deltas are emitted ([cffc967](https://github.com/google/adk-python/commit/cffc9677dac4f00c55a38e4331318da2b1595c6c))
-
-
-### Code Refactoring
-
 
 
 ### Documentation
@@ -125,11 +118,6 @@ This release introduces enhanced workflow control with cancellation signals and 
 * fix to_a2a import so the task mode sample runs ([e6bdb4d](https://github.com/google/adk-python/commit/e6bdb4dab7a1657a871ef63292f9b76e26a95bd0))
 * **runners:** add developer guide for execution cancellation ([4e48bb0](https://github.com/google/adk-python/commit/4e48bb07292ac80a0c897bf1311454750bda8097))
 * **tools:** add ModelConsultTool developer guide and sample agent ([89ebdec](https://github.com/google/adk-python/commit/89ebdecf233b9d57fcd27cc4b003a9a62b107097))
-
-
-### Miscellaneous Chores
-
-* pin this release to 2.11.0 ([adff14a](https://github.com/google/adk-python/commit/adff14ab879fee222509d3d26d19ce5245ba5e22))
 
 </details>
 
