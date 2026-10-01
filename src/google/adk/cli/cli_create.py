@@ -65,7 +65,6 @@ _SUCCESS_MSG_CONFIG = """
 Agent created in {agent_folder}:
 - .env
 - .gitignore
-- __init__.py
 - root_agent.yaml
 
 ⚠️  WARNING: Secrets (like GOOGLE_API_KEY) are stored in .env.
@@ -139,8 +138,9 @@ def _generate_files(
   if type == "config":
     with open(agent_config_file_path, "w", encoding="utf-8") as f:
       f.write(_AGENT_CONFIG_TEMPLATE.format(model_name=model))
-    with open(init_file_path, "w", encoding="utf-8") as f:
-      f.write("")
+    # Config agents are loaded from root_agent.yaml; they are not Python
+    # packages. Matching existing config samples, do not emit an empty
+    # __init__.py.
     click.secho(
         _SUCCESS_MSG_CONFIG.format(agent_folder=agent_folder),
         fg="green",

@@ -146,6 +146,28 @@ def test_database_session_service_fails_on_creation():
     assert "sqlalchemy" in str(exc_info.value)
 
 
+def test_database_session_service_names_its_extra_when_asyncio_failed_to_load():
+  """Without greenlet, SQLAlchemy 2.1 fails only the first asyncio import.
+
+  The module is loaded while that import fails, and the service is created
+  after it would succeed again, as happens in a real environment.
+  """
+  module_name = "google.adk.sessions.database_session_service"
+  original = sys.modules.pop(module_name, None)
+  try:
+    with mock.patch.dict("sys.modules", {"sqlalchemy.ext.asyncio": None}):
+      from google.adk.sessions import DatabaseSessionService
+
+    with pytest.raises(
+        ImportError, match=r"sqlalchemy\[asyncio\].*google-adk\[db\]"
+    ):
+      DatabaseSessionService(db_url="sqlite+aiosqlite:///:memory:")
+  finally:
+    sys.modules.pop(module_name, None)
+    if original is not None:
+      sys.modules[module_name] = original
+
+
 def test_vertex_ai_session_service_fails_on_creation():
   """Verify that creating VertexAiSessionService without extra fails using mocks."""
   try:

@@ -706,6 +706,36 @@ async def test_record_tool_execution_reported_error_labels_span_and_metric(
   }]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("experimental", "expected_source"),
+    [(False, None), (True, "before_tool_callback")],
+)
+async def test_record_tool_execution_response_source_needs_experimental(
+    telemetry: _Telemetry,
+    monkeypatch: pytest.MonkeyPatch,
+    experimental: bool,
+    expected_source: str | None,
+):
+  """The response source is experimental telemetry, off by default."""
+  if experimental:
+    monkeypatch.setenv("ADK_EXPERIMENTAL_TELEMETRY", "true")
+  agent = _agent()
+  ctx = await _invocation_context(agent)
+  tool = _EchoTool(name="echo", description="echoes its input")
+
+  async with _instrumentation.record_tool_execution(
+      tool, agent, {}, ctx
+  ) as tel_ctx:
+    tel_ctx.function_response_event = _function_response_event(
+        "call-1", {"out": "hi"}
+    )
+    tel_ctx.response_source = "before_tool_callback"
+
+  attributes = dict(telemetry.only_span().attributes)
+  assert attributes.get("adk.experimental.response.source") == expected_source
+
+
 # --- skill script execution, on the execute_tool span ----------------------
 #
 # The exit code is only known after the script has run, so the tool fills it

@@ -95,10 +95,22 @@ def merge_function_response_events(
   return merged_event
 
 
+def _is_stale_text_reply(event: Event, invocation_id: str) -> bool:
+  return bool(
+      event.invocation_id == invocation_id
+      and event.author != 'user'
+      and event.content
+      and event.content.role == 'model'
+      and not event.get_function_calls()
+      and not (event.actions and event.actions.compaction)
+      and any(part.text for part in event.content.parts or [])
+  )
+
+
 def rearrange_events_for_async_function_responses_in_history(
     events: list[Event],
 ) -> list[Event]:
-  """Rearrange the async function_response events in the history."""
+  """Rearrange async function responses and their model replies in history."""
   # A model may hand out the same function call id more than once in a session,
   # so an id on its own does not identify a single call. Each response is
   # attributed to the newest call that precedes it and carries the same id, and
@@ -113,7 +125,7 @@ def rearrange_events_for_async_function_responses_in_history(
     for function_call in event.get_function_calls():
       call_event_indices_by_id.setdefault(function_call.id, []).append(i)
 
-  response_event_index_by_call: dict[tuple[str | None, int], int] = {}
+  response_event_indices_by_call: dict[tuple[str | None, int], list[int]] = {}
   history_has_function_responses = False
   for i, event in enumerate(events):
     for function_response in event.get_function_responses():
@@ -126,15 +138,40 @@ def rearrange_events_for_async_function_responses_in_history(
       # that carries its id keeps the first, as it did before ids could repeat.
       preceding_calls = bisect_left(call_event_indices, i)
       owning_call_event_index = call_event_indices[max(preceding_calls - 1, 0)]
-      response_event_index_by_call[
-          (function_response.id, owning_call_event_index)
-      ] = i
+      call_key = (function_response.id, owning_call_event_index)
+      response_event_indices_by_call.setdefault(call_key, []).append(i)
 
   if not history_has_function_responses:
     return events
 
+  # Drop intermediate model text replies between consecutive updates of the
+  # same tool call within the same invocation.
+  # Caveat: Positional; drops any intervening text replies during parallel calls.
+  stale_model_event_indices: set[int] = set()
+  for response_event_indices in response_event_indices_by_call.values():
+    for cur_idx, next_idx in zip(
+        response_event_indices, response_event_indices[1:]
+    ):
+      if events[cur_idx].invocation_id != events[next_idx].invocation_id:
+        continue
+      if events[cur_idx].author != events[next_idx].author:
+        continue
+      if events[cur_idx].actions and (
+          events[cur_idx].actions.requested_tool_confirmations
+          or events[cur_idx].actions.requested_auth_configs
+      ):
+        continue
+      run = range(cur_idx + 1, next_idx)
+      if run and all(
+          _is_stale_text_reply(events[i], events[cur_idx].invocation_id)
+          for i in run
+      ):
+        stale_model_event_indices.update(run)
+
   result_events: list[Event] = []
   for i, event in enumerate(events):
+    if i in stale_model_event_indices:
+      continue
     if event.get_function_responses():
       # function_response should be handled together with function_call below.
       continue
@@ -142,11 +179,11 @@ def rearrange_events_for_async_function_responses_in_history(
 
       function_response_events_indices = set()
       for function_call in event.get_function_calls():
-        response_event_index = response_event_index_by_call.get(
+        response_indices = response_event_indices_by_call.get(
             (function_call.id, i)
         )
-        if response_event_index is not None:
-          function_response_events_indices.add(response_event_index)
+        if response_indices:
+          function_response_events_indices.add(response_indices[-1])
       result_events.append(event)
       if not function_response_events_indices:
         continue

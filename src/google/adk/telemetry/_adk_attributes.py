@@ -50,3 +50,6 @@ ADK_EXPERIMENTAL_CONTEXT_CACHE_CONTENTS_COUNT = (
 ADK_EXPERIMENTAL_CONTEXT_CACHE_INVOCATIONS_USED = (
     'adk.experimental.context_cache.invocations_used'
 )
+
+# Names the callback that produced the response the span records.
+ADK_EXPERIMENTAL_RESPONSE_SOURCE = 'adk.experimental.response.source'

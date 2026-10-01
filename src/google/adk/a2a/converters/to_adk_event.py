@@ -34,6 +34,7 @@ from pydantic import ValidationError
 
 from .. import _compat
 from ...agents.invocation_context import InvocationContext
+from ...events._internal_metadata import without_internal_metadata
 from ...events.event import Event
 from ...events.event_actions import EventActions
 from ..experimental import a2a_experimental
@@ -449,8 +450,8 @@ def _extract_all_metadata_fields(metadata: Any) -> dict[str, Any]:
       "grounding_metadata": _extract_genai_metadata(
           metadata_dict, "grounding_metadata", genai_types.GroundingMetadata
       ),
-      "custom_metadata": _extract_genai_metadata(
-          metadata_dict, "custom_metadata", dict
+      "custom_metadata": without_internal_metadata(
+          _extract_genai_metadata(metadata_dict, "custom_metadata", dict)
       ),
       "usage_metadata": _extract_genai_metadata(
           metadata_dict,
