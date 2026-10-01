@@ -108,7 +108,7 @@
               "gen_ai.tool.call.id": "PRESENT",
               "gcp.vertex.agent.event_id": "PRESENT",
               "gcp.vertex.agent.tool_response": "{}",
-              "adk.experimental.skill.name": "nonexistent-skill"
+              "gen_ai.skill.name": "nonexistent-skill"
             },
             "status": "ERROR",
             "children": [],
@@ -355,7 +355,7 @@
       {
         "attributes": {
           "gen_ai.agent.name": "some_root_agent",
-          "adk.experimental.skill.name": "<hallucinated>",
+          "gen_ai.skill.name": "<hallucinated>",
           "error.type": "REGISTRY_ERROR"
         },
         "value": 1
