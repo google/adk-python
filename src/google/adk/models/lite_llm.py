@@ -2064,6 +2064,16 @@ def _parse_deepseek_tool_calls_from_text(
   return tool_calls, remainder or None
 
 
+_INLINE_CALL_OPEN_RE = re.compile(r"\s*(?:<tool_call>|```(?:json)?)?\s*")
+_INLINE_CALL_CLOSE_RE = re.compile(r"\s*(?:</tool_call>|```)?\s*")
+
+
+def _skip_past(pattern: re.Pattern[str], text: str, pos: int) -> int:
+  """Returns the index just past `pattern` matched at `pos`, or `pos`."""
+  match = pattern.match(text, pos)
+  return match.end() if match else pos
+
+
 def _parse_tool_calls_from_text(
     text_block: str,
 ) -> tuple[list[ChatCompletionMessageToolCall], Optional[str]]:
@@ -2085,41 +2095,35 @@ def _parse_tool_calls_from_text(
       return tool_calls, extra_remainder
     return ds_tool_calls, None
 
-  remainder_segments = []
+  # Only calls the text opens with count, optionally in the wrappers models
+  # emit them in. JSON after any prose is quoted text: turning it into a call
+  # would run a tool the model only showed.
   cursor = 0
-  text_length = len(text_block)
-
-  while cursor < text_length:
-    brace_index = text_block.find("{", cursor)
-    if brace_index == -1:
-      remainder_segments.append(text_block[cursor:])
+  while True:
+    start = _skip_past(_INLINE_CALL_OPEN_RE, text_block, cursor)
+    if not text_block.startswith("{", start):
       break
-
-    remainder_segments.append(text_block[cursor:brace_index])
     try:
-      candidate, end = _JSON_DECODER.raw_decode(text_block, brace_index)
+      candidate, end = _JSON_DECODER.raw_decode(text_block, start)
     except json.JSONDecodeError:
-      remainder_segments.append(text_block[brace_index])
-      cursor = brace_index + 1
-      continue
-
+      break
     tool_call = _build_tool_call_from_json_dict(
         candidate, index=len(tool_calls)
     )
-    if tool_call:
-      tool_calls.append(tool_call)
-    else:
-      remainder_segments.append(text_block[brace_index:end])
-    cursor = end
+    if not tool_call:
+      break
+    tool_calls.append(tool_call)
+    cursor = _skip_past(_INLINE_CALL_CLOSE_RE, text_block, end)
 
-  remainder = "".join(segment for segment in remainder_segments if segment)
-  remainder = remainder.strip()
-
-  return tool_calls, remainder or None
+  if not tool_calls:
+    return tool_calls, text_block.strip() or None
+  return tool_calls, text_block[cursor:].strip() or None
 
 
 def _split_message_content_and_tool_calls(
     message: Message,
+    *,
+    parse_inline_tool_calls: bool = True,
 ) -> tuple[Optional[OpenAIMessageContent], list[ChatCompletionMessageToolCall]]:
   """Returns message content and tool calls, parsing inline JSON when needed."""
   existing_tool_calls = message.get("tool_calls") or []
@@ -2130,7 +2134,11 @@ def _split_message_content_and_tool_calls(
 
   # LiteLLM responses either provide structured tool_calls or inline JSON, not
   # both. When tool_calls are present we trust them and skip the fallback parser.
-  if normalized_tool_calls or not isinstance(content, str):
+  if (
+      normalized_tool_calls
+      or not isinstance(content, str)
+      or not parse_inline_tool_calls
+  ):
     return content, normalized_tool_calls
 
   fallback_tool_calls, remainder = _parse_tool_calls_from_text(content)
@@ -2493,11 +2501,15 @@ def _model_response_to_chunk(
     reasoning_parts: List[types.Part] = []
 
     if message is not None:
-      # Both Delta and Message support dict-like .get() access
+      # Both Delta and Message support dict-like .get() access. A delta is too
+      # little text to tell a tool call from one quoted mid-answer, so streamed
+      # text is parsed for calls once, as a whole, when the stream finalizes.
       (
           message_content,
           tool_calls,
-      ) = _split_message_content_and_tool_calls(message)
+      ) = _split_message_content_and_tool_calls(
+          message, parse_inline_tool_calls=message_field != "delta"
+      )
       reasoning_value = _extract_reasoning_value(message)
       if reasoning_value:
         reasoning_parts = _convert_reasoning_value_to_parts(reasoning_value)
@@ -2687,7 +2699,10 @@ def _message_to_generate_content_response(
     )
   if thought_parts:
     parts.extend(thought_parts)
-  message_content, tool_calls = _split_message_content_and_tool_calls(message)
+  # A partial message is one streamed delta; see _model_response_to_chunk.
+  message_content, tool_calls = _split_message_content_and_tool_calls(
+      message, parse_inline_tool_calls=not is_partial
+  )
   if isinstance(message_content, str) and message_content:
     parts.append(types.Part.from_text(text=message_content))
 
