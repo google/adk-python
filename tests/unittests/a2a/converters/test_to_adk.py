@@ -999,7 +999,7 @@ class TestExtractGenaiMetadata:
     """Tests that grounding metadata can be successfully extracted from a status update."""
     event = Event(
         author="agent",
-        actions=EventActions(state_delta={"key": "val"}),
+        actions=EventActions(escalate=True),
         grounding_metadata=genai_types.GroundingMetadata(
             search_entry_point=genai_types.SearchEntryPoint(
                 rendered_content="test-status"
@@ -1024,7 +1024,7 @@ class TestExtractGenaiMetadata:
     """Tests that grounding metadata can be successfully extracted from a Message."""
     event = Event(
         author="agent",
-        actions=EventActions(state_delta={"key": "val"}),
+        actions=EventActions(escalate=True),
         grounding_metadata=genai_types.GroundingMetadata(
             search_entry_point=genai_types.SearchEntryPoint(
                 rendered_content="test-message"
@@ -1045,3 +1045,149 @@ class TestExtractGenaiMetadata:
         back.grounding_metadata.search_entry_point.rendered_content
         == "test-message"
     )
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        _compat.TS_INPUT_REQUIRED,
+        _compat.TS_AUTH_REQUIRED,
+        _compat.TS_COMPLETED,
+        _compat.TS_FAILED,
+        _compat.TS_CANCELED,
+        _compat.TS_REJECTED,
+    ],
+)
+@pytest.mark.parametrize("empty_message", [False, True])
+@pytest.mark.parametrize("response_kind", ["task", "status", "empty-artifact"])
+def test_contentless_task_boundary_is_preserved(
+    state, empty_message, response_kind
+):
+  message = (
+      _compat.make_message(message_id="empty", role="agent", parts=[])
+      if empty_message
+      else None
+  )
+  status = _compat.make_task_status(state, message=message)
+  if response_kind == "status":
+    response = _compat.make_task_status_update_event(
+        task_id="task", context_id="context", status=status, final=True
+    )
+    event = convert_a2a_status_update_to_event(response)
+  else:
+    response = _compat.make_task(
+        id="task",
+        context_id="context",
+        status=status,
+        artifacts=[_compat.make_artifact(artifact_id="empty", parts=[])]
+        if response_kind == "empty-artifact"
+        else None,
+    )
+    event = convert_a2a_task_to_event(response)
+  assert event is not None
+  assert event.content is None
+  assert event.is_final_response()
+  assert not event.partial
+
+
+@pytest.mark.parametrize(
+    "state", [_compat.TS_UNKNOWN, _compat.TS_SUBMITTED, _compat.TS_WORKING]
+)
+@pytest.mark.parametrize("with_metadata", [False, True])
+def test_contentless_progress_does_not_emit_a_final_response(
+    state, with_metadata
+):
+  message = (
+      _compat.make_message(
+          message_id="progress",
+          role="agent",
+          parts=[],
+          metadata={
+              _get_adk_metadata_key("custom_metadata"): '{"step": 1}',
+              _get_adk_metadata_key(
+                  "grounding_metadata"
+              ): '{"search_entry_point": {"rendered_content": "progress"}}',
+          },
+      )
+      if with_metadata
+      else None
+  )
+  status = _compat.make_task_status(state, message=message)
+  assert (
+      convert_a2a_task_to_event(
+          _compat.make_task(id="task", context_id="context", status=status)
+      )
+      is None
+  )
+  assert (
+      convert_a2a_status_update_to_event(
+          _compat.make_task_status_update_event(
+              task_id="task", context_id="context", status=status, final=False
+          )
+      )
+      is None
+  )
+
+
+@pytest.mark.parametrize("response_kind", ["task", "status", "artifact"])
+def test_empty_boundary_fallback_does_not_override_part_filter(response_kind):
+  message = _compat.make_message(
+      message_id="prompt", role="agent", parts=[_compat.make_text_part("Input")]
+  )
+  status = _compat.make_task_status(_compat.TS_INPUT_REQUIRED, message=message)
+  part_filter = Mock(return_value=None)
+  if response_kind == "status":
+    event = convert_a2a_status_update_to_event(
+        _compat.make_task_status_update_event(
+            task_id="task", context_id="context", status=status, final=True
+        ),
+        part_converter=part_filter,
+    )
+  else:
+    event = convert_a2a_task_to_event(
+        _compat.make_task(
+            id="task",
+            context_id="context",
+            status=status,
+            artifacts=[
+                _compat.make_artifact(
+                    artifact_id="answer",
+                    parts=[_compat.make_text_part("Result")],
+                )
+            ]
+            if response_kind == "artifact"
+            else None,
+        ),
+        part_converter=part_filter,
+    )
+  assert event is None
+  part_filter.assert_called()
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        _compat.TS_COMPLETED,
+        _compat.TS_FAILED,
+        _compat.TS_CANCELED,
+        _compat.TS_REJECTED,
+    ],
+)
+def test_terminal_task_with_status_message_parts_converts_message(
+    state,
+):
+  message = _compat.make_message(
+      message_id="done", role="agent", parts=[_compat.make_text_part("Done")]
+  )
+  task = _compat.make_task(
+      id="task",
+      context_id="context",
+      status=_compat.make_task_status(state, message=message),
+  )
+  event = convert_a2a_task_to_event(task)
+  assert event is not None
+  assert event.content is not None
+  assert [part.text for part in event.content.parts] == ["Done"]
+  assert (
+      convert_a2a_task_to_event(task, part_converter=lambda part: None) is None
+  )

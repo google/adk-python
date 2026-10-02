@@ -56,6 +56,17 @@ MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH = (
     "mock_function_call_for_required_user_auth"
 )
 
+# These states finish the current interaction, including a deliberate pause.
+# Unlike progress updates, a bare boundary still needs a persisted response.
+_TASK_RESPONSE_BOUNDARY_STATES = frozenset({
+    _compat.TS_INPUT_REQUIRED,
+    _compat.TS_AUTH_REQUIRED,
+    _compat.TS_COMPLETED,
+    _compat.TS_FAILED,
+    _compat.TS_CANCELED,
+    _compat.TS_REJECTED,
+})
+
 A2AMessageToEventConverter = Callable[
     [
         Message,
@@ -197,11 +208,14 @@ def _create_event(
     usage_metadata: Any = None,
     error_code: Any = None,
     citation_metadata: Any = None,
+    allow_empty_event: bool = False,
 ) -> Optional[Event]:
   """Creates an ADK event from parts and metadata."""
   event_actions = actions or EventActions()
-  if not output_parts and not event_actions.model_dump(
-      exclude_none=True, exclude_defaults=True
+  if (
+      not allow_empty_event
+      and not output_parts
+      and event_actions == EventActions()
   ):
     return None
 
@@ -498,10 +512,13 @@ def convert_a2a_task_to_event(
     long_running_function_ids: set[str] = set()
     metadata_fields: dict[str, Any] = {}
     status_message = _compat.normalize_message(a2a_task.status.message)
+    has_source_parts = False
+    artifact_parts: list[A2APart] = []
     if a2a_task.artifacts:
       artifact_parts = [
           part for artifact in a2a_task.artifacts for part in artifact.parts
       ]
+      has_source_parts = bool(artifact_parts)
       for artifact in a2a_task.artifacts:
         event_actions = _merge_event_actions(
             event_actions, _extract_event_actions(artifact.metadata)
@@ -512,9 +529,17 @@ def convert_a2a_task_to_event(
           artifact_parts, part_converter
       )
     if status_message and (
-        a2a_task.status.state == _compat.TS_INPUT_REQUIRED
-        or a2a_task.status.state == _compat.TS_AUTH_REQUIRED
+        a2a_task.status.state
+        in (
+            _compat.TS_INPUT_REQUIRED,
+            _compat.TS_AUTH_REQUIRED,
+        )
+        or (
+            not artifact_parts
+            and a2a_task.status.state in _TASK_RESPONSE_BOUNDARY_STATES
+        )
     ):
+      has_source_parts = has_source_parts or bool(status_message.parts)
       event_actions = _merge_event_actions(
           event_actions,
           _extract_event_actions(status_message.metadata),
@@ -551,6 +576,10 @@ def convert_a2a_task_to_event(
         author,
         event_actions,
         long_running_function_ids,
+        allow_empty_event=(
+            not has_source_parts
+            and a2a_task.status.state in _TASK_RESPONSE_BOUNDARY_STATES
+        ),
         **metadata_fields,
     )
 
@@ -656,6 +685,10 @@ def convert_a2a_status_update_to_event(
         author,
         event_actions,
         long_running_function_ids,
+        allow_empty_event=(
+            (status_message is None or not status_message.parts)
+            and a2a_status_update.status.state in _TASK_RESPONSE_BOUNDARY_STATES
+        ),
         **metadata_fields,
     )
   except Exception as e:

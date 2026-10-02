@@ -149,6 +149,7 @@ if IS_A2A_V1:
   TS_INPUT_REQUIRED = TaskState.Value("TASK_STATE_INPUT_REQUIRED")
   TS_AUTH_REQUIRED = TaskState.Value("TASK_STATE_AUTH_REQUIRED")
   TS_CANCELED = TaskState.Value("TASK_STATE_CANCELED")
+  TS_REJECTED = TaskState.Value("TASK_STATE_REJECTED")
 
   TP_JSONRPC = TransportProtocol.JSONRPC
   TP_HTTP_JSON = TransportProtocol.HTTP_JSON
@@ -165,6 +166,7 @@ else:
   TS_INPUT_REQUIRED = TaskState.input_required
   TS_AUTH_REQUIRED = TaskState.auth_required
   TS_CANCELED = TaskState.canceled
+  TS_REJECTED = TaskState.rejected
 
   TP_JSONRPC = getattr(TransportProtocol, "jsonrpc")
   TP_HTTP_JSON = getattr(TransportProtocol, "http_json")

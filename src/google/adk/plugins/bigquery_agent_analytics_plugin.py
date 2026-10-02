@@ -590,6 +590,15 @@ _LLM_RESPONSE_ERROR_CODES = frozenset(
 
 
 # --- Helper Formatters ---
+def _enum_label(value: object) -> str:
+  """Returns an enum's value or the value itself as a label, else 'unknown'."""
+  if value is None:
+    return "unknown"
+  if isinstance(value, enum.Enum):
+    return str(value.value) or "unknown"
+  return str(value) or "unknown"
+
+
 def _format_content(
     content: Optional[types.Content], *, max_len: int = 5000
 ) -> tuple[str, bool]:
@@ -597,7 +606,7 @@ def _format_content(
 
   Args:
       content: The content to format.
-      max_len: Maximum length for text parts.
+      max_len: Maximum length for text, code, and execution output parts.
 
   Returns:
       A tuple of (formatted_string, is_truncated).
@@ -608,15 +617,30 @@ def _format_content(
   truncated = False
   for p in content.parts:
     if p.text:
-      if max_len != -1 and len(p.text) > max_len:
-        parts.append(f"text: '{p.text[:max_len]}...'")
+      sanitized_text, text_truncated = _sanitize_sensitive_text(p.text, max_len)
+      if text_truncated:
         truncated = True
-      else:
-        parts.append(f"text: '{p.text}'")
+      parts.append(f"text: '{sanitized_text}'")
     elif p.function_call:
       parts.append(f"call: {p.function_call.name}")
     elif p.function_response:
       parts.append(f"resp: {p.function_response.name}")
+    elif p.executable_code:
+      lang = _enum_label(p.executable_code.language)
+      code = p.executable_code.code or ""
+      sanitized_code, code_truncated = _sanitize_sensitive_text(code, max_len)
+      if code_truncated:
+        truncated = True
+      parts.append(f"Executable code ({lang}): {sanitized_code}")
+    elif p.code_execution_result:
+      outcome = _enum_label(p.code_execution_result.outcome)
+      output = p.code_execution_result.output or ""
+      sanitized_output, output_truncated = _sanitize_sensitive_text(
+          output, max_len
+      )
+      if output_truncated:
+        truncated = True
+      parts.append(f"Code execution result ({outcome}): {sanitized_output}")
     else:
       parts.append("other")
   return " | ".join(parts), truncated
@@ -2389,12 +2413,12 @@ class BigQueryLoggerConfig:
         ``False`` (the default) emits no ``attributes.otel``. Has no effect when
         ``attributes`` is projected out via ``payload_column_denylist``.
       custom_metadata_allowlist: Keys to capture from ``event.custom_metadata``
-        into ``attributes.custom_metadata.*``. Entries are exact keys, or
-        explicit prefix patterns ending in ``*`` (e.g. ``"a2a:*"``). ``None`` /
-        empty preserves today's behavior (only the built-in ``a2a:*`` path
-        runs). Captured values pass the same safety pipeline (truncation,
-        sensitive-key redaction, circular-reference handling) as all other
-        logged content.
+        or ``llm_response.custom_metadata`` into
+        ``attributes.custom_metadata.*``. Entries are exact keys, or explicit
+        prefix patterns ending in ``*`` (e.g. ``"a2a:*"``). ``None`` / empty
+        preserves today's behavior (only the built-in ``a2a:*`` path runs).
+        Captured values pass the same safety pipeline (truncation, sensitive-key
+        redaction, circular-reference handling) as all other logged content.
       payload_column_denylist: Payload columns to project OUT of the table at
         write time. Only the projectable payload columns ``content`` /
         ``content_parts`` / ``attributes`` / ``latency_ms`` may be listed;
@@ -4889,6 +4913,10 @@ class EventData:
   # like ``JSON_VALUE(attributes, '$.adk.function_call_id')`` lands at
   # the right JSON path.
   adk_extras: dict[str, Any] = field(default_factory=dict)
+  # Dedicated custom metadata dictionary (e.g. from LlmResponse.custom_metadata
+  # on terminal LLM_RESPONSE rows). When set, takes precedence over
+  # getattr(source_event, "custom_metadata", None).
+  custom_metadata: Optional[collections.abc.Mapping[str, Any]] = None
 
 
 async def _close_write_transport_helper(
@@ -5279,7 +5307,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       return _format_content(content, max_len=self.config.max_content_length)
     except Exception as e:
       logger.warning("Content formatter failed: %s", e)
-      return "[FORMATTING FAILED]", False
+      return "[FORMATTING FAILED]", True
 
   async def _close_write_transport(self, write_client: Any) -> None:
     """Best-effort bounded close for a BigQuery write-client transport."""
@@ -7368,7 +7396,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   ) -> bool:
     """Captures allowlisted ``custom_metadata`` into ``attributes``.
 
-    Reads ``event.custom_metadata`` from the row's source Event, keeps only
+    Reads ``event.custom_metadata`` from the row's source Event or
+    ``llm_response.custom_metadata`` from event_data, keeps only
     allowlisted keys, runs them through the shared safety pipeline
     (truncation + sensitive-key redaction + circular-reference handling),
     and writes the result under ``attributes['custom_metadata']``.
@@ -7376,12 +7405,19 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     The built-in ``a2a:*`` handling in ``on_event_callback`` is unaffected;
     this is purely additive under a separate namespace.
 
+    Args:
+      event_data: Event payload container holding custom metadata or source
+        event.
+      attributes: Attributes dictionary to receive the allowlisted custom
+        metadata map.
+
     Returns:
         True if any captured value was truncated (so the caller can flip
         ``is_truncated``).
     """
-    source = event_data.source_event
-    meta = getattr(source, "custom_metadata", None) if source else None
+    meta = event_data.custom_metadata
+    if meta is None and event_data.source_event:
+      meta = getattr(event_data.source_event, "custom_metadata", None)
     if not meta:
       return False
     captured = {
@@ -7591,9 +7627,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     attributes = self._enrich_attributes(event_data, callback_context)
 
     # Capture allowlisted custom_metadata into attributes.custom_metadata.
-    # Runs for every row emitted from a source Event (incl. AGENT_RESPONSE,
-    # which does not otherwise read custom_metadata), through the same safety
-    # pipeline. Truncation here also flips is_truncated.
+    # Runs for every row emitted with custom_metadata or from a source Event
+    # (incl. AGENT_RESPONSE, which does not otherwise read custom_metadata, and
+    # terminal LLM_RESPONSE rows), through the same safety pipeline.
+    # Truncation here also flips is_truncated.
     if self._custom_metadata_exact or self._custom_metadata_prefixes:
       meta_truncated = self._capture_custom_metadata(event_data, attributes)
       is_truncated = is_truncated or meta_truncated
@@ -8071,8 +8108,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     ):
       # Filter to visible text parts only.  Exclude thoughts
       # (internal reasoning, A2A working/submitted updates),
-      # empty parts, and non-text parts (executable_code, etc.)
-      # that would render as "other" in _format_content.
+      # empty parts, and non-text execution parts (executable_code,
+      # code_execution_result) that are internal tool execution turns
+      # rather than user-facing conversational text.
       visible_parts = [
           p
           for p in event_content.parts
@@ -8427,6 +8465,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             span_id_override=span_id if is_popped else None,
             parent_span_id_override=(parent_span_id if is_popped else None),
             extra_attributes=extra_attributes,
+            custom_metadata=(
+                llm_response.custom_metadata
+                if not is_partial and isinstance(llm_response, LlmResponse)
+                else None
+            ),
         ),
     )
 
