@@ -491,15 +491,11 @@ class RestApiTool(BaseTool):
             if param.param_location == "body" and param.py_name in kwargs:
               body_data[param.original_name] = kwargs[param.py_name]
 
-        elif schema.type == "array":
+        else:
+          # Exactly one body parameter reaches this branch, and its name
+          # is not stable: _dedupe_param_names can rewrite py_name.
           for param in parameters:
-            if param.param_location == "body" and param.py_name == "array":
-              body_data = kwargs.get("array")
-              break
-        else:  # like string
-          for param in parameters:
-            # original_name = '' indicating this param applies to the full body.
-            if param.param_location == "body" and not param.original_name:
+            if param.param_location == "body":
               body_data = (
                   kwargs.get(param.py_name) if param.py_name in kwargs else None
               )

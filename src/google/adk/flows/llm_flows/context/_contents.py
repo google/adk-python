@@ -30,6 +30,7 @@ from ....models.base_llm import BaseLlm
 from ....models.llm_request import LlmRequest
 from .._base_llm_processor import BaseLlmRequestProcessor
 from ..core._utils import as_llm_agent
+from ..tools._functions import _collect_function_call_ids
 from ..tools._functions import AF_FUNCTION_CALL_ID_PREFIX
 from ..tools._functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from ..tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
@@ -445,6 +446,7 @@ def _get_contents(
   # never sent to the LLM. This is the same rewind logic the context compactor
   # applies, keeping the two consistent (see google.adk.events._rewind_events).
   rewind_filtered_events = _apply_rewinds(events)
+  tool_call_ids = _collect_function_call_ids(rewind_filtered_events)
 
   # Parse the events, leaving the contents and the function calls and
   # responses from the current agent.
@@ -460,6 +462,9 @@ def _get_contents(
               include_thoughts_from_other_agents
               and _is_other_agent_reply(agent_name, e)
           ),
+      )
+      and not _is_tool_sub_branch_event(
+          current_branch, e, agent_name, tool_call_ids
       )
   ]
 
@@ -634,6 +639,7 @@ def _get_current_turn_contents(
   # on while a long-running tool is pending, so an ordinary user turn can sit
   # between the two, and anchoring there would leave the result orphaned.
   unmatched_response_ids: set[str] = set()
+  tool_call_ids = _collect_function_call_ids(events)
   for i in range(len(events) - 1, -1, -1):
     event = events[i]
     unmatched_response_ids -= {
@@ -663,6 +669,9 @@ def _get_current_turn_contents(
         and (event.author == 'user' or _is_other_agent_reply(agent_name, event))
         and not _is_direct_transfer(event)
         and not is_submitted_result
+        and not _is_tool_sub_branch_event(
+            current_branch, event, agent_name, tool_call_ids
+        )
     ):
       return _get_contents(
           current_branch,
@@ -693,6 +702,42 @@ def _is_event_belongs_to_branch(
   inv_path = _BranchPath.from_string(invocation_branch)
   evt_path = _BranchPath.from_string(event.branch)
   return inv_path == evt_path or inv_path.is_descendant_of(evt_path)
+
+
+def _is_tool_sub_branch_event(
+    current_branch: str | None,
+    event: Event,
+    agent_name: str,
+    tool_call_ids: set[str],
+) -> bool:
+  """Whether ``event`` is a tool's message published below the agent's branch.
+
+  A tool that runs a node through ``tool_context.run_node`` on its own branch
+  (NodeTool, single-turn AgentTool) publishes its intermediate events on the
+  sub-branch ``<tool>@<function_call_id>``. Those are user-facing progress,
+  not model context: the model only gets the tool's FunctionResponse.
+
+  Only events strictly below ``current_branch`` qualify. An agent that itself
+  runs on a tool branch (e.g. an LlmAgent inside a NodeTool-wrapped Workflow
+  inherits ``<tool>@<function_call_id>``) must keep seeing its own history.
+
+  Every segment below ``current_branch`` is checked, not only the leaf: a
+  Workflow run by a NodeTool that fans out publishes on
+  ``<tool>@<function_call_id>.<node>@<run_id>``.
+  """
+  if not event.branch:
+    return False
+  event_path = _BranchPath.from_string(event.branch)
+  base_path = _BranchPath.from_string(current_branch)
+  if not event_path.is_descendant_of(base_path):
+    return False
+  segments = event_path.segments
+  return any(
+      _BranchPath.is_tool_branch(
+          str(_BranchPath(segments[:depth])), agent_name, tool_call_ids
+      )
+      for depth in range(len(base_path.segments) + 1, len(segments) + 1)
+  )
 
 
 def _is_function_call_event(event: Event, function_name: str) -> bool:

@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-import copy
 import importlib
 import json
 import logging
@@ -46,15 +45,12 @@ from starlette.concurrency import run_in_threadpool
 from starlette.types import Lifespan
 from watchdog.observers import Observer
 
-from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..auth.credential_service.in_memory_credential_service import InMemoryCredentialService
-from ..memory.in_memory_memory_service import InMemoryMemoryService
 from ..runners import Runner
-from ..sessions.in_memory_session_service import InMemorySessionService
-from ..sessions.vertex_ai_session_service import VertexAiSessionService
 from ..telemetry._agent_engine import get_propagated_context
 from ..telemetry._agent_engine import maybe_install_request_metrics_middleware
 from ..telemetry._agent_engine import TopSpanProcessor
+from .api_server import _is_loopback_address
 from .api_server import ApiServer
 from .cli_deploy import _AGENT_ENGINE_CLASS_METHODS
 from .service_registry import load_services_module
@@ -253,7 +249,14 @@ def get_fast_api_app(
     if is_single_agent and isinstance(agent_loader, this_module.AgentLoader):
       if single_agent_name is not None:
         agent_loader._set_single_agent_mode(single_agent_name, agents_dir)
-  agent_loader._allow_special_agents = web
+  # The built-in agents include the agent builder assistant, which writes
+  # arbitrary files -- Python included -- that the server then imports. The
+  # dev server has no authentication, so they are only safe where nobody else
+  # can reach it: a loopback bind, which the DNS-rebinding and Origin guards
+  # also cover. An unknown bind (None) is treated as exposed.
+  agent_loader._allow_special_agents = (
+      web and bind_host is not None and _is_loopback_address(bind_host)
+  )
 
   # Load services.py from agents_dir for custom service registration.
   load_services_module(agents_dir)
@@ -442,24 +445,7 @@ def get_fast_api_app(
         """Factory function to create A2A runner with proper closure."""
 
         async def _get_a2a_runner_async() -> Runner:
-          original_runner = await adk_web_server.get_runner_async(
-              captured_app_name
-          )
-          # Check if the session service is Agent Engine session Service
-          if isinstance(
-              original_runner.session_service, VertexAiSessionService
-          ):
-            # VertexAiSessionService is not compliant with A2A (impossible to
-            # create session on the fly with contextID). So, change it to
-            # InMemorySessionService. Put the other services in memory because
-            # persistence does not make sense.
-            runner = copy.copy(original_runner)
-            runner.session_service = InMemorySessionService()
-            runner.artifact_service = InMemoryArtifactService()
-            runner.memory_service = InMemoryMemoryService()
-            runner.credential_service = InMemoryCredentialService()
-            return runner
-          return original_runner
+          return await adk_web_server.get_runner_async(captured_app_name)
 
         return _get_a2a_runner_async
 

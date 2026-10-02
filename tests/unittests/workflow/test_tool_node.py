@@ -1072,3 +1072,372 @@ async def test_dynamic_tool_node_with_no_output_is_not_rerun_on_resume(
 
   assert tool_calls == 1
   assert driver_outputs == ["done"]
+
+
+@pytest.mark.parametrize("resumable", [False, True])
+@pytest.mark.asyncio
+async def test_tool_node_authenticated_function_tool_pause_and_resume(
+    resumable: bool,
+):
+  """Tests that AuthenticatedFunctionTool in _ToolNode pauses for auth and resumes with credential."""
+  from fastapi.openapi.models import APIKey
+  from fastapi.openapi.models import APIKeyIn
+  from google.adk.auth.auth_credential import AuthCredential
+  from google.adk.auth.auth_credential import AuthCredentialTypes
+  from google.adk.auth.auth_tool import AuthConfig
+  from google.adk.tools.authenticated_function_tool import AuthenticatedFunctionTool
+  from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
+
+  auth_config = AuthConfig(
+      auth_scheme=APIKey(**{"in": APIKeyIn.header, "name": "X-Api-Key"}),
+      credential_key="tool_node_api_key",
+  )
+
+  seen_credentials: list[str] = []
+  seen_downstream: list[Any] = []
+  plugin = _RecordingToolPlugin()
+
+  def fetch_data(query: str, credential: AuthCredential) -> dict[str, str]:
+    seen_credentials.append(credential.api_key)
+    return {"query": query, "api_key": credential.api_key}
+
+  def start_node():
+    return Event(output={"query": "metrics"})
+
+  def after(node_input: Any):
+    seen_downstream.append(node_input)
+    return node_input
+
+  auth_tool = AuthenticatedFunctionTool(
+      func=fetch_data,
+      auth_config=auth_config,
+  )
+  tool_node = ToolNode(tool=auth_tool)
+  wf = Workflow(
+      name="tool_node_auth_wf",
+      edges=[
+          (START, start_node),
+          (start_node, tool_node),
+          (tool_node, after),
+      ],
+  )
+  app_instance = testing_utils.App(
+      name="test_app",
+      root_agent=wf,
+      plugins=[plugin],
+      resumability_config=(
+          ResumabilityConfig(is_resumable=True) if resumable else None
+      ),
+  )
+  runner = testing_utils.InMemoryRunner(app=app_instance)
+
+  # Turn 1: pauses for credential before calling fetch_data or after_tool_callback.
+  events1 = await runner.run_async("start")
+  auth_events = workflow_testing_utils.get_auth_request_events(events1)
+  assert len(auth_events) == 1
+  fc = auth_events[0].content.parts[0].function_call
+  assert fc.name == REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
+  assert fc.id == "wf_auth:tool_node_auth_wf@1/fetch_data@1"
+  assert not seen_credentials
+  assert not seen_downstream
+  assert plugin.calls == [("before", "fetch_data", {"query": "metrics"})]
+
+  # Turn 2: supply the credential and verify tool executes and completes.
+  auth_response = AuthConfig(
+      auth_scheme=auth_config.auth_scheme,
+      exchanged_auth_credential=AuthCredential(
+          auth_type=AuthCredentialTypes.API_KEY,
+          api_key="secret_key_456",
+      ),
+      credential_key="tool_node_api_key",
+  )
+  resume_part = types.Part(
+      function_response=types.FunctionResponse(
+          id=fc.id,
+          name=REQUEST_CREDENTIAL_FUNCTION_CALL_NAME,
+          response=auth_response.model_dump(exclude_none=True, by_alias=True),
+      )
+  )
+  await runner.run_async(
+      new_message=testing_utils.UserContent(resume_part),
+      invocation_id=auth_events[0].invocation_id,
+  )
+
+  assert seen_credentials == ["secret_key_456"]
+  assert seen_downstream == [{"query": "metrics", "api_key": "secret_key_456"}]
+  assert plugin.calls[-1] == (
+      "after",
+      "fetch_data",
+      {"query": "metrics", "api_key": "secret_key_456"},
+  )
+
+
+@pytest.mark.parametrize("resumable", [False, True])
+@pytest.mark.asyncio
+async def test_tool_node_dynamic_request_credential_pause_and_resume(
+    resumable: bool,
+):
+  """Tests that a FunctionTool calling tool_context.request_credential pauses and resumes in _ToolNode."""
+  from fastapi.openapi.models import APIKey
+  from fastapi.openapi.models import APIKeyIn
+  from google.adk.auth.auth_credential import AuthCredential
+  from google.adk.auth.auth_credential import AuthCredentialTypes
+  from google.adk.auth.auth_tool import AuthConfig
+  from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
+
+  auth_config = AuthConfig(
+      auth_scheme=APIKey(**{"in": APIKeyIn.header, "name": "X-Api-Key"}),
+      raw_auth_credential=AuthCredential(
+          auth_type=AuthCredentialTypes.API_KEY,
+          api_key="placeholder",
+      ),
+      credential_key="dynamic_tool_api_key",
+  )
+
+  seen_downstream: list[Any] = []
+
+  def query_service(endpoint: str, tool_context) -> dict[str, str]:
+    cred = tool_context.get_auth_response(auth_config)
+    if cred is None:
+      tool_context.request_credential(auth_config)
+      return {"status": "auth_required"}
+    return {"endpoint": endpoint, "token": cred.api_key}
+
+  def start_node():
+    return Event(output={"endpoint": "/v1/items"})
+
+  def after(node_input: Any):
+    seen_downstream.append(node_input)
+    return node_input
+
+  tool_node = ToolNode(tool=FunctionTool(func=query_service))
+  wf = Workflow(
+      name="tool_node_dyn_auth_wf",
+      edges=[
+          (START, start_node),
+          (start_node, tool_node),
+          (tool_node, after),
+      ],
+  )
+  app_instance = testing_utils.App(
+      name="test_app",
+      root_agent=wf,
+      resumability_config=(
+          ResumabilityConfig(is_resumable=True) if resumable else None
+      ),
+  )
+  runner = testing_utils.InMemoryRunner(app=app_instance)
+
+  # Turn 1: pauses with adk_request_credential and cleans up requested_auth_configs.
+  events1 = await runner.run_async("start")
+  auth_events = workflow_testing_utils.get_auth_request_events(events1)
+  assert len(auth_events) == 1
+  assert not auth_events[0].actions.requested_auth_configs
+  fc = auth_events[0].content.parts[0].function_call
+  assert fc.id == "wf_auth:tool_node_dyn_auth_wf@1/query_service@1"
+  assert not seen_downstream
+
+  # Turn 2: supply the credential and verify tool_context.get_auth_response succeeds.
+  auth_response = AuthConfig(
+      auth_scheme=auth_config.auth_scheme,
+      raw_auth_credential=auth_config.raw_auth_credential,
+      exchanged_auth_credential=AuthCredential(
+          auth_type=AuthCredentialTypes.API_KEY,
+          api_key="dyn_secret_789",
+      ),
+      credential_key="dynamic_tool_api_key",
+  )
+  resume_part = types.Part(
+      function_response=types.FunctionResponse(
+          id=fc.id,
+          name=REQUEST_CREDENTIAL_FUNCTION_CALL_NAME,
+          response=auth_response.model_dump(exclude_none=True, by_alias=True),
+      )
+  )
+  await runner.run_async(
+      new_message=testing_utils.UserContent(resume_part),
+      invocation_id=auth_events[0].invocation_id,
+  )
+
+  assert seen_downstream == [
+      {"endpoint": "/v1/items", "token": "dyn_secret_789"}
+  ]
+
+
+@pytest.mark.asyncio
+async def test_tool_node_malformed_auth_response_is_not_a_tool_error():
+  """A malformed auth response fails the node instead of becoming a tool error.
+
+  Like a malformed confirmation answer, it is handled before the tool runs, so
+  the on-tool-error callback never sees it and cannot answer it.
+  """
+  from fastapi.openapi.models import APIKey
+  from fastapi.openapi.models import APIKeyIn
+  from google.adk.auth.auth_credential import AuthCredential
+  from google.adk.auth.auth_tool import AuthConfig
+  from google.adk.tools.authenticated_function_tool import AuthenticatedFunctionTool
+  from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
+
+  auth_config = AuthConfig(
+      auth_scheme=APIKey(**{"in": APIKeyIn.header, "name": "X-Api-Key"}),
+      credential_key="tool_node_api_key",
+  )
+  tool_calls: list[str] = []
+  plugin = _RecordingToolPlugin(error_response={"error": "handled"})
+
+  def fetch_data(query: str, credential: AuthCredential) -> dict[str, str]:
+    tool_calls.append(query)
+    return {"query": query}
+
+  def start_node():
+    return Event(output={"query": "metrics"})
+
+  tool_node = ToolNode(
+      tool=AuthenticatedFunctionTool(func=fetch_data, auth_config=auth_config)
+  )
+  wf = Workflow(
+      name="tool_node_malformed_auth_wf",
+      edges=[(START, start_node), (start_node, tool_node)],
+  )
+  app_instance = testing_utils.App(
+      name="test_app", root_agent=wf, plugins=[plugin]
+  )
+  runner = testing_utils.InMemoryRunner(app=app_instance)
+  # Given the tool node paused for a credential
+  auth_events = workflow_testing_utils.get_auth_request_events(
+      await runner.run_async("start")
+  )
+  assert len(auth_events) == 1
+  fc = auth_events[0].content.parts[0].function_call
+
+  # When the client answers with something that is not a credential
+  resume_part = types.Part(
+      function_response=types.FunctionResponse(
+          id=fc.id,
+          name=REQUEST_CREDENTIAL_FUNCTION_CALL_NAME,
+          response={"result": "not a credential"},
+      )
+  )
+
+  # Then the node fails without running the tool or the error callback
+  with pytest.raises(ValueError):
+    await runner.run_async(
+        new_message=testing_utils.UserContent(resume_part),
+        invocation_id=auth_events[0].invocation_id,
+    )
+  assert not tool_calls
+  assert not [call for call in plugin.calls if call[0] == "error"]
+
+
+@pytest.mark.parametrize(
+    "auth_response",
+    [
+        {"result": "some_api_key"},
+        {
+            "authScheme": {"type": "apiKey", "in": "header", "name": "X-Key"},
+            "credentialKey": "client_chosen_key",
+            "exchangedAuthCredential": {
+                "authType": "apiKey",
+                "apiKey": "some_api_key",
+            },
+        },
+    ],
+)
+@pytest.mark.asyncio
+async def test_tool_node_auth_resume_missing_auth_config_raises_workflow_data_error(
+    auth_response: dict[str, Any],
+):
+  """Tests that resuming auth when AuthConfig cannot be resolved raises WorkflowDataError.
+
+  A full auth config in the client's response is not used either, so the
+  client cannot pick the state slot the credential is stored in.
+  """
+  from unittest.mock import MagicMock
+
+  from google.adk.workflow._errors import WorkflowDataError
+
+  class SimpleTool(BaseTool):
+
+    def __init__(self):
+      super().__init__(name="simple_tool", description="Simple tool")
+
+    async def run_async(self, *, args: dict[str, Any], tool_context) -> Any:
+      return "done"
+
+  tool_node = ToolNode(tool=SimpleTool())
+  ctx = MagicMock(spec=Context)
+  ctx.node_path = "simple_tool@1"
+  interrupt_id = "wf_auth:simple_tool@1"
+  ctx.resume_inputs = {interrupt_id: auth_response}
+  ctx.session = MagicMock()
+  ctx.session.events = []
+
+  with pytest.raises(WorkflowDataError, match="no AuthConfig found"):
+    await tool_node._apply_auth_resume(ctx=ctx)
+
+
+@pytest.mark.parametrize("resumable", [False, True])
+@pytest.mark.asyncio
+async def test_tool_node_non_function_tool_no_output_fast_forwards_on_resume(
+    resumable: bool,
+):
+  """Tests that a non-FunctionTool returning None fast-forwards and does not rerun on resume."""
+  execution_count = 0
+
+  class NoOutputTool(BaseTool):
+
+    def __init__(self):
+      super().__init__(
+          name="no_output_tool", description="Tool producing no output"
+      )
+
+    async def run_async(self, *, args: dict[str, Any], tool_context) -> None:
+      nonlocal execution_count
+      execution_count += 1
+      return None
+
+  def start_node():
+    return Event(output={})
+
+  def pause_node(node_input: Any):
+    return RequestInput(
+        interrupt_id="pause_after_tool",
+        message="pause",
+        response_schema=dict,
+    )
+
+  tool_node = ToolNode(tool=NoOutputTool())
+  wf = Workflow(
+      name="no_output_wf",
+      edges=[
+          (START, start_node),
+          (start_node, tool_node),
+          (tool_node, pause_node),
+      ],
+  )
+  app_instance = testing_utils.App(
+      name="test_app",
+      root_agent=wf,
+      resumability_config=(
+          ResumabilityConfig(is_resumable=True) if resumable else None
+      ),
+  )
+  runner = testing_utils.InMemoryRunner(app=app_instance)
+
+  # Turn 1: tool runs once, returns None, then pause_node pauses.
+  events1 = await runner.run_async("start")
+  assert execution_count == 1
+  request = workflow_testing_utils.find_function_call_event(
+      events1, REQUEST_INPUT_FUNCTION_CALL_NAME
+  )
+  assert request is not None
+
+  # Turn 2: resume pause_node. Tool should fast-forward and NOT re-execute.
+  interrupt_id = get_request_input_interrupt_ids(request)[0]
+  await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response(interrupt_id, {"status": "ok"})
+      ),
+      invocation_id=request.invocation_id,
+  )
+  assert execution_count == 1

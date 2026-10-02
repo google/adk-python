@@ -33,13 +33,13 @@ from pydantic import BaseModel
 from websockets.exceptions import ConnectionClosed
 from websockets.exceptions import ConnectionClosedOK
 
+from ..agents._streaming_mode import StreamingMode
 from ..agents.base_agent import BaseAgent
 from ..agents.callback_context import CallbackContext
 from ..agents.invocation_context import InvocationContext
 from ..agents.llm_agent import Agent
 from ..agents.readonly_context import ReadonlyContext
 from ..agents.run_config import RunConfig
-from ..agents.run_config import StreamingMode
 from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService

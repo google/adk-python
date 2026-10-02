@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import asyncio
-import concurrent.futures
 import json
 import logging
 import os
@@ -35,7 +34,6 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
-from google.adk.auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from google.adk.cli import api_server as api_server_module
 from google.adk.cli import fast_api as fast_api_module
 from google.adk.cli.api_server import RunAgentRequest
@@ -55,7 +53,6 @@ from google.adk.plugins.bigquery_agent_analytics_plugin import BigQueryAgentAnal
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
-from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
 from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.api_core.exceptions import GoogleAPICallError
 from google.api_core.exceptions import InvalidArgument
@@ -749,6 +746,46 @@ def test_api_server_get_runner_async_rejects_internal_special_agent_name(
       "Access to internal special agents is disabled in API server mode"
       in exc_info.value.detail
   )
+
+
+@pytest.mark.parametrize(
+    ("web", "bind_host", "expected"),
+    [
+        (True, "127.0.0.1", True),
+        (True, "localhost", True),
+        (True, "::1", True),
+        (True, "0.0.0.0", False),
+        (True, "::", False),
+        (True, "192.168.1.10", False),
+        (True, None, False),
+        (False, "127.0.0.1", False),
+    ],
+)
+def test_special_agents_allowed_only_on_loopback_web_server(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    web,
+    bind_host,
+    expected,
+):
+  # The agent builder assistant writes files the server imports, and the dev
+  # server is unauthenticated, so it must not be reachable off the machine.
+  _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      web=web,
+      bind_host=bind_host,
+  )
+
+  assert mock_agent_loader._allow_special_agents is expected
 
 
 @pytest.fixture
@@ -1988,6 +2025,45 @@ def test_list_sessions(test_app, create_test_session):
   logger.info(f"Listed {len(data)} sessions")
 
 
+async def test_list_sessions_filters_eval_sessions(
+    test_app, test_session_info, mock_session_service
+):
+  """Test that eval sessions (both old and new prefixes) are filtered from list."""
+  # Create a normal session
+  await mock_session_service.create_session(
+      app_name=test_session_info["app_name"],
+      user_id=test_session_info["user_id"],
+      session_id="normal-session",
+      state={},
+  )
+  # Create a new style eval session
+  await mock_session_service.create_session(
+      app_name=test_session_info["app_name"],
+      user_id=test_session_info["user_id"],
+      session_id="adk-eval-session-new-style",
+      state={},
+  )
+  # Create an old style eval session
+  await mock_session_service.create_session(
+      app_name=test_session_info["app_name"],
+      user_id=test_session_info["user_id"],
+      session_id="___eval___session___old-style",
+      state={},
+  )
+
+  url = f"/apps/{test_session_info['app_name']}/users/{test_session_info['user_id']}/sessions"
+  response = test_app.get(url)
+
+  assert response.status_code == 200
+  data = response.json()
+  assert isinstance(data, list)
+
+  session_ids = [session["id"] for session in data]
+  assert "normal-session" in session_ids
+  assert "adk-eval-session-new-style" not in session_ids
+  assert "___eval___session___old-style" not in session_ids
+
+
 def test_delete_session(test_app, create_test_session):
   """Test deleting a session."""
   info = create_test_session
@@ -3174,30 +3250,32 @@ def test_list_metrics_info(builder_test_client):
     assert "metricValueInfo" in metric
 
 
-def test_list_metrics_info_omits_metrics_that_need_no_threshold(
+def test_list_metrics_info_includes_metrics_that_need_no_threshold(
     builder_test_client,
 ):
-  """Always-on informational metrics are not offered for threshold selection.
+  """Informational metrics are listed too, flagged as needing no threshold.
 
-  This surface asks the user to pick metrics and set a threshold for each, and
-  bounds the threshold control by the metric's value interval. Metrics that
-  need no threshold have neither, so listing them leaves consumers with nothing
-  to render.
+  A caller that asks the user to pick metrics and set a threshold for each
+  filters on `requiresThreshold`; a caller that only describes metrics, such
+  as the Dev UI's result tooltips, needs every registered metric present.
   """
   response = builder_test_client.get("/dev/apps/test_app/metrics-info")
 
   assert response.status_code == 200
-  listed = [metric["metricName"] for metric in response.json()["metricsInfo"]]
-  assert "tool_trajectory_avg_score" in listed
+  by_name = {
+      metric["metricName"]: metric for metric in response.json()["metricsInfo"]
+  }
+  assert by_name["tool_trajectory_avg_score"]["requiresThreshold"] is True
   for informational in (
       "tool_call_count_v1",
       "inference_call_count_v1",
       "token_usage_v1",
+      "invocation_duration_v1",
   ):
-    assert informational not in listed
-  # Everything that is listed can be rendered as a bounded threshold control.
-  for metric in response.json()["metricsInfo"]:
-    assert metric["metricValueInfo"]["interval"]
+    assert by_name[informational]["requiresThreshold"] is False
+    # Nothing bounds an informational value, so a threshold control has no
+    # interval to size itself by. That is why the caller filters instead.
+    assert "interval" not in by_name[informational]["metricValueInfo"]
 
 
 def test_debug_trace(test_app):
@@ -3573,92 +3651,6 @@ def test_a2a_in_memory_task_store_no_engine_dispose(
     # Lifespan should complete without errors even with no engine.
     with TestClient(app):
       pass
-
-
-def test_a2a_runner_factory_creates_isolated_runner(temp_agents_dir_with_a2a):  # pylint: disable=redefined-outer-name
-  """Verify the A2A runner factory creates a copy of the runner with in-memory services."""
-  # 1. Setup Mocks for the original runner and its services
-  original_runner = Runner(
-      agent=MagicMock(),
-      app_name="test_app",
-      session_service=VertexAiSessionService(),
-  )
-  original_runner.memory_service = MagicMock()
-  original_runner.artifact_service = MagicMock()
-  original_runner.credential_service = MagicMock()
-
-  # Mock the ApiServer to control the runner it returns
-  mock_web_server_instance = MagicMock()
-  mock_web_server_instance.get_runner_async = AsyncMock(
-      return_value=original_runner
-  )
-  # The factory captures the app_name, so we need to mock list_agents
-  mock_web_server_instance.list_agents.return_value = ["test_a2a_agent"]
-
-  # 2. Patch dependencies in the fast_api module
-  with (
-      patch(
-          "google.adk.cli.fast_api.ApiServer",
-          return_value=mock_web_server_instance,
-      ),
-      patch(
-          "google.adk.a2a.executor.a2a_agent_executor.A2aAgentExecutor"
-      ) as mock_executor,
-      patch("google.adk.a2a._compat.attach_a2a_routes_to_app"),
-  ):
-
-    # Change to temp directory
-    original_cwd = os.getcwd()
-    os.chdir(temp_agents_dir_with_a2a)
-    try:
-      # 3. Call get_fast_api_app to trigger the factory creation
-      get_fast_api_app(
-          agents_dir=".",
-          web=False,
-          session_service_uri="",
-          artifact_service_uri="",
-          memory_service_uri="",
-          allow_origins=[],
-          a2a=True,  # Enable A2A to create the factory
-          host="127.0.0.1",
-          port=8000,
-      )
-    finally:
-      os.chdir(original_cwd)
-
-    # 4. Capture the factory from the mocked A2aAgentExecutor
-    assert mock_executor.call_args is not None, "A2aAgentExecutor not called"
-    kwargs = mock_executor.call_args.kwargs
-    assert "runner" in kwargs
-    runner_factory = kwargs["runner"]
-
-    # 5. Execute the factory to get the new runner
-    # Since runner_factory is an async function, we need to run it.
-    # We run it in a separate thread to avoid event loop conflicts if
-    # an event loop is already running.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-      a2a_runner = executor.submit(asyncio.run, runner_factory()).result()
-
-    # 6. Assert that the new runner is a separate, modified copy
-    assert a2a_runner is not original_runner, "Runner should be a copy"
-
-    # Assert that services have been replaced with InMemory versions
-    assert isinstance(a2a_runner.memory_service, InMemoryMemoryService)
-    assert isinstance(a2a_runner.session_service, InMemorySessionService)
-    assert isinstance(a2a_runner.artifact_service, InMemoryArtifactService)
-    assert isinstance(a2a_runner.credential_service, InMemoryCredentialService)
-
-    # Assert that the original runner's services are unchanged
-    assert not isinstance(original_runner.memory_service, InMemoryMemoryService)
-    assert not isinstance(
-        original_runner.session_service, InMemorySessionService
-    )
-    assert not isinstance(
-        original_runner.artifact_service, InMemoryArtifactService
-    )
-    assert not isinstance(
-        original_runner.credential_service, InMemoryCredentialService
-    )
 
 
 def test_a2a_disabled_by_default(test_app):

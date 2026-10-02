@@ -1319,6 +1319,7 @@ class DevServer(ApiServer):
       # Create a mapping from eval set file to all the evals that needed to be
       # run.
       try:
+        from ..evaluation.eval_config import append_default_efficiency_metrics
         from ..evaluation.local_eval_service import LocalEvalService
         from ..evaluation.simulation.user_simulator_provider import UserSimulatorProvider
         from .cli_eval import _collect_eval_results
@@ -1377,10 +1378,15 @@ class DevServer(ApiServer):
             eval_service=eval_service,
         )
 
+        # The request carries only what the user selected in the run dialog,
+        # and the efficiency metrics are not selectable there: they take no
+        # threshold, so the dialog has nothing to ask about. Adding them here
+        # is what makes "reported for every eval" hold for a run started from
+        # the Dev UI, and not only for one started from `adk eval`.
         eval_case_results = await _collect_eval_results(
             inference_results=inference_results,
             eval_service=eval_service,
-            eval_metrics=req.eval_metrics,
+            eval_metrics=append_default_efficiency_metrics(req.eval_metrics),
         )
       except ModuleNotFoundError as e:
         logger.exception("%s", e)
@@ -1449,27 +1455,15 @@ class DevServer(ApiServer):
 
         # Right now we ignore the app_name as eval metrics are not tied to the
         # app_name, but they could be moving forward.
-        # This endpoint feeds a surface that asks the user to pick metrics and
-        # set a threshold for each. Metrics that need no threshold are always
-        # on and have nothing for the user to choose, and they carry no value
-        # interval for a threshold control to bound itself by.
         #
-        # Hiding them is a compatibility shim for the Dev UI bundle vendored in
-        # cli/browser, which dereferences `metricValueInfo.interval`
-        # unconditionally while building the threshold form and so takes the
-        # whole form down on a metric that has none.
-        # TODO: Drop this filter once that
-        # bundle understands `requires_threshold=False` and renders those
-        # metrics as an always-on, non-selectable section instead. The bundle
-        # ships from this repo, so its refresh and this removal land together.
-        metrics_info = [
-            metric_info
-            for metric_info in (
-                DEFAULT_METRIC_EVALUATOR_REGISTRY.get_registered_metrics()
-            )
-            if metric_info.requires_threshold
-        ]
-        return ListMetricsInfoResponse(metrics_info=metrics_info)
+        # Every registered metric is listed, including the ones that need no
+        # threshold. A caller that asks the user to set thresholds decides for
+        # itself which to offer -- `MetricInfo.requires_threshold` says which
+        # those are -- while a caller that only describes metrics, such as the
+        # Dev UI's result tooltips, needs the whole list.
+        return ListMetricsInfoResponse(
+            metrics_info=DEFAULT_METRIC_EVALUATOR_REGISTRY.get_registered_metrics()
+        )
       except ModuleNotFoundError as e:
         logger.exception("%s\n%s", MISSING_EVAL_DEPENDENCIES_MESSAGE, e)
         raise HTTPException(

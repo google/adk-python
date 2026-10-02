@@ -27,6 +27,7 @@ from pydantic import Field
 from typing_extensions import override
 
 from ..agents.context import Context
+from ..auth.auth_tool import AuthConfig
 from ..events.event import Event
 from ..events.request_input import RequestInput
 from ..platform import uuid as platform_uuid
@@ -37,8 +38,24 @@ from ..utils.content_utils import extract_text_from_content
 from ._base_node import BaseNode
 from ._errors import WorkflowDataError
 from ._retry_config import RetryConfig
+from .utils._workflow_hitl_utils import create_auth_request_event
+from .utils._workflow_hitl_utils import process_auth_resume
+from .utils._workflow_hitl_utils import REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
 
 _TOOL_CONFIRMATION_INTERRUPT_PREFIX = 'wf_tool_confirmation:'
+_TOOL_AUTH_INTERRUPT_PREFIX = 'wf_auth:'
+
+
+def _get_tool_auth_config(tool: BaseTool) -> AuthConfig | None:
+  """Returns the AuthConfig attached to a tool or its credential manager."""
+  auth_config = getattr(tool, '_auth_config', None)
+  if isinstance(auth_config, AuthConfig):
+    return auth_config
+  credentials_manager = getattr(tool, '_credentials_manager', None)
+  cm_auth_config = getattr(credentials_manager, '_auth_config', None)
+  if isinstance(cm_auth_config, AuthConfig):
+    return cm_auth_config
+  return None
 
 
 def _parse_tool_confirmation(response: Any) -> ToolConfirmation:
@@ -63,6 +80,13 @@ def _parse_tool_confirmation(response: Any) -> ToolConfirmation:
     raise WorkflowDataError(
         f'Invalid tool confirmation response: {response!r}'
     ) from e
+
+
+class _AuthPending:
+  """Marks a tool call that is waiting for the user to provide credentials."""
+
+  def __init__(self, auth_config: AuthConfig):
+    self.auth_config = auth_config
 
 
 class _ToolNode(BaseNode):
@@ -149,6 +173,12 @@ class _ToolNode(BaseNode):
     if isinstance(response, RequestInput):
       yield response
       return
+    if isinstance(response, _AuthPending):
+      auth_interrupt_id = f'{_TOOL_AUTH_INTERRUPT_PREFIX}{ctx.node_path}'
+      yield create_auth_request_event(
+          response.auth_config, auth_interrupt_id, ctx.state
+      )
+      return
 
     # State and artifact deltas recorded on ctx.actions by the tool are
     # attached to emitted events by the node runner.
@@ -169,15 +199,18 @@ class _ToolNode(BaseNode):
     a tool node.
 
     Like the agent pipeline, the user's answer to a confirmation request is on
-    `ctx.tool_confirmation` before any callback runs, and the confirmation gate
-    runs after the before-tool callback. A call waiting for confirmation
-    returns the `RequestInput` to send the user and skips the after-tool
-    callback; a rejected call answers with an error that the after-tool
+    `ctx.tool_confirmation`, and a credential the user supplied is stored in
+    state, before any callback runs; the confirmation gate runs after the
+    before-tool callback. A call waiting for confirmation
+    returns the `RequestInput` to send the user, and a call waiting for
+    authentication returns an `_AuthPending`; both skip the after-tool
+    callback. A rejected call answers with an error that the after-tool
     callback still sees.
     """
-    # Set before the callbacks so they see the answer, and outside the tool
+    # Set before the callbacks so they see the answers, and outside the tool
     # error handling so a malformed answer is not reported as a tool failure.
     self._apply_confirmation_resume(ctx=ctx)
+    await self._apply_auth_resume(ctx=ctx)
     plugin_manager = ctx.get_invocation_context().plugin_manager
     response = await plugin_manager.run_before_tool_callback(
         tool=self.tool, tool_args=args, tool_context=ctx
@@ -190,10 +223,20 @@ class _ToolNode(BaseNode):
         request = self._take_requested_confirmation(ctx=ctx, args=args)
         if request is not None:
           return request
+        if (
+            ctx.function_call_id
+            and ctx.function_call_id in ctx.actions.requested_auth_configs
+        ):
+          auth_request = ctx.actions.requested_auth_configs.pop(
+              ctx.function_call_id
+          )
+          return _AuthPending(auth_request)
       except Exception as error:
-        # The failure is the call's result, so a confirmation the tool asked
-        # for before raising is dropped rather than left pending.
+        # The failure is the call's result, so a confirmation or credential
+        # the tool asked for before raising is dropped rather than left
+        # pending.
         ctx.actions.requested_tool_confirmations.pop(ctx.function_call_id, None)
+        ctx.actions.requested_auth_configs.pop(ctx.function_call_id, None)
         response = await plugin_manager.run_on_tool_error_callback(
             tool=self.tool, tool_args=args, tool_context=ctx, error=error
         )
@@ -247,3 +290,43 @@ class _ToolNode(BaseNode):
   def _confirmation_interrupt_id(self, ctx: Context) -> str:
     """Returns the interrupt id of this node run's confirmation request."""
     return f'{_TOOL_CONFIRMATION_INTERRUPT_PREFIX}{ctx.node_path}'
+
+  async def _apply_auth_resume(self, *, ctx: Context) -> None:
+    """Processes a resumed auth credential response before running the tool."""
+    interrupt_id = f'{_TOOL_AUTH_INTERRUPT_PREFIX}{ctx.node_path}'
+    auth_response = ctx.resume_inputs.get(interrupt_id)
+    if auth_response is None:
+      return
+    auth_config = self._resolve_auth_config(ctx, interrupt_id)
+    if auth_config is None:
+      raise WorkflowDataError(
+          f'Cannot resume auth for tool node {ctx.node_path}: no AuthConfig'
+          f' found for interrupt {interrupt_id}.'
+      )
+    await process_auth_resume(
+        auth_response, auth_config, ctx.state, interrupt_id
+    )
+
+  def _resolve_auth_config(
+      self, ctx: Context, interrupt_id: str
+  ) -> AuthConfig | None:
+    """Resolves the AuthConfig for this tool node on resume.
+
+    The config comes from the tool or from the credential request this node
+    recorded, never from the client: its `credential_key` picks the state slot
+    the credential is stored in.
+    """
+    auth_config = _get_tool_auth_config(self.tool)
+    if auth_config is not None:
+      return auth_config
+    for event in reversed(ctx.session.events):
+      for fc in event.get_function_calls():
+        if (
+            fc.name == REQUEST_CREDENTIAL_FUNCTION_CALL_NAME
+            and fc.id == interrupt_id
+            and fc.args
+        ):
+          raw_config = fc.args.get('authConfig') or fc.args.get('auth_config')
+          if raw_config:
+            return AuthConfig.model_validate(raw_config)
+    return None

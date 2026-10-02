@@ -509,6 +509,42 @@ async def test_evaluate_invocations_sample_failure(mock_llm_as_judge, mocker):
   assert mock_aggregate_per_invocation_samples.call_count == 1
 
 
+@pytest.mark.asyncio
+async def test_evaluate_invocations_cancelled_sample(mock_llm_as_judge, mocker):
+  """A cancelled sample marks its invocation not evaluated."""
+
+  async def mock_generate_content_async(llm_request):
+    raise asyncio.CancelledError()
+    yield  # makes this an async generator, like the real method
+
+  mock_judge_model = mocker.MagicMock()
+  mock_judge_model.generate_content_async = mock_generate_content_async
+  mock_llm_as_judge._judge_model = mock_judge_model
+  mock_llm_as_judge.aggregate_invocation_results = (
+      lambda per_invocation_results: EvaluationResult(
+          per_invocation_results=per_invocation_results,
+      )
+  )
+  actual_invocations = [
+      Invocation(
+          invocation_id="id1",
+          user_content=genai_types.Content(parts=[genai_types.Part(text="u1")]),
+          final_response=genai_types.Content(
+              parts=[genai_types.Part(text="r1")]
+          ),
+      ),
+  ]
+
+  result = await mock_llm_as_judge.evaluate_invocations(
+      actual_invocations, actual_invocations
+  )
+
+  assert len(result.per_invocation_results) == 1
+  assert (
+      result.per_invocation_results[0].eval_status == EvalStatus.NOT_EVALUATED
+  )
+
+
 @pytest.mark.parametrize("invalid_limit", [0, -1])
 def test_judge_model_options_invalid_parallelism_limit(invalid_limit):
   with pytest.raises(pydantic.ValidationError):

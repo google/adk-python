@@ -270,6 +270,32 @@ def get_evaluation_criteria_or_default(
   return _DEFAULT_EVAL_CONFIG
 
 
+def append_default_efficiency_metrics(
+    eval_metrics: list[EvalMetric],
+) -> list[EvalMetric]:
+  """Returns `eval_metrics` with the informational efficiency metrics added.
+
+  Efficiency is reported for every eval without the caller asking for it, so
+  every entry point that assembles a metric list runs the list through here.
+  A metric the caller already named is left as it is rather than replaced, so
+  the caller's own entry -- and the error it earns for carrying a threshold --
+  survives, and no duplicate is added.
+
+  Args:
+    eval_metrics: The metrics the caller asked for. Not modified.
+
+  Returns:
+    A new list: the caller's metrics, then the efficiency metrics they did not
+    already name.
+  """
+  requested = {eval_metric.metric_name for eval_metric in eval_metrics}
+  return list(eval_metrics) + [
+      EvalMetric(metric_name=metric_name)
+      for metric_name in _DEFAULT_EFFICIENCY_METRICS
+      if metric_name not in requested
+  ]
+
+
 def get_eval_metrics_from_config(eval_config: EvalConfig) -> list[EvalMetric]:
   """Returns a list of EvalMetrics mapped from the EvalConfig.
 
@@ -284,10 +310,8 @@ def get_eval_metrics_from_config(eval_config: EvalConfig) -> list[EvalMetric]:
   metric once.
   """
   eval_metric_list = []
-  configured_metric_names = set()
   if eval_config.criteria:
     for metric_name, criterion in eval_config.criteria.items():
-      configured_metric_names.add(metric_name)
       custom_function_path = None
       if eval_config.custom_metrics and (
           config := eval_config.custom_metrics.get(metric_name)
@@ -322,12 +346,4 @@ def get_eval_metrics_from_config(eval_config: EvalConfig) -> list[EvalMetric]:
       eval_metric._config_custom_function_path = custom_function_path  # pylint: disable=protected-access
       eval_metric_list.append(eval_metric)
 
-  # Always report the informational efficiency metrics, even when the user did
-  # not enable them in the config. A metric named in the config above is not
-  # added a second time; that entry is rejected later, for carrying a
-  # threshold.
-  for metric_name in _DEFAULT_EFFICIENCY_METRICS:
-    if metric_name not in configured_metric_names:
-      eval_metric_list.append(EvalMetric(metric_name=metric_name))
-
-  return eval_metric_list
+  return append_default_efficiency_metrics(eval_metric_list)

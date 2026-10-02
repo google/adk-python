@@ -1423,6 +1423,137 @@ async def test_file_metadata_camelcase(tmp_path, artifact_service_factory):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+async def test_artifact_version_metadata_holds_only_caller_keys(
+    service_type, artifact_service_factory
+):
+  """A version reports the metadata the caller saved and nothing else.
+
+  A text artifact makes GCS write its own adkIsText marker next to the
+  caller's keys, so it must not come back as custom_metadata.
+  """
+  artifact_service = artifact_service_factory(service_type)
+  custom_metadata = {"origin": "unit-test"}
+  await artifact_service.save_artifact(
+      app_name="myapp",
+      user_id="user123",
+      session_id="sess789",
+      filename="note.txt",
+      artifact=types.Part(text="hello"),
+      custom_metadata=custom_metadata,
+  )
+
+  fetched = await artifact_service.get_artifact_version(
+      app_name="myapp",
+      user_id="user123",
+      session_id="sess789",
+      filename="note.txt",
+  )
+  assert fetched is not None
+  assert fetched.custom_metadata == custom_metadata
+
+  versions = await artifact_service.list_artifact_versions(
+      app_name="myapp",
+      user_id="user123",
+      session_id="sess789",
+      filename="note.txt",
+  )
+  assert [v.custom_metadata for v in versions] == [custom_metadata]
+
+
+@pytest.mark.asyncio
+async def test_gcs_artifact_version_suppresses_legacy_file_uri_metadata(
+    artifact_service_factory,
+):
+  """A version suppresses the legacy file_uri key from custom_metadata."""
+  service = artifact_service_factory(ArtifactServiceType.GCS)
+  custom_metadata = {"origin": "unit-test"}
+  await service.save_artifact(
+      app_name="myapp",
+      user_id="user123",
+      session_id="sess789",
+      filename="note.txt",
+      artifact=types.Part(text="hello"),
+      custom_metadata=custom_metadata,
+  )
+  blob_name = service._get_blob_name(
+      "myapp", "user123", "note.txt", 0, "sess789"
+  )
+  blob = service.bucket.get_blob(blob_name)
+  assert blob is not None
+  blob.metadata["file_uri"] = "gs://legacy-bucket/note.txt"
+
+  fetched = await service.get_artifact_version(
+      app_name="myapp",
+      user_id="user123",
+      session_id="sess789",
+      filename="note.txt",
+  )
+  assert fetched is not None
+  assert fetched.custom_metadata == custom_metadata
+
+  versions = await service.list_artifact_versions(
+      app_name="myapp",
+      user_id="user123",
+      session_id="sess789",
+      filename="note.txt",
+  )
+  assert [v.custom_metadata for v in versions] == [custom_metadata]
+
+
+@pytest.mark.asyncio
+async def test_gcs_save_artifact_ignores_internal_metadata_keys(
+    artifact_service_factory,
+):
+  """Saving with internal bookkeeping keys in custom_metadata does not corrupt loads."""
+  service = artifact_service_factory(ArtifactServiceType.GCS)
+  part = types.Part.from_bytes(
+      data=b"REAL BYTES", mime_type="application/octet-stream"
+  )
+  custom_metadata = {
+      "file_uri": "gs://attacker/other.bin",
+      "adkIsText": "true",
+      "origin": "unit-test",
+  }
+  await service.save_artifact(
+      app_name="myapp",
+      user_id="user123",
+      session_id="sess789",
+      filename="data.bin",
+      artifact=part,
+      custom_metadata=custom_metadata,
+  )
+
+  loaded = await service.load_artifact(
+      app_name="myapp",
+      user_id="user123",
+      session_id="sess789",
+      filename="data.bin",
+  )
+  assert loaded is not None
+  assert loaded.inline_data is not None
+  assert loaded.inline_data.data == b"REAL BYTES"
+  assert loaded.text is None
+  assert loaded.file_data is None
+
+  fetched = await service.get_artifact_version(
+      app_name="myapp",
+      user_id="user123",
+      session_id="sess789",
+      filename="data.bin",
+  )
+  assert fetched is not None
+  assert fetched.custom_metadata == {"origin": "unit-test"}
+
+
+@pytest.mark.asyncio
 async def test_file_list_artifact_versions(tmp_path, artifact_service_factory):
   """FileArtifactService exposes canonical URIs and metadata for each version."""
   artifact_service = artifact_service_factory(ArtifactServiceType.FILE)

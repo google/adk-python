@@ -362,6 +362,9 @@ Tool definitions:
   }
 }
 
+Grounding metadata:
+No grounding metadata was provided.
+
 tool_calls:
 [
   {
@@ -414,6 +417,9 @@ Tool definitions:
   }
 }
 
+Grounding metadata:
+No grounding metadata was provided.
+
 tool_calls:
 [
   {
@@ -457,6 +463,68 @@ tool_outputs:
 ]
     """
     assert context.strip() == expected_context.strip()
+
+  def test_create_context_for_step_includes_grounding_metadata(
+      self,
+      hallucinations_metric: HallucinationsV1Evaluator,
+      create_context_data: tuple[AppDetails, list[InvocationEvent], Invocation],
+  ) -> None:
+    """Sentences grounded only via grounding_metadata must reach the judge."""
+    app_details, events, invocation = create_context_data
+    grounding_event = InvocationEvent(
+        author="root",
+        content=None,
+        grounding_metadata=genai_types.GroundingMetadata(
+            web_search_queries=["recent AI news"]
+        ),
+    )
+    context = hallucinations_metric._create_context_for_step(
+        app_details, invocation, events + [grounding_event]
+    )
+    grounding_section = context.split("Grounding metadata:\n")[1].split(
+        "\n\ntool_calls:"
+    )[0]
+    parsed = json.loads(grounding_section)
+    assert parsed["grounding_metadata"][0]["author"] == "root"
+    assert parsed["grounding_metadata"][0]["grounding_metadata"][
+        "web_search_queries"
+    ] == ["recent AI news"]
+
+  def test_get_steps_to_evaluate_includes_intermediate_grounding_metadata(
+      self, hallucinations_metric: HallucinationsV1Evaluator
+  ) -> None:
+    """Intermediate NL steps include their own event's grounding_metadata."""
+    invocation = Invocation(
+        user_content=genai_types.Content(
+            parts=[genai_types.Part(text="What's new in AI?")]
+        ),
+        intermediate_data=InvocationEvents(
+            invocation_events=[
+                InvocationEvent(
+                    author="search_agent",
+                    content=genai_types.Content(
+                        parts=[
+                            genai_types.Part(text="Grounded sub-agent step.")
+                        ]
+                    ),
+                    grounding_metadata=genai_types.GroundingMetadata(
+                        web_search_queries=["recent AI news"]
+                    ),
+                ),
+            ]
+        ),
+        final_response=genai_types.Content(
+            parts=[genai_types.Part(text="Final response.")]
+        ),
+    )
+    steps = hallucinations_metric._get_steps_to_evaluate(invocation)
+    assert len(steps) == 2
+    assert steps[0].nl_response == "Grounded sub-agent step."
+    assert "recent AI news" in steps[0].context
+    assert "Grounded sub-agent step." not in steps[0].context
+    assert steps[1].nl_response == "Final response."
+    assert "recent AI news" in steps[1].context
+    assert "Grounded sub-agent step." in steps[1].context
 
 
 @pytest.fixture
@@ -623,7 +691,10 @@ Tool definitions:
     ],
     "agent2": []
   }
-}"""
+}
+
+Grounding metadata:
+No grounding metadata was provided."""
     expected_context5 = R"""Developer instructions:
 root:
 Root agent instructions.
@@ -661,6 +732,9 @@ Tool definitions:
     "agent2": []
   }
 }
+
+Grounding metadata:
+No grounding metadata was provided.
 
 Hi, I am root.
 
@@ -738,6 +812,9 @@ Tool definitions:
     "agent2": []
   }
 }
+
+Grounding metadata:
+No grounding metadata was provided.
 
 Hi, I am root.
 
@@ -871,6 +948,9 @@ Tool definitions:
     "agent2": []
   }
 }
+
+Grounding metadata:
+No grounding metadata was provided.
 
 Hi, I am root.
 
@@ -1080,6 +1160,9 @@ Tool definitions:
   }
 }
 
+Grounding metadata:
+No grounding metadata was provided.
+
 tool_calls:
 [
   {
@@ -1124,6 +1207,9 @@ Tool definitions:
     ]
   }
 }
+
+Grounding metadata:
+No grounding metadata was provided.
 
 tool_calls:
 [
@@ -1242,6 +1328,9 @@ Tool definitions:
     ]
   }
 }
+
+Grounding metadata:
+No grounding metadata was provided.
 
 tool_calls:
 [
