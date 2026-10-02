@@ -135,11 +135,7 @@ _POLL_MAX_CONSECUTIVE_ERRORS = 5
 # google-genai release does not declare on its request model. That model
 # discards keys it has no field for while serializing, so these never reach the
 # API and sending them is indistinguishable from never setting them.
-_UNDECLARED_SAMPLING_PARAMS = (
-    'temperature',
-    'top_p',
-    'top_k',
-)
+_UNDECLARED_SAMPLING_PARAMS = ('top_k',)
 
 # Sampling knobs the interactions API itself rejects as unknown parameters.
 # No release of the client can carry these, so the caller has to stop setting
@@ -1334,6 +1330,10 @@ def build_generation_config(
     A dictionary containing generation configuration parameters.
   """
   generation_config: GenerationConfigParam = {}
+  if config.temperature is not None:
+    generation_config['temperature'] = config.temperature
+  if config.top_p is not None:
+    generation_config['top_p'] = config.top_p
   if config.max_output_tokens is not None:
     generation_config['max_output_tokens'] = config.max_output_tokens
   if config.stop_sequences:
