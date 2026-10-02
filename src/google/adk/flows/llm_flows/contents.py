@@ -20,8 +20,6 @@ This module re-exports all symbols for backward compatibility.
 
 from __future__ import annotations
 
-from ._fencing import _is_other_agent_reply as _is_other_agent_reply
-from ._fencing import _present_other_agent_message as _present_other_agent_message
 from .context._compaction import _process_compaction_events as _process_compaction_events
 from .context._compaction import _recover_compacted_function_calls as _recover_compacted_function_calls
 from .context._contents import _add_instructions_to_user_content as _add_instructions_to_user_content
@@ -46,6 +44,8 @@ from .context._contents import _should_include_event_in_context as _should_inclu
 from .context._contents import _SINGLE_TURN_NUDGE as _SINGLE_TURN_NUDGE
 from .context._contents import logger as logger
 from .context._contents import request_processor as request_processor
+from .context._fencing import _is_other_agent_reply as _is_other_agent_reply
+from .context._fencing import _present_other_agent_message as _present_other_agent_message
 from .tools._rearranger import _drop_orphaned_function_responses as _drop_orphaned_function_responses
 from .tools._rearranger import _rearrange_events_for_async_function_responses_in_history as _rearrange_events_for_async_function_responses_in_history
 from .tools._rearranger import _rearrange_events_for_latest_function_response as _rearrange_events_for_latest_function_response

@@ -16,7 +16,7 @@
 
 This module provides the DevServer class which extends ApiServer with development-only endpoints.
 All production endpoints are inherited from ApiServer.
-All dev-only endpoints (eval, debug, graph, test management) are added by DevServer.
+All dev-only endpoints (eval, debug, graph, test management, deploy) are added by DevServer.
 
 Use this for local development with `adk web`.
 For production deployments, use api_server.py instead.
@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+import importlib.util
 import json
 import logging
 import os
@@ -78,6 +79,7 @@ from ..evaluation.eval_result import EvalSetResult
 from ..evaluation.eval_set import EvalSet
 from ..utils._telemetry_config import read_telemetry_consent
 from ..utils._telemetry_config import write_telemetry_consent
+from ._dev_deploy import register_dev_deploy_endpoints
 from .api_server import ApiServer
 
 NESTED_APP_SEPARATOR = "."
@@ -250,25 +252,38 @@ def _is_adk_built_in(reference: str) -> bool:
   return False
 
 
-def _app_name_shadows_module(app_name: str) -> bool:
-  """Whether the app name collides with a module that can be imported."""
-  # "google" is a namespace package rather than a standard library module, so
-  # it has to be named explicitly.
-  return (
-      app_name in sys.builtin_module_names
-      or app_name in sys.stdlib_module_names
-      or app_name == "google"
+def _app_name_shadows_module(app_name: str, app_root: Path) -> bool:
+  """Whether importing the app name would load code from outside the app."""
+  # find_spec imports a dotted name's parents, so only look up the first part.
+  try:
+    spec = importlib.util.find_spec(app_name.partition(".")[0])
+  except ValueError:
+    return True
+  if spec is None:
+    return False
+  locations = list(spec.submodule_search_locations or [])
+  if spec.has_location and spec.origin is not None:
+    locations.append(spec.origin)
+  return not locations or not all(
+      Path(location).resolve().is_relative_to(app_root)
+      for location in locations
   )
 
 
 def _check_code_reference(
-    reference: str, *, app_name: str, filename: str, field_name: str
+    reference: str,
+    *,
+    app_name: str,
+    app_root: Path,
+    filename: str,
+    field_name: str,
 ) -> None:
   """Checks that a code reference stays inside the app being edited.
 
   Args:
     reference: The name found in the uploaded document.
     app_name: The app the document belongs to.
+    app_root: The app's resolved directory.
     filename: The uploaded path, used in the error message.
     field_name: The config field the reference came from.
 
@@ -286,7 +301,7 @@ def _check_code_reference(
         f" '{field_name}' field may only reference code under"
         f" '{app_name}' or an ADK built-in."
     )
-  if _app_name_shadows_module(app_name):
+  if _app_name_shadows_module(app_name, app_root):
     raise ValueError(
         f"Blocked code reference {reference!r} in {filename!r}. The app name"
         f" {app_name!r} shadows an importable Python module, so a reference to"
@@ -425,6 +440,7 @@ class DevServer(ApiServer):
   """
 
   _allow_special_agents: bool = True
+  _serves_debug_trace_endpoints: bool = True
 
   def _get_agent_dir(self, app_name: str) -> str:
     """Resolves the agent directory and validates the app name to prevent path traversal."""
@@ -564,6 +580,7 @@ class DevServer(ApiServer):
         content: bytes, *, filename: str, app_name: str
     ) -> None:
       """Raise if the YAML would let the loader run code outside the app."""
+      app_root = _get_app_root(app_name)
       try:
         docs = list(yaml.safe_load_all(content))
       except yaml.YAMLError as exc:
@@ -583,6 +600,7 @@ class DevServer(ApiServer):
                 _check_code_reference(
                     reference,
                     app_name=app_name,
+                    app_root=app_root,
                     filename=filename,
                     field_name=key,
                 )
@@ -1431,9 +1449,26 @@ class DevServer(ApiServer):
 
         # Right now we ignore the app_name as eval metrics are not tied to the
         # app_name, but they could be moving forward.
-        metrics_info = (
-            DEFAULT_METRIC_EVALUATOR_REGISTRY.get_registered_metrics()
-        )
+        # This endpoint feeds a surface that asks the user to pick metrics and
+        # set a threshold for each. Metrics that need no threshold are always
+        # on and have nothing for the user to choose, and they carry no value
+        # interval for a threshold control to bound itself by.
+        #
+        # Hiding them is a compatibility shim for the Dev UI bundle vendored in
+        # cli/browser, which dereferences `metricValueInfo.interval`
+        # unconditionally while building the threshold form and so takes the
+        # whole form down on a metric that has none.
+        # TODO: Drop this filter once that
+        # bundle understands `requires_threshold=False` and renders those
+        # metrics as an always-on, non-selectable section instead. The bundle
+        # ships from this repo, so its refresh and this removal land together.
+        metrics_info = [
+            metric_info
+            for metric_info in (
+                DEFAULT_METRIC_EVALUATOR_REGISTRY.get_registered_metrics()
+            )
+            if metric_info.requires_threshold
+        ]
         return ListMetricsInfoResponse(metrics_info=metrics_info)
       except ModuleNotFoundError as e:
         logger.exception("%s\n%s", MISSING_EVAL_DEPENDENCIES_MESSAGE, e)
@@ -1523,6 +1558,8 @@ class DevServer(ApiServer):
         return GetEventGraphResult(dot_src=dot_graph.source)
       else:
         return {}
+
+    register_dev_deploy_endpoints(app, get_agent_dir=self._get_agent_dir)
 
   def _navigate_to_node(self, app_info: dict, node_path: str) -> dict | None:
     """Navigate to a specific node in the agent hierarchy.

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from google.adk.sessions import database_session_service
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.migration import _schema_check_utils
 from google.adk.sessions.schemas import v0
@@ -23,8 +24,10 @@ from sqlalchemy import text
 from sqlalchemy.dialects import mysql
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects import sqlite
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.schema import CreateIndex
+from sqlalchemy.schema import Index
 
 
 async def create_v0_db(db_path):
@@ -302,7 +305,7 @@ async def test_prepare_tables_adds_new_events_index_to_existing_db(tmp_path):
   await engine.dispose()
 
   index_names = {idx['name'] for idx in event_indexes}
-  assert 'idx_events_app_user_session_ts' not in index_names
+  assert 'idx_events_app_user_session_ts' in index_names
   assert 'idx_events_app_user_session_ts_id' in index_names
   composite_idx = next(
       idx
@@ -479,3 +482,72 @@ def test_get_db_schema_version_from_connection_uses_open_connection(tmp_path):
     engine.dispose()
 
   assert version == _schema_check_utils.SCHEMA_VERSION_0_PICKLE
+
+
+def test_ensure_schema_indexes_exist_tolerates_concurrent_index_creation(
+    tmp_path, monkeypatch
+):
+  """If another container creates the index between checkfirst and DDL, it succeeds."""
+  db_path = tmp_path / 'concurrent_index.db'
+  engine = create_engine(f'sqlite:///{db_path}')
+  try:
+    with engine.begin() as connection:
+      v1.Base.metadata.create_all(bind=connection)
+
+    original_create = Index.create
+    raised_once = False
+
+    def racing_create(self, bind=None, checkfirst=False):
+      nonlocal raised_once
+      if not raised_once and self.name == 'idx_events_app_user_session_ts_id':
+        raised_once = True
+        assert bind is not None and bind.in_nested_transaction()
+        return original_create(self, bind=bind, checkfirst=False)
+      return original_create(self, bind=bind, checkfirst=checkfirst)
+
+    monkeypatch.setattr(Index, 'create', racing_create)
+
+    with engine.begin() as connection:
+      database_session_service._ensure_schema_indexes_exist(
+          connection, v1.Base.metadata
+      )
+    assert raised_once
+  finally:
+    engine.dispose()
+
+
+def test_ensure_schema_indexes_exist_reraises_when_index_missing(
+    tmp_path, monkeypatch
+):
+  """If index DDL fails and the index is still missing, the error is re-raised."""
+  db_path = tmp_path / 'failed_index.db'
+  engine = create_engine(f'sqlite:///{db_path}')
+  try:
+    with engine.begin() as connection:
+      v1.Base.metadata.create_all(bind=connection)
+      connection.execute(text('DROP INDEX idx_events_app_user_session_ts_id'))
+
+    original_create = Index.create
+
+    def failing_create(self, bind=None, checkfirst=False):
+      if self.name == 'idx_events_app_user_session_ts_id':
+        assert bind is not None and bind.in_nested_transaction()
+        bind.execute(
+            text(
+                'CREATE INDEX idx_events_app_user_session_ts_id '
+                'ON events (nonexistent_column)'
+            )
+        )
+      return original_create(self, bind=bind, checkfirst=checkfirst)
+
+    monkeypatch.setattr(Index, 'create', failing_create)
+
+    with (
+        pytest.raises(OperationalError, match='nonexistent_column'),
+        engine.begin() as connection,
+    ):
+      database_session_service._ensure_schema_indexes_exist(
+          connection, v1.Base.metadata
+      )
+  finally:
+    engine.dispose()

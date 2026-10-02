@@ -21,6 +21,7 @@ from google.adk.agents.base_agent import BaseAgent
 from google.adk.cli.adk_web_server import AdkWebServer
 from google.adk.events.event import Event
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.genai import types as genai_types
 import pytest
 from starlette.websockets import WebSocketDisconnect
 
@@ -61,7 +62,7 @@ class _CapturingRunner:
     yield Event(author="runner")
 
 
-def test_run_live_applies_run_config_query_options():
+def test_run_live_applies_server_and_query_run_config_options():
   session_service = InMemorySessionService()
   asyncio.run(
       session_service.create_session(
@@ -82,6 +83,8 @@ def test_run_live_applies_run_config_query_options():
       eval_sets_manager=types.SimpleNamespace(),
       eval_set_results_manager=types.SimpleNamespace(),
       agents_dir=".",
+      avatar_config=genai_types.AvatarConfig(avatar_name="Kai"),
+      max_llm_calls=37,
   )
 
   async def _get_runner_async(_self, _app_name: str):
@@ -122,6 +125,143 @@ def test_run_live_applies_run_config_query_options():
   assert run_config.session_resumption.transparent is True
   assert run_config.save_live_blob is True
   assert run_config.explicit_vad_signal is True
+  # No VIDEO modality was requested, so the server avatar config is skipped.
+  assert run_config.avatar_config is None
+  assert run_config.max_llm_calls == 37
+
+
+@pytest.mark.parametrize(
+    ("modalities_query", "expect_avatar"),
+    [
+        ("&modalities=VIDEO", True),
+        ("&modalities=AUDIO&modalities=VIDEO", True),
+        ("&modalities=AUDIO", False),
+        ("&modalities=TEXT", False),
+        ("", False),
+    ],
+)
+def test_run_live_applies_avatar_config_only_for_video(
+    modalities_query: str, expect_avatar: bool
+):
+  """The server avatar config is sent only when VIDEO output is requested."""
+  session_service = InMemorySessionService()
+  asyncio.run(
+      session_service.create_session(
+          app_name="test_app",
+          user_id="user",
+          session_id="session",
+          state={},
+      )
+  )
+
+  runner = _CapturingRunner()
+  adk_web_server = AdkWebServer(
+      agent_loader=_DummyAgentLoader(),
+      session_service=session_service,
+      memory_service=types.SimpleNamespace(),
+      artifact_service=types.SimpleNamespace(),
+      credential_service=types.SimpleNamespace(),
+      eval_sets_manager=types.SimpleNamespace(),
+      eval_set_results_manager=types.SimpleNamespace(),
+      agents_dir=".",
+      avatar_config=genai_types.AvatarConfig(avatar_name="Custom"),
+  )
+
+  async def _get_runner_async(_self, _app_name: str):
+    return runner
+
+  adk_web_server.get_runner_async = _get_runner_async.__get__(adk_web_server)  # pytype: disable=attribute-error
+
+  fast_api_app = adk_web_server.get_fast_api_app(
+      setup_observer=lambda _observer, _server: None,
+      tear_down_observer=lambda _observer, _server: None,
+  )
+
+  client = TestClient(fast_api_app)
+  url = (
+      "/run_live"
+      "?app_name=test_app"
+      "&user_id=user"
+      "&session_id=session"
+      f"{modalities_query}"
+  )
+
+  with client.websocket_connect(url) as ws:
+    _ = ws.receive_text()
+
+  run_config = runner.captured_run_config
+  assert run_config is not None
+  if expect_avatar:
+    assert run_config.avatar_config is not None
+    assert run_config.avatar_config.avatar_name == "Custom"
+  else:
+    assert run_config.avatar_config is None
+
+
+@pytest.mark.parametrize(
+    ("modalities_query", "expected_avatar_name"),
+    [
+        ("&modalities=VIDEO", "Kai"),
+        ("&modalities=AUDIO&modalities=VIDEO", "Kai"),
+        ("&modalities=AUDIO", None),
+        ("", None),
+    ],
+)
+def test_run_live_defaults_avatar_config_for_video(
+    modalities_query: str, expected_avatar_name: str | None
+):
+  """VIDEO sessions get a default avatar when the server has none set."""
+  session_service = InMemorySessionService()
+  asyncio.run(
+      session_service.create_session(
+          app_name="test_app",
+          user_id="user",
+          session_id="session",
+          state={},
+      )
+  )
+
+  runner = _CapturingRunner()
+  adk_web_server = AdkWebServer(
+      agent_loader=_DummyAgentLoader(),
+      session_service=session_service,
+      memory_service=types.SimpleNamespace(),
+      artifact_service=types.SimpleNamespace(),
+      credential_service=types.SimpleNamespace(),
+      eval_sets_manager=types.SimpleNamespace(),
+      eval_set_results_manager=types.SimpleNamespace(),
+      agents_dir=".",
+  )
+
+  async def _get_runner_async(unused_app_name: str):
+    return runner
+
+  setattr(adk_web_server, "get_runner_async", _get_runner_async)
+
+  fast_api_app = adk_web_server.get_fast_api_app(
+      setup_observer=lambda _observer, _server: None,
+      tear_down_observer=lambda _observer, _server: None,
+  )
+
+  client = TestClient(fast_api_app)
+  url = (
+      "/run_live"
+      "?app_name=test_app"
+      "&user_id=user"
+      "&session_id=session"
+      f"{modalities_query}"
+  )
+
+  with client.websocket_connect(url) as ws:
+    _ = ws.receive_text()
+
+  run_config = runner.captured_run_config
+  assert run_config is not None
+  if expected_avatar_name is None:
+    assert run_config.avatar_config is None
+  else:
+    assert run_config.avatar_config is not None
+    assert run_config.avatar_config.avatar_name == expected_avatar_name
 
 
 @pytest.mark.parametrize(

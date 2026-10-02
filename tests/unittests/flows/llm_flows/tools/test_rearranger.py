@@ -19,18 +19,25 @@ from __future__ import annotations
 from typing import Any
 
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
+from google.adk.events.event_actions import EventCompaction
 from google.adk.flows.llm_flows.tools import _rearranger as _tool_call_rearranger
 from google.adk.flows.llm_flows.tools._rearranger import drop_orphaned_function_calls
 from google.adk.flows.llm_flows.tools._rearranger import drop_orphaned_function_responses
 from google.adk.flows.llm_flows.tools._rearranger import merge_function_response_events
 from google.adk.flows.llm_flows.tools._rearranger import rearrange_events_for_async_function_responses_in_history
 from google.adk.flows.llm_flows.tools._rearranger import rearrange_events_for_latest_function_response
+from google.adk.models.anthropic_llm import content_to_message_param
+from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.genai import types
 import pytest
 
 
-def _call_event(call_id: str, name: str = "tool") -> Event:
+def _call_event(
+    call_id: str, name: str = "tool", invocation_id: str = "inv1"
+) -> Event:
   return Event(
+      invocation_id=invocation_id,
       author="test_agent",
       content=types.Content(
           role="model",
@@ -46,11 +53,16 @@ def _call_event(call_id: str, name: str = "tool") -> Event:
 
 
 def _resp_event(
-    call_id: str | None, name: str = "tool", result: Any = "ok"
+    call_id: str | None,
+    name: str = "tool",
+    result: Any = "ok",
+    invocation_id: str = "inv1",
+    author: str = "test_agent",
 ) -> Event:
   resp = result if isinstance(result, dict) else {"result": result}
   return Event(
-      author="user",
+      invocation_id=invocation_id,
+      author=author,
       content=types.Content(
           role="user",
           parts=[
@@ -64,8 +76,16 @@ def _resp_event(
   )
 
 
+def _model_text_event(text: str, invocation_id: str = "inv1") -> Event:
+  return Event(
+      invocation_id=invocation_id,
+      author="test_agent",
+      content=types.ModelContent(text),
+  )
+
+
 def test_drop_orphaned_responses_prunes_unpaired_and_preserves_valid():
-  """Unpaired function response IDs are pruned while matched and ID-less responses survive."""
+  """Unpaired and ID-less function responses are pruned while matched responses survive."""
   call = _call_event("c1", "lookup")
   valid_resp = _resp_event("c1", "lookup", "found")
   no_id_resp = _resp_event(None, "legacy", "ok")
@@ -74,7 +94,7 @@ def test_drop_orphaned_responses_prunes_unpaired_and_preserves_valid():
 
   result = drop_orphaned_function_responses(events)
 
-  assert result == [call, valid_resp, no_id_resp]
+  assert result == [call, valid_resp]
 
 
 def test_drop_orphaned_responses_removes_event_when_all_parts_orphaned():
@@ -221,8 +241,6 @@ def test_drop_orphaned_calls_prunes_unanswered_in_parallel_tool_calls():
 
 def test_drop_orphaned_calls_prevents_unclosed_tool_use_in_anthropic_conversion():
   """Pruned events converted for Anthropic contain no unclosed tool_use blocks."""
-  from google.adk.models.anthropic_llm import content_to_message_param
-
   orphan_call = _call_event("fc_interrupted", "slow_tool")
   user_turn = Event(
       author="user",
@@ -371,15 +389,189 @@ def test_rearrange_latest_response_moves_to_call_and_prunes_intervening():
   }
 
 
-def test_rearrange_latest_response_missing_matching_call_raises_value_error():
-  """A trailing response with no matching preceding call raises ValueError."""
-  events = [
-      Event(author="user", content=types.UserContent("hello")),
-      _resp_event("missing_call_id"),
-  ]
+@pytest.mark.parametrize(
+    "resp_event",
+    [
+        _resp_event("missing_id"),
+        _resp_event(None, "missing_tool"),
+        _resp_event("", "missing_tool"),
+    ],
+    ids=["unmatched-id", "idless", "empty-id"],
+)
+def test_rearrange_latest_response_drops_orphans(
+    *,
+    resp_event: Event,
+) -> None:
+  """Trailing FR with unpairable, None, or empty id is dropped."""
+  user_msg = Event(author="user", content=types.UserContent("hello"))
+  result = rearrange_events_for_latest_function_response([user_msg, resp_event])
+  assert result == [user_msg]
 
-  with pytest.raises(ValueError, match="No function call event found"):
-    rearrange_events_for_latest_function_response(events)
+
+def test_rearrange_latest_response_drops_orphan_part_preserves_valid() -> None:
+  """An unmatched FR part is dropped while a matched sibling part is kept."""
+  call = _call_event("c1", "tool_a")
+  trailing = Event(
+      author="user",
+      content=types.UserContent([
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id="c1", name="tool_a", response={"ok": True}
+              )
+          ),
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id="extra", name="tool_b", response={"ok": True}
+              )
+          ),
+      ]),
+  )
+  result = rearrange_events_for_latest_function_response([call, trailing])
+  assert len(result) == 2
+  assert [r.id for r in result[1].get_function_responses()] == ["c1"]
+
+
+def test_rearrange_latest_response_preserves_non_fr_parts_when_orphan_dropped() -> (
+    None
+):
+  """Non-FR parts in the trailing event are preserved when an orphan is dropped."""
+  user_msg = Event(author="user", content=types.UserContent("hello"))
+  trailing = Event(
+      author="user",
+      content=types.UserContent([
+          types.Part(text="keep this text"),
+          types.Part(
+              function_response=types.FunctionResponse(
+                  name="ghost", response={"err": 1}
+              )
+          ),
+      ]),
+  )
+  result = rearrange_events_for_latest_function_response([user_msg, trailing])
+  assert len(result) == 2
+  assert result[0] == user_msg
+  assert result[1].content is not None and result[1].content.parts is not None
+  assert result[1].content.parts[0].text == "keep this text"
+
+
+def test_rearrange_latest_response_splits_across_calls() -> None:
+  """Trailing responses for multiple calls split and pair per owning call."""
+  call_slow = _call_event("c_slow", "slow_tool")
+  user_wait = Event(author="user", content=types.UserContent("waiting..."))
+  call_fast = _call_event("c_fast", "fast_tool")
+  trailing = Event(
+      author="user",
+      content=types.UserContent([
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id="c_fast", name="fast_tool", response={"fast": True}
+              )
+          ),
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id="c_slow", name="slow_tool", response={"slow": True}
+              )
+          ),
+      ]),
+  )
+  events = [call_slow, user_wait, call_fast, trailing]
+  result = rearrange_events_for_latest_function_response(events)
+
+  assert len(result) == 5
+  assert result[0] == call_slow
+  assert [r.name for r in result[1].get_function_responses()] == ["slow_tool"]
+  assert result[2] == user_wait
+  assert result[3] == call_fast
+  assert [r.name for r in result[4].get_function_responses()] == ["fast_tool"]
+
+
+def test_rearrange_latest_response_merges_intermediate_for_earlier_call() -> (
+    None
+):
+  """Trailing response for an earlier call merges with and updates its intermediate response."""
+  call_slow = _call_event("c_slow", "slow_tool")
+  progress_slow = _resp_event("c_slow", "slow_tool", {"progress": "50%"})
+  call_fast = _call_event("c_fast", "fast_tool")
+  trailing = Event(
+      author="user",
+      content=types.UserContent([
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id="c_fast", name="fast_tool", response={"fast": True}
+              )
+          ),
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id="c_slow",
+                  name="slow_tool",
+                  response={"progress": "100%", "result": "final"},
+              )
+          ),
+      ]),
+  )
+  events = [call_slow, progress_slow, call_fast, trailing]
+  result = rearrange_events_for_latest_function_response(events)
+
+  assert len(result) == 4
+  assert result[0] == call_slow
+  assert result[1].get_function_responses()[0].response == {
+      "progress": "100%",
+      "result": "final",
+  }
+  assert result[2] == call_fast
+  assert [r.name for r in result[3].get_function_responses()] == ["fast_tool"]
+
+
+def test_rearrange_latest_response_splits_shared_intermediate_progress_per_call() -> (
+    None
+):
+  """A progress event covering two calls only merges each call's own part into its split."""
+  call_slow = _call_event("c_slow", "slow_tool")
+  call_fast = _call_event("c_fast", "fast_tool")
+  progress_both = Event(
+      author="user",
+      content=types.UserContent([
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id="c_slow", name="slow_tool", response={"progress": "50%"}
+              )
+          ),
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id="c_fast", name="fast_tool", response={"progress": "50%"}
+              )
+          ),
+      ]),
+  )
+  trailing = Event(
+      author="user",
+      content=types.UserContent([
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id="c_fast",
+                  name="fast_tool",
+                  response={"progress": "100%", "fast": True},
+              )
+          ),
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id="c_slow",
+                  name="slow_tool",
+                  response={"progress": "100%", "result": "final"},
+              )
+          ),
+      ]),
+  )
+  events = [call_slow, call_fast, progress_both, trailing]
+  result = rearrange_events_for_latest_function_response(events)
+
+  assert len(result) == 4
+  assert [(r.id, r.response) for r in result[1].get_function_responses()] == [
+      ("c_slow", {"progress": "100%", "result": "final"})
+  ]
+  assert [(r.id, r.response) for r in result[3].get_function_responses()] == [
+      ("c_fast", {"progress": "100%", "fast": True})
+  ]
 
 
 def test_rearrange_history_reused_id_across_tools_pairs_correctly():
@@ -490,3 +682,482 @@ def test_backward_compatibility_aliases_exported():
       _tool_call_rearranger._rearrange_events_for_latest_function_response
       is rearrange_events_for_latest_function_response
   )
+
+
+def test_rearrange_latest_response_merges_intermediate_response_after_intervening_call() -> (
+    None
+):
+  """Intermediate response for an earlier call merges when positioned after a later call."""
+  call_parallel = Event(
+      author="test_agent",
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="c1", name="tool_1", args={}
+                  )
+              ),
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="c2", name="tool_2", args={}
+                  )
+              ),
+          ],
+      ),
+  )
+  call_other = _call_event("c3", "tool_3")
+  resp_c1 = _resp_event("c1", "tool_1", {"r1": True})
+  trailing = Event(
+      author="user",
+      content=types.UserContent([
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id="c2", name="tool_2", response={"r2": True}
+              )
+          ),
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id="c3", name="tool_3", response={"r3": True}
+              )
+          ),
+      ]),
+  )
+  events = [call_parallel, call_other, resp_c1, trailing]
+  result = rearrange_events_for_latest_function_response(events)
+
+  assert len(result) == 4
+  assert result[0] == call_parallel
+  resp_ids = [r.id for r in result[1].get_function_responses()]
+  assert "c1" in resp_ids
+  assert "c2" in resp_ids
+
+
+def test_rearrange_latest_response_reused_id_preserves_earlier_settled_response() -> (
+    None
+):
+  """A reused call ID with intervening turn preserves the earlier call's settled response."""
+  call1 = _call_event("call_1", "tool_a")
+  resp1 = _resp_event("call_1", "tool_a", "first")
+  call2 = _call_event("call_1", "tool_b")
+  intervening = Event(author="user", content=types.UserContent("intervening"))
+  resp2 = _resp_event("call_1", "tool_b", "second")
+  events = [call1, resp1, call2, intervening, resp2]
+
+  result = rearrange_events_for_latest_function_response(events)
+
+  assert len(result) == 4
+  assert result[0] == call1
+  assert result[1] == resp1
+  assert result[2] == call2
+  assert result[3].get_function_responses()[0].response == {"result": "second"}
+
+
+def test_drop_orphaned_responses_preserves_idless_response_for_idless_call() -> (
+    None
+):
+  """ID-less function responses are preserved when preceded by a matching call."""
+  call = Event(
+      author="test_agent",
+      content=types.Content(
+          role="model",
+          parts=[types.Part(function_call=types.FunctionCall(name="legacy"))],
+      ),
+  )
+  resp = Event(
+      author="user",
+      content=types.UserContent([
+          types.Part(
+              function_response=types.FunctionResponse(
+                  name="legacy", response={"found": True}
+              )
+          )
+      ]),
+  )
+  events = [call, resp]
+
+  result = drop_orphaned_function_responses(events)
+
+  assert result == [call, resp]
+
+
+def test_find_owning_call_event_index_does_not_match_different_idless_tools() -> (
+    None
+):
+  """An ID-less response must not match an ID-less call for a different tool."""
+  call = Event(
+      author="test_agent",
+      content=types.Content(
+          role="model",
+          parts=[types.Part(function_call=types.FunctionCall(name="weather"))],
+      ),
+  )
+  resp = types.FunctionResponse(name="calculator", response={"and": 42})
+  assert _tool_call_rearranger._find_owning_call_event_index([call], resp) == -1
+
+
+def test_rearrange_latest_response_merges_intermediate_for_earlier_idless_call() -> (
+    None
+):
+  """Trailing response for an earlier ID-less call merges its intermediate response."""
+  call_slow = Event(
+      author="test_agent",
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(function_call=types.FunctionCall(name="slow_tool"))
+          ],
+      ),
+  )
+  progress_slow = Event(
+      author="user",
+      content=types.UserContent([
+          types.Part(
+              function_response=types.FunctionResponse(
+                  name="slow_tool", response={"progress": "50%"}
+              )
+          )
+      ]),
+  )
+  call_fast = Event(
+      author="test_agent",
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(function_call=types.FunctionCall(name="fast_tool"))
+          ],
+      ),
+  )
+  trailing = Event(
+      author="user",
+      content=types.UserContent([
+          types.Part(
+              function_response=types.FunctionResponse(
+                  name="fast_tool", response={"fast": True}
+              )
+          ),
+          types.Part(
+              function_response=types.FunctionResponse(
+                  name="slow_tool",
+                  response={"progress": "100%", "result": "final"},
+              )
+          ),
+      ]),
+  )
+  events = [call_slow, progress_slow, call_fast, trailing]
+  result = rearrange_events_for_latest_function_response(events)
+
+  assert len(result) == 4
+  assert result[0] == call_slow
+  assert result[1].get_function_responses()[0].response == {
+      "progress": "100%",
+      "result": "final",
+  }
+  assert result[2] == call_fast
+  assert [r.name for r in result[3].get_function_responses()] == ["fast_tool"]
+
+
+def test_rearrange_latest_response_preserves_call_event_carrying_consumed_response() -> (
+    None
+):
+  """Call event with a consumed response keeps its call and response."""
+  call_slow = _call_event("c_slow", "slow_tool")
+  call_fast_with_progress = Event(
+      author="test_agent",
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      id="c_slow",
+                      name="slow_tool",
+                      response={"progress": "50%"},
+                  )
+              ),
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="c_fast", name="fast_tool", args={}
+                  )
+              ),
+          ],
+      ),
+  )
+  trailing = Event(
+      author="user",
+      content=types.UserContent([
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id="c_fast", name="fast_tool", response={"fast": True}
+              )
+          ),
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id="c_slow",
+                  name="slow_tool",
+                  response={"progress": "100%", "result": "final"},
+              )
+          ),
+      ]),
+  )
+  events = [call_slow, call_fast_with_progress, trailing]
+  result = rearrange_events_for_latest_function_response(events)
+
+  assert len(result) == 4
+  assert result[0] == call_slow
+  assert result[1].get_function_calls() == []
+  assert [(r.id, r.response) for r in result[1].get_function_responses()] == [
+      ("c_slow", {"progress": "100%", "result": "final"})
+  ]
+  assert [c.id for c in result[2].get_function_calls()] == ["c_fast"]
+  assert result[2].get_function_responses() == []
+  assert [(r.id, r.response) for r in result[3].get_function_responses()] == [
+      ("c_fast", {"fast": True})
+  ]
+
+
+def test_rearrange_history_drops_stale_model_reply():
+  """A model reply to a superseded tool update must not remain in history."""
+  events = [
+      _call_event("call_1", "watch", invocation_id="inv1"),
+      _resp_event("call_1", "watch", "progress", invocation_id="inv1"),
+      _model_text_event("Still working.", invocation_id="inv1"),
+      _resp_event("call_1", "watch", "done", invocation_id="inv1"),
+      _model_text_event("Finished.", invocation_id="inv1"),
+      Event(
+          invocation_id="inv2",
+          author="user",
+          content=types.UserContent("What happened?"),
+      ),
+  ]
+
+  result = rearrange_events_for_async_function_responses_in_history(events)
+
+  assert len(result) == 4
+  assert result[0].get_function_calls()[0].name == "watch"
+  assert result[1].get_function_responses()[0].response == {"result": "done"}
+  assert result[2].content.parts[0].text == "Finished."
+  assert result[3].content.parts[0].text == "What happened?"
+
+
+def test_rearrange_history_preserves_reply_across_different_invocations():
+  """A model reply to a tool response must be preserved when the next response is in a new invocation."""
+  events = [
+      _call_event("call_1", "watch", invocation_id="inv1"),
+      _resp_event("call_1", "watch", "progress", invocation_id="inv1"),
+      _model_text_event("Still working.", invocation_id="inv1"),
+      _resp_event("call_1", "watch", "done", invocation_id="inv2"),
+      _model_text_event("Finished.", invocation_id="inv2"),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent("What happened?"),
+      ),
+  ]
+
+  result = rearrange_events_for_async_function_responses_in_history(events)
+
+  assert len(result) == 5
+  assert result[0].get_function_calls()[0].name == "watch"
+  assert result[1].get_function_responses()[0].response == {"result": "done"}
+  assert result[2].content.parts[0].text == "Still working."
+  assert result[3].content.parts[0].text == "Finished."
+  assert result[4].content.parts[0].text == "What happened?"
+
+
+def test_rearrange_history_parallel_calls_positional_pruning():
+  """A model reply positioned directly after a superseded response is dropped.
+
+  The pruning heuristic is positional and cannot attribute text replies to
+  specific parallel calls, so a reply about a non-superseded call that appears
+  between another call's superseded and final responses is dropped.
+  """
+  events = [
+      _call_event("call_1", "tool_a"),
+      _call_event("call_2", "tool_b"),
+      _resp_event("call_1", "tool_a", "progress_a"),
+      _model_text_event("tool_b finished: here you go"),
+      _resp_event("call_1", "tool_a", "done_a"),
+      _model_text_event("All finished."),
+  ]
+
+  result = rearrange_events_for_async_function_responses_in_history(events)
+
+  assert len(result) == 4
+  assert result[0].get_function_calls()[0].name == "tool_a"
+  assert result[1].get_function_responses()[0].response == {"result": "done_a"}
+  assert result[2].get_function_calls()[0].name == "tool_b"
+  assert result[3].content.parts[0].text == "All finished."
+
+
+def test_rearrange_history_preserves_reply_when_user_intervenes():
+  """A model question answered by the user must survive rearrangement."""
+  events = [
+      _call_event("call_1", "watch", invocation_id="inv1"),
+      _resp_event("call_1", "watch", "progress", invocation_id="inv1"),
+      _model_text_event("halfway, continue?", invocation_id="inv1"),
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("yes"),
+      ),
+      _resp_event("call_1", "watch", "done", invocation_id="inv1"),
+      _model_text_event("all done", invocation_id="inv1"),
+  ]
+
+  result = rearrange_events_for_async_function_responses_in_history(events)
+
+  assert len(result) == 5
+  assert result[0].get_function_calls()[0].name == "watch"
+  assert result[1].get_function_responses()[0].response == {"result": "done"}
+  assert result[2].content.parts[0].text == "halfway, continue?"
+  assert result[3].content.parts[0].text == "yes"
+  assert result[4].content.parts[0].text == "all done"
+
+
+def test_rearrange_history_preserves_compaction_summary():
+  """A materialized compaction summary must not be dropped as a stale reply."""
+  compaction_event = Event(
+      invocation_id="inv1",
+      author="test_agent",
+      content=types.ModelContent("Summary of earlier conversation"),
+      actions=EventActions(
+          compaction=EventCompaction(
+              start_timestamp=1.0,
+              end_timestamp=2.0,
+              compacted_content=types.ModelContent(
+                  "Summary of earlier conversation"
+              ),
+          )
+      ),
+  )
+  events = [
+      _call_event("call_1", "watch", invocation_id="inv1"),
+      _resp_event("call_1", "watch", "progress", invocation_id="inv1"),
+      compaction_event,
+      _resp_event("call_1", "watch", "done", invocation_id="inv1"),
+      _model_text_event("Finished.", invocation_id="inv1"),
+  ]
+
+  result = rearrange_events_for_async_function_responses_in_history(events)
+
+  assert len(result) == 4
+  assert result[0].get_function_calls()[0].name == "watch"
+  assert result[1].get_function_responses()[0].response == {"result": "done"}
+  assert result[2] is compaction_event
+  assert result[3].content.parts[0].text == "Finished."
+
+
+def test_rearrange_history_preserves_pending_approval_reply():
+  """A pending approval model reply is preserved when resumed with same invocation id."""
+  events = [
+      _call_event("call_1", "transfer", invocation_id="inv1"),
+      _resp_event(
+          "call_1",
+          "transfer",
+          {"status": "pending_approval"},
+          invocation_id="inv1",
+          author="test_agent",
+      ),
+      _model_text_event(
+          "Pending approval for transfer.",
+          invocation_id="inv1",
+      ),
+      _resp_event(
+          "call_1",
+          "transfer",
+          {"result": "transferred"},
+          invocation_id="inv1",
+          author="user",
+      ),
+      _model_text_event("Transfer completed.", invocation_id="inv1"),
+  ]
+
+  result = rearrange_events_for_async_function_responses_in_history(events)
+
+  assert len(result) == 4
+  assert result[0].get_function_calls()[0].name == "transfer"
+  assert result[1].get_function_responses()[0].response == {
+      "result": "transferred"
+  }
+  assert result[2].content.parts[0].text == "Pending approval for transfer."
+  assert result[3].content.parts[0].text == "Transfer completed."
+
+
+def test_rearrange_history_preserves_tool_confirmation_reply():
+  """A model confirmation request is preserved when tool requested confirmation."""
+  confirmation_event = _resp_event(
+      "call_1",
+      "delete_file",
+      {"result": "Confirmation required."},
+      invocation_id="inv1",
+      author="test_agent",
+  )
+  confirmation_event.actions = EventActions(
+      requested_tool_confirmations={
+          "call_1": ToolConfirmation(hint="Confirm delete?")
+      }
+  )
+
+  events = [
+      _call_event("call_1", "delete_file", invocation_id="inv1"),
+      confirmation_event,
+      _model_text_event(
+          "Are you sure you want to delete the file?",
+          invocation_id="inv1",
+      ),
+      _resp_event(
+          "call_1",
+          "delete_file",
+          {"result": "deleted"},
+          invocation_id="inv1",
+          author="test_agent",
+      ),
+      _model_text_event("File deleted.", invocation_id="inv1"),
+  ]
+
+  result = rearrange_events_for_async_function_responses_in_history(events)
+
+  assert len(result) == 4
+  assert result[0].get_function_calls()[0].name == "delete_file"
+  assert result[1].get_function_responses()[0].response == {"result": "deleted"}
+  assert (
+      result[2].content.parts[0].text
+      == "Are you sure you want to delete the file?"
+  )
+  assert result[3].content.parts[0].text == "File deleted."
+
+
+def test_rearrange_history_prunes_stale_reply_between_user_authored_tool_updates():
+  """Intermediate model replies between user-authored tool responses must be pruned."""
+  events = [
+      _call_event("call_1", "client_tool", invocation_id="inv1"),
+      _resp_event(
+          "call_1",
+          "client_tool",
+          "progress",
+          invocation_id="inv1",
+          author="user",
+      ),
+      _model_text_event("Still working.", invocation_id="inv1"),
+      _resp_event(
+          "call_1",
+          "client_tool",
+          "done",
+          invocation_id="inv1",
+          author="user",
+      ),
+      _model_text_event("Finished.", invocation_id="inv1"),
+      Event(
+          invocation_id="inv2",
+          author="user",
+          content=types.UserContent("What happened?"),
+      ),
+  ]
+
+  result = rearrange_events_for_async_function_responses_in_history(events)
+
+  assert len(result) == 4
+  assert result[0].get_function_calls()[0].name == "client_tool"
+  assert result[1].get_function_responses()[0].response == {"result": "done"}
+  assert result[2].content.parts[0].text == "Finished."
+  assert result[3].content.parts[0].text == "What happened?"

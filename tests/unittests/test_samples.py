@@ -168,6 +168,7 @@ _DUMMY_ENV = {
     "GEMINI_API_KEY": "dummy-key",
     "GOOGLE_CLOUD_PROJECT": "dummy-project",
     "GOOGLE_CLOUD_LOCATION": "us-central1",
+    "GOOGLE_CLOUD_AGENT_ENGINE_ID": "dummy-agent-engine",
     "OPENAI_API_KEY": "dummy-key",
     "ANTHROPIC_API_KEY": "dummy-key",
     "AZURE_API_KEY": "dummy-key",

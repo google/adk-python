@@ -25,10 +25,12 @@ from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
+from google.adk.tools.base_tool import BaseTool
 from google.adk.workflow._base_node import BaseNode
 from google.adk.workflow._dynamic_node_scheduler import DynamicNodeRun
 from google.adk.workflow._node_state import NodeState
 from google.adk.workflow._node_status import NodeStatus
+from google.adk.workflow._tool_node import _ToolNode
 from google.adk.workflow.utils._rehydration_utils import _ChildScanState
 from google.adk.workflow.utils._replay_interceptor import check_interception
 from google.adk.workflow.utils._replay_interceptor import create_mock_context
@@ -266,6 +268,37 @@ def test_cross_turn_all_resolved_rerun():
   assert result.resume_inputs == {'fc-1': 'ans'}
 
 
+def test_cross_turn_no_outcome_static_vs_dynamic_run():
+  """Case 6 fast-forwards static runs with no outcome but reruns dynamic runs."""
+  recovered = _ChildScanState(run_id='1')
+  node = BaseNode(name='node', rerun_on_resume=False, wait_for_output=False)
+
+  static_run = DynamicNodeRun(
+      state=NodeState(run_id='1'),
+      recovered_state=recovered,
+      is_static=True,
+  )
+  dynamic_run = DynamicNodeRun(
+      state=NodeState(run_id='1'),
+      recovered_state=recovered,
+      is_static=False,
+  )
+
+  static_result = check_interception(
+      node=node,
+      recovered=recovered,
+      current_run=static_run,
+  )
+  dynamic_result = check_interception(
+      node=node,
+      recovered=recovered,
+      current_run=dynamic_run,
+  )
+
+  assert not static_result.should_run
+  assert dynamic_result.should_run
+
+
 # --- create_mock_context ---
 
 
@@ -347,3 +380,52 @@ def test_create_mock_context_branch_override_does_not_touch_parent():
 
   assert ctx.branch == 'root.sub'
   assert parent.branch == 'root'
+
+
+@pytest.mark.parametrize('is_dynamic', [False, True])
+def test_cross_turn_tool_node_completed_without_output_fast_forwards(
+    is_dynamic: bool,
+):
+  """A tool node that returned None in a prior turn is not rerun."""
+  # Given a tool node whose prior turn recorded no output, route, or interrupt
+  recovered = _ChildScanState(run_id='1')
+  node = _ToolNode(tool=BaseTool(name='dummy', description='dummy'))
+  current_run = DynamicNodeRun(state=NodeState()) if is_dynamic else None
+
+  # When checked, as a static node or as one scheduled with ctx.run_node()
+  result = check_interception(
+      node=node,
+      recovered=recovered,
+      current_run=current_run,
+  )
+
+  # Then it is fast-forwarded with no output
+  assert not result.should_run
+  assert result.output is None
+
+
+@pytest.mark.parametrize(
+    ('finished_after_resume', 'expected_should_run'),
+    [(True, False), (False, True)],
+)
+def test_cross_turn_tool_node_resolved_interrupts(
+    finished_after_resume: bool, expected_should_run: bool
+):
+  """A tool node that already reran with its answers is not rerun again."""
+  # Given a tool node whose confirmation was answered, and which either reran
+  # and returned None or has not rerun yet
+  recovered = _ChildScanState(
+      run_id='1',
+      interrupt_ids={'confirm'},
+      resolved_ids={'confirm'},
+      resolved_responses={'confirm': {'confirmed': True}},
+      finished_after_resume=finished_after_resume,
+  )
+  node = _ToolNode(tool=BaseTool(name='dummy', description='dummy'))
+
+  # When checked
+  result = check_interception(node=node, recovered=recovered)
+
+  # Then it is fast-forwarded only if it already reran
+  assert result.should_run is expected_should_run
+  assert result.output is None

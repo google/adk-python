@@ -28,8 +28,9 @@ every dependency extra, pre-commit hooks, and a green unit-test run.
    python3 --version
    ```
 
-2. **uv.** Dependencies are pinned in `uv.lock`; a hand-rolled `pip`/`venv`
-   environment will not reproduce the locked versions.
+2. **uv.** Dependencies are declared in `pyproject.toml`. The `uv sync` step
+   below creates a local `uv.lock`, which this repository ignores. Run that step
+   before `tox`, whose lock runner requires the file.
 
    ```bash
    uv --version

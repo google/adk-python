@@ -27,9 +27,9 @@ from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import App
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
-from google.adk.flows.llm_flows._fencing import OTHER_AGENT_CONTEXT_PREAMBLE
-from google.adk.flows.llm_flows._fencing import QUOTED_CONTENT_BEGIN
-from google.adk.flows.llm_flows._fencing import QUOTED_CONTENT_END
+from google.adk.flows.llm_flows.context._fencing import OTHER_AGENT_CONTEXT_PREAMBLE
+from google.adk.flows.llm_flows.context._fencing import QUOTED_CONTENT_BEGIN
+from google.adk.flows.llm_flows.context._fencing import QUOTED_CONTENT_END
 from google.adk.live import LiveRequestQueue
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.models import LlmCapabilities
@@ -83,6 +83,7 @@ async def create_invocation_context(
     user_content: str = '',
     run_config: RunConfig = None,
     plugins: list[BasePlugin] = [],
+    abort_signal: Optional[asyncio.Event] = None,
 ):
   invocation_id = 'test_id'
   artifact_service = InMemoryArtifactService()
@@ -103,6 +104,8 @@ async def create_invocation_context(
       ),
       run_config=run_config or RunConfig(),
   )
+  if abort_signal is not None:
+    invocation_context._attach_abort_signal(abort_signal)
   if user_content:
     append_user_content(
         invocation_context, [types.Part.from_text(text=user_content)]
@@ -221,17 +224,23 @@ class TestInMemoryRunner(AfInMemoryRunner):
   """
 
   async def run_async_with_new_session(
-      self, new_message: types.ContentUnion
+      self,
+      new_message: types.ContentUnion,
+      run_config: Optional[RunConfig] = None,
   ) -> list[Event]:
 
     collected_events: list[Event] = []
-    async for event in self.run_async_with_new_session_agen(new_message):
+    async for event in self.run_async_with_new_session_agen(
+        new_message, run_config
+    ):
       collected_events.append(event)
 
     return collected_events
 
   async def run_async_with_new_session_agen(
-      self, new_message: types.ContentUnion
+      self,
+      new_message: types.ContentUnion,
+      run_config: Optional[RunConfig] = None,
   ) -> AsyncGenerator[Event, None]:
     session = await self.session_service.create_session(
         app_name='InMemoryRunner', user_id='test_user'
@@ -240,6 +249,7 @@ class TestInMemoryRunner(AfInMemoryRunner):
         user_id=session.user_id,
         session_id=session.id,
         new_message=get_user_content(new_message),
+        run_config=run_config,
     )
     async with Aclosing(agen):
       async for event in agen:

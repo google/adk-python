@@ -61,12 +61,13 @@ def check_interception(
     current_run: DynamicNodeRun | None = None,
 ) -> InterceptionResult:
   """Determine if a node execution should be intercepted based on history."""
+  from .._tool_node import _ToolNode  # pylint: disable=g-import-not-at-top
   from .._workflow import Workflow  # pylint: disable=g-import-not-at-top
 
   # Case 1: Same-turn completed or waiting interception (dynamic nodes only).
   # If a node already successfully executed or is currently blocked in the
   # current turn, bypass execution and return its current turn results.
-  if current_run:
+  if current_run and not current_run.is_static:
     if current_run.state.status == NodeStatus.COMPLETED:
       return InterceptionResult(
           should_run=False,
@@ -127,28 +128,41 @@ def check_interception(
   elif recovered.interrupt_ids:
     # Case 5: Cross-turn all prior interrupts are resolved, but no output yet.
     # Extract responses directly if the node does not support rerun; otherwise
-    # rerun natively with resolved responses to produce output.
+    # rerun natively with resolved responses to produce output, unless a tool
+    # node already reran with them.
     if not node.rerun_on_resume:
       child_resume_inputs = recovered.resolved_responses
       if len(child_resume_inputs) == 1:
         output = list(child_resume_inputs.values())[0]
       else:
         output = dict(child_resume_inputs)
+    elif isinstance(node, _ToolNode) and recovered.finished_after_resume:
+      # The tool node reran with the user's answers and its tool returned
+      # None. Fast-forward it, as in case 6, so the tool's side effects do
+      # not run again.
+      should_run = False
     else:
       should_run = True
       resume_inputs = recovered.resolved_responses
 
   else:
     # Case 6: Cross-turn no events, or events contain no output, route, or interrupts.
-    # Rerun wait_for_output nodes and rerun_on_resume nodes with no prior output
-    # so they can guide nested children or resume execution; otherwise fall through.
-    if node.wait_for_output or node.rerun_on_resume:
+    if isinstance(node, _ToolNode):
+      # A tool node emits a single terminal event (its output, an empty event
+      # for a None result, a confirmation request, or an error), so recorded
+      # history with none of the above means it returned None. Fast-forward
+      # it whether it is static or scheduled dynamically, so the tool's side
+      # effects do not run again on resume.
+      should_run = False
+    elif node.wait_for_output or node.rerun_on_resume:
+      # Rerun wait_for_output nodes and rerun_on_resume nodes with no prior
+      # output so they can guide nested children or resume execution.
       should_run = True
       resume_inputs = recovered.resolved_responses
     else:
       # Allow fresh execution for crashed/timeout dynamic nodes;
       # static nodes with no outcome (e.g. return None) should be fast-forwarded.
-      should_run = current_run is not None
+      should_run = current_run is not None and not current_run.is_static
 
   return InterceptionResult(
       should_run=should_run,

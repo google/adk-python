@@ -23,6 +23,7 @@ from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.auth.credential_service.session_state_credential_service import SessionStateCredentialService
+from pydantic_core import to_jsonable_python
 import pytest
 
 
@@ -107,7 +108,9 @@ class TestSessionStateCredentialService:
         auth_config, callback_context
     )
 
-    # Verify the credential was saved and loaded correctly
+    # Verify the credential was saved and loaded correctly. The client secret
+    # is stripped on the way in and restored from the auth config on the way
+    # out, so the caller sees the credential it saved.
     assert result is not None
     assert result == auth_config.exchanged_auth_credential
     assert result.auth_type == AuthCredentialTypes.OAUTH2
@@ -145,7 +148,10 @@ class TestSessionStateCredentialService:
     )
     assert result is not None
     assert result.oauth2.client_id == "updated_client_id"
-    assert result.oauth2.client_secret == "updated_client_secret"
+    assert result.oauth2.redirect_uri == "https://updated.com/callback"
+    # The store never held a secret; the one on the way out is the configured
+    # one, not whatever the saved credential carried.
+    assert result.oauth2.client_secret == "mock_client_secret"
 
   @pytest.mark.asyncio
   async def test_credentials_isolated_by_context(
@@ -262,15 +268,16 @@ class TestSessionStateCredentialService:
       self, credential_service, auth_config, callback_context
   ):
     """Test that state persists across multiple operations."""
+    # What is stored is the exchanged credential minus the client secret.
+    expected = auth_config.exchanged_auth_credential.model_copy(deep=True)
+    expected.oauth2.client_secret = None
+
     # Save credential
     await credential_service.save_credential(auth_config, callback_context)
 
     # Verify state contains the credential
     assert auth_config.credential_key in callback_context.state
-    assert (
-        callback_context.state[auth_config.credential_key]
-        == auth_config.exchanged_auth_credential
-    )
+    assert callback_context.state[auth_config.credential_key] == expected
 
     # Load credential
     result = await credential_service.load_credential(
@@ -280,10 +287,7 @@ class TestSessionStateCredentialService:
 
     # Verify state still contains the credential
     assert auth_config.credential_key in callback_context.state
-    assert (
-        callback_context.state[auth_config.credential_key]
-        == auth_config.exchanged_auth_credential
-    )
+    assert callback_context.state[auth_config.credential_key] == expected
 
     # Update credential
     new_credential = AuthCredential(
@@ -300,7 +304,9 @@ class TestSessionStateCredentialService:
     await credential_service.save_credential(auth_config, callback_context)
 
     # Verify state was updated
-    assert callback_context.state[auth_config.credential_key] == new_credential
+    expected_new = new_credential.model_copy(deep=True)
+    expected_new.oauth2.client_secret = None
+    assert callback_context.state[auth_config.credential_key] == expected_new
 
   @pytest.mark.asyncio
   async def test_credential_key_uniqueness(
@@ -385,4 +391,151 @@ class TestSessionStateCredentialService:
     result = await credential_service.load_credential(
         auth_config, callback_context
     )
-    assert result == test_credential
+    assert result.oauth2.client_id == "direct_client_id"
+    assert result.oauth2.redirect_uri == "https://direct.com/callback"
+    # The secret always comes from the auth config, never from state.
+    assert result.oauth2.client_secret == "mock_client_secret"
+
+  @pytest.mark.asyncio
+  async def test_client_secret_not_written_to_state(
+      self, credential_service, auth_config, callback_context
+  ):
+    """The agent's client secret must not reach client-readable state.
+
+    Session state is returned verbatim by the session-read endpoints, so
+    anything kept here is readable by anything that can reach them.
+    """
+    auth_config.exchanged_auth_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="1234.apps.googleusercontent.com",
+            client_secret="GOCSPX-super-secret",
+            access_token="ya29.access",
+            refresh_token="1//0grefresh",
+        ),
+    )
+
+    await credential_service.save_credential(auth_config, callback_context)
+
+    stored = callback_context.state[auth_config.credential_key]
+    assert stored.oauth2.client_secret is None
+    # The end user's own tokens are what this store exists to hold.
+    assert stored.oauth2.access_token == "ya29.access"
+    assert stored.oauth2.refresh_token == "1//0grefresh"
+    # Nothing anywhere in the serialized state carries the secret.
+    assert "GOCSPX-super-secret" not in str(
+        {k: v.model_dump() for k, v in callback_context.state.items()}
+    )
+
+  @pytest.mark.asyncio
+  async def test_save_does_not_mutate_caller_credential(
+      self, credential_service, auth_config, callback_context
+  ):
+    """Stripping the secret must not clear it on the tool's own config.
+
+    The caller keeps using this object for the token exchange, so redaction
+    has to happen on a copy.
+    """
+    exchanged = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="cid",
+            client_secret="still-needed",
+            access_token="ya29.access",
+        ),
+    )
+    auth_config.exchanged_auth_credential = exchanged
+
+    await credential_service.save_credential(auth_config, callback_context)
+
+    assert exchanged.oauth2.client_secret == "still-needed"
+    assert (
+        auth_config.exchanged_auth_credential.oauth2.client_secret
+        == "still-needed"
+    )
+
+  @pytest.mark.asyncio
+  async def test_load_restores_client_secret_for_refresh(
+      self, credential_service, oauth2_auth_scheme, callback_context
+  ):
+    """Every caller of load_credential gets a credential that can refresh.
+
+    The secret is put back here rather than in `CredentialManager`, so callers
+    reaching the store directly through `callback_context.load_credential` are
+    not handed a credential that fails its next token request.
+    """
+    raw_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="1234.apps.googleusercontent.com",
+            client_secret="GOCSPX-configured-secret",
+        ),
+    )
+    auth_config = AuthConfig(
+        auth_scheme=oauth2_auth_scheme,
+        raw_auth_credential=raw_credential,
+        exchanged_auth_credential=AuthCredential(
+            auth_type=AuthCredentialTypes.OAUTH2,
+            oauth2=OAuth2Auth(
+                client_id="1234.apps.googleusercontent.com",
+                client_secret="GOCSPX-configured-secret",
+                access_token="ya29.access",
+                refresh_token="1//0grefresh",
+            ),
+        ),
+    )
+
+    await credential_service.save_credential(auth_config, callback_context)
+    result = await credential_service.load_credential(
+        auth_config, callback_context
+    )
+
+    assert result.oauth2.client_secret == "GOCSPX-configured-secret"
+    assert result.oauth2.access_token == "ya29.access"
+    assert result.oauth2.refresh_token == "1//0grefresh"
+    # Restoring is a copy: state still holds no secret afterwards.
+    assert (
+        callback_context.state[auth_config.credential_key].oauth2.client_secret
+        is None
+    )
+
+  @pytest.mark.asyncio
+  async def test_load_credential_stored_as_dict(
+      self, credential_service, auth_config, callback_context
+  ):
+    """Tests that load_credential deserializes a stored dict into a credential.
+
+    `DatabaseSessionService` and `SqliteSessionService` serialize state to a
+    JSON column, so what `save_credential` wrote as a model comes back as a
+    plain dict on the next run.
+    """
+    await credential_service.save_credential(auth_config, callback_context)
+    stored = callback_context.state[auth_config.credential_key]
+    callback_context.state[auth_config.credential_key] = to_jsonable_python(
+        stored
+    )
+
+    result = await credential_service.load_credential(
+        auth_config, callback_context
+    )
+
+    assert isinstance(result, AuthCredential)
+    assert result.oauth2.client_id == "mock_client_id"
+    assert result.oauth2.client_secret == "mock_client_secret"
+
+  @pytest.mark.asyncio
+  async def test_load_credential_stored_as_string(
+      self, credential_service, auth_config, callback_context
+  ):
+    """Tests that load_credential returns None for a non-credential value.
+
+    `AuthHandler` accepts a bare token string under the same state key, so one
+    can be there without `save_credential` having written it.
+    """
+    callback_context.state[auth_config.credential_key] = "ya29.access"
+
+    result = await credential_service.load_credential(
+        auth_config, callback_context
+    )
+
+    assert result is None

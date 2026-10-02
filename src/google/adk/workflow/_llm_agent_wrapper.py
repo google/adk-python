@@ -29,7 +29,7 @@ from ..agents.context import Context
 from ..agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME as _FINISH_TASK_FC_NAME
 from ..agents.llm.task._finish_task_tool import is_finish_task_terminal_fr
 from ..events.event import Event
-from ..flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ..flows.llm_flows.tools._functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from ..utils._schema_utils import validate_schema
 from ..utils.content_utils import to_user_content
 from ._errors import WorkflowConfigurationError
@@ -174,11 +174,12 @@ def _find_unresolved_task_delegations(
   current turn's scope would hide the coordinator's own FC from a
   prior turn.  Author + tool-name filtering is sufficient.
   """
+  from ..events._rewind_events import _apply_rewinds
   from ..tools.agent_tool import _TaskAgentTool
 
   fc_by_id: dict[str, types.FunctionCall] = {}
   fr_ids: set[str] = set()
-  for event in session.events:
+  for event in _apply_rewinds(session.events):
     if event.author != owner and event.author != 'user':
       continue
     if not event.content or not event.content.parts:
@@ -293,16 +294,13 @@ def prepare_llm_agent_context(agent: LlmAgent, ctx: Context) -> Context:
   if agent.mode != 'single_turn':
     return ctx
 
-  ic = ctx._invocation_context.model_copy()
+  ic = ctx.get_invocation_context()
   ic._event_queue = ctx._invocation_context._event_queue
-  ic.isolation_scope = ctx.isolation_scope
   agent_ctx = Context(
       invocation_context=ic,
-      node_path=ctx.node_path,
       run_id=ctx.run_id,
       resume_inputs=ctx.resume_inputs,
   )
-  agent_ctx.isolation_scope = ctx.isolation_scope
 
   # Share the parent's `session` object (don't copy it): a mid-invocation
   # write such as compaction must be visible to later nodes, or the DB
@@ -312,7 +310,7 @@ def prepare_llm_agent_context(agent: LlmAgent, ctx: Context) -> Context:
 
 def prepare_llm_agent_input(
     agent: LlmAgent, ctx: Context, node_input: object
-) -> None:
+) -> Event | None:
   """Prepares the input for running LlmAgent as a node.
 
   For ``single_turn`` mode, append a user-role event with the input
@@ -343,11 +341,14 @@ def prepare_llm_agent_input(
       or agent.mode != 'single_turn'
       or bool(ctx.resume_inputs)
   ):
-    return
+    return None
   agent_input = to_user_content(node_input)
   user_event = Event(author='user', message=agent_input)
   if user_event.content is not None:
     user_event.content.role = 'user'
+  node_path = getattr(ctx, 'node_path', None)
+  if isinstance(node_path, str) and node_path:
+    user_event.node_info.path = node_path
   iso = getattr(ctx, 'isolation_scope', None)
   if iso:
     user_event.isolation_scope = iso
@@ -355,6 +356,7 @@ def prepare_llm_agent_input(
   if branch:
     user_event.branch = branch
   ctx.session.events.append(user_event)
+  return user_event
 
 
 def process_llm_agent_output(
@@ -387,7 +389,8 @@ def process_llm_agent_output(
     ctx.actions.state_delta[agent.output_key] = output
 
   event.output = output
-  event.node_info.message_as_output = True
+  if not agent.output_schema:
+    event.node_info.message_as_output = True
 
 
 async def run_llm_agent_as_node(
@@ -412,18 +415,10 @@ async def run_llm_agent_as_node(
     agent.include_contents = 'none'
 
   agent_ctx = prepare_llm_agent_context(agent, ctx)
-  prepare_llm_agent_input(agent, agent_ctx, node_input)
+  injected_input_event = prepare_llm_agent_input(agent, agent_ctx, node_input)
 
   ic = agent_ctx.get_invocation_context()
   update: dict[str, object] = {'agent': agent}
-  # thread the agent's isolation_scope into the
-  # InvocationContext so the content processor can filter session
-  # events to this agent's scope only.  Only mode=task and
-  # mode=single_turn agents need scope-based filtering — chat agents
-  # see the full conversation.
-  _agent_iso = getattr(agent_ctx, 'isolation_scope', None)
-  if agent.mode in ('task', 'single_turn') and _agent_iso:
-    update['isolation_scope'] = _agent_iso
   # Override ``user_content`` for task mode with this node's input.
   # The content-builder uses it as the fallback first user turn when
   # there is no originating delegation FC (the workflow-node task
@@ -444,10 +439,17 @@ async def run_llm_agent_as_node(
 
   if agent.mode == 'single_turn':
     # is_live is always False here (single_turn forces non-live).
-    async with aclosing(agent.run_async(ic)) as run_iter:
-      async for event in run_iter:
-        process_llm_agent_output(agent, ctx, event)
-        yield event
+    try:
+      async with aclosing(agent.run_async(ic)) as run_iter:
+        async for event in run_iter:
+          process_llm_agent_output(agent, ctx, event)
+          yield event
+    finally:
+      if (
+          injected_input_event is not None
+          and injected_input_event in agent_ctx.session.events
+      ):
+        agent_ctx.session.events.remove(injected_input_event)
     return
 
   if agent.mode == 'chat':

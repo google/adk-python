@@ -20,6 +20,7 @@ import ast
 import asyncio
 import os
 import pathlib
+import types
 
 from google.adk.dependencies import _httpx as httpx_dependency
 from google.adk.dependencies import _mcp as mcp_dependency
@@ -123,3 +124,74 @@ class TestTheSeamHolds:
       assert isinstance(sdk_client, httpx_dependency.AsyncClient)
     finally:
       asyncio.run(sdk_client.aclose())
+
+
+def _foreign_timeout_class():
+  """The other major's `Timeout`, stood in for by the installed one's own code.
+
+  Both majors ship the same constructor, and its first branch asks
+  `isinstance(timeout, Timeout)` against a global of the module it was defined
+  in. Rebinding that one global to a class of our own is the entire difference
+  between a home `Timeout` and a foreign one, so this reaches the foreign
+  branches of real library code with only one library installed.
+  """
+  source = httpx_dependency.Timeout.__init__
+  namespace = dict(source.__globals__)
+  init = types.FunctionType(
+      source.__code__,
+      namespace,
+      source.__name__,
+      source.__defaults__,
+      source.__closure__,
+  )
+  init.__kwdefaults__ = source.__kwdefaults__
+  foreign = type('ForeignTimeout', (), {'__init__': init})
+  namespace['Timeout'] = foreign
+  return foreign
+
+
+class TestPortableTimeout:
+  """A timeout has to survive a factory built on the major ADK did not bind."""
+
+  def _timeout(self):
+    return httpx_dependency.Timeout(15.0, read=300.0)
+
+  def test_it_is_a_timeout_of_the_flavor_the_seam_bound(self):
+    portable = httpx_dependency.PortableTimeout(self._timeout())
+
+    assert isinstance(portable, httpx_dependency.Timeout)
+    assert (portable.connect, portable.read, portable.write, portable.pool) == (
+        15.0,
+        300.0,
+        15.0,
+        15.0,
+    )
+
+  def test_it_is_also_the_four_item_tuple_the_other_major_falls_back_to(self):
+    portable = httpx_dependency.PortableTimeout(self._timeout())
+
+    assert tuple(portable) == (15.0, 300.0, 15.0, 15.0)
+
+  def test_a_constructor_that_does_not_recognize_it_reads_it_anyway(self):
+    """This runs whichever major is installed, and one always is.
+
+    It proves the shim against a constructor that does not know its class, not
+    against `httpx2` specifically -- that the two majors still dispatch alike
+    is what the cross-major test in `test_mcp_session_manager` checks, and that
+    one needs both installed.
+    """
+    foreign_timeout = _foreign_timeout_class()
+
+    # The defect: unrecognized, a plain `Timeout` is stored whole as each field.
+    plain = self._timeout()
+    assert foreign_timeout(plain).connect is plain
+
+    portable = foreign_timeout(
+        httpx_dependency.PortableTimeout(self._timeout())
+    )
+    assert (portable.connect, portable.read, portable.write, portable.pool) == (
+        15.0,
+        300.0,
+        15.0,
+        15.0,
+    )

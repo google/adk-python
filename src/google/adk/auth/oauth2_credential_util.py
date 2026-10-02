@@ -36,6 +36,74 @@ logger = logging.getLogger("google_adk." + __name__)
 _TOKEN_REQUEST_TIMEOUT_SECONDS = 10
 
 
+def _credential_without_client_secret(
+    credential: Optional[AuthCredential],
+) -> Optional[AuthCredential]:
+  """Returns a copy of credential with the OAuth2 client secret removed.
+
+  The client secret identifies the agent's OAuth2 client, not the end user, so
+  it must not travel to the client or reach any store the client can read. Call
+  sites that still need it for a token request re-attach it from the tool's own
+  configuration, so dropping it here costs nothing.
+  """
+  if credential is None:
+    return None
+  redacted = credential.model_copy(deep=True)
+  if redacted.oauth2 is not None:
+    redacted.oauth2.client_secret = None
+  return redacted
+
+
+def _with_configured_client_secret(
+    *,
+    credential: Optional[AuthCredential],
+    raw_credential: Optional[AuthCredential],
+) -> Optional[AuthCredential]:
+  """Returns credential with the configured OAuth2 client secret restored.
+
+  The inverse of `_credential_without_client_secret`: a credential read back
+  from a store that holds no secret needs one again before a token exchange or
+  refresh. Only the secret is put back, so the rest of the stored credential
+  round trips untouched.
+  """
+  if (
+      raw_credential is None
+      or raw_credential.oauth2 is None
+      or credential is None
+      or credential.oauth2 is None
+  ):
+    return credential
+  restored = credential.model_copy(deep=True)
+  if restored.oauth2 is not None:
+    restored.oauth2.client_secret = raw_credential.oauth2.client_secret
+  return restored
+
+
+def _with_configured_client(
+    *,
+    credential: Optional[AuthCredential],
+    raw_credential: Optional[AuthCredential],
+) -> Optional[AuthCredential]:
+  """Returns credential with the whole configured OAuth2 client restored.
+
+  For credentials that came back through the client, which must not be able to
+  pick which OAuth2 client its token is exchanged for, so the client id is
+  pinned to the tool's own configuration along with the secret.
+  """
+  restored = _with_configured_client_secret(
+      credential=credential, raw_credential=raw_credential
+  )
+  if (
+      raw_credential is None
+      or raw_credential.oauth2 is None
+      or restored is None
+      or restored.oauth2 is None
+  ):
+    return restored
+  restored.oauth2.client_id = raw_credential.oauth2.client_id
+  return restored
+
+
 @experimental
 def create_oauth2_session(
     auth_scheme: AuthScheme,

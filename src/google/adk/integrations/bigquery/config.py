@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from enum import Enum
+import re
 from typing import Optional
 
 from pydantic import BaseModel
@@ -39,8 +40,11 @@ class WriteMode(Enum):
   In this mode write operations in the anonymous dataset of a BigQuery session
   are allowed. For example, a temporary table can be created, manipulated and
   deleted in the anonymous dataset during Agent interaction, while protecting
-  permanent tables from being modified or deleted. To learn more about BigQuery
-  sessions, see https://cloud.google.com/bigquery/docs/sessions-intro.
+  permanent tables from being modified or deleted. A non-SELECT statement runs
+  only when a dry run places it in that anonymous dataset, so a statement the
+  dry run attributes to no destination at all, such as a script, a procedure
+  call or an export, is rejected. To learn more about BigQuery sessions, see
+  https://cloud.google.com/bigquery/docs/sessions-intro.
   """
 
   ALLOWED = 'allowed'
@@ -145,6 +149,27 @@ class BigQueryToolConfig(BaseModel):
   "adk-bigquery-" are reserved for internal usage.
   """
 
+  kms_key_name: Optional[str] = None
+  """Cloud KMS key to encrypt query results with (CMEK).
+
+  Set this when an organization policy such as
+  `constraints/gcp.restrictNonCmekServices` requires BigQuery query results to
+  be protected with a customer-managed key. The value is the key's resource
+  name, `projects/{project}/locations/{location}/keyRings/{key_ring}/cryptoKeys/{key}`,
+  and the key must be in the same location as the data being queried. The
+  BigQuery service agent of the project that runs the query needs the Cloud
+  KMS CryptoKey Encrypter/Decrypter role on the key.
+
+  The key is applied to SELECT statements only, because BigQuery rejects a
+  job-level key for DDL, DML, and multi-statement scripts. Under such a policy,
+  those need a project default key. A permanent table can instead take
+  `OPTIONS(kms_key_name=...)` in its CREATE statement, but a temporary table
+  cannot. With `WriteMode.ALLOWED`, setting this adds a dry run before
+  each query to find the statement type; the other write modes already dry
+  run the query. For all key options, see
+  https://cloud.google.com/bigquery/docs/customer-managed-encryption.
+  """
+
   @field_validator('maximum_bytes_billed')
   @classmethod
   def validate_maximum_bytes_billed(cls, v: Optional[int]) -> Optional[int]:
@@ -164,6 +189,20 @@ class BigQueryToolConfig(BaseModel):
     """Validate the application name."""
     if v and ' ' in v:
       raise ValueError('Application name should not contain spaces.')
+    return v
+
+  @field_validator('kms_key_name')
+  @classmethod
+  def validate_kms_key_name(cls, v: Optional[str]) -> Optional[str]:
+    """Validate the Cloud KMS key resource name."""
+    if v is not None and not re.fullmatch(
+        r'projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/]+', v
+    ):
+      raise ValueError(
+          'kms_key_name must be a Cloud KMS key resource name of the form'
+          ' projects/{project}/locations/{location}/keyRings/{key_ring}'
+          f'/cryptoKeys/{{key}}, found "{v}".'
+      )
     return v
 
   @field_validator('job_labels')

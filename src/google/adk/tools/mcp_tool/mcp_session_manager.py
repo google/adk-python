@@ -82,6 +82,7 @@ except (ImportError, AttributeError):
 from ...features import FeatureName
 from ...features import is_feature_enabled
 from ...telemetry import tracing
+from ...utils._google_client_headers import merge_tracking_headers
 from .session_context import SessionContext
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -106,6 +107,12 @@ _SESSION_USE_PIN_WARN_SECONDS = 4 * _SESSION_IDLE_TTL_SECONDS
 # A failed mTLS probe is not retried for this long. Not cached for the life of
 # the manager, so credentials granted while the process runs are picked up.
 _MTLS_PROBE_RETRY_INTERVAL_SECONDS = 300.0
+
+# The headers `merge_tracking_headers` writes, spelled the way it spells them.
+# HTTP header names are case-insensitive and a caller may have used any casing,
+# but a dict is not: leaving their spelling alongside ours would put the header
+# on the wire twice, so theirs is folded onto ours before merging.
+_TRACKING_HEADER_NAMES = frozenset(('user-agent', 'x-goog-api-client'))
 
 
 def create_mcp_http_client(
@@ -372,7 +379,11 @@ class _DebugHttpxClientFactory:
       timeout: httpx.Timeout | None = None,
       auth: httpx.Auth | None = None,
   ) -> httpx.AsyncClient:
-    client = self._base_factory(headers=headers, timeout=timeout, auth=auth)
+    client = self._base_factory(
+        headers=headers,
+        timeout=None if timeout is None else httpx.PortableTimeout(timeout),
+        auth=auth,
+    )
     if hasattr(client, 'event_hooks') and isinstance(client.event_hooks, dict):
       client.event_hooks.setdefault('response', []).append(self._response_hook)
     return client
@@ -961,11 +972,15 @@ class MCPSessionManager:
   ) -> Optional[Dict[str, str]]:
     """Merges base connection headers with additional headers.
 
+    The ADK client tokens are added on top, so that an MCP server sees the
+    traffic as coming from ADK rather than from bare httpx.
+
     Args:
         additional_headers: Optional headers to merge with connection headers.
 
     Returns:
-        Merged headers dictionary, or None if no headers are provided.
+        Merged headers dictionary, or None for stdio connections, which do not
+        support headers.
     """
     if isinstance(self._connection_params, StdioConnectionParams) or isinstance(
         self._connection_params, StdioServerParameters
@@ -983,20 +998,28 @@ class MCPSessionManager:
     if additional_headers:
       base_headers.update(additional_headers)
 
-    return base_headers
+    return merge_tracking_headers({
+        key.lower() if key.lower() in _TRACKING_HEADER_NAMES else key: value
+        for key, value in base_headers.items()
+    })
 
   def _is_session_disconnected(self, session: ClientSession) -> bool:
     """Checks if a session is disconnected or closed.
 
-    Reads two attributes ADK does not own: the SDK holds the transport streams
-    on the session privately, and each stream reports its own closed flag. A
-    session that lacks either one reads as connected rather than raising,
-    because a release is free to restructure both away and this probe is not
-    the only thing standing between a dead session and a caller.
+    Reads attributes ADK does not own, and where they hang moved between SDK
+    majors. On 1.x the session holds the transport streams and each stream
+    reports its own closed flag. On 2.x the transport moved behind a
+    dispatcher, which reports one closed flag of its own and need not hold
+    streams at all, so a session holding no streams is read there instead. A
+    session offering neither reads as connected rather than raising, because
+    a release is free to restructure them away and this probe is not the only
+    thing standing between a dead session and a caller.
 
     `create_session` pairs this with `SessionContext._is_task_alive`, which
-    ADK owns and which catches strictly more: a crashed transport can leave
-    the streams open while the task behind them is already dead. That pairing
+    ADK owns. Neither check subsumes the other: a crashed transport can
+    leave the streams open while the task behind them is already dead, and a
+    transport that closes under a live session leaves that task parked on
+    its close event, where only these flags report the death. That pairing
     runs under `_MCP_GRACEFUL_ERROR_HANDLING`, which is on by default. The
     kill switch drops it and leaves this probe on its own.
 
@@ -1009,6 +1032,16 @@ class MCPSessionManager:
     Returns:
         True if the session is known to be disconnected, False otherwise.
     """
+    if not hasattr(session, '_read_stream'):
+      dispatcher = getattr(session, '_dispatcher', None)
+      if not hasattr(dispatcher, '_closed'):
+        logger.debug(
+            'MCP session %s offers no closed flag to read, on itself or on a'
+            ' dispatcher; reading it as connected.',
+            type(session).__name__,
+        )
+        return False
+      return bool(getattr(dispatcher, '_closed', False))
     read_stream = getattr(session, '_read_stream', None)
     write_stream = getattr(session, '_write_stream', None)
     return bool(

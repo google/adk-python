@@ -28,12 +28,41 @@ from typing_extensions import override
 
 from ..agents.context import Context
 from ..events.event import Event
+from ..events.request_input import RequestInput
 from ..platform import uuid as platform_uuid
+from ..tools._confirmation_utils import apply_confirmation_gate
 from ..tools.base_tool import BaseTool
-from ..tools.tool_context import ToolContext
+from ..tools.tool_confirmation import ToolConfirmation
 from ..utils.content_utils import extract_text_from_content
 from ._base_node import BaseNode
+from ._errors import WorkflowDataError
 from ._retry_config import RetryConfig
+
+_TOOL_CONFIRMATION_INTERRUPT_PREFIX = 'wf_tool_confirmation:'
+
+
+def _parse_tool_confirmation(response: Any) -> ToolConfirmation:
+  """Parses the user's answer to a tool confirmation request.
+
+  Resume validation against the `ToolConfirmation` schema yields a dict in
+  which the fields the user left out are None, so those are dropped to fall
+  back to the model defaults.
+  """
+  if isinstance(response, ToolConfirmation):
+    return response
+  if not isinstance(response, dict):
+    raise WorkflowDataError(
+        'A tool confirmation response must be a ToolConfirmation payload, but'
+        f' got {type(response).__name__}.'
+    )
+  try:
+    return ToolConfirmation.from_response_dict(
+        {k: v for k, v in response.items() if v is not None}
+    )
+  except ValueError as e:
+    raise WorkflowDataError(
+        f'Invalid tool confirmation response: {response!r}'
+    ) from e
 
 
 class _ToolNode(BaseNode):
@@ -53,7 +82,8 @@ class _ToolNode(BaseNode):
     super().__init__(
         tool=tool,
         name=name or tool.name,
-        rerun_on_resume=False,
+        # Tool nodes rerun on resume so that calls paused for confirmation execute.
+        rerun_on_resume=True,
         retry_config=retry_config,
         timeout=timeout,
     )
@@ -65,10 +95,10 @@ class _ToolNode(BaseNode):
       ctx: Context,
       node_input: Any,
   ) -> AsyncGenerator[Any, None]:
-    tool_context = ToolContext(
-        invocation_context=ctx.get_invocation_context(),
-        function_call_id=platform_uuid.new_uuid(),
-    )
+    # Run the tool with the node's own context (ToolContext is Context) so
+    # state and artifact deltas recorded by the tool on ctx.actions are emitted
+    # with this node.
+    ctx.function_call_id = platform_uuid.new_uuid()
 
     args = node_input
     if isinstance(args, types.Content):
@@ -115,16 +145,105 @@ class _ToolNode(BaseNode):
         if param_name not in args and param_name in ctx.state:
           args[param_name] = ctx.state[param_name]
 
-    response = await self.tool.run_async(args=args, tool_context=tool_context)
-    state_delta = (
-        dict(tool_context.actions.state_delta)
-        if tool_context.actions.state_delta
-        else None
-    )
+    response = await self._run_tool_with_plugin_callbacks(ctx=ctx, args=args)
+    if isinstance(response, RequestInput):
+      yield response
+      return
+
+    # State and artifact deltas recorded on ctx.actions by the tool are
+    # attached to emitted events by the node runner.
     if response is not None:
-      yield Event(
-          output=response,
-          state=state_delta,
-      )
-    elif state_delta:
-      yield Event(state=state_delta)
+      yield Event(output=response)
+    else:
+      yield Event()
+
+  async def _run_tool_with_plugin_callbacks(
+      self, *, ctx: Context, args: dict[str, Any]
+  ) -> Any:
+    """Runs the tool between the plugin tool callbacks.
+
+    Mirrors the plugin steps of the LlmAgent tool pipeline: a before-tool
+    callback may answer the call instead of the tool, an on-tool-error
+    callback may answer a failed call, and an after-tool callback may replace
+    the result. Agent-level tool callbacks do not apply because no agent owns
+    a tool node.
+
+    Like the agent pipeline, the user's answer to a confirmation request is on
+    `ctx.tool_confirmation` before any callback runs, and the confirmation gate
+    runs after the before-tool callback. A call waiting for confirmation
+    returns the `RequestInput` to send the user and skips the after-tool
+    callback; a rejected call answers with an error that the after-tool
+    callback still sees.
+    """
+    # Set before the callbacks so they see the answer, and outside the tool
+    # error handling so a malformed answer is not reported as a tool failure.
+    self._apply_confirmation_resume(ctx=ctx)
+    plugin_manager = ctx.get_invocation_context().plugin_manager
+    response = await plugin_manager.run_before_tool_callback(
+        tool=self.tool, tool_args=args, tool_context=ctx
+    )
+    if response is None:
+      try:
+        response = await apply_confirmation_gate(self.tool, args, ctx)
+        if response is None:
+          response = await self.tool.run_async(args=args, tool_context=ctx)
+        request = self._take_requested_confirmation(ctx=ctx, args=args)
+        if request is not None:
+          return request
+      except Exception as error:
+        # The failure is the call's result, so a confirmation the tool asked
+        # for before raising is dropped rather than left pending.
+        ctx.actions.requested_tool_confirmations.pop(ctx.function_call_id, None)
+        response = await plugin_manager.run_on_tool_error_callback(
+            tool=self.tool, tool_args=args, tool_context=ctx, error=error
+        )
+        if response is None:
+          raise
+
+    altered_response = await plugin_manager.run_after_tool_callback(
+        tool=self.tool, tool_args=args, tool_context=ctx, result=response
+    )
+    if altered_response is not None:
+      response = altered_response
+    return response
+
+  def _apply_confirmation_resume(self, *, ctx: Context) -> None:
+    """Stores the user's answer to this node's confirmation request.
+
+    The answer is set on `ctx.tool_confirmation`, so the confirmation gate and
+    the tool see it the same way they do inside an agent.
+    """
+    response = ctx.resume_inputs.get(self._confirmation_interrupt_id(ctx))
+    if response is not None:
+      ctx.tool_confirmation = _parse_tool_confirmation(response)
+
+  def _take_requested_confirmation(
+      self, *, ctx: Context, args: dict[str, Any]
+  ) -> RequestInput | None:
+    """Turns a confirmation requested for this call into a `RequestInput`.
+
+    The request comes from the confirmation gate or from the tool calling
+    `tool_context.request_confirmation()`. Once the user answers, the node is
+    rerun with `ctx.tool_confirmation` set.
+    """
+    if not ctx.function_call_id:
+      return None
+    requested = ctx.actions.requested_tool_confirmations.pop(
+        ctx.function_call_id, None
+    )
+    if requested is None:
+      return None
+    payload: dict[str, Any] = {'tool_name': self.tool.name, 'args': args}
+    if requested.payload is not None:
+      payload['confirmation_payload'] = requested.payload
+    return RequestInput(
+        interrupt_id=self._confirmation_interrupt_id(ctx),
+        message=requested.hint
+        or f'Please approve or reject the tool call {self.tool.name}().',
+        payload=payload,
+        response_schema=ToolConfirmation,
+    )
+
+  def _confirmation_interrupt_id(self, ctx: Context) -> str:
+    """Returns the interrupt id of this node run's confirmation request."""
+    return f'{_TOOL_CONFIRMATION_INTERRUPT_PREFIX}{ctx.node_path}'

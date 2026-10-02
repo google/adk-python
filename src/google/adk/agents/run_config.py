@@ -55,6 +55,9 @@ def _default_max_llm_calls() -> int:
 class ToolThreadPoolConfig(BaseModel):
   """Configuration for the tool thread pool executor.
 
+  Set through `RunConfig.tool_thread_pool_config`. Outside live mode only
+  synchronous function tools an `LlmAgent` calls use the pool.
+
   Attributes:
     max_workers: Maximum number of worker threads in the pool. Defaults to 4.
   """
@@ -106,12 +109,14 @@ class RunConfig(BaseModel):
 
   `ServiceTier.DEFERRED` queues each model call to run on off-peak capacity,
   so it waits for room instead of being turned away when capacity is tight.
-  An agent that calls tools queues once per turn rather than once per run. It
-  cannot be combined with `StreamingMode.SSE`.
+  ADK waits for the queued result before yielding, which means the run takes
+  as long as the queue does, and an agent that calls tools queues once per
+  turn rather than once per run. It cannot be combined with
+  `StreamingMode.SSE`.
   """
 
   response_modalities: Optional[list[types.Modality]] = None
-  """The output modalities. If not set, it's default to AUDIO."""
+  """The output modalities. If not set, it defaults to AUDIO."""
 
   avatar_config: Optional[types.AvatarConfig] = None
   """Avatar configuration for the live agent."""
@@ -184,21 +189,32 @@ class RunConfig(BaseModel):
   """Saves live video and audio data to session and artifact service."""
 
   tool_thread_pool_config: Optional[ToolThreadPoolConfig] = None
-  """Configuration for running tools in a thread pool for live mode.
+  """Configuration for running tools in a thread pool.
 
   When set, tool executions will run in a separate thread pool executor
-  instead of the main event loop. When None (default), tools run in the
-  main event loop. One pool serves every invocation running on the same event
-  loop and is shut down once that loop is gone, so its worker threads do not
-  outlive it.
+  instead of the main event loop, for the tools described below. When None
+  (default), tools run in the main event loop. One pool serves every
+  invocation running on the same event loop and is shut down once that loop
+  is gone, so its worker threads do not outlive it.
 
-  This helps keep the event loop responsive for:
+  In live mode, this helps keep the event loop responsive for:
   - User interruptions to be processed immediately
   - Model responses to continue being received
 
-  Both sync and async tools are supported. Async tools are run in a new event
-  loop within the background thread, which helps catch blocking I/O mistakenly
-  used inside async functions.
+  In live mode, both sync and async tools are supported. Async tools are run
+  in a new event loop within the background thread, which helps catch blocking
+  I/O mistakenly used inside async functions.
+
+  Outside live mode, only synchronous function tools an `LlmAgent` calls use
+  the pool, and only their own synchronous callables run there: the tool
+  function and a callable `require_confirmation`. Argument handling and
+  callbacks stay on the event loop, and async tools run on the event loop as
+  they do without this config. A tool used directly as a `Workflow` node also
+  runs on the event loop, because a tool node calls the tool itself rather
+  than through the `LlmAgent` tool pipeline this config applies to. Parallel
+  calls to synchronous function tools then overlap, so their functions must
+  be safe to run at the same time and on a thread other than the event
+  loop's.
 
   IMPORTANT - GIL (Global Interpreter Lock) Considerations:
 
@@ -346,3 +362,25 @@ class RunConfig(BaseModel):
       )
 
     return value
+
+  @model_validator(mode='after')
+  def validate_service_tier_streaming(self) -> RunConfig:
+    """Rejects a deferred run that also asks to stream.
+
+    A deferred create returns an interaction id as soon as the work is
+    accepted rather than a result, so there is nothing to stream. The
+    interactions transport refuses the combination too, but by then a caller
+    such as `/run_sse` has already opened its response; failing here lets the
+    caller reject the request up front instead.
+    """
+    if (
+        self.service_tier == ServiceTier.DEFERRED
+        and self.streaming_mode == StreamingMode.SSE
+    ):
+      raise ValueError(
+          "service_tier='deferred' cannot be used with StreamingMode.SSE. A"
+          ' deferred request is queued to run on off-peak capacity and returns'
+          ' an interaction id instead of a result, so there is nothing to'
+          ' stream.'
+      )
+    return self
