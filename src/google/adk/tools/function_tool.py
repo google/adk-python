@@ -92,12 +92,66 @@ def _build_declaration_cached(
   )
 
 
+def _make_keyword_compatible(
+    target: Callable[..., Any],
+    signature: inspect.Signature,
+) -> Callable[..., Any]:
+  """Wraps a callable so that positional-only parameters can be passed via keyword."""
+  pos_only_params = [
+      p
+      for p in signature.parameters.values()
+      if p.kind == inspect.Parameter.POSITIONAL_ONLY
+  ]
+  if not pos_only_params:
+    return target
+
+  def _bind_args(kwargs: dict[str, Any]) -> tuple[list[Any], dict[str, Any]]:
+    pos_args: list[Any] = []
+    kw_args = dict(kwargs)
+    for i, p in enumerate(pos_only_params):
+      if p.name in kw_args:
+        pos_args.append(kw_args.pop(p.name))
+      elif any(rem.name in kw_args for rem in pos_only_params[i + 1 :]):
+        if p.default is not inspect.Parameter.empty:
+          pos_args.append(p.default)
+        else:
+          break
+      else:
+        break
+    return pos_args, kw_args
+
+  is_async = inspect.iscoroutinefunction(target) or (
+      hasattr(target, "__call__")
+      and inspect.iscoroutinefunction(target.__call__)
+  )
+  if is_async:
+
+    @functools.wraps(target)
+    async def async_wrapper(**kwargs: Any) -> Any:
+      pos, kw = _bind_args(kwargs)
+      return await target(*pos, **kw)
+
+    return async_wrapper
+
+  @functools.wraps(target)
+  def sync_wrapper(**kwargs: Any) -> Any:
+    pos, kw = _bind_args(kwargs)
+    return target(*pos, **kw)
+
+  return sync_wrapper
+
+
 class FunctionTool(BaseTool):
   """A tool that wraps a user-defined Python function.
 
   Attributes:
     func: The function to wrap.
   """
+
+  func: Callable[..., Any]
+  _spec: CallableSpec
+  _compatible_func: Callable[..., Any]
+  _require_confirmation: Union[bool, Callable[..., bool]]
 
   def __init__(
       self,
@@ -125,6 +179,12 @@ class FunctionTool(BaseTool):
     self._ignore_params = [self._context_param_name, "input_stream"]
     self._require_confirmation = require_confirmation
     self._type_adapter_cache: dict[Any, pydantic.TypeAdapter[Any]] = {}
+    if self._spec.has_signature:
+      self._compatible_func = _make_keyword_compatible(
+          func, self._spec.signature
+      )
+    else:
+      self._compatible_func = func
 
   @override
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
@@ -444,6 +504,14 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
       self, target: Callable[..., Any], args_to_call: dict[str, Any]
   ) -> Any:
     """Invokes a callable, handling both sync and async cases."""
+    if target is self.func or target is getattr(self, "_compatible_func", None):
+      target = getattr(self, "_compatible_func", self.func)
+    else:
+      try:
+        sig = inspect.signature(target)
+        target = _make_keyword_compatible(target, sig)
+      except (ValueError, TypeError):
+        pass
 
     # Functions are callable objects, but not all callable objects are functions
     # checking coroutine function is not enough. We also need to check whether
