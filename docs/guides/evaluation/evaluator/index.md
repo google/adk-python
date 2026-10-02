@@ -26,11 +26,11 @@ and the module it names.
 
 An **`Evaluator` subclass** is the heavier one. It exists for a metric that needs
 per-run construction, such as a client to build, an expensive model to load
-once, or a criterion type of its own with extra config keys. A config file
-cannot name a class, only a function, so a subclass has to be registered from
-Python before the run starts.
+once, a criterion type of its own with extra config keys, or session state.
+A config file cannot name a class, only a function, so a subclass has to be
+registered from Python before the run starts.
 
-Take the function unless one of those three needs applies, because a function
+Take the function unless one of those needs applies, because a function
 costs you nothing beyond the function, while a subclass adds a registration step
 that has to run in the same process as the evaluation.
 
@@ -198,16 +198,41 @@ both the scores and the statuses, as the example above does, satisfies both.
 
 ## Advanced applications
 
-The class-based route is what makes per-run construction and extra configuration
-keys available, and those two capabilities are worth taking separately.
+The class-based route supports per-run construction, session state, and extra
+configuration keys.
 
 ### Write an `Evaluator` subclass
 
-Subclass `Evaluator` when the metric needs setup that should happen once per
-run rather than once per call. The constructor is invoked with a single keyword
-argument, `eval_metric=`, and `evaluate_invocations` may be sync or async.
+Subclass `Evaluator` when the metric needs setup once per run or access to
+session state. The constructor receives a single keyword argument, `eval_metric=`.
+Override `evaluate_invocations` for invocation-only metrics, or
+`evaluate_with_context` for metrics that need state. Either method may be sync
+or async. The default `evaluate_with_context` calls `evaluate_invocations` with
+its original arguments, so existing evaluators need no changes.
+
+`EvaluationContext` provides state for the whole eval case:
+
+| Field | Description |
+| :--- | :--- |
+| `initial_session_state` | Actual state before the first turn. |
+| `final_session_state` | Actual state after the last turn. |
+| `expected_final_session_state` | Expected state from `EvalCase.final_session_state`. |
+
+Each field is a dictionary, or `None` when unavailable. An empty dictionary is
+valid state. Actual states are snapshots from inference, and each metric receives
+its own copy. For details on saved results, see the
+[eval service guide](../eval_service/index.md#session-state-for-metrics).
+
+The expected state preserves `EvalCase.final_session_state` as supplied. Its
+default is `{}`, so an omitted value means an expected empty state. Set it to
+`None` explicitly when no expected state is available.
+
+The following metric checks whether the final state exactly matches the expected
+state. It returns `NOT_EVALUATED` if either state is absent. The same case-level
+score appears on each invocation to satisfy the result contract.
 
 ```python
+from google.adk.evaluation import EvaluationContext
 from google.adk.evaluation.eval_metrics import BaseCriterion
 from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.evaluator import EvaluationResult
@@ -216,45 +241,45 @@ from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.evaluator import PerInvocationResult
 
 
-class ResponseLengthEvaluator(Evaluator):
-  """Scores 1.0 when the final response stays under a character budget."""
+class FinalStateMatchEvaluator(Evaluator):
+  """Scores 1.0 when the final state matches the expected state."""
 
   criterion_type = BaseCriterion
 
   def __init__(self, eval_metric: EvalMetric):
-    self._threshold = eval_metric.criterion.threshold
+    if eval_metric.criterion is not None:
+      self._threshold = eval_metric.criterion.threshold
+    elif eval_metric.threshold is not None:
+      self._threshold = eval_metric.threshold
+    else:
+      raise ValueError("final_state_match requires a threshold.")
 
-  def evaluate_invocations(
+  def evaluate_with_context(
       self,
       actual_invocations,
       expected_invocations=None,
       conversation_scenario=None,
+      *,
+      context: EvaluationContext,
   ) -> EvaluationResult:
-    results = []
-    for invocation in actual_invocations:
-      response = invocation.final_response
-      parts = (response.parts or []) if response else []
-      length = len("".join(part.text or "" for part in parts))
-      score = 1.0 if length <= 200 else 0.0
-      results.append(
-          PerInvocationResult(
-              actual_invocation=invocation,
-              score=score,
-              eval_status=(
-                  EvalStatus.PASSED if score else EvalStatus.FAILED
-              ),
-          )
-      )
+    actual = context.final_session_state
+    expected = context.expected_final_session_state
+    if actual is None or expected is None or not actual_invocations:
+      return EvaluationResult()
 
-    overall = sum(r.score for r in results) / len(results)
+    score = 1.0 if actual == expected else 0.0
+    status = (
+        EvalStatus.PASSED if score >= self._threshold else EvalStatus.FAILED
+    )
     return EvaluationResult(
-        overall_score=overall,
-        overall_eval_status=(
-            EvalStatus.PASSED
-            if overall >= self._threshold
-            else EvalStatus.FAILED
-        ),
-        per_invocation_results=results,
+        overall_score=score,
+        overall_eval_status=status,
+        per_invocation_results=[
+            PerInvocationResult(
+                actual_invocation=invocation, score=score, eval_status=status
+            )
+            for invocation in actual_invocations
+        ],
     )
 ```
 
@@ -268,13 +293,13 @@ from google.adk.evaluation.metric_evaluator_registry import DEFAULT_METRIC_EVALU
 
 DEFAULT_METRIC_EVALUATOR_REGISTRY.register_evaluator(
     metric_info=MetricInfo(
-        metric_name="response_length",
-        description="Penalizes over-long final responses.",
+        metric_name="final_state_match",
+        description="Checks the expected final session state.",
         metric_value_info=MetricValueInfo(
             interval=Interval(min_value=0.0, max_value=1.0)
         ),
     ),
-    evaluator=ResponseLengthEvaluator,
+    evaluator=FinalStateMatchEvaluator,
 )
 ```
 
@@ -312,10 +337,10 @@ that two-stage validation works.
     the first registration and logs it. Constructing any registry also emits an
     experimental-feature warning, `MetricEvaluatorRegistry` being marked
     experimental.
-*   **Nothing is re-exported at package level.** Import from
+*   **Evaluator and registry types use module imports.** Import from
     `google.adk.evaluation.evaluator` and
-    `google.adk.evaluation.metric_evaluator_registry` directly; the package
-    `__init__` exports only `AgentEvaluator`.
+    `google.adk.evaluation.metric_evaluator_registry` directly.
+    `EvaluationContext` is also available from `google.adk.evaluation`.
 *   **Errors are swallowed.** A metric that raises degrades to `NOT_EVALUATED`
     with a log line rather than surfacing the exception to the caller.
 

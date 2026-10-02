@@ -66,6 +66,7 @@ from .eval_case import Invocation
 from .eval_case import InvocationEvent
 from .eval_case import InvocationEvents
 from .eval_case import SessionInput
+from .eval_case import SessionState
 from .eval_set import EvalSet
 from .request_intercepter_plugin import _RequestIntercepterPlugin
 from .simulation.user_simulator import BaseUserSimulatorConfig
@@ -156,6 +157,20 @@ async def _get_or_create_eval_session(
       user_id=user_id,
       state=initial_session.state if initial_session else {},
       session_id=pinned_session_id or fallback_session_id or str(uuid.uuid4()),
+  )
+
+
+async def _capture_final_session_state(
+    session_service: BaseSessionService, session: Session
+) -> Optional[SessionState]:
+  """Reads the final state from storage, since the runner may use another copy."""
+  final_session = await session_service.get_session(
+      app_name=session.app_name,
+      user_id=session.user_id,
+      session_id=session.id,
+  )
+  return (
+      copy.deepcopy(final_session.state) if final_session is not None else None
   )
 
 
@@ -752,12 +767,18 @@ class EvaluationGenerator:
       memory_service: Optional[BaseMemoryService] = None,
       live_timeout_seconds: int = DEFAULT_LIVE_TIMEOUT_SECONDS,
       app: Optional[App] = None,
+      session_state_callback: Optional[
+          Callable[[SessionState, Optional[SessionState]], None]
+      ] = None,
   ) -> list[Invocation]:
     """Scrapes the root agent in coordination with the user simulator in live mode.
 
     Mirrors `_generate_inferences_from_root_agent`: when `app` is provided the
     Runner carries the App's plugins and configuration, otherwise the bare
     `root_agent` is used.
+
+    If set, `session_state_callback` receives detached initial and final states
+    after the live session and runner close. A missing final session yields None.
     """
     if not session_service:
       session_service = InMemorySessionService()
@@ -767,6 +788,11 @@ class EvaluationGenerator:
 
     session = await _get_or_create_eval_session(
         session_service, initial_session, session_id
+    )
+    initial_state = (
+        copy.deepcopy(session.state)
+        if session_state_callback is not None
+        else {}
     )
     app_name = session.app_name
     user_id = session.user_id
@@ -857,10 +883,17 @@ class EvaluationGenerator:
               events, request_intercepter_plugin
           )
       )
-      return EvaluationGenerator.convert_events_to_eval_invocations(
+      inferences = EvaluationGenerator.convert_events_to_eval_invocations(
           EvaluationGenerator._normalize_live_transcriptions(events),
           app_details_by_invocation_id,
       )
+
+    if session_state_callback is not None:
+      session_state_callback(
+          initial_state,
+          await _capture_final_session_state(session_service, session),
+      )
+    return inferences
 
   @staticmethod
   async def _generate_inferences_from_root_agent(
@@ -873,6 +906,9 @@ class EvaluationGenerator:
       artifact_service: Optional[BaseArtifactService] = None,
       memory_service: Optional[BaseMemoryService] = None,
       app: Optional[App] = None,
+      session_state_callback: Optional[
+          Callable[[SessionState, Optional[SessionState]], None]
+      ] = None,
   ) -> list[Invocation]:
     """Scrapes the root agent in coordination with the user simulator.
 
@@ -882,6 +918,9 @@ class EvaluationGenerator:
     application-wide configuration. Otherwise the Runner is built from
     the bare `root_agent` with only the internal eval plugins, matching
     the legacy behavior.
+
+    If set, `session_state_callback` receives detached initial and final states
+    after the runner closes. A missing final session yields None.
     """
 
     if not session_service:
@@ -892,6 +931,11 @@ class EvaluationGenerator:
 
     session = await _get_or_create_eval_session(
         session_service, initial_session, session_id
+    )
+    initial_state = (
+        copy.deepcopy(session.state)
+        if session_state_callback is not None
+        else {}
     )
     app_name = session.app_name
     user_id = session.user_id
@@ -966,9 +1010,16 @@ class EvaluationGenerator:
               events, request_intercepter_plugin
           )
       )
-      return EvaluationGenerator.convert_events_to_eval_invocations(
+      inferences = EvaluationGenerator.convert_events_to_eval_invocations(
           events, app_details_by_invocation_id, durations_by_invocation_id
       )
+
+    if session_state_callback is not None:
+      session_state_callback(
+          initial_state,
+          await _capture_final_session_state(session_service, session),
+      )
+    return inferences
 
   @staticmethod
   def convert_events_to_eval_invocations(

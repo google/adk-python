@@ -1216,6 +1216,190 @@ class TestGenerateInferencesFromRootAgent:
     mock_live_session_cls.assert_called_once()
 
 
+class TestSessionStateSnapshots:
+
+  @pytest.fixture(params=[False, True], ids=["regular", "live"])
+  def generator_path(self, request, mocker, mock_runner):
+    live_session = None
+    if request.param:
+      live_session = mocker.MagicMock()
+      live_session.__aenter__ = mocker.AsyncMock(return_value=live_session)
+      live_session.__aexit__ = mocker.AsyncMock(return_value=None)
+      live_session.turn_complete_event = asyncio.Event()
+      live_session.live_finished = asyncio.Event()
+      mocker.patch.object(
+          evaluation_generator_module, "_LiveSession", return_value=live_session
+      )
+    suffix = "_live" if request.param else ""
+    generate = getattr(
+        EvaluationGenerator, "_generate_inferences_from_root_agent" + suffix
+    )
+    return generate, suffix, mock_runner, live_session
+
+  async def test_snapshots_use_actual_pinned_state_and_final_session(
+      self, mocker, generator_path
+  ):
+    """Snapshots keep the actual state before and after the complete run."""
+    generate, suffix, runner, live_session = generator_path
+    initial = Session(
+        id="fixed",
+        app_name="snapshot_app",
+        user_id="snapshot_user",
+        state={"nested": {"values": ["before"]}},
+    )
+    final = initial.model_copy(
+        deep=True, update={"state": {"nested": {"values": ["after"]}}}
+    )
+    session_service = mocker.MagicMock()
+    session_service.get_session = mocker.AsyncMock(side_effect=[initial, final])
+    simulator = mocker.MagicMock(spec=UserSimulator)
+    simulator.get_next_user_message = mocker.AsyncMock(
+        side_effect=[
+            NextUserMessage(
+                status=UserSimulatorStatus.SUCCESS,
+                user_message=types.Content(parts=[types.Part(text="hello")]),
+            ),
+            NextUserMessage(status=UserSimulatorStatus.STOP_SIGNAL_DETECTED),
+        ]
+    )
+
+    async def run_turn(*args, **kwargs):
+      initial.state["nested"]["values"].append("changed during the run")
+      yield _build_event("user", [types.Part(text="hello")], "inv1")
+      yield _build_event("agent", [types.Part(text="done")], "inv1")
+
+    mocker.patch.object(
+        EvaluationGenerator,
+        "_generate_inferences_for_single_user_invocation" + suffix,
+        side_effect=run_turn,
+    )
+
+    async def close_runner(*args):
+      final.state["runner_closed"] = True
+
+    runner.__aexit__.side_effect = close_runner
+    if live_session is not None:
+
+      async def close_live_session(*args):
+        final.state["live_closed"] = True
+
+      live_session.__aexit__.side_effect = close_live_session
+    capture = mocker.Mock()
+
+    inferences = await generate(
+        root_agent=mocker.MagicMock(),
+        user_simulator=simulator,
+        initial_session=SessionInput(
+            app_name="snapshot_app",
+            user_id="snapshot_user",
+            session_id="fixed",
+            state={"nested": {"values": ["unused configured state"]}},
+        ),
+        session_service=session_service,
+        session_state_callback=capture,
+    )
+    final.state["nested"]["values"].append("changed after the run")
+
+    expected_final = {
+        "nested": {"values": ["after"]},
+        "runner_closed": True,
+    }
+    if live_session is not None:
+      expected_final["live_closed"] = True
+    capture.assert_called_once_with(
+        {"nested": {"values": ["before"]}}, expected_final
+    )
+    session_service.get_session.assert_awaited_with(
+        app_name="snapshot_app", user_id="snapshot_user", session_id="fixed"
+    )
+    assert len(inferences) == 1
+    assert inferences[0].final_response.parts[0].text == "done"
+
+  async def test_new_session_has_empty_snapshots_without_session_input(
+      self, mocker, generator_path
+  ):
+    """An observed empty state stays distinct from an unavailable state."""
+    generate, _, _, _ = generator_path
+    session_service = InMemorySessionService()
+    simulator = mocker.MagicMock(spec=UserSimulator)
+    simulator.get_next_user_message = mocker.AsyncMock(
+        return_value=NextUserMessage(
+            status=UserSimulatorStatus.STOP_SIGNAL_DETECTED
+        )
+    )
+    capture = mocker.Mock()
+
+    inferences = await generate(
+        root_agent=mocker.MagicMock(),
+        user_simulator=simulator,
+        session_id="new_session",
+        session_service=session_service,
+        session_state_callback=capture,
+    )
+
+    assert inferences == []
+    capture.assert_called_once_with({}, {})
+
+  async def test_deleted_session_has_no_final_state(
+      self, mocker, generator_path
+  ):
+    """A deleted session does not reuse the initial state as its final state."""
+    generate, _, _, _ = generator_path
+    session_service = InMemorySessionService()
+    await session_service.create_session(
+        app_name="snapshot_app",
+        user_id="snapshot_user",
+        session_id="fixed",
+        state={"before": True},
+    )
+
+    async def stop_after_session_delete(*args):
+      await session_service.delete_session(
+          app_name="snapshot_app", user_id="snapshot_user", session_id="fixed"
+      )
+      return NextUserMessage(status=UserSimulatorStatus.STOP_SIGNAL_DETECTED)
+
+    simulator = mocker.MagicMock(spec=UserSimulator)
+    simulator.get_next_user_message = mocker.AsyncMock(
+        side_effect=stop_after_session_delete
+    )
+    capture = mocker.Mock()
+
+    inferences = await generate(
+        root_agent=mocker.MagicMock(),
+        user_simulator=simulator,
+        initial_session=SessionInput(
+            app_name="snapshot_app", user_id="snapshot_user", session_id="fixed"
+        ),
+        session_service=session_service,
+        session_state_callback=capture,
+    )
+
+    assert inferences == []
+    capture.assert_called_once_with({"before": True}, None)
+
+  async def test_failed_inference_does_not_report_completed_snapshots(
+      self, mocker, generator_path
+  ):
+    """The callback does not report success after an inference error."""
+    generate, _, _, _ = generator_path
+    simulator = mocker.MagicMock(spec=UserSimulator)
+    simulator.get_next_user_message = mocker.AsyncMock(
+        side_effect=RuntimeError("user simulator failed")
+    )
+    capture = mocker.Mock()
+
+    with pytest.raises(RuntimeError, match="user simulator failed"):
+      await generate(
+          root_agent=mocker.MagicMock(),
+          user_simulator=simulator,
+          session_service=InMemorySessionService(),
+          session_state_callback=capture,
+      )
+
+    capture.assert_not_called()
+
+
 class TestGenerateResponses:
   """Test cases for EvaluationGenerator.generate_responses method."""
 
