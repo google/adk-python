@@ -139,7 +139,13 @@ class A2aRemoteAgentConfig(BaseModel):
   """Interceptors that inject headers into the remote agent card fetch."""
 
   forward_session_id_as_context_id: bool = False
-  """Whether to forward the local session ID as context_id when no context_id is present."""
+  """Whether to derive context_id from the local session when no context_id is present.
+
+  The derived value is ``app_name/user_id/session_id`` (each part
+  percent-encoded), so it stays correlatable across agents and distinct local
+  users or apps never collapse onto the same remote context, even if they
+  happen to share a session ID.
+  """
 
   def __deepcopy__(
       self, memo: dict[int, Any] | None = None

@@ -3967,6 +3967,8 @@ class TestRemoteA2aAgentExecution:
     # Mock session and context
     self.mock_session = Mock(spec=Session)
     self.mock_session.id = "session-123"
+    self.mock_session.app_name = "test-app"
+    self.mock_session.user_id = "user-a"
     self.mock_session.events = []
     self.mock_session.state = {}
 
@@ -4258,18 +4260,50 @@ class TestRemoteA2aAgentExecution:
 
   @pytest.mark.asyncio
   async def test_run_async_impl_uses_session_id_when_opted_in(self):
-    """Test that session ID is used as context_id when opted in.
+    """Test that a namespaced session ID is used as context_id when opted in.
 
     When forward_session_id_as_context_id is True and
     _construct_message_parts_from_session returns None for context_id,
-    the agent should use ctx.session.id to maintain session identity across
-    local and remote agents.
+    the agent should derive context_id from the session's app name, user ID,
+    and session ID (not the raw session ID) to maintain session identity
+    across local and remote agents without collapsing distinct local users
+    that share a session ID.
     """
+    expected_context_id = remote_a2a_agent._namespaced_session_context_id(
+        self.mock_session
+    )
     await self._run_context_id_test(
         mock_context_id=None,
-        expected_context_id=self.mock_session.id,
+        expected_context_id=expected_context_id,
         forward_session_id=True,
     )
+
+  @pytest.mark.asyncio
+  async def test_run_async_impl_namespaces_context_id_by_user(self):
+    """Two distinct users sharing a session ID must not collide remotely.
+
+    Regression test for the vulnerability where forwarding the raw session
+    ID as context_id let two different local users with the same session ID
+    be mapped to the same remote A2A context.
+    """
+    self.mock_session.user_id = "user-a"
+    expected_context_id = remote_a2a_agent._namespaced_session_context_id(
+        self.mock_session
+    )
+    await self._run_context_id_test(
+        mock_context_id=None,
+        expected_context_id=expected_context_id,
+        forward_session_id=True,
+    )
+    context_id_for_user_a = expected_context_id
+
+    self.mock_session.user_id = "user-b"
+    context_id_for_user_b = remote_a2a_agent._namespaced_session_context_id(
+        self.mock_session
+    )
+
+    assert context_id_for_user_a == "test-app/user-a/session-123"
+    assert context_id_for_user_b == "test-app/user-b/session-123"
 
   @pytest.mark.asyncio
   async def test_run_async_impl_preserves_existing_context_id(self):

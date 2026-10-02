@@ -25,6 +25,7 @@ from typing import Callable
 from typing import Literal
 from typing import Optional
 from typing import Union
+from urllib.parse import quote
 from urllib.parse import urlparse
 
 from a2a.client import Client as A2AClient
@@ -577,6 +578,23 @@ def _remote_identity(agent_card: Union[AgentCard, str]) -> str:
   # A card with neither is rejected later by `_validate_agent_card`, so return
   # a string the digest can hash rather than fail the constructor.
   return _compat.agent_card_url(agent_card) or agent_card.name or ""
+
+
+def _namespaced_session_context_id(session: Any) -> Optional[str]:
+  """Derives a remote context ID that namespaces the session by app/user.
+
+  ``session.id`` alone is not globally unique: two distinct local users (or
+  two apps) can reuse the same session ID, and forwarding the raw ID would
+  let their conversations collide on a remote A2A server that keys state off
+  the context ID.
+  """
+  session_id = getattr(session, "id", None)
+  if not session_id:
+    return None
+  app_name = getattr(session, "app_name", "") or ""
+  user_id = getattr(session, "user_id", "") or ""
+  # Percent-encoding keeps "/" unambiguous, so the parts can be split back out.
+  return "/".join(quote(p, safe="") for p in (app_name, user_id, session_id))
 
 
 def _names_its_own_credential_key(
@@ -1655,8 +1673,8 @@ class RemoteA2aAgent(BaseAgent):
               branch=ctx.branch,
           )
           return
-        session_id = (
-            getattr(ctx.session, "id", None)
+        namespaced_session_id = (
+            _namespaced_session_context_id(ctx.session)
             if self._config.forward_session_id_as_context_id
             and ctx
             and getattr(ctx, "session", None)
@@ -1666,7 +1684,7 @@ class RemoteA2aAgent(BaseAgent):
             message_id=platform_uuid.new_uuid(),
             parts=message_parts,
             role=_compat.ROLE_USER,
-            context_id=context_id or session_id,
+            context_id=context_id or namespaced_session_id,
         )
 
       logger.debug(build_a2a_request_log(a2a_request))
