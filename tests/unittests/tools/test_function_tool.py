@@ -1333,3 +1333,155 @@ async def test_run_async_leaves_untyped_list_param_alone(mock_tool_context):
       tool_context=mock_tool_context,
   )
   assert result == {"types": ["float"]}
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_positional_only_arguments(mock_tool_context):
+  """FunctionTool invokes sync functions with positional-only arguments."""
+
+  def add_pos_only(x: int, /, y: int) -> int:
+    return x + y
+
+  tool = FunctionTool(add_pos_only)
+  result = await tool.run_async(
+      args={"x": 1, "y": 2},
+      tool_context=mock_tool_context,
+  )
+  assert result == 3
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_async_positional_only_arguments(
+    mock_tool_context,
+):
+  """FunctionTool invokes async functions with positional-only arguments."""
+
+  async def add_pos_only_async(x: int, /, y: int) -> int:
+    return x + y
+
+  tool = FunctionTool(add_pos_only_async)
+  result = await tool.run_async(
+      args={"x": 10, "y": 20},
+      tool_context=mock_tool_context,
+  )
+  assert result == 30
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_builtin_positional_only(mock_tool_context):
+  """FunctionTool invokes builtins with positional-only arguments (e.g. math.pow)."""
+  import math
+
+  tool = FunctionTool(math.pow)
+  result = await tool.run_async(
+      args={"x": 2.0, "y": 3.0},
+      tool_context=mock_tool_context,
+  )
+  assert result == 8.0
+
+
+@pytest.mark.asyncio
+async def test_run_async_positional_only_defaults(mock_tool_context):
+  """FunctionTool handles default values on positional-only arguments."""
+
+  def greet(name: str, greeting: str = "hello", /) -> str:
+    return f"{greeting}, {name}"
+
+  tool = FunctionTool(greet)
+  res1 = await tool.run_async(
+      args={"name": "Alice"},
+      tool_context=mock_tool_context,
+  )
+  assert res1 == "hello, Alice"
+
+  res2 = await tool.run_async(
+      args={"name": "Bob", "greeting": "hi"},
+      tool_context=mock_tool_context,
+  )
+  assert res2 == "hi, Bob"
+
+
+@pytest.mark.asyncio
+async def test_run_async_positional_only_with_thread_pool_runner(
+    mock_tool_context,
+):
+  """FunctionTool with positional-only args works through _use_sync_callable_runner."""
+  from google.adk.tools.function_tool import _use_sync_callable_runner
+
+  def multiply(x: int, /, factor: int = 2) -> int:
+    return x * factor
+
+  async def dummy_sync_runner(target, call_args):
+    return target(**call_args)
+
+  tool = FunctionTool(multiply)
+  with _use_sync_callable_runner(dummy_sync_runner):
+    result = await tool.run_async(
+        args={"x": 5, "factor": 3},
+        tool_context=mock_tool_context,
+    )
+  assert result == 15
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_callable_object_positional_only(
+    mock_tool_context,
+):
+  """FunctionTool invokes callable object instances with positional-only arguments."""
+
+  class Multiplier:
+
+    def __call__(self, x: int, /, y: int) -> int:
+      return x * y
+
+  tool = FunctionTool(Multiplier())
+  result = await tool.run_async(
+      args={"x": 4, "y": 5},
+      tool_context=mock_tool_context,
+  )
+  assert result == 20
+
+
+@pytest.mark.asyncio
+async def test_run_async_positional_only_with_injected_context(
+    mock_tool_context,
+):
+  """FunctionTool passes injected tool_context alongside positional-only args."""
+
+  def tool_with_ctx(val: int, /, tool_context: ToolContext) -> dict[str, Any]:
+    return {"val": val, "has_ctx": tool_context is not None}
+
+  tool = FunctionTool(tool_with_ctx)
+  result = await tool.run_async(
+      args={"val": 42},
+      tool_context=mock_tool_context,
+  )
+  assert result == {"val": 42, "has_ctx": True}
+
+
+@pytest.mark.asyncio
+async def test_run_async_positional_only_with_confirmation_predicate(
+    mock_tool_context,
+):
+  """FunctionTool handles confirmation predicates with positional-only args."""
+
+  def add(x: int, /, y: int) -> int:
+    return x + y
+
+  def require_if_large(x: int, /, y: int) -> bool:
+    return (x + y) > 10
+
+  mock_tool_context.function_call_id = "call_123"
+  tool = FunctionTool(add, require_confirmation=require_if_large)
+  res_small = await tool.run_async(
+      args={"x": 2, "y": 3},
+      tool_context=mock_tool_context,
+  )
+  assert res_small == 5
+
+  res_large = await tool.run_async(
+      args={"x": 10, "y": 20},
+      tool_context=mock_tool_context,
+  )
+  assert "error" in res_large
+  assert "requires confirmation" in res_large["error"]
