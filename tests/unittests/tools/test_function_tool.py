@@ -1876,3 +1876,293 @@ async def test_generator_tool_binds_none_default_without_revalidation(
       if p.function_response
   ]
   assert second_req_responses == [{"query": "sales", "tag": None}]
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_positional_only_arguments(mock_tool_context):
+  """FunctionTool invokes sync functions with positional-only arguments."""
+
+  def add_pos_only(x: int, /, y: int) -> int:
+    return x + y
+
+  tool = FunctionTool(add_pos_only)
+  result = await tool.run_async(
+      args={"x": 1, "y": 2},
+      tool_context=mock_tool_context,
+  )
+  assert result == 3
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_async_positional_only_arguments(
+    mock_tool_context,
+):
+  """FunctionTool invokes async functions with positional-only arguments."""
+
+  async def add_pos_only_async(x: int, /, y: int) -> int:
+    return x + y
+
+  tool = FunctionTool(add_pos_only_async)
+  result = await tool.run_async(
+      args={"x": 10, "y": 20},
+      tool_context=mock_tool_context,
+  )
+  assert result == 30
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_builtin_positional_only(mock_tool_context):
+  """FunctionTool invokes builtins with positional-only arguments (e.g. math.pow)."""
+  import math
+
+  tool = FunctionTool(math.pow)
+  result = await tool.run_async(
+      args={"x": 2.0, "y": 3.0},
+      tool_context=mock_tool_context,
+  )
+  assert result == 8.0
+
+
+@pytest.mark.asyncio
+async def test_run_async_positional_only_defaults(mock_tool_context):
+  """FunctionTool handles default values on positional-only arguments."""
+
+  def greet(name: str, greeting: str = "hello", /) -> str:
+    return f"{greeting}, {name}"
+
+  tool = FunctionTool(greet)
+  res1 = await tool.run_async(
+      args={"name": "Alice"},
+      tool_context=mock_tool_context,
+  )
+  assert res1 == "hello, Alice"
+
+  res2 = await tool.run_async(
+      args={"name": "Bob", "greeting": "hi"},
+      tool_context=mock_tool_context,
+  )
+  assert res2 == "hi, Bob"
+
+
+@pytest.mark.asyncio
+async def test_run_async_positional_only_with_thread_pool_runner(
+    mock_tool_context,
+):
+  """FunctionTool with positional-only args works through _use_sync_callable_runner."""
+  from google.adk.tools.function_tool import _use_sync_callable_runner
+
+  def multiply(x: int, /, factor: int = 2) -> int:
+    return x * factor
+
+  async def dummy_sync_runner(target, call_args):
+    return target(**call_args)
+
+  tool = FunctionTool(multiply)
+  with _use_sync_callable_runner(dummy_sync_runner):
+    result = await tool.run_async(
+        args={"x": 5, "factor": 3},
+        tool_context=mock_tool_context,
+    )
+  assert result == 15
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_callable_object_positional_only(
+    mock_tool_context,
+):
+  """FunctionTool invokes callable object instances with positional-only arguments."""
+
+  class Multiplier:
+
+    def __call__(self, x: int, /, y: int) -> int:
+      return x * y
+
+  tool = FunctionTool(Multiplier())
+  result = await tool.run_async(
+      args={"x": 4, "y": 5},
+      tool_context=mock_tool_context,
+  )
+  assert result == 20
+
+
+@pytest.mark.asyncio
+async def test_run_async_positional_only_with_injected_context(
+    mock_tool_context,
+):
+  """FunctionTool passes injected tool_context alongside positional-only args."""
+
+  def tool_with_ctx(val: int, /, tool_context: ToolContext) -> dict[str, Any]:
+    return {"val": val, "has_ctx": tool_context is not None}
+
+  tool = FunctionTool(tool_with_ctx)
+  result = await tool.run_async(
+      args={"val": 42},
+      tool_context=mock_tool_context,
+  )
+  assert result == {"val": 42, "has_ctx": True}
+
+
+@pytest.mark.asyncio
+async def test_run_async_positional_only_with_confirmation_predicate(
+    mock_tool_context,
+):
+  """FunctionTool handles confirmation predicates with positional-only args."""
+
+  def add(x: int, /, y: int) -> int:
+    return x + y
+
+  def require_if_large(x: int, /, y: int) -> bool:
+    return (x + y) > 10
+
+  mock_tool_context.function_call_id = "call_123"
+  tool = FunctionTool(add, require_confirmation=require_if_large)
+  res_small = await tool.run_async(
+      args={"x": 2, "y": 3},
+      tool_context=mock_tool_context,
+  )
+  assert res_small == 5
+
+  res_large = await tool.run_async(
+      args={"x": 10, "y": 20},
+      tool_context=mock_tool_context,
+  )
+  assert "error" in res_large
+  assert "requires confirmation" in res_large["error"]
+
+
+@pytest.mark.asyncio
+async def test_generator_tool_with_positional_only_arguments_runner():
+  """Generator FunctionTool with positional-only arguments executes through Runner."""
+  from google.adk.agents.llm_agent import Agent
+  from google.adk.events.event import Event
+  from google.adk.models.llm_response import LlmResponse
+  from google.genai import types
+
+  from .. import testing_utils
+
+  def count(n: int, /):
+    for i in range(n):
+      yield Event(message=f"step {i}")
+    yield {"count": n}
+
+  fc = types.Part.from_function_call(name="count", args={"n": 3})
+  mock_model = testing_utils.MockModel.create([
+      LlmResponse(content=types.Content(role="model", parts=[fc])),
+      LlmResponse(
+          content=types.Content(
+              role="model", parts=[types.Part.from_text(text="Done.")]
+          )
+      ),
+  ])
+  agent = Agent(name="root_agent", model=mock_model, tools=[count])
+  runner = testing_utils.InMemoryRunner(agent)
+
+  events = await runner.run_async("count to 3")
+
+  intermediate = [
+      e
+      for e in events
+      if e.author == "count"
+      and e.content
+      and e.content.parts
+      and e.content.parts[0].text in ("step 0", "step 1", "step 2")
+  ]
+  assert len(intermediate) == 3
+  assert all(
+      e.branch is not None and e.branch.startswith("count@")
+      for e in intermediate
+  )
+
+  second_req_responses = [
+      p.function_response.response
+      for c in mock_model.requests[1].contents
+      for p in c.parts or []
+      if p.function_response
+  ]
+  assert second_req_responses == [{"count": 3}]
+
+
+@pytest.mark.asyncio
+async def test_async_generator_tool_with_positional_only_arguments_runner():
+  """Async generator FunctionTool with positional-only arguments executes through Runner."""
+  from google.adk.agents.llm_agent import Agent
+  from google.adk.events.event import Event
+  from google.adk.models.llm_response import LlmResponse
+  from google.genai import types
+
+  from .. import testing_utils
+
+  async def async_count(n: int, /):
+    for i in range(n):
+      yield Event(message=f"async_step {i}")
+    yield {"count": n}
+
+  fc = types.Part.from_function_call(name="async_count", args={"n": 2})
+  mock_model = testing_utils.MockModel.create([
+      LlmResponse(content=types.Content(role="model", parts=[fc])),
+      LlmResponse(
+          content=types.Content(
+              role="model", parts=[types.Part.from_text(text="Done.")]
+          )
+      ),
+  ])
+  agent = Agent(name="root_agent", model=mock_model, tools=[async_count])
+  runner = testing_utils.InMemoryRunner(agent)
+
+  events = await runner.run_async("count to 2")
+
+  intermediate = [
+      e
+      for e in events
+      if e.author == "async_count"
+      and e.content
+      and e.content.parts
+      and e.content.parts[0].text in ("async_step 0", "async_step 1")
+  ]
+  assert len(intermediate) == 2
+
+  second_req_responses = [
+      p.function_response.response
+      for c in mock_model.requests[1].contents
+      for p in c.parts or []
+      if p.function_response
+  ]
+  assert second_req_responses == [{"count": 2}]
+
+
+@pytest.mark.asyncio
+async def test_generator_tool_positional_only_defaults_runner():
+  """Generator FunctionTool with positional-only defaults executes through Runner."""
+  from google.adk.agents.llm_agent import Agent
+  from google.adk.events.event import Event
+  from google.adk.models.llm_response import LlmResponse
+  from google.genai import types
+
+  from .. import testing_utils
+
+  def count_default(n: int = 2, /):
+    for i in range(n):
+      yield Event(message=f"step {i}")
+    yield {"total": n}
+
+  fc = types.Part.from_function_call(name="count_default", args={})
+  mock_model = testing_utils.MockModel.create([
+      LlmResponse(content=types.Content(role="model", parts=[fc])),
+      LlmResponse(
+          content=types.Content(
+              role="model", parts=[types.Part.from_text(text="Done.")]
+          )
+      ),
+  ])
+  agent = Agent(name="root_agent", model=mock_model, tools=[count_default])
+  runner = testing_utils.InMemoryRunner(agent)
+
+  await runner.run_async("count default")
+
+  second_req_responses = [
+      p.function_response.response
+      for c in mock_model.requests[1].contents
+      for p in c.parts or []
+      if p.function_response
+  ]
+  assert second_req_responses == [{"total": 2}]
