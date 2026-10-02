@@ -7,9 +7,9 @@
 
 This release adds graceful cancellation and tool confirmation to workflows, a tool for consulting another model mid-task, and a built-in SQLite memory service.
 
-* **Execution cancellation**: Pass an `abort_signal` to `Runner`, `Workflow`, and nodes to stop a run gracefully; `/run_sse` now cancels the run when the client disconnects. ([ef5bbcf](https://github.com/google/adk-python/commit/ef5bbcfe51670bd211645a043914c162e7c1cd60), [3d73603](https://github.com/google/adk-python/commit/3d73603deb180a6518982b2b60f036c764f0cf7e))
+* **Execution cancellation**: Pass an `abort_signal` to `Runner`, `Workflow`, and nodes to stop a run gracefully; `/run_sse` now cancels the run when the client disconnects. See the [unit guide](https://github.com/google/adk-python/blob/main/docs/guides/runners/runner/abort.md). ([ef5bbcf](https://github.com/google/adk-python/commit/ef5bbcfe51670bd211645a043914c162e7c1cd60), [3d73603](https://github.com/google/adk-python/commit/3d73603deb180a6518982b2b60f036c764f0cf7e))
 * **Tool confirmation in workflows**: Tool nodes now pause for user approval via `RequestInput`, the same way an `LlmAgent` does, instead of passing an error downstream. ([ce132b9](https://github.com/google/adk-python/commit/ce132b92d471b8df903524593d863171b000a764))
-* **ModelConsultTool**: Let an agent consult another model mid-task, capped by per-turn and per-session budgets. ([84cc99a](https://github.com/google/adk-python/commit/84cc99abd53010817a85b51fdcdc5d4f48366769))
+* **ModelConsultTool**: Let an agent consult another model mid-task, capped by per-turn and per-session budgets. See the [unit guide](https://github.com/google/adk-python/blob/main/docs/guides/tools/model_consult/model_consult_tool/index.md). ([84cc99a](https://github.com/google/adk-python/commit/84cc99abd53010817a85b51fdcdc5d4f48366769))
 * **SQLite memory service**: Keep agent memory in a local SQLite database, selected with a `sqlite://` memory service URI. ([9625b06](https://github.com/google/adk-python/commit/9625b06c9a1be6b9ecd85225657690ae5c0e9d3e))
 * **MCP SDK 2.x**: Connect to MCP servers over the modern protocol through a new opt-in path. ([e738c26](https://github.com/google/adk-python/commit/e738c26fe5abcecffe2fbeba31f8d837086aad8a))
 
