@@ -781,6 +781,8 @@ def builder_test_client(
   """Return a TestClient rooted in a temporary agents directory."""
   with (
       patch.object(signal, "signal", autospec=True, return_value=None),
+      # Building the app adds tmp_path to sys.path; undo it for later tests.
+      patch.object(sys, "path", list(sys.path)),
       patch.object(
           fast_api_module,
           "create_session_service_from_options",
@@ -3940,17 +3942,41 @@ def test_builder_save_rejects_external_schema_reference(builder_test_client):
   assert "input_schema" in response.json()["detail"]
 
 
+@pytest.mark.parametrize(
+    ("app_name", "reference"),
+    [
+        ("os", "os.system"),
+        ("sys", "sys.exit"),
+        ("google", "google.genai.Client"),
+        ("dotenv", "dotenv.cli.run_command"),
+    ],
+)
 def test_builder_save_rejects_reference_when_app_name_shadows_module(
-    builder_test_client,
+    builder_test_client, app_name, reference
 ):
   """An app named after a real module cannot vouch for its own references."""
   response = _save_builder_yaml(
       builder_test_client,
-      b"name: my_agent\ntools:\n  - name: os.system\n",
-      app_name="os",
+      f"name: my_agent\ntools:\n  - name: {reference}\n".encode(),
+      app_name=app_name,
   )
   assert response.status_code == 400
   assert "shadows" in response.json()["detail"]
+
+
+def test_builder_save_allows_reference_when_app_imports_from_its_directory(
+    builder_test_client, tmp_path, monkeypatch
+):
+  """An app that is importable passes when it imports from its own folder."""
+  (tmp_path / "importable_app").mkdir()
+  (tmp_path / "importable_app" / "__init__.py").touch()
+  monkeypatch.syspath_prepend(str(tmp_path))
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\ntools:\n  - name: importable_app.tools.search\n",
+      app_name="importable_app",
+  )
+  assert response.status_code == 200
 
 
 def test_builder_save_covers_every_code_config_field(builder_test_client):

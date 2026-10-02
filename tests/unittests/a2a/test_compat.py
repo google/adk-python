@@ -164,6 +164,72 @@ def test_build_agent_card_converts_model_arguments_to_card_fields():
 
 
 # -----------------------------------------------------------------------------
+# build_agent_skill / get_skill_security
+# -----------------------------------------------------------------------------
+class _FakeStringList:
+
+  def __init__(self, values: list[str]):
+    self.list = values
+
+
+class _FakeSecurityRequirement:
+
+  def __init__(self, schemes: dict[str, list[str]]):
+    self.schemes = {k: _FakeStringList(v) for k, v in schemes.items()}
+
+
+class _FakeV1Skill:
+
+  def __init__(self, requirements: list[dict[str, list[str]]]):
+    self.security_requirements = [
+        _FakeSecurityRequirement(req) for req in requirements
+    ]
+
+
+def test_build_agent_skill_without_security_returns_none_from_get_skill_security():
+  skill = _compat.build_agent_skill(
+      id='skill-1',
+      name='Skill One',
+      description='Skill description',
+      tags=['tag-1'],
+      examples=['example input'],
+      input_modes=['text/plain'],
+      output_modes=['application/json'],
+  )
+  assert skill.id == 'skill-1'
+  assert skill.name == 'Skill One'
+  assert skill.description == 'Skill description'
+  assert list(skill.tags) == ['tag-1']
+  assert list(skill.examples) == ['example input']
+  assert list(skill.input_modes) == ['text/plain']
+  assert list(skill.output_modes) == ['application/json']
+  assert _compat.get_skill_security(skill) is None
+
+
+def test_build_agent_skill_with_security_round_trips_through_get_skill_security():
+  security = [{'oauth2': ['read', 'write']}, {'api_key': []}]
+  skill = _compat.build_agent_skill(
+      id='skill-1',
+      name='Skill One',
+      description='Skill description',
+      tags=['tag-1'],
+      security=security,
+  )
+  assert _compat.get_skill_security(skill) == security
+
+
+def test_get_skill_security_v1_returns_none_when_empty(monkeypatch):
+  monkeypatch.setattr(_compat, 'IS_A2A_V1', True)
+  assert _compat.get_skill_security(_FakeV1Skill([])) is None
+
+
+def test_get_skill_security_v1_extracts_scheme_scopes(monkeypatch):
+  monkeypatch.setattr(_compat, 'IS_A2A_V1', True)
+  security = [{'oauth2': ['read', 'write']}, {'api_key': []}]
+  assert _compat.get_skill_security(_FakeV1Skill(security)) == security
+
+
+# -----------------------------------------------------------------------------
 # rebind_client_factory_httpx
 # -----------------------------------------------------------------------------
 def _factory_with_custom_transport(httpx_client, consumers):

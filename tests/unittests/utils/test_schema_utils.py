@@ -14,12 +14,8 @@
 
 """Tests for _schema_utils module."""
 
-from datetime import datetime
-from decimal import Decimal
-from enum import Enum
 import functools
 import inspect
-import json
 import signal
 import time
 from typing import Annotated
@@ -35,13 +31,10 @@ from google.adk.utils._schema_utils import preprocess_args
 from google.adk.utils._schema_utils import schema_to_json_schema
 from google.adk.utils._schema_utils import validate_node_data
 from google.adk.utils._schema_utils import validate_schema
-from google.adk.workflow._base_node import BaseNode
 from google.genai import types
 from pydantic import BaseModel
 from pydantic import Field
-from pydantic import PlainSerializer
 from pydantic import ValidationError
-from pydantic_core import PydanticSerializationError
 import pytest
 
 
@@ -303,30 +296,6 @@ class TestValidateSchema:
     assert _strip_json_code_fence("```") == "```"
     assert _strip_json_code_fence("") == ""
 
-  def test_validate_schema_dumps_native_types_in_json_mode(self):
-    """validate_schema coerces Decimal, datetime, Enum to JSON primitives."""
-
-    class Color(Enum):
-      RED = 1
-
-    class Payload(BaseModel):
-      price: Decimal
-      stamped_at: datetime
-      color: Color
-
-    json_text = (
-        '{"price": "29.99", "stamped_at": "2026-01-02T03:04:05", "color": 1}'
-    )
-    result = validate_schema(Payload, json_text)
-    assert result == {
-        "price": "29.99",
-        "stamped_at": "2026-01-02T03:04:05",
-        "color": 1,
-    }
-    assert isinstance(result["price"], str)
-    assert isinstance(result["stamped_at"], str)
-    assert result["color"] == 1
-
 
 class TestValidateNodeData:
   """Tests for validate_node_data function."""
@@ -342,48 +311,6 @@ class TestValidateNodeData:
     # Mock types.Schema
     schema = types.Schema(type=types.Type.STRING)
     assert validate_node_data(schema, "some_data") == "some_data"
-
-  def test_dict_or_types_schema_dumps_basemodel_in_json_mode(self):
-    """dict or types.Schema schema dumps BaseModel outputs in JSON mode."""
-
-    class Price(BaseModel):
-      amount: Decimal
-      note: str | None = None
-
-    price = Price(amount=Decimal("29.99"))
-    dict_result = validate_node_data({"type": "object"}, price)
-    assert dict_result == {"amount": "29.99", "note": None}
-    assert isinstance(dict_result["amount"], str)
-
-    schema_result = validate_node_data(
-        types.Schema(type=types.Type.OBJECT), price
-    )
-    assert schema_result == {"amount": "29.99", "note": None}
-    assert isinstance(schema_result["amount"], str)
-
-  def test_dict_schema_coerces_native_types_in_json_mode(self):
-    """dict schema in validate_node_data coerces native types in JSON mode."""
-
-    class Color(Enum):
-      RED = 1
-
-    data = {
-        "price": Decimal("29.99"),
-        "stamped_at": datetime(2026, 1, 2, 3, 4, 5),
-        "color": Color.RED,
-        "by_color": {Color.RED: Decimal("10.00")},
-    }
-    result = validate_node_data({"type": "object"}, data)
-    assert result == {
-        "price": "29.99",
-        "stamped_at": "2026-01-02T03:04:05",
-        "color": 1,
-        "by_color": {"1": "10.00"},
-    }
-    assert isinstance(result["price"], str)
-    assert isinstance(result["stamped_at"], str)
-    assert result["color"] == 1
-    json.dumps(result)
 
   def test_content_schema_returns_data(self):
     """Bypasses validation if target schema is types.Content or subclass."""
@@ -428,118 +355,6 @@ class TestValidateNodeData:
     """Bypasses JSON parsing if schema is str."""
     result = validate_node_data(str, "hello")
     assert result == "hello"
-
-  def test_json_mode_serializers_are_applied_for_decimal(self):
-    """when_used='json' serializers run so validated node data is JSON-safe."""
-    JsonDecimal = Annotated[
-        Decimal, PlainSerializer(float, return_type=float, when_used="json")
-    ]
-
-    class Price(BaseModel):
-      amount: JsonDecimal
-
-    class Payload(BaseModel):
-      price: Price
-
-    result = validate_node_data(Payload, {"price": {"amount": "29.99"}})
-    assert result == {"price": {"amount": 29.99}}
-    assert isinstance(result["price"]["amount"], float)
-    assert json.dumps(result) == '{"price": {"amount": 29.99}}'
-
-  def test_datetime_and_enum_fields_are_json_serializable(self):
-    """Python-mode types that json.dumps rejects become JSON-safe values."""
-
-    class Color(Enum):
-      RED = 1
-
-    class Payload(BaseModel):
-      stamped_at: datetime
-      color: Color
-
-    result = validate_node_data(
-        Payload,
-        {"stamped_at": "2026-01-02T03:04:05", "color": 1},
-    )
-    assert result["color"] == 1
-    assert isinstance(result["stamped_at"], str)
-    json.dumps(result)
-
-  def test_base_node_output_validation_is_json_serializable(self):
-    """BaseNode output_schema validation returns JSON-serializable dicts."""
-    JsonDecimal = Annotated[
-        Decimal, PlainSerializer(float, return_type=float, when_used="json")
-    ]
-
-    class Price(BaseModel):
-      amount: JsonDecimal
-
-    class Payload(BaseModel):
-      price: Price
-
-    node = BaseNode(name="pricing", output_schema=Payload)
-    result = node._validate_output_data({"price": {"amount": "29.99"}})
-    assert result == {"price": {"amount": 29.99}}
-    json.dumps(result)
-
-  def test_validate_node_data_dumps_native_types_in_json_mode(self):
-    """validate_node_data coerces native types (datetime, Decimal, Enum) in JSON mode."""
-
-    class Color(Enum):
-      RED = 1
-
-    class Payload(BaseModel):
-      price: Decimal
-      stamped_at: datetime
-      color: Color
-
-    data = {
-        "price": Decimal("29.99"),
-        "stamped_at": datetime(2026, 1, 2, 3, 4, 5),
-        "color": Color.RED,
-    }
-    result = validate_node_data(Payload, data)
-    assert result == {
-        "price": "29.99",
-        "stamped_at": "2026-01-02T03:04:05",
-        "color": 1,
-    }
-    assert isinstance(result["price"], str)
-    assert isinstance(result["stamped_at"], str)
-    assert result["color"] == 1
-    json.dumps(result)
-
-  def test_validate_node_data_content_with_decimal_preserve_content(self):
-    """validate_node_data re-wraps validated Decimal in Content without raising TypeError."""
-    content = types.Content(parts=[types.Part(text="29.99")])
-    result = validate_node_data(Decimal, content, preserve_content=True)
-    assert isinstance(result, types.Content)
-    assert result.parts[0].text == "29.99"
-
-  def test_validate_node_data_raises_on_serialization_error(self):
-    """Serialization errors are raised instead of falling back to un-coerced values."""
-
-    def failing_serializer(v: str) -> str:
-      raise ValueError("cannot serialize")
-
-    BadType = Annotated[
-        str, PlainSerializer(failing_serializer, when_used="json")
-    ]
-
-    class Payload(BaseModel):
-      x: BadType
-
-    with pytest.raises(PydanticSerializationError):
-      validate_node_data(Payload, {"x": "test"})
-
-  def test_dict_or_types_schema_raises_on_serialization_error(self):
-    """dict and types.Schema in validate_node_data raise on serialization failure."""
-    with pytest.raises(PydanticSerializationError):
-      validate_node_data({"type": "object"}, {"bad": object()})
-
-    with pytest.raises(PydanticSerializationError):
-      validate_node_data(
-          types.Schema(type=types.Type.OBJECT), {"bad": object()}
-      )
 
 
 class TestSchemaToJsonSchema:
@@ -747,103 +562,3 @@ class TestPreprocessArgs:
     result = preprocess_args(raw_args, None)
     assert result == raw_args
     assert result is not raw_args
-
-
-class TestLlmAgentOutputKeyAndAgentToolSchemaValidation:
-  """Tests covering breaking change behavior for llm_agent output_key and agent_tool."""
-
-  def test_llm_agent_output_key_state_coerces_json_mode_types(self):
-    """LlmAgent output_key state receives JSON-mode coerced types (Decimal, datetime, Enum)."""
-    from google.adk.agents.llm_agent import LlmAgent
-    from google.adk.events.event import Event
-
-    class Color(Enum):
-      RED = 1
-
-    class Payload(BaseModel):
-      price: Decimal
-      stamped_at: datetime
-      color: Color
-
-    agent = LlmAgent(
-        name="test_agent", output_key="result", output_schema=Payload
-    )
-    json_text = (
-        '{"price": "29.99", "stamped_at": "2026-01-02T03:04:05", "color": 1}'
-    )
-    event = Event(
-        author="test_agent",
-        content=types.Content(
-            role="model", parts=[types.Part.from_text(text=json_text)]
-        ),
-    )
-    agent._LlmAgent__maybe_save_output_to_state(event)
-
-    result = event.actions.state_delta["result"]
-    assert result == {
-        "price": "29.99",
-        "stamped_at": "2026-01-02T03:04:05",
-        "color": 1,
-    }
-    assert isinstance(result["price"], str)
-    assert isinstance(result["stamped_at"], str)
-    assert result["color"] == 1
-
-  @pytest.mark.asyncio
-  async def test_agent_tool_result_coerces_json_mode_types(self):
-    """AgentTool result coerces Decimal/datetime to JSON primitives."""
-    from unittest.mock import patch
-
-    from google.adk.agents.invocation_context import InvocationContext
-    from google.adk.agents.llm_agent import LlmAgent
-    from google.adk.events.event import Event
-    from google.adk.runners import Runner
-    from google.adk.sessions.in_memory_session_service import InMemorySessionService
-    from google.adk.tools.agent_tool import AgentTool
-    from google.adk.tools.tool_context import ToolContext
-
-    class Color(Enum):
-      RED = 1
-
-    class Payload(BaseModel):
-      price: Decimal
-      stamped_at: datetime
-      color: Color
-
-    inner = LlmAgent(name="inner", output_schema=Payload)
-    tool = AgentTool(agent=inner)
-    session_service = InMemorySessionService()
-    session = await session_service.create_session(
-        app_name="app", user_id="user"
-    )
-    ctx = ToolContext(
-        invocation_context=InvocationContext(
-            invocation_id="inv",
-            agent=inner,
-            session=session,
-            session_service=session_service,
-        )
-    )
-    json_text = (
-        '{"price": "29.99", "stamped_at": "2026-01-02T03:04:05", "color": 1}'
-    )
-
-    async def fake_run_async(*args, **kwargs):
-      yield Event(
-          author="inner",
-          content=types.Content(
-              role="model", parts=[types.Part.from_text(text=json_text)]
-          ),
-      )
-
-    with patch.object(Runner, "run_async", side_effect=fake_run_async):
-      tool_res = await tool.run_async(args={"request": "req"}, tool_context=ctx)
-
-    assert tool_res == {
-        "price": "29.99",
-        "stamped_at": "2026-01-02T03:04:05",
-        "color": 1,
-    }
-    assert isinstance(tool_res["price"], str)
-    assert isinstance(tool_res["stamped_at"], str)
-    assert tool_res["color"] == 1

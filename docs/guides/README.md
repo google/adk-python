@@ -126,6 +126,7 @@ This directory contains specific developer guides for the ADK Python implementat
 
 ### Workflows
 * [BaseNode](workflow/base_node/index.md) - The foundational base class and configuration settings for all workflow nodes.
+* [Node and @node](workflow/node/index.md) - Wrapping functions, agents, and tools as workflow steps, overriding node settings per graph, and subclassing Node.
 * [Workflow](workflow/workflow/index.md) - Graph-based orchestration of complex, multi-step agent interactions.
 * [Workflow Graphs](workflow/graph/index.md) - Understanding nodes, edges, and graph structures in workflows.
 * [Function Nodes](workflow/function_node/index.md) - Wrapping Python functions and generators as workflow nodes.

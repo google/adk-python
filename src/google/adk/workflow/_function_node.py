@@ -398,13 +398,6 @@ class FunctionNode(BaseNode):
       return None
 
     if isinstance(data, Event):
-      if (
-          self.output_schema is None
-          and data.output is not None
-          and isinstance(data.output, BaseModel)
-          and not isinstance(data.output, types.Content)
-      ):
-        data.output = data.output.model_dump(mode="json")
       if state_delta:
         data.actions.state_delta.update(state_delta)
       return data
@@ -416,8 +409,8 @@ class FunctionNode(BaseNode):
           state=state_delta,
       )
 
-    if self.output_schema is None and isinstance(data, BaseModel):
-      data = data.model_dump(mode="json")
+    if isinstance(data, BaseModel):
+      data = data.model_dump()
 
     return Event(
         output=data,
@@ -465,11 +458,10 @@ class FunctionNode(BaseNode):
   @override
   def _validate_input_data(self, data: Any) -> Any:
     """Validates input data for FunctionNode."""
-    data = super()._validate_input_data(data)
     if self.input_schema is not None and not isinstance(
         self.input_schema, (dict, types.Schema)
     ):
-      return data
+      return super()._validate_input_data(data)
 
     if self.parameter_binding == "node_input":
       source: Any = data if isinstance(data, (dict, BaseModel)) else {}
@@ -510,7 +502,7 @@ class FunctionNode(BaseNode):
           )
       return validated
 
-    return data
+    return super()._validate_input_data(data)
 
   @override
   def model_copy(
