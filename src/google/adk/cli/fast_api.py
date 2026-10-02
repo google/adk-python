@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import copy
 import importlib
 import json
 import logging
@@ -45,8 +46,12 @@ from starlette.concurrency import run_in_threadpool
 from starlette.types import Lifespan
 from watchdog.observers import Observer
 
+from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..auth.credential_service.in_memory_credential_service import InMemoryCredentialService
+from ..memory.in_memory_memory_service import InMemoryMemoryService
 from ..runners import Runner
+from ..sessions.in_memory_session_service import InMemorySessionService
+from ..sessions.vertex_ai_session_service import VertexAiSessionService
 from ..telemetry._agent_engine import get_propagated_context
 from ..telemetry._agent_engine import maybe_install_request_metrics_middleware
 from ..telemetry._agent_engine import TopSpanProcessor
@@ -437,7 +442,24 @@ def get_fast_api_app(
         """Factory function to create A2A runner with proper closure."""
 
         async def _get_a2a_runner_async() -> Runner:
-          return await adk_web_server.get_runner_async(captured_app_name)
+          original_runner = await adk_web_server.get_runner_async(
+              captured_app_name
+          )
+          # Check if the session service is Agent Engine session Service
+          if isinstance(
+              original_runner.session_service, VertexAiSessionService
+          ):
+            # VertexAiSessionService is not compliant with A2A (impossible to
+            # create session on the fly with contextID). So, change it to
+            # InMemorySessionService. Put the other services in memory because
+            # persistence does not make sense.
+            runner = copy.copy(original_runner)
+            runner.session_service = InMemorySessionService()
+            runner.artifact_service = InMemoryArtifactService()
+            runner.memory_service = InMemoryMemoryService()
+            runner.credential_service = InMemoryCredentialService()
+            return runner
+          return original_runner
 
         return _get_a2a_runner_async
 

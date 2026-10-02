@@ -98,6 +98,28 @@ def get_eval_status(score: Optional[float], threshold: float) -> EvalStatus:
   return EvalStatus.PASSED if score >= threshold else EvalStatus.FAILED
 
 
+def build_judge_request_config(
+    user_config: Optional[genai_types.GenerateContentConfig],
+) -> genai_types.GenerateContentConfig:
+  """Returns a judge-request config with Automatic Function Calling forced off.
+
+  Judge evaluators never pass tools, so google-genai's AFC branch is a no-op
+  for them; the only observable effect of leaving it on is a per-request
+  warning that floods eval runs. We override the flag regardless of what the
+  caller passed so a user config that merely tweaks e.g. temperature does not
+  silently re-enable AFC. The caller's object is not mutated.
+  """
+  config = (
+      user_config.model_copy(deep=True)
+      if user_config is not None
+      else genai_types.GenerateContentConfig()
+  )
+  config.automatic_function_calling = (
+      genai_types.AutomaticFunctionCallingConfig(disable=True)
+  )
+  return config
+
+
 def get_average_rubric_score(
     rubric_scores: list[RubricScore],
 ) -> Optional[float]:

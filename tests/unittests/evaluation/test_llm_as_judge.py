@@ -27,6 +27,7 @@ from google.adk.evaluation.evaluator import EvaluationResult
 from google.adk.evaluation.evaluator import PerInvocationResult
 from google.adk.evaluation.llm_as_judge import AutoRaterScore
 from google.adk.evaluation.llm_as_judge import LlmAsJudge
+from google.adk.evaluation.llm_as_judge_utils import build_judge_request_config
 from google.adk.evaluation.llm_as_judge_utils import get_eval_status
 from google.adk.evaluation.llm_as_judge_utils import get_text_from_content
 from google.adk.models.llm_response import LlmResponse
@@ -248,6 +249,102 @@ async def test_evaluate_invocations_with_mock(
   assert mock_llm_as_judge.format_auto_rater_prompt.call_count == 2
   assert mock_llm_as_judge.convert_auto_rater_response_to_score.call_count == 6
   assert mock_llm_as_judge.aggregate_invocation_results.call_count == 1
+
+
+def test_build_judge_request_config_disables_afc_when_user_config_is_none():
+  # No user config: a fresh GenerateContentConfig with AFC explicitly disabled.
+  config = build_judge_request_config(None)
+  assert config.automatic_function_calling is not None
+  assert config.automatic_function_calling.disable is True
+
+
+def test_build_judge_request_config_force_disables_afc_in_user_config():
+  # User passed a config that tweaks temperature but did not mention AFC. We
+  # force AFC off anyway, so the per-request google-genai warning does not
+  # survive a caller merely overriding an unrelated field.
+  user_config = genai_types.GenerateContentConfig(temperature=0.3)
+  config = build_judge_request_config(user_config)
+  assert config.temperature == 0.3
+  assert config.automatic_function_calling is not None
+  assert config.automatic_function_calling.disable is True
+  # Caller's object is untouched.
+  assert user_config.automatic_function_calling is None
+
+
+def test_build_judge_request_config_overrides_user_enabled_afc():
+  # Even if the user explicitly left AFC on, judges never call tools so we
+  # still disable it. If this ever stops being true, flip this test.
+  user_config = genai_types.GenerateContentConfig(
+      automatic_function_calling=genai_types.AutomaticFunctionCallingConfig(
+          disable=False
+      )
+  )
+  config = build_judge_request_config(user_config)
+  assert config.automatic_function_calling.disable is True
+  assert user_config.automatic_function_calling.disable is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "user_judge_model_config",
+    [
+        None,
+        genai_types.GenerateContentConfig(temperature=0.3),
+    ],
+    ids=["default_config", "user_supplied_config"],
+)
+async def test_evaluate_invocations_judge_request_disables_afc(
+    mock_judge_model, user_judge_model_config
+):
+  # The judge request must disable google-genai's automatic function calling
+  # regardless of whether the caller supplied a judge_model_config, since the
+  # judge never calls tools and leaving AFC on only produces a spurious
+  # per-request warning on every eval run.
+  judge = MockLlmAsJudge(
+      eval_metric=EvalMetric(
+          metric_name="test_metric",
+          threshold=0.5,
+          criterion=LlmAsAJudgeCriterion(
+              threshold=0.5,
+              judge_model_options=JudgeModelOptions(
+                  judge_model="gemini-2.5-flash",
+                  judge_model_config=user_judge_model_config,
+                  num_samples=1,
+              ),
+          ),
+      ),
+      criterion_type=LlmAsAJudgeCriterion,
+  )
+  judge._judge_model = mock_judge_model
+  captured_requests = []
+  original_generate_content_async = mock_judge_model.generate_content_async
+
+  def capturing_generate_content_async(llm_request):
+    captured_requests.append(llm_request)
+    return original_generate_content_async(llm_request)
+
+  judge._judge_model.generate_content_async = capturing_generate_content_async
+
+  actual_invocations = [
+      Invocation(
+          invocation_id="id1",
+          user_content=genai_types.Content(
+              parts=[genai_types.Part(text="user content 1")],
+              role="user",
+          ),
+          final_response=genai_types.Content(
+              parts=[genai_types.Part(text="final response 1")],
+              role="model",
+          ),
+      )
+  ]
+
+  await judge.evaluate_invocations(actual_invocations)
+
+  assert len(captured_requests) == 1
+  config = captured_requests[0].config
+  assert config.automatic_function_calling is not None
+  assert config.automatic_function_calling.disable is True
 
 
 @pytest.mark.asyncio

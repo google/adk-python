@@ -1,6 +1,6 @@
 {
-  "eval_set_id": "live_non_blocking_tool_agent",
-  "name": "live_non_blocking_tool_agent",
+  "eval_set_id": "non_blocking_tool_agent",
+  "name": "non_blocking_tool_agent",
   "description": "Live eval cases for the non-blocking tool agent. Exercises the audio user simulator driving the live agent, then keeping the conversation going while a background task runs.",
   "eval_cases": [
     {
@@ -11,7 +11,7 @@
         "user_persona": "NOVICE"
       },
       "session_input": {
-        "app_name": "live_non_blocking_tool_agent",
+        "app_name": "non_blocking_tool_agent",
         "user_id": "test_user_id",
         "state": {}
       }
@@ -33,7 +33,7 @@
         }
       ],
       "session_input": {
-        "app_name": "live_non_blocking_tool_agent",
+        "app_name": "non_blocking_tool_agent",
         "user_id": "test_user_id",
         "state": {}
       }

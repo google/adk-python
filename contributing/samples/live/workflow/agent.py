@@ -107,7 +107,7 @@ goals_agent = Agent(
 
 # --- The workflow: agents sequenced directly by edges ----------------------
 root_agent = Workflow(
-    name='live_workflow',
+    name='workflow',
     description=(
         'A Workflow of live voice agents: confirm the caller, verify their'
         ' date of birth, then share the call details.'

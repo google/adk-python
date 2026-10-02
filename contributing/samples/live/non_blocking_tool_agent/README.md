@@ -16,7 +16,7 @@ When a tool declaration is configured with `response_scheduling` set to `WHEN_ID
 
 1. Run the sample via `adk web`:
    ```bash
-   uv run adk web contributing/samples/live/live_non_blocking_tool_agent
+   uv run adk web contributing/samples/live/non_blocking_tool_agent
    ```
 1. Open the ADK web interface and start a Live Session with the agent.
 1. Trigger the tool by saying: *"Please start a slow background task and keep talking with me."*
@@ -28,18 +28,18 @@ The model should continue conversing and generating audio/transcription response
 
 ## Evaluating this agent
 
-`test_config.json` and `live_non_blocking_tool_agent.evalset.json` evaluate the
+`test_config.json` and `non_blocking_tool_agent.evalset.json` evaluate the
 agent in **live mode** with an `llm_audio` user simulator (each user turn is
 synthesized to audio and streamed to the live agent).
 
 1. Install the eval extra: `uv pip install -e ".[eval]"`.
 1. Add a `.env` in this directory with Vertex AI credentials (see
-   `live_bidi_streaming_single_agent/.env`). The project needs access to both
+   `single_agent/.env`). The project needs access to both
    the Live API and Gemini TTS models.
 1. Run the eval:
    ```bash
    uv run adk eval \
-     contributing/samples/live/live_non_blocking_tool_agent \
-     contributing/samples/live/live_non_blocking_tool_agent/live_non_blocking_tool_agent.evalset.json \
-     --config_file_path contributing/samples/live/live_non_blocking_tool_agent/test_config.json
+     contributing/samples/live/non_blocking_tool_agent \
+     contributing/samples/live/non_blocking_tool_agent/non_blocking_tool_agent.evalset.json \
+     --config_file_path contributing/samples/live/non_blocking_tool_agent/test_config.json
    ```

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import contextlib
 import json
 from typing import Any
 from typing import Optional
@@ -30,6 +31,7 @@ from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactServ
 from google.adk.events.event import Event
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
+from google.adk.flows.llm_flows.tools._caller import _call_tool_in_thread_pool
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
@@ -2150,3 +2152,61 @@ async def test_run_async_input_schema_content_survives_node_validation(
   assert validate_node_data(
       _RoundTripInput, content, preserve_content=False
   ) == {'query': 'hello', 'limit': 5}
+
+
+class _SlowMockModel(testing_utils.MockModel):
+  """Answers after a delay, so the runner waits on the abort signal meanwhile."""
+
+  async def generate_content_async(
+      self, llm_request: LlmRequest, stream: bool = False
+  ):
+    await asyncio.sleep(0.2)
+    async for response in super().generate_content_async(llm_request, stream):
+      yield response
+
+
+def _nested_llm_agent() -> LlmAgent:
+  # An LlmAgent, so the nested Runner takes the node path that awaits the
+  # abort signal.
+  return LlmAgent(
+      name='tool_agent',
+      model=_SlowMockModel.create(responses=['nested reply']),
+  )
+
+
+async def _caller_context_bound_to_this_loop(
+    tool_agent: BaseAgent,
+) -> InvocationContext:
+  """Returns a caller context whose abort signal is bound to the running loop."""
+  root_agent = Agent(
+      name='root_agent', model='test-model', tools=[AgentTool(agent=tool_agent)]
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=root_agent
+  )
+  # Await the signal once so it binds to this loop, as the caller's runner does.
+  with contextlib.suppress(asyncio.TimeoutError):
+    await asyncio.wait_for(
+        invocation_context._abort_signal.wait(),  # pylint: disable=protected-access
+        timeout=0.01,
+    )
+  return invocation_context
+
+
+@mark.asyncio
+async def test_agent_tool_in_tool_thread_pool_returns_nested_reply():
+  """In the tool thread pool, the nested run is not aborted by the caller's signal.
+
+  The pool runs the tool in a fresh event loop on a worker thread, where the
+  caller's abort signal cannot be awaited.
+  """
+  tool_agent = _nested_llm_agent()
+  invocation_context = await _caller_context_bound_to_this_loop(tool_agent)
+
+  result = await _call_tool_in_thread_pool(
+      AgentTool(agent=tool_agent),
+      {'request': 'hello'},
+      ToolContext(invocation_context),
+  )
+
+  assert result == 'nested reply'
