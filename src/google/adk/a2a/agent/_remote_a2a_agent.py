@@ -77,6 +77,7 @@ from ..converters.part_converter import convert_a2a_part_to_genai_part
 from ..converters.part_converter import convert_genai_part_to_a2a_part
 from ..converters.part_converter import GenAIPartToA2APartConverter
 from ..converters.to_adk_event import _create_mock_function_call_for_required_user_input
+from ..converters.to_adk_event import _warn_if_peer_metadata_has_state_delta
 from ..converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH
 from ..converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
 from ..experimental import a2a_experimental
@@ -1416,6 +1417,13 @@ class RemoteA2aAgent(BaseAgent):
     try:
       if isinstance(a2a_response, tuple):
         task, update = a2a_response
+        # The legacy converters never rebuild EventActions from peer metadata,
+        # so surface a dropped state delta here. Read only this item's own
+        # metadata: the aggregated task keeps metadata merged from earlier
+        # updates and would repeat the warning.
+        _warn_if_peer_metadata_has_state_delta(
+            task if update is None else update
+        )
         if update is None:
           # This is the initial response for a streaming task or the complete
           # response for a non-streaming task, which is the full task state.
@@ -1501,6 +1509,7 @@ class RemoteA2aAgent(BaseAgent):
 
       # Otherwise, it's a regular A2AMessage for non-streaming responses.
       elif isinstance(a2a_response, A2AMessage):
+        _warn_if_peer_metadata_has_state_delta(a2a_response)
         event = convert_a2a_message_to_event(
             a2a_response, self.name, ctx, self._a2a_part_converter
         )
