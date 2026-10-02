@@ -8,7 +8,7 @@ Follow these steps to get the agent up and running:
 
 1. **Start the ADK Web Server**
    Open your terminal, navigate to the root directory that contains the
-   `live_bidi_streaming_parallel_tools_agent` folder, and execute the following
+   `parallel_tools_agent` folder, and execute the following
    command:
 
    ```bash
@@ -21,7 +21,7 @@ Follow these steps to get the agent up and running:
 
 1. **Select the Agent**
    In the top-left corner of the ADK Web UI, use the dropdown menu to select
-   this agent (`live_bidi_streaming_parallel_tools_agent`).
+   this agent (`parallel_tools_agent`).
 
 1. **Start Streaming**
    Click on the **Audio** icon located near the chat input

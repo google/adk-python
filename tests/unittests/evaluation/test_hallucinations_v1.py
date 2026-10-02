@@ -1576,3 +1576,56 @@ async def test_evaluate_invocations_partial_failure(
   assert len(result.per_invocation_results) == 1
   per_invocation_result = result.per_invocation_results[0]
   assert per_invocation_result.score == 0.8
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "user_judge_model_config",
+    [
+        None,
+        genai_types.GenerateContentConfig(temperature=0.3),
+    ],
+    ids=["default_config", "user_supplied_config"],
+)
+async def test_evaluate_nl_response_judge_request_disables_afc(
+    mock_llm_registry, user_judge_model_config, mocker
+):
+  # Both the segmenter and validator judge requests must disable google-genai's
+  # automatic function calling regardless of whether the caller supplied a
+  # judge_model_config, since the judge never calls tools and leaving AFC on
+  # only produces a spurious per-request warning on every eval run.
+  del mock_llm_registry  # fixture only needed for its side effect.
+  judge_model_options = JudgeModelOptions(
+      judge_model="gemini-2.5-flash",
+      judge_model_config=user_judge_model_config,
+      num_samples=1,
+  )
+  criterion = HallucinationsCriterion(
+      threshold=0.5,
+      judge_model_options=judge_model_options,
+      evaluate_intermediate_nl_responses=True,
+  )
+  metric = HallucinationsV1Evaluator(
+      EvalMetric(
+          metric_name="hallucinations_v1", threshold=0.5, criterion=criterion
+      )
+  )
+
+  captured_requests = []
+
+  async def mock_generate(llm_request):
+    captured_requests.append(llm_request)
+    response = mocker.MagicMock()
+    response.content = genai_types.Content(
+        parts=[genai_types.Part(text="<sentence>s</sentence>")]
+    )
+    yield response
+
+  metric._judge_model.generate_content_async = mock_generate
+  await metric._evaluate_nl_response("nl", "ctx")
+
+  # Both the segmenter and validator should have been called.
+  assert len(captured_requests) == 2
+  for request in captured_requests:
+    assert request.config.automatic_function_calling is not None
+    assert request.config.automatic_function_calling.disable is True

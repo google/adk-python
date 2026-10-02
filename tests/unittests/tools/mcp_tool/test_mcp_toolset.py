@@ -47,6 +47,7 @@ from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnecti
 from google.adk.tools.mcp_tool.mcp_tool import MCPTool
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolsetConfig
+from google.adk.tools.set_model_response_tool import SetModelResponseTool
 from google.adk.tools.tool_configs import ToolArgsConfig
 from mcp import StdioServerParameters
 from mcp.types import BlobResourceContents
@@ -409,6 +410,7 @@ class TestMcpToolset:
         MockMCPTool("adk_request_credential"),
         MockMCPTool("adk_request_confirmation"),
         MockMCPTool("adk_request_input"),
+        MockMCPTool(SetModelResponseTool.NAME),
     ]
     self.mock_session.list_tools = AsyncMock(
         return_value=MockListToolsResult(mock_tools)

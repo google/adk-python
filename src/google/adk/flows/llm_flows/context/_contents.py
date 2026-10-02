@@ -767,7 +767,7 @@ def _is_live_model_media_event_with_inline_data(event: Event) -> bool:
     parts=[
       Part(
         file_data=FileData(
-          file_uri='artifact://live_bidi_streaming_multi_agent/user/cccf0b8b-4a30-449a-890e-e8b8deb661a1/_adk_live/adk_live_audio_storage_input_audio_1756092402277.pcm#1',
+          file_uri='artifact://multi_agent/user/cccf0b8b-4a30-449a-890e-e8b8deb661a1/_adk_live/adk_live_audio_storage_input_audio_1756092402277.pcm#1',
           mime_type='audio/pcm'
         )
       ),

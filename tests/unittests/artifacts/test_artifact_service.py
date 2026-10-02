@@ -1112,6 +1112,50 @@ async def test_load_and_get_artifact_version_reject_negative_version(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+async def test_artifact_service_isolates_stored_data_from_caller_mutation(
+    service_type, artifact_service_factory
+):
+  """Mutating passed or returned Parts and metadata does not corrupt storage."""
+  artifact_service = artifact_service_factory(service_type)
+  scope = {
+      "app_name": "app0",
+      "user_id": "user0",
+      "session_id": "123",
+      "filename": "img.png",
+  }
+  part = types.Part.from_bytes(data=b"original", mime_type="image/png")
+  metadata = {"source": "upload"}
+
+  await artifact_service.save_artifact(
+      **scope, artifact=part, custom_metadata=metadata
+  )
+  part.inline_data = None
+  metadata["source"] = "tampered"
+
+  loaded = await artifact_service.load_artifact(**scope)
+  assert loaded is not None and loaded.inline_data is not None
+  assert loaded.inline_data.data == b"original"
+
+  # Mutating the loaded Part must not erase or alter the persisted version.
+  loaded.inline_data = None
+  reloaded = await artifact_service.load_artifact(**scope)
+  assert reloaded is not None and reloaded.inline_data is not None
+  assert reloaded.inline_data.data == b"original"
+
+  version_info = await artifact_service.get_artifact_version(**scope)
+  assert version_info is not None
+  assert version_info.custom_metadata["source"] == "upload"
+
+
+@pytest.mark.asyncio
 async def test_gcs_save_and_load_empty_text_artifact(
     artifact_service_factory,
 ):

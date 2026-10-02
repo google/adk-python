@@ -44,6 +44,7 @@ from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .evaluator import PerInvocationResult
+from .llm_as_judge_utils import build_judge_request_config
 from .llm_as_judge_utils import get_eval_status
 from .llm_as_judge_utils import get_text_from_content
 from .llm_as_judge_utils import get_tool_declarations_as_json_str
@@ -295,9 +296,11 @@ class HallucinationsV1Evaluator(Evaluator):
     self.segmenter_prompt = _HALLUCINATIONS_V1_SEGMENTER_PROMPT
     self.sentence_validator_prompt = _HALLUCINATIONS_V1_VALIDATOR_PROMPT
     self._model = self._judge_model_options.judge_model
-    self._model_config = (
+    # Force AFC off on judge requests so google-genai does not log a
+    # per-request warning when the judge sends no tools; see
+    # build_judge_request_config.
+    self._model_config = build_judge_request_config(
         self._judge_model_options.judge_model_config
-        or genai_types.GenerateContentConfig()
     )
 
   def _setup_auto_rater(self) -> BaseLlm:

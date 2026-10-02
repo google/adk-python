@@ -47,6 +47,7 @@ from .evaluator import _validate_invocation_lengths
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .evaluator import PerInvocationResult
+from .llm_as_judge_utils import build_judge_request_config
 from .llm_as_judge_utils import get_eval_status
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -106,6 +107,9 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
       raise expected_criterion_type_error from e
 
     self._judge_model_options = self._criterion.judge_model_options
+    self._judge_model_config = build_judge_request_config(
+        self._judge_model_options.judge_model_config
+    )
     self._threshold = _get_metric_threshold(eval_metric)
     self._judge_model = self._setup_auto_rater()
 
@@ -221,8 +225,7 @@ class LlmAsJudge(Evaluator, Generic[_CriterionT]):
                   role="user",
               )
           ],
-          config=self._judge_model_options.judge_model_config
-          or genai_types.GenerateContentConfig(),
+          config=self._judge_model_config,
       )
       add_default_retry_options_if_not_present(llm_request)
       num_samples = self._judge_model_options.num_samples

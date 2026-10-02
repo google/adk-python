@@ -50,19 +50,20 @@ def new_invocation_context_for_live(
     run_config: Optional[RunConfig] = None,
 ) -> InvocationContext:
   """Creates a new invocation context for live multi-agent."""
-  run_config = run_config or RunConfig()
+  run_config = run_config.model_copy() if run_config else RunConfig()
 
   # For live multi-agents system, we need model's text transcription as
   # context for the transferred agent.
   if hasattr(runner.agent, "sub_agents") and runner.agent.sub_agents:
     if (
-        run_config.response_modalities
-        and types.Modality.AUDIO in run_config.response_modalities
+        run_config.input_audio_transcription is None
+        or run_config.output_audio_transcription is None
     ):
-      if not run_config.output_audio_transcription:
-        run_config.output_audio_transcription = types.AudioTranscriptionConfig()
-    if not run_config.input_audio_transcription:
-      run_config.input_audio_transcription = types.AudioTranscriptionConfig()
+      logger.warning(
+          "Audio transcription is disabled while sub_agents are configured;"
+          " agent transfer may not work properly without transcription"
+          " context."
+      )
   return runner._new_invocation_context(  # pylint: disable=protected-access
       session,
       live_request_queue=live_request_queue,

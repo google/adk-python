@@ -1,6 +1,6 @@
-# Simplistic Live (Bidi-Streaming) Multi-Agent
+# Simplistic Live (Bidi-Streaming) Agent
 
-This project provides a basic example of a live, [bidirectional streaming](https://google.github.io/adk-docs/streaming/) multi-agent
+This project provides a basic example of a live, [bidirectional streaming](https://google.github.io/adk-docs/streaming/) agent
 designed for testing and experimentation.
 
 ## Getting Started
@@ -9,7 +9,7 @@ Follow these steps to get the agent up and running:
 
 1. **Start the ADK Web Server**
    Open your terminal, navigate to the root directory that contains the
-   `live_bidi_streaming_agent` folder, and execute the following command:
+   `single_agent` folder, and execute the following command:
 
    ```bash
    adk web
@@ -35,9 +35,3 @@ Follow these steps to get the agent up and running:
 - You only need to click the **Audio** or **Video** button once to initiate the
   stream. The current version does not support stopping and restarting the stream
   by clicking the button again during a session.
-
-## Sample Queries
-
-- Hello, what's the weather in Seattle and New York?
-- Could you roll a 6-sided dice for me?
-- Could you check if the number you rolled is a prime number or not?

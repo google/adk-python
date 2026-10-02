@@ -1,6 +1,6 @@
 {
-  "eval_set_id": "live_workflow",
-  "name": "live_workflow",
+  "eval_set_id": "workflow",
+  "name": "workflow",
   "description": "Live eval cases for the live workflow. Exercises the audio user simulator driving each stage: greeting/identity, DOB verification, and delivering the call goals.",
   "eval_cases": [
     {
@@ -11,7 +11,7 @@
         "user_persona": "NOVICE"
       },
       "session_input": {
-        "app_name": "live_workflow",
+        "app_name": "workflow",
         "user_id": "test_user_id",
         "state": {}
       }

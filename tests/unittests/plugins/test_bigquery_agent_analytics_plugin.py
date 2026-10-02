@@ -2078,6 +2078,218 @@ class TestBigQueryAgentAnalyticsPlugin:
     assert log_entry["error_message"] is None
 
   @pytest.mark.asyncio
+  async def test_after_model_callback_code_execution(  # pylint: disable=redefined-outer-name
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """Tests after_model_callback formats code execution parts."""
+    code_part = types.Part(
+        executable_code=types.ExecutableCode(
+            language=types.Language.PYTHON, code="print('hello')"
+        )
+    )
+    result_part = types.Part(
+        code_execution_result=types.CodeExecutionResult(
+            outcome=types.Outcome.OUTCOME_OK, output="hello\n"
+        )
+    )
+    llm_response = llm_response_lib.LlmResponse(
+        content=types.Content(parts=[code_part, result_part]),
+        usage_metadata=types.UsageMetadata(
+            prompt_token_count=10, total_token_count=15
+        ),
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+    await bq_plugin_inst.after_model_callback(
+        callback_context=callback_context,
+        llm_response=llm_response,
+    )
+    await bq_plugin_inst.flush()
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    _assert_common_fields(log_entry, "LLM_RESPONSE")
+    content_dict = json.loads(log_entry["content"])
+    expected_response = (
+        "Executable code (PYTHON): print('hello') | "
+        "Code execution result (OUTCOME_OK): hello\n"
+    )
+    assert content_dict["response"] == expected_response
+    assert "other" not in content_dict["response"]
+    assert content_dict["usage"]["prompt"] == 10
+    assert content_dict["usage"]["total"] == 15
+    assert log_entry["error_message"] is None
+
+  @pytest.mark.asyncio
+  async def test_after_model_callback_code_execution_redacts_credentials(  # pylint: disable=redefined-outer-name
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """Tests after_model_callback redacts code execution credentials."""
+    code_part = types.Part(
+        executable_code=types.ExecutableCode(
+            language=types.Language.PYTHON,
+            code="token = 'Authorization: Bearer topsecret123'",
+        )
+    )
+    result_part = types.Part(
+        code_execution_result=types.CodeExecutionResult(
+            outcome=types.Outcome.OUTCOME_OK,
+            output=(
+                "Connecting with Authorization: Bearer"
+                " confidential_auth_token\n"
+            ),
+        )
+    )
+    llm_response = llm_response_lib.LlmResponse(
+        content=types.Content(parts=[code_part, result_part]),
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+    await bq_plugin_inst.after_model_callback(
+        callback_context=callback_context,
+        llm_response=llm_response,
+    )
+    await bq_plugin_inst.flush()
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    _assert_common_fields(log_entry, "LLM_RESPONSE")
+    content_dict = json.loads(log_entry["content"])
+    assert "confidential_auth_token" not in content_dict["response"]
+    assert "topsecret123" not in content_dict["response"]
+    assert "Authorization: [REDACTED]" in content_dict["response"]
+    assert "Executable code (PYTHON):" in content_dict["response"]
+    assert "Code execution result (OUTCOME_OK):" in content_dict["response"]
+
+  @pytest.mark.asyncio
+  @pytest.mark.usefixtures(
+      "mock_auth_default",
+      "mock_bq_client",
+      "mock_to_arrow_schema",
+      "mock_asyncio_to_thread",
+  )
+  async def test_after_model_callback_captures_allowlisted_custom_metadata(  # pylint: disable=redefined-outer-name
+      self,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """Tests after_model_callback captures allowlisted custom_metadata."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        custom_metadata_allowlist=["server_ttft_ms", "llm_latency_ms"]
+    )
+    async with managed_plugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+        config=config,
+    ) as plugin:
+      mock_write_client.append_rows.reset_mock()
+      llm_response = llm_response_lib.LlmResponse(
+          content=types.Content(parts=[types.Part(text="Done")]),
+          custom_metadata={
+              "server_ttft_ms": 1200,
+              "llm_latency_ms": 3400,
+              "unallowed_key": "discarded",
+          },
+      )
+      bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+      await plugin.after_model_callback(
+          callback_context=callback_context,
+          llm_response=llm_response,
+      )
+      await plugin.flush()
+      log_entry = await _get_captured_event_dict_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      _assert_common_fields(log_entry, "LLM_RESPONSE")
+      attributes = json.loads(log_entry["attributes"])
+      adk = attributes["adk"]
+      assert "source_event_id" not in adk
+      assert "node" not in adk
+      assert "branch" not in adk
+      assert "scope" not in adk
+      assert attributes["custom_metadata"] == {
+          "server_ttft_ms": 1200,
+          "llm_latency_ms": 3400,
+      }
+      assert "unallowed_key" not in attributes["custom_metadata"]
+
+  @pytest.mark.asyncio
+  async def test_after_model_callback_without_allowlist_omits_custom_metadata(  # pylint: disable=redefined-outer-name
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """Tests after_model_callback omits custom_metadata without allowlist."""
+    llm_response = llm_response_lib.LlmResponse(
+        content=types.Content(parts=[types.Part(text="Done")]),
+        custom_metadata={"server_ttft_ms": 1200},
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+    await bq_plugin_inst.after_model_callback(
+        callback_context=callback_context,
+        llm_response=llm_response,
+    )
+    await bq_plugin_inst.flush()
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    _assert_common_fields(log_entry, "LLM_RESPONSE")
+    attributes = json.loads(log_entry["attributes"])
+    assert "custom_metadata" not in attributes
+
+  @pytest.mark.asyncio
+  @pytest.mark.usefixtures(
+      "mock_auth_default",
+      "mock_bq_client",
+      "mock_to_arrow_schema",
+      "mock_asyncio_to_thread",
+  )
+  async def test_after_model_callback_streaming_chunk_omits_custom_metadata(  # pylint: disable=redefined-outer-name
+      self,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """Tests streaming chunks (partial=True) omit custom_metadata."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        custom_metadata_allowlist=["server_ttft_ms"]
+    )
+    async with managed_plugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+        config=config,
+    ) as plugin:
+      mock_write_client.append_rows.reset_mock()
+      llm_response = llm_response_lib.LlmResponse(
+          content=types.Content(parts=[types.Part(text="chunk")]),
+          partial=True,
+          custom_metadata={"server_ttft_ms": 1200},
+      )
+      bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+      await plugin.after_model_callback(
+          callback_context=callback_context,
+          llm_response=llm_response,
+      )
+      await plugin.flush()
+      log_entry = await _get_captured_event_dict_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      _assert_common_fields(log_entry, "LLM_RESPONSE")
+      attributes = json.loads(log_entry["attributes"])
+      assert "custom_metadata" not in attributes
+
+  @pytest.mark.asyncio
   async def test_before_tool_callback_logs_correctly(
       self, bq_plugin_inst, mock_write_client, tool_context, dummy_arrow_schema
   ):
@@ -19009,3 +19221,229 @@ class TestLatestReviewLifecycleRegressions:
     assert len(serialized) == 6
     assert any(key.startswith("[KEY_COLLISION_") for key in serialized)
     assert content_lost is True
+
+
+# pylint: disable=protected-access
+class TestFormatContent:
+  """Unit tests for _format_content truncation and credential redaction."""
+
+  def test_format_content_none_or_empty(self):
+    """Tests formatting None or empty parts returns 'None'."""
+    assert bigquery_agent_analytics_plugin._format_content(None) == (
+        "None",
+        False,
+    )
+    content = types.Content(parts=[])
+    assert bigquery_agent_analytics_plugin._format_content(content) == (
+        "None",
+        False,
+    )
+
+  def test_format_content_text(self):
+    """Tests formatting text parts."""
+    content = types.Content(parts=[types.Part(text="Hello world")])
+    formatted, truncated = bigquery_agent_analytics_plugin._format_content(
+        content
+    )
+    assert formatted == "text: 'Hello world'"
+    assert not truncated
+
+  def test_format_content_truncates_text_with_marker(self):
+    """Long text is cut to max_len and marked with ...[TRUNCATED]."""
+    content = types.Content(parts=[types.Part(text="a" * 20)])
+
+    formatted, truncated = bigquery_agent_analytics_plugin._format_content(
+        content, max_len=5
+    )
+
+    assert formatted == "text: 'aaaaa...[TRUNCATED]'"
+    assert truncated
+
+  def test_format_content_function_call_and_response(self):
+    """Tests formatting function call and function response parts."""
+    call_part = types.Part(
+        function_call=types.FunctionCall(name="foo", args={})
+    )
+    resp_part = types.Part(
+        function_response=types.FunctionResponse(name="foo", response={})
+    )
+    content = types.Content(parts=[call_part, resp_part])
+    formatted, truncated = bigquery_agent_analytics_plugin._format_content(
+        content
+    )
+    assert formatted == "call: foo | resp: foo"
+    assert not truncated
+
+  def test_format_content_executable_code_and_result(self):
+    """Tests formatting executable code and code execution result parts."""
+    code_part = types.Part(
+        executable_code=types.ExecutableCode(
+            language=types.Language.PYTHON, code="print('hi')"
+        )
+    )
+    result_part = types.Part(
+        code_execution_result=types.CodeExecutionResult(
+            outcome=types.Outcome.OUTCOME_OK, output="hi\n"
+        )
+    )
+    content = types.Content(parts=[code_part, result_part])
+    formatted, truncated = bigquery_agent_analytics_plugin._format_content(
+        content
+    )
+    assert (
+        formatted
+        == "Executable code (PYTHON): print('hi') | Code execution result"
+        " (OUTCOME_OK): hi\n"
+    )
+    assert "other" not in formatted
+    assert not truncated
+
+  def test_format_content_code_execution_unspecified_or_unknown(self):
+    """Tests code execution with unspecified language and outcome."""
+    code_part = types.Part(executable_code=types.ExecutableCode(code="x = 1"))
+    result_part = types.Part(
+        code_execution_result=types.CodeExecutionResult(output="done")
+    )
+    content = types.Content(parts=[code_part, result_part])
+    formatted, truncated = bigquery_agent_analytics_plugin._format_content(
+        content
+    )
+    assert (
+        formatted
+        == "Executable code (unknown): x = 1 | Code execution result (unknown):"
+        " done"
+    )
+    assert not truncated
+
+  def test_format_content_code_execution_string_enums(self):
+    """Tests formatting code execution with raw string enums."""
+    code_part = types.Part.model_construct(
+        executable_code=types.ExecutableCode.model_construct(
+            language="PYTHON", code="x = 1"
+        )
+    )
+    result_part = types.Part.model_construct(
+        code_execution_result=types.CodeExecutionResult.model_construct(
+            outcome="OUTCOME_OK", output="done"
+        )
+    )
+    content = types.Content(parts=[code_part, result_part])
+    formatted, truncated = bigquery_agent_analytics_plugin._format_content(
+        content
+    )
+    assert (
+        formatted
+        == "Executable code (PYTHON): x = 1 | Code execution result"
+        " (OUTCOME_OK):"
+        " done"
+    )
+    assert not truncated
+
+  def test_format_content_redacts_credentials(self):
+    """Tests sensitive credentials in code and text parts are redacted."""
+    code_part = types.Part(
+        executable_code=types.ExecutableCode(
+            language=types.Language.PYTHON,
+            code="headers = {'Authorization': 'Bearer super-secret-token'}",
+        )
+    )
+    result_part = types.Part(
+        code_execution_result=types.CodeExecutionResult(
+            outcome=types.Outcome.OUTCOME_OK,
+            output="Connecting with Authorization: Bearer response-token-xyz\n",
+        )
+    )
+    text_part = types.Part(text="api_key: secret-api-key-12345")
+    content = types.Content(parts=[text_part, code_part, result_part])
+    formatted, truncated = bigquery_agent_analytics_plugin._format_content(
+        content
+    )
+    assert "super-secret-token" not in formatted
+    assert "response-token-xyz" not in formatted
+    assert "secret-api-key-12345" not in formatted
+    assert "Authorization: [REDACTED]" in formatted
+    assert truncated
+
+  def test_format_content_truncation_on_code_and_output(self):
+    """Tests truncation bounds apply to code and execution output."""
+    long_code = "a" * 100
+    long_output = "b" * 100
+    code_part = types.Part(
+        executable_code=types.ExecutableCode(
+            language=types.Language.PYTHON, code=long_code
+        )
+    )
+    result_part = types.Part(
+        code_execution_result=types.CodeExecutionResult(
+            outcome=types.Outcome.OUTCOME_OK, output=long_output
+        )
+    )
+    content = types.Content(parts=[code_part, result_part])
+    formatted, truncated = bigquery_agent_analytics_plugin._format_content(
+        content, max_len=10
+    )
+    expected_code = f"Executable code (PYTHON): {'a' * 10}...[TRUNCATED]"
+    expected_output = (
+        f"Code execution result (OUTCOME_OK): {'b' * 10}...[TRUNCATED]"
+    )
+    assert formatted == f"{expected_code} | {expected_output}"
+    assert truncated
+
+  def test_format_content_truncation_disabled(self):
+    """Tests truncation can be disabled via max_len=-1."""
+    long_code = "a" * 100
+    long_output = "b" * 100
+    code_part = types.Part(
+        executable_code=types.ExecutableCode(
+            language=types.Language.PYTHON, code=long_code
+        )
+    )
+    result_part = types.Part(
+        code_execution_result=types.CodeExecutionResult(
+            outcome=types.Outcome.OUTCOME_OK, output=long_output
+        )
+    )
+    content = types.Content(parts=[code_part, result_part])
+    formatted, truncated = bigquery_agent_analytics_plugin._format_content(
+        content, max_len=-1
+    )
+    assert (
+        formatted
+        == f"Executable code (PYTHON): {long_code} | Code execution result"
+        f" (OUTCOME_OK): {long_output}"
+    )
+    assert not truncated
+
+  def test_format_content_unknown_part_renders_other(self):
+    """Tests unrecognized parts fall back to 'other'."""
+    file_part = types.Part(
+        file_data=types.FileData(
+            file_uri="gs://bucket/file", mime_type="text/plain"
+        )
+    )
+    content = types.Content(parts=[file_part])
+    formatted, truncated = bigquery_agent_analytics_plugin._format_content(
+        content
+    )
+    assert formatted == "other"
+    assert not truncated
+
+  @pytest.mark.asyncio
+  async def test_format_content_safely_reports_content_loss(  # pylint: disable=redefined-outer-name
+      self, bq_plugin_inst
+  ):
+    """A formatting failure replaces content and reports it as truncated."""
+    bad_part = types.Part.model_construct(
+        executable_code=types.ExecutableCode.model_construct(
+            language=types.Language.PYTHON, code=123
+        )
+    )
+    content = types.Content(parts=[types.Part(text="kept"), bad_part])
+
+    assert bq_plugin_inst._format_content_safely(content) == (
+        "[FORMATTING FAILED]",
+        True,
+    )
+
+
+# pylint: enable=protected-access

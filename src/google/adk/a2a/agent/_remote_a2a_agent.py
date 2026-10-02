@@ -77,6 +77,7 @@ from ..converters.part_converter import convert_a2a_part_to_genai_part
 from ..converters.part_converter import convert_genai_part_to_a2a_part
 from ..converters.part_converter import GenAIPartToA2APartConverter
 from ..converters.to_adk_event import _create_mock_function_call_for_required_user_input
+from ..converters.to_adk_event import _TASK_RESPONSE_BOUNDARY_STATES
 from ..converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH
 from ..converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
 from ..experimental import a2a_experimental
@@ -1381,6 +1382,73 @@ class RemoteA2aAgent(BaseAgent):
       return self._context_builder(ctx, self.name, self._genai_part_converter)
     return self._construct_message_parts_from_session(ctx)
 
+  def _get_resumable_task_id(
+      self, ctx: InvocationContext, context_id: Optional[str]
+  ) -> Optional[str]:
+    """Returns the latest paused task in the outgoing message's context."""
+    if not context_id or not self._has_default_response_persistence():
+      return None
+    task_scope = ctx.isolation_scope if self.mode == "task" else None
+    for event in reversed(ctx.session.events):
+      if task_scope and event.isolation_scope != task_scope:
+        # Do not resume a task from an earlier delegation to the same agent.
+        if any(fc.id == task_scope for fc in event.get_function_calls()):
+          return None
+        continue
+      metadata = event.custom_metadata or {}
+      if (
+          event.author == self.name
+          and event.error_message
+          and metadata.get(A2A_METADATA_PREFIX + "request")
+      ):
+        # A failed request may already have consumed the recorded pause.
+        # Its old task state is no longer sufficient to infer a continuation.
+        return None
+      if not self._is_remote_response(event):
+        continue
+      if metadata.get(A2A_METADATA_PREFIX + "context_id") != context_id:
+        return None
+      response = metadata.get(A2A_METADATA_PREFIX + "response")
+      status = response.get("status") if isinstance(response, dict) else None
+      # Session metadata contains the serialized wire state. A2A 0.3 uses
+      # hyphenated names, while A2A 1.x uses protobuf enum names.
+      if not isinstance(status, dict) or status.get("state") not in (
+          "input-required",
+          "auth-required",
+          "TASK_STATE_INPUT_REQUIRED",
+          "TASK_STATE_AUTH_REQUIRED",
+      ):
+        return None
+      task_id = metadata.get(A2A_METADATA_PREFIX + "task_id")
+      return task_id if isinstance(task_id, str) else None
+    return None
+
+  def _has_default_response_persistence(self) -> bool:
+    """Whether recorded responses can safely determine task continuation.
+
+    Inbound converters and after-request hooks may suppress a terminal response,
+    leaving an older pause in history. With these overrides, callers retain
+    control of task routing through function responses or request interceptors.
+    """
+    if self._a2a_part_converter is not convert_a2a_part_to_genai_part:
+      return False
+    for name in (
+        "a2a_task_converter",
+        "a2a_status_update_converter",
+        "a2a_message_converter",
+        "a2a_artifact_update_converter",
+        "a2a_part_converter",
+    ):
+      if (
+          getattr(self._config, name)
+          is not A2aRemoteAgentConfig.model_fields[name].default
+      ):
+        return False
+    return not any(
+        interceptor.after_request is not None
+        for interceptor in self._config.request_interceptors or []
+    )
+
   async def _handle_a2a_response(
       self,
       a2a_response: _compat.A2AClientEvent | A2AMessage,
@@ -1424,12 +1492,16 @@ class RemoteA2aAgent(BaseAgent):
             for part in event.content.parts or []:
               part.thought = True
           _add_mock_function_call(event, task.status.state)
-        elif isinstance(update, A2ATaskStatusUpdateEvent) and (
-            _status_message := (
-                _compat.normalize_message(update.status.message)
-                if update.status
-                else None
+        elif (
+            isinstance(update, A2ATaskStatusUpdateEvent)
+            and (
+                _status_message := (
+                    _compat.normalize_message(update.status.message)
+                    if update.status
+                    else None
+                )
             )
+            and getattr(_status_message, "parts", True)
         ):
           # This is a streaming task status update with a message.
           # ``normalize_message`` collapses the always-present empty proto
@@ -1447,6 +1519,17 @@ class RemoteA2aAgent(BaseAgent):
             for part in event.content.parts or []:
               part.thought = True
           _add_mock_function_call(event, update.status.state)
+        elif (
+            isinstance(update, A2ATaskStatusUpdateEvent)
+            and update.status.state in _TASK_RESPONSE_BOUNDARY_STATES
+        ):
+          # A bare pause or terminal status is still the end of an interaction.
+          # Persist it so the next user turn sees the current task state.
+          event = Event(
+              author=self.name,
+              invocation_id=ctx.invocation_id,
+              branch=ctx.branch,
+          )
         elif isinstance(update, A2ATaskArtifactUpdateEvent):
           # This is a streaming task artifact update.
           # Convert only the parts carried by this update. Converting the
@@ -1667,6 +1750,7 @@ class RemoteA2aAgent(BaseAgent):
             parts=message_parts,
             role=_compat.ROLE_USER,
             context_id=context_id or session_id,
+            task_id=self._get_resumable_task_id(ctx, context_id),
         )
 
       logger.debug(build_a2a_request_log(a2a_request))
@@ -1832,6 +1916,14 @@ class RemoteA2aAgent(BaseAgent):
               error_message=task_error_message,
               invocation_id=ctx.invocation_id,
               branch=ctx.branch,
+              custom_metadata=(
+                  {
+                      A2A_METADATA_PREFIX
+                      + "request": _compat.a2a_to_dict(a2a_request),
+                  }
+                  if a2a_request
+                  else None
+              ),
           )
 
       except _compat.A2A_HTTP_ERRORS as e:

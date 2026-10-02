@@ -422,6 +422,7 @@ overrides = [ { module = [
 
 [tool.pytest]
 ini_options.testpaths = [ "tests" ]
+ini_options.pythonpath = "src"
 ini_options.asyncio_default_fixture_loop_scope = "function"
 ini_options.asyncio_mode = "auto"
 

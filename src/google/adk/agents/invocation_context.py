@@ -93,7 +93,10 @@ class _AbortState:
   instance reference. Updates to loop, signal, or aborted propagate across all
   model_copy() clones in the tree. Cross-Runner sub-runs (such as AgentTool or
   nested Workflow node runners) propagate cancellation by passing
-  ``_abort_signal`` to the child Runner's ``run_async``.
+  ``_abort_signal`` to the child Runner's ``run_async``. ``signal`` is an
+  ``asyncio.Event`` and can only be awaited on ``loop``, so AgentTool does not
+  pass it when the tool runs on another event loop (e.g. RunConfig's tool
+  thread pool); such a sub-run is not cancelled by a caller abort.
   """
 
   def __init__(

@@ -74,7 +74,7 @@ SERVER_HOST = "127.0.0.1"
 SERVER_PORT = 8000
 
 # APP_NAME is the folder name of your agent.
-APP_NAME = "live_bidi_streaming_single_agent"
+APP_NAME = "single_agent"
 # The following default ones also work
 USER_ID = "your_user_id_123"
 SESSION_ID = "your_session_id_abc"
@@ -462,7 +462,7 @@ async def websocket_client():
   agent_response_audio_player = AgentResponseAudioPlayer()
   audio_streaming_component = AudioStreamingComponent()
   if (
-      APP_NAME == "live_bidi_streaming_single_agent"
+      APP_NAME == "single_agent"
       or USER_ID.startswith("your_user_id")
       or SESSION_ID.startswith("your_session_id")
   ):
@@ -805,7 +805,7 @@ async def websocket_client():
 if __name__ == "__main__":
   logging.info("Script's main execution block started.")
   if (
-      APP_NAME == "live_bidi_streaming_single_agent"
+      APP_NAME == "single_agent"
       or USER_ID.startswith("your_user_id")
       or SESSION_ID.startswith("your_session_id")
   ):
