@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from enum import Enum
+import functools
 import inspect
 from typing import Any
 from typing import Optional
@@ -24,6 +25,7 @@ from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
+from google.adk.models.llm_request import LlmRequest
 from google.adk.sessions.session import Session
 from google.adk.tools.function_tool import _build_declaration_cached
 from google.adk.tools.function_tool import FunctionTool
@@ -165,6 +167,41 @@ async def test_run_async_with_tool_context_async_callable():
   assert result == "test_value_1"
   assert tool.name == "AsyncCallableWith1ArgAndToolContext"
   assert tool.description == "Async call doc"
+
+
+def test_callable_declaration_uses_call_docstring():
+  """The declaration carries the same __call__ docstring as tool.description."""
+  tool = FunctionTool(AsyncCallableWith1ArgAndToolContext())
+
+  declaration = tool._get_declaration()  # pylint: disable=protected-access
+
+  assert declaration.description == "Async call doc"
+
+
+def test_partial_tools_do_not_shadow_each_other():
+  """Partials of different functions keep their own names and docstrings."""
+
+  def get_weather(api_key: str, city: str) -> str:
+    """Returns the current weather for a city."""
+    return city
+
+  def get_forecast(api_key: str, city: str, days: int = 3) -> str:
+    """Returns a forecast for a city."""
+    return city
+
+  llm_request = LlmRequest()
+  llm_request.append_tools([
+      FunctionTool(functools.partial(get_weather, "key")),
+      FunctionTool(functools.partial(get_forecast, "key")),
+  ])
+
+  declarations = llm_request.config.tools[0].function_declarations
+  assert [d.name for d in declarations] == ["get_weather", "get_forecast"]
+  assert [d.description for d in declarations] == [
+      "Returns the current weather for a city.",
+      "Returns a forecast for a city.",
+  ]
+  assert list(llm_request.tools_dict) == ["get_weather", "get_forecast"]
 
 
 @pytest.mark.asyncio
