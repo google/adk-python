@@ -47,7 +47,10 @@ from google.adk.a2a.agent.config import A2aRemoteAgentConfig
 from google.adk.a2a.agent.utils import execute_after_request_interceptors
 from google.adk.a2a.agent.utils import execute_before_card_request_interceptors
 from google.adk.a2a.agent.utils import execute_before_request_interceptors
+from google.adk.a2a.converters.event_converter import convert_event_to_a2a_events as legacy_convert_event_to_a2a_events
+from google.adk.a2a.converters.from_adk_event import convert_event_to_a2a_events
 from google.adk.a2a.converters.part_converter import convert_genai_part_to_a2a_part
+from google.adk.a2a.converters.utils import _get_adk_metadata_key
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_ERROR_RESULT
 from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_SUCCESS_RESULT
@@ -1539,6 +1542,27 @@ class TestRemoteA2aAgentMessageHandling:
       self.agent._construct_message_parts_from_session(self.mock_context)
 
     assert "cannot forward the preceding state-only event" not in caplog.text
+
+  def test_task_mode_warns_for_in_scope_state_only_event(self, caplog):
+    """A state-only event inside the current task scope still warns."""
+    task_scope = "task-scope"
+    self.agent.mode = "task"
+    trigger = _make_dummy_task_trigger_event(task_scope, self.agent.name)
+    in_scope_state_only = Event(
+        author="local_agent",
+        isolation_scope=task_scope,
+        actions=EventActions(state_delta={"routing": "priority"}),
+    )
+    self.mock_session.events = [trigger, in_scope_state_only]
+    self.mock_context.isolation_scope = task_scope
+    self.mock_genai_part_converter.return_value = _compat.make_text_part(
+        "converted"
+    )
+
+    with caplog.at_level("WARNING"):
+      self.agent._construct_message_parts_from_session(self.mock_context)
+
+    assert "cannot forward the preceding state-only event" in caplog.text
 
   def test_construct_message_parts_from_session_foreign_function_response_converted_in_default_mode(
       self,
@@ -3130,6 +3154,150 @@ class TestRemoteA2aAgentStreamingArtifactChunks:
     )
 
     assert result is None
+
+
+_PEER_STATE_DELTA_WARNING = (
+    "Ignoring a session state delta from a remote A2A peer"
+)
+
+
+class TestRemoteA2aAgentPeerStateDelta:
+  """A remote peer's state delta is never applied, but dropping it is logged."""
+
+  def setup_method(self):
+    """Setup test fixtures."""
+    self.agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card=create_test_agent_card(),
+    )
+    self.mock_context = Mock(spec=InvocationContext)
+    self.mock_context.invocation_id = "invocation-123"
+    self.mock_context.branch = "main"
+
+  def _remote_event(self, state_delta):
+    """Build the final event of a remote LlmAgent(output_key="findings")."""
+    return Event(
+        author="remote_agent",
+        invocation_id="remote-invocation",
+        content=genai_types.Content(
+            role="model", parts=[genai_types.Part(text="the findings")]
+        ),
+        actions=EventActions(state_delta=state_delta),
+    )
+
+  def _remote_invocation_context(self):
+    remote_context = Mock(spec=InvocationContext)
+    remote_context.app_name = "remote_app"
+    remote_context.user_id = "user"
+    remote_context.session = Mock(spec=Session)
+    remote_context.session.id = "remote-session"
+    return remote_context
+
+  def _working_task(self):
+    return _compat.make_task(
+        id="task-123",
+        status=_compat.make_task_status(_compat.TS_WORKING),
+        context_id="context-123",
+    )
+
+  async def _round_trip_legacy(self, state_delta):
+    """Send a remote event through the default (legacy) server and client."""
+    updates = legacy_convert_event_to_a2a_events(
+        self._remote_event(state_delta),
+        self._remote_invocation_context(),
+        "task-123",
+        "context-123",
+    )
+    return [
+        await self.agent._handle_a2a_response(
+            (self._working_task(), update), self.mock_context
+        )
+        for update in updates
+    ]
+
+  @pytest.mark.asyncio
+  async def test_legacy_round_trip_warns_on_peer_state_delta(self, caplog):
+    """The default client path logs a remote output_key it cannot apply."""
+    with caplog.at_level("WARNING"):
+      events = await self._round_trip_legacy({"findings": "the findings"})
+
+    assert _PEER_STATE_DELTA_WARNING in caplog.text
+    assert [event.content.parts[0].text for event in events] == ["the findings"]
+    assert all(event.actions.state_delta == {} for event in events)
+
+  @pytest.mark.asyncio
+  async def test_legacy_round_trip_without_state_delta_does_not_warn(
+      self, caplog
+  ):
+    """The legacy server sends stateDelta: {} on every event; ignore it."""
+    with caplog.at_level("WARNING"):
+      await self._round_trip_legacy({})
+
+    assert _PEER_STATE_DELTA_WARNING not in caplog.text
+
+  @pytest.mark.asyncio
+  async def test_legacy_full_task_warns_on_peer_state_delta(self, caplog):
+    """A non-streaming client sees the delta merged into the task metadata."""
+    task = _compat.make_task(
+        id="task-123",
+        status=_compat.make_task_status(_compat.TS_COMPLETED),
+        context_id="context-123",
+        metadata={
+            _get_adk_metadata_key("actions"): {
+                "stateDelta": {"findings": "the findings"}
+            }
+        },
+    )
+
+    with caplog.at_level("WARNING"):
+      await self.agent._handle_a2a_response((task, None), self.mock_context)
+
+    assert _PEER_STATE_DELTA_WARNING in caplog.text
+
+  @pytest.mark.asyncio
+  async def test_legacy_message_warns_on_peer_state_delta(self, caplog):
+    """A direct message response carrying a state delta also warns."""
+    message = _compat.make_message(
+        message_id="msg-1",
+        role=_compat.ROLE_AGENT,
+        parts=[_compat.make_text_part("the findings")],
+        metadata={
+            _get_adk_metadata_key("actions"): {
+                "stateDelta": {"findings": "the findings"}
+            }
+        },
+    )
+
+    with caplog.at_level("WARNING"):
+      event = await self.agent._handle_a2a_response(message, self.mock_context)
+
+    assert _PEER_STATE_DELTA_WARNING in caplog.text
+    assert event.actions.state_delta == {}
+
+  @pytest.mark.asyncio
+  async def test_new_integration_round_trip_warns_on_peer_state_delta(
+      self, caplog
+  ):
+    """The new integration path logs a remote output_key it cannot apply."""
+    updates = convert_event_to_a2a_events(
+        self._remote_event({"findings": "the findings"}),
+        {},
+        "task-123",
+        "context-123",
+    )
+
+    with caplog.at_level("WARNING"):
+      events = [
+          await self.agent._handle_a2a_response_v2(
+              (self._working_task(), update), self.mock_context
+          )
+          for update in updates
+      ]
+
+    assert _PEER_STATE_DELTA_WARNING in caplog.text
+    events = [event for event in events if event]
+    assert [event.content.parts[0].text for event in events] == ["the findings"]
+    assert all(event.actions.state_delta == {} for event in events)
 
 
 class TestRemoteA2aAgentMessageHandlingFromFactory:
