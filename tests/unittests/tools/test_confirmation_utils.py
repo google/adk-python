@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for the shared tool confirmation gate.
+"""Tests for the shared tool confirmation helpers.
 
 Verifies that the gate holds back a call that needs confirmation, records the
 confirmation request, and lets approved or unguarded calls through.

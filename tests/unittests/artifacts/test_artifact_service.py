@@ -1079,6 +1079,39 @@ async def test_get_artifact_version_out_of_index(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+async def test_load_and_get_artifact_version_reject_negative_version(
+    service_type, artifact_service_factory
+):
+  """Negative version numbers return None instead of indexing backward."""
+  artifact_service = artifact_service_factory(service_type)
+  scope = {
+      "app_name": "app0",
+      "user_id": "user0",
+      "session_id": "123",
+      "filename": "filename",
+  }
+  await artifact_service.save_artifact(
+      **scope, artifact=types.Part.from_text(text="v0")
+  )
+  await artifact_service.save_artifact(
+      **scope, artifact=types.Part.from_text(text="v1")
+  )
+
+  assert await artifact_service.load_artifact(**scope, version=-1) is None
+  assert (
+      await artifact_service.get_artifact_version(**scope, version=-1) is None
+  )
+
+
+@pytest.mark.asyncio
 async def test_gcs_save_and_load_empty_text_artifact(
     artifact_service_factory,
 ):

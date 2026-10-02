@@ -25,7 +25,7 @@ from google.auth.credentials import Credentials
 from google.cloud import bigquery
 
 from ... import version
-from ...utils._telemetry_context import _is_visual_builder
+from ...utils._telemetry_context import _surface_user_agent
 
 if TYPE_CHECKING:
   from google.cloud import dataplex_v1
@@ -34,9 +34,6 @@ USER_AGENT_BASE = f"google-adk/{version.__version__}"
 BQ_USER_AGENT = f"adk-bigquery-tool {USER_AGENT_BASE}"
 DP_USER_AGENT = f"adk-dataplex-tool {USER_AGENT_BASE}"
 USER_AGENT = BQ_USER_AGENT
-
-# Internal identifier for Visual Builder usage tracking.
-_VISUAL_BUILDER_UA = "google-adk-visual-builder"
 
 # google-cloud-dataplex is optional, so the modules that need it import it
 # where it is used and raise this instead of failing at import time.
@@ -67,8 +64,8 @@ def get_bigquery_client(
 
   user_agents = [BQ_USER_AGENT]
 
-  if _is_visual_builder.get():
-    user_agents.append(_VISUAL_BUILDER_UA)
+  if surface_ua := _surface_user_agent():
+    user_agents.append(surface_ua)
 
   if user_agent:
     if isinstance(user_agent, str):
@@ -115,8 +112,8 @@ def get_dataplex_catalog_client(
 
   user_agents = [DP_USER_AGENT]
 
-  if _is_visual_builder.get():
-    user_agents.append(_VISUAL_BUILDER_UA)
+  if surface_ua := _surface_user_agent():
+    user_agents.append(surface_ua)
 
   if user_agent:
     if isinstance(user_agent, str):

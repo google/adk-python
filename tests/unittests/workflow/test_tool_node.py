@@ -19,14 +19,21 @@ import re
 from typing import Any
 
 from google.adk.agents.context import Context
+from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
+from google.adk.events.request_input import RequestInput
 from google.adk.platform import uuid as platform_uuid
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.tools.base_tool import BaseTool
+from google.adk.tools.bash_tool import ExecuteBashTool
 from google.adk.tools.function_tool import FunctionTool
+from google.adk.workflow import node
 from google.adk.workflow import START
 from google.adk.workflow._tool_node import _ToolNode as ToolNode
 from google.adk.workflow._workflow import Workflow
+from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
+from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
+from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
 from google.genai import types
 from pydantic import BaseModel
 import pytest
@@ -557,3 +564,511 @@ async def test_tool_node_failure_propagates_when_no_plugin_handles_it():
   with pytest.raises(ValueError, match="no data for Paris"):
     await _run_tool_node_with_plugin(FunctionTool(func=lookup), plugin)
   assert ("error", "lookup", "no data for Paris") in plugin.calls
+
+
+@pytest.mark.asyncio
+async def test_tool_node_failure_drops_confirmation_requested_before_it():
+  """A tool that fails after requesting confirmation leaves no request pending.
+
+  The on-tool-error answer is the call's result, so the after-tool callback
+  sees no pending confirmation request and the workflow does not pause.
+  """
+
+  class _PendingRequestPlugin(_RecordingToolPlugin):
+
+    def __init__(self):
+      super().__init__(error_response={"error": "handled"})
+      self.pending_after: list[dict[str, Any]] = []
+
+    async def after_tool_callback(
+        self, *, tool, tool_args, tool_context, result
+    ):
+      self.pending_after.append(
+          dict(tool_context.actions.requested_tool_confirmations)
+      )
+      return await super().after_tool_callback(
+          tool=tool,
+          tool_args=tool_args,
+          tool_context=tool_context,
+          result=result,
+      )
+
+  def lookup(city: str, tool_context: Context) -> dict[str, str]:
+    tool_context.request_confirmation(hint="Look up the city?")
+    raise ValueError(f"no data for {city}")
+
+  plugin = _PendingRequestPlugin()
+
+  seen_downstream = await _run_tool_node_with_plugin(
+      FunctionTool(func=lookup), plugin
+  )
+
+  assert plugin.pending_after == [{}]
+  assert seen_downstream == [{"error": "handled"}]
+
+
+class _ConfirmationWorkflow:
+  """Runs start -> confirm-required tool node -> downstream with a runner."""
+
+  def __init__(
+      self,
+      *,
+      resumable: bool,
+      require_confirmation: Any = True,
+      plugins: list[BasePlugin] | None = None,
+  ):
+    self.tool_calls: list[str] = []
+    self.seen_downstream: list[Any] = []
+
+    def delete_db(name: str) -> dict[str, str]:
+      self.tool_calls.append(name)
+      return {"deleted": name}
+
+    def start_node():
+      return Event(output={"name": "prod"})
+
+    def after(node_input: Any):
+      self.seen_downstream.append(node_input)
+      return node_input
+
+    tool_node = ToolNode(
+        tool=FunctionTool(
+            func=delete_db, require_confirmation=require_confirmation
+        )
+    )
+    wf = Workflow(
+        name="tool_node_confirmation_wf",
+        edges=[
+            (START, start_node),
+            (start_node, tool_node),
+            (tool_node, after),
+        ],
+    )
+    app_instance = testing_utils.App(
+        name="test_app",
+        root_agent=wf,
+        plugins=plugins or [],
+        resumability_config=(
+            ResumabilityConfig(is_resumable=True) if resumable else None
+        ),
+    )
+    self.runner = testing_utils.InMemoryRunner(app=app_instance)
+
+  async def start(self) -> Event | None:
+    """Runs the workflow and returns the confirmation request, if any."""
+    events = await self.runner.run_async("start")
+    return workflow_testing_utils.find_function_call_event(
+        events, REQUEST_INPUT_FUNCTION_CALL_NAME
+    )
+
+  async def answer(self, request: Event, response: dict[str, Any]) -> None:
+    """Resumes the workflow with the user's answer to the request."""
+    interrupt_id = get_request_input_interrupt_ids(request)[0]
+    await self.runner.run_async(
+        new_message=testing_utils.UserContent(
+            create_request_input_response(interrupt_id, response)
+        ),
+        invocation_id=request.invocation_id,
+    )
+
+
+@pytest.mark.parametrize("resumable", [False, True])
+@pytest.mark.asyncio
+async def test_tool_node_confirmation_pauses_before_running_tool(
+    resumable: bool,
+):
+  """Tests that a confirm-required tool asks the user before it runs."""
+  wf = _ConfirmationWorkflow(resumable=resumable)
+
+  request = await wf.start()
+
+  assert request is not None
+  args = request.content.parts[0].function_call.args
+  assert args["payload"] == {"tool_name": "delete_db", "args": {"name": "prod"}}
+  assert not wf.tool_calls
+  assert not wf.seen_downstream
+
+
+@pytest.mark.parametrize("resumable", [False, True])
+@pytest.mark.asyncio
+async def test_tool_node_confirmation_approved_runs_tool_once(
+    resumable: bool,
+):
+  """Tests that an approved call runs the tool once and continues."""
+  wf = _ConfirmationWorkflow(resumable=resumable)
+  request = await wf.start()
+
+  await wf.answer(request, {"confirmed": True})
+
+  assert wf.tool_calls == ["prod"]
+  assert wf.seen_downstream == [{"deleted": "prod"}]
+
+
+@pytest.mark.parametrize("resumable", [False, True])
+@pytest.mark.asyncio
+async def test_tool_node_confirmation_rejected_skips_tool(resumable: bool):
+  """Tests that a rejected call answers with an error and skips the tool."""
+  wf = _ConfirmationWorkflow(resumable=resumable)
+  request = await wf.start()
+
+  await wf.answer(request, {"confirmed": False})
+
+  assert not wf.tool_calls
+  assert wf.seen_downstream == [{"error": "This tool call is rejected."}]
+
+
+@pytest.mark.parametrize("resumable", [False, True])
+@pytest.mark.asyncio
+async def test_tool_node_before_tool_callback_sees_confirmation_on_resume(
+    resumable: bool,
+):
+  """The before-tool plugin sees the user's answer, as in an agent."""
+
+  class _ConfirmationRecordingPlugin(BasePlugin):
+
+    def __init__(self):
+      super().__init__(name="confirmation_recording_plugin")
+      self.seen: list[bool | None] = []
+
+    async def before_tool_callback(self, *, tool, tool_args, tool_context):
+      confirmation = tool_context.tool_confirmation
+      self.seen.append(confirmation.confirmed if confirmation else None)
+
+  plugin = _ConfirmationRecordingPlugin()
+  wf = _ConfirmationWorkflow(resumable=resumable, plugins=[plugin])
+  request = await wf.start()
+
+  await wf.answer(request, {"confirmed": True})
+
+  assert plugin.seen == [None, True]
+  assert wf.tool_calls == ["prod"]
+
+
+@pytest.mark.asyncio
+async def test_tool_node_confirmation_not_required_for_args_runs_directly():
+  """Tests that a confirmation predicate returning False does not pause."""
+  wf = _ConfirmationWorkflow(
+      resumable=False, require_confirmation=lambda name: name != "prod"
+  )
+
+  request = await wf.start()
+
+  assert request is None
+  assert wf.tool_calls == ["prod"]
+  assert wf.seen_downstream == [{"deleted": "prod"}]
+
+
+class _RequestedConfirmationWorkflow(_ConfirmationWorkflow):
+  """Runs a tool that calls `tool_context.request_confirmation()` itself."""
+
+  def __init__(self, *, resumable: bool):
+    self.tool_calls: list[str] = []
+    self.seen_downstream: list[Any] = []
+
+    def transfer(amount: int, tool_context: Context) -> dict[str, Any]:
+      confirmation = tool_context.tool_confirmation
+      if confirmation is None:
+        tool_context.request_confirmation(
+            hint="Approve the transfer?", payload={"limit": 0}
+        )
+        return {"status": "waiting for approval"}
+      if not confirmation.confirmed:
+        return {"status": "declined"}
+      self.tool_calls.append(f"transfer {amount}")
+      return {"transferred": amount, "limit": confirmation.payload["limit"]}
+
+    def start_node():
+      return Event(output={"amount": 5})
+
+    def after(node_input: Any):
+      self.seen_downstream.append(node_input)
+      return node_input
+
+    tool_node = ToolNode(tool=FunctionTool(func=transfer))
+    wf = Workflow(
+        name="tool_node_requested_confirmation_wf",
+        edges=[
+            (START, start_node),
+            (start_node, tool_node),
+            (tool_node, after),
+        ],
+    )
+    app_instance = testing_utils.App(
+        name="test_app",
+        root_agent=wf,
+        resumability_config=(
+            ResumabilityConfig(is_resumable=True) if resumable else None
+        ),
+    )
+    self.runner = testing_utils.InMemoryRunner(app=app_instance)
+
+
+@pytest.mark.parametrize("resumable", [False, True])
+@pytest.mark.asyncio
+async def test_tool_node_requested_confirmation_pauses(resumable: bool):
+  """Tests that request_confirmation() inside a tool pauses the workflow."""
+  wf = _RequestedConfirmationWorkflow(resumable=resumable)
+
+  request = await wf.start()
+
+  assert request is not None
+  args = request.content.parts[0].function_call.args
+  assert args["message"] == "Approve the transfer?"
+  assert args["payload"] == {
+      "tool_name": "transfer",
+      "args": {"amount": 5},
+      "confirmation_payload": {"limit": 0},
+  }
+  assert not wf.tool_calls
+  assert not wf.seen_downstream
+
+
+@pytest.mark.parametrize("resumable", [False, True])
+@pytest.mark.asyncio
+async def test_tool_node_requested_confirmation_approved_reruns_tool(
+    resumable: bool,
+):
+  """Tests that the tool reruns with the user's answer on ctx.tool_confirmation."""
+  wf = _RequestedConfirmationWorkflow(resumable=resumable)
+  request = await wf.start()
+
+  await wf.answer(request, {"confirmed": True, "payload": {"limit": 10}})
+
+  assert wf.tool_calls == ["transfer 5"]
+  assert wf.seen_downstream == [{"transferred": 5, "limit": 10}]
+
+
+@pytest.mark.parametrize("resumable", [False, True])
+@pytest.mark.asyncio
+async def test_tool_node_requested_confirmation_rejected_lets_tool_decide(
+    resumable: bool,
+):
+  """Tests that a rejection is handed to the tool, which decides the result."""
+  wf = _RequestedConfirmationWorkflow(resumable=resumable)
+  request = await wf.start()
+
+  await wf.answer(request, {"confirmed": False})
+
+  assert not wf.tool_calls
+  assert wf.seen_downstream == [{"status": "declined"}]
+
+
+def _make_runner(
+    wf: Workflow, *, resumable: bool
+) -> testing_utils.InMemoryRunner:
+  """Returns a runner for the workflow, resumable or not."""
+  app_instance = testing_utils.App(
+      name="test_app",
+      root_agent=wf,
+      resumability_config=(
+          ResumabilityConfig(is_resumable=True) if resumable else None
+      ),
+  )
+  return testing_utils.InMemoryRunner(app=app_instance)
+
+
+async def _start(runner: testing_utils.InMemoryRunner) -> Event | None:
+  """Runs the workflow and returns the input request it paused on, if any."""
+  events = await runner.run_async("start")
+  return workflow_testing_utils.find_function_call_event(
+      events, REQUEST_INPUT_FUNCTION_CALL_NAME
+  )
+
+
+async def _answer(
+    runner: testing_utils.InMemoryRunner,
+    request: Event,
+    response: dict[str, Any],
+) -> Event | None:
+  """Resumes the workflow with the user's answer to the request.
+
+  Returns the next input request the workflow paused on, if any.
+  """
+  interrupt_id = get_request_input_interrupt_ids(request)[0]
+  events = await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response(interrupt_id, response)
+      ),
+      invocation_id=request.invocation_id,
+  )
+  return workflow_testing_utils.find_function_call_event(
+      events, REQUEST_INPUT_FUNCTION_CALL_NAME
+  )
+
+
+@pytest.mark.parametrize("resumable", [False, True])
+@pytest.mark.asyncio
+async def test_execute_bash_tool_node_runs_command_after_approval(
+    tmp_path, resumable: bool
+):
+  """ExecuteBashTool in a tool node runs its command once the user approves.
+
+  ExecuteBashTool asks for confirmation from inside `run_async` rather than
+  through `check_require_confirmation`.
+  """
+  seen_downstream: list[Any] = []
+
+  def start_node():
+    return Event(output={"command": "echo hello_from_bash"})
+
+  def after(node_input: Any):
+    seen_downstream.append(node_input)
+    return node_input
+
+  tool_node = ToolNode(tool=ExecuteBashTool(workspace=tmp_path))
+  wf = Workflow(
+      name="tool_node_bash_wf",
+      edges=[
+          (START, start_node),
+          (start_node, tool_node),
+          (tool_node, after),
+      ],
+  )
+  runner = _make_runner(wf, resumable=resumable)
+  # Given the workflow paused on the bash command's confirmation request
+  request = await _start(runner)
+  assert request is not None
+  assert not seen_downstream
+
+  # When the user approves the command
+  await _answer(runner, request, {"confirmed": True})
+
+  # Then the command ran and its result reached the downstream node
+  assert len(seen_downstream) == 1
+  assert seen_downstream[0]["returncode"] == 0
+  assert "hello_from_bash" in seen_downstream[0]["stdout"]
+
+
+@pytest.mark.parametrize("resumable", [False, True])
+@pytest.mark.asyncio
+async def test_tool_node_with_no_output_is_not_rerun_on_resume(
+    resumable: bool,
+):
+  """A tool node whose tool returned None does not run again on resume."""
+  tool_calls = 0
+
+  def record_call(tool_context: Context) -> None:
+    del tool_context  # Takes a context but never asks for confirmation.
+    nonlocal tool_calls
+    tool_calls += 1
+
+  def start_node():
+    return Event(output={})
+
+  def review_node(node_input: Any):
+    return RequestInput(interrupt_id="review", message="Please review")
+
+  tool_node = ToolNode(tool=FunctionTool(func=record_call))
+  wf = Workflow(
+      name="tool_node_no_output_wf",
+      edges=[
+          (START, start_node),
+          (start_node, tool_node),
+          (tool_node, review_node),
+      ],
+  )
+  runner = _make_runner(wf, resumable=resumable)
+  # Given the tool ran and the workflow paused on a later node
+  request = await _start(runner)
+  assert request is not None
+
+  # When the user answers the later node
+  await _answer(runner, request, {"status": "ok"})
+
+  # Then the tool ran only in the first turn
+  assert tool_calls == 1
+
+
+@pytest.mark.parametrize("resumable", [False, True])
+@pytest.mark.asyncio
+async def test_confirmed_tool_node_with_no_output_is_not_rerun_on_resume(
+    resumable: bool,
+):
+  """A confirmed tool call that returned None does not run again on resume.
+
+  Setup: a confirm-required tool that returns None, followed by a node that
+    asks for review in the same invocation.
+  Act: approve the call, then answer the review.
+  Assert: the tool ran only once, when the call was approved.
+  """
+  tool_calls = 0
+
+  def record_call(name: str) -> None:
+    del name  # Only the number of calls matters.
+    nonlocal tool_calls
+    tool_calls += 1
+
+  def start_node():
+    return Event(output={"name": "prod"})
+
+  def review_node(node_input: Any):
+    return RequestInput(interrupt_id="review", message="Please review")
+
+  tool_node = ToolNode(
+      tool=FunctionTool(func=record_call, require_confirmation=True)
+  )
+  wf = Workflow(
+      name="confirmed_tool_node_no_output_wf",
+      edges=[
+          (START, start_node),
+          (start_node, tool_node),
+          (tool_node, review_node),
+      ],
+  )
+  runner = _make_runner(wf, resumable=resumable)
+  # Given the user approved the call and the workflow paused on the review
+  confirmation = await _start(runner)
+  assert confirmation is not None
+  review = await _answer(runner, confirmation, {"confirmed": True})
+  assert review is not None
+  assert tool_calls == 1
+
+  # When the user answers the review
+  await _answer(runner, review, {"status": "ok"})
+
+  # Then the tool did not run again
+  assert tool_calls == 1
+
+
+@pytest.mark.parametrize("resumable", [False, True])
+@pytest.mark.asyncio
+async def test_dynamic_tool_node_with_no_output_is_not_rerun_on_resume(
+    resumable: bool,
+):
+  """A tool node run through ctx.run_node() that returned None is not rerun.
+
+  Setup: driver (rerun_on_resume=True) runs a no-output tool node through
+    `ctx.run_node()`, then pauses for review.
+  Act: answer the review, so the driver reruns and schedules the tool node
+    again.
+  Assert: the tool ran only in the first turn, and the driver finished.
+  """
+  tool_calls = 0
+  driver_outputs: list[Any] = []
+
+  def record_call(tool_context: Context) -> None:
+    del tool_context  # Takes a context but never asks for confirmation.
+    nonlocal tool_calls
+    tool_calls += 1
+
+  tool_node = ToolNode(tool=FunctionTool(func=record_call))
+
+  @node(rerun_on_resume=True)
+  async def driver(*, ctx: Context, node_input: Any):
+    del node_input
+    await ctx.run_node(tool_node)
+    if "review" not in ctx.resume_inputs:
+      yield RequestInput(interrupt_id="review", message="Please review")
+      return
+    driver_outputs.append("done")
+    yield Event(output="done")
+
+  wf = Workflow(name="dynamic_tool_node_no_output_wf", edges=[(START, driver)])
+  runner = _make_runner(wf, resumable=resumable)
+  request = await _start(runner)
+  assert request is not None
+
+  await _answer(runner, request, {"status": "ok"})
+
+  assert tool_calls == 1
+  assert driver_outputs == ["done"]

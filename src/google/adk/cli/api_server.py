@@ -112,6 +112,10 @@ logger = logging.getLogger("google_adk." + __name__)
 
 _REGEX_PREFIX = "regex:"
 
+# Pre-built avatar used for VIDEO live sessions when no avatar config is set.
+# The Live API rejects VIDEO output without an avatar config.
+_DEFAULT_AVATAR_NAME = "Kai"
+
 
 def _parse_cors_origins(
     allow_origins: list[str],
@@ -906,6 +910,7 @@ class ApiServer:
       ] = None,
       default_llm_model: Optional[str] = None,
       avatar_config: Optional[types.AvatarConfig] = None,
+      max_llm_calls: Optional[int] = None,
   ):
     self.agent_loader = agent_loader
     self.session_service = session_service
@@ -939,6 +944,7 @@ class ApiServer:
     self.trigger_auth_verifier = trigger_auth_verifier
     self.default_llm_model = default_llm_model
     self.avatar_config = avatar_config
+    self.max_llm_calls = max_llm_calls
     self.default_app_name = os.getenv("ADK_DEFAULT_APP_NAME")
 
   async def get_runner_async(self, app_name: str) -> Runner:
@@ -1244,7 +1250,26 @@ class ApiServer:
     register_processors(tracer_provider)
 
     # Run the FastAPI server.
-    app = FastAPI(lifespan=internal_lifespan)
+    #
+    # `url_prefix` may be a bare path (e.g. "adk" or "/adk") or a full
+    # absolute URL (e.g. "https://host/adk", as used for the dev-ui's
+    # `backendUrl`). FastAPI's `root_path` must be a path only and, per the
+    # ASGI spec, either empty or starting with "/", so normalize both forms
+    # here. Only call urlparse() on strings that are actually absolute
+    # http(s) URLs -- otherwise a bare "host:port"-shaped prefix would be
+    # misparsed as `scheme:path`. This is what makes generated URLs --
+    # notably `/openapi.json` referenced from `/docs` -- resolve correctly
+    # when the app sits behind a reverse proxy that strips the prefix
+    # before forwarding.
+    root_path = ""
+    if self.url_prefix:
+      prefix = self.url_prefix
+      if prefix.startswith(("http://", "https://")):
+        prefix = urllib.parse.urlparse(prefix).path
+      if prefix and not prefix.startswith("/"):
+        prefix = "/" + prefix
+      root_path = prefix.rstrip("/")
+    app = FastAPI(lifespan=internal_lifespan, root_path=root_path)
 
     has_configured_allowed_origins = bool(allow_origins)
     if allow_origins:
@@ -1917,10 +1942,19 @@ class ApiServer:
       runner = await self.get_runner_async(req.app_name)
       _set_telemetry_context_if_needed(runner)
       run_config = None
-      if req.custom_metadata or req.service_tier:
+      if (
+          req.custom_metadata
+          or req.service_tier
+          or self.max_llm_calls is not None
+      ):
         run_config = RunConfig(
             custom_metadata=req.custom_metadata,
             service_tier=req.service_tier,
+            **(
+                {"max_llm_calls": self.max_llm_calls}
+                if self.max_llm_calls is not None
+                else {}
+            ),
         )
 
       async def worker():
@@ -1994,6 +2028,11 @@ class ApiServer:
             streaming_mode=stream_mode,
             custom_metadata=req.custom_metadata,
             service_tier=req.service_tier,
+            **(
+                {"max_llm_calls": self.max_llm_calls}
+                if self.max_llm_calls is not None
+                else {}
+            ),
         )
       except ValidationError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
@@ -2212,6 +2251,13 @@ class ApiServer:
 
       async def forward_events():
         runner = await self.get_runner_async(app_name)
+        # Avatars are rendered as video, so only VIDEO sessions get an avatar
+        # config, falling back to a pre-built avatar when none is configured.
+        avatar_config = None
+        if "VIDEO" in modalities:
+          avatar_config = self.avatar_config or types.AvatarConfig(
+              avatar_name=_DEFAULT_AVATAR_NAME
+          )
         run_config = RunConfig(
             response_modalities=modalities,
             proactivity=(
@@ -2229,10 +2275,11 @@ class ApiServer:
             ),
             save_live_blob=save_live_blob,
             explicit_vad_signal=explicit_vad_signal,
-            # Avatars are rendered as video, so only apply the server-wide
-            # avatar config to sessions that request VIDEO output.
-            avatar_config=(
-                self.avatar_config if "VIDEO" in modalities else None
+            avatar_config=avatar_config,
+            **(
+                {"max_llm_calls": self.max_llm_calls}
+                if self.max_llm_calls is not None
+                else {}
             ),
         )
         async with Aclosing(

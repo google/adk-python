@@ -215,11 +215,10 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     if not versions:
       return None
     if version is None:
-      version = -1
-
-    try:
+      artifact_entry = versions[-1]
+    elif 0 <= version < len(versions):
       artifact_entry = versions[version]
-    except IndexError:
+    else:
       return None
 
     if artifact_entry is None:
@@ -332,8 +331,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       return None
 
     if version is None:
-      version = -1
-    try:
+      return entries[-1].artifact_version
+    if 0 <= version < len(entries):
       return entries[version].artifact_version
-    except IndexError:
-      return None
+    return None

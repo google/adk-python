@@ -485,7 +485,12 @@ class TestMCPSessionManager:
       pass
 
     manager = MCPSessionManager(self.mock_stdio_connection_params)
-    with caplog.at_level(logging.DEBUG):
+    # Set on the module's logger, not the root: CLI tests that run earlier in
+    # the same worker leave the `google_adk` logger at INFO, and the module
+    # logger would inherit that and never create this debug record.
+    with caplog.at_level(
+        logging.DEBUG, logger=mcp_session_manager_module.logger.name
+    ):
       assert not manager._is_session_disconnected(SessionWithoutStreams())
     assert any(
         "SessionWithoutStreams" in record.getMessage()

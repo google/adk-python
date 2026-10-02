@@ -43,6 +43,7 @@ from ..events._internal_metadata import INTERNAL_METADATA_PREFIX
 from ..events._internal_metadata import mark_restored
 from ..events._internal_metadata import RESTORED_EVENT_KEY
 from ..events.event import Event
+from ..workflow._tool_node import _ToolNode
 from .base_plugin import BasePlugin
 
 if TYPE_CHECKING:
@@ -152,6 +153,10 @@ class ToolCallIntegrityPlugin(BasePlugin):
   name and arguments match one of them; it always refuses a call with no ID.
   Unstamped calls are rejected unless ``allow_unstamped_calls`` is set, in
   which case they are logged.
+
+  Tools that run as workflow nodes are not checked: their arguments come from
+  the workflow graph, not from a function call in the session. Node outputs
+  that a workflow restores from the session on resume are not covered either.
 
   Events without function calls are ignored. Events marked as restored are
   not verified, and their function calls are never executed. ADK marks events
@@ -320,6 +325,10 @@ class ToolCallIntegrityPlugin(BasePlugin):
       tool_args: dict[str, Any],
       tool_context: ToolContext,
   ) -> dict[str, Any] | None:
+    # A tool node gets its arguments from the workflow graph and a fresh call
+    # ID, so there is no stored call to check.
+    if isinstance(tool_context.node, _ToolNode):
+      return None
     call_id = tool_context.function_call_id
     # ADK gives every new call an ID before running it, so a call without one
     # was replayed from the session and cannot be matched to its stamp.

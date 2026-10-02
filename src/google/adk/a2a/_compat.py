@@ -41,6 +41,7 @@ from typing import TypeVar
 from a2a.client.client import ClientConfig as A2AClientConfig
 from a2a.client.client_factory import ClientFactory as A2AClientFactory
 from a2a.types import AgentCard
+from a2a.types import AgentSkill
 from a2a.types import APIKeySecurityScheme
 from a2a.types import Artifact
 from a2a.types import Message
@@ -569,6 +570,71 @@ def build_agent_card(
   if doc_url:
     card_data["documentation_url"] = doc_url
   return parse_agent_card(card_data)
+
+
+def build_agent_skill(
+    *,
+    id: str,
+    name: str,
+    description: str,
+    tags: list[str],
+    examples: list[str] | None = None,
+    input_modes: list[str] | None = None,
+    output_modes: list[str] | None = None,
+    security: list[dict[str, list[str]]] | None = None,
+) -> AgentSkill:
+  """Builds an ``AgentSkill`` from primitive fields."""
+  if IS_A2A_V1:
+    security_requirements = []
+    if security:
+      for req in security:
+        schemes = {}
+        for scheme_name, scopes in req.items():
+          schemes[scheme_name] = {"list": scopes}
+        security_requirements.append({"schemes": schemes})
+
+    skill_data = {
+        "id": id,
+        "name": name,
+        "description": description,
+        "tags": list(tags) if tags is not None else [],
+        "examples": list(examples) if examples is not None else [],
+        "input_modes": list(input_modes) if input_modes is not None else [],
+        "output_modes": list(output_modes) if output_modes is not None else [],
+        "security_requirements": security_requirements,
+    }
+    msg = AgentSkill()
+    ParseDict(skill_data, msg)
+    return msg
+  else:
+    return _as_factory(AgentSkill)(
+        id=id,
+        name=name,
+        description=description,
+        tags=tags,
+        examples=examples,
+        input_modes=input_modes,
+        output_modes=output_modes,
+        security=security,
+    )
+
+
+def get_skill_security(
+    skill: AgentSkill,
+) -> list[dict[str, list[str]]] | None:
+  """Gets security requirements from an ``AgentSkill``."""
+  if IS_A2A_V1:
+    if not skill.security_requirements:
+      return None
+    security = []
+    for req in skill.security_requirements:
+      req_dict = {}
+      for scheme_name, string_list in req.schemes.items():
+        req_dict[scheme_name] = list(string_list.list)
+      security.append(req_dict)
+    return security
+  else:
+    return getattr(skill, "security", None)
 
 
 # -----------------------------------------------------------------------------

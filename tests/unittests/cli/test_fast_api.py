@@ -781,6 +781,8 @@ def builder_test_client(
   """Return a TestClient rooted in a temporary agents directory."""
   with (
       patch.object(signal, "signal", autospec=True, return_value=None),
+      # Building the app adds tmp_path to sys.path; undo it for later tests.
+      patch.object(sys, "path", list(sys.path)),
       patch.object(
           fast_api_module,
           "create_session_service_from_options",
@@ -2252,6 +2254,114 @@ def test_agent_run_passes_custom_metadata(
   assert response.status_code == 200
   assert captured["run_config"] is not None
   assert captured["run_config"].custom_metadata == payload["custom_metadata"]
+
+
+def test_agent_run_passes_max_llm_calls(
+    create_test_session,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Test /run forwards the server's max_llm_calls via the run config."""
+  info = create_test_session
+  captured: dict[str, Optional[RunConfig]] = {"run_config": None}
+
+  async def run_async_capture(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      invocation_id: Optional[str] = None,
+      new_message: Optional[types.Content] = None,
+      state_delta: Optional[dict[str, object]] = None,
+      run_config: Optional[RunConfig] = None,
+  ):
+    del self, user_id, session_id, invocation_id, new_message, state_delta
+    captured["run_config"] = run_config
+    yield _event_1()
+
+  monkeypatch.setattr(Runner, "run_async", run_async_capture)
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      max_llm_calls=37,
+  )
+
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello"}]},
+      "streaming": False,
+  }
+
+  response = client.post("/run", json=payload)
+
+  assert response.status_code == 200
+  assert captured["run_config"] is not None
+  assert captured["run_config"].max_llm_calls == 37
+
+
+def test_agent_run_sse_passes_max_llm_calls(
+    create_test_session,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Test /run_sse forwards the server's max_llm_calls via the run config."""
+  info = create_test_session
+  captured: dict[str, Optional[RunConfig]] = {"run_config": None}
+
+  async def run_async_capture(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      invocation_id: Optional[str] = None,
+      new_message: Optional[types.Content] = None,
+      state_delta: Optional[dict[str, object]] = None,
+      run_config: Optional[RunConfig] = None,
+  ):
+    del self, user_id, session_id, invocation_id, new_message, state_delta
+    captured["run_config"] = run_config
+    yield _event_1()
+
+  monkeypatch.setattr(Runner, "run_async", run_async_capture)
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      max_llm_calls=37,
+  )
+
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello"}]},
+      "streaming": True,
+  }
+
+  response = client.post("/run_sse", json=payload)
+
+  assert response.status_code == 200
+  assert captured["run_config"] is not None
+  assert captured["run_config"].max_llm_calls == 37
 
 
 def test_agent_run_sse_splits_artifact_delta(
@@ -3832,17 +3942,41 @@ def test_builder_save_rejects_external_schema_reference(builder_test_client):
   assert "input_schema" in response.json()["detail"]
 
 
+@pytest.mark.parametrize(
+    ("app_name", "reference"),
+    [
+        ("os", "os.system"),
+        ("sys", "sys.exit"),
+        ("google", "google.genai.Client"),
+        ("dotenv", "dotenv.cli.run_command"),
+    ],
+)
 def test_builder_save_rejects_reference_when_app_name_shadows_module(
-    builder_test_client,
+    builder_test_client, app_name, reference
 ):
   """An app named after a real module cannot vouch for its own references."""
   response = _save_builder_yaml(
       builder_test_client,
-      b"name: my_agent\ntools:\n  - name: os.system\n",
-      app_name="os",
+      f"name: my_agent\ntools:\n  - name: {reference}\n".encode(),
+      app_name=app_name,
   )
   assert response.status_code == 400
   assert "shadows" in response.json()["detail"]
+
+
+def test_builder_save_allows_reference_when_app_imports_from_its_directory(
+    builder_test_client, tmp_path, monkeypatch
+):
+  """An app that is importable passes when it imports from its own folder."""
+  (tmp_path / "importable_app").mkdir()
+  (tmp_path / "importable_app" / "__init__.py").touch()
+  monkeypatch.syspath_prepend(str(tmp_path))
+  response = _save_builder_yaml(
+      builder_test_client,
+      b"name: my_agent\ntools:\n  - name: importable_app.tools.search\n",
+      app_name="importable_app",
+  )
+  assert response.status_code == 200
 
 
 def test_builder_save_covers_every_code_config_field(builder_test_client):
@@ -5613,6 +5747,68 @@ def test_runtime_config_rejects_half_specified_logo(tmp_path):
   """--logo-text without --logo-image-url is a config error, not a silent drop."""
   with pytest.raises(ValueError, match="Both --logo-text and --logo-image-url"):
     get_fast_api_app(agents_dir=str(tmp_path), web=True, logo_text="ACME")
+
+
+@pytest.mark.parametrize(
+    ("url_prefix", "expected_root_path"),
+    [
+        (None, ""),
+        ("", ""),
+        ("adk", "/adk"),
+        ("adk/", "/adk"),
+        ("/adk", "/adk"),
+        ("/adk/", "/adk"),
+        ("host:8000/adk", "/host:8000/adk"),
+        ("https://host", ""),
+        ("https://host/", ""),
+        ("https://host/adk", "/adk"),
+        ("https://host/adk/", "/adk"),
+    ],
+)
+def test_url_prefix_propagated_to_fastapi_root_path(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    url_prefix: str | None,
+    expected_root_path: str,
+):
+  """FastAPI root_path is extracted from url_prefix."""
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      url_prefix=url_prefix,
+  )
+  assert client.app.root_path == expected_root_path
+
+
+def test_url_prefix_propagated_to_docs_openapi_url(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Swagger UI /docs references the prefix-qualified openapi.json."""
+  client = _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      url_prefix="/adk",
+  )
+  response = client.get("/docs")
+  assert response.status_code == 200
+  assert "/adk/openapi.json" in response.text
 
 
 if __name__ == "__main__":

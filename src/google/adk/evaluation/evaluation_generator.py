@@ -45,6 +45,7 @@ from ..artifacts.base_artifact_service import BaseArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..events.event import Event
 from ..flows.llm_flows.tools._functions import handle_function_calls_live
+from ..live import _runner_utils as _live_runner_utils
 from ..live.live_request_queue import LiveRequestQueue
 from ..memory.base_memory_service import BaseMemoryService
 from ..memory.in_memory_memory_service import InMemoryMemoryService
@@ -254,7 +255,8 @@ class _LiveSession:
       if not isinstance(root_agent, BaseAgent):
         raise TypeError("Live evaluation requires a root agent or workflow.")
 
-      invocation_context = self.runner._new_invocation_context_for_live(
+      invocation_context = _live_runner_utils.new_invocation_context_for_live(
+          self.runner,
           self.session,
           live_request_queue=self.live_request_queue,
           run_config=run_config,
@@ -477,10 +479,13 @@ class _LiveSession:
     if graph is None:
       return callback_context_by_author
 
-    base_invocation_context = self.runner._new_invocation_context_for_live(
-        self.session,
-        live_request_queue=self.live_request_queue,
-        run_config=_LIVE_RUN_CONFIG,
+    base_invocation_context = (
+        _live_runner_utils.new_invocation_context_for_live(
+            self.runner,
+            self.session,
+            live_request_queue=self.live_request_queue,
+            run_config=_LIVE_RUN_CONFIG,
+        )
     )
 
     for node in graph.nodes:

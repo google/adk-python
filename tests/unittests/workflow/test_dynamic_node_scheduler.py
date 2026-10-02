@@ -1139,10 +1139,10 @@ async def test_dynamic_node_state_maintains_independent_run_counters():
 async def test_static_and_dynamic_node_sharing_a_name_do_not_collide():
   """A static graph node and a dynamic node of the same name get distinct run IDs.
 
-  Both allocators -- `Workflow._next_run_id` for static graph nodes and
-  `DynamicNodeScheduler` for `ctx.run_node()` -- draw from the same
-  `_LoopState` counter, so two runs of the same name under one parent can no
-  longer be assigned the same run_id (and therefore the same node_path).
+  Both static graph nodes (`_LoopState.next_run_id`) and `DynamicNodeScheduler`
+  (`ctx.run_node()`) draw from the same `_LoopState` counter, so two runs of the
+  same name under one parent cannot be assigned the same run_id (and therefore
+  the same node_path).
   """
 
   class SimpleNode(BaseNode):
@@ -1163,9 +1163,7 @@ async def test_static_and_dynamic_node_sharing_a_name_do_not_collide():
   ctx._run_node_standalone = AsyncMock(return_value=mock_child_ctx)
 
   # The static graph node 'worker' runs first and takes run_id '1'.
-  static_run_id = Workflow._next_run_id(
-      loop_state, 'worker', parent_path=ctx.node_path
-  )
+  static_run_id = loop_state.next_run_id('worker', parent_path=ctx.node_path)
 
   # A dynamic node of the same name under the same parent continues the same
   # sequence instead of restarting at '1'.
@@ -1176,10 +1174,7 @@ async def test_static_and_dynamic_node_sharing_a_name_do_not_collide():
   assert dynamic_run_id == '2'
 
   # A later static run of the same name keeps advancing the shared counter.
-  assert (
-      Workflow._next_run_id(loop_state, 'worker', parent_path=ctx.node_path)
-      == '3'
-  )
+  assert loop_state.next_run_id('worker', parent_path=ctx.node_path) == '3'
   assert loop_state.run_counters[ctx.node_path] == {'worker': 3}
 
 

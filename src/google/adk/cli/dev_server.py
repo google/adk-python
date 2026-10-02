@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+import importlib.util
 import json
 import logging
 import os
@@ -251,25 +252,38 @@ def _is_adk_built_in(reference: str) -> bool:
   return False
 
 
-def _app_name_shadows_module(app_name: str) -> bool:
-  """Whether the app name collides with a module that can be imported."""
-  # "google" is a namespace package rather than a standard library module, so
-  # it has to be named explicitly.
-  return (
-      app_name in sys.builtin_module_names
-      or app_name in sys.stdlib_module_names
-      or app_name == "google"
+def _app_name_shadows_module(app_name: str, app_root: Path) -> bool:
+  """Whether importing the app name would load code from outside the app."""
+  # find_spec imports a dotted name's parents, so only look up the first part.
+  try:
+    spec = importlib.util.find_spec(app_name.partition(".")[0])
+  except ValueError:
+    return True
+  if spec is None:
+    return False
+  locations = list(spec.submodule_search_locations or [])
+  if spec.has_location and spec.origin is not None:
+    locations.append(spec.origin)
+  return not locations or not all(
+      Path(location).resolve().is_relative_to(app_root)
+      for location in locations
   )
 
 
 def _check_code_reference(
-    reference: str, *, app_name: str, filename: str, field_name: str
+    reference: str,
+    *,
+    app_name: str,
+    app_root: Path,
+    filename: str,
+    field_name: str,
 ) -> None:
   """Checks that a code reference stays inside the app being edited.
 
   Args:
     reference: The name found in the uploaded document.
     app_name: The app the document belongs to.
+    app_root: The app's resolved directory.
     filename: The uploaded path, used in the error message.
     field_name: The config field the reference came from.
 
@@ -287,7 +301,7 @@ def _check_code_reference(
         f" '{field_name}' field may only reference code under"
         f" '{app_name}' or an ADK built-in."
     )
-  if _app_name_shadows_module(app_name):
+  if _app_name_shadows_module(app_name, app_root):
     raise ValueError(
         f"Blocked code reference {reference!r} in {filename!r}. The app name"
         f" {app_name!r} shadows an importable Python module, so a reference to"
@@ -566,6 +580,7 @@ class DevServer(ApiServer):
         content: bytes, *, filename: str, app_name: str
     ) -> None:
       """Raise if the YAML would let the loader run code outside the app."""
+      app_root = _get_app_root(app_name)
       try:
         docs = list(yaml.safe_load_all(content))
       except yaml.YAMLError as exc:
@@ -585,6 +600,7 @@ class DevServer(ApiServer):
                 _check_code_reference(
                     reference,
                     app_name=app_name,
+                    app_root=app_root,
                     filename=filename,
                     field_name=key,
                 )

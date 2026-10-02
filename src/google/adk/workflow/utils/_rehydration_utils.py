@@ -85,6 +85,15 @@ class _ChildScanState:
   resolved_responses: dict[str, Any] = field(default_factory=dict)
   """Responses keyed by interrupt id, for the ids in ``resolved_ids``."""
 
+  finished_after_resume: bool = False
+  """Whether the child finished without asking again after its last answer.
+
+  A user response to one of the child's interrupts clears it, and the child's
+  next direct event sets it unless that event raises an interrupt. It tells a
+  child that reran with its answers and finished without output apart from one
+  that has not rerun yet.
+  """
+
 
 def _wrap_response(value: Any) -> dict[str, Any]:
   """Wraps a value into a dict suitable for FunctionResponse.response.
@@ -319,6 +328,7 @@ def _reconstruct_node_states(
             # not rerun never gets to pick an edge again.
             scan_states[owner].output = None
             scan_states[owner].resolved_responses[fr.id] = response_data
+            scan_states[owner].finished_after_resume = False
 
           if event.branch:
             # Match the branch's run ids exactly. A substring test on the raw
@@ -338,6 +348,7 @@ def _reconstruct_node_states(
                   # Same reason as the direct branch: the node paused mid-run
                   # to ask this, so what it emitted earlier is not its result.
                   o_state.output = None
+                  o_state.finished_after_resume = False
       continue
 
     # 2. Match events under base_path
@@ -428,6 +439,9 @@ def _reconstruct_node_states(
         schema_json = _extract_schema_from_event(event, interrupt_id)
         if schema_json:
           schemas_by_id[interrupt_id] = schema_json
+
+    if is_direct:
+      child.finished_after_resume = not interrupt_ids_to_process
 
   return scan_states
 
