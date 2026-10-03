@@ -345,6 +345,40 @@ def test_get_api_client_defaults_credentials_to_none():
   )
 
 
+def _count_clients_built(service_under_test, *, loops):
+  """Reads the API client twice in each of `loops` fresh event loops."""
+
+  async def read_twice():
+    return (
+        service_under_test._get_api_client(),
+        service_under_test._get_api_client(),
+    )
+
+  with mock.patch(
+      'vertexai.Client', side_effect=lambda **_: mock.MagicMock()
+  ) as mock_client_constructor:
+    reads = [asyncio.run(read_twice()) for _ in range(loops)]
+  return reads, mock_client_constructor.call_count
+
+
+def test_get_api_client_reuses_one_client_within_an_event_loop():
+  (reads,), built = _count_clients_built(
+      mock_vertex_ai_memory_bank_service(), loops=1
+  )
+
+  assert reads[0] is reads[1]
+  assert built == 1
+
+
+def test_get_api_client_builds_a_separate_client_per_event_loop():
+  (first_loop, second_loop), built = _count_clients_built(
+      mock_vertex_ai_memory_bank_service(), loops=2
+  )
+
+  assert first_loop[0] is not second_loop[0]
+  assert built == 2
+
+
 @pytest.mark.asyncio
 async def test_add_session_to_memory(mock_vertexai_client):
   memory_service = mock_vertex_ai_memory_bank_service()
