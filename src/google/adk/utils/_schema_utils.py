@@ -32,6 +32,7 @@ from typing import Optional
 from typing import Union
 
 from google.genai import types
+import jsonschema
 from pydantic import BaseModel
 from pydantic import TypeAdapter
 from typing_extensions import Annotated
@@ -243,6 +244,12 @@ def validate_schema(schema: SchemaType, json_text: str) -> Any:
       - dict for BaseModel
       - list of dicts for list[BaseModel]
       - raw value for other schema types (list[str], dict, etc.)
+
+  Raises:
+    ValidationError: If schema is a BaseModel/list[BaseModel] or a generic
+      alias (e.g. list[str], dict[str, int]) and json_text does not conform.
+    jsonschema.ValidationError: If schema is a raw JSON Schema dict or a
+      ``types.Schema`` and json_text does not conform.
   """
   json_text = _strip_json_code_fence(json_text)
 
@@ -254,9 +261,24 @@ def validate_schema(schema: SchemaType, json_text: str) -> Any:
     type_adapter = TypeAdapter(schema)
     validated: list[Any] = type_adapter.validate_json(json_text)
     return [item.model_dump(exclude_none=True) for item in validated]
+  elif isinstance(schema, (dict, types.Schema)):
+    # For raw JSON Schema dicts and Schema objects, validate the parsed
+    # value against the JSON Schema (Schema uses uppercase type names, so
+    # lowercase them first to match the JSON Schema vocabulary).
+    parsed = _json_utils.safe_json_loads(json_text, context="schema value")
+    json_schema = (
+        schema
+        if isinstance(schema, dict)
+        else schema.model_dump(exclude_none=True, mode="json", by_alias=True)
+    )
+    if not isinstance(schema, dict):
+      lowercase_schema_types(json_schema)
+    jsonschema.validate(instance=parsed, schema=json_schema)
+    return parsed
   else:
-    # For other schema types (list[str], dict, Schema, etc.),
-    return _json_utils.safe_json_loads(json_text, context="schema value")
+    # For other generic alias schema types (list[str], dict[str, int], etc.),
+    # use TypeAdapter to validate.
+    return TypeAdapter(schema).validate_json(json_text)
 
 
 def annotation_expects_str(annotated_type: Any) -> bool:
