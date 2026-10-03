@@ -71,6 +71,8 @@ class VertexAiSearchTool(BaseTool):
       filter: Optional[str] = None,
       max_results: Optional[int] = None,
       bypass_multi_tools_limit: bool = False,
+      name: Optional[str] = None,
+      description: Optional[str] = None,
   ):
     """Initializes the Vertex AI Search tool.
 
@@ -86,6 +88,19 @@ class VertexAiSearchTool(BaseTool):
       max_results: The maximum number of results to return.
       bypass_multi_tools_limit: Whether to bypass the multi tools limitation,
         so that the tool can be used with other tools in the same agent.
+      name: Optional custom name for the tool. Only used when
+        ``bypass_multi_tools_limit=True``, in which case the tool is converted
+        to a client-side :class:`DiscoveryEngineSearchTool`. When ``None``
+        (default) the converted tool is named ``discovery_engine_search``.
+        Has no effect when ``bypass_multi_tools_limit=False`` because the
+        built-in grounding path does not expose a callable tool name to the
+        model. Providing a domain-specific name (e.g.
+        ``"knowledge_base_search"``) prevents prompt-fragility issues where
+        lightweight models guess generic names like ``search`` and trigger a
+        ``ValueError: Tool 'search' not found`` at runtime.
+      description: Optional custom description for the tool. Only used when
+        ``bypass_multi_tools_limit=True``. When ``None`` (default) the
+        converted tool uses the docstring of its internal search function.
 
     Raises:
       ValueError: If both data_store_id and search_engine_id are not specified
@@ -109,6 +124,9 @@ class VertexAiSearchTool(BaseTool):
     self.filter = filter
     self.max_results = max_results
     self.bypass_multi_tools_limit = bypass_multi_tools_limit
+    # Stored separately so they never shadow the built-in grounding name.
+    self._bypass_tool_name = name
+    self._bypass_tool_description = description
 
   def _build_vertex_ai_search_config(
       self, readonly_context: ReadonlyContext
