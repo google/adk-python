@@ -14,6 +14,8 @@
 
 """Tests for cli_test.py."""
 
+from __future__ import annotations
+
 from typing import Optional
 from unittest.mock import MagicMock
 
@@ -377,3 +379,78 @@ def test_summary_succeeds_when_every_streaming_mode_passes():
 
   assert result.exit_code == 0
   assert result.output.count("All tests passed!") == 2
+
+
+@pytest.mark.asyncio
+async def test_run_user_messages_live_mode():
+  """Test that live mode runs agent without replay config."""
+  client = MagicMock()
+  captured_requests = []
+
+  async def fake_run_agent(req, **kwargs):
+    captured_requests.append(req)
+    # Live mode should not have mode parameter
+    assert "mode" not in kwargs
+    yield Event(partial=False, content=types.Content(parts=[types.Part.from_text("response")]))
+
+  client.run_agent = fake_run_agent
+
+  runner = ConformanceTestRunner([], client, mode="live")
+  test_case = TestCase(
+      category="cat",
+      name="tc",
+      dir=None,
+      test_spec=TestSpec(
+          description="test live mode",
+          agent="agent",
+          user_messages=[UserMessage(text="test message")],
+      ),
+  )
+  await runner._run_user_messages_live("sess1", test_case)
+
+  assert len(captured_requests) == 1
+  assert captured_requests[0].new_message.parts[0].text == "test message"
+
+
+@pytest.mark.asyncio
+async def test_run_test_case_live():
+  """Test complete live mode test case execution."""
+  client = MagicMock()
+  session = MagicMock()
+  session.id = "test-session"
+
+  async def fake_create_session(**kwargs):
+    return session
+
+  async def fake_get_session(**kwargs):
+    return MagicMock(events=[])
+
+  async def fake_delete_session(**kwargs):
+    pass
+
+  client.create_session = fake_create_session
+  client.get_session = fake_get_session
+  client.delete_session = fake_delete_session
+
+  runner = ConformanceTestRunner([], client, mode="live")
+  test_case = TestCase(
+      category="cat",
+      name="tc",
+      dir=None,
+      test_spec=TestSpec(
+          description="test live mode",
+          agent="agent",
+          user_messages=[UserMessage(text="test message")],
+      ),
+  )
+
+  # Mock the user messages execution
+  runner._run_user_messages_live = MagicMock(return_value=None)
+
+  result = await runner._run_test_case_live(test_case)
+
+  assert result.category == "cat"
+  assert result.name == "tc"
+  # Should fail because no recordings exist for comparison
+  assert not result.success
+  assert "No recorded session found" in result.error_message
