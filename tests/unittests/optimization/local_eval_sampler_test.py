@@ -197,6 +197,23 @@ def test_extract_single_invocation_info():
                 "_validation_eval_case_ids": ["v1"],
             },
         ),
+        (
+            {"train_eval_set": "train_set", "train_eval_case_ids": []},
+            {
+                "_train_eval_case_ids": [],
+                "_validation_eval_case_ids": [],
+            },
+        ),
+        (
+            {
+                "train_eval_set": "train_set",
+                "validation_eval_case_ids": [],
+            },
+            {
+                "_train_eval_case_ids": ["train_set_1", "train_set_2"],
+                "_validation_eval_case_ids": [],
+            },
+        ),
     ],
 )
 def test_local_eval_service_interface_init(
