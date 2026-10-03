@@ -81,6 +81,32 @@ class TestReadFileWriteFile:
     assert data == b"first\r\nsecond\r\n"
 
   @pytest.mark.asyncio
+  async def test_unencodable_text_does_not_truncate_existing_file(
+      self, env: LocalEnvironment
+  ):
+    """An encoding error leaves existing file bytes intact."""
+    original = b"keep these bytes\n"
+    await env.write_file("existing.txt", original)
+
+    with pytest.raises(UnicodeEncodeError):
+      await env.write_file("existing.txt", "replacement \ud800")
+
+    assert await env.read_file("existing.txt") == original
+
+  @pytest.mark.asyncio
+  async def test_invalid_content_does_not_truncate_existing_file(
+      self, env: LocalEnvironment
+  ):
+    """An invalid content type leaves existing file bytes intact."""
+    original = b"keep these bytes\n"
+    await env.write_file("existing.txt", original)
+
+    with pytest.raises(TypeError, match="content must be str or bytes"):
+      await env.write_file("existing.txt", 123)
+
+    assert await env.read_file("existing.txt") == original
+
+  @pytest.mark.asyncio
   async def test_write_creates_parent_dirs(self, env: LocalEnvironment):
     """Parent directories are created automatically."""
     await env.write_file(Path("sub/dir/file.txt"), "nested")
