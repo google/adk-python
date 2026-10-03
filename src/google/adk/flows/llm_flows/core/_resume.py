@@ -24,6 +24,7 @@ original call -- so it lives here rather than inline in the flow.
 
 from __future__ import annotations
 
+from collections import Counter
 import dataclasses
 import enum
 from typing import Any
@@ -216,8 +217,9 @@ def _unexecuted_calls_event(
 ) -> Event | None:
   """`call_event` cut down to the calls that never ran, or None if all did.
 
-  A call ran when a response in `later_events` carries its id, or its name
-  with no id. None is also returned once the agent has written any event with
+  A call ran when a response in `later_events` carries its id. Responses with
+  no id each match one remaining same-name call, in call order. None is also
+  returned once the agent has written any event with
   content after `call_event`: tool responses and auth or confirmation requests
   are only written after the whole batch ran, so a call still missing its
   response then ran and lost it, or is pending.
@@ -229,19 +231,24 @@ def _unexecuted_calls_event(
     return None
   responses = [fr for ev in later_events for fr in ev.get_function_responses()]
   answered_ids = {fr.id for fr in responses if fr.id is not None}
-  answered_names = {fr.name for fr in responses if fr.id is None}
-  unexecuted_ids = {
-      fc.id
-      for fc in call_event.get_function_calls()
-      if fc.id not in answered_ids and fc.name not in answered_names
-  }
-  if not unexecuted_ids or call_event.content is None:
+  answered_names = Counter(fr.name for fr in responses if fr.id is None)
+  if call_event.content is None:
     return None
-  parts = [
-      part
-      for part in call_event.content.parts or []
-      if part.function_call is None or part.function_call.id in unexecuted_ids
-  ]
+  parts = []
+  has_unexecuted_call = False
+  for part in call_event.content.parts or []:
+    if (call := part.function_call) is None:
+      parts.append(part)
+    elif call.id in answered_ids:
+      # Explicit IDs take precedence without consuming a name-only response.
+      continue
+    elif answered_names[call.name]:
+      answered_names[call.name] -= 1
+    else:
+      parts.append(part)
+      has_unexecuted_call = True
+  if not has_unexecuted_call:
+    return None
   return call_event.model_copy(
       update={'content': call_event.content.model_copy(update={'parts': parts})}
   )
