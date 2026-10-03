@@ -110,7 +110,9 @@ class MultimodalToolResultsPlugin(BasePlugin):
         and result
         and isinstance(result[0], types.Part)
     ):
-      return result
+      # None leaves the result unchanged. Returning the result itself would
+      # stop the remaining plugins and the agent's after_tool_callbacks.
+      return None
 
     parts = [result] if isinstance(result, types.Part) else result[:]
 
