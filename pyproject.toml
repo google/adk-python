@@ -135,6 +135,7 @@ optional-dependencies.all = [
   "sqlalchemy-spanner>=1.14",
   "tabulate>=0.9",
   "toolbox-adk>=1,<2",
+  "typesafe-sdk>=0.5.7,<1",
   "xlrd>=2,<3",
 ]
 optional-dependencies.antigravity = [
@@ -358,6 +359,9 @@ optional-dependencies.test = [
 optional-dependencies.toolbox = [ "toolbox-adk>=1,<2" ]
 optional-dependencies.tools = [
   "google-api-python-client>=2.157,<3",
+]
+optional-dependencies.typesafe = [
+  "typesafe-sdk>=0.5.7,<1", # For TypesafeClassifier (TypeSafe AI's Jev model)
 ]
 urls.changelog = "https://github.com/google/adk-python/blob/main/CHANGELOG.md"
 urls.documentation = "https://google.github.io/adk-docs/"
