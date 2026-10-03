@@ -17,10 +17,12 @@ from __future__ import annotations
 from abc import ABC
 from collections.abc import Iterator
 import logging
+from typing import Any
 from typing import AsyncGenerator
 from typing import cast
 from typing import Optional
 from typing import TYPE_CHECKING
+import warnings
 
 from google.adk.platform import time as platform_time
 from google.genai import types
@@ -31,7 +33,7 @@ from ...agents.base_agent import BaseAgent
 from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...live import _live_llm_flow
-from ...live._audio_cache_manager import AudioCacheManager
+from ...live._cache_manager import CacheManager
 from ...live._flow_utils import DEFAULT_ENABLE_CACHE_STATISTICS as DEFAULT_ENABLE_CACHE_STATISTICS
 from ...live._flow_utils import DEFAULT_MAX_RECONNECT_ATTEMPTS as DEFAULT_MAX_RECONNECT_ATTEMPTS
 from ...live._flow_utils import DEFAULT_TASK_COMPLETION_DELAY as DEFAULT_TASK_COMPLETION_DELAY
@@ -126,7 +128,34 @@ class BaseLlmFlow(ABC):
     self.response_processors: list[BaseLlmResponseProcessor] = []
 
     # Initialize configuration and managers
-    self.audio_cache_manager = AudioCacheManager()
+    self.cache_manager = CacheManager()
+    self.audio_cache_manager = self.cache_manager
+
+  def __getattribute__(self, name: str) -> Any:
+    if name == 'audio_cache_manager':
+      warnings.warn(
+          'audio_cache_manager is deprecated; use cache_manager instead.',
+          DeprecationWarning,
+          stacklevel=2,
+      )
+      return super().__getattribute__('cache_manager')
+    return super().__getattribute__(name)
+
+  def __setattr__(self, name: str, value: Any) -> None:
+    if name == 'audio_cache_manager':
+      if 'audio_cache_manager' in super().__getattribute__('__dict__'):
+        warnings.warn(
+            'audio_cache_manager is deprecated; use cache_manager instead.',
+            DeprecationWarning,
+            stacklevel=2,
+        )
+      super().__setattr__('cache_manager', value)
+    elif (
+        name == 'cache_manager'
+        and 'audio_cache_manager' in super().__getattribute__('__dict__')
+    ):
+      super().__setattr__('audio_cache_manager', value)
+    super().__setattr__(name, value)
 
   def _request_processor_lists(
       self,
