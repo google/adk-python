@@ -167,6 +167,8 @@ Model Armor returns de-identified text only when the template's SDP settings use
 
 A match from any other filter (responsible AI, prompt injection and jailbreak, malicious URIs, CSAM) still blocks, even when SDP also matched and de-identified text is available.
 
+De-identification covers only the text the plugin screens: the latest user turn and the model output. Tool results are not screened (see [Limitations](#limitations)), so sensitive data returned by a tool, such as a customer record from a CRM lookup, still reaches the model unchanged.
+
 ## Advanced applications
 
 ### Screening one direction only
