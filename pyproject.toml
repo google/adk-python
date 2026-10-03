@@ -327,6 +327,7 @@ optional-dependencies.test = [
   "llama-index-readers-file>=0.4",
   "lxml>=5.3",
   "mcp>=1.24,<3",
+  "mongomock>=4.3,<5",                                               # In-memory MongoDB used by the mongodb integration tests.
   "nltk!=3.10.1",                                                    # Transitive via rouge-score and llama-index-core; 3.10.1's import hook breaks any venv living inside the working directory (reverted upstream in nltk/nltk#3732).
   "openai>=2.20,<3",
   "openpyxl>=3.1.5,<4",
