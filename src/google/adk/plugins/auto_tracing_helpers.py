@@ -31,6 +31,11 @@ from typing import Sequence
 
 from opentelemetry import trace as trace_api
 
+from ..utils._credential_names import is_credential_arg_name as _is_credential_arg_name
+from ..utils._credential_names import is_credential_type as _is_credential_type
+from ..utils._credential_names import MAX_REDACT_DEPTH as _MAX_REDACT_DEPTH
+from ..utils._credential_names import MAX_REDACT_NODES as _MAX_REDACT_NODES
+
 logger = logging.getLogger("google_adk." + __name__)
 
 DEFAULT_MAX_REPR_LEN = 4096
@@ -41,77 +46,6 @@ WRAPPED_ATTR = "_adk_auto_tracing_wrapped"
 _SELF_OR_CLS = frozenset({"self", "cls"})
 _SCALAR_TYPES = frozenset({int, float, bool, str, bytes, type(None)})
 _DEFAULT_REPR_RE = re.compile(r"^<.+ object at 0x[0-9a-fA-F]+>$")
-
-# Types whose repr() renders live secrets (tokens, keys, passwords). Matched by
-# name over the MRO so this module never imports ``google.adk.auth``.
-_CREDENTIAL_TYPE_NAMES = frozenset({
-    "AuthConfig",
-    "AuthCredential",
-    "AuthToolArguments",
-    "Credentials",
-    "HttpAuth",
-    "HttpCredentials",
-    "OAuth2Auth",
-    "OAuth2Session",
-    "ServiceAccount",
-    "ServiceAccountCredential",
-})
-# Parameter names that conventionally carry secret material.
-_CREDENTIAL_ARG_NAMES = frozenset({
-    "api_key",
-    "auth_config",
-    "auth_credential",
-    "authorization",
-    "cookie",
-    "cookies",
-    "credential",
-    "credentials",
-    "password",
-    "private_key",
-    "secret",
-    "token",
-})
-_CREDENTIAL_ARG_SUFFIXES = (
-    "_api_key",
-    "_auth_config",
-    "_authorization",
-    "_cookie",
-    "_cookies",
-    "_credential",
-    "_credentials",
-    "_password",
-    "_private_key",
-    "_secret",
-    "_token",
-)
-# Bounds for the structural walk below. Both are deliberately generous: only
-# containers and objects consume node budget, so a list of a million ints
-# costs one node.
-_MAX_REDACT_DEPTH = 10
-_MAX_REDACT_NODES = 1024
-
-
-def _mro_holds_credential(cls: type) -> bool:
-  """True iff ``cls`` or one of its bases is a credential-bearing type."""
-  return any(k.__name__ in _CREDENTIAL_TYPE_NAMES for k in cls.__mro__)
-
-
-# Cached because the walk asks this of every non-scalar node it visits. The
-# annotation is spelled out because lru_cache erases the wrapped signature to
-# ``*args: Hashable``, which the ``type(value)`` the callers pass does not
-# satisfy.
-_is_credential_type: Callable[[type], bool] = functools.lru_cache(maxsize=512)(
-    _mro_holds_credential
-)
-
-
-@functools.lru_cache(maxsize=1024)
-def _is_credential_arg_name(name: str) -> bool:
-  """True iff a parameter called ``name`` conventionally holds a secret."""
-  lowered = name.lower()
-  return lowered in _CREDENTIAL_ARG_NAMES or lowered.endswith(
-      _CREDENTIAL_ARG_SUFFIXES
-  )
 
 
 @dataclasses.dataclass(frozen=True)

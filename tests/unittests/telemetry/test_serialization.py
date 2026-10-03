@@ -16,7 +16,14 @@
 
 from __future__ import annotations
 
+import json
+
+from google.adk.auth.auth_credential import AuthCredential
+from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.auth.auth_credential import OAuth2Auth
+from google.adk.telemetry._serialization import safe_json_serialize
 from google.adk.telemetry._serialization import serialize_content
+from google.adk.utils._credential_names import MAX_REDACT_DEPTH
 from google.genai import types
 
 
@@ -84,3 +91,53 @@ def test_serialize_content_unserializable_value_yields_the_sentinel():
   raising out of the telemetry path.
   """
   assert serialize_content(object()) == '"<not serializable>"'
+
+
+_TOKEN = 'ya29.access-token-value'
+
+
+def _oauth_credential() -> AuthCredential:
+  return AuthCredential(
+      auth_type=AuthCredentialTypes.OAUTH2,
+      oauth2=OAuth2Auth(client_id='cid', access_token=_TOKEN),
+  )
+
+
+def test_safe_json_serialize_masks_a_credential_model():
+  """A credential model must not reach a span attribute in the clear.
+
+  `Field(repr=False)` keeps these values out of `repr()`, but `model_dump()`
+  renders them, so the serializer has to mask them itself.
+  """
+  assert _TOKEN not in safe_json_serialize(_oauth_credential())
+
+
+def test_safe_json_serialize_masks_a_credential_nested_in_tool_args():
+  """Tool args and tool responses arrive as plain dicts, so the type is gone.
+
+  `adk_request_credential` carries its `AuthConfig` under `auth_config`, which
+  is why the field name has to be masked as well as the declared type.
+  """
+  args = {
+      'function_call_id': 'fc-1',
+      'auth_config': {'exchanged_auth_credential': {'access_token': _TOKEN}},
+  }
+  serialized = safe_json_serialize(args)
+  assert _TOKEN not in serialized
+  # The key survives, so a trace still shows a credential was present.
+  assert 'auth_config' in serialized
+  assert 'fc-1' in serialized
+
+
+def test_safe_json_serialize_leaves_ordinary_content_unchanged():
+  """Redaction must not alter a payload that holds no credential."""
+  payload = {'city': 'Paris', 'temps': [1, 2.5, None, True], 'n': {'k': 'v'}}
+  assert json.loads(safe_json_serialize(payload)) == payload
+
+
+def test_safe_json_serialize_elides_past_its_depth_bound():
+  """Hitting the walk's bound must elide the subtree, never emit it raw."""
+  nested: dict[str, object] = {'access_token': _TOKEN}
+  for _ in range(MAX_REDACT_DEPTH + 2):
+    nested = {'wrap': nested}
+  assert _TOKEN not in safe_json_serialize(nested)
