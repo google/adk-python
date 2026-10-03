@@ -3058,6 +3058,19 @@ async def _get_completion_inputs(
         mapped_key = param_mapping.get(key, key)
         generation_params[mapped_key] = config_dict[key]
 
+    thinking_config = config_dict.get("thinking_config") or {}
+    thinking_level = thinking_config.get("thinking_level")
+    thinking_budget = thinking_config.get("thinking_budget")
+    if thinking_level and thinking_level != "THINKING_LEVEL_UNSPECIFIED":
+      generation_params["reasoning_effort"] = str(
+          getattr(thinking_level, "value", thinking_level)
+      ).lower()
+    elif thinking_budget and thinking_budget > 0:
+      generation_params["thinking"] = {
+          "type": "enabled",
+          "budget_tokens": thinking_budget,
+      }
+
     if not generation_params:
       generation_params = None
 
