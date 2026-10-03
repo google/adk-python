@@ -134,6 +134,21 @@ holding `memories`, a list of `MemoryEntry`. Each entry carries `content` (a
 `custom_metadata`. Memory is scoped by the `(app_name, user_id)` pair, so one
 user never sees another's memories.
 
+### Lifecycle & Removal
+
+Memory persists independently of sessions. Deleting a session in a `BaseSessionService`
+does not remove what was previously ingested into memory. To purge memories,
+`BaseMemoryService` provides explicit lifecycle methods:
+
+*   `delete_memory(*, app_name, user_id, memory_id)` removes an individual memory
+    item by its `id` (as returned in `MemoryEntry.id` by `search_memory`).
+*   `delete_session_memory(*, app_name, user_id, session_id)` removes all memory
+    entries associated with a specific session.
+
+Inside an agent callback, `Context` provides the helper
+`await ctx.delete_session_memory()`. Services that do not support deletion raise
+`NotImplementedError`.
+
 ### From inside an agent
 
 `Context` — what tools and callbacks receive — exposes the same operations
@@ -150,7 +165,8 @@ async def save_to_memory(callback_context: Context) -> None:
 
 Attach that as an `after_agent_callback` and each turn is ingested as it
 finishes, rather than at some later point you have to remember to trigger.
-`Context` also offers `add_events_to_memory`, `add_memory`, and `search_memory`.
+`Context` also offers `add_events_to_memory`, `add_memory`,
+`search_memory`, and `delete_session_memory`.
 
 ## The memory tools
 

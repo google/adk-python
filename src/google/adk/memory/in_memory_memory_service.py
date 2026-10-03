@@ -133,6 +133,18 @@ class InMemoryMemoryService(BaseMemoryService):
       self._session_events[user_key][scoped_session_id] = existing_events
 
   @override
+  async def delete_memory(
+      self, *, app_name: str, user_id: str, memory_id: str
+  ) -> None:
+    user_key = _user_key(app_name, user_id)
+
+    with self._lock:
+      for session_id, events in self._session_events.get(user_key, {}).items():
+        kept = [event for event in events if event.id != memory_id]
+        if len(kept) != len(events):
+          self._session_events[user_key][session_id] = kept
+
+  @override
   async def search_memory(
       self, *, app_name: str, user_id: str, query: str
   ) -> SearchMemoryResponse:
@@ -173,6 +185,7 @@ class InMemoryMemoryService(BaseMemoryService):
           scored_memories.append((
               matched_words,
               MemoryEntry(
+                  id=event.id,
                   content=event.content,
                   author=event.author,
                   timestamp=_utils.format_timestamp(event.timestamp),
@@ -188,3 +201,18 @@ class InMemoryMemoryService(BaseMemoryService):
     return SearchMemoryResponse(
         memories=[memory for _, memory in scored_memories[:_MAX_SEARCH_RESULTS]]
     )
+
+  @override
+  async def delete_session_memory(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+  ) -> None:
+    user_key = _user_key(app_name, user_id)
+    with self._lock:
+      if user_key in self._session_events:
+        self._session_events[user_key].pop(session_id, None)
+        if not self._session_events[user_key]:
+          del self._session_events[user_key]
