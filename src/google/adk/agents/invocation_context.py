@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+import weakref
 from typing import Any
 
 from google.adk.platform import uuid as platform_uuid
@@ -49,6 +51,11 @@ from .context_cache_config import ContextCacheConfig
 from .run_config import RunConfig
 
 _EventQueueItem = tuple[object, asyncio.Event | None]
+
+_confirmation_claim_lock = threading.Lock()
+_claimed_tool_confirmations: dict[
+    int, tuple[weakref.ReferenceType[BaseSessionService], set[tuple[str, str]]]
+] = {}
 
 
 class LlmCallsLimitExceededError(Exception):
@@ -207,6 +214,22 @@ class InvocationContext(BaseModel):
   Format: "agent_1/agent_2/agent_3" where agent_1 is the outermost workflow.
   None for non-workflow agents.
   """
+
+  async def _consume_tool_confirmation(self, function_call_id: str) -> bool:
+    """Atomically claim a confirmation across invocations in this process."""
+    service_key = id(self.session_service)
+    with _confirmation_claim_lock:
+      service_claims = _claimed_tool_confirmations.get(service_key)
+      if service_claims is None or service_claims[0]() is not self.session_service:
+        service_claims = (weakref.ref(self.session_service), set())
+        _claimed_tool_confirmations[service_key] = service_claims
+      claims = service_claims[1]
+      claim_key = (self.session.id, function_call_id)
+      if claim_key in claims:
+        return False
+      claims.add(claim_key)
+
+    return True
 
   agent_states: dict[str, dict[str, Any]] = Field(default_factory=dict)
   """The state of the agent for this invocation."""
