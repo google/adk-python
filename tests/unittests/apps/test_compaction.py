@@ -1260,6 +1260,68 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(result_contents[0].parts[0].text, 'Summary safe prefix')
     self.assertEqual(result_contents[1].parts[0].text, 'e3')
 
+  async def test_contents_handles_parallel_timestamp_ordering_after_compaction(
+      self,
+  ):
+    """Compaction preserves pairs when parallel append and timestamp order differ."""
+    analyzer_branch = 'root.parallel.analyzer'
+    reproducer_branch = 'root.parallel.reproducer'
+
+    def _branch_event(event, branch, author):
+      event.branch = branch
+      event.author = author
+      return event
+
+    events = [
+        self._create_event(0.0, 'inv-user', 'task'),
+        # The reproducer starts later but completes and appends first.
+        _branch_event(
+            self._create_function_call_event(2.0, 'inv-reproducer', 'b1'),
+            reproducer_branch,
+            'reproducer',
+        ),
+        _branch_event(
+            self._create_function_response_event(3.0, 'inv-reproducer', 'b1'),
+            reproducer_branch,
+            'reproducer',
+        ),
+        # The analyzer started earlier, so its call has an earlier timestamp,
+        # but its event is appended after the reproducer's completed pair.
+        _branch_event(
+            self._create_function_call_event(1.0, 'inv-analyzer', 'a1'),
+            analyzer_branch,
+            'analyzer',
+        ),
+        _branch_event(
+            self._create_function_response_event(4.0, 'inv-analyzer', 'a1'),
+            analyzer_branch,
+            'analyzer',
+        ),
+        self._create_compacted_event(0.0, 3.0, 'summary', appended_ts=5.0),
+    ]
+
+    contents = _contents._get_contents(
+        analyzer_branch,
+        events,
+        'analyzer',
+        preserve_function_call_ids=True,
+    )
+    parts = [part for content in contents for part in content.parts]
+
+    call_indices = [
+        index
+        for index, part in enumerate(parts)
+        if part.function_call and part.function_call.id == 'a1'
+    ]
+    response_indices = [
+        index
+        for index, part in enumerate(parts)
+        if part.function_response and part.function_response.id == 'a1'
+    ]
+    self.assertEqual(len(call_indices), 1)
+    self.assertEqual(len(response_indices), 1)
+    self.assertLess(call_indices[0], response_indices[0])
+
   async def test_token_threshold_excludes_pending_function_call_events(self):
     """Token-threshold compaction stays contiguous before pending calls."""
     app = App(
