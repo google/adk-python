@@ -145,7 +145,14 @@ class CallableSpec:
       self.doc = doc
 
       # Context parameter detection
-      self.context_param_name = context_utils.find_context_parameter(func)
+      try:
+        hash(func)
+      except TypeError:
+        # Callable instances (e.g. dataclasses) need not be hashable.
+        find_context = context_utils.find_context_parameter.__wrapped__
+      else:
+        find_context = context_utils.find_context_parameter
+      self.context_param_name = find_context(func)
 
       # Resolve signature presence at initialization
       try:
