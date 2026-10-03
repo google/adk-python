@@ -105,6 +105,8 @@ __all__ = [
 # Constants
 A2A_METADATA_PREFIX = "a2a:"
 DEFAULT_TIMEOUT = 600.0
+# The error_code of an event for a remote task that ended in TASK_STATE_FAILED.
+A2A_TASK_FAILED_ERROR_CODE = "A2A_TASK_FAILED"
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
@@ -491,6 +493,60 @@ def _create_task_failure_events(
       is_error=True,
   )
   return error_event, finish_event
+
+
+def _failed_task_status(
+    a2a_response: _compat.A2AClientEvent | A2AMessage,
+) -> Any:
+  """The status of the remote task a response reports as failed, if any.
+
+  A streamed failure arrives as a status update, which carries the state the
+  task ended in; a non-streamed one, as the task itself.
+  """
+  if not isinstance(a2a_response, tuple):
+    return None
+  task, update = a2a_response
+  if update is None:
+    status = getattr(task, "status", None)
+  elif isinstance(update, A2ATaskStatusUpdateEvent):
+    status = update.status
+  else:
+    return None
+  if getattr(status, "state", None) != _compat.TS_FAILED:
+    return None
+  return status
+
+
+def _mark_task_failed(
+    event: Optional[Event],
+    status: Any,
+    ctx: InvocationContext,
+    agent_name: str,
+) -> Event:
+  """Marks the event of a failed remote task as an error, creating one if the
+  response converted to none.
+
+  The text the remote agent sent with the failure is its account of why, so it
+  becomes the error message rather than being read as an ordinary answer.
+  """
+  if event is None:
+    event = Event(
+        author=agent_name,
+        invocation_id=ctx.invocation_id,
+        branch=ctx.branch,
+    )
+  event.error_code = event.error_code or A2A_TASK_FAILED_ERROR_CODE
+  if not event.error_message:
+    message = _compat.normalize_message(getattr(status, "message", None))
+    text = "\n".join(
+        _compat.part_text(part)
+        for part in (message.parts if message else [])
+        if _compat.is_text_part(part) and _compat.part_text(part)
+    )
+    event.error_message = (
+        text or _text_from_content(event.content) or "Remote A2A task failed"
+    )
+  return event
 
 
 def _add_mock_function_call(event: Event, state: TaskState) -> None:
@@ -1810,6 +1866,13 @@ class RemoteA2aAgent(BaseAgent):
               event = await self._handle_a2a_response_v2(a2a_response, ctx)
             else:
               event = await self._handle_a2a_response(a2a_response, ctx)
+            # The response converters keep a failed task's text as content and
+            # drop its state, which would read as an ordinary answer. Task mode
+            # reports the failure with events of its own, below.
+            if self.mode != "task" and (
+                failed_status := _failed_task_status(a2a_response)
+            ):
+              event = _mark_task_failed(event, failed_status, ctx, self.name)
             if not event:
               continue
 

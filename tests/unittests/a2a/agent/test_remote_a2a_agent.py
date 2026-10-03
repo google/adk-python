@@ -8304,3 +8304,93 @@ async def test_after_request_metadata_overrides_are_preserved():
     assert turn[-1].custom_metadata["a2a:task_id"] == "caller-task"
     assert turn[-1].custom_metadata["a2a:context_id"] == "caller-context"
     assert turn[-1].custom_metadata["a2a:response"]["id"] == "currency-task"
+
+
+def _failed_task_stream(*, streaming, use_v2, text):
+  """A task that works, then fails: a status update when streamed, the task
+  itself when not."""
+  message = (
+      _compat.make_message(
+          message_id="failure",
+          role="agent",
+          parts=[_compat.make_text_part(text)],
+      )
+      if text
+      else None
+  )
+  if streaming:
+    stream = _bare_task_stream(_compat.TS_FAILED, use_v2=use_v2)
+    if message is not None:
+      status = _compat.make_task_status(_compat.TS_FAILED, message=message)
+      if _compat.IS_A2A_V1:
+        stream[-1].status_update.status.CopyFrom(status)
+      else:
+        stream[-1][0].status = status
+        stream[-1][1].status = status
+    return stream
+  task = _compat.make_task(
+      id="currency-task",
+      context_id="currency-context",
+      status=_compat.make_task_status(_compat.TS_FAILED, message=message),
+      metadata=(
+          {remote_a2a_agent._NEW_A2A_ADK_INTEGRATION_EXTENSION: True}
+          if use_v2
+          else None
+      ),
+  )
+  return [_make_stream_task(task)]
+
+
+@pytest.mark.parametrize("use_v2", [False, True], ids=["legacy", "v2"])
+@pytest.mark.parametrize("streaming", [True, False])
+@pytest.mark.parametrize(
+    "text, error_message",
+    [
+        ("claude exited with code 1", "claude exited with code 1"),
+        (None, "Remote A2A task failed"),
+    ],
+    ids=["with-reason", "without-reason"],
+)
+async def test_failed_remote_task_is_an_error_event(
+    use_v2, streaming, text, error_message
+):
+  """A failed task ends the turn as an error, not as the remote's answer."""
+  completed = _bare_task_stream(_compat.TS_COMPLETED, use_v2=use_v2)
+  _, turns, session = await _run_remote_task_responses([
+      _failed_task_stream(streaming=streaming, use_v2=use_v2, text=text),
+      completed,
+      completed,
+  ])
+
+  failure = turns[0][-1]
+  assert failure.error_code == remote_a2a_agent.A2A_TASK_FAILED_ERROR_CODE
+  assert failure.error_message == error_message
+  assert failure.is_final_response()
+  assert failure.custom_metadata["a2a:task_id"] == "currency-task"
+  # The failure is stored as an error too, not only shown as one.
+  assert [event.id for event in session.events if event.error_code] == [
+      failure.id
+  ]
+  # Only the failure is marked: the working update before it and the later
+  # turns are not.
+  assert all(event.error_code is None for event in turns[0][:-1])
+  assert all(event.error_code is None for turn in turns[1:] for event in turn)
+
+
+@pytest.mark.parametrize("use_v2", [False, True], ids=["legacy", "v2"])
+@pytest.mark.parametrize(
+    "state",
+    [
+        _compat.TS_COMPLETED,
+        _compat.TS_CANCELED,
+        _compat.TS_REJECTED,
+        _compat.TS_INPUT_REQUIRED,
+    ],
+)
+async def test_only_a_failed_remote_task_is_an_error_event(use_v2, state):
+  _, turns, _ = await _run_remote_task_responses(
+      [_bare_task_stream(state, use_v2=use_v2)]
+      + [_bare_task_stream(_compat.TS_COMPLETED, use_v2=use_v2)] * 2
+  )
+
+  assert all(event.error_code is None for turn in turns for event in turn)
