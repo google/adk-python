@@ -286,6 +286,86 @@ class TestDialogueAssembly:
     assert "Transfer money between accounts." in evaluator._formatted_tools
 
   @pytest.mark.asyncio
+  async def test_user_turn_excludes_thought_parts(self, evaluator):
+    """Tests that a thought part in the user turn is excluded from dialogue."""
+    invocations = [
+        Invocation(
+            user_content=genai_types.Content(
+                parts=[
+                    genai_types.Part(text="Considering...", thought=True),
+                    genai_types.Part(text="Hello"),
+                ]
+            ),
+            final_response=genai_types.Content(
+                parts=[genai_types.Part(text="Hi there!")]
+            ),
+            invocation_id="agent1",
+            rubrics=_RUBRICS,
+        ),
+    ]
+    evaluator._assemble_dialogue_history(invocations)
+
+    assert "Considering..." not in evaluator._formatted_dialogue
+    assert "USER TURN 1: Hello" in evaluator._formatted_dialogue
+
+  @pytest.mark.asyncio
+  async def test_intermediate_event_excludes_thought_parts(self, evaluator):
+    """Tests that a thought part in an intermediate event is excluded."""
+    intermediate_data = InvocationEvents(
+        invocation_events=[
+            InvocationEvent(
+                author="banking_agent",
+                content=genai_types.Content(
+                    parts=[
+                        genai_types.Part(
+                            text="Let me check the balance.", thought=True
+                        ),
+                        genai_types.Part(text="Checking your balance."),
+                    ]
+                ),
+            ),
+        ]
+    )
+    invocations = [
+        _make_invocation(
+            user_text="What is my balance?",
+            agent_text="Your balance is $100.",
+            invocation_id="banking_agent",
+            rubrics=_RUBRICS,
+            intermediate_data=intermediate_data,
+        ),
+    ]
+    evaluator._assemble_dialogue_history(invocations)
+
+    assert "Let me check the balance." not in evaluator._formatted_dialogue
+    assert "Checking your balance." in evaluator._formatted_dialogue
+
+  @pytest.mark.asyncio
+  async def test_final_response_excludes_thought_parts(self, evaluator):
+    """Tests that a thought part in the final response is excluded."""
+    invocations = [
+        Invocation(
+            user_content=genai_types.Content(
+                parts=[genai_types.Part(text="Hello")]
+            ),
+            final_response=genai_types.Content(
+                parts=[
+                    genai_types.Part(
+                        text="Deciding how to respond.", thought=True
+                    ),
+                    genai_types.Part(text="Hi there!"),
+                ]
+            ),
+            invocation_id="agent1",
+            rubrics=_RUBRICS,
+        ),
+    ]
+    evaluator._assemble_dialogue_history(invocations)
+
+    assert "Deciding how to respond." not in evaluator._formatted_dialogue
+    assert "AGENT (agent) TURN 1: Hi there!" in evaluator._formatted_dialogue
+
+  @pytest.mark.asyncio
   async def test_invocation_without_user_content(self, evaluator):
     """Tests that invocations with no user text parts are handled gracefully."""
     invocations = [
