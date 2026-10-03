@@ -103,9 +103,9 @@ def get_gcp_exporters(
   """Returns GCP OTel exporters to be used in the app.
 
   Args:
-    enable_tracing: whether to enable tracing to Cloud Trace.
-    enable_metrics: whether to enable reporting metrics to Cloud Monitoring.
-    enable_logging: whether to enable sending logs to Cloud Logging.
+    enable_cloud_tracing: whether to enable tracing to Cloud Trace.
+    enable_cloud_metrics: whether to enable reporting metrics to Cloud Monitoring.
+    enable_cloud_logging: whether to enable sending logs to Cloud Logging.
     google_auth: optional custom credentials and project_id. google.auth.default() used when this is omitted.
   """
 
