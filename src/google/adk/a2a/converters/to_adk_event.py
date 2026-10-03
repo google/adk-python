@@ -696,6 +696,29 @@ def convert_a2a_status_update_to_event(
     raise RuntimeError(f"Failed to convert status update: {e}") from e
 
 
+def _artifact_event_id(
+    artifact_id: str, invocation_context: Optional[InvocationContext]
+) -> Optional[str]:
+  """The event id shared by every chunk of one A2A artifact.
+
+  ADK's own streaming gives the partial chunks of one model response and the
+  complete response that closes them a single event id, which is how a
+  consumer knows the complete response replaces the chunks instead of adding
+  to them. Over A2A the chunks of one response are the updates of one
+  artifact, closed by a ``last_chunk`` update that replaces it whole
+  (``append=False``), so the artifact id plays that role. It is scoped to the
+  invocation, so an artifact id a peer reuses in another invocation does not
+  collide with it in the session.
+
+  Returns None when there is no artifact id or invocation to derive it from,
+  so the event keeps a fresh id.
+  """
+  if not artifact_id or invocation_context is None:
+    return None
+  key = f"{invocation_context.invocation_id}:{artifact_id}"
+  return str(uuid.uuid5(uuid.NAMESPACE_URL, key))
+
+
 # TODO: Add support for non-ADK Artifact Updates.
 @a2a_experimental
 def convert_a2a_artifact_update_to_event(
@@ -725,7 +748,7 @@ def convert_a2a_artifact_update_to_event(
     metadata_fields = _extract_all_metadata_fields(
         a2a_artifact_update.artifact.metadata
     )
-    return _create_event(
+    event = _create_event(
         output_parts,
         invocation_context,
         author,
@@ -733,6 +756,13 @@ def convert_a2a_artifact_update_to_event(
         partial=not a2a_artifact_update.last_chunk,
         **metadata_fields,
     )
+    if event is not None:
+      event_id = _artifact_event_id(
+          a2a_artifact_update.artifact.artifact_id, invocation_context
+      )
+      if event_id:
+        event.id = event_id
+    return event
   except Exception as e:
     logger.error("Failed to convert A2A artifact update to event: %s", e)
     raise RuntimeError(f"Failed to convert artifact update: {e}") from e
