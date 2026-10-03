@@ -3058,6 +3058,55 @@ class TestRemoteA2aAgentStreamingArtifactChunks:
     assert events[1].partial is False
 
   @pytest.mark.asyncio
+  async def test_chunks_of_one_artifact_share_the_event_id(self):
+    """All chunks of one artifact are one response, like local streaming.
+
+    ADK's A2A server closes a streamed response with a ``last_chunk`` update
+    that replaces the artifact (``append=False``) with the full text. Sharing
+    the event id is what tells a consumer that this final event replaces the
+    partial ones rather than adding to them.
+    """
+    stream = [
+        _make_artifact_chunk("Hello, ", append=False, last_chunk=False),
+        _make_artifact_chunk("world!", append=True, last_chunk=False),
+        _make_artifact_chunk("Hello, world!", append=False, last_chunk=True),
+    ]
+
+    events = [
+        await self.agent._handle_a2a_response(
+            (_make_accumulated_task([]), update), self.mock_context
+        )
+        for update in stream
+    ]
+
+    assert [event.partial for event in events] == [True, True, False]
+    assert len({event.id for event in events}) == 1
+
+  @pytest.mark.asyncio
+  async def test_different_artifacts_get_different_event_ids(self):
+    """Two responses of one invocation stay apart: one id per artifact."""
+    first = _make_artifact_chunk("First answer.", append=False, last_chunk=True)
+    second = TaskArtifactUpdateEvent(
+        task_id="task-123",
+        context_id="context-123",
+        append=False,
+        last_chunk=True,
+        artifact=_compat.make_artifact(
+            artifact_id="artifact-2",
+            parts=[_compat.make_text_part("Second answer.")],
+        ),
+    )
+
+    events = [
+        await self.agent._handle_a2a_response(
+            (_make_accumulated_task([]), update), self.mock_context
+        )
+        for update in (first, second)
+    ]
+
+    assert events[0].id != events[1].id
+
+  @pytest.mark.asyncio
   async def test_artifact_update_without_parts_is_ignored(self):
     """An artifact update carrying no parts must not emit a spurious event."""
     update = TaskArtifactUpdateEvent(
