@@ -140,6 +140,48 @@ async def test_send_history(gemini_connection, mock_gemini_session):
 
 
 @pytest.mark.asyncio
+async def test_send_history_filters_out_adk_live_artifact_parts():
+  """send_history strips internal `artifact://.../_adk_live/...` file_data parts."""
+  mock_session = mock.AsyncMock()
+  mock_session.session_id = 'test-session-id'
+  connection = GeminiLlmConnection(
+      mock_session,
+      api_backend=GoogleLLMVariant.VERTEX_AI,
+      model_version=MODEL_VERSION,
+  )
+  history = [
+      types.Content(role='user', parts=[types.Part.from_text(text='Hello')]),
+      types.Content(
+          role='user',
+          parts=[
+              types.Part(
+                  file_data=types.FileData(
+                      file_uri='artifact://app/u/s/_adk_live/adk_live_media_storage_input_media_1.zip#0',
+                      mime_type='application/zip',
+                  )
+              ),
+              types.Part(
+                  file_data=types.FileData(
+                      file_uri='artifact://app/u/s/_adk_live/adk_live_media_storage_input_media_2.jpeg#0',
+                      mime_type='image/jpeg',
+                  )
+              ),
+          ],
+      ),
+      types.Content(
+          role='model', parts=[types.Part.from_text(text='I saw that.')]
+      ),
+  ]
+
+  await connection.send_history(history)
+
+  mock_session.send_client_content.assert_called_once()
+  call_args = mock_session.send_client_content.call_args[1]
+  assert call_args['turns'] == [history[0], history[2]]
+  assert not call_args['turn_complete']
+
+
+@pytest.mark.asyncio
 async def test_send_content_text(gemini_connection, mock_gemini_session):
   """Test send_content with text content."""
   content = types.Content(
