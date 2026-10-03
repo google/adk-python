@@ -866,3 +866,91 @@ def test_sanitize_schema_types_removes_all_invalid_list(openapi_spec_generator):
 
   # Type field should be removed entirely
   assert "type" not in sanitized["schema"]
+
+
+def create_spec_with_path_level_parameters() -> Dict[str, Any]:
+  """Creates a spec whose path item and operation both declare accountId."""
+  return {
+      "openapi": "3.0.0",
+      "info": {"title": "CRM API", "version": "1.0.0"},
+      "servers": [{"url": "https://crm.example.com"}],
+      "paths": {
+          "/accounts/{accountId}": {
+              "parameters": [
+                  {
+                      "name": "accountId",
+                      "in": "path",
+                      "required": True,
+                      "description": "Account id (path level).",
+                      "schema": {"type": "string"},
+                  },
+                  {
+                      "name": "trace",
+                      "in": "query",
+                      "description": "Trace flag (path level).",
+                      "schema": {"type": "boolean"},
+                  },
+              ],
+              "get": {
+                  "operationId": "getAccount",
+                  "parameters": [
+                      {
+                          "name": "accountId",
+                          "in": "path",
+                          "required": True,
+                          "description": "Account id (operation level).",
+                          "schema": {"type": "string", "pattern": "^ACC-"},
+                      },
+                  ],
+                  "responses": {"200": {"description": "Successful response"}},
+              },
+          }
+      },
+  }
+
+
+def test_operation_parameter_overrides_path_level_parameter(
+    openapi_spec_generator,
+):
+  """Test that an operation parameter overrides the path-level one."""
+  spec = create_spec_with_path_level_parameters()
+
+  op = openapi_spec_generator.parse(spec)[0]
+
+  # The path-level declaration must not survive as a second argument.
+  assert [param.py_name for param in op.parameters] == ["account_id", "trace"]
+  account_id = op.parameters[0]
+  assert account_id.original_name == "accountId"
+  assert account_id.description == "Account id (operation level)."
+
+
+def test_path_level_parameters_are_still_collected(openapi_spec_generator):
+  """Test that path-level parameters the operation does not redeclare remain."""
+  spec = create_spec_with_path_level_parameters()
+
+  op = openapi_spec_generator.parse(spec)[0]
+
+  trace = op.parameters[1]
+  assert trace.original_name == "trace"
+  assert trace.param_location == "query"
+  assert trace.description == "Trace flag (path level)."
+
+
+def test_parameters_with_same_name_different_location_are_both_kept(
+    openapi_spec_generator,
+):
+  """Test that `in` participates in the override key."""
+  spec = create_spec_with_path_level_parameters()
+  spec["paths"]["/accounts/{accountId}"]["get"]["parameters"].append({
+      "name": "accountId",
+      "in": "query",
+      "description": "Account id as a query parameter.",
+      "schema": {"type": "string"},
+  })
+
+  op = openapi_spec_generator.parse(spec)[0]
+
+  # The path-level `accountId` is overridden, the query one is not.
+  names = [param.py_name for param in op.parameters]
+  assert names == ["account_id", "account_id_0", "trace"]
+  assert op.parameters[1].param_location == "query"
