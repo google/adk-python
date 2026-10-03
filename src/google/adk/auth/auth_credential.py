@@ -30,6 +30,42 @@ from pydantic import model_validator
 
 _REDACTED = "<redacted>"
 
+# By-alias (camelCase) and by-name (snake_case) names of every field on a
+# credential model that is marked `repr=False` above. `repr=False` only redacts
+# these from Python's `repr()`/`str()` (logs, error strings); it has no effect
+# on `model_dump()`/`model_dump_json()`, which is what actually goes out over
+# the network (e.g. FastAPI's /run, /run_sse, /run_live, and session
+# responses). Anything serializing an `AuthCredential`-derived object for an
+# external, untrusted client -- as opposed to internal persistence via
+# SessionService -- must additionally strip these keys. Kept as one set here,
+# next to the field declarations, so the two lists can't silently drift apart.
+_CREDENTIAL_SECRET_KEYS = frozenset({
+    "password",
+    "token",
+    "additionalHeaders",
+    "additional_headers",
+    "clientSecret",
+    "client_secret",
+    "authResponseUri",
+    "auth_response_uri",
+    "authCode",
+    "auth_code",
+    "accessToken",
+    "access_token",
+    "refreshToken",
+    "refresh_token",
+    "idToken",
+    "id_token",
+    "codeVerifier",
+    "code_verifier",
+    "privateKeyId",
+    "private_key_id",
+    "privateKey",
+    "private_key",
+    "apiKey",
+    "api_key",
+})
+
 
 # Pydantic echoes the rejected value into ValidationError messages
 # ("input_value=..."), which would put a malformed secret straight into logs and
@@ -319,3 +355,100 @@ class AuthCredential(BaseModelWithConfig):
   http: HttpAuth | None = None
   service_account: ServiceAccount | None = None
   oauth2: OAuth2Auth | None = None
+
+
+_AUTH_TYPE_VALUES = (
+    frozenset(e.value for e in AuthCredentialTypes)
+    | frozenset(e.name for e in AuthCredentialTypes)
+    | frozenset(e.name.lower() for e in AuthCredentialTypes)
+)
+
+
+def _redact_auth_config_secrets(value: Any) -> Any:
+  """Strips credential-secret keys from an authConfig subtree."""
+  if isinstance(value, dict):
+    return {
+        key: _redact_auth_config_secrets(val)
+        for key, val in value.items()
+        if key not in _CREDENTIAL_SECRET_KEYS
+    }
+  if isinstance(value, list):
+    return [_redact_auth_config_secrets(item) for item in value]
+  return value
+
+
+def _redact_credential_secrets(value: Any) -> Any:
+  """Strips credential secrets from auth carriers and credential payloads.
+
+  Serializers calling this function are expected to serialize Pydantic models
+  with `by_alias=True` so on-wire payloads match the camelCase aliases used by
+  FastAPI and frontend clients, though `_CREDENTIAL_SECRET_KEYS` also handles
+  snake_case keys for raw dicts and `by_alias=False` dumps.
+
+  Args:
+    value: The payload to redact, typically a serialized dict or list containing
+      auth credentials, function call args, or event actions.
+
+  Returns:
+    A copy of the payload with credential secret keys stripped.
+  """
+  if isinstance(value, dict):
+    for key in ("authType", "auth_type"):
+      auth_type = value.get(key)
+      if (
+          isinstance(auth_type, str) and auth_type in _AUTH_TYPE_VALUES
+      ) or isinstance(auth_type, AuthCredentialTypes):
+        return _redact_auth_config_secrets(value)
+
+    if value.get("name") == "adk_request_credential":
+      result = {}
+      for key, val in value.items():
+        if key == "args" and isinstance(val, dict):
+          new_args = dict(val)
+          for auth_key in ("authConfig", "auth_config"):
+            if auth_key in new_args:
+              new_args[auth_key] = _redact_auth_config_secrets(
+                  new_args[auth_key]
+              )
+          result[key] = new_args
+        elif key == "response":
+          result[key] = _redact_auth_config_secrets(val)
+        else:
+          result[key] = _redact_credential_secrets(val)
+      return result
+
+    if "requestedAuthConfigs" in value or "requested_auth_configs" in value:
+      result = {}
+      for key, val in value.items():
+        if key in ("requestedAuthConfigs", "requested_auth_configs"):
+          result[key] = _redact_auth_config_secrets(val)
+        else:
+          result[key] = _redact_credential_secrets(val)
+      return result
+
+    if any(
+        k in value
+        for k in (
+            "rawAuthCredential",
+            "raw_auth_credential",
+            "exchangedAuthCredential",
+            "exchanged_auth_credential",
+        )
+    ):
+      result = {}
+      for key, val in value.items():
+        if key in (
+            "rawAuthCredential",
+            "raw_auth_credential",
+            "exchangedAuthCredential",
+            "exchanged_auth_credential",
+        ):
+          result[key] = _redact_auth_config_secrets(val)
+        else:
+          result[key] = _redact_credential_secrets(val)
+      return result
+
+    return {key: _redact_credential_secrets(val) for key, val in value.items()}
+  if isinstance(value, list):
+    return [_redact_credential_secrets(item) for item in value]
+  return value

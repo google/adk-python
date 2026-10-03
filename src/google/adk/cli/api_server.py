@@ -63,6 +63,7 @@ from opentelemetry.sdk.trace import SpanProcessor
 from opentelemetry.sdk.trace import TracerProvider
 from pydantic import Field
 from pydantic import ValidationError
+import pydantic_core
 from starlette.types import Lifespan
 from typing_extensions import deprecated
 from typing_extensions import override
@@ -76,6 +77,7 @@ from ..agents.run_config import StreamingMode
 from ..apps.app import App
 from ..artifacts.base_artifact_service import ArtifactVersion
 from ..artifacts.base_artifact_service import BaseArtifactService
+from ..auth.auth_credential import _redact_credential_secrets
 from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..errors.already_exists_error import AlreadyExistsError
 from ..errors.input_validation_error import InputValidationError
@@ -625,6 +627,30 @@ def _invalid_event_error(event_index: int, disallowed: str) -> HTTPException:
           f"Session initialization event {event_index} cannot include"
           f" {disallowed}."
       ),
+  )
+
+
+def _redacted_session_response(
+    session: Session | list[Session],
+) -> JSONResponse:
+  """Returns a JSONResponse with credential secrets redacted."""
+  if isinstance(session, list):
+    return JSONResponse(
+        content=[
+            _redact_credential_secrets(
+                public_session(s).model_dump(
+                    exclude_none=True, by_alias=True, mode="json"
+                )
+            )
+            for s in session
+        ]
+    )
+  return JSONResponse(
+      content=_redact_credential_secrets(
+          public_session(session).model_dump(
+              exclude_none=True, by_alias=True, mode="json"
+          )
+      )
   )
 
 
@@ -1547,38 +1573,41 @@ class ApiServer:
 
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}",
+        response_model=Session,
         response_model_exclude_none=True,
     )
     async def get_session(
         app_name: str, user_id: str, session_id: str
-    ) -> Session:
+    ) -> Response:
       session = await self.session_service.get_session(
           app_name=app_name, user_id=user_id, session_id=session_id
       )
       if not session:
         raise HTTPException(status_code=404, detail="Session not found")
       self.current_app_name_ref.value = app_name
-      return public_session(session)
+      return _redacted_session_response(session)
 
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions",
+        response_model=list[Session],
         response_model_exclude_none=True,
     )
-    async def list_sessions(app_name: str, user_id: str) -> list[Session]:
+    async def list_sessions(app_name: str, user_id: str) -> Response:
       list_sessions_response = await self.session_service.list_sessions(
           app_name=app_name, user_id=user_id
       )
-      return [
-          public_session(session)
+      return _redacted_session_response([
+          session
           for session in list_sessions_response.sessions
           # Remove sessions that were generated as a part of Eval.
           if not session.id.startswith(
               (EVAL_SESSION_ID_PREFIX, _LEGACY_EVAL_SESSION_ID_PREFIX)
           )
-      ]
+      ])
 
     @app.post(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}",
+        response_model=Session,
         response_model_exclude_none=True,
     )
     @deprecated(
@@ -1590,29 +1619,28 @@ class ApiServer:
         user_id: str,
         session_id: str,
         state: Optional[dict[str, Any]] = None,
-    ) -> Session:
-      return public_session(
-          await self._create_session(
-              app_name=app_name,
-              user_id=user_id,
-              state=state,
-              session_id=session_id,
-          )
+    ) -> Response:
+      session = await self._create_session(
+          app_name=app_name,
+          user_id=user_id,
+          state=state,
+          session_id=session_id,
       )
+      return _redacted_session_response(session)
 
     @app.post(
         "/apps/{app_name}/users/{user_id}/sessions",
+        response_model=Session,
         response_model_exclude_none=True,
     )
     async def create_session(
         app_name: str,
         user_id: str,
         req: Optional[CreateSessionRequest] = None,
-    ) -> Session:
+    ) -> Response:
       if not req:
-        return public_session(
-            await self._create_session(app_name=app_name, user_id=user_id)
-        )
+        session = await self._create_session(app_name=app_name, user_id=user_id)
+        return _redacted_session_response(session)
 
       if req.events:
         _validate_session_initialization_events(req.events)
@@ -1634,7 +1662,7 @@ class ApiServer:
               session=session, event=mark_restored(event)
           )
 
-      return public_session(session)
+      return _redacted_session_response(session)
 
     @app.delete("/apps/{app_name}/users/{user_id}/sessions/{session_id}")
     async def delete_session(
@@ -1646,6 +1674,7 @@ class ApiServer:
 
     @app.patch(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}",
+        response_model=Session,
         response_model_exclude_none=True,
     )
     async def update_session(
@@ -1653,7 +1682,7 @@ class ApiServer:
         user_id: str,
         session_id: str,
         req: UpdateSessionRequest,
-    ) -> Session:
+    ) -> Response:
       """Updates session state without running the agent.
 
       Args:
@@ -1692,7 +1721,7 @@ class ApiServer:
           session=session, event=state_update_event
       )
 
-      return public_session(session)
+      return _redacted_session_response(session)
 
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name:path}/versions/{version_id}/metadata",
@@ -1932,8 +1961,10 @@ class ApiServer:
       else:
         _is_visual_builder.set(False)
 
-    @app.post("/run", response_model_exclude_none=True)
-    async def run_agent(req: RunAgentRequest, request: Request) -> list[Event]:
+    @app.post(
+        "/run", response_model=list[Event], response_model_exclude_none=True
+    )
+    async def run_agent(req: RunAgentRequest, request: Request) -> Response:
       app_name = req.app_name or self.default_app_name
       if not app_name:
         raise HTTPException(
@@ -2000,7 +2031,16 @@ class ApiServer:
         events = await worker_task
         logger.info("Generated %s events in agent run", len(events))
         logger.debug("Events generated: %s", events)
-        return events
+        return JSONResponse(
+            content=[
+                _redact_credential_secrets(
+                    event.model_dump(
+                        exclude_none=True, by_alias=True, mode="json"
+                    )
+                )
+                for event in events
+            ]
+        )
       except asyncio.CancelledError:
         if await request.is_disconnected():
           return Response(status_code=499)
@@ -2129,10 +2169,15 @@ class ApiServer:
                 events_to_stream = [content_event, artifact_event]
 
               for event_to_stream in events_to_stream:
-                sse_event = public_event(event_to_stream).model_dump_json(
-                    exclude_none=True,
-                    by_alias=True,
-                )
+                sse_event = pydantic_core.to_json(
+                    _redact_credential_secrets(
+                        public_event(event_to_stream).model_dump(
+                            exclude_none=True,
+                            by_alias=True,
+                            mode="json",
+                        )
+                    )
+                ).decode("utf-8")
                 logger.debug(
                     "Generated event in agent run streaming: %s", sse_event
                 )
@@ -2294,9 +2339,13 @@ class ApiServer:
         ) as agen:
           async for event in agen:
             await websocket.send_text(
-                public_event(event).model_dump_json(
-                    exclude_none=True, by_alias=True
-                )
+                pydantic_core.to_json(
+                    _redact_credential_secrets(
+                        public_event(event).model_dump(
+                            exclude_none=True, by_alias=True, mode="json"
+                        )
+                    )
+                ).decode("utf-8")
             )
 
       async def process_messages():

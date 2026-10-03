@@ -50,8 +50,10 @@ import anyio
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi import Request as FastAPIRequest
+from fastapi import Response
 from fastapi import UploadFile
 from fastapi.responses import FileResponse
+from fastapi.responses import JSONResponse
 from fastapi.responses import PlainTextResponse
 from fastapi.responses import StreamingResponse
 import graphviz
@@ -63,6 +65,7 @@ import yaml
 
 from . import agent_graph
 from ..apps.app import App
+from ..auth.auth_credential import _redact_credential_secrets
 from ..errors.not_found_error import NotFoundError
 from ..evaluation.base_eval_service import InferenceConfig
 from ..evaluation.base_eval_service import InferenceRequest
@@ -1111,6 +1114,7 @@ class DevServer(ApiServer):
     # TODO - remove after migration
     @app.get(
         "/dev/apps/{app_name}/eval_results/{eval_result_id}",
+        response_model=EvalSetResult,
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
     )
@@ -1121,10 +1125,17 @@ class DevServer(ApiServer):
     async def get_eval_result_legacy(
         app_name: str,
         eval_result_id: str,
-    ) -> EvalSetResult:
+    ) -> Response:
       try:
-        return self.eval_set_results_manager.get_eval_set_result(
+        eval_set_result = self.eval_set_results_manager.get_eval_set_result(
             app_name, eval_result_id
+        )
+        return JSONResponse(
+            content=_redact_credential_secrets(
+                eval_set_result.model_dump(
+                    exclude_none=True, by_alias=True, mode="json"
+                )
+            )
         )
       except ValueError as ve:
         raise HTTPException(status_code=404, detail=str(ve)) from ve
@@ -1226,24 +1237,32 @@ class DevServer(ApiServer):
 
     @app.get(
         "/dev/apps/{app_name}/eval-sets/{eval_set_id}/eval-cases/{eval_case_id}",
+        response_model=EvalCase,
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
     )
     @app.get(
         "/dev/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}",
+        response_model=EvalCase,
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
     )
     async def get_eval(
         app_name: str, eval_set_id: str, eval_case_id: str
-    ) -> EvalCase:
+    ) -> Response:
       """Gets an eval case in an eval set."""
       eval_case_to_find = self.eval_sets_manager.get_eval_case(
           app_name, eval_set_id, eval_case_id
       )
 
       if eval_case_to_find:
-        return eval_case_to_find
+        return JSONResponse(
+            content=_redact_credential_secrets(
+                eval_case_to_find.model_dump(
+                    exclude_none=True, by_alias=True, mode="json"
+                )
+            )
+        )
 
       raise HTTPException(
           status_code=404,
@@ -1413,19 +1432,27 @@ class DevServer(ApiServer):
 
     @app.get(
         "/dev/apps/{app_name}/eval-results/{eval_result_id}",
+        response_model=EvalResult,
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
     )
     async def get_eval_result(
         app_name: str,
         eval_result_id: str,
-    ) -> EvalResult:
+    ) -> Response:
       """Gets the eval result for the given eval id."""
       try:
         eval_set_result = self.eval_set_results_manager.get_eval_set_result(
             app_name, eval_result_id
         )
-        return EvalResult(**eval_set_result.model_dump())
+        eval_result = EvalResult(**eval_set_result.model_dump())
+        return JSONResponse(
+            content=_redact_credential_secrets(
+                eval_result.model_dump(
+                    exclude_none=True, by_alias=True, mode="json"
+                )
+            )
+        )
       except ValueError as ve:
         raise HTTPException(status_code=404, detail=str(ve)) from ve
       except ValidationError as ve:

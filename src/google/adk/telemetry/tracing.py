@@ -67,9 +67,11 @@ from opentelemetry.trace import Span
 from opentelemetry.trace import Status
 from opentelemetry.trace import StatusCode
 from opentelemetry.util.types import AttributeValue
+from pydantic_core import to_jsonable_python
 from typing_extensions import deprecated
 
 from .. import version
+from ..auth.auth_credential import _redact_credential_secrets
 from ..utils.env_utils import is_enterprise_mode_enabled
 from ..utils.model_name_utils import extract_model_name
 from ..utils.model_name_utils import is_gemini_model
@@ -350,10 +352,17 @@ def trace_tool_call(
   if function_response_event is not None:
     span.set_attribute("gcp.vertex.agent.event_id", function_response_event.id)
   if telemetry_config.should_add_content_to_legacy_spans:
-    span.set_attribute(
-        "gcp.vertex.agent.tool_response",
-        safe_json_serialize(tool_response),
-    )
+    try:
+      tool_response_json = safe_json_serialize(
+          _redact_credential_secrets(
+              to_jsonable_python(
+                  tool_response, fallback=lambda _: "<not serializable>"
+              )
+          )
+      )
+    except Exception:  # pylint: disable=broad-exception-caught
+      tool_response_json = "<not serializable>"
+    span.set_attribute("gcp.vertex.agent.tool_response", tool_response_json)
   else:
     span.set_attribute("gcp.vertex.agent.tool_response", "{}")
 
@@ -553,7 +562,9 @@ def trace_merged_tool_calls(
     parts = (content.parts or []) if content else []
     try:
       tool_response_json = safe_json_serialize([
-          part.function_response.model_dump(exclude_none=True, mode="json")
+          _redact_credential_secrets(
+              part.function_response.model_dump(exclude_none=True, mode="json")
+          )
           for part in parts
           if part.function_response is not None
       ])
