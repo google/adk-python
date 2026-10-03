@@ -647,6 +647,36 @@ def test_cli_run_interactive_with_state(
   assert called_kwargs.get("state_str") == '{"x": 1}'
 
 
+def test_cli_run_interactive_with_state_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk run` in interactive mode should pass state file contents."""
+  # Arrange
+  agent_dir = tmp_path / "agent_interactive"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+  state_file = tmp_path / "state.json"
+  state_file.write_text('{"x": 1}', encoding="utf-8")
+
+  mock_run_cli = mock.AsyncMock()
+  monkeypatch.setattr("google.adk.cli.cli.run_cli", mock_run_cli)
+
+  runner = CliRunner()
+
+  # Act
+  result = runner.invoke(
+      cli_tools_click.main,
+      ["run", str(agent_dir), "--state_file", str(state_file)],
+  )
+
+  # Assert
+  assert result.exit_code == 0
+  assert mock_run_cli.called
+  called_kwargs = mock_run_cli.call_args.kwargs
+  assert called_kwargs.get("state_str") == '{"x": 1}'
+
+
 def test_cli_run_options_with_query(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -683,6 +713,70 @@ def test_cli_run_options_with_query(
   assert called_kwargs.get("state_str") == '{"x": 1}'
   assert called_kwargs.get("in_memory") is True
   assert called_kwargs.get("jsonl") is True
+
+
+def test_cli_run_options_with_query_and_state_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk run` with query should pass state file contents to run_once_cli."""
+  # Arrange
+  agent_dir = tmp_path / "agent_opts"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  state_file = tmp_path / "state.json"
+  state_file.write_text('{"x": 1}', encoding="utf-8")
+
+  mock_run_once = mock.AsyncMock(return_value=0)
+  monkeypatch.setattr("google.adk.cli.cli.run_once_cli", mock_run_once)
+
+  runner = CliRunner()
+
+  # Act
+  result = runner.invoke(
+      cli_tools_click.main,
+      ["run", str(agent_dir), "hello", "--state_file", str(state_file)],
+  )
+
+  # Assert
+  assert result.exit_code == 0
+  assert mock_run_once.called
+  called_kwargs = mock_run_once.call_args.kwargs
+  assert called_kwargs.get("query") == "hello"
+  assert called_kwargs.get("state_str") == '{"x": 1}'
+
+
+def test_cli_run_rejects_state_and_state_file_together(
+    tmp_path: Path,
+) -> None:
+  """`adk run` should reject simultaneous --state and --state_file."""
+  # Arrange
+  agent_dir = tmp_path / "agent_opts"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  state_file = tmp_path / "state.json"
+  state_file.write_text('{"x": 1}', encoding="utf-8")
+
+  runner = CliRunner()
+
+  # Act
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "run",
+          str(agent_dir),
+          "--state",
+          '{"y": 2}',
+          "--state_file",
+          str(state_file),
+      ],
+  )
+
+  # Assert
+  assert result.exit_code != 0
+  assert (
+      "Options 'state' and 'state_file' cannot be set together."
+      in result.output
+  )
 
 
 def test_cli_run_auto_resume_with_query(
