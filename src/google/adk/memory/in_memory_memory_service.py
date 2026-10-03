@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from collections.abc import Sequence
+from copy import deepcopy
 import itertools
 import re
 import threading
@@ -98,7 +99,7 @@ class InMemoryMemoryService(BaseMemoryService):
     with self._lock:
       self._session_events[user_key] = self._session_events.get(user_key, {})
       self._session_events[user_key][session.id] = [
-          event
+          event.model_copy(update={'content': deepcopy(event.content)})
           for event in session.events
           if event.content and event.content.parts
       ]
@@ -128,7 +129,10 @@ class InMemoryMemoryService(BaseMemoryService):
       existing_ids = {event.id for event in existing_events}
       for event in events_to_add:
         if event.id not in existing_ids:
-          existing_events.append(event)
+          # Snapshot the fields used by memory without copying opaque outputs.
+          existing_events.append(
+              event.model_copy(update={'content': deepcopy(event.content)})
+          )
           existing_ids.add(event.id)
       self._session_events[user_key][scoped_session_id] = existing_events
 
@@ -186,5 +190,8 @@ class InMemoryMemoryService(BaseMemoryService):
     # so it is stable and events matching equally stay in insertion order.
     scored_memories.sort(key=lambda scored_memory: -scored_memory[0])
     return SearchMemoryResponse(
-        memories=[memory for _, memory in scored_memories[:_MAX_SEARCH_RESULTS]]
+        memories=[
+            memory.model_copy(update={'content': deepcopy(memory.content)})
+            for _, memory in scored_memories[:_MAX_SEARCH_RESULTS]
+        ]
     )
