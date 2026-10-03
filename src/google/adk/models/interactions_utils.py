@@ -131,14 +131,33 @@ _POLL_MAX_DELAY_SECONDS = 30.0
 # across a long wait while still surfacing an endpoint that is truly down.
 _POLL_MAX_CONSECUTIVE_ERRORS = 5
 
-# Sampling knobs the interactions API applies, but that the installed
-# google-genai release does not declare on its request model. That model
-# discards keys it has no field for while serializing, so these never reach the
-# API and sending them is indistinguishable from never setting them.
-_UNDECLARED_SAMPLING_PARAMS = (
+# Sampling knobs the interactions API applies, but that only some google-genai
+# releases declare on the request model (2.26 added temperature and top_p).
+# That model discards keys it has no field for while serializing, so an
+# undeclared one never reaches the API and sending it is indistinguishable from
+# never setting it. The split is read from the installed release, because the
+# supported google-genai range spans releases on both sides of it. 2.26 already
+# marks both new fields deprecated on its GenerationConfig model, so a later
+# release may remove them again; they then fall back to being dropped with the
+# warning below.
+_CLIENT_DEPENDENT_SAMPLING_PARAMS = (
     'temperature',
     'top_p',
     'top_k',
+)
+_DECLARED_GENERATION_CONFIG_KEYS = (
+    GenerationConfigParam.__required_keys__
+    | GenerationConfigParam.__optional_keys__
+)
+_DECLARED_SAMPLING_PARAMS = tuple(
+    name
+    for name in _CLIENT_DEPENDENT_SAMPLING_PARAMS
+    if name in _DECLARED_GENERATION_CONFIG_KEYS
+)
+_UNDECLARED_SAMPLING_PARAMS = tuple(
+    name
+    for name in _CLIENT_DEPENDENT_SAMPLING_PARAMS
+    if name not in _DECLARED_GENERATION_CONFIG_KEYS
 )
 
 # Sampling knobs the interactions API itself rejects as unknown parameters.
@@ -1340,6 +1359,12 @@ def build_generation_config(
     generation_config['stop_sequences'] = config.stop_sequences
   if config.seed is not None:
     generation_config['seed'] = config.seed
+  for name in _DECLARED_SAMPLING_PARAMS:
+    value = getattr(config, name)
+    if value is not None:
+      # Not a literal key: which of these the TypedDict declares depends on
+      # the installed google-genai.
+      generation_config[name] = value  # type: ignore[literal-required]
 
   undeclared = _unwarned_params_set_on(config, _UNDECLARED_SAMPLING_PARAMS)
   if undeclared:

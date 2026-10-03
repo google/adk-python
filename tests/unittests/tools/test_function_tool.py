@@ -575,6 +575,7 @@ def test_get_declaration_is_cached_and_returns_independent_copies():
 @pytest.mark.asyncio
 async def test_run_async_with_async_generator_streaming_tool(mock_tool_context):
   """Test that run_async returns an AsyncGenerator when wrapped function is an async generator."""
+  mock_tool_context._invocation_context.live_request_queue = mock.MagicMock()
 
   async def streaming_tool(val: int, tool_context: Context):
     yield f"item_{val}"
@@ -625,6 +626,7 @@ async def test_run_async_with_streaming_tool_require_confirmation(
     mock_tool_context,
 ):
   """Test e2e confirmation lifecycle for a streaming tool in run_async."""
+  mock_tool_context._invocation_context.live_request_queue = mock.MagicMock()
 
   async def streaming_tool_conf(val: int):
     yield f"confirmed_{val}"
@@ -1333,3 +1335,541 @@ async def test_run_async_leaves_untyped_list_param_alone(mock_tool_context):
       tool_context=mock_tool_context,
   )
   assert result == {"types": ["float"]}
+
+
+@pytest.mark.asyncio
+async def test_async_generator_tool_emits_intermediate_events_and_returns_final_output():
+  """An async generator tool emits intermediate events on a sub-branch and returns its final output to the model."""
+  from google.adk.agents.llm_agent import Agent
+  from google.adk.events.event import Event
+  from google.adk.models.llm_response import LlmResponse
+  from google.genai import types
+
+  from .. import testing_utils
+
+  async def analyze(query: str):
+    yield Event(message=f"Starting {query}...")
+    yield Event(message=f"Finished {query}.")
+    yield {"rows": 42}
+
+  fc = types.Part.from_function_call(name="analyze", args={"query": "sales"})
+  mock_model = testing_utils.MockModel.create([
+      LlmResponse(content=types.Content(role="model", parts=[fc])),
+      LlmResponse(
+          content=types.Content(
+              role="model", parts=[types.Part.from_text(text="All done.")]
+          )
+      ),
+  ])
+  agent = Agent(name="root_agent", model=mock_model, tools=[analyze])
+  runner = testing_utils.InMemoryRunner(agent)
+
+  events = await runner.run_async("run sales")
+
+  intermediate = [
+      e
+      for e in events
+      if e.author == "analyze"
+      and e.content
+      and e.content.parts
+      and e.content.parts[0].text in ("Starting sales...", "Finished sales.")
+  ]
+  assert len(intermediate) == 2
+  assert all(
+      e.branch is not None and e.branch.startswith("analyze@")
+      for e in intermediate
+  )
+  assert len(mock_model.requests) == 2
+  second_req_responses = [
+      p.function_response.response
+      for c in mock_model.requests[1].contents
+      for p in c.parts or []
+      if p.function_response
+  ]
+  assert {"rows": 42} in second_req_responses
+  assert not [
+      c
+      for c in mock_model.requests[1].contents
+      if "Starting sales..." in str(c)
+  ]
+
+
+@pytest.mark.asyncio
+async def test_generator_tool_intermediate_events_stay_out_of_next_turn_context():
+  """A root agent does not see a generator tool's intermediate events in a later turn."""
+  from google.adk.agents.llm_agent import Agent
+  from google.adk.events.event import Event
+  from google.adk.models.llm_response import LlmResponse
+  from google.genai import types
+
+  from .. import testing_utils
+
+  async def analyze(query: str):
+    yield Event(message=f"Starting {query}...")
+    yield Event(message=f"Finished {query}.")
+    yield {"rows": 42}
+
+  fc = types.Part.from_function_call(name="analyze", args={"query": "sales"})
+  mock_model = testing_utils.MockModel.create([
+      LlmResponse(content=types.Content(role="model", parts=[fc])),
+      LlmResponse(
+          content=types.Content(
+              role="model", parts=[types.Part.from_text(text="All done.")]
+          )
+      ),
+      LlmResponse(
+          content=types.Content(
+              role="model", parts=[types.Part.from_text(text="42 rows.")]
+          )
+      ),
+  ])
+  agent = Agent(name="root_agent", model=mock_model, tools=[analyze])
+  runner = testing_utils.InMemoryRunner(agent)
+
+  await runner.run_async("run sales")
+  await runner.run_async("what happened?")
+
+  assert len(mock_model.requests) == 3
+  third_req = str(mock_model.requests[2].contents)
+  assert "Starting sales" not in third_req
+  assert "Finished sales" not in third_req
+  assert "] said:" not in third_req
+  third_req_responses = [
+      p.function_response.response
+      for c in mock_model.requests[2].contents
+      for p in c.parts or []
+      if p.function_response
+  ]
+  assert {"rows": 42} in third_req_responses
+
+
+@pytest.mark.asyncio
+async def test_sync_generator_tool_emits_events_and_persists_state():
+  """A sync generator tool emits intermediate events, persists state deltas, and returns its final output."""
+  from google.adk.agents.llm_agent import Agent
+  from google.adk.events.event import Event
+  from google.adk.events.event_actions import EventActions
+  from google.adk.models.llm_response import LlmResponse
+  from google.genai import types
+
+  from .. import testing_utils
+
+  def sync_analyze(query: str, tool_context: ToolContext):
+    tool_context.state["last_query"] = query
+    yield Event(
+        message=f"Sync step for {query}",
+        actions=EventActions(state_delta={"step_count": 1}),
+    )
+    yield {"status": "ok", "query": query}
+
+  fc = types.Part.from_function_call(
+      name="sync_analyze", args={"query": "revenue"}
+  )
+  mock_model = testing_utils.MockModel.create([
+      LlmResponse(content=types.Content(role="model", parts=[fc])),
+      LlmResponse(
+          content=types.Content(
+              role="model", parts=[types.Part.from_text(text="Completed.")]
+          )
+      ),
+  ])
+  agent = Agent(name="root_agent", model=mock_model, tools=[sync_analyze])
+  runner = testing_utils.InMemoryRunner(agent)
+
+  events = await runner.run_async("check revenue")
+
+  texts = [
+      p.text
+      for e in events
+      for p in (e.content.parts if e.content and e.content.parts else [])
+      if p.text
+  ]
+  assert "Sync step for revenue" in texts
+  assert runner.session.state.get("last_query") == "revenue"
+  assert runner.session.state.get("step_count") == 1
+
+
+@pytest.mark.asyncio
+async def test_generator_tool_stamps_tool_author_and_propagates_actions():
+  """A generator tool stamps the tool name as event author and propagates EventActions to the tool response."""
+  from google.adk.agents.llm_agent import Agent
+  from google.adk.events.event import Event
+  from google.adk.models.llm_response import LlmResponse
+  from google.genai import types
+
+  from .. import testing_utils
+
+  async def summarize_and_skip(query: str, tool_context: ToolContext):
+    tool_context.actions.skip_summarization = True
+    yield Event(author="custom_reporter", message=f"Progress on {query}")
+    yield {"done": query}
+
+  fc = types.Part.from_function_call(
+      name="summarize_and_skip", args={"query": "report"}
+  )
+  mock_model = testing_utils.MockModel.create([
+      LlmResponse(content=types.Content(role="model", parts=[fc])),
+  ])
+  agent = Agent(name="root_agent", model=mock_model, tools=[summarize_and_skip])
+  runner = testing_utils.InMemoryRunner(agent)
+
+  events = await runner.run_async("generate report")
+
+  tool_events = [e for e in events if e.author == "summarize_and_skip"]
+  assert len(tool_events) == 2
+  assert not any(e.author == "custom_reporter" for e in events)
+  fn_response_events = [e for e in events if e.get_function_responses()]
+  assert len(fn_response_events) == 1
+  assert fn_response_events[0].actions.skip_summarization is True
+  assert len(mock_model.requests) == 1
+
+
+@pytest.mark.parametrize("is_async", [True, False])
+@pytest.mark.asyncio
+async def test_generator_tool_rejects_multiple_outputs(is_async: bool):
+  """A generator tool that yields more than one non-Event output raises ValueError and deterministically closes the generator."""
+  from google.adk.agents.llm_agent import Agent
+  from google.adk.models.llm_response import LlmResponse
+  from google.genai import types
+
+  from .. import testing_utils
+
+  closed = False
+
+  async def async_analyze(query: str):
+    nonlocal closed
+    del query
+    try:
+      yield {"rows": 1}
+      yield {"rows": 2}
+    finally:
+      closed = True
+
+  def sync_analyze(query: str):
+    nonlocal closed
+    del query
+    try:
+      yield {"rows": 1}
+      yield {"rows": 2}
+    finally:
+      closed = True
+
+  tool_fn = async_analyze if is_async else sync_analyze
+  fc = types.Part.from_function_call(
+      name=tool_fn.__name__, args={"query": "sales"}
+  )
+  mock_model = testing_utils.MockModel.create([
+      LlmResponse(content=types.Content(role="model", parts=[fc])),
+  ])
+  agent = Agent(name="root_agent", model=mock_model, tools=[tool_fn])
+  runner = testing_utils.InMemoryRunner(agent)
+
+  with pytest.raises(
+      ValueError, match="Output already set. A node can produce at most one"
+  ):
+    await runner.run_async("run sales")
+
+  assert closed is True
+
+
+@pytest.mark.asyncio
+async def test_generator_tool_pauses_on_request_input_and_resumes():
+  """A generator tool yielding RequestInput pauses the invocation and resumes with user input.
+
+  Setup: Resumable App with an Agent whose async generator tool yields
+  RequestInput on first run.
+  Act: Run the invocation until paused, then resume with
+  create_request_input_response.
+  Assert: The tool receives the resume input via tool_context.resume_inputs and
+  completes the turn.
+  """
+  from google.adk.agents.llm_agent import Agent
+  from google.adk.apps.app import App
+  from google.adk.apps.app import ResumabilityConfig
+  from google.adk.events.event import Event
+  from google.adk.events.request_input import RequestInput
+  from google.adk.models.llm_response import LlmResponse
+  from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
+  from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
+  from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
+  from google.genai import types
+
+  from .. import testing_utils
+
+  async def ask_and_analyze(query: str, tool_context: ToolContext):
+    clarification = tool_context.resume_inputs.get("clarify_region")
+    if clarification is None:
+      yield Event(message=f"Preparing {query}, need region...")
+      yield RequestInput(
+          interrupt_id="clarify_region",
+          message="Which region should I analyze?",
+      )
+      return
+    region = (
+        clarification.get("text")
+        if isinstance(clarification, dict)
+        else clarification
+    )
+    yield Event(message=f"Analyzing {query} for {region}...")
+    yield {"query": query, "region": region}
+
+  fc = types.Part.from_function_call(
+      name="ask_and_analyze", args={"query": "sales"}
+  )
+  mock_model = testing_utils.MockModel.create([
+      LlmResponse(content=types.Content(role="model", parts=[fc])),
+      LlmResponse(
+          content=types.Content(
+              role="model",
+              parts=[types.Part.from_text(text="Region analyzed.")],
+          )
+      ),
+  ])
+  agent = Agent(name="root_agent", model=mock_model, tools=[ask_and_analyze])
+  app = App(
+      name="test_app",
+      root_agent=agent,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events1 = await runner.run_async("start")
+  req_events = [
+      e
+      for e in events1
+      if any(
+          p.function_call
+          and p.function_call.name == REQUEST_INPUT_FUNCTION_CALL_NAME
+          for p in (e.content.parts if e.content and e.content.parts else [])
+      )
+  ]
+  interrupt_id = get_request_input_interrupt_ids(req_events[0])[0]
+  invocation_id = req_events[0].invocation_id
+  resume_part = create_request_input_response(interrupt_id, {"text": "APAC"})
+  events2 = await runner.run_async(
+      new_message=testing_utils.UserContent(resume_part),
+      invocation_id=invocation_id,
+  )
+
+  texts2 = [
+      p.text
+      for e in events2
+      for p in (e.content.parts if e.content and e.content.parts else [])
+      if p.text
+  ]
+  assert "Analyzing sales for APAC..." in texts2
+  assert "Region analyzed." in texts2
+
+
+@pytest.mark.asyncio
+async def test_generator_tool_preserves_non_context_ctx_parameter():
+  """A generator tool with a non-Context parameter named 'ctx' receives the LLM argument rather than a Context object."""
+  from google.adk.agents.llm_agent import Agent
+  from google.adk.events.event import Event
+  from google.adk.models.llm_response import LlmResponse
+  from google.genai import types
+
+  from .. import testing_utils
+
+  async def search_in_scope(ctx: str, query: str):
+    yield Event(message=f"Searching {query} in {ctx}")
+    yield {"ctx": ctx, "query": query, "ctx_type": type(ctx).__name__}
+
+  fc = types.Part.from_function_call(
+      name="search_in_scope", args={"ctx": "billing_domain", "query": "invoice"}
+  )
+  mock_model = testing_utils.MockModel.create([
+      LlmResponse(content=types.Content(role="model", parts=[fc])),
+      LlmResponse(
+          content=types.Content(
+              role="model", parts=[types.Part.from_text(text="Done.")]
+          )
+      ),
+  ])
+  agent = Agent(name="root_agent", model=mock_model, tools=[search_in_scope])
+  runner = testing_utils.InMemoryRunner(agent)
+
+  await runner.run_async("search invoice")
+
+  second_req_responses = [
+      p.function_response.response
+      for c in mock_model.requests[1].contents
+      for p in c.parts or []
+      if p.function_response
+  ]
+  assert {
+      "ctx": "billing_domain",
+      "query": "invoice",
+      "ctx_type": "str",
+  } in second_req_responses
+
+
+def test_generator_tool_caches_function_node_across_invocations():
+  """_get_generator_node reuses the cached FunctionNode unless tool metadata changes."""
+
+  async def gen_tool(query: str):
+    yield query
+
+  tool = FunctionTool(gen_tool)
+
+  node1 = tool._get_generator_node()
+  node2 = tool._get_generator_node()
+  tool.name = "renamed_gen_tool"
+  node3 = tool._get_generator_node()
+
+  assert node1 is node2
+  assert node3 is not node1
+  assert node3.name == "renamed_gen_tool"
+
+
+@pytest.mark.asyncio
+async def test_generator_tool_repeated_calls_isolate_node_path_and_hitl_state():
+  """Repeated calls to the same generator tool in one invocation get distinct node_info.path values and do not leak resume_inputs."""
+  from google.adk.agents.llm_agent import Agent
+  from google.adk.apps.app import App
+  from google.adk.apps.app import ResumabilityConfig
+  from google.adk.events.event import Event
+  from google.adk.events.request_input import RequestInput
+  from google.adk.models.llm_response import LlmResponse
+  from google.adk.workflow.utils._workflow_hitl_utils import create_request_input_response
+  from google.adk.workflow.utils._workflow_hitl_utils import get_request_input_interrupt_ids
+  from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
+  from google.genai import types
+
+  from .. import testing_utils
+
+  async def ask_and_analyze(query: str, tool_context: ToolContext):
+    clarification = tool_context.resume_inputs.get("clarify_region")
+    if clarification is None:
+      yield Event(message=f"Need region for {query}")
+      yield RequestInput(
+          interrupt_id="clarify_region",
+          message=f"Which region for {query}?",
+      )
+      return
+    region = (
+        clarification.get("text")
+        if isinstance(clarification, dict)
+        else clarification
+    )
+    yield Event(message=f"Analyzed {query} in {region}")
+    yield {"query": query, "region": region}
+
+  fc1 = types.Part.from_function_call(
+      name="ask_and_analyze", args={"query": "sales"}
+  )
+  fc2 = types.Part.from_function_call(
+      name="ask_and_analyze", args={"query": "marketing"}
+  )
+  mock_model = testing_utils.MockModel.create([
+      LlmResponse(content=types.Content(role="model", parts=[fc1])),
+      LlmResponse(content=types.Content(role="model", parts=[fc2])),
+      LlmResponse(
+          content=types.Content(
+              role="model",
+              parts=[types.Part.from_text(text="Both analyzed.")],
+          )
+      ),
+  ])
+  agent = Agent(name="root_agent", model=mock_model, tools=[ask_and_analyze])
+  app = App(
+      name="test_app",
+      root_agent=agent,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  # Step 1: First call ("sales") pauses for input.
+  events1 = await runner.run_async("start")
+  req_event1 = next(
+      e
+      for e in events1
+      if any(
+          p.function_call
+          and p.function_call.name == REQUEST_INPUT_FUNCTION_CALL_NAME
+          for p in (e.content.parts if e.content and e.content.parts else [])
+      )
+  )
+  interrupt_id1 = get_request_input_interrupt_ids(req_event1)[0]
+  invocation_id = req_event1.invocation_id
+
+  # Step 2: Resume first call ("APAC"); model then calls ask_and_analyze("marketing"),
+  # which must pause for its own input rather than reusing "APAC".
+  events2 = await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response(interrupt_id1, {"text": "APAC"})
+      ),
+      invocation_id=invocation_id,
+  )
+  req_event2 = next(
+      e
+      for e in events2
+      if any(
+          p.function_call
+          and p.function_call.name == REQUEST_INPUT_FUNCTION_CALL_NAME
+          for p in (e.content.parts if e.content and e.content.parts else [])
+      )
+  )
+  interrupt_id2 = get_request_input_interrupt_ids(req_event2)[0]
+
+  # Step 3: Resume second call ("EMEA") and complete.
+  events3 = await runner.run_async(
+      new_message=testing_utils.UserContent(
+          create_request_input_response(interrupt_id2, {"text": "EMEA"})
+      ),
+      invocation_id=invocation_id,
+  )
+
+  texts3 = [
+      p.text
+      for e in events3
+      for p in (e.content.parts if e.content and e.content.parts else [])
+      if p.text
+  ]
+  assert req_event1.branch != req_event2.branch
+  assert req_event1.node_info is not None and req_event2.node_info is not None
+  assert req_event1.node_info.path != req_event2.node_info.path
+  assert "Analyzed marketing in EMEA" in texts3
+  assert "Both analyzed." in texts3
+
+
+@pytest.mark.parametrize(
+    "llm_args",
+    [{"query": "sales"}, {"query": "sales", "tag": None}],
+    ids=["omitted", "explicit_none"],
+)
+@pytest.mark.asyncio
+async def test_generator_tool_binds_none_default_without_revalidation(
+    llm_args: dict[str, Any],
+):
+  """A generator tool passes a `str = None` parameter through as-is instead of re-validating it against `str`."""
+  from google.adk.agents.llm_agent import Agent
+  from google.adk.models.llm_response import LlmResponse
+  from google.genai import types
+
+  from .. import testing_utils
+
+  async def tagged_search(query: str, tag: str = None):
+    yield {"query": query, "tag": tag}
+
+  fc = types.Part.from_function_call(name="tagged_search", args=llm_args)
+  mock_model = testing_utils.MockModel.create([
+      LlmResponse(content=types.Content(role="model", parts=[fc])),
+      LlmResponse(
+          content=types.Content(
+              role="model", parts=[types.Part.from_text(text="Done.")]
+          )
+      ),
+  ])
+  agent = Agent(name="root_agent", model=mock_model, tools=[tagged_search])
+  runner = testing_utils.InMemoryRunner(agent)
+
+  await runner.run_async("search sales")
+
+  second_req_responses = [
+      p.function_response.response
+      for c in mock_model.requests[1].contents
+      for p in c.parts or []
+      if p.function_response
+  ]
+  assert second_req_responses == [{"query": "sales", "tag": None}]

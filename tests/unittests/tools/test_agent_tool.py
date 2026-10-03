@@ -31,7 +31,7 @@ from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactServ
 from google.adk.events.event import Event
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
-from google.adk.flows.llm_flows.tools._caller import _call_tool_in_thread_pool
+from google.adk.flows.llm_flows.tools._thread_pool import _call_tool_in_thread_pool
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse

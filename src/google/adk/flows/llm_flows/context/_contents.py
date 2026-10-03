@@ -713,9 +713,10 @@ def _is_tool_sub_branch_event(
   """Whether ``event`` is a tool's message published below the agent's branch.
 
   A tool that runs a node through ``tool_context.run_node`` on its own branch
-  (NodeTool, single-turn AgentTool) publishes its intermediate events on the
-  sub-branch ``<tool>@<function_call_id>``. Those are user-facing progress,
-  not model context: the model only gets the tool's FunctionResponse.
+  (generator FunctionTool, NodeTool, single-turn AgentTool) publishes its
+  intermediate events on the sub-branch ``<tool>@<function_call_id>``. Those
+  are user-facing progress, not model context: the model only gets the tool's
+  FunctionResponse.
 
   Only events strictly below ``current_branch`` qualify. An agent that itself
   runs on a tool branch (e.g. an LlmAgent inside a NodeTool-wrapped Workflow

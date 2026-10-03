@@ -136,14 +136,32 @@ class _ToolNode(BaseNode):
         args = None
       else:
         try:
-          args = json.loads(args)
+          if isinstance(parsed := json.loads(args), dict):
+            args = parsed
         except json.JSONDecodeError:
           pass
+
+    declaration = getattr(self.tool, '_get_declaration', lambda: None)()
+    schema = getattr(declaration, 'parameters_json_schema', None) or getattr(
+        declaration, 'parameters', None
+    )
+    if isinstance(schema, dict):
+      all_params = list(schema.get('properties') or ())
+      required_params = list(schema.get('required') or ())
+    elif schema is not None:
+      all_params = list(getattr(schema, 'properties', None) or ())
+      required_params = list(getattr(schema, 'required', None) or ())
+    else:
+      all_params, required_params = (), ()
 
     if args is None:
       args = {}
     elif isinstance(args, dict):
       args = dict(args)
+    elif len(all_params) == 1:
+      args = {all_params[0]: args}
+    elif len(required_params) == 1:
+      args = {required_params[0]: args}
     else:
       raise TypeError(
           'The input to ToolNode must be a dictionary of tool arguments or'
@@ -151,23 +169,9 @@ class _ToolNode(BaseNode):
       )
 
     # Fallback to ctx.state for missing required parameters declared in tool declaration
-    declaration = getattr(self.tool, '_get_declaration', lambda: None)()
-    if declaration is not None:
-      required_params = ()
-      if getattr(declaration, 'parameters_json_schema', None) and isinstance(
-          declaration.parameters_json_schema, dict
-      ):
-        required_params = (
-            declaration.parameters_json_schema.get('required', ()) or ()
-        )
-      elif getattr(declaration, 'parameters', None) and getattr(
-          declaration.parameters, 'required', None
-      ):
-        required_params = declaration.parameters.required or ()
-
-      for param_name in required_params:
-        if param_name not in args and param_name in ctx.state:
-          args[param_name] = ctx.state[param_name]
+    for param_name in required_params:
+      if param_name not in args and param_name in ctx.state:
+        args[param_name] = ctx.state[param_name]
 
     response = await self._run_tool_with_plugin_callbacks(ctx=ctx, args=args)
     if isinstance(response, RequestInput):

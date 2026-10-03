@@ -70,14 +70,15 @@ For workflows, the input schema is specified using `input_schema` on the `Workfl
 
 ### Function node as a tool
 
-Passing a function decorated with `@node` directly to an agent `tools` argument automatically wraps it as a tool. Tool parameter names and types are inferred directly from the function signature and docstrings.
+Plain functions and generators passed to an agent's `tools` list are wrapped as [`FunctionTool`](../function_tool/index.md) instances, which already support streaming intermediate `Event` objects and pausing with `RequestInput`. Decorating a function with `@node` wraps it as a `FunctionNode` instead, which is useful when you want node-level execution settings such as `retry_config`, `timeout`, or `auth_config`, or when you share the same node with a `Workflow` graph. Tool parameter names and types are inferred directly from the function signature and docstrings.
 
 ```python
 from google.adk import Agent
+from google.adk.workflow import RetryConfig
 from google.adk.workflow import node
 
 
-@node
+@node(retry_config=RetryConfig(max_attempts=3))
 def check_order(order_id: str) -> dict[str, str]:
   """Checks shipping status for an existing order identifier.
 
@@ -143,7 +144,7 @@ from google.adk.workflow import node
 @node(rerun_on_resume=True)
 def process_refund(
     amount: float, ctx: Context
-) -> Generator[str, None, None]:
+) -> Generator[RequestInput | str, None, None]:
   """Processes customer refund requests with manager approval.
 
   Args:

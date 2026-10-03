@@ -35,9 +35,9 @@ from ....tools.base_tool import BaseTool
 from ....tools.tool_confirmation import ToolConfirmation
 from ..core._utils import as_llm_agent as _as_llm_agent
 from ._caller import _execute_single_prepared_call_async
-from ._caller import _execute_single_prepared_call_live
 from ._caller import _prepare_single
 from ._caller import _PreparedFunctionCall
+from ._live_caller import _execute_single_prepared_call_live
 
 if TYPE_CHECKING:
   from ....agents.invocation_context import InvocationContext

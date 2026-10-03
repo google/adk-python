@@ -52,9 +52,12 @@ class MockTool(BaseTool):
     return args
 
 
-async def _run_tool_node_wf(node_input: Any) -> list[Any]:
+async def _run_tool_node_wf(
+    node_input: Any,
+    tool: BaseTool | None = None,
+) -> list[Any]:
   """Runs a workflow with a ToolNode that receives node_input."""
-  tool_node = ToolNode(tool=MockTool())
+  tool_node = ToolNode(tool=tool or MockTool())
 
   def start_node():
     return Event(output=node_input)
@@ -1441,3 +1444,64 @@ async def test_tool_node_non_function_tool_no_output_fast_forwards_on_resume(
       invocation_id=request.invocation_id,
   )
   assert execution_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("param_names", "required", "raw_input", "expected"),
+    [
+        (("path",), None, "/path/to/file.txt", {"path": "/path/to/file.txt"}),
+        (("count",), None, 42, {"count": 42}),
+        (("text",), None, "null", {"text": "null"}),
+        (("text",), None, "12345", {"text": "12345"}),
+        (("city", "units"), ("city",), "Paris", {"city": "Paris"}),
+        (
+            ("query",),
+            None,
+            types.Content(
+                parts=[types.Part.from_text(text="hello")], role="user"
+            ),
+            {"query": "hello"},
+        ),
+    ],
+)
+async def test_tool_node_autoboxes_scalar_input(
+    param_names: tuple[str, ...],
+    required: tuple[str, ...] | None,
+    raw_input: Any,
+    expected: dict[str, Any],
+):
+  """Tests that ToolNode auto-boxes scalar/Content input for single-param tools."""
+  tool = MockToolWithDeclaration(
+      param_names=param_names, required_param_names=required
+  )
+  simplified = await _run_tool_node_wf(raw_input, tool=tool)
+  assert (
+      "tool_node_test_wf@1/mock_tool_with_decl@1",
+      {"output": expected},
+  ) in simplified
+
+
+@pytest.mark.asyncio
+async def test_tool_node_autoboxes_streaming_and_rejects_multi_param():
+  """Tests auto-boxing ignores input_stream and rejects multi-param tools."""
+
+  def streaming_func(query: str, input_stream: Any = None) -> str:
+    del input_stream
+    return f"echo:{query}"
+
+  simplified = await _run_tool_node_wf(
+      "search_term", tool=FunctionTool(streaming_func)
+  )
+  assert (
+      "tool_node_test_wf@1/streaming_func@1",
+      {"output": "echo:search_term"},
+  ) in simplified
+
+  with pytest.raises(
+      TypeError, match="The input to ToolNode must be a dictionary"
+  ):
+    await _run_tool_node_wf(
+        "scalar_value",
+        tool=MockToolWithDeclaration(param_names=("param_a", "param_b")),
+    )
