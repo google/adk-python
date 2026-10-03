@@ -22,6 +22,7 @@ from typing import Awaitable
 from typing import Callable
 from typing import Union
 
+from google.genai import types
 from typing_extensions import TypeAlias
 
 from ....agents.readonly_context import ReadonlyContext
@@ -41,6 +42,25 @@ InstructionProvider: TypeAlias = Callable[
 ]
 
 _TEMPLATE_VAR_PATTERN = re.compile(r'(?<![\$\{\\]){+[^{}]*}+')
+
+
+def _artifact_to_text(artifact: object) -> str:
+  """Renders a loaded artifact as instruction text.
+
+  Artifact services return a `types.Part`, whose `str()` is its pydantic field
+  dump, so text content is unwrapped instead of injected as that repr.
+  """
+  if isinstance(artifact, types.Part):
+    if artifact.text is not None:
+      return artifact.text
+    blob = artifact.inline_data
+    if (
+        blob is not None
+        and blob.data is not None
+        and (blob.mime_type or '').startswith('text/')
+    ):
+      return blob.data.decode('utf-8', errors='replace')
+  return str(artifact)
 
 
 async def inject_session_state(
@@ -164,7 +184,7 @@ async def _render_with_regex(
               f"Artifact '{var_name}' not found in agent"
               f" '{readonly_context.agent_name}'."
           )
-      return str(artifact)
+      return _artifact_to_text(artifact)
     else:
       if not _is_valid_state_name(var_name):
         return str(match.group())
@@ -238,7 +258,7 @@ async def _render_with_jinja2(
           f"Artifact '{filename}' not found in agent"
           f" '{readonly_context.agent_name}'."
       )
-    return str(artifact)
+    return _artifact_to_text(artifact)
 
   env = SandboxedEnvironment(
       enable_async=True,
