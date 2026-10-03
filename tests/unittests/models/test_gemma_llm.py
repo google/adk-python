@@ -104,7 +104,7 @@ async def test_not_gemma_model():
   llm_request_bad_model = LlmRequest(
       model="not-a-gemma-model",
   )
-  with pytest.raises(AssertionError, match=r".*model.*"):
+  with pytest.raises(ValueError, match=r".*model.*"):
     async for _ in llm.generate_content_async(llm_request_bad_model):
       pass
 
