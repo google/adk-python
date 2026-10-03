@@ -25,6 +25,7 @@ from google.adk.evaluation.app_details import AppDetails
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_case import InvocationEvent
 from google.adk.evaluation.eval_case import InvocationEvents
+from google.adk.evaluation.eval_rubrics import RubricScore
 from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.vertex_ai_eval_facade import _MultiTurnVertexiAiEvalFacade
 from google.adk.evaluation.vertex_ai_eval_facade import _SingleTurnVertexAiEvalFacade
@@ -258,6 +259,129 @@ class TestSingleTurnVertexAiEvalFacade:
     )
     assert evaluation_result.overall_eval_status == EvalStatus.FAILED
     assert mock_perform_eval.call_count == num_invocations
+
+  def test_evaluate_invocations_reports_explanation_per_invocation(
+      self, mocker
+  ):
+    """The judge's explanation surfaces on the invocation it explains."""
+    mocker.patch("google.adk.dependencies.vertexai.vertexai.Client")
+    mock_perform_eval = mocker.patch(
+        "google.adk.evaluation.vertex_ai_eval_facade._VertexAiEvalFacade._perform_eval"
+    )
+    mock_perform_eval.return_value = _make_eval_result(
+        score=0.0,
+        metric_result=vertexai_types.EvalCaseMetricResult(
+            metric_name="safety_v1",
+            score=0.0,
+            explanation="Violated policies: PII & Demographic Data",
+        ),
+    )
+    evaluator = _SingleTurnVertexAiEvalFacade(
+        threshold=0.8, metric_name=vertexai_types.PrebuiltMetric.SAFETY
+    )
+
+    evaluation_result = evaluator.evaluate_invocations([_make_invocation()])
+
+    assert evaluation_result.per_invocation_results[0].rubric_scores == [
+        RubricScore(
+            rubric_id="explanation",
+            rationale="Violated policies: PII & Demographic Data",
+        ),
+    ]
+    # Each invocation is judged separately, so nothing is aggregated.
+    assert evaluation_result.overall_rubric_scores is None
+
+  def test_evaluate_invocations_reports_error_when_not_scored(self, mocker):
+    """The error Vertex returns for an unscored invocation is kept."""
+    mocker.patch("google.adk.dependencies.vertexai.vertexai.Client")
+    mock_perform_eval = mocker.patch(
+        "google.adk.evaluation.vertex_ai_eval_facade._VertexAiEvalFacade._perform_eval"
+    )
+    mock_perform_eval.return_value = _make_eval_result(
+        score=None,
+        metric_result=vertexai_types.EvalCaseMetricResult(
+            metric_name="response_evaluation_score",
+            error_message="400 INVALID_ARGUMENT",
+        ),
+    )
+    evaluator = _SingleTurnVertexAiEvalFacade(
+        threshold=0.8, metric_name=vertexai_types.PrebuiltMetric.COHERENCE
+    )
+
+    evaluation_result = evaluator.evaluate_invocations([_make_invocation()])
+
+    per_invocation_result = evaluation_result.per_invocation_results[0]
+    assert per_invocation_result.eval_status == EvalStatus.NOT_EVALUATED
+    assert per_invocation_result.rubric_scores == [
+        RubricScore(rubric_id="error", rationale="400 INVALID_ARGUMENT")
+    ]
+
+  def test_evaluate_invocations_without_details_has_no_rubric_scores(
+      self, mocker
+  ):
+    """A result carrying only a score yields no rubric scores."""
+    mocker.patch("google.adk.dependencies.vertexai.vertexai.Client")
+    mock_perform_eval = mocker.patch(
+        "google.adk.evaluation.vertex_ai_eval_facade._VertexAiEvalFacade._perform_eval"
+    )
+    mock_perform_eval.return_value = vertexai_types.EvaluationResult(
+        summary_metrics=[vertexai_types.AggregatedMetricResult(mean_score=0.9)],
+        eval_case_results=[],
+    )
+    evaluator = _SingleTurnVertexAiEvalFacade(
+        threshold=0.8, metric_name=vertexai_types.PrebuiltMetric.COHERENCE
+    )
+
+    evaluation_result = evaluator.evaluate_invocations([_make_invocation()])
+
+    assert evaluation_result.per_invocation_results[0].rubric_scores is None
+
+
+def _make_invocation(invocation_id: str = "inv1") -> Invocation:
+  return Invocation(
+      invocation_id=invocation_id,
+      user_content=genai_types.Content(parts=[genai_types.Part(text="query")]),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="response")]
+      ),
+  )
+
+
+def _make_rubric_verdict(
+    description: str, verdict: bool | None, reasoning: str
+) -> vertexai_types.RubricVerdict:
+  return vertexai_types.RubricVerdict(
+      evaluated_rubric=vertexai_types.evals.Rubric(
+          rubric_id=f"id-{description}",
+          content=vertexai_types.evals.RubricContent(
+              property=vertexai_types.evals.RubricContentProperty(
+                  description=description
+              )
+          ),
+      ),
+      verdict=verdict,
+      reasoning=reasoning,
+  )
+
+
+def _make_eval_result(
+    score: float | None,
+    metric_result: vertexai_types.EvalCaseMetricResult,
+) -> vertexai_types.EvaluationResult:
+  return vertexai_types.EvaluationResult(
+      summary_metrics=[vertexai_types.AggregatedMetricResult(mean_score=score)],
+      eval_case_results=[
+          vertexai_types.EvalCaseResult(
+              eval_case_index=0,
+              response_candidate_results=[
+                  vertexai_types.ResponseCandidateResult(
+                      response_index=0,
+                      metric_results={metric_result.metric_name: metric_result},
+                  )
+              ],
+          )
+      ],
+  )
 
 
 class TestVertexAiEvalFacade:
@@ -608,3 +732,79 @@ class TestMultiTurnVertexAiEvalFacade:
     assert agent_data.turns[0].turn_id == "inv1"
     assert agent_data.turns[1].turn_id == "inv2"
     assert len(agent_data.turns[1].events) == 3  # user, intermediate, agent
+
+  @pytest.mark.parametrize(
+      "metric",
+      [
+          vertexai_types.RubricMetric.MULTI_TURN_TASK_SUCCESS,
+          vertexai_types.RubricMetric.MULTI_TURN_TOOL_USE_QUALITY,
+          vertexai_types.RubricMetric.MULTI_TURN_TRAJECTORY_QUALITY,
+      ],
+  )
+  def test_evaluate_invocations_reports_conversation_verdicts(
+      self, mocker, metric
+  ):
+    """Verdicts on the conversation surface on the last turn and overall."""
+    mocker.patch("google.adk.dependencies.vertexai.vertexai.Client")
+    mock_perform_eval = mocker.patch(
+        "google.adk.evaluation.vertex_ai_eval_facade._VertexAiEvalFacade._perform_eval"
+    )
+    mock_perform_eval.return_value = _make_eval_result(
+        score=0.5,
+        metric_result=vertexai_types.EvalCaseMetricResult(
+            metric_name=metric.name,
+            score=0.5,
+            rubric_verdicts=[
+                _make_rubric_verdict("Books the flight.", True, "Booked."),
+                # Vertex omits `verdict` when a rubric is not met.
+                _make_rubric_verdict("Confirms the date.", None, "Skipped."),
+            ],
+        ),
+    )
+    evaluator = _MultiTurnVertexiAiEvalFacade(threshold=0.8, metric_name=metric)
+
+    evaluation_result = evaluator.evaluate_invocations(
+        [_make_invocation("inv1"), _make_invocation("inv2")]
+    )
+
+    expected_rubric_scores = [
+        RubricScore(
+            rubric_id="Books the flight.", rationale="Booked.", score=1.0
+        ),
+        RubricScore(
+            rubric_id="Confirms the date.", rationale="Skipped.", score=0.0
+        ),
+    ]
+    assert evaluation_result.overall_eval_status == EvalStatus.FAILED
+    assert evaluation_result.overall_rubric_scores == expected_rubric_scores
+    assert evaluation_result.per_invocation_results[0].rubric_scores is None
+    assert (
+        evaluation_result.per_invocation_results[1].rubric_scores
+        == expected_rubric_scores
+    )
+
+  def test_evaluate_invocations_reports_error_when_not_scored(self, mocker):
+    """An unscored conversation keeps the error Vertex returned."""
+    mocker.patch("google.adk.dependencies.vertexai.vertexai.Client")
+    mock_perform_eval = mocker.patch(
+        "google.adk.evaluation.vertex_ai_eval_facade._VertexAiEvalFacade._perform_eval"
+    )
+    mock_perform_eval.return_value = _make_eval_result(
+        score=None,
+        metric_result=vertexai_types.EvalCaseMetricResult(
+            metric_name="multi_turn_task_success_v1",
+            error_message="Quota exceeded.",
+        ),
+    )
+    evaluator = _MultiTurnVertexiAiEvalFacade(
+        threshold=0.8,
+        metric_name=vertexai_types.RubricMetric.MULTI_TURN_TASK_SUCCESS,
+    )
+
+    evaluation_result = evaluator.evaluate_invocations([_make_invocation()])
+
+    assert evaluation_result.overall_score is None
+    assert evaluation_result.overall_eval_status == EvalStatus.NOT_EVALUATED
+    assert evaluation_result.overall_rubric_scores == [
+        RubricScore(rubric_id="error", rationale="Quota exceeded.")
+    ]
