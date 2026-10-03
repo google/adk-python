@@ -19,10 +19,12 @@ from unittest import mock
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.llm_agent import InstructionProvider as LlmAgentInstructionProvider
 from google.adk.agents.readonly_context import ReadonlyContext
+from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.flows.llm_flows.prompt import _instructions_utils as instructions_utils
 from google.adk.flows.llm_flows.prompt._instructions_utils import _is_valid_state_name
 from google.adk.flows.llm_flows.prompt._instructions_utils import InstructionProvider
 from google.adk.sessions.session import Session
+from google.genai import types
 import pytest
 
 from .... import testing_utils
@@ -566,3 +568,40 @@ async def test_inject_session_state_jinja2_state_mapping_is_read_only():
         use_jinja2=True,
     )
   assert invocation_context.session.state == {"user:name": "Foo", "count": 1}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "use_jinja2,template",
+    [
+        (False, "Notes: {artifact.notes.txt}"),
+        (True, "Notes: {{ artifact('notes.txt') }}"),
+    ],
+)
+@pytest.mark.parametrize(
+    "artifact",
+    [
+        types.Part(text="Buy milk."),
+        types.Part.from_bytes(data=b"Buy milk.", mime_type="text/plain"),
+    ],
+)
+async def test_inject_session_state_artifact_part_renders_as_text(
+    use_jinja2, template, artifact
+):
+  artifact_service = InMemoryArtifactService()
+  await artifact_service.save_artifact(
+      app_name="test_app",
+      user_id="test_user",
+      session_id="test_session_id",
+      filename="notes.txt",
+      artifact=artifact,
+  )
+  invocation_context = await _create_test_readonly_context(
+      artifact_service=artifact_service
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      template, invocation_context, use_jinja2=use_jinja2
+  )
+
+  assert populated_instruction == "Notes: Buy milk."
