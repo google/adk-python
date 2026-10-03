@@ -22,6 +22,7 @@ content isolation, output extraction, and both old/new workflow paths.
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import MagicMock
 
 from google.adk.agents.context import Context
 from google.adk.agents.llm.task._task_models import TaskResult
@@ -379,9 +380,13 @@ class TestBuildNode:
       agent_kwargs: dict[str, Any],
       expected_include_contents: str,
   ):
-    """Single-turn workflow nodes preserve explicit content inclusion."""
-    from unittest.mock import MagicMock
+    """Single-turn nodes get the right effective include_contents on build,
 
+    without permanently mutating the original agent object: the node built
+    from the agent is configured once with include_contents='none' when unset,
+    preserving the input agent's configuration while reusing the node and its
+    resolved model memo across every future invocation.
+    """
     agent = LlmAgent(
         name='test_agent',
         model='gemini-2.5-flash',
@@ -389,17 +394,20 @@ class TestBuildNode:
         **agent_kwargs,
     )
     wrapper = build_node(agent)
+    assert wrapper.include_contents == expected_include_contents
     seen_include_contents = []
+    seen_self = []
 
-    async def mock_run_async(*args, **kwargs):
-      seen_include_contents.append(wrapper.include_contents)
+    async def mock_run_async(self, *args, **kwargs):
+      seen_self.append(self)
+      seen_include_contents.append(self.include_contents)
       yield Event(
           invocation_id='inv',
-          author=wrapper.name,
+          author=self.name,
           content=types.Content(parts=[types.Part(text='ok')]),
       )
 
-    object.__setattr__(wrapper, 'run_async', mock_run_async)
+    monkeypatch.setattr(LlmAgent, 'run_async', mock_run_async)
     monkeypatch.setattr(
         agent_wrapper,
         'prepare_llm_agent_context',
@@ -419,9 +427,60 @@ class TestBuildNode:
         event async for event in wrapper._run_impl(ctx=ctx, node_input='hi')
     ]
 
+    # The effective value used for this run is correct...
     assert seen_include_contents == [expected_include_contents]
-    assert wrapper.include_contents == expected_include_contents
+    # ...and execution runs directly on wrapper, not a throwaway clone.
+    assert seen_self == [wrapper]
+    # The original input agent is never mutated.
+    if 'include_contents' not in agent_kwargs:
+      assert agent.include_contents == 'default'
+      assert 'include_contents' not in agent.model_fields_set
     assert events[0].content.parts[0].text == 'ok'
+
+  @pytest.mark.asyncio
+  async def test_single_turn_node_preserves_model_memo_across_runs(
+      self,
+      monkeypatch: pytest.MonkeyPatch,
+  ):
+    """Single-turn nodes preserve the resolved model memo across invocations."""
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-2.5-flash',
+        instruction='Test.',
+    )
+    wrapper = build_node(agent)
+
+    ctx = MagicMock(spec=Context)
+    ic = MagicMock()
+    ctx.get_invocation_context.return_value = ic
+    ic.model_copy.return_value = ic
+
+    async def mock_run_async(self, *args, **kwargs):
+      _ = self.canonical_model
+      yield Event(
+          invocation_id='inv',
+          author=self.name,
+          content=types.Content(parts=[types.Part(text='ok')]),
+      )
+
+    monkeypatch.setattr(LlmAgent, 'run_async', mock_run_async)
+    monkeypatch.setattr(
+        agent_wrapper,
+        'prepare_llm_agent_context',
+        lambda agent, ctx: ctx,
+    )
+    monkeypatch.setattr(
+        agent_wrapper,
+        'prepare_llm_agent_input',
+        lambda agent, ctx, node_input: None,
+    )
+
+    _ = [event async for event in wrapper._run_impl(ctx=ctx, node_input='1')]
+    assert wrapper._resolved_model is not None
+    first_resolved = wrapper._resolved_model
+
+    _ = [event async for event in wrapper._run_impl(ctx=ctx, node_input='2')]
+    assert wrapper._resolved_model is first_resolved
 
   def test_name_override(self):
     """build_node respects explicit name override."""
