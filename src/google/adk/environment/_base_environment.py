@@ -121,6 +121,41 @@ class BaseEnvironment(ABC):
       FileNotFoundError: If the file does not exist.
     """
 
+  async def read_file_lines(
+      self,
+      path: str | Path,
+      start_line: int = 1,
+      end_line: int | None = None,
+  ) -> tuple[list[bytes], int]:
+    """Read a range of lines from a file.
+
+    The default implementation reads the whole file via ``read_file`` and
+    slices it in memory. Subclasses backed by a real filesystem should
+    override this to stream the file instead, so that requesting a small
+    range from a large file does not require buffering it entirely.
+
+    Args:
+      path: Absolute or working-dir-relative path to the file.
+      start_line: First line to return (1-based, inclusive).
+      end_line: Last line to return (1-based, inclusive). ``None`` means
+        through the end of the file.
+
+    Returns:
+      A tuple of (selected lines as bytes including line endings, total
+      number of lines in the file).
+
+    Raises:
+      FileNotFoundError: If the file does not exist.
+    """
+    data = await self.read_file(path)
+    lines = data.splitlines(keepends=True)
+    total = len(lines)
+    start = max(1, start_line)
+    end = total if end_line is None else min(total, end_line)
+    if start > end:
+      return [], total
+    return lines[start - 1 : end], total
+
   @abstractmethod
   async def write_file(self, path: Path, content: str | bytes) -> None:
     """Write content to a file in the environment's filesystem.
