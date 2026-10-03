@@ -20,6 +20,8 @@ import builtins
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.apps.app import App
 from google.adk.evaluation import evaluation_generator as evaluation_generator_module
+from google.adk.evaluation._efficiency_evaluators import _InferenceCallCountV1Evaluator
+from google.adk.evaluation._efficiency_evaluators import _TokenUsageV1Evaluator
 from google.adk.evaluation.app_details import AgentDetails
 from google.adk.evaluation.app_details import AppDetails
 from google.adk.evaluation.conversation_scenarios import ConversationScenario
@@ -38,6 +40,7 @@ from google.adk.evaluation.simulation.user_simulator import Status as UserSimula
 from google.adk.evaluation.simulation.user_simulator import UserSimulator
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
+from google.adk.models.gemini_llm_connection import GeminiLlmConnection
 from google.adk.models.llm_request import LlmRequest
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -2258,3 +2261,183 @@ def test_convert_events_empty_invocation_events_when_no_agent_events():
 
   assert len(invocations) == 1
   assert invocations[0].intermediate_data.invocation_events == []
+
+
+@pytest.mark.parametrize("chunks", [["Hello"], ["Hel", "lo"]])
+@pytest.mark.parametrize(
+    "usage_position", ["before", "after", "combined", "absent"]
+)
+async def test_live_usage_preserved_without_extra_model_calls(
+    chunks, usage_position
+):
+  """Exercise real Live response conversion, including consolidated final text."""
+  messages = [
+      types.LiveServerMessage(
+          server_content=types.LiveServerContent(
+              model_turn=types.Content(
+                  role="model", parts=[types.Part(text=text)]
+              )
+          )
+      )
+      for text in chunks
+  ]
+  usage = types.UsageMetadata(
+      prompt_token_count=10, response_token_count=5, total_token_count=15
+  )
+  if usage_position == "before":
+    messages.insert(0, types.LiveServerMessage(usage_metadata=usage))
+  elif usage_position == "after":
+    messages.append(types.LiveServerMessage(usage_metadata=usage))
+  elif usage_position == "combined":
+    messages[0].usage_metadata = usage
+  messages.append(
+      types.LiveServerMessage(
+          server_content=types.LiveServerContent(turn_complete=True)
+      )
+  )
+
+  class LocalTransport:
+    session_id = "test-session"
+
+    async def receive(self):
+      for message in messages:
+        yield message
+
+  connection = GeminiLlmConnection(
+      LocalTransport(), model_version="gemini-live-test"
+  )
+  events = [_build_event("user", [types.Part(text="Hi")], "inv1")]
+  async for response in connection.receive():
+    events.append(
+        Event(
+            author="agent",
+            invocation_id="inv1",
+            **response.model_dump(exclude_none=True),
+        )
+    )
+  original_events = [event.model_copy(deep=True) for event in events]
+
+  invocations = EvaluationGenerator.convert_events_to_eval_invocations(events)
+
+  expected_tokens = None if usage_position == "absent" else 15
+  assert (
+      _TokenUsageV1Evaluator().evaluate_invocations(invocations).overall_score
+      == expected_tokens
+  )
+  # The existing metric counts model-version-bearing chunks. A standalone
+  # usage report must not add another call, including on the final text event.
+  assert _InferenceCallCountV1Evaluator().evaluate_invocations(
+      invocations
+  ).overall_score == len(chunks)
+  assert invocations[0].final_response.parts[0].text == "Hello"
+  assert events == original_events
+
+
+@pytest.mark.parametrize("content", [None, types.Content(parts=[])])
+def test_standalone_usage_preserved_without_model_event(content):
+  events = [
+      Event(
+          author="agent",
+          invocation_id="inv1",
+          content=content,
+          usage_metadata=types.GenerateContentResponseUsageMetadata(
+              prompt_token_count=10,
+              candidates_token_count=5,
+              total_token_count=15,
+          ),
+      )
+  ]
+
+  invocations = EvaluationGenerator.convert_events_to_eval_invocations(events)
+
+  assert (
+      _TokenUsageV1Evaluator().evaluate_invocations(invocations).overall_score
+      == 15
+  )
+  assert (
+      _InferenceCallCountV1Evaluator()
+      .evaluate_invocations(invocations)
+      .overall_score
+      == 1
+  )
+
+
+@pytest.mark.parametrize("usage_first", [False, True])
+def test_standalone_usage_keeps_separate_model_calls_and_invocations(
+    usage_first,
+):
+  events = []
+  for invocation_id in ["inv1", "inv2"]:
+    for tokens in [15, 28]:
+      model_event = Event(
+          author="agent",
+          invocation_id=invocation_id,
+          model_version="gemini-test",
+          content=types.Content(parts=[types.Part(text="response")]),
+      )
+      usage_event = Event(
+          author="agent",
+          invocation_id=invocation_id,
+          model_version="gemini-test",
+          usage_metadata=types.GenerateContentResponseUsageMetadata(
+              prompt_token_count=tokens, total_token_count=tokens
+          ),
+      )
+      events.extend(
+          [usage_event, model_event]
+          if usage_first
+          else [model_event, usage_event]
+      )
+
+  invocations = EvaluationGenerator.convert_events_to_eval_invocations(events)
+
+  for invocation in invocations:
+    assert [
+        e.usage_metadata.total_token_count
+        for e in invocation.intermediate_data.invocation_events
+    ] == [15, 28]
+  assert (
+      _TokenUsageV1Evaluator().evaluate_invocations(invocations).overall_score
+      == 43
+  )
+  assert (
+      _InferenceCallCountV1Evaluator()
+      .evaluate_invocations(invocations)
+      .overall_score
+      == 2
+  )
+
+
+@pytest.mark.parametrize("different_field", ["author", "model_version"])
+def test_standalone_usage_does_not_merge_into_different_model(different_field):
+  model_event = Event(
+      author="agent",
+      invocation_id="inv1",
+      model_version="gemini-test",
+      content=types.Content(parts=[types.Part(text="response")]),
+  )
+  usage_event = Event(
+      author="agent",
+      invocation_id="inv1",
+      model_version="gemini-test",
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=15, total_token_count=15
+      ),
+  )
+  setattr(usage_event, different_field, "different")
+
+  invocations = EvaluationGenerator.convert_events_to_eval_invocations(
+      [model_event, usage_event]
+  )
+
+  assert len(invocations[0].intermediate_data.invocation_events) == 2
+  assert (
+      _TokenUsageV1Evaluator().evaluate_invocations(invocations).overall_score
+      == 15
+  )
+  assert (
+      _InferenceCallCountV1Evaluator()
+      .evaluate_invocations(invocations)
+      .overall_score
+      == 2
+  )
