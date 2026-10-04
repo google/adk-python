@@ -26,6 +26,7 @@ from pydantic import ConfigDict
 from pydantic import Field
 from typing_extensions import override
 
+from ..agents._caller_principal import caller_may_confirm
 from ..agents.context import Context
 from ..auth.auth_tool import AuthConfig
 from ..events.event import Event
@@ -258,11 +259,20 @@ class _ToolNode(BaseNode):
     """Stores the user's answer to this node's confirmation request.
 
     The answer is set on `ctx.tool_confirmation`, so the confirmation gate and
-    the tool see it the same way they do inside an agent.
+    the tool see it the same way they do inside an agent. An answer from a
+    caller the serving layer could not authenticate is stored as a rejection,
+    the same decision the agent pipeline makes for a confirmation carried in a
+    user event; it is applied here, before the answer is stored, because tools
+    such as `ExecuteBashTool` read `tool_confirmation` themselves rather than
+    through `apply_confirmation_gate`.
     """
     response = ctx.resume_inputs.get(self._confirmation_interrupt_id(ctx))
-    if response is not None:
-      ctx.tool_confirmation = _parse_tool_confirmation(response)
+    if response is None:
+      return
+    confirmation = _parse_tool_confirmation(response)
+    if not caller_may_confirm(ctx.get_invocation_context().caller_principal):
+      confirmation = confirmation.model_copy(update={'confirmed': False})
+    ctx.tool_confirmation = confirmation
 
   def _take_requested_confirmation(
       self, *, ctx: Context, args: dict[str, Any]
