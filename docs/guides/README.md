@@ -105,6 +105,9 @@ This directory contains specific developer guides for the ADK Python implementat
 * [Runner Execution Cancellation](runners/runner/abort.md) - Halting agent and workflow execution cleanly using abort signals.
 * [Runner Live Streaming](runners/runner/live.md) - Real-time bidirectional audio/text streaming and non-blocking background tool execution with Gemini Multimodal Live API.
 
+### Security
+* [Credentials Encryption](auth/kms_encryptor/index.md) - Securely encrypting sensitive session credentials using Google Cloud KMS.
+
 ### Sessions
 * [Session and BaseSessionService](sessions/session/index.md) - The session lifecycle, state scoping, and choosing a session service.
 * [State](sessions/state/index.md) - Session state and the app:, user:, and temp: prefixes that decide what is shared and what is stored.
