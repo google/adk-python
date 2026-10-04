@@ -83,6 +83,13 @@ so a tool that follows the confirmation contract returns its rejection response
 and the turn ends with a reason the caller can see. The pending call never
 hangs waiting for an approval that will not come.
 
+The same decision applies wherever a confirmation answer enters the framework:
+a confirmation carried in a user event to an `LlmAgent`, and an answer that
+resumes a paused workflow tool node (`RequestInput` with interrupt id
+`wf_tool_confirmation:<node_path>`). In the tool node the answer is rewritten
+before it is stored on the tool context, so tools that read
+`tool_confirmation` themselves, such as `ExecuteBashTool`, see the refusal too.
+
 The principal is derived only from what the serving layer established. It is
 never read from message content, from event authorship, or from transport
 metadata, because a remote caller controls all three and could set any of them
@@ -178,9 +185,10 @@ decision stays uniform across all of them.
 
 - The principal describes the caller of the invocation as a whole. ADK does
   not verify the identity behind each individual event within a session.
-- Only the tool confirmation flow reads the principal today. Other consumers
-  can read `InvocationContext.caller_principal`, but the framework does not
-  yet gate anything else on it.
+- Only tool confirmation answers are gated on the principal today, on both
+  paths that accept one: the `LlmAgent` confirmation flow and the workflow tool
+  node's resume. Other consumers can read `InvocationContext.caller_principal`,
+  but the framework does not yet gate anything else on it.
 - The synchronous `Runner.run` wrapper and live sessions do not accept a
   principal. Both behave as in-process callers.
 - Setting a principal does not authenticate anything by itself. The ADK API
