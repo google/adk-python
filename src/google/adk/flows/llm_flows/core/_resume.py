@@ -247,6 +247,27 @@ def _unexecuted_calls_event(
   )
 
 
+def _locate_answer(
+    events: list[Event],
+    call_event: Event,
+) -> tuple[int, set[str | None], set[str], Event]:
+  """Locates `call_event` in `events` and the event that answers it."""
+  call_idx = next(i for i, ev in enumerate(events) if ev is call_event)
+  calls = call_event.get_function_calls()
+  call_names = {fc.name for fc in calls}
+  lro_ids = {
+      lro for ev in events[call_idx:] for lro in ev.long_running_tool_ids or []
+  }
+  answer_event = _find_answer_event(
+      events,
+      call_event,
+      call_idx,
+      {fc.id for fc in calls} | lro_ids,
+      call_names,
+  )
+  return call_idx, call_names, lro_ids, answer_event
+
+
 def decide_resume(
     invocation_context: InvocationContext,
     events: list[Event],
@@ -277,18 +298,10 @@ def decide_resume(
       events, tools_dict, require_agent_name(invocation_context)
   )
   if call_event:
-    call_idx = next(i for i, ev in enumerate(events) if ev is call_event)
-    calls = call_event.get_function_calls()
-    call_names = {fc.name for fc in calls}
-    lro_ids = {
-        lro
-        for ev in events[call_idx:]
-        for lro in ev.long_running_tool_ids or []
-    }
-    call_ids = {fc.id for fc in calls} | lro_ids
-    answer_event = _find_answer_event(
-        events, call_event, call_idx, call_ids, call_names
+    call_idx, call_names, lro_ids, answer_event = _locate_answer(
+        events, call_event
     )
+    call_ids = {fc.id for fc in call_event.get_function_calls()} | lro_ids
     answered_ids = {
         fr.id
         for ev in events[call_idx + 1 :]
@@ -320,6 +333,23 @@ def decide_resume(
   return ResumeDecision(ResumeAction.PAUSE if pause else ResumeAction.CONTINUE)
 
 
+def _find_sub_branch_replay_event(
+    invocation_context: InvocationContext,
+    events: list[Event],
+    tools_dict: dict[str, Any],
+) -> Event | None:
+  """Returns the call event to replay if a sub-branch interrupt was answered."""
+  call_event = _find_target_call_event(
+      events, tools_dict, require_agent_name(invocation_context)
+  )
+  if not call_event:
+    return None
+  _, _, _, answer_event = _locate_answer(events, call_event)
+  if _is_sub_branch_answer(answer_event, call_event):
+    return call_event
+  return None
+
+
 def decide_step_resume(
     invocation_context: InvocationContext,
     tools_dict: dict[str, Any],
@@ -345,13 +375,19 @@ def decide_step_resume(
     CONTINUE for a fresh step, PAUSE when the branch still owes an answer,
     or REPLAY_CALLS naming the event whose calls were never executed.
   """
-  if not invocation_context.is_resumable:
-    return ResumeDecision(ResumeAction.CONTINUE)
-
   events = invocation_context._get_events(  # pylint: disable=protected-access
       current_invocation=True, current_branch=True
   )
   if not events:
+    return ResumeDecision(ResumeAction.CONTINUE)
+
+  if not invocation_context.is_resumable:
+    if len(events) > 1 and (
+        call_event := _find_sub_branch_replay_event(
+            invocation_context, events, tools_dict
+        )
+    ):
+      return ResumeDecision(ResumeAction.REPLAY_CALLS, call_event)
     return ResumeDecision(ResumeAction.CONTINUE)
 
   # For a multi-event branch, decide whether to pause (unanswered tool calls

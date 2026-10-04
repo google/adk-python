@@ -265,6 +265,18 @@ async def test_workflow_as_tool_hitl_resume_non_resumable_app(
 
   # Verify the tool workflow finished executing, returned the output,
   # and the parent agent LLM produced its final response.
+  tool_responses = [
+      part.function_response.response
+      for event in events2
+      if event.content and event.content.parts
+      for part in event.content.parts
+      if (
+          part.function_response
+          and part.function_response.name == 'collect_user_info_tool'
+      )
+  ]
+  assert tool_responses == [{'result': 'User Alice is 25 years old.'}]
+
   text_responses = [
       event.content.parts[0].text
       for event in events2

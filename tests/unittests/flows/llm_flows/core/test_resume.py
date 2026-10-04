@@ -446,11 +446,22 @@ class TestDecideStepResume:
     ctx.should_pause_invocation.side_effect = lambda ev: ev.id in pausing
     return ctx
 
-  def test_a_non_resumable_invocation_never_walks_the_session(self):
+  def test_a_non_resumable_invocation_ignores_top_level_unexecuted_call(self):
     ctx = self._ctx([_call_event('ask', 'c1')], resumable=False)
     decision = decide_step_resume(ctx, {'ask': object()})
     assert decision.action is ResumeAction.CONTINUE
-    ctx._get_events.assert_not_called()
+
+  def test_a_non_resumable_invocation_replays_sub_branch_answer(self):
+    call = _call_event('workflow_tool', 'c1')
+    sub_answer = _response_event(
+        REQUEST_INPUT_FUNCTION_CALL_NAME,
+        'int-1',
+        branch='sub_workflow@c1.input_node@1',
+    )
+    ctx = self._ctx([call, sub_answer], resumable=False)
+    decision = decide_step_resume(ctx, {'workflow_tool': object()})
+    assert decision.action is ResumeAction.REPLAY_CALLS
+    assert decision.replay_event() is call
 
   def test_no_events_continues(self):
     decision = decide_step_resume(self._ctx([]), {'ask': object()})

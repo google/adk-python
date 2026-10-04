@@ -1573,11 +1573,14 @@ async def test_generator_tool_rejects_multiple_outputs(is_async: bool):
 
 
 @pytest.mark.asyncio
-async def test_generator_tool_pauses_on_request_input_and_resumes():
+@pytest.mark.parametrize("resumable", [False, True])
+async def test_generator_tool_pauses_on_request_input_and_resumes(
+    resumable: bool,
+):
   """A generator tool yielding RequestInput pauses the invocation and resumes with user input.
 
-  Setup: Resumable App with an Agent whose async generator tool yields
-  RequestInput on first run.
+  Setup: App (resumable or non-resumable) with an Agent whose async generator
+  tool yields RequestInput on first run.
   Act: Run the invocation until paused, then resume with
   create_request_input_response.
   Assert: The tool receives the resume input via tool_context.resume_inputs and
@@ -1629,7 +1632,7 @@ async def test_generator_tool_pauses_on_request_input_and_resumes():
   app = App(
       name="test_app",
       root_agent=agent,
-      resumability_config=ResumabilityConfig(is_resumable=True),
+      resumability_config=ResumabilityConfig(is_resumable=resumable),
   )
   runner = testing_utils.InMemoryRunner(app=app)
 
