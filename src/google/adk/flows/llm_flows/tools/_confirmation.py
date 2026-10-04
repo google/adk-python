@@ -22,11 +22,10 @@ from typing import TYPE_CHECKING
 from google.genai import types
 from typing_extensions import override
 
+from ....agents._caller_principal import caller_may_confirm
 from ....agents.invocation_context import InvocationContext
 from ....agents.readonly_context import ReadonlyContext
 from ....events.event import Event
-from ....features import FeatureName
-from ....features import is_feature_enabled
 from ....models.llm_request import LlmRequest
 from ....tools.base_tool import BaseTool
 from ....tools.tool_confirmation import ToolConfirmation
@@ -264,32 +263,12 @@ def _apply_caller_principal_gate(
 ) -> dict[str, ToolConfirmation]:
   """Decides whether the caller of this invocation may approve a tool call.
 
-  Three states, and only the middle one is a refusal:
-
-  - No principal: nothing vouched for the caller because nothing had to. The
-    invocation was started in process, so the caller is the operator.
-  - Principal present, not authenticated: a serving layer handled this request
-    and could not say who sent it, so the approval is not known to be the
-    operator's.
-  - Principal present and authenticated: the serving layer verified the caller.
-
-  The question asked here is deliberately about authentication and not about
-  transport. A transport is a proxy for identity, and a proxy for identity
-  fails in both directions: it refuses authenticated peers that happen to
-  arrive over the wire, and it admits anyone who reaches an ungated path.
-
-  A refusal rewrites the confirmation to ``confirmed=False`` instead of
-  dropping it. Dropping it leaves the ``adk_request_confirmation`` call pending
-  with nothing left to resolve it, which is what made an earlier attempt at
-  this guard stall every human-in-the-loop tool. ``confirmed=False`` is a state
-  the framework already has a contract for -- it is what a human decline
-  produces -- so the tool returns its rejection response and the turn ends with
-  a reason the caller can see.
-
-  Strict mode is the STRICT_CALLER_PRINCIPAL feature, off by default for now
-  so that upgrading cannot break a working deployment that runs its A2A server
-  without an authenticator; those get a warning instead. The intent is to flip
-  the registry default at the next major version.
+  The decision itself is ``caller_may_confirm``, shared with the workflow tool
+  node so that both consumers of a human-in-the-loop answer refuse the same
+  callers. A refusal rewrites each confirmation to ``confirmed=False`` instead
+  of dropping it: dropping it leaves the ``adk_request_confirmation`` call
+  pending with nothing left to resolve it, which is what made an earlier
+  attempt at this guard stall every human-in-the-loop tool.
 
   Args:
     invocation_context: Current invocation context.
@@ -299,27 +278,8 @@ def _apply_caller_principal_gate(
     The confirmations to act on, with refused ones forced to
     ``confirmed=False``.
   """
-  principal = invocation_context.caller_principal
-  if principal is None or principal.authenticated:
+  if caller_may_confirm(invocation_context.caller_principal):
     return confirmations_by_fc_id
-
-  if not is_feature_enabled(FeatureName.STRICT_CALLER_PRINCIPAL):
-    logger.warning(
-        "Honoring a tool confirmation from an unauthenticated caller"
-        " (principal source %r). The serving layer could not say who sent this"
-        " approval, so it is not known to be the operator's. Enable the"
-        " STRICT_CALLER_PRINCIPAL feature to refuse these instead; that is"
-        " intended to become the default in a future major version.",
-        principal.source,
-    )
-    return confirmations_by_fc_id
-
-  logger.error(
-      "Refusing a tool confirmation from an unauthenticated caller (principal"
-      " source %r). Enable authentication on the serving layer, or disable the"
-      " STRICT_CALLER_PRINCIPAL feature to downgrade this to a warning.",
-      principal.source,
-  )
   return {
       confirmation_fc_id: confirmation.model_copy(update={"confirmed": False})
       for confirmation_fc_id, confirmation in confirmations_by_fc_id.items()
