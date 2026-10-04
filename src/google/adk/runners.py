@@ -170,6 +170,27 @@ def _get_function_responses_from_content(
   ]
 
 
+def _session_for_routing(
+    session: Session, new_message: types.Content | None
+) -> Session:
+  """Includes a user FunctionResponse for routing before `new_message` is saved.
+
+  `_find_agent_to_run` runs before `new_message` is appended to
+  `session.events`, so a user FunctionResponse must be attached here to route
+  back to the agent that issued the FunctionCall.
+  """
+  if not _get_function_responses_from_content(new_message):
+    return session
+  return session.model_copy(
+      update={
+          'events': [
+              *session.events,
+              Event(author='user', content=new_message),
+          ]
+      }
+  )
+
+
 def _apply_run_config_custom_metadata(
     event: Event, run_config: RunConfig | None
 ) -> None:
@@ -1212,7 +1233,9 @@ class Runner:
           if has_task_subagent:
             agent_to_run = self.agent
           else:
-            agent_to_run = self._find_agent_to_run(session, self.agent)
+            agent_to_run = self._find_agent_to_run(
+                _session_for_routing(session, new_message), self.agent
+            )
         else:
           agent_to_run = self.agent
 

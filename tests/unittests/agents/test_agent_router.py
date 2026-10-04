@@ -241,9 +241,53 @@ def test_find_agent_to_run_with_function_response_scenario():
   )
 
 
-def test_find_agent_to_run_skips_function_response_when_not_resumable():
-  """Function response routing is skipped when session is not resumable."""
+def test_find_agent_to_run_skips_agent_function_response_when_not_resumable():
+  """Agent function response does not trap next turn when not resumable."""
   root, _, _, _ = _make_agent_tree()
+  call_event = Event(
+      invocation_id="inv1",
+      author="non_transferable",
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="func_456", name="test_func", args={}
+                  )
+              )
+          ],
+      ),
+  )
+  response_event = Event(
+      invocation_id="inv1",
+      author="non_transferable",
+      content=types.Content(
+          role="user",
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      id="func_456", name="test_func", response={}
+                  )
+              )
+          ],
+      ),
+  )
+  session = Session(
+      id="s1",
+      app_name="app",
+      user_id="u1",
+      events=[call_event, response_event],
+  )
+  resumability_config = ResumabilityConfig(is_resumable=False)
+
+  agent = _agent_router.find_agent_to_run(session, root, resumability_config)
+
+  assert agent == root
+
+
+def test_find_agent_to_run_routes_user_function_response_when_not_resumable():
+  """User function response routes to sub-agent even when not resumable."""
+  root, _, _, non_transferable = _make_agent_tree()
   call_event = Event(
       invocation_id="inv1",
       author="non_transferable",
@@ -280,10 +324,9 @@ def test_find_agent_to_run_skips_function_response_when_not_resumable():
   )
   resumability_config = ResumabilityConfig(is_resumable=False)
 
-  assert (
-      _agent_router.find_agent_to_run(session, root, resumability_config)
-      == root
-  )
+  agent = _agent_router.find_agent_to_run(session, root, resumability_config)
+
+  assert agent == non_transferable
 
 
 def test_find_agent_to_run_function_response_takes_precedence():

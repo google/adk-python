@@ -123,11 +123,10 @@ def find_agent_to_run(
       else None
   )
   is_resumable = resumability_config and resumability_config.is_resumable
-  # Only route based on a past function response if resumability is enabled.
-  # In non-resumable scenarios, a turn ending with function call response
-  # shouldn't trap the next turn on that same agent if it's not transferable.
-  # Falling through allows it to return to root.
-  if event and event.author and is_resumable:
+  is_user_function_response = (
+      event is not None and filtered_events[-1].author == "user"
+  )
+  if event and event.author and (is_resumable or is_user_function_response):
     # `find_agent` returns None when the author does not correspond to any
     # agent in the current hierarchy (e.g. the author is "user" or a stale or
     # foreign agent name carried over from a previous turn/session). Returning

@@ -55,6 +55,7 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.base_toolset import BaseToolset
+from google.adk.tools.long_running_tool import LongRunningFunctionTool
 from google.adk.workflow import BaseNode
 from google.adk.workflow import START
 from google.adk.workflow._workflow import Workflow
@@ -5689,6 +5690,141 @@ async def test_run_async_aborted_then_resumed_does_not_replay_tool():
       if p.function_response
   ]
   assert responses == [{"error": "Invocation was aborted by client."}]
+
+
+async def test_run_async_routes_user_function_response_to_subagent_when_not_resumable():
+  """User FunctionResponse routes to sub-agent without resumability."""
+
+  def _pending_lro() -> None:
+    """Starts a long-running operation."""
+    return None
+
+  sub_agent = LlmAgent(
+      name="sub_agent",
+      disallow_transfer_to_parent=True,
+      disallow_transfer_to_peers=True,
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(name="_pending_lro", args={}),
+              "Subagent finished LRO",
+          ]
+      ),
+      tools=[LongRunningFunctionTool(func=_pending_lro)],
+  )
+  root_agent = LlmAgent(
+      name="root_agent",
+      model=testing_utils.MockModel.create(
+          responses=[
+              types.Part.from_function_call(
+                  name="transfer_to_agent", args={"agent_name": "sub_agent"}
+              ),
+              "Root handled next turn",
+          ]
+      ),
+      sub_agents=[sub_agent],
+  )
+  runner = testing_utils.InMemoryRunner(root_agent)
+
+  # Turn 1: Root transfers to sub_agent, which emits LRO FunctionCall.
+  turn1_events = await runner.run_async("Start LRO")
+  lro_calls = [
+      fc
+      for e in turn1_events
+      if e.author == "sub_agent"
+      for fc in e.get_function_calls()
+      if fc.name == "_pending_lro"
+  ]
+  assert len(lro_calls) == 1
+  lro_fc = lro_calls[0]
+
+  # Turn 2: User supplies FunctionResponse for the LRO without resumability.
+  fr_part = types.Part.from_function_response(
+      name="_pending_lro", response={"status": "completed"}
+  )
+  fr_part.function_response.id = lro_fc.id
+  turn2_events = await runner.run_async(types.UserContent(parts=[fr_part]))
+  assert [e.author for e in turn2_events] == ["sub_agent"]
+  assert _texts([e.content for e in turn2_events]) == ["Subagent finished LRO"]
+
+  # Turn 3: Plain text message returns to root_agent since sub_agent is non-transferable.
+  turn3_events = await runner.run_async("Next turn")
+  assert [e.author for e in turn3_events] == ["root_agent"]
+  assert _texts([e.content for e in turn3_events]) == ["Root handled next turn"]
+
+
+async def test_run_async_does_not_hide_prior_agent_function_response_when_resumable():
+  """Plain user message does not hide prior agent FunctionResponse."""
+  sub_agent = LlmAgent(
+      name="sub_agent",
+      disallow_transfer_to_parent=True,
+      disallow_transfer_to_peers=True,
+      model=testing_utils.MockModel.create(
+          responses=["Subagent resumed after agent FR"]
+      ),
+  )
+  root_agent = LlmAgent(
+      name="root_agent",
+      model=testing_utils.MockModel.create(responses=["Root response"]),
+      sub_agents=[sub_agent],
+  )
+  app = App(
+      name=TEST_APP_ID,
+      root_agent=root_agent,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  session_service = InMemorySessionService()
+  runner = Runner(app=app, session_service=session_service)
+  session = await session_service.create_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+  )
+  await session_service.append_event(
+      session,
+      Event(
+          invocation_id="inv_1",
+          author="sub_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          id="fc_1", name="tool_fn", args={}
+                      )
+                  )
+              ],
+          ),
+      ),
+  )
+  await session_service.append_event(
+      session,
+      Event(
+          invocation_id="inv_1",
+          author="sub_agent",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id="fc_1", name="tool_fn", response={"ok": True}
+                      )
+                  )
+              ],
+          ),
+      ),
+  )
+
+  events = [
+      e
+      async for e in runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=types.UserContent(parts=[types.Part(text="Continue")]),
+      )
+  ]
+
+  assert {e.author for e in events} == {"sub_agent"}
+  assert _texts([e.content for e in events]) == [
+      "Subagent resumed after agent FR"
+  ]
 
 
 if __name__ == "__main__":
