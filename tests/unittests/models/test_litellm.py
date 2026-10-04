@@ -2226,7 +2226,9 @@ def test_function_declaration_to_tool_param_response_schema_exceeds_max_length_b
       },
   )
 
-  with caplog.at_level(logging.DEBUG):
+  # Other tests (e.g. CLI tests via setup_adk_logger) may raise the
+  # "google_adk" logger level, so set it explicitly for this capture.
+  with caplog.at_level(logging.DEBUG, logger="google_adk"):
     result = _function_declaration_to_tool_param(func_decl)["function"][
         "description"
     ]
@@ -4124,6 +4126,168 @@ def test_message_to_generate_content_response_preserves_thought_signature():
   assert fc_part.thought_signature == b"round_trip_sig"
 
 
+def test_message_to_generate_content_response_strips_signature_from_id():
+  """An id carrying an embedded signature is split before it reaches the part."""
+  sig_b64 = base64.b64encode(b"embedded_sig").decode("utf-8")
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id=f"call_ts_2{_THOUGHT_SIGNATURE_SEPARATOR}{sig_b64}",
+              function=Function(
+                  name="load_skill",
+                  arguments='{"skill": "my_skill"}',
+              ),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+  fc_part = response.content.parts[0]
+  assert fc_part.function_call.id == "call_ts_2"
+  assert fc_part.thought_signature == b"embedded_sig"
+
+
+def test_message_to_generate_content_response_strips_urlsafe_unpadded_signature_from_id():
+  """An id suffix in unpadded urlsafe base64 still moves onto the part."""
+  sig_b64 = base64.urlsafe_b64encode(b"\xfb\xffurlsafe_sig").rstrip(b"=")
+  assert sig_b64 == b"-_91cmxzYWZlX3NpZw"
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id=f"call_ts_3{_THOUGHT_SIGNATURE_SEPARATOR}{sig_b64.decode()}",
+              function=Function(name="load_skill", arguments="{}"),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+  fc_part = response.content.parts[0]
+  assert fc_part.function_call.id == "call_ts_3"
+  assert fc_part.thought_signature == b"\xfb\xffurlsafe_sig"
+
+
+def test_message_to_generate_content_response_keeps_a_non_signature_id_whole():
+  """A provider id is opaque, so a separator whose suffix is not a signature stays."""
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id=f"job{_THOUGHT_SIGNATURE_SEPARATOR}not.base64",
+              function=Function(name="load_skill", arguments="{}"),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+  fc_part = response.content.parts[0]
+  assert (
+      fc_part.function_call.id == f"job{_THOUGHT_SIGNATURE_SEPARATOR}not.base64"
+  )
+  assert fc_part.thought_signature is None
+
+
+def test_message_to_generate_content_response_keeps_the_id_when_the_signature_came_from_extra_content():
+  """The id is only LiteLLM's to split when its own suffix decodes as the signature."""
+  sig_b64 = base64.b64encode(b"channel_sig").decode("utf-8")
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id=f"job{_THOUGHT_SIGNATURE_SEPARATOR}not.base64",
+              function=Function(name="load_skill", arguments="{}"),
+              extra_content={"google": {"thought_signature": sig_b64}},
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+  fc_part = response.content.parts[0]
+  assert (
+      fc_part.function_call.id == f"job{_THOUGHT_SIGNATURE_SEPARATOR}not.base64"
+  )
+  assert fc_part.thought_signature == b"channel_sig"
+
+
+@pytest.mark.asyncio
+async def test_embedded_signature_round_trips_from_a_clean_id():
+  """The repro end to end: the id is cleaned inbound and the signature still goes back."""
+  sig_b64 = base64.b64encode(b"embedded_sig").decode("utf-8")
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id=f"call_abc{_THOUGHT_SIGNATURE_SEPARATOR}{sig_b64}",
+              function=Function(name="load_skill", arguments='{"skill": "s"}'),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+  outbound = await _content_to_message_param(response.content)
+
+  tool_call = outbound["tool_calls"][0]
+  assert tool_call["id"] == "call_abc"
+  assert tool_call["provider_specific_fields"]["thought_signature"] == sig_b64
+  assert tool_call["extra_content"]["google"]["thought_signature"] == sig_b64
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_cleans_an_embedded_signature_id():
+  """The reported path end to end: a Gemini tool call arrives with a clean id."""
+  sig_b64 = base64.b64encode(b"embedded_sig").decode("utf-8")
+  model_response = ModelResponse(
+      model="test_model",
+      choices=[
+          Choices(
+              message=ChatCompletionAssistantMessage(
+                  role="assistant",
+                  content=None,
+                  tool_calls=[
+                      ChatCompletionMessageToolCall(
+                          type="function",
+                          id=f"call_abc{_THOUGHT_SIGNATURE_SEPARATOR}{sig_b64}",
+                          function=Function(
+                              name="test_function",
+                              arguments='{"test_arg": "test_value"}',
+                          ),
+                      )
+                  ],
+              )
+          )
+      ],
+  )
+  llm = LiteLlm(
+      model="test_model",
+      llm_client=MockLLMClient(
+          AsyncMock(return_value=model_response),
+          Mock(return_value=model_response),
+      ),
+  )
+
+  responses = [
+      response
+      async for response in llm.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION
+      )
+  ]
+
+  part = responses[0].content.parts[0]
+  assert part.function_call.id == "call_abc"
+  assert part.thought_signature == b"embedded_sig"
+
+
 def test_message_to_generate_content_response_no_thought_signature():
   """Parts without thought_signature have thought_signature=None."""
   message = ChatCompletionAssistantMessage(
@@ -5728,6 +5892,52 @@ async def test_generate_content_async_stream_with_only_finish_reason(
   assert responses[0].error_message == "Finished with SAFETY"
   assert responses[0].usage_metadata.prompt_token_count == 7
   assert responses[0].usage_metadata.total_token_count == 7
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "finish_reason", ["stop", "tool_calls", "function_call", None]
+)
+async def test_generate_content_async_stream_with_only_stop_finish_reason(
+    mock_completion, lite_llm_instance, finish_reason
+):
+  """A stream with a STOP-mapped finish_reason and no content yields a terminal response."""
+  mock_completion.return_value = iter([
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(finish_reason=finish_reason, delta=Delta())
+          ],
+          usage={
+              "prompt_tokens": 5,
+              "completion_tokens": 0,
+              "total_tokens": 5,
+          },
+      ),
+  ])
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          llm_request, stream=True
+      )
+  ]
+
+  assert len(responses) == 1
+  assert responses[0].content.parts == []
+  assert responses[0].partial is False
+  assert responses[0].finish_reason == types.FinishReason.STOP
+  assert responses[0].error_code is None
+  assert responses[0].usage_metadata.prompt_token_count == 5
+  assert responses[0].usage_metadata.total_token_count == 5
 
 
 @pytest.mark.asyncio

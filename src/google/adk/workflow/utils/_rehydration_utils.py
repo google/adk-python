@@ -85,6 +85,9 @@ class _ChildScanState:
   resolved_responses: dict[str, Any] = field(default_factory=dict)
   """Responses keyed by interrupt id, for the ids in ``resolved_ids``."""
 
+  finished_after_resume: bool = False
+  """Whether the child emitted a direct completion event since its last answer (or start)."""
+
 
 def _wrap_response(value: Any) -> dict[str, Any]:
   """Wraps a value into a dict suitable for FunctionResponse.response.
@@ -319,8 +322,9 @@ def _reconstruct_node_states(
             # not rerun never gets to pick an edge again.
             scan_states[owner].output = None
             scan_states[owner].resolved_responses[fr.id] = response_data
+            scan_states[owner].finished_after_resume = False
 
-          if event.branch:
+          elif event.branch:
             # Match the branch's run ids exactly. A substring test on the raw
             # branch string resolves an interrupt whose id merely happens to be
             # contained in another id.
@@ -338,6 +342,7 @@ def _reconstruct_node_states(
                   # Same reason as the direct branch: the node paused mid-run
                   # to ask this, so what it emitted earlier is not its result.
                   o_state.output = None
+                  o_state.finished_after_resume = False
       continue
 
     # 2. Match events under base_path
@@ -396,10 +401,11 @@ def _reconstruct_node_states(
         child.transfer_to_agent = event.actions.transfer_to_agent
 
       # The node's outcome is whatever its latest attempt recorded, so a
-      # result clears the error left by an earlier failed attempt. A result
-      # wins on the same event too: an LlmAgent node's output rides on the
-      # response event, which carries an error code for any finish reason
-      # other than STOP, and that node did produce a result.
+      # later non-error event or result clears the error left by an earlier
+      # failed attempt. A result wins on the same event too: an LlmAgent
+      # node's output rides on the response event, which carries an error
+      # code for any finish reason other than STOP, and that node did
+      # produce a result.
       has_result = has_output or (
           event.actions is not None
           and (
@@ -407,7 +413,7 @@ def _reconstruct_node_states(
               or event.actions.transfer_to_agent is not None
           )
       )
-      if has_result:
+      if has_result or (event.error_code is None and not event.partial):
         child.error_code = None
       elif event.error_code is not None:
         child.error_code = event.error_code
@@ -428,6 +434,15 @@ def _reconstruct_node_states(
         schema_json = _extract_schema_from_event(event, interrupt_id)
         if schema_json:
           schemas_by_id[interrupt_id] = schema_json
+
+    if is_direct:
+      child.finished_after_resume = (
+          not interrupt_ids_to_process
+          and child.error_code is None
+          and not event.partial
+          and not event.get_function_calls()
+          and not event.get_function_responses()
+      )
 
   return scan_states
 

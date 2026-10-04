@@ -3,9 +3,11 @@
 ## General Rules
 
 - **Annotate everything**: type hints on all function arguments and return
-  types.
+  types, including `-> None` and private functions.
 - **Minimize `Any`**: use a specific type or a `TypeVar`. `Any` disables
   checking for every value that flows through it.
+- **Precise types**: `Literal` for a fixed set of strings, `TypedDict` for a
+  dict with known keys, `Protocol` for a structural interface.
 - **`from __future__ import annotations` goes at the top of every module**
   under `src/google/adk/`, immediately after the license header and before any
   other import. `scripts/compliance_checks.py` fails the commit if it is
@@ -30,6 +32,16 @@ mypy .
 The CI job compares your branch's errors against the base branch and fails
 only on **new** ones, so a pre-existing error in a file you touched is not
 your problem — an error on a line you added is.
+
+## Escape Hatches
+
+Fix a type error rather than silencing it. When you can't:
+
+- `# type: ignore[arg-type]  # <the external cause>`, never a bare ignore.
+- `object`, not `Any`, for a value that can be anything.
+- `cast(Foo, x)  # <why it holds>`, never a bare cast. On a typing-only
+  change, use a `cast` rather than a new `isinstance` check that raises: test
+  doubles and protobuf maps reach that check.
 
 ## `Optional[X]` vs `X | None`
 

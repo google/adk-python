@@ -49,6 +49,7 @@ from .utils import logs
 
 if TYPE_CHECKING:
   from fastapi import FastAPI
+  from google.genai import types
 
   from ..agents.llm_agent import LlmAgent
 
@@ -83,6 +84,37 @@ def _parse_streaming_mode(
   if mode is None:
     raise click.BadParameter(f"unknown streaming mode {value!r}", param=param)
   return mode
+
+
+def _parse_avatar_config(
+    _ctx: click.Context,
+    param: click.Parameter,
+    value: str | None,
+) -> types.AvatarConfig | None:
+  """Parses an inline JSON object or JSON file into an avatar config."""
+  if value is None:
+    return None
+
+  if value.lstrip().startswith("{"):
+    config_json = value
+  else:
+    try:
+      config_json = Path(value).read_text(encoding="utf-8")
+    except OSError as exc:
+      raise click.BadParameter(
+          f"could not read avatar configuration file {value!r}: {exc}",
+          param=param,
+      ) from exc
+
+  from google.genai import types
+
+  try:
+    return types.AvatarConfig.model_validate_json(config_json)
+  except ValueError as exc:
+    raise click.BadParameter(
+        f"avatar configuration must be a valid AvatarConfig JSON object: {exc}",
+        param=param,
+    ) from exc
 
 
 def _logging_options():
@@ -922,6 +954,7 @@ def adk_services_options(*, default_use_local_storage: bool = True):
               sessions. <agent_engine> can either be the full qualified resource
               name 'projects/abc/locations/us-central1/reasoningEngines/123' or
               the resource id '123'.
+            - Use 'sqlite:///<relative_path>' / 'sqlite:////<absolute_path>' to connect to SQLite memory service.
             - Use 'memory://' to force the in-memory memory service."""),
         default=None,
     )
@@ -2047,6 +2080,28 @@ def fast_api_common_options():
         ),
         default=None,
     )
+    @click.option(
+        "--avatar_config",
+        type=str,
+        callback=_parse_avatar_config,
+        help=(
+            "Optional. AvatarConfig as an inline JSON object or a path to a"
+            " JSON file. Applied only to /run_live sessions whose client"
+            " requests video output (modalities=VIDEO); other live sessions"
+            " ignore it. If unset, video sessions use the pre-built 'Kai'"
+            " avatar."
+        ),
+        default=None,
+    )
+    @click.option(
+        "--max_llm_calls",
+        type=int,
+        help=(
+            "Optional. Maximum number of LLM calls allowed for each agent"
+            " run. Values less than or equal to zero disable the limit."
+        ),
+        default=None,
+    )
     # Parsed into list[str] by the wrapper below (server commands need a list).
     @click.option(
         "--trigger_sources",
@@ -2166,6 +2221,8 @@ def cli_web(
     trigger_sources: list[str] | None = None,
     trigger_oidc_audience: str | None = None,
     trigger_oidc_service_accounts: list[str] | None = None,
+    avatar_config: types.AvatarConfig | None = None,
+    max_llm_calls: int | None = None,
 ):
   """Starts a FastAPI server with Web UI for agents.
 
@@ -2238,6 +2295,8 @@ def cli_web(
       trigger_oidc_audience=trigger_oidc_audience,
       trigger_oidc_service_accounts=trigger_oidc_service_accounts,
       default_llm_model=default_llm_model,
+      avatar_config=avatar_config,
+      max_llm_calls=max_llm_calls,
   )
   config = uvicorn.Config(
       app,
@@ -2321,6 +2380,8 @@ def cli_api_server(
     express_mode: bool = False,
     trigger_oidc_audience: str | None = None,
     trigger_oidc_service_accounts: list[str] | None = None,
+    avatar_config: types.AvatarConfig | None = None,
+    max_llm_calls: int | None = None,
 ):
   """Starts a FastAPI server for agents.
 
@@ -2383,6 +2444,8 @@ def cli_api_server(
           trigger_oidc_service_accounts=trigger_oidc_service_accounts,
           gemini_enterprise_app_name=gemini_enterprise_app_name,
           express_mode=express_mode,
+          avatar_config=avatar_config,
+          max_llm_calls=max_llm_calls,
           lifespan=_lifespan,
       ),
       host=host,

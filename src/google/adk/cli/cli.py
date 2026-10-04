@@ -35,6 +35,9 @@ from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..auth.credential_service.in_memory_credential_service import InMemoryCredentialService
+from ..events._internal_metadata import mark_restored
+from ..events._internal_metadata import public_event
+from ..events._internal_metadata import public_session
 from ..events.event import Event
 from ..memory.base_memory_service import BaseMemoryService
 from ..runners import Runner
@@ -359,7 +362,9 @@ def _print_event(
     session_id: Optional session ID to inject into the JSONL output.
   """
   if jsonl:
-    event_dict = event.model_dump(mode='json', by_alias=True, exclude_none=True)
+    event_dict = public_event(event).model_dump(
+        mode='json', by_alias=True, exclude_none=True
+    )
     if session_id:
       event_dict['session_id'] = session_id
     if event.node_info and event.node_info.path:
@@ -481,7 +486,7 @@ async def run_cli(
     # Append events from the file to the new session and display them
     if loaded_session:
       for event in loaded_session.events:
-        await session_service.append_event(session, event)
+        await session_service.append_event(session, mark_restored(event))
         _print_event(event, jsonl=jsonl, session_id=session.id)
 
     await run_interactively(
@@ -528,7 +533,9 @@ async def run_cli(
         session_id=session.id,
     )
     session_path.write_text(
-        session.model_dump_json(indent=2, exclude_none=True, by_alias=True),
+        public_session(session).model_dump_json(
+            indent=2, exclude_none=True, by_alias=True
+        ),
         encoding='utf-8',
     )
 

@@ -62,7 +62,12 @@ from .simulation.user_simulator_provider import UserSimulatorProvider
 
 logger = logging.getLogger("google_adk." + __name__)
 
-EVAL_SESSION_ID_PREFIX = "___eval___session___"
+# Note: must only contain lowercase letters, digits and hyphens, and start
+# and end with an alphanumeric character once the UUID is appended. Custom
+# session IDs are passed to the configured SessionService (e.g. Vertex
+# AiSessionService), which forwards them to remote backends such as Agent
+# Engine that enforce this constraint.
+EVAL_SESSION_ID_PREFIX = "adk-eval-session-"
 
 
 def _get_session_id() -> str:
@@ -443,7 +448,8 @@ class LocalEvalService(BaseEvalService):
 
     # Track overall score across all invocations.
     eval_metric_result_details = EvalMetricResultDetails(
-        rubric_scores=evaluation_result.overall_rubric_scores
+        rubric_scores=evaluation_result.overall_rubric_scores,
+        token_usage_details=evaluation_result.overall_token_usage_details,
     )
     overall_eval_metric_results.append(
         EvalMetricResult(
@@ -454,10 +460,18 @@ class LocalEvalService(BaseEvalService):
         )
     )
 
-    if (
-        evaluation_result.overall_eval_status != EvalStatus.NOT_EVALUATED
-        and len(evaluation_result.per_invocation_results)
-        != len(eval_metric_result_per_invocation)
+    # A mismatch here means the metric's results cannot be attributed to
+    # invocations, which would corrupt its verdict, so it is a hard error.
+    # NOT_EVALUATED is exempt because that metric legitimately produced
+    # nothing. INFORMATIONAL is exempt because those metrics never gate: a
+    # mismatch costs reporting detail, not a wrong verdict, and aborting the
+    # whole eval run over it would be disproportionate. It is warned about
+    # below instead.
+    if evaluation_result.overall_eval_status not in (
+        EvalStatus.NOT_EVALUATED,
+        EvalStatus.INFORMATIONAL,
+    ) and len(evaluation_result.per_invocation_results) != len(
+        eval_metric_result_per_invocation
     ):
       raise ValueError(
           "Eval metric should return results for each invocation. Found "
@@ -465,17 +479,43 @@ class LocalEvalService(BaseEvalService):
           f"{len(eval_metric_result_per_invocation)} invocations."
       )
 
+    # Use the evaluator's per-invocation results only when it produced exactly
+    # one per invocation: they are matched to invocations by position, so a
+    # mismatch leaves us unable to tell which invocation each result belongs
+    # to. Fall back to empty placeholders for all of them rather than risk
+    # attributing a value to the wrong invocation.
+    has_per_invocation_results = len(
+        evaluation_result.per_invocation_results
+    ) == len(eval_metric_result_per_invocation)
+
+    if (
+        not has_per_invocation_results
+        and evaluation_result.overall_eval_status == EvalStatus.INFORMATIONAL
+    ):
+      # Exempted from the hard error above, so surface it here rather than
+      # dropping the values silently. A metric that could not run at all is
+      # already logged where the exception is caught.
+      logger.warning(
+          "Metric `%s` returned %d per-invocation results for %d invocations;"
+          " they cannot be aligned, so it will report no per-invocation value"
+          " (the entries are kept with a null score).",
+          eval_metric.metric_name,
+          len(evaluation_result.per_invocation_results),
+          len(eval_metric_result_per_invocation),
+      )
+
     # Track score across individual invocations.
     for idx, invocation in enumerate(eval_metric_result_per_invocation):
       invocation_result = (
           evaluation_result.per_invocation_results[idx]
-          if evaluation_result.overall_eval_status != EvalStatus.NOT_EVALUATED
+          if has_per_invocation_results
           else PerInvocationResult(
               actual_invocation=invocation.actual_invocation
           )
       )
       eval_metric_result_details = EvalMetricResultDetails(
-          rubric_scores=invocation_result.rubric_scores
+          rubric_scores=invocation_result.rubric_scores,
+          token_usage_details=invocation_result.token_usage_details,
       )
       invocation.eval_metric_results.append(
           EvalMetricResult(
@@ -520,7 +560,12 @@ class LocalEvalService(BaseEvalService):
       overall_eval_status = overall_eval_metric_result.eval_status
       if overall_eval_status == EvalStatus.PASSED:
         final_eval_status = EvalStatus.PASSED
-      elif overall_eval_status == EvalStatus.NOT_EVALUATED:
+      elif overall_eval_status in (
+          EvalStatus.NOT_EVALUATED,
+          EvalStatus.INFORMATIONAL,
+      ):
+        # Informational metrics (e.g. the efficiency metrics) report a value
+        # but never pass or fail, so they do not affect the case's status.
         continue
       elif overall_eval_status == EvalStatus.FAILED:
         final_eval_status = EvalStatus.FAILED

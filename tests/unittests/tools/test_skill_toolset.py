@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import collections
 import json
 import logging
@@ -23,7 +24,10 @@ import re
 import sys
 from unittest import mock
 
+from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.readonly_context import ReadonlyContext
+from google.adk.agents.sequential_agent import SequentialAgent
+from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.code_executors.base_code_executor import BaseCodeExecutor
 from google.adk.code_executors.code_execution_utils import CodeExecutionResult
 from google.adk.code_executors.unsafe_local_code_executor import UnsafeLocalCodeExecutor
@@ -31,10 +35,12 @@ from google.adk.environment import BaseEnvironment
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.models import llm_request as llm_request_model
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.skills import models
 from google.adk.telemetry import _instrumentation
 from google.adk.tools import skill_toolset
 from google.adk.tools import tool_context
+from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 import pytest
 
@@ -207,6 +213,7 @@ def test_clone_with_updated_skills(mock_skill1, mock_skill2):
       registry=registry,
       code_executor=executor,
       script_timeout=42,
+      save_output_artifacts=True,
       additional_tools=[mock_tool],
   )
 
@@ -221,6 +228,7 @@ def test_clone_with_updated_skills(mock_skill1, mock_skill2):
   assert new_toolset._registry is registry
   assert new_toolset._code_executor is executor
   assert new_toolset._script_timeout == 42
+  assert new_toolset._save_output_artifacts is True
   assert "my_tool" in new_toolset._provided_tools_by_name
 
 
@@ -2284,6 +2292,1012 @@ async def test_execute_script_input_files_packaged(mock_skill1):
   # Verify content mappings exist in the string
   assert "'references/ref1.md': 'ref content 1'" in code_input.code
   assert "'assets/asset1.txt': 'asset content 1'" in code_input.code
+
+
+# ── generated file → artifact persistence (#5579) ──
+
+
+def test_extract_generated_files_from_stdout_strips_marker():
+  """Generated-files marker with nonce is removed from stdout and parsed."""
+  nonce = "nonce123"
+  payload = [{
+      "path": "report.pdf",
+      "content_b64": base64.b64encode(b"%PDF").decode("ascii"),
+      "mime_type": "application/pdf",
+  }]
+  marker = f"{skill_toolset._GENERATED_FILES_MARKER}{nonce}:"
+  stdout = f"hello\n{marker}{json.dumps(payload)}\n"
+  cleaned, files, skipped = skill_toolset._extract_generated_files_from_stdout(
+      stdout, nonce=nonce
+  )
+  assert cleaned == "hello\n"
+  assert len(files) == 1
+  assert files[0]["path"] == "report.pdf"
+  assert not skipped
+
+
+def test_extract_generated_files_from_stdout_multiple_markers():
+  """Multiple generated-files markers across stdout lines are all collected."""
+  nonce = "nonce123"
+  payload1 = [{
+      "path": "file1.txt",
+      "content_b64": base64.b64encode(b"1").decode("ascii"),
+      "mime_type": "text/plain",
+  }]
+  payload2 = [{
+      "path": "file2.txt",
+      "content_b64": base64.b64encode(b"2").decode("ascii"),
+      "mime_type": "text/plain",
+  }]
+  marker = f"{skill_toolset._GENERATED_FILES_MARKER}{nonce}:"
+  stdout = (
+      f"part1\n{marker}{json.dumps(payload1)}\n"
+      f"part2\n{marker}{json.dumps(payload2)}\n"
+  )
+  cleaned, files, skipped = skill_toolset._extract_generated_files_from_stdout(
+      stdout, nonce=nonce
+  )
+  assert cleaned == "part1\npart2\n"
+  assert len(files) == 2
+  assert [f["path"] for f in files] == ["file1.txt", "file2.txt"]
+  assert not skipped
+
+
+def test_extract_generated_files_from_stdout_wrong_nonce_ignored():
+  """Marker with wrong or missing nonce is ignored and not stripped."""
+  nonce = "realnonce"
+  payload = [{
+      "path": "file.txt",
+      "content_b64": base64.b64encode(b"a").decode("ascii"),
+      "mime_type": "text/plain",
+  }]
+  stdout = (
+      f"log\n{skill_toolset._GENERATED_FILES_MARKER}{json.dumps(payload)}\n"
+      f"{skill_toolset._GENERATED_FILES_MARKER}wrongnonce:{json.dumps(payload)}\n"
+  )
+  cleaned, files, skipped = skill_toolset._extract_generated_files_from_stdout(
+      stdout, nonce=nonce
+  )
+  assert cleaned == stdout
+  assert not files
+  assert not skipped
+
+
+def test_extract_generated_files_from_stdout_with_skipped_paths():
+  """Marker with dictionary payload extracts both generated and skipped files."""
+  nonce = "nonce123"
+  payload = {
+      "files": [{
+          "path": "report.pdf",
+          "content_b64": base64.b64encode(b"%PDF").decode("ascii"),
+          "mime_type": "application/pdf",
+      }],
+      "skipped_paths": ["large.bin"],
+  }
+  marker = f"{skill_toolset._GENERATED_FILES_MARKER}{nonce}:"
+  stdout = f"hello\n{marker}{json.dumps(payload)}\n"
+  cleaned, files, skipped = skill_toolset._extract_generated_files_from_stdout(
+      stdout, nonce=nonce
+  )
+  assert cleaned == "hello\n"
+  assert len(files) == 1
+  assert files[0]["path"] == "report.pdf"
+  assert skipped == ["large.bin"]
+
+
+@pytest.mark.asyncio
+async def test_execute_script_saves_generated_files_as_artifacts(mock_skill1):
+  """Files emitted by the skill wrapper are saved and listed in the result."""
+  nonce = "fixed_nonce_123"
+  marker = f"{skill_toolset._GENERATED_FILES_MARKER}{nonce}:"
+  payload = [{
+      "path": "output_report.pdf",
+      "content_b64": base64.b64encode(b"%PDF-1.4").decode("ascii"),
+      "mime_type": "application/pdf",
+  }]
+  stdout = f"done\n{marker}{json.dumps(payload)}\n"
+  executor = _make_mock_executor(stdout=stdout)
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1], code_executor=executor, save_output_artifacts=True
+  )
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  ctx._invocation_context.artifact_service = mock.MagicMock()
+  ctx.save_artifact = mock.AsyncMock(return_value=0)
+
+  with mock.patch.object(
+      skill_toolset.secrets, "token_hex", return_value=nonce
+  ):
+    result = await tool.run_async(
+        args={"skill_name": "skill1", "file_path": "run.py"},
+        tool_context=ctx,
+    )
+
+  assert result["status"] == "success"
+  assert result["stdout"] == "done\n"
+  assert result["saved_artifacts"] == ["output_report.pdf"]
+  ctx.save_artifact.assert_awaited_once()
+  kwargs = ctx.save_artifact.await_args.kwargs
+  assert kwargs["filename"] == "output_report.pdf"
+  assert kwargs["artifact"].inline_data.data == b"%PDF-1.4"
+
+
+@pytest.mark.asyncio
+async def test_execute_script_does_not_save_artifacts_by_default(mock_skill1):
+  """By default (save_output_artifacts=False), generated files are not saved."""
+  payload = [{
+      "path": "output_report.pdf",
+      "content_b64": base64.b64encode(b"%PDF-1.4").decode("ascii"),
+      "mime_type": "application/pdf",
+  }]
+  stdout = (
+      f"done\n{skill_toolset._GENERATED_FILES_MARKER}{json.dumps(payload)}\n"
+  )
+  executor = _make_mock_executor(stdout=stdout)
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  ctx._invocation_context.artifact_service = mock.MagicMock()
+  ctx.save_artifact = mock.AsyncMock()
+
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "run.py"},
+      tool_context=ctx,
+  )
+
+  assert result["status"] == "success"
+  assert result["stdout"] == stdout
+  assert "saved_artifacts" not in result
+  ctx.save_artifact.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_script_shell_envelope_not_stripped_when_disabled(
+    mock_skill1,
+):
+  """Shell stdout containing marker is preserved when save_output_artifacts=False."""
+  envelope = json.dumps({
+      "__shell_result__": True,
+      "stdout": f"log: {skill_toolset._GENERATED_FILES_MARKER}data\n",
+      "stderr": "",
+      "returncode": 0,
+  })
+  executor = _make_mock_executor(stdout=envelope)
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  ctx._invocation_context.artifact_service = mock.MagicMock()
+  ctx.save_artifact = mock.AsyncMock()
+
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "setup.sh"},
+      tool_context=ctx,
+  )
+
+  assert result["status"] == "success"
+  assert (
+      result["stdout"] == f"log: {skill_toolset._GENERATED_FILES_MARKER}data\n"
+  )
+  assert "saved_artifacts" not in result
+  ctx.save_artifact.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_script_shell_envelope_with_generated_files(mock_skill1):
+  """Shell JSON envelope still parses when a generated-files marker follows."""
+  nonce = "fixed_nonce_123"
+  marker = f"{skill_toolset._GENERATED_FILES_MARKER}{nonce}:"
+  envelope = json.dumps({
+      "__shell_result__": True,
+      "stdout": "shell out\n",
+      "stderr": "",
+      "returncode": 0,
+  })
+  payload = [{
+      "path": "exports/data.csv",
+      "content_b64": base64.b64encode(b"a,b\n1,2\n").decode("ascii"),
+      "mime_type": "text/csv",
+  }]
+  stdout = f"{envelope}\n{marker}{json.dumps(payload)}\n"
+  executor = _make_mock_executor(stdout=stdout)
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1], code_executor=executor, save_output_artifacts=True
+  )
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  ctx._invocation_context.artifact_service = mock.MagicMock()
+  ctx.save_artifact = mock.AsyncMock(return_value=1)
+
+  with mock.patch.object(
+      skill_toolset.secrets, "token_hex", return_value=nonce
+  ):
+    result = await tool.run_async(
+        args={"skill_name": "skill1", "file_path": "setup.sh"},
+        tool_context=ctx,
+    )
+
+  assert result["status"] == "success"
+  assert result["stdout"] == "shell out\n"
+  assert result["saved_artifacts"] == ["exports/data.csv"]
+
+
+@pytest.mark.asyncio
+async def test_execute_script_shell_marker_in_stdout_with_nonzero_exit(
+    mock_skill1,
+):
+  """Shell script whose stdout contains the marker and exits non-zero reports error."""
+  nonce = "fixed_nonce_123"
+  marker = f"{skill_toolset._GENERATED_FILES_MARKER}{nonce}:"
+  envelope = json.dumps({
+      "__shell_result__": True,
+      "stdout": f"log: {skill_toolset._GENERATED_FILES_MARKER}data\n",
+      "stderr": "failed",
+      "returncode": 1,
+  })
+  payload = [{
+      "path": "out.txt",
+      "content_b64": base64.b64encode(b"hello").decode("ascii"),
+      "mime_type": "text/plain",
+  }]
+  stdout = f"{envelope}\n{marker}{json.dumps(payload)}\n"
+  executor = _make_mock_executor(stdout=stdout)
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1], code_executor=executor, save_output_artifacts=True
+  )
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  ctx._invocation_context.artifact_service = mock.MagicMock()
+  ctx.save_artifact = mock.AsyncMock(return_value=1)
+
+  with mock.patch.object(
+      skill_toolset.secrets, "token_hex", return_value=nonce
+  ):
+    result = await tool.run_async(
+        args={"skill_name": "skill1", "file_path": "setup.sh"},
+        tool_context=ctx,
+    )
+
+  assert result["status"] == "error"
+  assert (
+      result["stdout"] == f"log: {skill_toolset._GENERATED_FILES_MARKER}data\n"
+  )
+  assert "Exit code 1" in result["stderr"]
+  assert result["saved_artifacts"] == ["out.txt"]
+
+
+@pytest.mark.asyncio
+async def test_execute_script_skips_artifact_save_without_service(mock_skill1):
+  """Missing artifact service does not fail the tool call."""
+  nonce = "fixed_nonce_123"
+  marker = f"{skill_toolset._GENERATED_FILES_MARKER}{nonce}:"
+  payload = [{
+      "path": "out.txt",
+      "content_b64": base64.b64encode(b"x").decode("ascii"),
+      "mime_type": "text/plain",
+  }]
+  stdout = f"{marker}{json.dumps(payload)}\n"
+  executor = _make_mock_executor(stdout=stdout)
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1], code_executor=executor, save_output_artifacts=True
+  )
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  ctx._invocation_context.artifact_service = None
+  ctx.save_artifact = mock.AsyncMock()
+
+  with mock.patch.object(
+      skill_toolset.secrets, "token_hex", return_value=nonce
+  ):
+    result = await tool.run_async(
+        args={"skill_name": "skill1", "file_path": "run.py"},
+        tool_context=ctx,
+    )
+
+  assert result["status"] == "success"
+  assert "saved_artifacts" not in result
+  ctx.save_artifact.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "unsafe_path",
+    [
+        "/etc/passwd",
+        "/absolute/path.txt",
+        "../escape.txt",
+        "nested/../../secret.txt",
+        "subdir/../..",
+        r"..\windows_escape.txt",
+        r"nested\..\..\secret.txt",
+        "user:preferences.json",
+        "user:nested/path.txt",
+        "user:../escape.txt",
+        r"user:\windows_path.txt",
+    ],
+)
+async def test_save_generated_skill_artifacts_rejects_unsafe_paths(unsafe_path):
+  """Unsafe paths (absolute, containing '..', or 'user:') are rejected."""
+  ctx = _make_tool_context_with_agent()
+  ctx._invocation_context.artifact_service = mock.MagicMock()
+  ctx.save_artifact = mock.AsyncMock()
+
+  payload = [
+      {
+          "path": unsafe_path,
+          "content_b64": base64.b64encode(b"malicious").decode("ascii"),
+          "mime_type": "text/plain",
+      },
+      {
+          "path": "safe/output.txt",
+          "content_b64": base64.b64encode(b"safe").decode("ascii"),
+          "mime_type": "text/plain",
+      },
+  ]
+
+  saved = await skill_toolset._save_generated_skill_artifacts(ctx, payload)
+
+  assert saved == ["safe/output.txt"]
+  ctx.save_artifact.assert_awaited_once()
+  assert ctx.save_artifact.await_args.kwargs["filename"] == "safe/output.txt"
+
+
+@pytest.mark.asyncio
+async def test_execute_script_wrapper_collects_generated_files(mock_skill1):
+  """Wrapper code walks the tempdir and emits the generated-files marker."""
+  executor = _make_mock_executor(stdout="ok\n")
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1], code_executor=executor, save_output_artifacts=True
+  )
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  await tool.run_async(
+      args={"skill_name": "skill1", "file_path": "run.py"},
+      tool_context=ctx,
+  )
+  code = executor.execute_code.call_args[0][1].code
+  assert skill_toolset._GENERATED_FILES_MARKER in code
+  assert "os.walk(td)" in code
+  assert "__pycache__" in code
+  assert "_logging" not in code
+  assert "_initial_stats" in code
+  assert "_stat.S_ISREG" in code
+  assert "skipped_paths" in code
+
+
+@pytest.mark.asyncio
+async def test_integration_python_generated_file_saved_as_artifact():
+  """Real executor: files written by a skill script are saved as artifacts."""
+  script = models.Script(
+      src=(
+          "from pathlib import"
+          " Path\nPath('output_report.txt').write_text('artifact body',"
+          " encoding='utf-8')\nprint('wrote report')\n"
+      )
+  )
+  skill = _make_skill_with_script("test_skill", "write_report.py", script)
+  toolset = _make_real_executor_toolset([skill], save_output_artifacts=True)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name="test_app", user_id="test_user"
+  )
+  artifact_service = InMemoryArtifactService()
+  invocation_context = InvocationContext(
+      invocation_id="inv_artifacts",
+      agent=SequentialAgent(name="test_agent"),
+      session=session,
+      session_service=session_service,
+      artifact_service=artifact_service,
+  )
+  ctx = ToolContext(invocation_context)
+
+  result = await tool.run_async(
+      args={
+          "skill_name": "test_skill",
+          "file_path": "write_report.py",
+      },
+      tool_context=ctx,
+  )
+
+  assert result["status"] == "success", result
+  assert result["stdout"] == "wrote report\n"
+  assert result.get("saved_artifacts") == ["output_report.txt"]
+  saved = await artifact_service.load_artifact(
+      app_name="test_app",
+      user_id="test_user",
+      session_id=session.id,
+      filename="output_report.txt",
+  )
+  assert saved is not None
+  assert saved.inline_data.data == b"artifact body"
+
+
+@pytest.mark.asyncio
+async def test_integration_python_does_not_resave_skill_resources():
+  """Real executor: packaged skill resources are not re-saved as artifacts."""
+  script = models.Script(src="print('ok')")
+  skill = _make_skill_with_script("test_skill", "noop.py", script)
+  skill.resources.get_reference.side_effect = lambda n: (
+      "ref body" if n == "notes.txt" else None
+  )
+  skill.resources.list_references.return_value = ["notes.txt"]
+  toolset = _make_real_executor_toolset([skill], save_output_artifacts=True)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name="test_app", user_id="test_user"
+  )
+  artifact_service = InMemoryArtifactService()
+  invocation_context = InvocationContext(
+      invocation_id="inv_no_resave",
+      agent=SequentialAgent(name="test_agent"),
+      session=session,
+      session_service=session_service,
+      artifact_service=artifact_service,
+  )
+  ctx = ToolContext(invocation_context)
+
+  result = await tool.run_async(
+      args={"skill_name": "test_skill", "file_path": "noop.py"},
+      tool_context=ctx,
+  )
+
+  assert result["status"] == "success", result
+  assert "saved_artifacts" not in result
+
+
+@pytest.mark.asyncio
+async def test_integration_python_saves_rewritten_packaged_resource():
+  """Real executor: packaged skill resource rewritten in-place is saved as artifact."""
+  script = models.Script(
+      src=(
+          "from pathlib import Path\n"
+          "Path('assets/template.txt').write_text('updated template',"
+          " encoding='utf-8')\nprint('done')\n"
+      )
+  )
+  skill = _make_skill_with_script("test_skill", "run.py", script)
+  skill.resources.get_asset.side_effect = lambda n: (
+      "initial template" if n == "template.txt" else None
+  )
+  skill.resources.list_assets.return_value = ["template.txt"]
+  toolset = _make_real_executor_toolset([skill], save_output_artifacts=True)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name="test_app", user_id="test_user"
+  )
+  artifact_service = InMemoryArtifactService()
+  invocation_context = InvocationContext(
+      invocation_id="inv_rewrite",
+      agent=SequentialAgent(name="test_agent"),
+      session=session,
+      session_service=session_service,
+      artifact_service=artifact_service,
+  )
+  ctx = ToolContext(invocation_context)
+
+  result = await tool.run_async(
+      args={"skill_name": "test_skill", "file_path": "run.py"},
+      tool_context=ctx,
+  )
+
+  assert result["status"] == "success", result
+  assert result["stdout"] == "done\n"
+  assert result.get("saved_artifacts") == ["assets/template.txt"]
+  saved = await artifact_service.load_artifact(
+      app_name="test_app",
+      user_id="test_user",
+      session_id=session.id,
+      filename="assets/template.txt",
+  )
+  assert saved is not None
+  assert saved.inline_data.data == b"updated template"
+
+
+@pytest.mark.asyncio
+async def test_integration_python_rejects_attacker_spoofed_generated_files_marker():
+  """Real executor: attacker script printing the constant marker cannot spoof artifacts."""
+  fake_payload = [{
+      "path": "malicious.txt",
+      "content_b64": base64.b64encode(b"attacker controlled").decode("ascii"),
+      "mime_type": "text/plain",
+  }]
+  fake_marker_line = (
+      f"{skill_toolset._GENERATED_FILES_MARKER}{json.dumps(fake_payload)}"
+  )
+  script = models.Script(src=f"print({fake_marker_line!r})\nprint('done')\n")
+  skill = _make_skill_with_script("test_skill", "run.py", script)
+  toolset = _make_real_executor_toolset([skill], save_output_artifacts=True)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name="test_app", user_id="test_user"
+  )
+  artifact_service = InMemoryArtifactService()
+  invocation_context = InvocationContext(
+      invocation_id="inv_spoof",
+      agent=SequentialAgent(name="test_agent"),
+      session=session,
+      session_service=session_service,
+      artifact_service=artifact_service,
+  )
+  ctx = ToolContext(invocation_context)
+
+  result = await tool.run_async(
+      args={"skill_name": "test_skill", "file_path": "run.py"},
+      tool_context=ctx,
+  )
+
+  assert result["status"] == "success", result
+  assert fake_marker_line in result["stdout"]
+  assert "done" in result["stdout"]
+  assert "saved_artifacts" not in result
+  saved = await artifact_service.load_artifact(
+      app_name="test_app",
+      user_id="test_user",
+      session_id=session.id,
+      filename="malicious.txt",
+  )
+  assert saved is None
+
+
+@pytest.mark.asyncio
+async def test_generated_artifacts_per_file_size_limit(caplog):
+  """Files exceeding _MAX_GENERATED_ARTIFACT_BYTES are not saved as artifacts."""
+  script = models.Script(
+      src=(
+          "from pathlib import Path\n"
+          "Path('small.txt').write_bytes(b'12345')\n"
+          "Path('large.txt').write_bytes(b'12345678901234567890')\n"
+      )
+  )
+  skill = _make_skill_with_script("test_skill", "run.py", script)
+  with mock.patch.object(skill_toolset, "_MAX_GENERATED_ARTIFACT_BYTES", 10):
+    toolset = _make_real_executor_toolset([skill], save_output_artifacts=True)
+    tool = skill_toolset.RunSkillScriptTool(toolset)
+
+    session_service = InMemorySessionService()
+    session = await session_service.create_session(
+        app_name="test_app", user_id="test_user"
+    )
+    artifact_service = InMemoryArtifactService()
+    invocation_context = InvocationContext(
+        invocation_id="inv_per_file_limit",
+        agent=SequentialAgent(name="test_agent"),
+        session=session,
+        session_service=session_service,
+        artifact_service=artifact_service,
+    )
+    ctx = ToolContext(invocation_context)
+
+    with caplog.at_level(logging.WARNING):
+      result = await tool.run_async(
+          args={"skill_name": "test_skill", "file_path": "run.py"},
+          tool_context=ctx,
+      )
+
+    assert result["status"] == "success", result
+    assert result.get("saved_artifacts") == ["small.txt"]
+    assert result.get("skipped_artifacts") == ["large.txt"]
+    assert any(
+        "Skipping generated skill file 'large.txt'" in record.message
+        for record in caplog.records
+    )
+    assert (
+        await artifact_service.load_artifact(
+            app_name="test_app",
+            user_id="test_user",
+            session_id=session.id,
+            filename="small.txt",
+        )
+        is not None
+    )
+    assert (
+        await artifact_service.load_artifact(
+            app_name="test_app",
+            user_id="test_user",
+            session_id=session.id,
+            filename="large.txt",
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_generated_artifacts_total_size_limit():
+  """Files exceeding _MAX_GENERATED_ARTIFACTS_TOTAL_BYTES in total are not saved."""
+  script = models.Script(
+      src=(
+          "from pathlib import Path\n"
+          "Path('file1.txt').write_bytes(b'1234567890')\n"
+          "Path('file2.txt').write_bytes(b'1234567890')\n"
+      )
+  )
+  skill = _make_skill_with_script("test_skill", "run.py", script)
+  with mock.patch.object(
+      skill_toolset, "_MAX_GENERATED_ARTIFACTS_TOTAL_BYTES", 15
+  ):
+    toolset = _make_real_executor_toolset([skill], save_output_artifacts=True)
+    tool = skill_toolset.RunSkillScriptTool(toolset)
+
+    session_service = InMemorySessionService()
+    session = await session_service.create_session(
+        app_name="test_app", user_id="test_user"
+    )
+    artifact_service = InMemoryArtifactService()
+    invocation_context = InvocationContext(
+        invocation_id="inv_total_limit",
+        agent=SequentialAgent(name="test_agent"),
+        session=session,
+        session_service=session_service,
+        artifact_service=artifact_service,
+    )
+    ctx = ToolContext(invocation_context)
+
+    result = await tool.run_async(
+        args={"skill_name": "test_skill", "file_path": "run.py"},
+        tool_context=ctx,
+    )
+
+    assert result["status"] == "success", result
+    saved = result.get("saved_artifacts", [])
+    assert len(saved) == 1
+    saved_file = saved[0]
+    unsaved_file = "file2.txt" if saved_file == "file1.txt" else "file1.txt"
+    assert result.get("skipped_artifacts") == [unsaved_file]
+    assert (
+        await artifact_service.load_artifact(
+            app_name="test_app",
+            user_id="test_user",
+            session_id=session.id,
+            filename=saved_file,
+        )
+        is not None
+    )
+    assert (
+        await artifact_service.load_artifact(
+            app_name="test_app",
+            user_id="test_user",
+            session_id=session.id,
+            filename=unsaved_file,
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_generated_artifacts_count_limit():
+  """Files exceeding _MAX_GENERATED_ARTIFACTS_COUNT in count are not saved and skipped files are capped."""
+  script = models.Script(
+      src=(
+          "from pathlib import Path\n"
+          "Path('file1.txt').write_bytes(b'1')\n"
+          "Path('file2.txt').write_bytes(b'2')\n"
+          "Path('file3.txt').write_bytes(b'3')\n"
+          "Path('file4.txt').write_bytes(b'4')\n"
+          "Path('file5.txt').write_bytes(b'5')\n"
+      )
+  )
+  skill = _make_skill_with_script("test_skill", "run.py", script)
+  with mock.patch.object(skill_toolset, "_MAX_GENERATED_ARTIFACTS_COUNT", 2):
+    toolset = _make_real_executor_toolset([skill], save_output_artifacts=True)
+    tool = skill_toolset.RunSkillScriptTool(toolset)
+
+    session_service = InMemorySessionService()
+    session = await session_service.create_session(
+        app_name="test_app", user_id="test_user"
+    )
+    artifact_service = InMemoryArtifactService()
+    invocation_context = InvocationContext(
+        invocation_id="inv_count_limit",
+        agent=SequentialAgent(name="test_agent"),
+        session=session,
+        session_service=session_service,
+        artifact_service=artifact_service,
+    )
+    ctx = ToolContext(invocation_context)
+
+    result = await tool.run_async(
+        args={"skill_name": "test_skill", "file_path": "run.py"},
+        tool_context=ctx,
+    )
+
+    assert result["status"] == "success", result
+    saved = result.get("saved_artifacts", [])
+    assert len(saved) == 2
+    skipped = result.get("skipped_artifacts", [])
+    assert len(skipped) == 2
+    all_files = {
+        "file1.txt",
+        "file2.txt",
+        "file3.txt",
+        "file4.txt",
+        "file5.txt",
+    }
+    assert set(saved).isdisjoint(set(skipped))
+    assert set(saved) | set(skipped) <= all_files
+    for sf in saved:
+      assert (
+          await artifact_service.load_artifact(
+              app_name="test_app",
+              user_id="test_user",
+              session_id=session.id,
+              filename=sf,
+          )
+          is not None
+      )
+    for skf in skipped:
+      assert (
+          await artifact_service.load_artifact(
+              app_name="test_app",
+              user_id="test_user",
+              session_id=session.id,
+              filename=skf,
+          )
+          is None
+      )
+
+
+@pytest.mark.asyncio
+async def test_generated_artifacts_unreadable_file_does_not_drop_other_files():
+  """An unreadable file in the directory does not prevent saving other files."""
+  script = models.Script(
+      src=(
+          "import os\n"
+          "from pathlib import Path\n"
+          "Path('good1.txt').write_text('good1', encoding='utf-8')\n"
+          "unreadable = Path('unreadable.txt')\n"
+          "unreadable.write_text('locked', encoding='utf-8')\n"
+          "os.chmod('unreadable.txt', 0o000)\n"
+          "Path('good2.txt').write_text('good2', encoding='utf-8')\n"
+      )
+  )
+  skill = _make_skill_with_script("test_skill", "run.py", script)
+  toolset = _make_real_executor_toolset([skill], save_output_artifacts=True)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name="test_app", user_id="test_user"
+  )
+  artifact_service = InMemoryArtifactService()
+  invocation_context = InvocationContext(
+      invocation_id="inv_unreadable",
+      agent=SequentialAgent(name="test_agent"),
+      session=session,
+      session_service=session_service,
+      artifact_service=artifact_service,
+  )
+  ctx = ToolContext(invocation_context)
+
+  result = await tool.run_async(
+      args={"skill_name": "test_skill", "file_path": "run.py"},
+      tool_context=ctx,
+  )
+
+  assert result["status"] == "success", result
+  saved = result.get("saved_artifacts", [])
+  assert "good1.txt" in saved
+  assert "good2.txt" in saved
+
+
+@pytest.mark.asyncio
+async def test_guest_wrapper_skipped_file_does_not_corrupt_stderr():
+  """Skipped files in the guest wrapper do not emit warnings to stderr."""
+  import subprocess
+
+  script = models.Script(
+      src=(
+          "from pathlib import Path\n"
+          "Path('large.txt').write_bytes(b'12345678901234567890')\n"
+      )
+  )
+  skill = _make_skill_with_script("test_skill", "run.py", script)
+  executor = mock.MagicMock(spec=BaseCodeExecutor)
+
+  def _run_in_subprocess(ctx, inp):
+    p = subprocess.run(
+        [sys.executable, "-c", inp.code],
+        capture_output=True,
+        text=True,
+    )
+    return CodeExecutionResult(
+        stdout=p.stdout,
+        stderr=p.stderr,
+        exit_code=p.returncode,
+    )
+
+  executor.execute_code.side_effect = _run_in_subprocess
+  with mock.patch.object(skill_toolset, "_MAX_GENERATED_ARTIFACT_BYTES", 10):
+    toolset = skill_toolset.SkillToolset(
+        [skill], code_executor=executor, save_output_artifacts=True
+    )
+    tool = skill_toolset.RunSkillScriptTool(toolset)
+    ctx = _make_tool_context_with_agent()
+    ctx._invocation_context.artifact_service = mock.MagicMock()
+    ctx.save_artifact = mock.AsyncMock()
+
+    result = await tool.run_async(
+        args={"skill_name": "test_skill", "file_path": "run.py"},
+        tool_context=ctx,
+    )
+
+    assert result["status"] == "success", result
+    assert result["stderr"] == ""
+    assert result.get("skipped_artifacts") == ["large.txt"]
+
+
+@pytest.mark.asyncio
+async def test_integration_python_fifo_in_working_dir_does_not_block():
+  """A FIFO left in the working directory does not block artifact collection."""
+  script = models.Script(
+      src=(
+          "import os\n"
+          "from pathlib import Path\n"
+          "Path('good.txt').write_text('content', encoding='utf-8')\n"
+          "os.mkfifo('fifo_pipe')\n"
+          "print('done')\n"
+      )
+  )
+  skill = _make_skill_with_script("test_skill", "run.py", script)
+  toolset = _make_real_executor_toolset([skill], save_output_artifacts=True)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name="test_app", user_id="test_user"
+  )
+  artifact_service = InMemoryArtifactService()
+  invocation_context = InvocationContext(
+      invocation_id="inv_fifo",
+      agent=SequentialAgent(name="test_agent"),
+      session=session,
+      session_service=session_service,
+      artifact_service=artifact_service,
+  )
+  ctx = ToolContext(invocation_context)
+
+  result = await asyncio.wait_for(
+      tool.run_async(
+          args={"skill_name": "test_skill", "file_path": "run.py"},
+          tool_context=ctx,
+      ),
+      timeout=10,
+  )
+
+  assert result["status"] == "success", result
+  assert result["stdout"] == "done\n"
+  assert result.get("saved_artifacts") == ["good.txt"]
+  assert (
+      await artifact_service.load_artifact(
+          app_name="test_app",
+          user_id="test_user",
+          session_id=session.id,
+          filename="good.txt",
+      )
+      is not None
+  )
+
+
+@pytest.mark.asyncio
+async def test_save_generated_skill_artifacts_host_side_per_file_size_limit():
+  """Host-side artifact save enforces per-file byte limit."""
+  ctx = _make_tool_context_with_agent()
+  ctx._invocation_context.artifact_service = mock.MagicMock()
+  ctx.save_artifact = mock.AsyncMock()
+
+  payload = [
+      {
+          "path": "small.txt",
+          "content_b64": base64.b64encode(b"12345").decode("ascii"),
+          "mime_type": "text/plain",
+      },
+      {
+          "path": "large.txt",
+          "content_b64": (
+              base64.b64encode(b"12345678901234567890").decode("ascii")
+          ),
+          "mime_type": "text/plain",
+      },
+  ]
+  with mock.patch.object(skill_toolset, "_MAX_GENERATED_ARTIFACT_BYTES", 10):
+    saved = await skill_toolset._save_generated_skill_artifacts(ctx, payload)
+
+  assert saved == ["small.txt"]
+  ctx.save_artifact.assert_awaited_once()
+  assert ctx.save_artifact.await_args.kwargs["filename"] == "small.txt"
+
+
+@pytest.mark.asyncio
+async def test_save_generated_skill_artifacts_host_side_total_size_limit():
+  """Host-side artifact save enforces total byte limit."""
+  ctx = _make_tool_context_with_agent()
+  ctx._invocation_context.artifact_service = mock.MagicMock()
+  ctx.save_artifact = mock.AsyncMock()
+
+  payload = [
+      {
+          "path": "file1.txt",
+          "content_b64": base64.b64encode(b"1234567890").decode("ascii"),
+          "mime_type": "text/plain",
+      },
+      {
+          "path": "file2.txt",
+          "content_b64": base64.b64encode(b"1234567890").decode("ascii"),
+          "mime_type": "text/plain",
+      },
+  ]
+  with mock.patch.object(
+      skill_toolset, "_MAX_GENERATED_ARTIFACTS_TOTAL_BYTES", 15
+  ):
+    saved = await skill_toolset._save_generated_skill_artifacts(ctx, payload)
+
+  assert saved == ["file1.txt"]
+  ctx.save_artifact.assert_awaited_once()
+  assert ctx.save_artifact.await_args.kwargs["filename"] == "file1.txt"
+
+
+@pytest.mark.asyncio
+async def test_save_generated_skill_artifacts_host_side_count_limit():
+  """Host-side artifact save enforces file count limit and caps skipped artifacts."""
+  ctx = _make_tool_context_with_agent()
+  ctx._invocation_context.artifact_service = mock.MagicMock()
+  ctx.save_artifact = mock.AsyncMock()
+
+  payload = [
+      {
+          "path": "file1.txt",
+          "content_b64": base64.b64encode(b"1").decode("ascii"),
+          "mime_type": "text/plain",
+      },
+      {
+          "path": "file2.txt",
+          "content_b64": base64.b64encode(b"2").decode("ascii"),
+          "mime_type": "text/plain",
+      },
+      {
+          "path": "file3.txt",
+          "content_b64": base64.b64encode(b"3").decode("ascii"),
+          "mime_type": "text/plain",
+      },
+      {
+          "path": "file4.txt",
+          "content_b64": base64.b64encode(b"4").decode("ascii"),
+          "mime_type": "text/plain",
+      },
+      {
+          "path": "file5.txt",
+          "content_b64": base64.b64encode(b"5").decode("ascii"),
+          "mime_type": "text/plain",
+      },
+  ]
+  skipped_artifacts = []
+  with mock.patch.object(skill_toolset, "_MAX_GENERATED_ARTIFACTS_COUNT", 2):
+    saved = await skill_toolset._save_generated_skill_artifacts(
+        ctx, payload, skipped_artifacts=skipped_artifacts
+    )
+
+  assert saved == ["file1.txt", "file2.txt"]
+  assert skipped_artifacts == ["file3.txt", "file4.txt"]
+  assert ctx.save_artifact.await_count == 2
+
+
+def test_skill_toolset_rejects_environment_with_save_output_artifacts():
+  """SkillToolset raises ValueError when both environment and save_output_artifacts are passed."""
+  env = mock.MagicMock(spec=BaseEnvironment)
+  with pytest.raises(
+      ValueError,
+      match=(
+          "`save_output_artifacts` is only supported with code_executor, not"
+          " environment."
+      ),
+  ):
+    skill_toolset.SkillToolset(environment=env, save_output_artifacts=True)
 
 
 # ── Integration: shell non-zero exit ──

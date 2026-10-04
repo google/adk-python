@@ -46,6 +46,7 @@ This directory contains specific developer guides for the ADK Python implementat
 ### Evaluation
 * [AgentEvaluator](evaluation/agent_evaluator/index.md) - Measuring agent quality from inside a pytest suite by replaying recorded conversations and scoring each answer and tool call.
 * [BaseEvalService and LocalEvalService](evaluation/eval_service/index.md) - Running evaluations that return results as data rather than as a test that passed or failed.
+* [Efficiency metrics](evaluation/efficiency_evaluators/index.md) - Reference-free metrics reporting what a run consumed: tool calls, model calls and tokens.
 * [EvalConfig and the eval config file](evaluation/eval_config/index.md) - The schema of the file that says which metrics score a run and how strict each one is.
 * [Evaluator](evaluation/evaluator/index.md) - The interface behind the built-in metrics, and how to score a rule that is specific to your agent.
 
@@ -101,6 +102,7 @@ This directory contains specific developer guides for the ADK Python implementat
 
 ### Runners
 * [Runner and InMemoryRunner](runners/runner/index.md) - Managing session lifecycles, state resolution, and streaming agent execution events.
+* [Runner Execution Cancellation](runners/runner/abort.md) - Halting agent and workflow execution cleanly using abort signals.
 * [Runner Live Streaming](runners/runner/live.md) - Real-time bidirectional audio/text streaming and non-blocking background tool execution with Gemini Multimodal Live API.
 
 ### Sessions
@@ -115,6 +117,8 @@ This directory contains specific developer guides for the ADK Python implementat
 * [TelemetryConfig](telemetry/telemetry_config/index.md) - What ADK puts in its OpenTelemetry traces, and whether the text of prompts and replies is copied onto exported spans.
 
 ### Tools
+* [FunctionTool](tools/function_tool/index.md) - Wrapping Python functions and generators as agent tools with argument validation, progress streaming, and confirmation.
+* [ModelConsultTool and ModelConsultContextConfig](tools/model_consult/model_consult_tool/index.md) - Escalating hard decisions mid-generation to a stronger advisor model, with per-turn and session budgets.
 * [Node as tool](tools/node_tool/index.md) - Exposing workflows and deterministic nodes as agent tools with isolated runtime branching and resume support.
 * [to_mcp_server](tools/mcp_tool/agent_to_mcp/index.md) - Expose an ADK agent as an MCP server so any MCP host can drive it as a single tool (the MCP counterpart of to_a2a).
 
@@ -123,6 +127,7 @@ This directory contains specific developer guides for the ADK Python implementat
 
 ### Workflows
 * [BaseNode](workflow/base_node/index.md) - The foundational base class and configuration settings for all workflow nodes.
+* [Node and @node](workflow/node/index.md) - Wrapping functions, agents, and tools as workflow steps, overriding node settings per graph, and subclassing Node.
 * [Workflow](workflow/workflow/index.md) - Graph-based orchestration of complex, multi-step agent interactions.
 * [Workflow Graphs](workflow/graph/index.md) - Understanding nodes, edges, and graph structures in workflows.
 * [Function Nodes](workflow/function_node/index.md) - Wrapping Python functions and generators as workflow nodes.

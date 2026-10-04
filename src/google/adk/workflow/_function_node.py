@@ -39,6 +39,7 @@ from ..events.request_input import RequestInput
 from ..utils._callable_utils import CallableSpec
 from ..utils._schema_utils import annotation_accepts_content
 from ..utils._schema_utils import annotation_expects_str
+from ..utils.context_utils import Aclosing
 from ._base_node import BaseNode
 from ._errors import WorkflowConfigurationError
 from ._errors import WorkflowDataError
@@ -311,6 +312,14 @@ class FunctionNode(BaseNode):
       if param_name == self._context_param_name:
         kwargs[param_name] = ctx
         continue
+      if param.kind == inspect.Parameter.VAR_POSITIONAL:
+        continue
+      if param.kind == inspect.Parameter.VAR_KEYWORD:
+        if input_bound and isinstance(source, dict):
+          for k, v in source.items():
+            if k not in self._sig.parameters and k != self._context_param_name:
+              kwargs[k] = v
+        continue
 
       # In state mode, 'node_input' param is passed through directly.
       if not input_bound and param_name == "node_input":
@@ -336,6 +345,24 @@ class FunctionNode(BaseNode):
             has_param = True
             value = source[param_name]
         except (TypeError, KeyError):
+          pass
+
+      if (
+          not has_param
+          and input_bound
+          and param_name == "node_input"
+          and self.input_schema is not None
+          and not isinstance(self.input_schema, (dict, types.Schema))
+          and param_name in self._type_hints
+      ):
+        try:
+          value = self._coerce_param(
+              param_name,
+              node_input,
+              self._type_hints[param_name],
+          )
+          has_param = True
+        except Exception:
           pass
 
       if has_param:
@@ -438,6 +465,66 @@ class FunctionNode(BaseNode):
     return adapter.validate_python(value)
 
   @override
+  def _validate_input_data(self, data: Any) -> Any:
+    """Validates input data for FunctionNode."""
+    if self.input_schema is not None and not isinstance(
+        self.input_schema, (dict, types.Schema)
+    ):
+      return super()._validate_input_data(data)
+
+    if self.parameter_binding == "node_input":
+      source: Any = data if isinstance(data, (dict, BaseModel)) else {}
+      validated: dict[str, Any] = {}
+      for param_name, param in self._sig.parameters.items():
+        if param_name == self._context_param_name:
+          continue
+        if param.kind == inspect.Parameter.VAR_POSITIONAL:
+          continue
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+          if isinstance(source, dict):
+            for k, v in source.items():
+              if (
+                  k not in self._sig.parameters
+                  and k != self._context_param_name
+              ):
+                validated[k] = v
+          continue
+
+        has_param = False
+        value = None
+        if isinstance(source, BaseModel):
+          if hasattr(source, param_name):
+            has_param = True
+            value = getattr(source, param_name)
+        else:
+          try:
+            if param_name in source:
+              has_param = True
+              value = source[param_name]
+          except (TypeError, KeyError):
+            pass
+
+        if has_param:
+          if param_name in self._type_hints:
+            value = self._coerce_param(
+                param_name,
+                value,
+                self._type_hints[param_name],
+            )
+          validated[param_name] = value
+        elif param.default is not inspect.Parameter.empty:
+          validated[param_name] = param.default
+        else:
+          raise WorkflowDataError(
+              f'Missing value for parameter "{param_name}" of function'
+              f' "{self.name}". It was not found in node_input and has no'
+              " default value."
+          )
+      return validated
+
+    return super()._validate_input_data(data)
+
+  @override
   def model_copy(
       self, *, update: Mapping[str, Any] | None = None, deep: bool = False
   ) -> FunctionNode:
@@ -506,10 +593,11 @@ class FunctionNode(BaseNode):
       items = None
 
     if items is not None:
-      async for item in items:
-        event = self._to_event(ctx, item)
-        if event is not None:
-          yield event
+      async with Aclosing(items) as items:
+        async for item in items:
+          event = self._to_event(ctx, item)
+          if event is not None:
+            yield event
     else:
       if inspect.iscoroutinefunction(unwrapped_func):
         result = await self._func(**kwargs)

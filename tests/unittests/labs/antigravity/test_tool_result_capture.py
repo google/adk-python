@@ -244,3 +244,15 @@ def test_the_capture_survives_a_deep_copy_of_the_config():
 
   assert clone is not capture
   assert clone.take({'c1'})
+
+
+def test_a_result_with_step_id_is_takeable_by_step_id_and_clears_alias():
+  """A built-in tool's hook result carries step_id matching ToolCall.id."""
+  buffer = _tool_result_capture.ToolResultBuffer()
+  result = _result('toolu_01', value='{"output": "ok"}')
+  object.__setattr__(result, 'step_id', 'traj_1:2')
+  buffer.record(result)
+
+  assert buffer.take({'traj_1:2'}) == [('traj_1:2', result)]
+  assert not buffer.take({'toolu_01'})
+  assert not buffer
