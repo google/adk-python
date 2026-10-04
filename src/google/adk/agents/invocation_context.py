@@ -31,6 +31,7 @@ from ..artifacts.base_artifact_service import BaseArtifactService
 from ..auth.auth_credential import AuthCredential
 from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..events._branch_path import _BranchPath
+from ..events._internal_metadata import without_internal_metadata
 from ..events.event import Event
 from ..live._active_streaming_tool import ActiveStreamingTool
 from ..live._audio_cache_manager import RealtimeCacheEntry as RealtimeCacheEntry
@@ -93,7 +94,10 @@ class _AbortState:
   instance reference. Updates to loop, signal, or aborted propagate across all
   model_copy() clones in the tree. Cross-Runner sub-runs (such as AgentTool or
   nested Workflow node runners) propagate cancellation by passing
-  ``_abort_signal`` to the child Runner's ``run_async``.
+  ``_abort_signal`` to the child Runner's ``run_async``. ``signal`` is an
+  ``asyncio.Event`` and can only be awaited on ``loop``, so AgentTool does not
+  pass it when the tool runs on another event loop (e.g. RunConfig's tool
+  thread pool); such a sub-run is not cancelled by a caller abort.
   """
 
   def __init__(
@@ -104,6 +108,7 @@ class _AbortState:
     self.signal = signal if signal is not None else asyncio.Event()
     self.loop = loop
     self.aborted = False
+    self.event_synthesized = False
 
   def __deepcopy__(self, memo: dict[int, Any] | None) -> _AbortState:
     # Preserve single-instance sharing across deepcopies and avoid traversing
@@ -304,7 +309,9 @@ class InvocationContext(BaseModel):
   def model_post_init(self, __context: Any) -> None:
     super().model_post_init(__context)
     if self.run_config and self.run_config.custom_metadata:
-      self._custom_metadata.update(self.run_config.custom_metadata)
+      self._custom_metadata.update(
+          without_internal_metadata(self.run_config.custom_metadata) or {}
+      )
     try:
       self._abort_state.loop = asyncio.get_running_loop()
     except RuntimeError:

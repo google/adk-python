@@ -112,7 +112,7 @@ def get_structured_model_response(function_response_event: Event) -> str | None:
     return None
 
   for func_response in function_response_event.get_function_responses():
-    if func_response.name == 'set_model_response':
+    if func_response.name == SetModelResponseTool.NAME:
       response = function_response_event.actions.set_model_response
       if response is None:
         return None

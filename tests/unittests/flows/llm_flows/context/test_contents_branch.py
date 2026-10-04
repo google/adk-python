@@ -302,3 +302,179 @@ async def test_branch_filtering_parent_cannot_see_child():
       types.UserContent("User message"),
       types.ModelContent("Parent response"),
   ]
+
+
+def _function_call_event(author: str, branch: str | None, name: str) -> Event:
+  return Event(
+      invocation_id="inv",
+      author=author,
+      branch=branch,
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id="adk-1", name=name, args={}
+                  )
+              )
+          ],
+      ),
+  )
+
+
+def _function_response_event(
+    author: str, branch: str | None, name: str
+) -> Event:
+  return Event(
+      invocation_id="inv",
+      author=author,
+      branch=branch,
+      content=types.Content(
+          role="user",
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      id="adk-1", name=name, response={"rows": 42}
+                  )
+              )
+          ],
+      ),
+  )
+
+
+@pytest.mark.asyncio
+async def test_root_agent_excludes_tool_sub_branch_events():
+  """Test that a root agent does not see events on a tool's sub-branch."""
+  agent = Agent(model="gemini-2.5-flash", name="root_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.branch = None
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv",
+          author="user",
+          content=types.UserContent("run sales"),
+      ),
+      _function_call_event("root_agent", None, "analyze"),
+      Event(
+          invocation_id="inv",
+          author="analyze",
+          content=types.ModelContent("Starting sales..."),
+          branch="analyze@adk-1",
+      ),
+      _function_response_event("root_agent", None, "analyze"),
+      Event(
+          invocation_id="inv",
+          author="root_agent",
+          content=types.ModelContent("All done."),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="user",
+          content=types.UserContent("what happened?"),
+      ),
+  ]
+
+  async for _ in request_processor.run_async(invocation_context, llm_request):
+    pass
+
+  assert "Starting sales" not in str(llm_request.contents)
+  parts = [p for c in llm_request.contents for p in c.parts or []]
+  assert any(
+      p.function_call and p.function_call.name == "analyze" for p in parts
+  )
+  assert any(
+      p.function_response and p.function_response.response == {"rows": 42}
+      for p in parts
+  )
+
+
+@pytest.mark.asyncio
+async def test_agent_on_its_own_tool_branch_keeps_its_events():
+  """Test that an agent scoped on `<parent>.<agent>@<fc_id>` sees its own events."""
+  agent = Agent(model="gemini-2.5-flash", name="worker")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.branch = "parent.worker@adk-1"
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv",
+          author="user",
+          content=types.UserContent("delegate"),
+      ),
+      _function_call_event("parent", "parent", "worker"),
+      Event(
+          invocation_id="inv",
+          author="worker",
+          content=types.ModelContent("Worker progress"),
+          branch="parent.worker@adk-1",
+      ),
+  ]
+
+  async for _ in request_processor.run_async(invocation_context, llm_request):
+    pass
+
+  assert types.ModelContent("Worker progress") in llm_request.contents
+
+
+@pytest.mark.asyncio
+async def test_agent_inheriting_tool_branch_keeps_its_events():
+  """Test that an agent inside a NodeTool, on the tool's branch, sees its own events."""
+  agent = Agent(model="gemini-2.5-flash", name="inner")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.branch = "parent.sub_wf_tool@adk-1"
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv",
+          author="user",
+          content=types.UserContent("add 1 and 2"),
+      ),
+      _function_call_event("parent", "parent", "sub_wf_tool"),
+      Event(
+          invocation_id="inv",
+          author="inner",
+          content=types.ModelContent("Inner progress"),
+          branch="parent.sub_wf_tool@adk-1",
+      ),
+  ]
+
+  async for _ in request_processor.run_async(invocation_context, llm_request):
+    pass
+
+  assert types.ModelContent("Inner progress") in llm_request.contents
+
+
+@pytest.mark.asyncio
+async def test_root_agent_still_sees_legacy_child_agent_events():
+  """Test that a root agent still sees child-agent events without a function call id leaf."""
+  agent = Agent(model="gemini-2.5-flash", name="root_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.branch = None
+  invocation_context.session.events = [
+      Event(
+          invocation_id="inv",
+          author="user",
+          content=types.UserContent("User message"),
+      ),
+      Event(
+          invocation_id="inv",
+          author="child",
+          content=types.ModelContent("Child response"),
+          branch="parallel.child",
+      ),
+  ]
+
+  async for _ in request_processor.run_async(invocation_context, llm_request):
+    pass
+
+  assert "Child response" in str(llm_request.contents)

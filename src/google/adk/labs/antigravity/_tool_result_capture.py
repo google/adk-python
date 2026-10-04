@@ -115,41 +115,53 @@ class ToolResultBuffer:
 
   def record(self, result: ToolResult) -> None:
     """Buffers one tool result, dropping one that cannot be correlated."""
-    # ``id`` is the only thing tying a result to an emitted function call, so
-    # keeping one without it risks draining it against an unrelated call.
-    if not result.id:
+    step_id: str | None = getattr(result, 'step_id', None)
+    if not result.id and not step_id:
       logger.debug(
           '[ADK] Dropping an Antigravity tool result for %s: it carries no '
-          'call id to correlate it with.',
+          'call id or step id to correlate it with.',
           result.name,
       )
       return
-    self._results[result.id] = result
+    if result.id:
+      self._results[result.id] = result
+    if step_id and step_id != result.id:
+      self._results[step_id] = result
 
   def record_error(self, error: ToolError) -> None:
     """Buffers one failed tool call, dropping one that cannot be correlated."""
-    if not error.call_id:
+    step_id: str | None = getattr(error, 'step_id', None)
+    if not error.call_id and not step_id:
       logger.debug(
           '[ADK] Dropping an Antigravity tool failure for %s: it carries no '
-          'call id to correlate it with.',
+          'call id or step id to correlate it with.',
           error.tool_name,
       )
       return
-    self._results[error.call_id] = _FailedToolResult(
+    failed = _FailedToolResult(
         name=error.tool_name,
-        id=error.call_id,
+        id=error.call_id or step_id,
         result=None,
         error=str(error) or 'Tool call execution failed.',
     )
+    if error.call_id:
+      self._results[error.call_id] = failed
+    if step_id and step_id != error.call_id:
+      self._results[step_id] = failed
 
   def take(self, call_ids: Collection[str]) -> list[tuple[str, ToolResult]]:
     """Removes and returns any buffered results for ``call_ids``."""
     # Insertion order is arrival order, i.e. the order the tools finished in.
-    return [
-        (call_id, self._results.pop(call_id))
-        for call_id in list(self._results)
-        if call_id in call_ids
-    ]
+    taken: list[tuple[str, ToolResult]] = []
+    for call_id in list(self._results):
+      if call_id not in call_ids or call_id not in self._results:
+        continue
+      result = self._results.pop(call_id)
+      for alias in (result.id, getattr(result, 'step_id', None)):
+        if alias and self._results.get(alias) is result:
+          self._results.pop(alias, None)
+      taken.append((call_id, result))
+    return taken
 
   def clear(self) -> None:
     """Forgets everything buffered."""

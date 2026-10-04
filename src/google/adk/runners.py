@@ -50,6 +50,10 @@ from .artifacts.base_artifact_service import BaseArtifactService
 from .auth.credential_service.base_credential_service import BaseCredentialService
 from .errors._stale_session_error import StaleSessionError
 from .errors.session_not_found_error import SessionNotFoundError
+from .events._abort_events import _build_abort_events
+from .events._abort_events import _is_abort_event
+from .events._internal_metadata import internal_metadata
+from .events._internal_metadata import without_internal_metadata
 from .events._rewind_events import _apply_rewinds
 from .events.event import Event
 from .events.event_actions import EventActions
@@ -106,10 +110,11 @@ def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
   'result' key matching ``FINISH_TASK_SUCCESS_RESULT`` or
   ``FINISH_TASK_ERROR_RESULT``. A FunctionResponse containing an 'error' key
   (indicating a tool validation failure) does NOT close the scope: the task
-  agent is still active, will see the validation error, and retry. Walking
-  backward, the first non-empty scope we encounter that hasn't been closed by a
-  later successful or failed terminal ``finish_task`` is the paused task
-  awaiting the user's next reply.
+  agent is still active, will see the validation error, and retry. Scopes whose
+  invocation was aborted are also closed, since the task agent was cancelled
+  without calling ``finish_task``. Walking backward, the first non-empty scope
+  we encounter that hasn't been closed is the paused task awaiting the user's
+  next reply.
 
   Used by ``Runner._append_user_event`` to scope the new user message
   to that task agent's view.
@@ -124,7 +129,10 @@ def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
   # the older success FR, falsely indicating the scope is still active.
   live_events = _apply_rewinds(session.events)
   finished_scopes: set[str] = set()
+  aborted_invocations: set[str] = set()
   for event in live_events:
+    if _is_abort_event(event):
+      aborted_invocations.add(event.invocation_id)
     scope = event.isolation_scope
     if not scope:
       continue
@@ -145,7 +153,10 @@ def _find_active_task_scope(session: Session) -> Optional[tuple[str, str]]:
     scope = event.isolation_scope
     if not scope:
       continue
-    if scope not in finished_scopes:
+    if (
+        scope not in finished_scopes
+        and event.invocation_id not in aborted_invocations
+    ):
       return scope, event.invocation_id
   return None
 
@@ -160,15 +171,39 @@ def _get_function_responses_from_content(
   ]
 
 
+def _session_for_routing(
+    session: Session, new_message: types.Content | None
+) -> Session:
+  """Includes a user FunctionResponse for routing before `new_message` is saved.
+
+  `_find_agent_to_run` runs before `new_message` is appended to
+  `session.events`, so a user FunctionResponse must be attached here to route
+  back to the agent that issued the FunctionCall.
+  """
+  if not _get_function_responses_from_content(new_message):
+    return session
+  return session.model_copy(
+      update={
+          'events': [
+              *session.events,
+              Event(author='user', content=new_message),
+          ]
+      }
+  )
+
+
 def _apply_run_config_custom_metadata(
     event: Event, run_config: RunConfig | None
 ) -> None:
-  """Merges run-level custom metadata into the event, if present."""
+  """Merges run-level custom metadata, minus ADK-internal keys, into the event."""
   if not run_config or not run_config.custom_metadata:
+    return
+  run_metadata = without_internal_metadata(run_config.custom_metadata)
+  if not run_metadata:
     return
 
   event.custom_metadata = {
-      **run_config.custom_metadata,
+      **run_metadata,
       **(event.custom_metadata or {}),
   }
 
@@ -877,6 +912,27 @@ class Runner:
       logger.error('Root node %s failed.', node_name, exc_info=True)
       raise
 
+  async def _synthesize_abort_events_if_needed(
+      self, ic: InvocationContext
+  ) -> list[Event]:
+    """Seals an aborted invocation in session history, at most once.
+
+    Returns the synthetic events after plugin processing and persistence.
+    """
+    if ic._abort_state.event_synthesized or ic.session is None:  # pylint: disable=protected-access
+      return []
+    ic._abort_state.event_synthesized = True  # pylint: disable=protected-access
+    abort_events = _build_abort_events(
+        ic.session.events,
+        invocation_id=ic.invocation_id,
+        root_agent_name=self.agent.name,
+        branch=ic.branch,
+    )
+    return [
+        await self._process_and_append_event(event=e, invocation_context=ic)
+        for e in abort_events
+    ]
+
   async def _run_post_invocation_compaction(
       self,
       *,
@@ -1132,8 +1188,12 @@ class Runner:
     """
     run_config = run_config or RunConfig()
 
-    if new_message and not new_message.role:
-      new_message.role = 'user'
+    # An inbound message is always a user turn, whatever role the caller set,
+    # matching the A2A request converter. Build a new Content instead of
+    # assigning the role, so the caller's object is left unchanged and a
+    # types.UserContent (whose role field is frozen) is accepted.
+    if new_message and new_message.role != 'user':
+      new_message = types.Content(role='user', parts=new_message.parts)
 
     from .agents.llm_agent import LlmAgent
     from .workflow._base_node import BaseNode
@@ -1181,7 +1241,9 @@ class Runner:
           if has_task_subagent:
             agent_to_run = self.agent
           else:
-            agent_to_run = self._find_agent_to_run(session, self.agent)
+            agent_to_run = self._find_agent_to_run(
+                _session_for_routing(session, new_message), self.agent
+            )
         else:
           agent_to_run = self.agent
 
@@ -1347,12 +1409,10 @@ class Runner:
         ) as agen:
           async for event in agen:
             yield event
-            if invocation_context.is_aborted:
-              break
-        # Run compaction after all events are yielded from the agent.
-        # (We don't compact in the middle of an invocation, we only compact at
-        # the end of an invocation.)
         if not invocation_context.is_aborted:
+          # Run compaction after all events are yielded from the agent.
+          # (We don't compact in the middle of an invocation, we only compact at
+          # the end of an invocation.)
           await self._run_post_invocation_compaction(
               session=invocation_context.session,
               skip_token_compaction=(
@@ -1465,6 +1525,13 @@ class Runner:
       if field_name in {'id', 'invocation_id', 'timestamp'}:
         continue
       update[field_name] = modified_event.__dict__[field_name]
+    internal = internal_metadata(original_event.custom_metadata)
+    if 'custom_metadata' in update and internal:
+      # ADK-internal keys belong to ADK, so a replacement cannot drop them.
+      update['custom_metadata'] = {
+          **(update['custom_metadata'] or {}),
+          **internal,
+      }
     output_event = original_event.model_copy(update=update)
     if not output_event.author:
       output_event.author = original_event.author
@@ -1489,6 +1556,34 @@ class Runner:
         modified_event=modified_event,
         run_config=invocation_context.run_config,
     )
+
+  async def _process_and_append_event(
+      self,
+      event: Event,
+      invocation_context: InvocationContext,
+      *,
+      is_live_call: bool = False,
+  ) -> Event:
+    """Applies custom metadata, runs on_event callbacks, and appends to session."""
+    output_event = await self._process_event_with_plugin_callbacks(
+        invocation_context=invocation_context,
+        event=event,
+    )
+
+    if is_live_call:
+      if output_event.partial is not True and self._should_append_event(
+          output_event, is_live_call
+      ):
+        logger.debug('Appending live event: %s', output_event)
+        await self.session_service.append_event(
+            session=invocation_context.session, event=output_event
+        )
+    else:
+      if output_event.partial is not True:
+        await self.session_service.append_event(
+            session=invocation_context.session, event=output_event
+        )
+    return output_event
 
   async def _exec_with_plugin(
       self,
@@ -1539,30 +1634,18 @@ class Runner:
         # Step 2: Otherwise continue with normal execution
         async with aclosing(execute_fn(invocation_context)) as agen:
           async for event in agen:
-            # Step 3: Run the on_event callbacks before persisting so callback
-            # changes are stored in the session and match the streamed event.
-            output_event = await self._process_event_with_plugin_callbacks(
-                invocation_context=invocation_context,
+            output_event = await self._process_and_append_event(
                 event=event,
+                invocation_context=invocation_context,
+                is_live_call=is_live_call,
             )
-
-            if is_live_call:
-              # Skip partial transcriptions for Live
-              if (
-                  output_event.partial is not True
-                  and self._should_append_event(output_event, is_live_call)
-              ):
-                logger.debug('Appending live event: %s', output_event)
-                await self.session_service.append_event(
-                    session=invocation_context.session, event=output_event
-                )
-            else:
-              if output_event.partial is not True:
-                await self.session_service.append_event(
-                    session=invocation_context.session, event=output_event
-                )
-
             yield output_event
+        if not is_live_call and invocation_context.is_aborted:
+          abort_events = await self._synthesize_abort_events_if_needed(
+              invocation_context
+          )
+          for abort_event in abort_events:
+            yield abort_event
     except GeneratorExit:
       # Early generator close is treated as a clean completion.
       closing_early = True
@@ -1585,6 +1668,17 @@ class Runner:
       run_error = e
       raise
     finally:
+      if not is_live_call and invocation_context.is_aborted:
+        # Best-effort: only reached on early close or error, where raising
+        # would mask the in-flight exception and skip after_run.
+        try:
+          await self._synthesize_abort_events_if_needed(invocation_context)
+        except Exception:  # pylint: disable=broad-exception-caught
+          logger.error(
+              'Failed to seal aborted invocation %s.',
+              invocation_context.invocation_id,
+              exc_info=True,
+          )
       # Step 4: Run after_run callbacks on successful completion or early exit.
       if run_error is None:
         try:
@@ -2112,25 +2206,6 @@ class Runner:
         run_config=run_config,
         caller_principal=caller_principal,
         resumability_config=self.resumability_config,
-    )
-
-  def _new_invocation_context_for_live(
-      self,
-      session: Session,
-      *,
-      live_request_queue: LiveRequestQueue,
-      run_config: Optional[RunConfig] = None,
-  ) -> InvocationContext:
-    """Creates a new invocation context for live multi-agent.
-
-    TODO: Deprecate or remove in follow-up CLs as live runner logic is
-    extracted.
-    """
-    return _live_runner_utils.new_invocation_context_for_live(
-        self,
-        session,
-        live_request_queue=live_request_queue,
-        run_config=run_config,
     )
 
   async def _handle_new_message(

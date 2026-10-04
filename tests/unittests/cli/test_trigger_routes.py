@@ -209,6 +209,7 @@ def _make_test_client(
     trigger_auth_verifier: Optional[
         Callable[[Request], None | Awaitable[None]]
     ] = None,
+    max_llm_calls: Optional[int] = None,
 ) -> TestClient:
   """Build a TestClient with the given trigger setting."""
   with (
@@ -261,6 +262,7 @@ def _make_test_client(
         trigger_oidc_audience=trigger_oidc_audience,
         trigger_oidc_service_accounts=trigger_oidc_service_accounts,
         trigger_auth_verifier=trigger_auth_verifier,
+        max_llm_calls=max_llm_calls,
     )
     return TestClient(app)
 
@@ -543,6 +545,33 @@ class TestTriggerOidcVerification:
         headers={"Authorization": "Bearer some.jwt.value"},
     )
     assert resp.status_code == 403
+
+  @pytest.mark.parametrize("endpoint,payload", _TRIGGER_ENDPOINTS_AND_PAYLOADS)
+  @pytest.mark.parametrize("email_verified", ["false", "true", 1])
+  def test_rejects_non_boolean_email_verified(
+      self, client_oidc_emails, monkeypatch, endpoint, payload, email_verified
+  ):
+    """The email_verified claim must be the boolean True."""
+
+    def _ok(token, request, audience):
+      return {
+          "aud": audience,
+          "email": "allowed@project.iam",
+          "email_verified": email_verified,
+      }
+
+    monkeypatch.setattr(
+        trigger_routes_module.google_id_token,
+        "verify_oauth2_token",
+        _ok,
+    )
+    resp = client_oidc_emails.post(
+        endpoint,
+        json=payload,
+        headers={"Authorization": "Bearer some.jwt.value"},
+    )
+    assert resp.status_code == 403
+    assert "Untrusted token principal" in resp.json()["detail"]
 
   @pytest.mark.parametrize("endpoint,payload", _TRIGGER_ENDPOINTS_AND_PAYLOADS)
   def test_accepts_allowed_email(
@@ -935,6 +964,47 @@ class TestTriggerPubSub:
     assert resp.status_code == 500
     assert "unknown_app" not in mock_session_service.sessions
 
+  def test_pubsub_passes_max_llm_calls(
+      self,
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      monkeypatch,
+  ):
+    """Trigger runs apply max_llm_calls configured on the server."""
+    captured_run_configs = []
+
+    async def dummy_run_async_capture(
+        self, user_id, session_id, new_message, run_config=None, **kwargs
+    ):
+      captured_run_configs.append(run_config)
+      yield _model_event("Success")
+      await asyncio.sleep(0)
+
+    monkeypatch.setattr(Runner, "run_async", dummy_run_async_capture)
+
+    client = _make_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        trigger_sources=["pubsub"],
+        max_llm_calls=37,
+    )
+
+    message_data = base64.b64encode(b"test").decode("utf-8")
+    payload = {
+        "message": {"data": message_data},
+    }
+    resp = client.post("/apps/test_app/trigger/pubsub", json=payload)
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "success"
+    assert len(captured_run_configs) == 1
+    assert captured_run_configs[0] is not None
+    assert captured_run_configs[0].max_llm_calls == 37
+
 
 # ===================================================================
 # /apps/test_app/trigger/eventarc — Eventarc / CloudEvents
@@ -1289,6 +1359,58 @@ class TestTriggerEventarc:
     assert received_data["data"]["bucket"] == "my-bucket"
     assert received_data["data"]["name"] == "file.txt"
     assert received_data["attributes"]["ce-id"] == "12345"
+
+  def test_eventarc_passes_max_llm_calls(
+      self,
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      monkeypatch,
+  ):
+    """Trigger runs apply max_llm_calls configured on the server."""
+    captured_run_configs = []
+
+    async def dummy_run_async_capture(
+        self, user_id, session_id, new_message, run_config=None, **kwargs
+    ):
+      captured_run_configs.append(run_config)
+      yield _model_event("Success")
+      await asyncio.sleep(0)
+
+    monkeypatch.setattr(Runner, "run_async", dummy_run_async_capture)
+
+    client = _make_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        trigger_sources=["eventarc"],
+        max_llm_calls=42,
+    )
+
+    payload = {
+        "bucket": "my-bucket",
+        "name": "file.txt",
+        "contentType": "application/json",
+    }
+    resp = client.post(
+        "/apps/test_app/trigger/eventarc",
+        json=payload,
+        headers={
+            "ce-source": (
+                "//storage.googleapis.com/projects/_/buckets/my-bucket"
+            ),
+            "ce-type": "google.cloud.storage.object.v1.finalized",
+            "ce-id": "12345",
+            "ce-specversion": "1.0",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "success"
+    assert len(captured_run_configs) == 1
+    assert captured_run_configs[0] is not None
+    assert captured_run_configs[0].max_llm_calls == 42
 
 
 # ===================================================================

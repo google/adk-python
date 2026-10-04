@@ -2088,7 +2088,17 @@ def fast_api_common_options():
             "Optional. AvatarConfig as an inline JSON object or a path to a"
             " JSON file. Applied only to /run_live sessions whose client"
             " requests video output (modalities=VIDEO); other live sessions"
-            " ignore it."
+            " ignore it. If unset, video sessions use the pre-built 'Kai'"
+            " avatar."
+        ),
+        default=None,
+    )
+    @click.option(
+        "--max_llm_calls",
+        type=int,
+        help=(
+            "Optional. Maximum number of LLM calls allowed for each agent"
+            " run. Values less than or equal to zero disable the limit."
         ),
         default=None,
     )
@@ -2212,6 +2222,7 @@ def cli_web(
     trigger_oidc_audience: str | None = None,
     trigger_oidc_service_accounts: list[str] | None = None,
     avatar_config: types.AvatarConfig | None = None,
+    max_llm_calls: int | None = None,
 ):
   """Starts a FastAPI server with Web UI for agents.
 
@@ -2285,6 +2296,7 @@ def cli_web(
       trigger_oidc_service_accounts=trigger_oidc_service_accounts,
       default_llm_model=default_llm_model,
       avatar_config=avatar_config,
+      max_llm_calls=max_llm_calls,
   )
   config = uvicorn.Config(
       app,
@@ -2369,6 +2381,7 @@ def cli_api_server(
     trigger_oidc_audience: str | None = None,
     trigger_oidc_service_accounts: list[str] | None = None,
     avatar_config: types.AvatarConfig | None = None,
+    max_llm_calls: int | None = None,
 ):
   """Starts a FastAPI server for agents.
 
@@ -2432,6 +2445,7 @@ def cli_api_server(
           gemini_enterprise_app_name=gemini_enterprise_app_name,
           express_mode=express_mode,
           avatar_config=avatar_config,
+          max_llm_calls=max_llm_calls,
           lifespan=_lifespan,
       ),
       host=host,

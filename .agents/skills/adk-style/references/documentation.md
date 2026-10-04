@@ -8,6 +8,8 @@
   field — see the Pydantic reference.
 - **Methods and functions**: document every argument, the return value, and
   each exception raised.
+- **Docstrings say what the API does.** Design history and rejected
+  alternatives belong in the pull request.
 
 ## Internal Implementation Comments
 
@@ -17,3 +19,5 @@
 - **No links to RFCs, design docs, issues, or pull requests.** They rot faster
   than the code, and a reader who cannot open the link is left with nothing.
   Put the reasoning in the comment itself and the link in the pull request.
+  The same applies to issue numbers, and to warnings, log lines and error
+  messages.

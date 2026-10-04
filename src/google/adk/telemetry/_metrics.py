@@ -657,8 +657,8 @@ def record_skill_script_execution(
   """Records the result of skill's script executions."""
   attrs: dict[str, AttributeValue] = {
       gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name,
-      _adk_attributes.ADK_EXPERIMENTAL_SKILL_NAME: skill_name.bounded(),
-      _adk_attributes.ADK_EXPERIMENTAL_SKILL_SCRIPT_PATH: script_path.bounded(),
+      tracing.GEN_AI_SKILL_NAME: skill_name.bounded(),
+      tracing.GEN_AI_SKILL_RESOURCE_NAME: script_path.bounded(),
   }
   if script_exit_code is not None:
     # As exit codes can be up to 255, to reduce cardinality we only record
@@ -679,7 +679,7 @@ def record_skill_load(
   """Records one skill load, whether or not it resolved a skill."""
   attrs: dict[str, AttributeValue] = {
       gen_ai_attributes.GEN_AI_AGENT_NAME: agent_name,
-      _adk_attributes.ADK_EXPERIMENTAL_SKILL_NAME: skill_name.bounded(),
+      tracing.GEN_AI_SKILL_NAME: skill_name.bounded(),
   }
   if error_type is not None:
     attrs[error_attributes.ERROR_TYPE] = error_type

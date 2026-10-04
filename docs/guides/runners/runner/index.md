@@ -65,7 +65,7 @@ sequenceDiagram
     participant Plugins as PluginManager
     participant Agent as Root Agent / Workflow
 
-    Caller->>Runner: run_async(user_id, session_id, new_message, run_config)
+    Caller->>Runner: run_async(user_id, session_id, new_message, run_config, abort_signal)
     Runner->>Session: get_session(app_name, user_id, session_id)
     alt Session Not Found & auto_create_session=True
         Runner->>Session: create_session(app_name, user_id, session_id)
@@ -85,7 +85,7 @@ sequenceDiagram
 
 1. **Session Resolution & Normalization:** `Runner` normalizes its root target to an `App`. On `run_async`, it retrieves the active `Session` from `session_service` using `app.name`, `user_id`, and `session_id`. If the session is missing and `auto_create_session=True`, a new session is created automatically; otherwise `SessionNotFoundError` is raised.
 2. **Context & Event Ingestion:** The caller's `new_message` is appended as a user `Event`. `Runner` constructs an `InvocationContext` linking session state (`app:`, `user:`, `temp:`), artifact service, memory service, and plugin manager.
-3. **Execution & Event Streaming:** The runner executes the root agent generator. Generated `Event` instances pass through `PluginManager.run_on_event_callback()` before being yielded to the caller.
+3. **Execution & Event Streaming:** The runner executes the root agent generator. Generated `Event` instances pass through `PluginManager.run_on_event_callback()` before being yielded to the caller. If `abort_signal` is set during execution, the runner cancels active tasks, emits an `INVOCATION_ABORTED` event, and seals any pending tool calls.
 4. **Session Persistence & Compaction:** Produced events are persisted to `session_service`. If `events_compaction_config` is set on `App`, event compaction runs after iteration completes.
 
 ## Configuration options
@@ -106,6 +106,21 @@ Constructor arguments passed when initializing `Runner(...)` or `InMemoryRunner(
 | `artifact_service` | `BaseArtifactService \| None` | `None` | Service for storing binary payloads and files outside session events. |
 | `auto_create_session` | `bool` | `False` | Automatically create a new session if `session_id` is not found during `run_async`. |
 | `plugins` | `list[BasePlugin] \| None` | `None` | Deprecated on `Runner`: pass plugins on `App(plugins=[...])` instead. |
+
+### `run_async` Options
+
+Arguments passed per-invocation to `runner.run_async(...)`:
+
+| Option | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `user_id` | `str` | *required* | User identifier of the session. |
+| `session_id` | `str` | *required* | Session identifier. |
+| `invocation_id` | `str \| None` | `None` | Invocation identifier to resume an interrupted invocation. |
+| `new_message` | `types.Content \| None` | `None` | Message to append to the session. Omit when resuming. |
+| `state_delta` | `dict[str, Any] \| None` | `None` | State changes to apply to the session before execution. |
+| `run_config` | `RunConfig \| None` | `None` | Per-invocation execution configuration. |
+| `yield_user_message` | `bool` | `False` | Yield the user-message event before agent or node events. |
+| `abort_signal` | `asyncio.Event \| None` | `None` | Cooperative cancellation signal; see [Runner Execution Cancellation](abort.md). |
 
 ### RunConfig Options
 
@@ -154,6 +169,7 @@ runner = InMemoryRunner(app=app, auto_create_session=True)
 ## Related guides & samples
 
 *   [App Container](../../apps/app/index.md) — Guide on `App` configuration, plugins, and cross-cutting features.
+*   [Runner Execution Cancellation](abort.md) — Guide on halting agent and workflow execution cleanly using abort signals.
 *   [Runner Live Streaming](live.md) — Guide on real-time bidirectional streaming with `run_live` and `LiveRequestQueue`.
 *   [Session and BaseSessionService](../../sessions/session/index.md) — Guide on session storage backends and state scoping.
 *   [Agent-to-Agent Sample](../../../../contributing/samples/a2a/a2a_basic/agent.py) — Multi-agent application executed via `Runner`.

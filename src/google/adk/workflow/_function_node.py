@@ -39,6 +39,7 @@ from ..events.request_input import RequestInput
 from ..utils._callable_utils import CallableSpec
 from ..utils._schema_utils import annotation_accepts_content
 from ..utils._schema_utils import annotation_expects_str
+from ..utils.context_utils import Aclosing
 from ._base_node import BaseNode
 from ._errors import WorkflowConfigurationError
 from ._errors import WorkflowDataError
@@ -311,6 +312,14 @@ class FunctionNode(BaseNode):
       if param_name == self._context_param_name:
         kwargs[param_name] = ctx
         continue
+      if param.kind == inspect.Parameter.VAR_POSITIONAL:
+        continue
+      if param.kind == inspect.Parameter.VAR_KEYWORD:
+        if input_bound and isinstance(source, dict):
+          for k, v in source.items():
+            if k not in self._sig.parameters and k != self._context_param_name:
+              kwargs[k] = v
+        continue
 
       # In state mode, 'node_input' param is passed through directly.
       if not input_bound and param_name == "node_input":
@@ -469,6 +478,17 @@ class FunctionNode(BaseNode):
       for param_name, param in self._sig.parameters.items():
         if param_name == self._context_param_name:
           continue
+        if param.kind == inspect.Parameter.VAR_POSITIONAL:
+          continue
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+          if isinstance(source, dict):
+            for k, v in source.items():
+              if (
+                  k not in self._sig.parameters
+                  and k != self._context_param_name
+              ):
+                validated[k] = v
+          continue
 
         has_param = False
         value = None
@@ -573,10 +593,11 @@ class FunctionNode(BaseNode):
       items = None
 
     if items is not None:
-      async for item in items:
-        event = self._to_event(ctx, item)
-        if event is not None:
-          yield event
+      async with Aclosing(items) as items:
+        async for item in items:
+          event = self._to_event(ctx, item)
+          if event is not None:
+            yield event
     else:
       if inspect.iscoroutinefunction(unwrapped_func):
         result = await self._func(**kwargs)

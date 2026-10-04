@@ -19,6 +19,7 @@ import contextvars
 import functools
 import inspect
 import logging
+import re
 from typing import Any
 from typing import Awaitable
 from typing import Callable
@@ -26,6 +27,7 @@ from typing import cast
 from typing import Iterable
 from typing import Iterator
 from typing import Optional
+from typing import TYPE_CHECKING
 from typing import Union
 
 from google.genai import types
@@ -41,6 +43,9 @@ from ..utils.variant_utils import GoogleLLMVariant
 from ._automatic_function_calling_util import build_function_declaration
 from .base_tool import BaseTool
 from .tool_context import ToolContext
+
+if TYPE_CHECKING:
+  from ..workflow._function_node import FunctionNode
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -125,6 +130,9 @@ class FunctionTool(BaseTool):
     self._ignore_params = [self._context_param_name, "input_stream"]
     self._require_confirmation = require_confirmation
     self._type_adapter_cache: dict[Any, pydantic.TypeAdapter[Any]] = {}
+    self._generator_node_cache: (
+        tuple[tuple[str, Any, str], FunctionNode] | None
+    ) = None
 
   @override
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
@@ -416,6 +424,10 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
         return {"error": "This tool call is rejected."}
 
     try:
+      if self._should_run_generator_as_node(tool_context):
+        return await self._run_generator_as_node(
+            args_to_call=args_to_call, tool_context=tool_context
+        )
       return await self._invoke_callable(self.func, args_to_call)
     except TypeError as e:
       if not self._spec.has_signature and self._is_invocation_type_error(
@@ -433,6 +445,69 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
             )
         }
       raise
+
+  def _should_run_generator_as_node(self, tool_context: ToolContext) -> bool:
+    """Returns whether a generator tool should run as a FunctionNode."""
+    if not self._spec.is_generator:
+      return False
+    if self._spec.has_signature and (
+        "input_stream" in self._spec.signature.parameters
+    ):
+      return False
+    ic = getattr(tool_context, "_invocation_context", None)
+    return ic is not None and ic.live_request_queue is None
+
+  def _get_generator_node(self) -> FunctionNode:
+    """Returns a cached FunctionNode configured for this generator tool."""
+    from ..workflow._function_node import FunctionNode
+
+    cache_key = (self.name, self.func, self._context_param_name)
+    if (
+        self._generator_node_cache is not None
+        and self._generator_node_cache[0] == cache_key
+    ):
+      return self._generator_node_cache[1]
+
+    node_name = re.sub(r"[^a-zA-Z0-9_]", "_", self.name)
+    if not node_name or not node_name.isidentifier():
+      node_name = f"_{node_name}"
+
+    node = FunctionNode(
+        func=self.func,
+        name=node_name,
+        parameter_binding="node_input",
+        rerun_on_resume=True,
+    )
+    # Inject the context under the same parameter FunctionTool uses, so
+    # e.g. a plain `ctx: str` argument is bound from args rather than
+    # replaced by the node's own `ctx` convention.
+    node._context_param_name = self._context_param_name
+    # run_async has already preprocessed and (when FUNCTION_TOOL_ARG_VALIDATION
+    # is on) validated the arguments. Clearing the node's type hints makes it
+    # bind them as-is, so generator tools see the same values as other
+    # FunctionTools instead of a second TypeAdapter pass that would reject a
+    # `param: str = None` default or raise past the tool's error handling.
+    node._type_hints = {}
+    node._type_adapters = {}
+    self._generator_node_cache = (cache_key, node)
+    return node
+
+  async def _run_generator_as_node(
+      self,
+      *,
+      args_to_call: dict[str, Any],
+      tool_context: ToolContext,
+  ) -> Any:
+    """Executes a non-live generator FunctionTool via FunctionNode."""
+    from ._node_tool import _run_node_in_tool_context
+
+    return await _run_node_in_tool_context(
+        self._get_generator_node(),
+        tool_name=self.name,
+        node_input=args_to_call,
+        tool_context=tool_context,
+        key_run_by_function_call=True,
+    )
 
   def _detect_error_in_response(self, response: Any) -> Optional[str]:
     """Telemetry hook: returns an error type if the response indicates an error."""

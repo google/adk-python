@@ -57,7 +57,7 @@ graph TD
 
    ```python
    root_agent = Workflow(
-       name='live_workflow',
+       name='workflow',
        edges=[
            (START, greeter_agent),
            (greeter_agent, dob_verifier_agent),
@@ -69,23 +69,23 @@ graph TD
 1. **Run the agent** with the ADK web interface and start a Live Session:
 
    ```bash
-   uv run adk web contributing/samples/live/live_workflow
+   uv run adk web contributing/samples/live/workflow
    ```
 
 1. **Evaluate the workflow in live mode**: `test_config.json` and
-   `live_workflow.evalset.json` score the workflow with an `llm_audio` user
+   `workflow.evalset.json` score the workflow with an `llm_audio` user
    simulator that adapts to each stage instead of following a fixed script.
 
    1. Install the eval extra: `uv pip install -e ".[eval]"`.
    1. Add a `.env` in this directory with Vertex AI credentials (see
-      `live_bidi_streaming_single_agent/.env`). The project needs access to both
+      `single_agent/.env`). The project needs access to both
       the Live API and Gemini TTS models.
    1. Run the eval:
       ```bash
       uv run adk eval \
-        contributing/samples/live/live_workflow \
-        contributing/samples/live/live_workflow/live_workflow.evalset.json \
-        --config_file_path contributing/samples/live/live_workflow/test_config.json
+        contributing/samples/live/workflow \
+        contributing/samples/live/workflow/workflow.evalset.json \
+        --config_file_path contributing/samples/live/workflow/test_config.json
       ```
 
 ## Related Guides

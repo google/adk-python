@@ -560,13 +560,6 @@ class Workflow(BaseNode):
     return trigger
 
   @staticmethod
-  def _next_run_id(
-      loop_state: _LoopState, node_name: str, parent_path: str = ""
-  ) -> str:
-    """Increment and return the next sequential run_id for a node."""
-    return loop_state.next_run_id(node_name, parent_path=parent_path)
-
-  @staticmethod
   def _compute_isolation_scope_for_node(
       node: BaseNode,
       parent_ctx: Context | None,
@@ -637,8 +630,8 @@ class Workflow(BaseNode):
     # Reuse run_id on resume; assign a new sequential id for fresh runs.
     run_id = node_state.run_id
     if not run_id:
-      run_id = self._next_run_id(
-          loop_state, node_name, parent_path=ctx.node_path or ""
+      run_id = loop_state.next_run_id(
+          node_name, parent_path=ctx.node_path or ""
       )
     node_state.run_id = run_id
 
