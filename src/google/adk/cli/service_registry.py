@@ -272,11 +272,11 @@ def _register_builtin_services(registry: ServiceRegistry) -> None:
 
     parsed = urlparse(uri)
     db_path = parsed.path
-    if not db_path:
-      # Treat sqlite:// without a path as an in-memory session service.
-      return memory_session_factory("memory://", **kwargs)
-    elif db_path.startswith("/"):
+    if db_path.startswith("/"):
       db_path = db_path[1:]
+    if not db_path or db_path == ":memory:":
+      # A per-operation SQLite connection cannot retain a temporary database.
+      return memory_session_factory("memory://", **kwargs)
 
     # SqliteSessionService only accepts db_path, warn if extra kwargs provided
     ignored_kwargs = {k: v for k, v in kwargs.items() if k != "agents_dir"}
