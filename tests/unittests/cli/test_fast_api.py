@@ -3862,9 +3862,25 @@ async def test_agent_run_sse_disconnect_seals_dangling_function_call(
       tool_in_flight.set()
       await asyncio.sleep(5.0)
 
+  from google.adk.apps.app import App
+  from google.adk.plugins.base_plugin import BasePlugin
+
+  after_run_called = False
+
+  class _AfterRunPlugin(BasePlugin):
+
+    async def after_run_callback(self, *, invocation_context):
+      nonlocal after_run_called
+      after_run_called = True
+
   slow_agent = SlowToolAgent("slow_tool_agent")
+  loaded_app = App(
+      name=info["app_name"],
+      root_agent=slow_agent,
+      plugins=[_AfterRunPlugin(name="after_run")],
+  )
   monkeypatch.setattr(
-      mock_agent_loader, "load_agent", lambda app_name: slow_agent
+      mock_agent_loader, "load_agent", lambda app_name: loaded_app
   )
 
   client = _create_test_client(
@@ -3913,6 +3929,7 @@ async def test_agent_run_sse_disconnect_seals_dangling_function_call(
   assert any("slow_tool" in chunk for chunk in sent_chunks)
   assert len(captured_contexts) == 1
   assert captured_contexts[0].is_aborted is True
+  assert after_run_called is True
 
   # Verify the dangling FunctionCall was sealed with a synthetic FunctionResponse in session
   session = await mock_session_service.get_session(
@@ -5930,6 +5947,119 @@ def test_agent_run_disconnect_aborts_run(
   # Then the response status should be 499 and the running generator was cancelled
   assert response.status_code == 499
   assert was_cancelled["value"] is True
+
+
+async def test_agent_run_disconnect_seals_dangling_call_and_runs_after_run(
+    create_test_session,
+    mock_session_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    monkeypatch,
+):
+  """Test that /run disconnect seals dangling FunctionCall and runs after_run."""
+  from google.adk.apps.app import App
+  from google.adk.plugins.base_plugin import BasePlugin
+  import starlette.requests
+
+  info = create_test_session
+  captured_contexts = []
+  tool_in_flight = asyncio.Event()
+  after_run_called = False
+
+  monkeypatch.setattr(Runner, "run_async", _ORIGINAL_RUNNER_RUN_ASYNC)
+
+  class _AfterRunPlugin(BasePlugin):
+
+    async def after_run_callback(self, *, invocation_context):
+      nonlocal after_run_called
+      after_run_called = True
+
+  class SlowToolAgent(BaseAgent):
+
+    def __init__(self, name: str):
+      super().__init__(name=name, sub_agents=[])
+
+    async def _run_async_impl(self, invocation_context):
+      captured_contexts.append(invocation_context)
+      fc = types.Part.from_function_call(name="slow_tool", args={"q": "test"})
+      fc.function_call.id = "call_run_1"
+      yield Event(
+          invocation_id=invocation_context.invocation_id,
+          author=self.name,
+          content=types.Content(role="model", parts=[fc]),
+      )
+      tool_in_flight.set()
+      await asyncio.sleep(5.0)
+
+  slow_agent = SlowToolAgent("slow_tool_agent")
+  loaded_app = App(
+      name=info["app_name"],
+      root_agent=slow_agent,
+      plugins=[_AfterRunPlugin(name="after_run")],
+  )
+  monkeypatch.setattr(
+      mock_agent_loader, "load_agent", lambda app_name: loaded_app
+  )
+
+  client = _create_test_client(
+      mock_session_service,
+      InMemoryArtifactService(),
+      InMemoryMemoryService(),
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
+  app = client.app
+  handler = None
+  for route in app.routes:
+    if route.path == "/run":
+      handler = route.endpoint
+      break
+  assert handler is not None
+
+  req = RunAgentRequest(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      new_message={"role": "user", "parts": [{"text": "Run slow tool"}]},
+      streaming=False,
+  )
+
+  async def receive():
+    await tool_in_flight.wait()
+    return {"type": "http.disconnect"}
+
+  request = starlette.requests.Request(
+      {
+          "type": "http",
+          "method": "POST",
+          "path": "/run",
+          "headers": [],
+          "asgi": {"spec_version": "2.1"},
+      },
+      receive=receive,
+  )
+
+  response = await handler(req, request)
+  assert response.status_code == 499
+  assert len(captured_contexts) == 1
+  assert captured_contexts[0].is_aborted is True
+  assert after_run_called is True
+
+  session = await mock_session_service.get_session(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+  )
+  abort_events = [
+      e for e in session.events if e.error_code == "INVOCATION_ABORTED"
+  ]
+  assert len(abort_events) == 1
+  frs = abort_events[0].get_function_responses()
+  assert len(frs) == 1
+  assert frs[0].id == "call_run_1"
+  assert frs[0].name == "slow_tool"
 
 
 #################################################

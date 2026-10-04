@@ -1991,18 +1991,28 @@ class ApiServer:
             ),
         )
 
+      abort_signal = asyncio.Event()
+
       async def worker():
+        run_async_kwargs: dict[str, Any] = {
+            "user_id": req.user_id,
+            "session_id": req.session_id,
+            "new_message": req.new_message,
+            "state_delta": req.state_delta,
+            "invocation_id": req.invocation_id,
+            "run_config": run_config,
+        }
         try:
-          async with Aclosing(
-              runner.run_async(
-                  user_id=req.user_id,
-                  session_id=req.session_id,
-                  new_message=req.new_message,
-                  state_delta=req.state_delta,
-                  invocation_id=req.invocation_id,
-                  run_config=run_config,
-              )
-          ) as agen:
+          params = inspect.signature(runner.run_async).parameters
+          if "abort_signal" in params or any(
+              p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+          ):
+            run_async_kwargs["abort_signal"] = abort_signal
+        except (ValueError, TypeError):
+          run_async_kwargs["abort_signal"] = abort_signal
+
+        try:
+          async with Aclosing(runner.run_async(**run_async_kwargs)) as agen:
             return [public_event(event) async for event in agen]
         except SessionNotFoundError as e:
           raise HTTPException(status_code=404, detail=str(e)) from e
@@ -2018,6 +2028,7 @@ class ApiServer:
                   "Client disconnected. Aborting agent run for session %s.",
                   req.session_id,
               )
+              abort_signal.set()
               worker_task.cancel()
               break
         except asyncio.CancelledError:
