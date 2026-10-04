@@ -34,6 +34,7 @@ from ...sessions import base_session_service
 from ...utils.context_utils import Aclosing
 from ..agent.interceptors.new_integration_extension import _NEW_A2A_ADK_INTEGRATION_EXTENSION
 from ..converters.from_adk_event import create_error_status_event
+from ..converters.from_adk_event import DEFAULT_ERROR_MESSAGE
 from ..converters.long_running_functions import handle_user_input
 from ..converters.long_running_functions import LongRunningFunctions
 from ..converters.request_converter import AgentRunRequest
@@ -165,7 +166,7 @@ class _A2aAgentExecutor(AgentExecutor):
                     message=Message(
                         message_id=str(uuid.uuid4()),
                         role=_compat.ROLE_AGENT,
-                        parts=[_compat.make_text_part(str(e))],
+                        parts=[_compat.make_text_part(DEFAULT_ERROR_MESSAGE)],
                     ),
                 ),
                 final=True,
