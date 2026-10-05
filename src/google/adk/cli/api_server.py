@@ -96,6 +96,7 @@ from ..memory.base_memory_service import BaseMemoryService
 from ..models._service_tier import ServiceTier
 from ..plugins.base_plugin import BasePlugin
 from ..runners import Runner
+from ..runners import _CALLER_CLOSED_EARLY_MSG
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
 from ..utils._telemetry_config import read_telemetry_consent
@@ -2018,7 +2019,11 @@ class ApiServer:
                   "Client disconnected. Aborting agent run for session %s.",
                   req.session_id,
               )
-              worker_task.cancel()
+              # Cancel with the caller-closed-early marker instead of a bare
+              # cancel: a disconnect is a caller that stopped consuming events,
+              # so plugins still get after_run_callback. A bare cancellation is
+              # treated as an external cancel and deliberately skips it.
+              worker_task.cancel(_CALLER_CLOSED_EARLY_MSG)
               break
         except asyncio.CancelledError:
           pass
