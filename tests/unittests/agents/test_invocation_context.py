@@ -22,6 +22,7 @@ from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.invocation_context import LlmCallsLimitExceededError
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps import ResumabilityConfig
+from google.adk.events._internal_metadata import INTERNAL_METADATA_PREFIX
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.platform.thread import create_thread
@@ -357,6 +358,40 @@ class TestInvocationContext:
     assert ctx.is_aborted is True
     assert ctx._abort_signal.is_set() is True
 
+  def test_abort_state_deepcopy_shares_instance(self):
+    """Deepcopying InvocationContext preserves shared _abort_state instance."""
+    ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_deep',
+        session=Mock(spec=Session, events=[]),
+    )
+    copied = ctx.model_copy(deep=True)
+    assert copied._abort_state is ctx._abort_state
+
+    copied.abort()
+    assert copied.is_aborted is True
+    assert ctx.is_aborted is True
+
+  async def test_model_copy_deep_with_running_async_generator(self):
+    """Calling model_copy(deep=True) inside a running event loop with active async generators does not raise."""
+    ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_deep_running_loop',
+        session=Mock(spec=Session, events=[]),
+    )
+
+    async def sample_generator():
+      yield 1
+
+    gen = sample_generator()
+    try:
+      copied = ctx.model_copy(deep=True)
+      assert copied._abort_state is ctx._abort_state
+    finally:
+      await gen.aclose()
+
   async def test_abort_signal_on_model_copy_wakes_when_parent_aborts_from_thread(
       self,
   ):
@@ -450,6 +485,23 @@ class TestInvocationContextInitialization:
         run_config=run_cfg,
     )
     # Access private attribute to verify
+    assert inv_ctx._custom_metadata == {'test_key': 'test_value'}
+
+  def test_custom_metadata_drops_internal_keys(self):
+    """Callers cannot set ADK-internal keys in the context's custom_metadata."""
+    run_cfg = RunConfig(
+        custom_metadata={
+            'test_key': 'test_value',
+            INTERNAL_METADATA_PREFIX + 'planted': 'x',
+        }
+    )
+    inv_ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_1',
+        session=Mock(spec=Session, events=[]),
+        run_config=run_cfg,
+    )
     assert inv_ctx._custom_metadata == {'test_key': 'test_value'}
 
   def test_custom_metadata_default_empty(self):

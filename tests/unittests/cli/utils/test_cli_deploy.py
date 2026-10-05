@@ -20,6 +20,7 @@ import importlib
 import inspect
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -28,6 +29,7 @@ from typing import Any
 from typing import Callable
 from typing import Dict
 from typing import List
+from typing import Optional
 from typing import Tuple
 from unittest import mock
 
@@ -142,10 +144,11 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             "rag://m",
             None,
-            (
-                "--session_service_uri=sqlite://s --artifact_service_uri=gs://a"
-                " --memory_service_uri=rag://m"
-            ),
+            [
+                "--session_service_uri=sqlite://s",
+                "--artifact_service_uri=gs://a",
+                "--memory_service_uri=rag://m",
+            ],
         ),
         (
             "1.2.5",
@@ -153,10 +156,11 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             "rag://m",
             None,
-            (
-                "--session_service_uri=sqlite://s --artifact_service_uri=gs://a"
-                " --memory_service_uri=rag://m"
-            ),
+            [
+                "--session_service_uri=sqlite://s",
+                "--artifact_service_uri=gs://a",
+                "--memory_service_uri=rag://m",
+            ],
         ),
         (
             "0.5.0",
@@ -164,10 +168,11 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             "rag://m",
             None,
-            (
-                "--session_service_uri=sqlite://s --artifact_service_uri=gs://a"
-                " --memory_service_uri=rag://m"
-            ),
+            [
+                "--session_service_uri=sqlite://s",
+                "--artifact_service_uri=gs://a",
+                "--memory_service_uri=rag://m",
+            ],
         ),
         (
             "1.3.0",
@@ -175,7 +180,7 @@ def test_resolve_project_from_gcloud_fails(
             None,
             None,
             None,
-            "--session_service_uri=sqlite://s",
+            ["--session_service_uri=sqlite://s"],
         ),
         (
             "1.3.0",
@@ -183,7 +188,7 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             "rag://m",
             None,
-            "--artifact_service_uri=gs://a --memory_service_uri=rag://m",
+            ["--artifact_service_uri=gs://a", "--memory_service_uri=rag://m"],
         ),
         (
             "1.2.0",
@@ -191,7 +196,7 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             None,
             None,
-            "--artifact_service_uri=gs://a",
+            ["--artifact_service_uri=gs://a"],
         ),
         (
             "1.21.0",
@@ -199,7 +204,7 @@ def test_resolve_project_from_gcloud_fails(
             None,
             None,
             False,
-            "--no_use_local_storage",
+            ["--no_use_local_storage"],
         ),
         (
             "1.21.0",
@@ -207,7 +212,7 @@ def test_resolve_project_from_gcloud_fails(
             None,
             None,
             True,
-            "--use_local_storage",
+            ["--use_local_storage"],
         ),
         (
             "1.21.0",
@@ -215,27 +220,40 @@ def test_resolve_project_from_gcloud_fails(
             "gs://a",
             None,
             False,
-            "--session_service_uri=sqlite://s --artifact_service_uri=gs://a",
+            [
+                "--session_service_uri=sqlite://s",
+                "--artifact_service_uri=gs://a",
+            ],
+        ),
+        # A value containing a space stays one argv entry; joining into a
+        # single string would have word split it into two flags.
+        (
+            "1.3.0",
+            "sqlite:///tmp/my sessions.db",
+            None,
+            None,
+            None,
+            ["--session_service_uri=sqlite:///tmp/my sessions.db"],
         ),
     ],
 )
-def test_get_service_option_by_adk_version(
+def test_get_service_options_by_adk_version(
     adk_version: str,
     session_uri: str | None,
     artifact_uri: str | None,
     memory_uri: str | None,
     use_local_storage: bool | None,
-    expected: str,
+    expected: list[str],
 ) -> None:
   """It should return the correct service URI flags for a given ADK version."""
-  actual = cli_deploy._get_service_option_by_adk_version(
+  actual = cli_deploy._get_service_options_by_adk_version(
       adk_version=adk_version,
       session_uri=session_uri,
       artifact_uri=artifact_uri,
       memory_uri=memory_uri,
       use_local_storage=use_local_storage,
   )
-  assert actual.rstrip() == expected.rstrip()
+  assert actual == expected
 
 
 def test_print_agent_engine_url() -> None:
@@ -401,18 +419,35 @@ def test_to_gke_happy_path(
   dockerfile_path = tmp_path / "Dockerfile"
   assert dockerfile_path.is_file()
   dockerfile_content = dockerfile_path.read_text()
-  assert "CMD adk api_server --with_ui --port=9090" in dockerfile_content
-  assert 'RUN pip install "google-adk[a2a]==1.2.0"' in dockerfile_content
+  assert (
+      'CMD ["adk", "api_server", "--with_ui", "--port=9090"'
+      in dockerfile_content
+  )
+  assert (
+      'RUN ["pip", "install", "google-adk[a2a]==1.2.0"]' in dockerfile_content
+  )
 
   assert len(run_recorder.calls) == 3, "Expected 3 subprocess calls"
 
   build_args = run_recorder.calls[0][0][0]
+  # The image is tagged uniquely per build. kubectl apply diffs the manifest,
+  # so reusing one floating tag leaves the Deployment spec unchanged and the
+  # freshly pushed image never rolls out.
+  image_ref = build_args[build_args.index("--tag") + 1]
+  image_name, _, image_tag = image_ref.partition(":")
+  assert image_name == "gcr.io/gke-proj/gke-svc"
+  assert re.fullmatch(r"\d{8}-\d{6}", image_tag), image_tag
+
   expected_build_args = [
       cli_deploy._GCLOUD_CMD,
       "builds",
       "submit",
       "--tag",
-      "gcr.io/gke-proj/gke-svc",
+      image_ref,
+      # Without --project the build runs in whatever project gcloud config
+      # points at, while the image is tagged for `project`.
+      "--project",
+      "gke-proj",
       "--verbosity",
       "debug",
       str(tmp_path),
@@ -447,6 +482,7 @@ def test_to_gke_happy_path(
   yaml_content = deployment_yaml_path.read_text()
 
   assert "kind: Deployment" in yaml_content
+  assert f"image: {image_ref}" in yaml_content
   assert "kind: Service" in yaml_content
   assert "name: gke-svc" in yaml_content
   assert "image: gcr.io/gke-proj/gke-svc" in yaml_content
@@ -1169,6 +1205,7 @@ def test_ensure_agent_engine_dependency(tmp_path: Path):
 
 def _make_recording_vertexai(
     captured_configs: List[Dict[str, Any]],
+    created_instances: Optional[List[Any]] = None,
 ) -> types.ModuleType:
   """Returns a fake `vertexai` module whose client records deploy configs."""
   fake_vertexai = types.ModuleType("vertexai")
@@ -1176,7 +1213,8 @@ def _make_recording_vertexai(
   class _FakeAgentEngines:
 
     def create(self, **kwargs: Any) -> Any:
-      del kwargs
+      if created_instances is not None:
+        created_instances.append(kwargs)
       return types.SimpleNamespace(
           api_resource=types.SimpleNamespace(
               name="projects/p/locations/l/reasoningEngines/e"
@@ -2088,6 +2126,78 @@ def test_to_agent_engine_sets_gcp_project_and_enterprise_env(
   assert (
       has_location
   ), "GOOGLE_CLOUD_LOCATION=us-central1 must be set in Dockerfile or env_vars"
+
+
+@pytest.mark.parametrize(
+    "value", ["1", "true", "us-central1", "example.com:my-project", "", None]
+)
+def test_validate_dockerfile_env_value_accepts_single_line_values(
+    value: Any,
+) -> None:
+  """Ordinary values, including domain-scoped project ids, are accepted."""
+  cli_deploy._validate_dockerfile_env_value("GOOGLE_CLOUD_PROJECT", value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "us-central1\nRUN touch /tmp/pwned",
+        "us-central1\r\nRUN touch /tmp/pwned",
+        "us-central1\n",
+        "\nRUN touch /tmp/pwned",
+    ],
+)
+def test_validate_dockerfile_env_value_rejects_multiline_values(
+    value: str,
+) -> None:
+  """A value spanning more than one line is rejected by name, not by value."""
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy._validate_dockerfile_env_value("GOOGLE_CLOUD_LOCATION", value)
+  assert "GOOGLE_CLOUD_LOCATION" in str(exc_info.value)
+  assert "RUN touch" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "env_name",
+    [
+        "GOOGLE_GENAI_USE_ENTERPRISE",
+        "GOOGLE_CLOUD_PROJECT",
+        "GOOGLE_CLOUD_LOCATION",
+    ],
+)
+def test_to_agent_engine_rejects_multiline_env_file_value(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    env_name: str,
+) -> None:
+  """A multi-line `.env` value must not add instructions to the Dockerfile."""
+  monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+  # An unset gcloud default project is what lets the .env project win.
+  monkeypatch.setattr(
+      subprocess, "run", lambda *a, **k: types.SimpleNamespace(stdout="\n")
+  )
+  created: List[Any] = []
+  monkeypatch.setitem(
+      sys.modules, "vertexai", _make_recording_vertexai([], created)
+  )
+
+  src_dir = agent_dir(False, False)
+  tmp_dir = src_dir.parent / "tmp"
+  (src_dir / ".env").write_text(f'{env_name}="1\nRUN touch /tmp/pwned"\n')
+
+  with pytest.raises(click.ClickException) as exc_info:
+    cli_deploy.to_agent_engine(
+        agent_folder=str(src_dir),
+        temp_folder="tmp",
+        project=None if env_name == "GOOGLE_CLOUD_PROJECT" else "my-project",
+        region=None if env_name == "GOOGLE_CLOUD_LOCATION" else "us-central1",
+        adk_version="1.2.0",
+    )
+
+  assert env_name in str(exc_info.value)
+  assert "RUN touch" not in str(exc_info.value)
+  assert not (tmp_dir / "Dockerfile").exists()
+  assert not created, "rejecting the value must not leak an agent engine"
 
 
 def test_to_gke_without_region_passes_valid_subprocess_args(

@@ -106,7 +106,14 @@
               "gcp.vertex.agent.tool_call_args": "{}",
               "gen_ai.tool.call.id": "PRESENT",
               "gcp.vertex.agent.event_id": "PRESENT",
-              "gcp.vertex.agent.tool_response": "{}"
+              "gcp.vertex.agent.tool_response": "{}",
+              "gen_ai.skill.name": "local-skill",
+              "gen_ai.skill.description": "A sample skill.",
+              "gen_ai.skill.source.uri": "file://local-skill",
+              "adk.skill.additional_tools": [
+                "foo",
+                "bar"
+              ]
             },
             "status": "UNSET",
             "children": [],
@@ -218,7 +225,11 @@
               "gcp.vertex.agent.tool_call_args": "{}",
               "gen_ai.tool.call.id": "PRESENT",
               "gcp.vertex.agent.event_id": "PRESENT",
-              "gcp.vertex.agent.tool_response": "{}"
+              "gcp.vertex.agent.tool_response": "{}",
+              "gen_ai.skill.name": "registry-skill",
+              "gen_ai.skill.description": "A sample skill.",
+              "gen_ai.skill.source.uri": "https://fake-registry.com/skill/registry-skill",
+              "adk.skill.additional_tools": []
             },
             "status": "UNSET",
             "children": [],

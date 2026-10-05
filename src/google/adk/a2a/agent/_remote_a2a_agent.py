@@ -60,13 +60,13 @@ from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
 from ...auth.auth_tool import AuthConfig
 from ...events.event import Event
-from ...flows.llm_flows._fencing import _is_other_agent_reply
-from ...flows.llm_flows._fencing import _present_other_agent_message
-from ...flows.llm_flows._fencing import quote_untrusted
-from ...flows.llm_flows.functions import find_matching_function_call
-from ...flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
-from ...flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
-from ...flows.llm_flows.functions import REQUEST_INPUT_FUNCTION_CALL_NAME
+from ...flows.llm_flows.context._fencing import _is_other_agent_reply
+from ...flows.llm_flows.context._fencing import _present_other_agent_message
+from ...flows.llm_flows.context._fencing import quote_untrusted
+from ...flows.llm_flows.tools._functions import find_matching_function_call
+from ...flows.llm_flows.tools._functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from ...flows.llm_flows.tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from ...flows.llm_flows.tools._functions import REQUEST_INPUT_FUNCTION_CALL_NAME
 from ...sessions.session import Session
 from ...utils.context_utils import Aclosing
 from ..converters.event_converter import convert_a2a_message_to_event
@@ -77,6 +77,7 @@ from ..converters.part_converter import convert_a2a_part_to_genai_part
 from ..converters.part_converter import convert_genai_part_to_a2a_part
 from ..converters.part_converter import GenAIPartToA2APartConverter
 from ..converters.to_adk_event import _create_mock_function_call_for_required_user_input
+from ..converters.to_adk_event import _TASK_RESPONSE_BOUNDARY_STATES
 from ..converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH
 from ..converters.to_adk_event import MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT
 from ..experimental import a2a_experimental
@@ -110,15 +111,18 @@ _DEFAULT_PORTS = {"http": 80, "https": 443}
 logger = logging.getLogger("google_adk." + __name__)
 
 
-# Function call names whose pause is resolved locally (ADK request-* tools or a
-# workflow HITL node); their response is flattened to text before forwarding.
-_HUMAN_INPUT_FUNCTION_CALL_NAMES = frozenset({
+# Calls ADK synthesizes locally for a peer's input or auth request.
+_MOCK_FUNCTION_CALL_NAMES = frozenset({
     MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_INPUT,
     MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH,
+})
+
+# Pause names answered locally as text when the pause was raised on this side.
+_HUMAN_INPUT_FUNCTION_CALL_NAMES = _MOCK_FUNCTION_CALL_NAMES | {
     REQUEST_INPUT_FUNCTION_CALL_NAME,
     REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
     REQUEST_EUC_FUNCTION_CALL_NAME,
-})
+}
 
 # Function call names whose *response* carries credential material.
 _CREDENTIAL_FUNCTION_CALL_NAMES = frozenset({
@@ -303,6 +307,7 @@ def _sanitize_user_function_response_event(
     event: Event,
     trusted_call_names_by_id: dict[Optional[str], set[str]],
     id_less_call_is_ambiguous: bool,
+    human_input_call_names: frozenset[str],
 ) -> Event:
   """Returns a copy of ``event`` with its parts sanitized for forwarding."""
   if event.content is None:
@@ -316,14 +321,14 @@ def _sanitize_user_function_response_event(
 
   def _is_human_input(fr: genai_types.FunctionResponse) -> bool:
     names = trusted_call_names_by_id.get(fr.id)
-    if not names or names.isdisjoint(_HUMAN_INPUT_FUNCTION_CALL_NAMES):
+    if not names or names.isdisjoint(human_input_call_names):
       return False
     # An id-less response with an unknown name can't be classified by id when a
     # call the rewrite must not flatten shares the id-less bucket.
     if (
         id_less_call_is_ambiguous
         and fr.id is None
-        and fr.name not in _HUMAN_INPUT_FUNCTION_CALL_NAMES
+        and fr.name not in human_input_call_names
     ):
       return False
     return True
@@ -842,7 +847,7 @@ class RemoteA2aAgent(BaseAgent):
     from ...auth.auth_handler import AuthHandler
     from ...auth.auth_preprocessor import TOOLSET_AUTH_CREDENTIAL_ID_PREFIX
     from ...auth.credential_manager import CredentialManager
-    from ...flows.llm_flows.functions import build_auth_request_event
+    from ...flows.llm_flows.tools._functions import build_auth_request_event
 
     # Resolve against a copy, so a credential exchanged for one user is never
     # written back onto the config shared by every invocation.
@@ -1135,6 +1140,13 @@ class RemoteA2aAgent(BaseAgent):
 
     event = ctx.session.events[-1]
 
+    # A pause the peer raised and relayed here is answered by resuming the peer.
+    human_input_call_names = (
+        _MOCK_FUNCTION_CALL_NAMES
+        if self._is_relayed_peer_event(function_call_event)
+        else _HUMAN_INPUT_FUNCTION_CALL_NAMES
+    )
+
     # Map every pending call to its id by the trusted function CALL name so
     # credential matching does not depend on the human-input set.
     trusted_call_names_by_id: dict[Optional[str], set[str]] = {}
@@ -1143,11 +1155,14 @@ class RemoteA2aAgent(BaseAgent):
       if fc.name is None:
         continue
       trusted_call_names_by_id.setdefault(fc.id, set()).add(fc.name)
-      if fc.id is None and fc.name not in _HUMAN_INPUT_FUNCTION_CALL_NAMES:
+      if fc.id is None and fc.name not in human_input_call_names:
         id_less_call_is_ambiguous = True
 
     event = _sanitize_user_function_response_event(
-        event, trusted_call_names_by_id, id_less_call_is_ambiguous
+        event,
+        trusted_call_names_by_id,
+        id_less_call_is_ambiguous,
+        human_input_call_names,
     )
 
     a2a_message = convert_event_to_a2a_message(
@@ -1169,13 +1184,16 @@ class RemoteA2aAgent(BaseAgent):
 
     return a2a_message
 
-  def _is_remote_response(self, event: Event) -> bool:
-    is_a2a_resp = bool(
+  def _is_relayed_peer_event(self, event: Event) -> bool:
+    """True when this event came over the wire from this agent's peer."""
+    return bool(
         event.author == self.name
         and event.custom_metadata
         and event.custom_metadata.get(A2A_METADATA_PREFIX + "response", False)
     )
-    if is_a2a_resp:
+
+  def _is_remote_response(self, event: Event) -> bool:
+    if self._is_relayed_peer_event(event):
       return True
 
     # Also stop on synthesized FR events for this agent (meaning the previous
@@ -1364,6 +1382,73 @@ class RemoteA2aAgent(BaseAgent):
       return self._context_builder(ctx, self.name, self._genai_part_converter)
     return self._construct_message_parts_from_session(ctx)
 
+  def _get_resumable_task_id(
+      self, ctx: InvocationContext, context_id: Optional[str]
+  ) -> Optional[str]:
+    """Returns the latest paused task in the outgoing message's context."""
+    if not context_id or not self._has_default_response_persistence():
+      return None
+    task_scope = ctx.isolation_scope if self.mode == "task" else None
+    for event in reversed(ctx.session.events):
+      if task_scope and event.isolation_scope != task_scope:
+        # Do not resume a task from an earlier delegation to the same agent.
+        if any(fc.id == task_scope for fc in event.get_function_calls()):
+          return None
+        continue
+      metadata = event.custom_metadata or {}
+      if (
+          event.author == self.name
+          and event.error_message
+          and metadata.get(A2A_METADATA_PREFIX + "request")
+      ):
+        # A failed request may already have consumed the recorded pause.
+        # Its old task state is no longer sufficient to infer a continuation.
+        return None
+      if not self._is_remote_response(event):
+        continue
+      if metadata.get(A2A_METADATA_PREFIX + "context_id") != context_id:
+        return None
+      response = metadata.get(A2A_METADATA_PREFIX + "response")
+      status = response.get("status") if isinstance(response, dict) else None
+      # Session metadata contains the serialized wire state. A2A 0.3 uses
+      # hyphenated names, while A2A 1.x uses protobuf enum names.
+      if not isinstance(status, dict) or status.get("state") not in (
+          "input-required",
+          "auth-required",
+          "TASK_STATE_INPUT_REQUIRED",
+          "TASK_STATE_AUTH_REQUIRED",
+      ):
+        return None
+      task_id = metadata.get(A2A_METADATA_PREFIX + "task_id")
+      return task_id if isinstance(task_id, str) else None
+    return None
+
+  def _has_default_response_persistence(self) -> bool:
+    """Whether recorded responses can safely determine task continuation.
+
+    Inbound converters and after-request hooks may suppress a terminal response,
+    leaving an older pause in history. With these overrides, callers retain
+    control of task routing through function responses or request interceptors.
+    """
+    if self._a2a_part_converter is not convert_a2a_part_to_genai_part:
+      return False
+    for name in (
+        "a2a_task_converter",
+        "a2a_status_update_converter",
+        "a2a_message_converter",
+        "a2a_artifact_update_converter",
+        "a2a_part_converter",
+    ):
+      if (
+          getattr(self._config, name)
+          is not A2aRemoteAgentConfig.model_fields[name].default
+      ):
+        return False
+    return not any(
+        interceptor.after_request is not None
+        for interceptor in self._config.request_interceptors or []
+    )
+
   async def _handle_a2a_response(
       self,
       a2a_response: _compat.A2AClientEvent | A2AMessage,
@@ -1407,12 +1492,16 @@ class RemoteA2aAgent(BaseAgent):
             for part in event.content.parts or []:
               part.thought = True
           _add_mock_function_call(event, task.status.state)
-        elif isinstance(update, A2ATaskStatusUpdateEvent) and (
-            _status_message := (
-                _compat.normalize_message(update.status.message)
-                if update.status
-                else None
+        elif (
+            isinstance(update, A2ATaskStatusUpdateEvent)
+            and (
+                _status_message := (
+                    _compat.normalize_message(update.status.message)
+                    if update.status
+                    else None
+                )
             )
+            and getattr(_status_message, "parts", True)
         ):
           # This is a streaming task status update with a message.
           # ``normalize_message`` collapses the always-present empty proto
@@ -1430,6 +1519,17 @@ class RemoteA2aAgent(BaseAgent):
             for part in event.content.parts or []:
               part.thought = True
           _add_mock_function_call(event, update.status.state)
+        elif (
+            isinstance(update, A2ATaskStatusUpdateEvent)
+            and update.status.state in _TASK_RESPONSE_BOUNDARY_STATES
+        ):
+          # A bare pause or terminal status is still the end of an interaction.
+          # Persist it so the next user turn sees the current task state.
+          event = Event(
+              author=self.name,
+              invocation_id=ctx.invocation_id,
+              branch=ctx.branch,
+          )
         elif isinstance(update, A2ATaskArtifactUpdateEvent):
           # This is a streaming task artifact update.
           # Convert only the parts carried by this update. Converting the
@@ -1650,6 +1750,7 @@ class RemoteA2aAgent(BaseAgent):
             parts=message_parts,
             role=_compat.ROLE_USER,
             context_id=context_id or session_id,
+            task_id=self._get_resumable_task_id(ctx, context_id),
         )
 
       logger.debug(build_a2a_request_log(a2a_request))
@@ -1815,6 +1916,14 @@ class RemoteA2aAgent(BaseAgent):
               error_message=task_error_message,
               invocation_id=ctx.invocation_id,
               branch=ctx.branch,
+              custom_metadata=(
+                  {
+                      A2A_METADATA_PREFIX
+                      + "request": _compat.a2a_to_dict(a2a_request),
+                  }
+                  if a2a_request
+                  else None
+              ),
           )
 
       except _compat.A2A_HTTP_ERRORS as e:

@@ -363,6 +363,17 @@ _PART_CONTENT_FIELDS = (
 )
 
 
+def _is_empty_text_part(part: types.Part) -> bool:
+  """Returns True for parts that carry nothing but an empty text string.
+
+  ADK itself can produce such parts (e.g. code execution with no output writes
+  `Part(text='')` into the content), and Anthropic rejects empty text blocks.
+  """
+  if part.text != "" or part.thought_signature:
+    return False
+  return not any(getattr(part, f, None) for f in _PART_CONTENT_FIELDS)
+
+
 def _is_content_free_signature(part: types.Part) -> bool:
   """Whether a part is a thought signature with nothing to send beside it.
 
@@ -431,24 +442,59 @@ def _function_response_media_blocks(
 
 
 class _ToolUseIdSanitizer:
-  """Maps invalid tool_use IDs to deterministic fallbacks.
+  """Maps invalid or empty tool_use IDs to deterministic unique fallbacks.
 
   Reuse one instance per conversation so a tool_use and its paired
-  tool_result with the same invalid source ID get matching outputs.
+  tool_result get matching unique outputs without collision across turns.
   """
 
   def __init__(self) -> None:
     self._mapping: dict[str, str] = {}
+    self._unpaired_calls_by_name: dict[str, list[str]] = {}
+    self._unpaired_calls_list: list[str] = []
     self._next_fallback: int = 0
 
-  def sanitize(self, tool_id: str | None) -> str:
+  def sanitize(
+      self,
+      tool_id: str | None,
+      tool_name: str | None = None,
+      is_call: bool = False,
+  ) -> str:
     if tool_id and re.fullmatch(r"[a-zA-Z0-9_-]+", tool_id):
       return tool_id
-    key = tool_id or ""
-    if key not in self._mapping:
-      self._mapping[key] = f"toolu_fallback_{self._next_fallback}"
+    if tool_id and tool_id in self._mapping:
+      return self._mapping[tool_id]
+
+    if is_call or (tool_id and tool_id not in self._mapping):
+      assigned_id = f"toolu_fallback_{self._next_fallback}"
       self._next_fallback += 1
-    return self._mapping[key]
+      if tool_id:
+        self._mapping[tool_id] = assigned_id
+      else:
+        if tool_name:
+          self._unpaired_calls_by_name.setdefault(tool_name, []).append(
+              assigned_id
+          )
+        self._unpaired_calls_list.append(assigned_id)
+      return assigned_id
+    else:
+      # Response with empty/None tool_id: pair with oldest pending call
+      if tool_name and self._unpaired_calls_by_name.get(tool_name):
+        assigned_id = self._unpaired_calls_by_name[tool_name].pop(0)
+        if assigned_id in self._unpaired_calls_list:
+          self._unpaired_calls_list.remove(assigned_id)
+        return assigned_id
+      elif self._unpaired_calls_list:
+        assigned_id = self._unpaired_calls_list.pop(0)
+        for ids in self._unpaired_calls_by_name.values():
+          if assigned_id in ids:
+            ids.remove(assigned_id)
+            break
+        return assigned_id
+      else:
+        assigned_id = f"toolu_fallback_{self._next_fallback}"
+        self._next_fallback += 1
+        return assigned_id
 
 
 def _part_to_message_block(
@@ -479,7 +525,9 @@ def _part_to_message_block(
     tool_input: dict[str, object] = dict(function_call.args or {})
 
     return anthropic_types.ToolUseBlockParam(
-        id=sanitizer.sanitize(function_call.id),
+        id=sanitizer.sanitize(
+            function_call.id, tool_name=function_call.name, is_call=True
+        ),
         name=function_call.name,
         input=tool_input,
         type="tool_use",
@@ -546,7 +594,11 @@ def _part_to_message_block(
       tool_result_content = content
 
     return anthropic_types.ToolResultBlockParam(
-        tool_use_id=sanitizer.sanitize(function_response.id),
+        tool_use_id=sanitizer.sanitize(
+            function_response.id,
+            tool_name=function_response.name,
+            is_call=False,
+        ),
         type="tool_result",
         content=tool_result_content,
         is_error=False,
@@ -604,6 +656,7 @@ def _content_to_message_param(
     sanitizer: _ToolUseIdSanitizer,
 ) -> anthropic_types.MessageParam:
   message_block = []
+  had_empty_text = False
   for part in content.parts or []:
     # Image data is not supported in Claude for assistant turns.
     if content.role != "user" and _is_image_part(part):
@@ -623,10 +676,28 @@ def _content_to_message_param(
       logger.warning("Dropping a thought signature from another model.")
       continue
 
+    # Anthropic rejects empty text blocks; skip them rather than failing the
+    # whole request with NotImplementedError.
+    if _is_empty_text_part(part):
+      logger.debug("Skipping empty text part for Claude request.")
+      had_empty_text = True
+      continue
+
     message_block.append(_part_to_message_block(part, sanitizer))
 
+  # Anthropic rejects empty text blocks, but dropping a turn whose only part
+  # was empty text causes problems: e.g. code execution with no output produces
+  # a user turn holding `Part(text='')` as the final message, and dropping it
+  # would end the conversation on an assistant turn, which Anthropic treats
+  # as assistant prefill. A non-whitespace placeholder keeps the turn valid,
+  # but only for user turns: a trailing assistant message is treated as
+  # assistant prefill.
+  role = to_claude_role(content.role)
+  if not message_block and had_empty_text and role == "user":
+    message_block.append(anthropic_types.TextBlockParam(type="text", text="."))
+
   return {
-      "role": to_claude_role(content.role),
+      "role": role,
       "content": message_block,
   }
 

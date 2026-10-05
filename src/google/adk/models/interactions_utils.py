@@ -30,6 +30,7 @@ conversation history.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import dataclasses
 import json
@@ -72,7 +73,6 @@ from google.genai.interactions import InteractionStatusUpdate
 from google.genai.interactions import MCPServerParam
 from google.genai.interactions import ModelOutputStep
 from google.genai.interactions import ModelOutputStepParam
-from google.genai.interactions import ServiceTier
 from google.genai.interactions import Step
 from google.genai.interactions import StepDelta
 from google.genai.interactions import StepDeltaData
@@ -102,6 +102,7 @@ if TYPE_CHECKING:
   from ..tools._remote_mcp_server import RemoteMcpServer
 
 from ..utils._google_client_headers import merge_tracking_headers
+from ._service_tier import ServiceTier
 from .llm_request import LlmRequest
 from .llm_response import LlmResponse
 
@@ -109,20 +110,54 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 _NEW_LINE = '\n'
 
-# Tier that queues the request to run on off-peak capacity, so the model call
-# waits for room instead of being turned away when capacity is tight. Spelled
-# out because ServiceTier is a Literal union rather than an enum, so there is
-# no member to reference; the annotation is what rejects a typo.
-_DEFERRED_SERVICE_TIER: ServiceTier = 'deferred'
+# Statuses that mean the API accepted the work but has not produced a result
+# yet. A deferred request sits in 'queued' until off-peak capacity frees up.
+# Every other status the API reports -- 'completed', 'requires_action',
+# 'failed', 'cancelled', 'incomplete', 'budget_exceeded' -- ends this call.
+# 'requires_action' in particular is not pending: the model is done and is
+# waiting on tool results that only the caller can supply.
+_PENDING_INTERACTION_STATUSES = frozenset({'queued', 'in_progress'})
 
-# Sampling knobs the interactions API applies, but that the installed
-# google-genai release does not declare on its request model. That model
-# discards keys it has no field for while serializing, so these never reach the
-# API and sending them is indistinguishable from never setting them.
-_UNDECLARED_SAMPLING_PARAMS = (
+# Poll schedule for a pending interaction. Starts short so a brief queue wait
+# is not padded much, then backs off so a long one costs few requests.
+_POLL_INITIAL_DELAY_SECONDS = 5.0
+_POLL_MAX_DELAY_SECONDS = 30.0
+
+# Consecutive failed reads to absorb before giving up on a pending
+# interaction. A failed poll is not like a failed create: the work is already
+# accepted and running, and nothing on the client can resume it once the id is
+# lost, so one blip would forfeit a job that keeps running and billing. The
+# count resets on every successful read, so this tolerates repeated blips
+# across a long wait while still surfacing an endpoint that is truly down.
+_POLL_MAX_CONSECUTIVE_ERRORS = 5
+
+# Sampling knobs the interactions API applies, but that only some google-genai
+# releases declare on the request model (2.26 added temperature and top_p).
+# That model discards keys it has no field for while serializing, so an
+# undeclared one never reaches the API and sending it is indistinguishable from
+# never setting it. The split is read from the installed release, because the
+# supported google-genai range spans releases on both sides of it. 2.26 already
+# marks both new fields deprecated on its GenerationConfig model, so a later
+# release may remove them again; they then fall back to being dropped with the
+# warning below.
+_CLIENT_DEPENDENT_SAMPLING_PARAMS = (
     'temperature',
     'top_p',
     'top_k',
+)
+_DECLARED_GENERATION_CONFIG_KEYS = (
+    GenerationConfigParam.__required_keys__
+    | GenerationConfigParam.__optional_keys__
+)
+_DECLARED_SAMPLING_PARAMS = tuple(
+    name
+    for name in _CLIENT_DEPENDENT_SAMPLING_PARAMS
+    if name in _DECLARED_GENERATION_CONFIG_KEYS
+)
+_UNDECLARED_SAMPLING_PARAMS = tuple(
+    name
+    for name in _CLIENT_DEPENDENT_SAMPLING_PARAMS
+    if name not in _DECLARED_GENERATION_CONFIG_KEYS
 )
 
 # Sampling knobs the interactions API itself rejects as unknown parameters.
@@ -1324,6 +1359,12 @@ def build_generation_config(
     generation_config['stop_sequences'] = config.stop_sequences
   if config.seed is not None:
     generation_config['seed'] = config.seed
+  for name in _DECLARED_SAMPLING_PARAMS:
+    value = getattr(config, name)
+    if value is not None:
+      # Not a literal key: which of these the TypedDict declares depends on
+      # the installed google-genai.
+      generation_config[name] = value  # type: ignore[literal-required]
 
   undeclared = _unwarned_params_set_on(config, _UNDECLARED_SAMPLING_PARAMS)
   if undeclared:
@@ -1632,6 +1673,79 @@ def _get_latest_user_contents(
   return latest_user_contents
 
 
+async def _wait_for_interaction(
+    api_client: Client,
+    interaction: Interaction,
+    *,
+    extra_headers: dict[str, str] | None = None,
+) -> Interaction:
+  """Re-read a pending interaction until the API reports a final status.
+
+  ``interactions.create`` returns once the work is accepted, not once it is
+  done, so a deferred request comes back ``queued`` carrying an id and no
+  output. Polling here keeps that off the callers: the generator still yields
+  one response per turn, and it holds the finished result.
+
+  There is no client-side deadline. The server already bounds the wait with
+  the interaction's own completion timeout (24 hours by default) and reports
+  the outcome as a final status, and nothing on the client can resume a queued
+  interaction, so giving up early would abandon work that runs anyway. A
+  caller that needs to stop sooner can cancel the surrounding task: the sleep
+  between polls is a cancellation point.
+
+  Args:
+    api_client: The Google GenAI client.
+    interaction: The pending interaction returned by ``interactions.create``.
+    extra_headers: Optional per-request HTTP headers forwarded to each poll.
+
+  Returns:
+    The interaction as of the first read that reported a final status.
+  """
+  logger.info(
+      'Interaction %s is %s; waiting for the result.',
+      interaction.id,
+      interaction.status,
+  )
+  interaction_id = interaction.id
+  delay = _POLL_INITIAL_DELAY_SECONDS
+  consecutive_errors = 0
+  while interaction.status in _PENDING_INTERACTION_STATUSES:
+    await asyncio.sleep(delay)
+    delay = min(delay * 2, _POLL_MAX_DELAY_SECONDS)
+    try:
+      interaction = await api_client.aio.interactions.get(
+          interaction_id, stream=False, extra_headers=extra_headers
+      )
+    except Exception as e:  # pylint: disable=broad-except
+      # Absorb a failed read rather than abandoning accepted work. Cancelling
+      # the surrounding task still stops the wait: CancelledError derives from
+      # BaseException, so it is not caught here.
+      consecutive_errors += 1
+      if consecutive_errors >= _POLL_MAX_CONSECUTIVE_ERRORS:
+        logger.error(
+            'Giving up on interaction %s after %d consecutive failed reads.',
+            interaction_id,
+            consecutive_errors,
+        )
+        raise
+      logger.warning(
+          'Failed to read interaction %s (%d/%d consecutive); retrying: %s',
+          interaction_id,
+          consecutive_errors,
+          _POLL_MAX_CONSECUTIVE_ERRORS,
+          e,
+      )
+      continue
+    consecutive_errors = 0
+    logger.debug('Interaction %s is %s.', interaction_id, interaction.status)
+
+  logger.info(
+      'Interaction %s reached status %s.', interaction.id, interaction.status
+  )
+  logger.debug(build_interactions_response_log(interaction))
+  return interaction
+
+
 async def _create_interactions(
     api_client: Client,
     *,
@@ -1644,6 +1758,10 @@ async def _create_interactions(
   This is the shared transport + conversion loop. The caller assembles
   ``create_kwargs`` (``model`` or ``agent``, ``input``, ``tools``, etc.); this
   helper owns issuing the call and mapping the stream to ``LlmResponse``s.
+
+  A non-streaming create that comes back still pending -- a deferred request
+  returns ``queued`` as soon as it is accepted -- is polled to completion
+  before anything is yielded, so every caller sees a finished result.
 
   Args:
     api_client: The Google GenAI client.
@@ -1686,6 +1804,10 @@ async def _create_interactions(
     )
     logger.info('Interaction response received.')
     logger.debug(build_interactions_response_log(interaction))
+    if interaction.status in _PENDING_INTERACTION_STATUSES:
+      interaction = await _wait_for_interaction(
+          api_client, interaction, extra_headers=extra_headers
+      )
     llm_response = convert_interaction_to_llm_response(interaction)
     llm_response.environment_id = interaction.environment_id
     yield llm_response
@@ -1696,7 +1818,7 @@ async def generate_content_via_interactions(
     llm_request: LlmRequest,
     stream: bool,
     *,
-    service_tier: ServiceTier | None = None,
+    service_tier: ServiceTier | str | None = None,
 ) -> AsyncGenerator[LlmResponse, None]:
   """Generate content using the interactions API.
 
@@ -1720,7 +1842,7 @@ async def generate_content_via_interactions(
   Raises:
     ValueError: If ``deferred`` is combined with streaming.
   """
-  if service_tier == _DEFERRED_SERVICE_TIER and stream:
+  if service_tier == ServiceTier.DEFERRED and stream:
     raise ValueError(
         "service_tier='deferred' cannot be used with streaming. A deferred"
         ' request is queued to run on off-peak capacity and returns an'
@@ -1779,7 +1901,7 @@ async def generate_content_via_interactions(
 
   if service_tier:
     create_kwargs['service_tier'] = service_tier
-    if service_tier == _DEFERRED_SERVICE_TIER:
+    if service_tier == ServiceTier.DEFERRED:
       # The API rejects deferred without this. 'store' is deliberately left
       # unset: it already defaults on for a background call, and sending
       # store=False is rejected outright.

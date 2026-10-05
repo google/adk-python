@@ -21,13 +21,16 @@ from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from ..events._abort_events import _is_abort_event
 from ..events._branch_path import _BranchPath
 from ..events._node_path_builder import _NodePathBuilder
 from ..events._rewind_events import _apply_rewinds
 from ..events.event import Event
+from ..flows.llm_flows.core._resume import decide_resume_action
+from ..flows.llm_flows.core._resume import ResumeRoute
 from ..flows.llm_flows.extensions._agent_transfer import _get_transfer_targets
-from ..flows.llm_flows.functions import _collect_function_call_ids
-from ..flows.llm_flows.functions import find_matching_function_call
+from ..flows.llm_flows.tools._functions import _collect_function_call_ids
+from ..flows.llm_flows.tools._functions import find_matching_function_call
 
 if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
@@ -37,6 +40,44 @@ if TYPE_CHECKING:
   from ..workflow._base_node import BaseNode
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+def _resolve_resumed_agent(
+    root_agent: BaseAgent,
+    call_event: Event,
+    events: list[Event],
+) -> Optional[BaseAgent]:
+  """Resolves the agent in `root_agent`'s hierarchy that owns `call_event`.
+
+  When `call_event` was emitted by a node running inside a tool sub-branch
+  (such as `RequestInputNode` or a generator `FunctionTool` wrapped as a
+  `FunctionNode`), `call_event.author` names that inner node rather than an
+  agent in `root_agent`'s tree. In that case, walk the sub-branch's run IDs back
+  to the ancestor `FunctionCall` event that opened the tool branch and resolve
+  its author.
+  """
+  if (
+      call_event.author
+      and (resumed_agent := root_agent.find_agent(call_event.author))
+      is not None
+  ):
+    return resumed_agent
+  if not call_event.branch:
+    return None
+  run_ids = {
+      rid
+      for rid in _BranchPath.from_string(call_event.branch).run_ids
+      if not rid.isdigit()
+  }
+  if not run_ids:
+    return None
+  for ev in reversed(events):
+    if not ev.author:
+      continue
+    if any(fc.id in run_ids for fc in ev.get_function_calls() if fc.id):
+      if (resumed_agent := root_agent.find_agent(ev.author)) is not None:
+        return resumed_agent
+  return None
 
 
 def can_transfer_between_agents(root: Any) -> bool:
@@ -97,7 +138,7 @@ def find_agent_to_run(
 
   Args:
       session: The session to find the agent for.
-      root_agent: The root agent of the runner.
+      root_agent: The agent of the runner.
       resumability_config: Optional resumability configuration.
 
   Returns:
@@ -116,26 +157,47 @@ def find_agent_to_run(
   # type of the agent. e.g. a remote a2a agent may surface a credential
   # request as a special long-running function tool call.
   filtered_events = _apply_rewinds(session.events)
-  event = find_matching_function_call(filtered_events)
-  is_resumable = resumability_config and resumability_config.is_resumable
-  # Only route based on a past function response if resumability is enabled.
-  # In non-resumable scenarios, a turn ending with function call response
-  # shouldn't trap the next turn on that same agent if it's not transferable.
-  # Falling through allows it to return to root.
-  if event and event.author and is_resumable:
-    # `find_agent` returns None when the author does not correspond to any
-    # agent in the current hierarchy (e.g. the author is "user" or a stale or
-    # foreign agent name carried over from a previous turn/session). Returning
-    # None here would propagate to `build_node`, raising a confusing
-    # "Invalid node type: <class 'NoneType'>" error. Fall through to the
-    # event-scan logic below (which ultimately falls back to the root agent)
-    # whenever the author cannot be resolved.
-    if (resumed_agent := root_agent.find_agent(event.author)) is not None:
-      return resumed_agent
+  last_non_user_event = next(
+      (ev for ev in reversed(filtered_events) if ev.author != "user"),
+      None,
+  )
+  event = (
+      find_matching_function_call(filtered_events)
+      if (
+          filtered_events
+          and not _is_abort_event(filtered_events[-1])
+          and not (
+              last_non_user_event is not None
+              and _is_abort_event(last_non_user_event)
+          )
+      )
+      else None
+  )
+  is_resumable = bool(resumability_config and resumability_config.is_resumable)
+  if event and event.author:
+    answer_event = filtered_events[-1]
+    route = decide_resume_action(
+        event,
+        answer_event,
+        is_resumable=is_resumable,
+    )
+    if route in (ResumeRoute.ROUTE_TO_AUTHOR, ResumeRoute.REPLAY_CALLS):
+      # `_resolve_resumed_agent` returns None when the author does not
+      # correspond to any agent in the current hierarchy (e.g. the author is
+      # "user" or a stale or foreign agent name carried over from a previous
+      # turn/session). Fall through to the event-scan logic below (which
+      # ultimately falls back to the root agent) whenever the author cannot be
+      # resolved.
+      if (
+          resumed_agent := _resolve_resumed_agent(
+              root_agent, event, filtered_events
+          )
+      ) is not None:
+        return resumed_agent
 
   def _event_filter(event: Event) -> bool:
-    """Filters out user-authored events and agent state change events."""
-    if event.author == "user":
+    """Filters out user, abort-sealing and agent state change events."""
+    if event.author == "user" or _is_abort_event(event):
       return False
     if event.actions.agent_state is not None or event.actions.end_of_agent:
       return False
@@ -194,11 +256,13 @@ def restore_branch_from_history(
   (a fresh direct-node turn, or a new invocation continuing a sub-agent), the
   most recent matching event across the session is used.
   """
+  from ..events._rewind_events import _apply_rewinds
   from ..workflow._base_node import find_static_node_path
 
+  live_events = _apply_rewinds(invocation_context.session.events)
   expected_static_path = find_static_node_path(root, node)
-  tool_call_ids = _collect_function_call_ids(invocation_context.session.events)
-  for event in reversed(invocation_context.session.events):
+  tool_call_ids = _collect_function_call_ids(live_events)
+  for event in reversed(live_events):
     if invocation_id is not None and event.invocation_id != invocation_id:
       continue
     if not event.branch:

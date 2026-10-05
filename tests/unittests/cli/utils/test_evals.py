@@ -61,6 +61,35 @@ def test_create_gcs_eval_managers_from_uri_success(
   )
 
 
+@mock.patch.dict(os.environ, {'GOOGLE_CLOUD_PROJECT': 'test-project'})
+@mock.patch(
+    'google.adk.evaluation.gcs_eval_set_results_manager.GcsEvalSetResultsManager',
+    autospec=True,
+)
+@mock.patch(
+    'google.adk.evaluation.gcs_eval_sets_manager.GcsEvalSetsManager',
+    autospec=True,
+)
+def test_create_gcs_eval_managers_from_uri_extracts_bucket_from_path(
+    mock_gcs_eval_sets_manager, mock_gcs_eval_set_results_manager
+):
+  mock_gcs_eval_sets_manager.return_value = mock.MagicMock(
+      spec=GcsEvalSetsManager
+  )
+  mock_gcs_eval_set_results_manager.return_value = mock.MagicMock(
+      spec=GcsEvalSetResultsManager
+  )
+
+  evals.create_gcs_eval_managers_from_uri('gs://test-bucket/some/path')
+
+  mock_gcs_eval_sets_manager.assert_called_once_with(
+      bucket_name='test-bucket', project='test-project'
+  )
+  mock_gcs_eval_set_results_manager.assert_called_once_with(
+      bucket_name='test-bucket', project='test-project'
+  )
+
+
 def test_create_gcs_eval_managers_from_uri_failure():
   with pytest.raises(ValueError):
     evals.create_gcs_eval_managers_from_uri('unsupported-uri')

@@ -16,7 +16,7 @@
 
 This module provides the DevServer class which extends ApiServer with development-only endpoints.
 All production endpoints are inherited from ApiServer.
-All dev-only endpoints (eval, debug, graph, test management) are added by DevServer.
+All dev-only endpoints (eval, debug, graph, test management, deploy) are added by DevServer.
 
 Use this for local development with `adk web`.
 For production deployments, use api_server.py instead.
@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+import importlib.util
 import json
 import logging
 import os
@@ -49,8 +50,10 @@ import anyio
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi import Request as FastAPIRequest
+from fastapi import Response
 from fastapi import UploadFile
 from fastapi.responses import FileResponse
+from fastapi.responses import JSONResponse
 from fastapi.responses import PlainTextResponse
 from fastapi.responses import StreamingResponse
 import graphviz
@@ -62,6 +65,7 @@ import yaml
 
 from . import agent_graph
 from ..apps.app import App
+from ..auth.auth_credential import _redact_credential_secrets
 from ..errors.not_found_error import NotFoundError
 from ..evaluation.base_eval_service import InferenceConfig
 from ..evaluation.base_eval_service import InferenceRequest
@@ -78,6 +82,7 @@ from ..evaluation.eval_result import EvalSetResult
 from ..evaluation.eval_set import EvalSet
 from ..utils._telemetry_config import read_telemetry_consent
 from ..utils._telemetry_config import write_telemetry_consent
+from ._dev_deploy import register_dev_deploy_endpoints
 from .api_server import ApiServer
 
 NESTED_APP_SEPARATOR = "."
@@ -250,25 +255,38 @@ def _is_adk_built_in(reference: str) -> bool:
   return False
 
 
-def _app_name_shadows_module(app_name: str) -> bool:
-  """Whether the app name collides with a module that can be imported."""
-  # "google" is a namespace package rather than a standard library module, so
-  # it has to be named explicitly.
-  return (
-      app_name in sys.builtin_module_names
-      or app_name in sys.stdlib_module_names
-      or app_name == "google"
+def _app_name_shadows_module(app_name: str, app_root: Path) -> bool:
+  """Whether importing the app name would load code from outside the app."""
+  # find_spec imports a dotted name's parents, so only look up the first part.
+  try:
+    spec = importlib.util.find_spec(app_name.partition(".")[0])
+  except ValueError:
+    return True
+  if spec is None:
+    return False
+  locations = list(spec.submodule_search_locations or [])
+  if spec.has_location and spec.origin is not None:
+    locations.append(spec.origin)
+  return not locations or not all(
+      Path(location).resolve().is_relative_to(app_root)
+      for location in locations
   )
 
 
 def _check_code_reference(
-    reference: str, *, app_name: str, filename: str, field_name: str
+    reference: str,
+    *,
+    app_name: str,
+    app_root: Path,
+    filename: str,
+    field_name: str,
 ) -> None:
   """Checks that a code reference stays inside the app being edited.
 
   Args:
     reference: The name found in the uploaded document.
     app_name: The app the document belongs to.
+    app_root: The app's resolved directory.
     filename: The uploaded path, used in the error message.
     field_name: The config field the reference came from.
 
@@ -286,7 +304,7 @@ def _check_code_reference(
         f" '{field_name}' field may only reference code under"
         f" '{app_name}' or an ADK built-in."
     )
-  if _app_name_shadows_module(app_name):
+  if _app_name_shadows_module(app_name, app_root):
     raise ValueError(
         f"Blocked code reference {reference!r} in {filename!r}. The app name"
         f" {app_name!r} shadows an importable Python module, so a reference to"
@@ -425,6 +443,7 @@ class DevServer(ApiServer):
   """
 
   _allow_special_agents: bool = True
+  _serves_debug_trace_endpoints: bool = True
 
   def _get_agent_dir(self, app_name: str) -> str:
     """Resolves the agent directory and validates the app name to prevent path traversal."""
@@ -564,6 +583,7 @@ class DevServer(ApiServer):
         content: bytes, *, filename: str, app_name: str
     ) -> None:
       """Raise if the YAML would let the loader run code outside the app."""
+      app_root = _get_app_root(app_name)
       try:
         docs = list(yaml.safe_load_all(content))
       except yaml.YAMLError as exc:
@@ -583,6 +603,7 @@ class DevServer(ApiServer):
                 _check_code_reference(
                     reference,
                     app_name=app_name,
+                    app_root=app_root,
                     filename=filename,
                     field_name=key,
                 )
@@ -1093,6 +1114,7 @@ class DevServer(ApiServer):
     # TODO - remove after migration
     @app.get(
         "/dev/apps/{app_name}/eval_results/{eval_result_id}",
+        response_model=EvalSetResult,
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
     )
@@ -1103,10 +1125,17 @@ class DevServer(ApiServer):
     async def get_eval_result_legacy(
         app_name: str,
         eval_result_id: str,
-    ) -> EvalSetResult:
+    ) -> Response:
       try:
-        return self.eval_set_results_manager.get_eval_set_result(
+        eval_set_result = self.eval_set_results_manager.get_eval_set_result(
             app_name, eval_result_id
+        )
+        return JSONResponse(
+            content=_redact_credential_secrets(
+                eval_set_result.model_dump(
+                    exclude_none=True, by_alias=True, mode="json"
+                )
+            )
         )
       except ValueError as ve:
         raise HTTPException(status_code=404, detail=str(ve)) from ve
@@ -1208,24 +1237,32 @@ class DevServer(ApiServer):
 
     @app.get(
         "/dev/apps/{app_name}/eval-sets/{eval_set_id}/eval-cases/{eval_case_id}",
+        response_model=EvalCase,
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
     )
     @app.get(
         "/dev/apps/{app_name}/eval_sets/{eval_set_id}/evals/{eval_case_id}",
+        response_model=EvalCase,
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
     )
     async def get_eval(
         app_name: str, eval_set_id: str, eval_case_id: str
-    ) -> EvalCase:
+    ) -> Response:
       """Gets an eval case in an eval set."""
       eval_case_to_find = self.eval_sets_manager.get_eval_case(
           app_name, eval_set_id, eval_case_id
       )
 
       if eval_case_to_find:
-        return eval_case_to_find
+        return JSONResponse(
+            content=_redact_credential_secrets(
+                eval_case_to_find.model_dump(
+                    exclude_none=True, by_alias=True, mode="json"
+                )
+            )
+        )
 
       raise HTTPException(
           status_code=404,
@@ -1301,6 +1338,7 @@ class DevServer(ApiServer):
       # Create a mapping from eval set file to all the evals that needed to be
       # run.
       try:
+        from ..evaluation.eval_config import append_default_efficiency_metrics
         from ..evaluation.local_eval_service import LocalEvalService
         from ..evaluation.simulation.user_simulator_provider import UserSimulatorProvider
         from .cli_eval import _collect_eval_results
@@ -1359,10 +1397,15 @@ class DevServer(ApiServer):
             eval_service=eval_service,
         )
 
+        # The request carries only what the user selected in the run dialog,
+        # and the efficiency metrics are not selectable there: they take no
+        # threshold, so the dialog has nothing to ask about. Adding them here
+        # is what makes "reported for every eval" hold for a run started from
+        # the Dev UI, and not only for one started from `adk eval`.
         eval_case_results = await _collect_eval_results(
             inference_results=inference_results,
             eval_service=eval_service,
-            eval_metrics=req.eval_metrics,
+            eval_metrics=append_default_efficiency_metrics(req.eval_metrics),
         )
       except ModuleNotFoundError as e:
         logger.exception("%s", e)
@@ -1389,19 +1432,27 @@ class DevServer(ApiServer):
 
     @app.get(
         "/dev/apps/{app_name}/eval-results/{eval_result_id}",
+        response_model=EvalResult,
         response_model_exclude_none=True,
         tags=[TAG_EVALUATION],
     )
     async def get_eval_result(
         app_name: str,
         eval_result_id: str,
-    ) -> EvalResult:
+    ) -> Response:
       """Gets the eval result for the given eval id."""
       try:
         eval_set_result = self.eval_set_results_manager.get_eval_set_result(
             app_name, eval_result_id
         )
-        return EvalResult(**eval_set_result.model_dump())
+        eval_result = EvalResult(**eval_set_result.model_dump())
+        return JSONResponse(
+            content=_redact_credential_secrets(
+                eval_result.model_dump(
+                    exclude_none=True, by_alias=True, mode="json"
+                )
+            )
+        )
       except ValueError as ve:
         raise HTTPException(status_code=404, detail=str(ve)) from ve
       except ValidationError as ve:
@@ -1431,10 +1482,15 @@ class DevServer(ApiServer):
 
         # Right now we ignore the app_name as eval metrics are not tied to the
         # app_name, but they could be moving forward.
-        metrics_info = (
-            DEFAULT_METRIC_EVALUATOR_REGISTRY.get_registered_metrics()
+        #
+        # Every registered metric is listed, including the ones that need no
+        # threshold. A caller that asks the user to set thresholds decides for
+        # itself which to offer -- `MetricInfo.requires_threshold` says which
+        # those are -- while a caller that only describes metrics, such as the
+        # Dev UI's result tooltips, needs the whole list.
+        return ListMetricsInfoResponse(
+            metrics_info=DEFAULT_METRIC_EVALUATOR_REGISTRY.get_registered_metrics()
         )
-        return ListMetricsInfoResponse(metrics_info=metrics_info)
       except ModuleNotFoundError as e:
         logger.exception("%s\n%s", MISSING_EVAL_DEPENDENCIES_MESSAGE, e)
         raise HTTPException(
@@ -1523,6 +1579,8 @@ class DevServer(ApiServer):
         return GetEventGraphResult(dot_src=dot_graph.source)
       else:
         return {}
+
+    register_dev_deploy_endpoints(app, get_agent_dir=self._get_agent_dir)
 
   def _navigate_to_node(self, app_info: dict, node_path: str) -> dict | None:
     """Navigate to a specific node in the agent hierarchy.

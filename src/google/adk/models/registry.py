@@ -200,6 +200,12 @@ class LLMRegistry:
           '\nInstall it with: pip install google-adk[extensions]'
           '\nOr: pip install anthropic>=0.43.0'
       )
+    elif re.fullmatch(r'gpt-.*|o\d+-.*', model):
+      error_msg += (
+          '\n\nOpenAI models require the openai package.'
+          '\nInstall it with: pip install google-adk[openai]'
+          '\nOr: pip install openai>=2.20'
+      )
     elif '/' in model:
       # Any model with provider/model format likely needs LiteLLM
       error_msg += (

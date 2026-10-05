@@ -259,3 +259,23 @@ def test_<behavior_description>():
     # Then the result matches expectations
     assert result == expected
 ```
+
+## ADK Test Fakes
+
+Use the fakes in `tests/unittests/testing_utils.py` instead of patching ADK
+internals:
+
+- `testing_utils.MockModel.create(responses=[...])` builds a model that
+  replies with canned responses in order and records each request in
+  `.requests`.
+- `testing_utils.InMemoryRunner(root_agent=agent)` runs an agent on in-memory
+  services; `await runner.run_async('hi')` returns the events, and
+  `testing_utils.simplify_events(events)` reduces them to `(author, content)`
+  pairs.
+
+Request the `env_variables` fixture from `conftest.py` to run a test against
+both the Gemini API and Vertex AI.
+
+A test that passes alone but fails in the full suite has usually inherited
+global state from an earlier test: reset that state with `monkeypatch` rather
+than changing your fixtures to dodge it.

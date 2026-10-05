@@ -403,6 +403,88 @@ def test_a_built_in_is_answered_from_its_step_and_its_hook_copy_is_inert():
   assert buffer.take({_BUILTIN_HOOK_CALL_ID})
 
 
+def test_run_command_done_step_extracts_combined_output_over_tool_summary():
+  """A completed run_command step surfaces stdout/exit_code, not toolSummary."""
+  turn = _Turn()
+  call_id = 'traj_sub:3'
+  turn.step(
+      sdk_types.Step(
+          id=call_id,
+          step_index=3,
+          trajectory_id='traj_sub',
+          type=sdk_types.StepType.TOOL_CALL,
+          source=sdk_types.StepSource.MODEL,
+          target=sdk_types.StepTarget.ENVIRONMENT,
+          status=sdk_types.StepStatus.ACTIVE,
+          content='Remcos RC4 decryption',
+          tool_calls=[
+              sdk_types.ToolCall(
+                  name='run_command',
+                  args={
+                      'command_line': 'python3 decrypt.py',
+                      'working_dir': '/workspace',
+                  },
+                  id=call_id,
+              )
+          ],
+      )
+  )
+  done = turn.step(
+      sdk_types.Step(
+          id=call_id,
+          step_index=3,
+          trajectory_id='traj_sub',
+          type=sdk_types.StepType.TOOL_CALL,
+          source=sdk_types.StepSource.MODEL,
+          target=sdk_types.StepTarget.ENVIRONMENT,
+          status=sdk_types.StepStatus.DONE,
+          content='Remcos RC4 decryption',
+          tool_calls=[
+              sdk_types.ToolCall(
+                  name='run_command',
+                  args={
+                      'command_line': 'python3 decrypt.py',
+                      'working_dir': '/workspace',
+                      'combined_output': 'Decrypted key: deadbeef',
+                      'exit_code': 0,
+                  },
+                  id=call_id,
+              )
+          ],
+      )
+  )
+
+  assert _responses(done) == [(
+      'run_command',
+      call_id,
+      {'combined_output': 'Decrypted key: deadbeef', 'exit_code': 0},
+  )]
+
+
+def test_built_in_tool_with_step_id_uses_captured_hook_result():
+  """When the hook result carries step_id, the converter drains it by step_id."""
+  buffer = _tool_result_capture.ToolResultBuffer()
+  turn = _Turn(tool_results=buffer)
+
+  turn.step(_builtin_tool_step(sdk_types.StepStatus.ACTIVE))
+  hook_res = _tool_result(
+      _BUILTIN_HOOK_CALL_ID,
+      value='{"output": "real file contents"}',
+      name='view_file',
+  )
+  object.__setattr__(hook_res, 'step_id', _BUILTIN_CALL_ID)
+  buffer.record(hook_res)
+
+  done = turn.step(
+      _builtin_tool_step(sdk_types.StepStatus.DONE, content='Viewing file')
+  )
+
+  assert _responses(done) == [
+      ('view_file', _BUILTIN_CALL_ID, {'output': 'real file contents'})
+  ]
+  assert not buffer
+
+
 def test_a_stripped_step_with_nothing_buffered_yields_nothing():
   """The banner text is the translator's, not the tool's, so it is no answer."""
   buffer = _tool_result_capture.ToolResultBuffer()

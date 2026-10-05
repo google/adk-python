@@ -146,6 +146,28 @@ def test_database_session_service_fails_on_creation():
     assert "sqlalchemy" in str(exc_info.value)
 
 
+def test_database_session_service_names_its_extra_when_asyncio_failed_to_load():
+  """Without greenlet, SQLAlchemy 2.1 fails only the first asyncio import.
+
+  The module is loaded while that import fails, and the service is created
+  after it would succeed again, as happens in a real environment.
+  """
+  module_name = "google.adk.sessions.database_session_service"
+  original = sys.modules.pop(module_name, None)
+  try:
+    with mock.patch.dict("sys.modules", {"sqlalchemy.ext.asyncio": None}):
+      from google.adk.sessions import DatabaseSessionService
+
+    with pytest.raises(
+        ImportError, match=r"sqlalchemy\[asyncio\].*google-adk\[db\]"
+    ):
+      DatabaseSessionService(db_url="sqlite+aiosqlite:///:memory:")
+  finally:
+    sys.modules.pop(module_name, None)
+    if original is not None:
+      sys.modules[module_name] = original
+
+
 def test_vertex_ai_session_service_fails_on_creation():
   """Verify that creating VertexAiSessionService without extra fails using mocks."""
   try:
@@ -177,6 +199,25 @@ def test_bigquery_agent_analytics_plugin_fails_on_import_naming_its_extra():
     message = str(exc_info.value)
     assert "pyarrow" in message
     assert "pip install google-adk[bigquery-analytics]" in message
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "google.adk.integrations.openai._openai_llm",
+        "google.adk.integrations.openai._openai_responses_llm",
+    ],
+)
+def test_openai_models_fail_on_import_naming_their_extra(module_name):
+  """Verify that importing the OpenAI models without openai names the extra."""
+  with mock.patch.dict("sys.modules", {"openai": None}):
+    sys.modules.pop(module_name, None)
+    with pytest.raises(ImportError) as exc_info:
+      importlib.import_module(module_name)
+
+    message = str(exc_info.value)
+    assert "'openai' package" in message
+    assert 'pip install "google-adk[openai]"' in message
 
 
 def test_bigquery_toolset_imports_without_dataplex():
