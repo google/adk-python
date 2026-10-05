@@ -12,22 +12,52 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Handles output schema when tools are also present."""
+"""Handles output schema when tools are also present.
+
+Unlike `RunConfig.max_llm_calls` (which bounds total LLM calls across an entire
+invocation), `ADK_MAX_TOOL_ROUNDS` (default 25) bounds consecutive tool-call
+rounds for a single agent turn before forcing `set_model_response` on round N-1
+and terminating on round N.
+"""
 
 from __future__ import annotations
 
 import json
+import logging
+import os
 from typing import AsyncGenerator
 
+from google.genai import types
 from typing_extensions import override
 
 from ....agents.invocation_context import InvocationContext
 from ....events.event import Event
 from ....models.llm_request import LlmRequest
 from ....tools.set_model_response_tool import SetModelResponseTool
+from ....utils._schema_utils import is_basemodel_schema
 from .._base_llm_processor import BaseLlmRequestProcessor
 from ..core._utils import as_llm_agent
 from ..core._utils import require_agent_name
+
+logger = logging.getLogger('google_adk.' + __name__)
+
+# Max tool rounds before forcing set_model_response (N-1) or terminating (N).
+_MAX_TOOL_ROUNDS = 25
+
+
+def _get_max_tool_rounds() -> int:
+  """Resolves the max tool rounds limit from environment or fallback."""
+  if env_val := os.getenv('ADK_MAX_TOOL_ROUNDS'):
+    try:
+      return int(env_val)
+    except ValueError:
+      logger.warning(
+          'Invalid value for ADK_MAX_TOOL_ROUNDS env var: %s. Using default'
+          ' %d.',
+          env_val,
+          _MAX_TOOL_ROUNDS,
+      )
+  return _MAX_TOOL_ROUNDS
 
 
 class _OutputSchemaRequestProcessor(BaseLlmRequestProcessor):
@@ -52,22 +82,68 @@ class _OutputSchemaRequestProcessor(BaseLlmRequestProcessor):
     ):
       return
 
+    # Count consecutive tool rounds for this agent in the current turn.
+    tool_rounds = 0
+    for e in reversed(
+        invocation_context._get_events(
+            current_invocation=True, current_branch=True
+        )
+    ):
+      if e.author != agent.name:
+        continue
+      if e.get_function_responses():
+        tool_rounds += 1
+      elif e.is_final_response():
+        break
+
+    max_tool_rounds = _get_max_tool_rounds()
+
+    # Terminate the invocation if the model never calls set_model_response.
+    if max_tool_rounds > 0 and tool_rounds >= max_tool_rounds:
+      error_msg = (
+          f'Tool execution reached {tool_rounds} rounds without producing'
+          ' structured output via set_model_response. Breaking loop to prevent'
+          ' runaway API costs.'
+      )
+      logger.error(error_msg)
+      invocation_context.end_invocation = True
+      yield Event(
+          author=require_agent_name(invocation_context),
+          invocation_id=invocation_context.invocation_id,
+          branch=invocation_context.branch,
+          error_code='MAX_TOOL_ROUNDS_EXCEEDED',
+          error_message=error_msg,
+      )
+      return
+
     # Add the set_model_response tool to handle structured output
     set_response_tool = SetModelResponseTool(agent.output_schema)
     llm_request.append_tools([set_response_tool])
 
-    # Add instruction about using the set_model_response tool
-    instruction = (
-        'IMPORTANT: You have access to other tools, but you must provide '
-        'your final response using the set_model_response tool with the '
-        'required structured format. After using any other tools needed '
-        'to complete the task, always call set_model_response with your '
-        'final answer in the specified schema format.'
-    )
+    # Primitive types (str, int, etc.) produce a trivial tool signature
+    # that flash models tend to ignore, so use a stronger instruction.
+    if is_basemodel_schema(agent.output_schema):
+      instruction = (
+          'After completing any needed tool calls, you must provide your'
+          ' final response by calling set_model_response with the required'
+          ' fields.'
+      )
+    else:
+      instruction = (
+          'IMPORTANT: After using any needed tools, you MUST call'
+          ' set_model_response to provide your final answer.'
+          ' This is required to complete the task.'
+      )
     llm_request.append_instructions([instruction])
 
-    return
-    yield  # Generator requires yield statement in function body.
+    # On round N-1, restrict the model to only call set_model_response.
+    if max_tool_rounds > 0 and tool_rounds >= max_tool_rounds - 1:
+      llm_request.config.tool_config = types.ToolConfig(
+          function_calling_config=types.FunctionCallingConfig(
+              mode=types.FunctionCallingConfigMode.ANY,
+              allowed_function_names=['set_model_response'],
+          )
+      )
 
 
 def create_final_model_response_event(

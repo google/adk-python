@@ -498,6 +498,8 @@ class MockLlmConnection(BaseLlmConnection):
 
   def __init__(self, llm_responses: list[LlmResponse]):
     self.llm_responses = llm_responses
+    self._replayed = False
+    self._closed = asyncio.Event()
 
   async def send_history(self, history: list[types.Content]):
     pass
@@ -513,12 +515,15 @@ class MockLlmConnection(BaseLlmConnection):
 
   async def receive(self) -> AsyncGenerator[LlmResponse, None]:
     """Yield each of the pre-defined LlmResponses."""
-    for response in self.llm_responses:
-      # Yield control to allow other tasks (like send_task) to run first.
-      # This ensures user content gets persisted before the mock response
-      # is yielded.
-      await asyncio.sleep(0)
-      yield response
+    if not self._replayed:
+      self._replayed = True
+      for response in self.llm_responses:
+        # Yield control to allow other tasks (like send_task) to run first.
+        # This ensures user content gets persisted before the mock response
+        # is yielded.
+        await asyncio.sleep(0)
+        yield response
+    await self._closed.wait()
 
   async def close(self):
-    pass
+    self._closed.set()

@@ -1340,7 +1340,8 @@ def test_input_streaming_tool_stream_recreated_after_stop():
       blob=types.Blob(data=b"test", mime_type="audio/pcm")
   )
 
-  res_events = runner.run_live(live_request_queue, max_responses=8)
+  # Three calls, a response event for each, and the closing turn_complete.
+  res_events = runner.run_live(live_request_queue, max_responses=7)
 
   # monitor_video should appear at least twice in function calls
   # (start + restart). Function response events may add extra

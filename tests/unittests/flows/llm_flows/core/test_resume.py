@@ -79,7 +79,7 @@ def _response_event(
   )
 
 
-def _parallel_call_event(calls: list[tuple[str, str]]) -> Event:
+def _parallel_call_event(calls: list[tuple[str, str | None]]) -> Event:
   return Event(
       author='agent',
       invocation_id='inv-1',
@@ -365,6 +365,90 @@ class TestDecideResume:
         self._ctx(), events, {'ask': object(), 'fetch': object()}
     )
     assert _replayed_ids(decision) == ['c2']
+
+  @pytest.mark.parametrize(
+      ('call_ids', 'response_ids', 'replayed_ids'),
+      [
+          (['c1', 'c2'], [None], ['c2']),
+          (['c1', 'c2'], [None, None], []),
+          (['c1', 'c2'], [None, None, None], []),
+          (['c1', 'c2', 'c3'], [None, 'c1'], ['c3']),
+          (['c1', 'c2', 'c3'], ['c1', None], ['c3']),
+          (['c1', 'c2'], ['c1', 'c1'], ['c2']),
+          (['c1', 'c2'], [None, 'other'], ['c2']),
+          ([None, None], [None], [None]),
+          ([None, 'c2', None], [None, 'c2'], [None]),
+      ],
+      ids=[
+          'one_idless_response',
+          'all_idless_responses',
+          'extra_idless_response',
+          'idless_before_explicit_id',
+          'explicit_id_before_idless',
+          'duplicate_explicit_id',
+          'unmatched_explicit_id',
+          'idless_calls',
+          'mixed_call_ids',
+      ],
+  )
+  def test_same_name_responses_answer_only_matching_calls(
+      self,
+      call_ids: list[str | None],
+      response_ids: list[str | None],
+      replayed_ids: list[str | None],
+  ) -> None:
+    """Each ID-less response covers one call after explicit IDs are matched."""
+    call = _parallel_call_event([('ask', call_id) for call_id in call_ids])
+    # Distinct arguments identify ID-less siblings even when their IDs match.
+    for index, part in enumerate(call.content.parts):
+      part.function_call.args = {'index': index}
+    responses = [_response_event('ask', call_id) for call_id in response_ids]
+    events = [call, *responses]
+    original_events = [event.model_copy(deep=True) for event in events]
+
+    decision = decide_resume(self._ctx(), events, {'ask': object()})
+
+    if replayed_ids:
+      assert decision.action is ResumeAction.REPLAY_CALLS
+      assert _replayed_ids(decision) == replayed_ids
+      assert decision.replay_event().get_function_calls()[-1].args == {
+          'index': len(call_ids) - 1
+      }
+    else:
+      assert decision.action is ResumeAction.CONTINUE
+    assert events == original_events
+
+  def test_idless_response_replay_preserves_other_content_parts(self) -> None:
+    """Filtering calls retains non-call parts in their original order."""
+    call = _parallel_call_event([('ask', 'c1'), ('ask', 'c2')])
+    call.content.parts.insert(0, types.Part(text='Before calls'))
+    call.content.parts.insert(2, types.Part(text='Between calls'))
+    call.content.parts.append(types.Part(text='After calls'))
+    original_call = call.model_copy(deep=True)
+
+    decision = decide_resume(
+        self._ctx(), [call, _response_event('ask', None)], {'ask': object()}
+    )
+
+    assert decision.action is ResumeAction.REPLAY_CALLS
+    assert decision.replay_event().content.parts == [
+        call.content.parts[0],
+        call.content.parts[2],
+        call.content.parts[3],
+        call.content.parts[4],
+    ]
+    assert call == original_call
+
+  def test_idless_response_after_agent_batch_completion_does_not_replay(
+      self,
+  ) -> None:
+    """An agent-authored batch result prevents replay of a pending sibling."""
+    call = _parallel_call_event([('ask', 'c1'), ('ask', 'c2')])
+    events = [call, _response_event('ask', None, author='agent')]
+
+    decision = decide_resume(self._ctx(), events, {'ask': object()})
+
+    assert decision.action is ResumeAction.CONTINUE
 
   def test_sibling_missing_a_response_after_an_auth_resume_is_not_replayed(
       self,

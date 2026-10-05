@@ -22,10 +22,12 @@ from typing import Awaitable
 from typing import Callable
 from typing import Union
 
+from google.genai import types
 from typing_extensions import TypeAlias
 
 from ....agents.readonly_context import ReadonlyContext
 from ....sessions.state import State
+from ....tools import load_artifacts_tool
 
 __all__ = [
     'InstructionProvider',
@@ -41,6 +43,15 @@ InstructionProvider: TypeAlias = Callable[
 ]
 
 _TEMPLATE_VAR_PATTERN = re.compile(r'(?<![\$\{\\]){+[^{}]*}+')
+
+
+def _artifact_to_text(artifact: object, artifact_name: str) -> str:
+  """Renders a loaded artifact as instruction text."""
+  if isinstance(artifact, types.Part):
+    safe = load_artifacts_tool.as_safe_part_for_llm(artifact, artifact_name)
+    if safe.text is not None:
+      return safe.text
+  return str(artifact)
 
 
 async def inject_session_state(
@@ -164,7 +175,7 @@ async def _render_with_regex(
               f"Artifact '{var_name}' not found in agent"
               f" '{readonly_context.agent_name}'."
           )
-      return str(artifact)
+      return _artifact_to_text(artifact, var_name)
     else:
       if not _is_valid_state_name(var_name):
         return str(match.group())
@@ -238,7 +249,7 @@ async def _render_with_jinja2(
           f"Artifact '{filename}' not found in agent"
           f" '{readonly_context.agent_name}'."
       )
-    return str(artifact)
+    return _artifact_to_text(artifact, filename)
 
   env = SandboxedEnvironment(
       enable_async=True,
