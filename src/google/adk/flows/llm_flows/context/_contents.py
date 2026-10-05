@@ -335,6 +335,21 @@ def _build_task_input_user_content(
           parts.append(types.Part(text=_SINGLE_TURN_NUDGE))
         return types.Content(role='user', parts=parts)
 
+  if '@' in isolation_scope:
+    invocation_id = isolation_scope.rpartition('@')[2]
+    for event in all_events:
+      if (
+          event.invocation_id == invocation_id
+          and event.author == 'user'
+          and event.content
+          and event.content.parts
+          and not any(p.function_response for p in event.content.parts)
+      ):
+        parts = list(event.content.parts)
+        if is_single_turn:
+          parts.append(types.Part(text=_SINGLE_TURN_NUDGE))
+        return types.Content(role='user', parts=parts)
+
   # Fallback: workflow-node task with no originating FC.  Use the
   # node_input that the wrapper stamped onto ``ic.user_content``.
   if user_content and user_content.parts:
