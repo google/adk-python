@@ -336,7 +336,10 @@ class DynamicNodeScheduler:
         override_isolation_scope is None
         and getattr(node, 'mode', None) == 'task'
     ):
-      override_isolation_scope = node_path
+      if not curr_parent_path:
+        override_isolation_scope = f"{target_node_name}@{ctx.invocation_id}"
+      else:
+        override_isolation_scope = node_path
 
     # Rehydration chronological sequence barrier setup for the parent path
     if self._enable_replay and curr_parent_path:
