@@ -14,18 +14,14 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-import contextvars
 import functools
 import inspect
 import logging
 import re
 from typing import Any
-from typing import Awaitable
 from typing import Callable
 from typing import cast
 from typing import Iterable
-from typing import Iterator
 from typing import Optional
 from typing import TYPE_CHECKING
 from typing import Union
@@ -39,6 +35,8 @@ from ..features import FeatureName
 from ..features import is_feature_enabled
 from ..utils import _schema_utils
 from ..utils._callable_utils import CallableSpec
+from ..utils._sync_runner import _SYNC_CALLABLE_RUNNER
+from ..utils._sync_runner import _use_sync_callable_runner as _use_sync_callable_runner
 from ..utils.variant_utils import GoogleLLMVariant
 from ._automatic_function_calling_util import build_function_declaration
 from .base_tool import BaseTool
@@ -48,29 +46,6 @@ if TYPE_CHECKING:
   from ..workflow._function_node import FunctionNode
 
 logger = logging.getLogger("google_adk." + __name__)
-
-_SyncCallableRunner = Callable[
-    [Callable[..., Any], dict[str, Any]], Awaitable[Any]
-]
-_SYNC_CALLABLE_RUNNER: contextvars.ContextVar[_SyncCallableRunner | None] = (
-    contextvars.ContextVar("adk_sync_callable_runner", default=None)
-)
-
-
-@contextmanager
-def _use_sync_callable_runner(
-    runner: _SyncCallableRunner | None = None,
-) -> Iterator[None]:
-  """Binds the runner used for synchronous callables.
-
-  Passing ``None`` clears the binding, which stops a worker-owned nested call
-  from reusing the caller's runner.
-  """
-  token = _SYNC_CALLABLE_RUNNER.set(runner)
-  try:
-    yield
-  finally:
-    _SYNC_CALLABLE_RUNNER.reset(token)
 
 
 @functools.lru_cache(maxsize=1024)

@@ -535,8 +535,67 @@ class TestRemoteA2aAgentResolution:
             httpx_client=mock_client, base_url="https://example.com"
         )
         mock_resolver.get_agent_card.assert_called_once_with(
-            relative_card_path="/agent.json", http_kwargs=None
+            relative_card_path="/agent.json",
+            http_kwargs={"timeout": remote_a2a_agent.DEFAULT_TIMEOUT},
         )
+
+  @pytest.mark.asyncio
+  async def test_resolve_agent_card_from_url_uses_configured_timeout(self):
+    """Test that configured timeout is used for card resolution."""
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card="https://example.com/agent.json",
+        timeout=15.0,
+    )
+
+    with patch.object(agent, "_ensure_httpx_client") as mock_ensure_client:
+      mock_client = AsyncMock()
+      mock_ensure_client.return_value = mock_client
+
+      with patch(
+          "google.adk.a2a.agent._remote_a2a_agent.A2ACardResolver"
+      ) as mock_resolver_class:
+        mock_resolver = AsyncMock()
+        mock_resolver.get_agent_card.return_value = self.agent_card
+        mock_resolver_class.return_value = mock_resolver
+
+        result = await agent._resolve_agent_card_from_url(
+            "https://example.com/agent.json", Mock()
+        )
+
+        assert result == self.agent_card
+        mock_resolver.get_agent_card.assert_called_once_with(
+            relative_card_path="/agent.json", http_kwargs={"timeout": 15.0}
+        )
+
+  @pytest.mark.asyncio
+  async def test_resolve_agent_card_from_url_with_shared_client_does_not_inject_timeout(
+      self,
+  ):
+    """Test that timeout is not injected when using a shared client."""
+    shared_client = httpx.AsyncClient()
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card="https://example.com/agent.json",
+        httpx_client=shared_client,
+    )
+
+    with patch(
+        "google.adk.a2a.agent._remote_a2a_agent.A2ACardResolver"
+    ) as mock_resolver_class:
+      mock_resolver = AsyncMock()
+      mock_resolver.get_agent_card.return_value = self.agent_card
+      mock_resolver_class.return_value = mock_resolver
+
+      result = await agent._resolve_agent_card_from_url(
+          "https://example.com/agent.json", Mock()
+      )
+
+      assert result == self.agent_card
+      mock_resolver.get_agent_card.assert_called_once_with(
+          relative_card_path="/agent.json",
+          http_kwargs={},
+      )
 
   @pytest.mark.asyncio
   async def test_resolve_agent_card_from_url_invalid_url(self):
@@ -632,7 +691,10 @@ class TestRemoteA2aAgentResolution:
 
     mock_resolver.get_agent_card.assert_called_once_with(
         relative_card_path="/agent.json",
-        http_kwargs={"headers": {"Authorization": "Bearer abc"}},
+        http_kwargs={
+            "headers": {"Authorization": "Bearer abc"},
+            "timeout": remote_a2a_agent.DEFAULT_TIMEOUT,
+        },
     )
 
   @pytest.mark.asyncio
@@ -671,7 +733,10 @@ class TestRemoteA2aAgentResolution:
 
     mock_resolver.get_agent_card.assert_called_once_with(
         relative_card_path="/agent.json",
-        http_kwargs={"headers": {"X-Common": "b", "X-A": "1", "X-B": "2"}},
+        http_kwargs={
+            "headers": {"X-Common": "b", "X-A": "1", "X-B": "2"},
+            "timeout": remote_a2a_agent.DEFAULT_TIMEOUT,
+        },
     )
 
   @pytest.mark.asyncio
@@ -710,6 +775,68 @@ class TestRemoteA2aAgentResolution:
     assert agent._agent_card is None
     assert agent._a2a_client is None
     assert agent._is_resolved is False
+
+  @pytest.mark.asyncio
+  async def test_ensure_resolved_caches_card_per_invocation_with_interceptor(
+      self,
+  ):
+    """With a card interceptor, the card is resolved only once per invocation."""
+    provider = AsyncMock(
+        return_value=A2aCardRequestConfig(headers={"Authorization": "Bearer x"})
+    )
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card="https://example.com/agent.json",
+        config=A2aRemoteAgentConfig(
+            card_request_interceptors=[
+                CardRequestInterceptor(before_request=provider)
+            ]
+        ),
+    )
+
+    ctx = Mock(spec=InvocationContext)
+    ctx._private_metadata = {}
+
+    with patch.object(
+        agent, "_resolve_agent_card_from_url", new_callable=AsyncMock
+    ) as mock_resolve_url:
+      mock_resolve_url.return_value = self.agent_card
+      with patch.object(agent, "_ensure_httpx_client") as mock_ensure:
+        mock_ensure.return_value = AsyncMock()
+        mock_factory = Mock()
+        mock_factory.create.return_value = Mock()
+        agent._a2a_client_factory = mock_factory
+
+        client1 = await agent._ensure_resolved(ctx)
+        client2 = await agent._ensure_resolved(ctx)
+
+    assert mock_resolve_url.await_count == 1
+    assert mock_factory.create.call_count == 1
+    assert client1 is client2
+    assert agent._agent_card is None
+
+  @pytest.mark.asyncio
+  async def test_resolve_agent_card_does_not_cache_unauthenticated_card(self):
+    """When auth is unresolved, _resolve_agent_card must not cache the unauthenticated card."""
+    from fastapi.openapi.models import HTTPBearer
+
+    agent = RemoteA2aAgent(
+        name="test_agent",
+        agent_card="https://example.com/agent.json",
+        auth_scheme=HTTPBearer(),
+    )
+    ctx = Mock(spec=InvocationContext)
+    ctx.credential_by_key = {}
+    ctx._private_metadata = {}
+
+    with patch.object(
+        agent, "_resolve_agent_card_from_url", new_callable=AsyncMock
+    ) as mock_resolve_url:
+      mock_resolve_url.return_value = self.agent_card
+      card = await agent._resolve_agent_card(ctx)
+
+    assert card is self.agent_card
+    assert "_remote_a2a_card_test_agent" not in ctx._private_metadata
 
   @pytest.mark.asyncio
   async def test_card_interceptor_does_not_leak_across_sessions(self):
@@ -1249,6 +1376,42 @@ class TestRemoteA2aAgentResolution:
         await agent._ensure_resolved(Mock())
 
     assert agent.description == "Converts currencies"
+
+  @pytest.mark.asyncio
+  async def test_ensure_resolved_adopts_prefetched_card_description(self):
+    """Initializing a prefetched public card still adopts its description."""
+    agent_card = create_test_agent_card()
+    agent = RemoteA2aAgent(
+        name="test_agent", agent_card="https://example.com/agent.json"
+    )
+    agent._agent_card = agent_card
+    mock_factory = Mock()
+    mock_factory.create.return_value = Mock()
+    agent._a2a_client_factory = mock_factory
+
+    with patch.object(agent, "_ensure_httpx_client", new_callable=AsyncMock):
+      await agent._ensure_resolved(Mock())
+
+    assert agent_card.description in agent.description
+
+  @pytest.mark.asyncio
+  async def test_get_transfer_description_fences_remote_card_description(self):
+    """Transfer description from remote card must be fenced with quote_untrusted."""
+    agent_card = create_test_agent_card()
+    agent = RemoteA2aAgent(
+        name="test_agent", agent_card="https://example.com/agent.json"
+    )
+    with patch.object(
+        agent,
+        "_resolve_agent_card",
+        new_callable=AsyncMock,
+        return_value=agent_card,
+    ):
+      desc = await agent._get_transfer_description(Mock())
+
+    assert desc.startswith(QUOTED_CONTENT_BEGIN)
+    assert desc.endswith(QUOTED_CONTENT_END)
+    assert agent_card.description in desc
 
   @pytest.mark.asyncio
   async def test_ensure_resolved_already_resolved(self):

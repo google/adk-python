@@ -50,21 +50,19 @@ class ScenarioGenerator:
   def __init__(self) -> None:
     project_id = os.environ.get("GOOGLE_CLOUD_PROJECT")
     location = os.environ.get("GOOGLE_CLOUD_LOCATION")
-    api_key = os.environ.get("GOOGLE_API_KEY")
 
-    if api_key:
-      self._client = vertexai.Client(api_key=api_key)
-    elif project_id or location:
-      if not project_id:
-        raise ValueError("Missing project id." + _ERROR_MESSAGE_SUFFIX)
-      if not location:
-        raise ValueError("Missing location." + _ERROR_MESSAGE_SUFFIX)
-      self._client = vertexai.Client(project=project_id, location=location)
-    else:
+    # Scenario generation is served only by the project backend, not API keys.
+    missing: list[str] = []
+    if not project_id:
+      missing.append("project id")
+    if not location:
+      missing.append("location")
+    if missing:
       raise ValueError(
-          "Either API Key or Google cloud Project id and location should be"
-          " specified."
+          "Missing " + " and ".join(missing) + "." + _ERROR_MESSAGE_SUFFIX
       )
+
+    self._client = vertexai.Client(project=project_id, location=location)
 
   def generate_scenarios(
       self,

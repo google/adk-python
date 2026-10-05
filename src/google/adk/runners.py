@@ -937,7 +937,6 @@ class Runner:
       self,
       *,
       session: Session,
-      skip_token_compaction: bool,
   ) -> None:
     """Run best-effort derived compaction after a completed invocation.
 
@@ -958,7 +957,6 @@ class Runner:
               self.app,
               session,
               self.session_service,
-              skip_token_compaction=skip_token_compaction,
           )
       ) as compaction_events:
         async for compaction_event in compaction_events:
@@ -1380,9 +1378,6 @@ class Runner:
           # the end of an invocation.)
           await self._run_post_invocation_compaction(
               session=invocation_context.session,
-              skip_token_compaction=(
-                  invocation_context.token_compaction_checked
-              ),
           )
 
     # For BaseAgent root agents running via _run_with_trace, events flow

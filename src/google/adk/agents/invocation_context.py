@@ -250,7 +250,10 @@ class InvocationContext(BaseModel):
   """The compaction config for this invocation."""
 
   token_compaction_checked: bool = False
-  """Whether token-threshold compaction ran during this invocation."""
+  """Whether the compaction request processor compacted before a model call.
+
+  Set on the context that call used, so parent contexts do not see it.
+  """
 
   plugin_manager: PluginManager = Field(default_factory=PluginManager)
   """The manager for keeping track of plugins in this invocation."""
@@ -281,6 +284,9 @@ class InvocationContext(BaseModel):
 
   _custom_metadata: dict[str, Any] = PrivateAttr(default_factory=dict)
   """Custom metadata for attaching low-level execution telemetry."""
+
+  _private_metadata: dict[str, Any] = PrivateAttr(default_factory=dict)
+  """Private metadata for internal caching, not exposed to user code."""
 
   _invocation_cost_manager: _InvocationCostManager = PrivateAttr(
       default_factory=_InvocationCostManager

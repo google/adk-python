@@ -70,6 +70,14 @@ Agent created in {agent_folder}:
 ⚠️  WARNING: Secrets (like GOOGLE_API_KEY) are stored in .env.
 """
 
+_NEXT_STEPS_MSG = """\
+Next steps:
+- Chat with your agent in the terminal: adk run {agent_path}
+- Or in the browser: adk web {agents_dir}
+- Have your coding agent evaluate and deploy it: uvx google-agents-cli setup
+  (other install options: https://adk.dev/get-started/agents-cli/)
+"""
+
 
 _GENERATED_GITIGNORE_ENTRIES = (".env", ".adk/")
 
@@ -258,4 +266,11 @@ def run_cmd(
       google_cloud_region=google_cloud_region,
       model=model,
       type=type.lower(),
+  )
+  agents_dir = os.path.dirname(os.path.normpath(agent_name))
+  click.echo(
+      _NEXT_STEPS_MSG.format(
+          agent_path=agent_name,
+          agents_dir=agents_dir or ".",
+      )
   )

@@ -570,7 +570,48 @@ def _create_test_client(
       ),
   ):
     app = get_fast_api_app(**defaults)
-    return TestClient(app)
+    return TestClient(app, client=("127.0.0.1", 51234))
+
+
+@pytest.mark.parametrize(
+    "bind_host, expect_warning",
+    [
+        (None, False),
+        ("127.0.0.1", False),
+        ("localhost", False),
+        ("::1", False),
+        ("0.0.0.0", True),
+        ("::", True),
+        ("192.168.1.10", True),
+    ],
+)
+def test_no_auth_warning_on_non_loopback_bind(
+    bind_host,
+    expect_warning,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    caplog,
+):
+  """Warns about missing auth only when bound to a reachable (non-loopback) address."""
+  with caplog.at_level(logging.WARNING):
+    _create_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+        bind_host=bind_host,
+    )
+  warned = any(
+      "has no authentication" in record.getMessage()
+      for record in caplog.records
+  )
+  assert warned is expect_warning
 
 
 def test_agent_with_bigquery_analytics_plugin(
@@ -814,7 +855,7 @@ def test_app(
 
 
 @pytest.fixture
-def builder_test_client(
+def builder_test_app(
     tmp_path,
     mock_session_service,
     mock_artifact_service,
@@ -823,7 +864,7 @@ def builder_test_client(
     mock_eval_sets_manager,
     mock_eval_set_results_manager,
 ):
-  """Return a TestClient rooted in a temporary agents directory."""
+  """Return a dev-server app rooted in a temporary agents directory."""
   with (
       patch.object(signal, "signal", autospec=True, return_value=None),
       # Building the app adds tmp_path to sys.path; undo it for later tests.
@@ -883,7 +924,27 @@ def builder_test_client(
         bind_host="127.0.0.1",
         port=8000,
     )
-    return TestClient(app, base_url=_LOOPBACK_BASE_URL)
+    return app
+
+
+@pytest.fixture
+def builder_test_client(builder_test_app):
+  """A client that reaches the server from the machine it runs on."""
+  return TestClient(
+      builder_test_app,
+      base_url=_LOOPBACK_BASE_URL,
+      client=("127.0.0.1", 51234),
+  )
+
+
+@pytest.fixture
+def remote_builder_test_client(builder_test_app):
+  """A client that reaches the server from somewhere else on the network."""
+  return TestClient(
+      builder_test_app,
+      base_url=_LOOPBACK_BASE_URL,
+      client=("203.0.113.7", 51234),
+  )
 
 
 @pytest.fixture
@@ -4839,6 +4900,154 @@ def test_builder_get_allows_request_without_origin(builder_test_client):
 
   assert response.status_code == 200
   assert not response.text
+
+
+def test_builder_save_rejects_remote_client(
+    remote_builder_test_client, tmp_path
+):
+  """A non-browser client off-machine must not be able to write agent YAML."""
+  # Omitting the Origin header skips _OriginCheckMiddleware entirely, so the
+  # loopback check is the only thing between the network and agents_dir.
+  response = remote_builder_test_client.post(
+      "/dev/apps/app/builder/save",
+      files=[(
+          "files",
+          ("app/root_agent.yaml", b"name: pwned\n", "application/x-yaml"),
+      )],
+  )
+
+  assert response.status_code == 403
+  assert not (tmp_path / "app" / "root_agent.yaml").exists()
+
+
+def test_builder_get_rejects_remote_client(remote_builder_test_client):
+  """The YAML readback is a disclosure too, so it is gated the same way."""
+  response = remote_builder_test_client.get("/dev/apps/app/builder")
+
+  assert response.status_code == 403
+
+
+def test_builder_cancel_rejects_remote_client(remote_builder_test_client):
+  """Discarding another developer's draft is a remote write as well."""
+  response = remote_builder_test_client.post("/dev/apps/app/builder/cancel")
+
+  assert response.status_code == 403
+
+
+def test_builder_save_rejects_forwarded_loopback_client(
+    builder_test_client, tmp_path
+):
+  """Behind a proxy the peer is loopback but the caller is still remote."""
+  response = builder_test_client.post(
+      "/dev/apps/app/builder/save",
+      headers={"x-forwarded-for": "203.0.113.7"},
+      files=[(
+          "files",
+          ("app/root_agent.yaml", b"name: pwned\n", "application/x-yaml"),
+      )],
+  )
+
+  assert response.status_code == 403
+  assert not (tmp_path / "app" / "root_agent.yaml").exists()
+
+
+def test_builder_save_allows_remote_client_when_opted_in(
+    remote_builder_test_client, tmp_path, monkeypatch
+):
+  """Serving the builder off-machine stays possible, but has to be chosen."""
+  monkeypatch.setenv("ADK_ALLOW_REMOTE_AGENT_BUILDER", "1")
+
+  response = remote_builder_test_client.post(
+      "/dev/apps/app/builder/save",
+      files=[(
+          "files",
+          ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
+      )],
+  )
+
+  assert response.status_code == 200
+  assert (tmp_path / "app" / "root_agent.yaml").is_file()
+
+
+def test_remote_client_can_still_reach_non_builder_endpoints(
+    remote_builder_test_client,
+):
+  """The gate is scoped to mutating /dev routes and builder readback."""
+  assert remote_builder_test_client.get("/list-apps").status_code == 200
+  assert (
+      remote_builder_test_client.get("/dev/apps/app/tests").status_code == 200
+  )
+  assert (
+      remote_builder_test_client.get("/dev/apps/app/eval-sets").status_code
+      == 200
+  )
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "json_body"),
+    [
+        ("POST", "/dev/apps/app/tests/rebuild", None),
+        ("POST", "/dev/apps/app/tests/run", {}),
+        ("PUT", "/dev/apps/app/tests/test_smoke", {"content": "x = 1\n"}),
+        ("DELETE", "/dev/apps/app/tests/test_smoke", None),
+        ("POST", "/dev/apps/app/eval-sets", {"eval_set": {"eval_set_id": "s"}}),
+        ("POST", "/dev/apps/app/eval_sets/s", None),
+        (
+            "POST",
+            "/dev/apps/app/eval_sets/s/run_eval",
+            {"eval_ids": [], "eval_metrics": []},
+        ),
+        (
+            "POST",
+            "/dev/apps/app/eval-sets/s/add-session",
+            {"eval_id": "e1", "session_id": "s1", "user_id": "u1"},
+        ),
+        (
+            "POST",
+            "/dev/apps/app/eval_sets/s/add_session",
+            {"eval_id": "e1", "session_id": "s1", "user_id": "u1"},
+        ),
+        (
+            "PUT",
+            "/dev/apps/app/eval-sets/s/eval-cases/c",
+            {"eval_id": "c", "conversation": []},
+        ),
+        (
+            "PUT",
+            "/dev/apps/app/eval_sets/s/evals/c",
+            {"eval_id": "c", "conversation": []},
+        ),
+        ("DELETE", "/dev/apps/app/eval-sets/s/eval-cases/c", None),
+        ("DELETE", "/dev/apps/app/eval_sets/s/evals/c", None),
+        (
+            "POST",
+            "/dev/apps/app/eval-sets/s/run",
+            {"eval_ids": [], "eval_metrics": []},
+        ),
+        ("POST", "/dev/apps/app/deploy/agent_engine", {}),
+        ("POST", "/dev/apps/app/deploy/cloud_run", {"project": "p"}),
+        (
+            "POST",
+            "/dev/apps/app/deploy/gke",
+            {"project": "p", "region": "r", "cluster_name": "c"},
+        ),
+    ],
+)
+def test_mutating_dev_routes_reject_remote_client(
+    remote_builder_test_client, builder_test_client, method, path, json_body
+):
+  """All mutating /dev endpoints reject non-loopback and proxied callers."""
+  kwargs = {"json": json_body} if json_body is not None else {}
+  remote_response = remote_builder_test_client.request(method, path, **kwargs)
+  assert remote_response.status_code == 403
+
+  forwarded_response = builder_test_client.request(
+      method,
+      path,
+      headers={"x-forwarded-for": "203.0.113.7"},
+      **kwargs,
+  )
+  assert forwarded_response.status_code == 403
 
 
 def test_builder_cancel_deletes_tmp_idempotent(builder_test_client, tmp_path):

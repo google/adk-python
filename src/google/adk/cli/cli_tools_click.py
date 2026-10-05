@@ -2608,6 +2608,8 @@ def cli_deploy_cloud_run(
         extra_gcloud_args=tuple(gcloud_args),
         with_cloud_run_sandbox=with_cloud_run_sandbox,
     )
+  except (click.ClickException, click.Abort):
+    raise
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
     ctx.exit(1)
@@ -2665,6 +2667,8 @@ def cli_deploy_docker(
         provider_args=provider_args,
         env=env,
     )
+  except (click.ClickException, click.Abort):
+    raise
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
     ctx.exit(1)
@@ -2729,6 +2733,7 @@ def cli_migrate_session(
     click.secho("Migration check and upgrade process finished.", fg="green")
   except Exception as e:
     click.secho(f"Migration failed: {e}", fg="red", err=True)
+    click.get_current_context().exit(1)
 
 
 @deploy.command("agent_engine")
@@ -3047,6 +3052,8 @@ def cli_deploy_agent_engine(
         extra_packages=list(extra_packages),
         worker_pool=worker_pool,
     )
+  except (click.ClickException, click.Abort):
+    raise
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
     click.get_current_context().exit(1)
@@ -3259,6 +3266,8 @@ def cli_deploy_gke(
         trigger_oidc_audience=trigger_oidc_audience,
         trigger_oidc_service_accounts=trigger_oidc_service_accounts,
     )
+  except (click.ClickException, click.Abort):
+    raise
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
     click.get_current_context().exit(1)

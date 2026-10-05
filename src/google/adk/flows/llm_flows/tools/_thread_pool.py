@@ -28,9 +28,9 @@ from typing import Any
 import weakref
 
 from ....tools.base_tool import BaseTool
-from ....tools.function_tool import _use_sync_callable_runner
 from ....tools.function_tool import FunctionTool
 from ....tools.tool_context import ToolContext
+from ....utils._sync_runner import _use_sync_callable_runner
 
 # Thread pool executors for running tools in background threads, keyed by the
 # event loop they serve and then by max_workers. A pool dedicated to tools keeps

@@ -180,7 +180,7 @@ def _strip_optional_quotes(value: str) -> str:
 
 
 def _get_scope_header(
-    scope: dict[str, Any], header_name: bytes
+    scope: Mapping[str, Any], header_name: bytes
 ) -> Optional[str]:
   """Return the first matching header value from an ASGI scope."""
   for candidate_name, candidate_value in scope.get("headers", []):
@@ -230,6 +230,32 @@ def _get_server_host(scope: dict[str, Any]) -> Optional[str]:
   if server and len(server) == 2:
     return str(server[0])
   return None
+
+
+_FORWARDING_HEADERS = (b"forwarded", b"x-forwarded-for", b"x-forwarded-host")
+
+
+def _is_local_client(scope: Mapping[str, Any]) -> bool:
+  """Return True if the request came straight from a process on this machine.
+
+  Header-based checks only constrain browsers: ``Origin``, ``Sec-Fetch-*`` and
+  custom headers are all trivially forged by a non-browser HTTP client, and
+  ``_OriginCheckMiddleware`` deliberately lets a request through when
+  ``Origin`` is absent so that non-browser API clients keep working. The peer
+  address of the connection is the one signal a remote caller cannot fake, so
+  it is what endpoints that must not be reachable over the network have to
+  use.
+
+  A request that arrived through a proxy or a tunnel is never treated as
+  local: the peer address is then the forwarder's rather than the caller's.
+  """
+  for header_name in _FORWARDING_HEADERS:
+    if _get_scope_header(scope, header_name) is not None:
+      return False
+  client = scope.get("client")
+  if not client or len(client) != 2:
+    return False
+  return _is_loopback_address(str(client[0]))
 
 
 def _get_request_origin(scope: dict[str, Any]) -> Optional[str]:

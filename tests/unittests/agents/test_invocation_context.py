@@ -514,6 +514,16 @@ class TestInvocationContextInitialization:
     )
     assert inv_ctx._custom_metadata == {}
 
+  def test_private_metadata_default_empty(self):
+    """Tests that _private_metadata is empty by default."""
+    inv_ctx = InvocationContext(
+        session_service=Mock(spec=BaseSessionService),
+        agent=Mock(spec=BaseAgent),
+        invocation_id='inv_1',
+        session=Mock(spec=Session, events=[]),
+    )
+    assert inv_ctx._private_metadata == {}
+
   def test_custom_metadata_empty_run_config(self):
     """Tests that _custom_metadata is empty when RunConfig has no custom_metadata."""
     run_cfg = RunConfig()

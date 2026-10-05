@@ -23,7 +23,9 @@ from typing import TYPE_CHECKING
 from google.genai import types
 from pydantic import ValidationError
 
+from ...auth.auth_credential import AuthCredential
 from ...auth.auth_credential import AuthCredentialTypes as _AuthCredentialTypes
+from ...auth.auth_credential import OAuth2Auth
 from ...auth.auth_handler import AuthHandler
 from ...auth.auth_tool import AuthConfig
 from ...auth.auth_tool import AuthToolArguments
@@ -33,7 +35,6 @@ from ...utils._schema_utils import schema_to_json_schema
 from .._errors import WorkflowDataError
 
 if TYPE_CHECKING:
-  from ...auth.auth_credential import AuthCredential
   from ...sessions.state import State
 
 REQUEST_INPUT_FUNCTION_CALL_NAME = 'adk_request_input'
@@ -134,10 +135,18 @@ def get_request_input_interrupt_ids(event: Event) -> list[str]:
 _OAUTH_STATE_KEY_PREFIX = 'adk_oauth_state:'
 """Session state prefix under which a generated OAuth state is kept."""
 
+_OAUTH_CREDENTIAL_KEY_PREFIX = 'adk_oauth_credential:'
+"""Session state prefix for a generated OAuth request credential."""
+
 
 def _oauth_state_key(interrupt_id: str) -> str:
   """Returns the session state key holding the generated OAuth state."""
   return f'{_OAUTH_STATE_KEY_PREFIX}{interrupt_id}'
+
+
+def _oauth_credential_key(interrupt_id: str) -> str:
+  """Returns the session state key holding the generated OAuth credential."""
+  return f'{_OAUTH_CREDENTIAL_KEY_PREFIX}{interrupt_id}'
 
 
 def _build_auth_message(auth_config: AuthConfig) -> str:
@@ -169,8 +178,9 @@ def create_auth_request_event(
   Args:
     auth_config: The auth configuration for the node.
     interrupt_id: The interrupt ID for this auth request.
-    state: The session state. The OAuth state generated for this request is
-      kept there so the resume response can be checked against it.
+    state: The session state. The OAuth state and any PKCE verifier
+      credential generated for this request are kept there for
+      ``process_auth_resume``.
 
   Returns:
     An Event containing an ``adk_request_credential`` function call.
@@ -178,12 +188,20 @@ def create_auth_request_event(
   auth_handler = AuthHandler(auth_config)
   auth_request = auth_handler.generate_auth_request()
   generated_credential = auth_request.exchanged_auth_credential
-  if (
-      generated_credential
-      and generated_credential.oauth2
-      and generated_credential.oauth2.state
-  ):
-    state[_oauth_state_key(interrupt_id)] = generated_credential.oauth2.state
+  if generated_credential and generated_credential.oauth2:
+    if generated_credential.oauth2.state:
+      state[_oauth_state_key(interrupt_id)] = generated_credential.oauth2.state
+    if generated_credential.oauth2.code_verifier:
+      state[_oauth_credential_key(interrupt_id)] = AuthCredential(
+          auth_type=generated_credential.auth_type,
+          oauth2=OAuth2Auth(
+              code_verifier=generated_credential.oauth2.code_verifier,
+              code_challenge_method=(
+                  generated_credential.oauth2.code_challenge_method
+              ),
+          ),
+      )
+      generated_credential.oauth2.code_verifier = None
   args = AuthToolArguments(
       function_call_id=interrupt_id,
       auth_config=auth_request,
@@ -218,8 +236,6 @@ def _build_credential_from_value(
   For API_KEY, the value is used as the key string directly.
   For all other types, the value is parsed as an AuthCredential dict.
   """
-  from ...auth.auth_credential import AuthCredential
-
   raw_cred = auth_config.raw_auth_credential
   if raw_cred is None:
     return AuthCredential.model_validate(value)
@@ -244,7 +260,8 @@ async def process_auth_resume(
   Only the credential is read from the response; the node's own auth config
   decides which scheme the credential is exchanged and stored under. When an
   OAuth state was generated for this request, the response must carry that
-  same state back.
+  same state back. Any PKCE verifier cached in ``state`` for this request is
+  restored onto the credential and cleared from ``state``.
 
   Accepts multiple response formats (tried in order):
     1. A full AuthConfig dict (from web UI OAuth flow).
@@ -259,7 +276,8 @@ async def process_auth_resume(
   Args:
     response_data: The unwrapped response from the client.
     auth_config: The original auth configuration for the node.
-    state: The session state to store credentials in.
+    state: The session state to read the cached OAuth state and PKCE verifier
+      from, and to store exchanged credentials in.
     interrupt_id: The interrupt ID of the auth request being resumed.
 
   Raises:
@@ -284,6 +302,26 @@ async def process_auth_resume(
           ' auth request. Return the auth config from the credential request'
           ' with the authorization result filled in.'
       )
+
+  credential_key = _oauth_credential_key(interrupt_id)
+  stored_credential = state.get(credential_key)
+  if isinstance(stored_credential, Mapping):
+    stored_credential = AuthCredential.model_validate(stored_credential)
+  if (
+      isinstance(stored_credential, AuthCredential)
+      and stored_credential.oauth2
+      and exchanged_credential
+      and exchanged_credential.oauth2
+  ):
+    if exchanged_credential.oauth2.code_verifier is None:
+      exchanged_credential.oauth2.code_verifier = (
+          stored_credential.oauth2.code_verifier
+      )
+    if exchanged_credential.oauth2.code_challenge_method is None:
+      exchanged_credential.oauth2.code_challenge_method = (
+          stored_credential.oauth2.code_challenge_method
+      )
+    state[credential_key] = None
 
   resumed_config = auth_config.model_copy(deep=True)
   resumed_config.exchanged_auth_credential = exchanged_credential

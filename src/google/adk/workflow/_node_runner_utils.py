@@ -367,7 +367,6 @@ async def run_node_async(
             if not ic.is_aborted:
               await runner._run_post_invocation_compaction(  # pylint: disable=protected-access
                   session=session,
-                  skip_token_compaction=ic.token_compaction_checked,
               )
           except Exception as e:
             await _notify_run_error(ic.plugin_manager, ic, e)
