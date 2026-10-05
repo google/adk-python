@@ -780,11 +780,12 @@ def _setup_gcp_telemetry(
 
   import google.auth
 
+  from ..telemetry.google_cloud import _CLOUD_PLATFORM_SCOPE
   from ..telemetry.google_cloud import get_gcp_exporters
   from ..telemetry.google_cloud import get_gcp_resource
   from ..telemetry.setup import maybe_set_otel_providers
 
-  credentials, project_id = google.auth.default()
+  credentials, project_id = google.auth.default(scopes=[_CLOUD_PLATFORM_SCOPE])
 
   otel_hooks_to_add.append(
       get_gcp_exporters(

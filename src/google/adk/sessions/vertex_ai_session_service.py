@@ -37,6 +37,7 @@ from . import _session_util
 from ..events.event import Event
 from ..events.event_actions import EventActions
 from ..events.event_actions import EventCompaction
+from ..utils._event_loop_cache import per_loop_value
 from ..utils.vertex_ai_utils import get_express_mode_api_key
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
@@ -220,15 +221,15 @@ class VertexAiSessionService(BaseSessionService):
       _validate_session_id(session_id)
       config['session_id'] = session_id
     config.update(kwargs)
-    async with self._get_api_client() as api_client:
-      api_response = await api_client.agent_engines.sessions.create(
-          name=f'reasoningEngines/{reasoning_engine_id}',
-          user_id=user_id,
-          config=config,
-      )
-      logger.debug('Create session response: %s', api_response)
-      get_session_response = api_response.response
-      session_id = get_session_response.name.split('/')[-1]
+    api_client = self._get_api_client()
+    api_response = await api_client.agent_engines.sessions.create(
+        name=f'reasoningEngines/{reasoning_engine_id}',
+        user_id=user_id,
+        config=config,
+    )
+    logger.debug('Create session response: %s', api_response)
+    get_session_response = api_response.response
+    session_id = get_session_response.name.split('/')[-1]
 
     session = Session(
         app_name=app_name,
@@ -256,61 +257,61 @@ class VertexAiSessionService(BaseSessionService):
     session_resource_name = (
         f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}'
     )
-    async with self._get_api_client() as api_client:
-      # Get session resource and events in parallel.
-      list_events_kwargs = {}
-      if config and config.after_timestamp:
-        # Filter events based on timestamp.
-        list_events_kwargs['config'] = {
-            'filter': 'timestamp>="{}"'.format(
-                datetime.datetime.fromtimestamp(
-                    config.after_timestamp, tz=datetime.timezone.utc
-                ).isoformat()
-            )
-        }
+    api_client = self._get_api_client()
+    # Get session resource and events in parallel.
+    list_events_kwargs = {}
+    if config and config.after_timestamp:
+      # Filter events based on timestamp.
+      list_events_kwargs['config'] = {
+          'filter': 'timestamp>="{}"'.format(
+              datetime.datetime.fromtimestamp(
+                  config.after_timestamp, tz=datetime.timezone.utc
+              ).isoformat()
+          )
+      }
 
-      try:
-        if config and config.num_recent_events == 0:
-          get_session_response = await api_client.agent_engines.sessions.get(
-              name=session_resource_name
-          )
-          events_iterator = None
-        else:
-          get_session_response, events_iterator = await asyncio.gather(
-              api_client.agent_engines.sessions.get(name=session_resource_name),
-              api_client.agent_engines.sessions.events.list(
-                  name=session_resource_name,
-                  **list_events_kwargs,
-              ),
-          )
-      except ClientError as e:
-        if e.code == 404:
-          logger.debug(
-              'Session %s not found in Vertex AI Agent Engine.',
-              session_resource_name,
-          )
-          return None
-        raise
-      if get_session_response.user_id != user_id:
-        raise ValueError(
-            f'Session {session_id} does not belong to user {user_id}.'
+    try:
+      if config and config.num_recent_events == 0:
+        get_session_response = await api_client.agent_engines.sessions.get(
+            name=session_resource_name
         )
-
-      update_timestamp = get_session_response.update_time.timestamp()
-      session = Session(
-          app_name=app_name,
-          user_id=user_id,
-          id=session_id,
-          state=getattr(get_session_response, 'session_state', None) or {},
-          last_update_time=update_timestamp,
+        events_iterator = None
+      else:
+        get_session_response, events_iterator = await asyncio.gather(
+            api_client.agent_engines.sessions.get(name=session_resource_name),
+            api_client.agent_engines.sessions.events.list(
+                name=session_resource_name,
+                **list_events_kwargs,
+            ),
+        )
+    except ClientError as e:
+      if e.code == 404:
+        logger.debug(
+            'Session %s not found in Vertex AI Agent Engine.',
+            session_resource_name,
+        )
+        return None
+      raise
+    if get_session_response.user_id != user_id:
+      raise ValueError(
+          f'Session {session_id} does not belong to user {user_id}.'
       )
-      # Preserve the entire event stream that Vertex returns rather than trying
-      # to discard events written milliseconds after the session resource was
-      # updated. Clock skew between those writes can otherwise drop tool_result
-      # events and permanently break the replayed conversation.
-      if events_iterator is not None:
-        async for event in events_iterator:
-          session.events.append(_from_api_event(event))
+
+    update_timestamp = get_session_response.update_time.timestamp()
+    session = Session(
+        app_name=app_name,
+        user_id=user_id,
+        id=session_id,
+        state=getattr(get_session_response, 'session_state', None) or {},
+        last_update_time=update_timestamp,
+    )
+    # Preserve the entire event stream that Vertex returns rather than trying
+    # to discard events written milliseconds after the session resource was
+    # updated. Clock skew between those writes can otherwise drop tool_result
+    # events and permanently break the replayed conversation.
+    if events_iterator is not None:
+      async for event in events_iterator:
+        session.events.append(_from_api_event(event))
 
     if config:
       # Filter events based on num_recent_events. Note `0` must return an empty
@@ -330,26 +331,26 @@ class VertexAiSessionService(BaseSessionService):
   ) -> ListSessionsResponse:
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
 
-    async with self._get_api_client() as api_client:
-      sessions = []
-      config = {}
-      if user_id is not None:
-        config['filter'] = f'user_id={_quote_filter_literal(user_id)}'
-      sessions_iterator = await api_client.agent_engines.sessions.list(
-          name=f'reasoningEngines/{reasoning_engine_id}',
-          config=config,
-      )
+    api_client = self._get_api_client()
+    sessions = []
+    config = {}
+    if user_id is not None:
+      config['filter'] = f'user_id={_quote_filter_literal(user_id)}'
+    sessions_iterator = await api_client.agent_engines.sessions.list(
+        name=f'reasoningEngines/{reasoning_engine_id}',
+        config=config,
+    )
 
-      async for api_session in sessions_iterator:
-        sessions.append(
-            Session(
-                app_name=app_name,
-                user_id=api_session.user_id,
-                id=api_session.name.split('/')[-1],
-                state=getattr(api_session, 'session_state', None) or {},
-                last_update_time=api_session.update_time.timestamp(),
-            )
-        )
+    async for api_session in sessions_iterator:
+      sessions.append(
+          Session(
+              app_name=app_name,
+              user_id=api_session.user_id,
+              id=api_session.name.split('/')[-1],
+              state=getattr(api_session, 'session_state', None) or {},
+              last_update_time=api_session.update_time.timestamp(),
+          )
+      )
 
     sessions.sort(key=lambda s: (s.last_update_time, s.user_id, s.id))
     return ListSessionsResponse(sessions=sessions)
@@ -366,28 +367,28 @@ class VertexAiSessionService(BaseSessionService):
         f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}'
     )
 
-    async with self._get_api_client() as api_client:
-      # Enforce ownership: delete_session otherwise ignores user_id entirely.
-      try:
-        existing = await api_client.agent_engines.sessions.get(
-            name=session_resource_name
-        )
-      except ClientError as e:
-        if e.code == 404:
-          return
-        raise
-      if existing.user_id != user_id:
-        raise ValueError(
-            f'Session {session_id} does not belong to user {user_id}.'
-        )
+    api_client = self._get_api_client()
+    # Enforce ownership: delete_session otherwise ignores user_id entirely.
+    try:
+      existing = await api_client.agent_engines.sessions.get(
+          name=session_resource_name
+      )
+    except ClientError as e:
+      if e.code == 404:
+        return
+      raise
+    if existing.user_id != user_id:
+      raise ValueError(
+          f'Session {session_id} does not belong to user {user_id}.'
+      )
 
-      try:
-        await api_client.agent_engines.sessions.delete(
-            name=session_resource_name,
-        )
-      except Exception as e:
-        logger.error('Error deleting session %s: %s', session_id, e)
-        raise
+    try:
+      await api_client.agent_engines.sessions.delete(
+          name=session_resource_name,
+      )
+    except Exception as e:
+      logger.error('Error deleting session %s: %s', session_id, e)
+      raise
 
   @override
   async def get_user_state(
@@ -502,43 +503,44 @@ class VertexAiSessionService(BaseSessionService):
 
     # Retry without raw_event if client side validation fails for older SDK
     # versions.
-    async with self._get_api_client() as api_client:
+    api_client = self._get_api_client()
 
-      async def _do_append(cfg: dict[str, Any]) -> None:
-        for attempt in range(2):
-          try:
-            await api_client.agent_engines.sessions.events.append(
-                name=(
-                    f'reasoningEngines/{reasoning_engine_id}/sessions/{session.id}'
-                ),
-                author=event.author,
-                invocation_id=event.invocation_id,
-                timestamp=datetime.datetime.fromtimestamp(
-                    event.timestamp, tz=datetime.timezone.utc
-                ),
-                config=cfg,
-            )
-            return
-          except ClientError as e:
-            if e.code == 429 and attempt == 0:
-              await asyncio.sleep(1.0)
-              continue
-            raise
+    async def _do_append(cfg: dict[str, Any]) -> None:
+      for attempt in range(2):
+        try:
+          await api_client.agent_engines.sessions.events.append(
+              name=(
+                  f'reasoningEngines/{reasoning_engine_id}/'
+                  f'sessions/{session.id}'
+              ),
+              author=event.author,
+              invocation_id=event.invocation_id,
+              timestamp=datetime.datetime.fromtimestamp(
+                  event.timestamp, tz=datetime.timezone.utc
+              ),
+              config=cfg,
+          )
+          return
+        except ClientError as e:
+          if e.code == 429 and attempt == 0:
+            await asyncio.sleep(1.0)
+            continue
+          raise
 
-      try:
-        await _do_append(config)
-      except pydantic.ValidationError:
-        _session_util.warn_event_fields_not_stored(
-            _FIELD_BY_FIELD_EVENT_FIELDS,
-            cause=(
-                'The installed Vertex AI SDK does not support raw_event, so an'
-                ' event is stored under the named fields the API defines'
-            ),
-            remedy='Upgrade the Vertex AI SDK to keep them.',
-        )
-        if 'raw_event' in config:
-          del config['raw_event']
-        await _do_append(config)
+    try:
+      await _do_append(config)
+    except pydantic.ValidationError:
+      _session_util.warn_event_fields_not_stored(
+          _FIELD_BY_FIELD_EVENT_FIELDS,
+          cause=(
+              'The installed Vertex AI SDK does not support raw_event, so an'
+              ' event is stored under the named fields the API defines'
+          ),
+          remedy='Upgrade the Vertex AI SDK to keep them.',
+      )
+      if 'raw_event' in config:
+        del config['raw_event']
+      await _do_append(config)
 
     if not event.partial:
       self._commit_event_to_session(session, event)
@@ -568,10 +570,24 @@ class VertexAiSessionService(BaseSessionService):
     return None
 
   def _get_api_client(self) -> vertexai.AsyncClient:
-    """Instantiates an API client for the given project and location.
+    """Returns the API client for the running event loop.
+
+    The client is built once per event loop and reused. An async client belongs
+    to the loop that opened it, so it cannot be shared across loops, and
+    building one per call leaks the resources each new client allocates.
 
     Returns:
       An API client for the given project and location or express mode api key.
+    """
+    return per_loop_value(self, '_api_client_per_loop', self._build_api_client)
+
+  def _build_api_client(self) -> vertexai.AsyncClient:
+    """Instantiates an API client for the given project and location.
+
+    Subclasses that need custom credentials or an endpoint should override this
+    method to get per-loop caching; override ``_get_api_client()`` only when the
+    client must vary per call (e.g. per-tenant), in which case callers never
+    close the returned client.
     """
     import vertexai
 

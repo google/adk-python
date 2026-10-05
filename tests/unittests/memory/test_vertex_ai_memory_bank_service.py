@@ -345,6 +345,57 @@ def test_get_api_client_defaults_credentials_to_none():
   )
 
 
+def test_get_api_client_reuses_one_client_within_an_event_loop():
+  """Reuses one Vertex AI client across calls in the same event loop."""
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  async def add_events_twice():
+    await memory_service.add_events_to_memory(
+        app_name=MOCK_APP_NAME,
+        user_id=MOCK_USER_ID,
+        events=[MOCK_SESSION.events[0]],
+    )
+    await memory_service.add_events_to_memory(
+        app_name=MOCK_APP_NAME,
+        user_id=MOCK_USER_ID,
+        events=[MOCK_SESSION.events[0]],
+    )
+
+  with mock.patch(
+      'vertexai.Client',
+      side_effect=lambda **_: mock.MagicMock(aio=mock.AsyncMock()),
+  ) as mock_client_constructor:
+    asyncio.run(add_events_twice())
+
+  assert mock_client_constructor.call_count == 1
+
+
+def test_get_api_client_builds_a_separate_client_per_event_loop():
+  """Builds a separate Vertex AI client for each event loop."""
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  with mock.patch(
+      'vertexai.Client',
+      side_effect=lambda **_: mock.MagicMock(aio=mock.AsyncMock()),
+  ) as mock_client_constructor:
+    asyncio.run(
+        memory_service.add_events_to_memory(
+            app_name=MOCK_APP_NAME,
+            user_id=MOCK_USER_ID,
+            events=[MOCK_SESSION.events[0]],
+        )
+    )
+    asyncio.run(
+        memory_service.add_events_to_memory(
+            app_name=MOCK_APP_NAME,
+            user_id=MOCK_USER_ID,
+            events=[MOCK_SESSION.events[0]],
+        )
+    )
+
+  assert mock_client_constructor.call_count == 2
+
+
 @pytest.mark.asyncio
 async def test_add_session_to_memory(mock_vertexai_client):
   memory_service = mock_vertex_ai_memory_bank_service()

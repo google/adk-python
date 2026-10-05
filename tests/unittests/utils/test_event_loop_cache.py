@@ -16,7 +16,9 @@
 
 import asyncio
 import concurrent.futures
+import copy
 import gc
+import pickle
 import threading
 import time
 import warnings
@@ -39,6 +41,14 @@ class _Owner:
     built = self._factory()
     self.builds.append(built)
     return built
+
+
+class _PicklableOwner:
+  """A module-level owner, so pickle can find its class."""
+
+  @PerLoopCachedProperty
+  def value(self):
+    return object()
 
 
 def _cache(owner):
@@ -287,3 +297,25 @@ def test_deleting_an_assigned_value_restores_building_per_loop():
 
 def test_class_level_access_returns_the_descriptor():
   assert isinstance(_Owner.value, PerLoopCachedProperty)
+
+
+def test_a_used_owner_deep_copies_without_its_cached_values():
+  """Deep-copying an owner drops cached loop values so the copy builds fresh."""
+  owner = _Owner()
+  original = asyncio.run(_read(owner))
+
+  copied = copy.deepcopy(owner)
+
+  assert not _cache(copied)
+  assert asyncio.run(_read(copied)) is not original
+
+
+def test_a_used_owner_pickles_without_its_cached_values():
+  """Pickling an owner drops cached loop values so unpickling builds fresh."""
+  owner = _PicklableOwner()
+  original = owner.value
+
+  restored = pickle.loads(pickle.dumps(owner))
+
+  assert not _cache(restored)
+  assert restored.value is not original

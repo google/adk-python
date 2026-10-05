@@ -11,8 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+import asyncio
 import copy
 import datetime
 import re
@@ -507,24 +506,27 @@ class MockAsyncClient:
 class MockAsyncClientWithPagination:
   """Mock client that simulates pagination requiring an open client connection.
 
-  This mock tracks whether the client context is active and raises RuntimeError
-  if iteration occurs outside the context, simulating the real httpx behavior.
+  Like the real async client, it stays open until it is closed, either by
+  ``aclose()`` or by leaving an ``async with`` block, and raises RuntimeError
+  if iteration continues after that, simulating the real httpx behavior.
   """
 
   def __init__(self, session_data: dict, events_pages: list[list[dict]]):
     self._session_data = session_data
     self._events_pages = events_pages
-    self._context_active = False
+    self._closed = False
     self.agent_engines = mock.AsyncMock()
     self.agent_engines.sessions.get.side_effect = self._get_session
     self.agent_engines.sessions.events.list.side_effect = self._list_events
 
   async def __aenter__(self):
-    self._context_active = True
     return self
 
   async def __aexit__(self, exc_type, exc_val, exc_tb):
-    self._context_active = False
+    await self.aclose()
+
+  async def aclose(self):
+    self._closed = True
 
   async def _get_session(self, name: str):
     return _convert_to_object(self._session_data)
@@ -535,7 +537,7 @@ class MockAsyncClientWithPagination:
   async def _paginated_events_iterator(self):
     for page in self._events_pages:
       for event in page:
-        if not self._context_active:
+        if self._closed:
           raise RuntimeError(
               'Cannot send a request, as the client has been closed.'
           )
@@ -562,12 +564,12 @@ def _generate_events_for_page(session_id: str, start_idx: int, count: int):
 
 @pytest.mark.asyncio
 async def test_get_session_pagination_keeps_client_open():
-  """Regression test: event iteration must occur inside the api_client context.
+  """Regression test: get_session() keeps the cached API client open.
 
   This test verifies that get_session() keeps the API client open while
-  iterating through paginated events. Before the fix, the events_iterator
-  was consumed outside the async with block, causing RuntimeError when
-  fetching subsequent pages.
+  iterating through paginated events and across subsequent calls. Closing the
+  client via ``async with`` or ``aclose()`` would cause RuntimeError when
+  fetching subsequent pages or making a second call on the same event loop.
   """
   session_data = {
       'name': (
@@ -591,6 +593,9 @@ async def test_get_session_pagination_keeps_client_open():
   with mock.patch.object(
       session_service, '_get_api_client', return_value=mock_client
   ):
+    await session_service.get_session(
+        app_name='123', user_id='pagination_user', session_id='pagination_test'
+    )
     session = await session_service.get_session(
         app_name='123', user_id='pagination_user', session_id='pagination_test'
     )
@@ -1209,10 +1214,6 @@ async def test_append_event_does_not_mutate_session_on_remote_failure() -> None:
       )
   )
 
-  @asynccontextmanager
-  async def fake_client() -> AsyncIterator[types.SimpleNamespace]:
-    yield client
-
   session_service = mock_vertex_ai_session_service()
   session = Session(
       id='1',
@@ -1231,7 +1232,9 @@ async def test_append_event_does_not_mutate_session_on_remote_failure() -> None:
       ),
   )
 
-  with mock.patch.object(session_service, '_get_api_client', fake_client):
+  with mock.patch.object(
+      session_service, '_get_api_client', return_value=client
+  ):
     with pytest.raises(RuntimeError):
       await session_service.append_event(session, event)
 
@@ -1670,6 +1673,37 @@ def test_api_client_http_options_override_default():
   """Tests that _api_client_http_options_override defaults to None."""
   session_service = mock_vertex_ai_session_service()
   assert session_service._api_client_http_options_override() is None
+
+
+def test_get_api_client_reuses_one_client_within_an_event_loop():
+  """Reuses one Vertex AI client across calls in the same event loop."""
+  session_service = mock_vertex_ai_session_service()
+
+  async def create_twice():
+    await session_service.create_session(app_name='123', user_id='user')
+    await session_service.create_session(app_name='123', user_id='user')
+
+  with mock.patch(
+      'vertexai.Client',
+      side_effect=lambda **_: mock.MagicMock(aio=MockAsyncClient()),
+  ) as mock_client_constructor:
+    asyncio.run(create_twice())
+
+  assert mock_client_constructor.call_count == 1
+
+
+def test_get_api_client_builds_a_separate_client_per_event_loop():
+  """Builds a separate Vertex AI client for each event loop."""
+  session_service = mock_vertex_ai_session_service()
+
+  with mock.patch(
+      'vertexai.Client',
+      side_effect=lambda **_: mock.MagicMock(aio=MockAsyncClient()),
+  ) as mock_client_constructor:
+    asyncio.run(session_service.create_session(app_name='123', user_id='user'))
+    asyncio.run(session_service.create_session(app_name='123', user_id='user'))
+
+  assert mock_client_constructor.call_count == 2
 
 
 @pytest.mark.asyncio
