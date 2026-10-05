@@ -88,10 +88,13 @@ def find_context_parameter(func: Callable[..., Any]) -> str | None:
   try:
     type_hints = typing.get_type_hints(func)
   except Exception:
-    # get_type_hints can fail for various reasons (e.g., unresolvable forward
-    # references). In such cases, we fall back to inspecting the parameter
-    # annotations directly.
-    type_hints = {}
+    try:
+      from ._callable_utils import get_type_hints_cached
+
+      type_hints = get_type_hints_cached(func)
+    except Exception:
+      # Unresolvable forward references fall back to parameter annotations.
+      type_hints = {}
 
   for name, param in signature.parameters.items():
     annotation = type_hints.get(name, param.annotation)

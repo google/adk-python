@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from enum import Enum
+import functools
 import inspect
 from typing import Any
 from typing import Optional
@@ -570,6 +571,66 @@ def test_get_declaration_is_cached_and_returns_independent_copies():
   d1.name = "prefixed_sample_tool"
   d3 = tool._get_declaration()  # pylint: disable=protected-access
   assert d3.name == "sample_tool"
+
+
+@pytest.mark.parametrize(
+    "callable_kind",
+    [
+        "partial",
+        "async_partial",
+        "instance",
+        "bound_method",
+        "wrapped_instance",
+    ],
+)
+async def test_deferred_context_is_injected_for_callable_tools(
+    callable_kind, mock_tool_context
+):
+  """Callable tools omit the context from their schema and receive it at runtime."""
+
+  def search(prefix: str, query: str, ctx: "ToolContext") -> str:
+    assert ctx is mock_tool_context
+    return prefix + query
+
+  async def async_search(prefix: str, query: str, ctx: "ToolContext") -> str:
+    return search(prefix, query, ctx)
+
+  class Search:
+
+    def __call__(self, query: str, ctx: "ToolContext") -> str:
+      return search("found: ", query, ctx)
+
+  class WrappedSearch:
+
+    def __init__(self, func):
+      functools.update_wrapper(self, func)
+
+    def __call__(self, *args, **kwargs):
+      return self.__wrapped__(*args, **kwargs)
+
+  callables = {
+      "partial": functools.partial(search, "found: "),
+      "async_partial": functools.partial(async_search, "found: "),
+      "instance": Search(),
+      "bound_method": Search().__call__,
+      "wrapped_instance": WrappedSearch(Search().__call__),
+  }
+  tool = FunctionTool(callables[callable_kind])
+  declaration = tool._get_declaration()
+  parameters = (
+      declaration.parameters_json_schema["properties"]
+      if declaration.parameters_json_schema is not None
+      else declaration.parameters.properties
+  )
+
+  assert "query" in parameters
+  assert "ctx" not in parameters
+  assert (
+      await tool.run_async(
+          args={"query": "hello"}, tool_context=mock_tool_context
+      )
+      == "found: hello"
+  )
 
 
 @pytest.mark.asyncio
