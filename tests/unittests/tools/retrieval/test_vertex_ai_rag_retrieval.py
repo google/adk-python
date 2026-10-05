@@ -57,9 +57,7 @@ async def test_retrieval_query_gets_the_original_rag_resources(mocker):
       description='rag_retrieval',
       rag_resources=[resource],
   )
-  retrieval_query = mocker.patch(
-      'google.adk.dependencies.vertexai.rag.retrieval_query'
-  )
+  retrieval_query = mocker.patch('vertexai.preview.rag.retrieval_query')
   retrieval_query.return_value.contexts.contexts = []
 
   await retrieval.run_async(args={'query': 'q'}, tool_context=mocker.Mock())

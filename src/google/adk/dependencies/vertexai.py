@@ -16,4 +16,6 @@ from __future__ import annotations
 
 import vertexai as vertexai
 from vertexai.preview import example_stores as example_stores
-from vertexai.preview import rag as rag
+
+# vertexai.preview.rag is not imported here: loading it emits a UserWarning
+# on google-cloud-aiplatform 1.163+, and evaluation only needs vertexai itself.

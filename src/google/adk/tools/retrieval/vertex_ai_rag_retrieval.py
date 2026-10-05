@@ -32,7 +32,7 @@ from ..tool_context import ToolContext
 from .base_retrieval_tool import BaseRetrievalTool
 
 if TYPE_CHECKING:
-  from ...dependencies.vertexai import rag
+  from vertexai.preview import rag
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -100,7 +100,9 @@ class VertexAiRagRetrieval(BaseRetrievalTool):
       args: dict[str, Any],
       tool_context: ToolContext,
   ) -> Any:
-    from ...dependencies.vertexai import rag
+    # Load inside the call: vertexai.preview.rag is deprecated and warns on
+    # import, so evaluation and other Vertex helpers must not pull it in.
+    from vertexai.preview import rag
 
     query = args.get('query')
     if not isinstance(query, str):
