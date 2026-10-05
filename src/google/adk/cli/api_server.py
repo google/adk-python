@@ -21,6 +21,7 @@ import base64
 import binascii
 from contextlib import asynccontextmanager
 import contextvars
+from dataclasses import dataclass
 import importlib
 import inspect
 import json
@@ -79,6 +80,7 @@ from ..artifacts.base_artifact_service import ArtifactVersion
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..auth.auth_credential import _redact_credential_secrets
 from ..auth.credential_service.base_credential_service import BaseCredentialService
+from ..errors._invocation_not_found_error import InvocationNotFoundError
 from ..errors.already_exists_error import AlreadyExistsError
 from ..errors.input_validation_error import InputValidationError
 from ..errors.session_not_found_error import SessionNotFoundError
@@ -701,6 +703,40 @@ class UpdateSessionRequest(common.BaseModel):
   """The state changes to apply to the session."""
 
 
+class RewindSessionRequest(common.BaseModel):
+  """Request to rewind a session to before a prior invocation."""
+
+  rewind_before_invocation_id: str = Field(
+      description=(
+          "The invocation ID to rewind before. Events from that invocation"
+          " onward are annulled for subsequent LLM turns."
+      ),
+  )
+
+
+class EditMessageRequest(common.BaseModel):
+  """Replaces a previous user prompt and regenerates from that turn."""
+
+  invocation_id: str
+  """The user turn to replace (the invocation that user message started)."""
+  new_message: types.Content
+  """The edited prompt."""
+  streaming: bool = False
+  """If true, stream regenerated events as SSE."""
+  state_delta: Optional[dict[str, Any]] = None
+  """Optional state changes applied with the new message."""
+  custom_metadata: Optional[dict[str, Any]] = None
+  """Optional custom metadata forwarded to the regenerated run."""
+
+
+@dataclass
+class _LiveSessionRun:
+  """A live /run_sse invocation whose abort_signal rewind/edit can trip."""
+
+  abort_signal: asyncio.Event
+  finished: asyncio.Event
+
+
 class FinalizeAgentIdentityCredentialsRequest(common.BaseModel):
   """Request to finalize a 3LO consent for an Agent Identity connector."""
 
@@ -974,6 +1010,69 @@ class ApiServer:
     self.avatar_config = avatar_config
     self.max_llm_calls = max_llm_calls
     self.default_app_name = os.getenv("ADK_DEFAULT_APP_NAME")
+    # Live /run_sse abort_signals, so rewind/edit can trip them before
+    # mutating session history.
+    self._live_session_runs: dict[
+        tuple[str, str, str], list[_LiveSessionRun]
+    ] = {}
+
+  def _live_session_key(
+      self, app_name: str, user_id: str, session_id: str
+  ) -> tuple[str, str, str]:
+    return (app_name, user_id, session_id)
+
+  def _register_live_session_run(
+      self,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      live_run: _LiveSessionRun,
+  ) -> None:
+    key = self._live_session_key(app_name, user_id, session_id)
+    self._live_session_runs.setdefault(key, []).append(live_run)
+
+  def _unregister_live_session_run(
+      self,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      live_run: _LiveSessionRun,
+  ) -> None:
+    key = self._live_session_key(app_name, user_id, session_id)
+    runs = self._live_session_runs.get(key)
+    if not runs:
+      return
+    try:
+      runs.remove(live_run)
+    except ValueError:
+      return
+    if not runs:
+      del self._live_session_runs[key]
+
+  async def _abort_live_session_runs(
+      self,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      timeout: float = 10.0,
+  ) -> None:
+    """Trips abort_signal on live /run_sse invocations for this session."""
+    key = self._live_session_key(app_name, user_id, session_id)
+    runs = list(self._live_session_runs.get(key, ()))
+    if not runs:
+      return
+    for live_run in runs:
+      live_run.abort_signal.set()
+    try:
+      await asyncio.wait_for(
+          asyncio.gather(*(live_run.finished.wait() for live_run in runs)),
+          timeout=timeout,
+      )
+    except asyncio.TimeoutError:
+      logger.warning(
+          "Timed out waiting for live runs to abort for session %s",
+          session_id,
+      )
 
   async def get_runner_async(self, app_name: str) -> Runner:
     """Returns the cached runner for the given app."""
@@ -1724,6 +1823,50 @@ class ApiServer:
 
       return _redacted_session_response(session)
 
+    @app.post(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/rewind",
+        response_model_exclude_none=True,
+    )
+    async def rewind_session(
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        req: RewindSessionRequest,
+    ) -> Response:
+      """Rewinds a session to before the given invocation.
+
+      This is the REST equivalent of ``runner.rewind_async``. Live
+      ``/run_sse`` invocations on the session are aborted via
+      ``abort_signal`` first so rewind does not race with in-flight events.
+      """
+      session = await self.session_service.get_session(
+          app_name=app_name, user_id=user_id, session_id=session_id
+      )
+      if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+      self.current_app_name_ref.value = app_name
+      await self._abort_live_session_runs(app_name, user_id, session_id)
+      runner = await self.get_runner_async(app_name)
+      _set_telemetry_context_if_needed(runner)
+      try:
+        await runner.rewind_async(
+            user_id=user_id,
+            session_id=session_id,
+            rewind_before_invocation_id=req.rewind_before_invocation_id,
+        )
+      except InvocationNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+      except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+      updated = await self.session_service.get_session(
+          app_name=app_name, user_id=user_id, session_id=session_id
+      )
+      if not updated:
+        raise HTTPException(status_code=404, detail="Session not found")
+      return _redacted_session_response(updated)
+
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name:path}/versions/{version_id}/metadata",
         response_model=ArtifactVersion,
@@ -2106,6 +2249,12 @@ class ApiServer:
         abort_signal = asyncio.Event()
         event_queue: asyncio.Queue[Optional[Event]] = asyncio.Queue()
         next_step_event = asyncio.Event()
+        live_run = _LiveSessionRun(
+            abort_signal=abort_signal, finished=asyncio.Event()
+        )
+        self._register_live_session_run(
+            req.app_name, req.user_id, req.session_id, live_run
+        )
 
         async def _produce_events() -> None:
           nonlocal is_closing, original_exc
@@ -2231,11 +2380,112 @@ class ApiServer:
               "Error during generator cleanup after completion: %s", e
           )
           raise e
+        finally:
+          live_run.finished.set()
+          self._unregister_live_session_run(
+              req.app_name, req.user_id, req.session_id, live_run
+          )
 
       # Returns a streaming response with the proper media type for SSE
       return StreamingResponse(
           event_generator(),
           media_type="text/event-stream",
+      )
+
+    @app.post(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/edit",
+        response_model_exclude_none=True,
+    )
+    async def edit_agent_message(
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        req: EditMessageRequest,
+    ) -> Response:
+      """Rewinds to a previous user turn and regenerates with a new prompt.
+
+      Live ``/run_sse`` invocations on the session are aborted via
+      ``abort_signal`` first so rewind does not race with in-flight events.
+      """
+      session = await self.session_service.get_session(
+          app_name=app_name, user_id=user_id, session_id=session_id
+      )
+      if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+      self.current_app_name_ref.value = app_name
+      await self._abort_live_session_runs(app_name, user_id, session_id)
+      runner = await self.get_runner_async(app_name)
+      _set_telemetry_context_if_needed(runner)
+      run_config = (
+          RunConfig(
+              streaming_mode=(
+                  StreamingMode.SSE if req.streaming else StreamingMode.NONE
+              ),
+              custom_metadata=req.custom_metadata,
+              **(
+                  {"max_llm_calls": self.max_llm_calls}
+                  if self.max_llm_calls is not None
+                  else {}
+              ),
+          )
+          if (
+              req.custom_metadata
+              or req.streaming
+              or self.max_llm_calls is not None
+          )
+          else None
+      )
+
+      async def _edit_events():
+        try:
+          async with Aclosing(
+              runner.edit_message_async(
+                  user_id=user_id,
+                  session_id=session_id,
+                  invocation_id=req.invocation_id,
+                  new_message=req.new_message,
+                  state_delta=req.state_delta,
+                  run_config=run_config,
+              )
+          ) as agen:
+            async for event in agen:
+              yield public_event(event)
+        except SessionNotFoundError as e:
+          raise HTTPException(status_code=404, detail=str(e)) from e
+        except InvocationNotFoundError as e:
+          raise HTTPException(status_code=404, detail=str(e)) from e
+        except ValueError as e:
+          raise HTTPException(status_code=400, detail=str(e)) from e
+
+      if req.streaming:
+
+        async def event_generator():
+          async for event in _edit_events():
+            sse_event = pydantic_core.to_json(
+                _redact_credential_secrets(
+                    event.model_dump(
+                        exclude_none=True, by_alias=True, mode="json"
+                    )
+                )
+            ).decode("utf-8")
+            yield f"data: {sse_event}\n\n"
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+        )
+
+      events = [event async for event in _edit_events()]
+      return JSONResponse(
+          content=[
+              _redact_credential_secrets(
+                  event.model_dump(
+                      exclude_none=True, by_alias=True, mode="json"
+                  )
+              )
+              for event in events
+          ]
       )
 
     @app.websocket("/run_live")
