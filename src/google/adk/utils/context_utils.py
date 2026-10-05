@@ -88,6 +88,9 @@ def find_context_parameter(func: Callable[..., Any]) -> str | None:
   try:
     type_hints = typing.get_type_hints(func)
   except Exception:
+    type_hints = {}
+
+  if not type_hints:
     try:
       from ._callable_utils import get_type_hints_cached
 
