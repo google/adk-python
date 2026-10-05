@@ -69,7 +69,7 @@ async def run_node_async(
   caller_ctx = context.get_current()
 
   async def _run() -> AsyncGenerator[Event, None]:
-    nonlocal invocation_id, new_message, session
+    nonlocal invocation_id, new_message, node, session
     with _instrumentation.record_invocation(
         entrypoint_node=node or runner.agent,
         conversation_id=session_id,
@@ -175,13 +175,41 @@ async def run_node_async(
             )
             if modified_user_message is not None:
               new_message = modified_user_message
-              if not resume_inputs:
+              resume_inputs = runner._extract_resume_inputs(new_message)  # pylint: disable=protected-access
+              runner._validate_new_message(new_message, resume_inputs)  # pylint: disable=protected-access
+              if not invocation_id:
+                resolved_inv_id = runner._resolve_invocation_id_from_fr(  # pylint: disable=protected-access
+                    session, new_message
+                )
+                if resolved_inv_id:
+                  ic.invocation_id = resolved_inv_id
+                  continues_paused_task = False
+              if resume_inputs and not continues_paused_task:
+                recovered_content = runner._find_user_message_for_invocation(  # pylint: disable=protected-access
+                    ic.session.events, ic.invocation_id
+                )
+                if recovered_content is not None:
+                  node_input = recovered_content
+                  ic.user_content = recovered_content
+              else:
                 ic.user_content = new_message
                 node_input = new_message
 
             user_event = await runner._append_user_event(  # pylint: disable=protected-access
                 ic, new_message, state_delta=state_delta
             )
+            if (
+                modified_user_message is not None
+                and isinstance(runner.agent, BaseAgent)
+                and runner._uses_legacy_sub_agent_picker()  # pylint: disable=protected-access
+            ):
+              node = runner._find_agent_to_run(ic.session, runner.agent)  # pylint: disable=protected-access
+              ic.agent = node
+              ic.branch = None
+              if node is not runner.agent:
+                runner._restore_branch_from_history(  # pylint: disable=protected-access
+                    ic, node, root=runner.agent, invocation_id=ic.invocation_id
+                )
             if yield_user_message and user_event:
               yield user_event
           elif state_delta:

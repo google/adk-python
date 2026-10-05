@@ -26,9 +26,11 @@ from google.adk.flows.llm_flows.core._resume import _is_sub_branch_answer
 from google.adk.flows.llm_flows.core._resume import _needs_call_replay
 from google.adk.flows.llm_flows.core._resume import _pause_left_calls_unanswered
 from google.adk.flows.llm_flows.core._resume import decide_resume
+from google.adk.flows.llm_flows.core._resume import decide_resume_action
 from google.adk.flows.llm_flows.core._resume import decide_step_resume
 from google.adk.flows.llm_flows.core._resume import ResumeAction
 from google.adk.flows.llm_flows.core._resume import ResumeDecision
+from google.adk.flows.llm_flows.core._resume import ResumeRoute
 from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from google.adk.workflow.utils._workflow_hitl_utils import REQUEST_INPUT_FUNCTION_CALL_NAME
 from google.genai import types
@@ -441,6 +443,8 @@ class TestDecideStepResume:
     pausing = pausing or set()
     ctx = mock.Mock()
     ctx.is_resumable = resumable
+    ctx.branch = None
+    ctx.session.events = list(events)
     ctx.agent.name = agent_name
     ctx._get_events.return_value = events
     ctx.should_pause_invocation.side_effect = lambda ev: ev.id in pausing
@@ -450,6 +454,7 @@ class TestDecideStepResume:
     ctx = self._ctx([_call_event('ask', 'c1')], resumable=False)
     decision = decide_step_resume(ctx, {'ask': object()})
     assert decision.action is ResumeAction.CONTINUE
+    ctx._get_events.assert_not_called()
 
   def test_a_non_resumable_invocation_replays_sub_branch_answer(self):
     call = _call_event('workflow_tool', 'c1')
@@ -530,3 +535,64 @@ class TestDecideStepResume:
     )
     assert decision.action is ResumeAction.REPLAY_CALLS
     assert decision.replay_event() is call
+
+
+class TestDecideResumeAction:
+  """Contract tests for `decide_resume_action`."""
+
+  @pytest.mark.parametrize('is_resumable', [True, False])
+  def test_user_authored_answer_routes_to_author(self, is_resumable: bool):
+    call = _call_event('ask', 'c1')
+    answer = _response_event('ask', 'c1', author='user')
+    route = decide_resume_action(
+        call,
+        answer,
+        is_resumable=is_resumable,
+    )
+    assert route is ResumeRoute.ROUTE_TO_AUTHOR
+
+  def test_agent_authored_answer_continues_when_not_resumable(self):
+    call = _call_event('ask', 'c1')
+    answer = _response_event('ask', 'c1', author='agent')
+    route = decide_resume_action(
+        call,
+        answer,
+        is_resumable=False,
+    )
+    assert route is ResumeRoute.CONTINUE
+
+  def test_agent_authored_answer_routes_when_resumable(self):
+    call = _call_event('ask', 'c1')
+    answer = _response_event('ask', 'c1', author='agent')
+    route = decide_resume_action(
+        call,
+        answer,
+        is_resumable=True,
+    )
+    assert route is ResumeRoute.ROUTE_TO_AUTHOR
+
+  @pytest.mark.parametrize('is_resumable', [True, False])
+  def test_sub_branch_answer_replays_calls(self, is_resumable: bool):
+    call = _call_event('wf_tool', 'c1')
+    answer = _response_event(
+        REQUEST_INPUT_FUNCTION_CALL_NAME,
+        'int-1',
+        author='user',
+        branch='wf_tool@c1.input_node@1',
+    )
+    route = decide_resume_action(
+        call,
+        answer,
+        is_resumable=is_resumable,
+    )
+    assert route is ResumeRoute.REPLAY_CALLS
+
+  @pytest.mark.parametrize('is_resumable', [True, False])
+  def test_no_answer_continues(self, is_resumable: bool):
+    call = _call_event('ask', 'c1')
+    route = decide_resume_action(
+        call,
+        None,
+        is_resumable=is_resumable,
+    )
+    assert route is ResumeRoute.CONTINUE

@@ -247,6 +247,39 @@ def _unexecuted_calls_event(
   )
 
 
+class ResumeRoute(enum.Enum):
+  """How the router or flow should handle a function call and its answer."""
+
+  ROUTE_TO_AUTHOR = 'route_to_author'
+  """Router: run the agent that authored the call."""
+
+  REPLAY_CALLS = 'replay_calls'
+  """Flow: re-dispatch the call event."""
+
+  CONTINUE = 'continue'
+  """Flow: fresh LLM step; router: normal scan."""
+
+
+def decide_resume_action(
+    call_event: Event,
+    answer_event: Event | None,
+    *,
+    is_resumable: bool,
+) -> ResumeRoute:
+  """Decides how to handle a function call and its answer event.
+
+  This is the single place `decide_resume`, `_find_sub_branch_replay_event`,
+  and `find_agent_to_run` ask what to do given a function call and its answer.
+  """
+  if answer_event is None:
+    return ResumeRoute.CONTINUE
+  if _is_sub_branch_answer(answer_event, call_event):
+    return ResumeRoute.REPLAY_CALLS
+  if answer_event.author == 'user' or is_resumable:
+    return ResumeRoute.ROUTE_TO_AUTHOR
+  return ResumeRoute.CONTINUE
+
+
 def _locate_answer(
     events: list[Event],
     call_event: Event,
@@ -310,7 +343,8 @@ def decide_resume(
     }
     # An answer on a sub-branch resolves the call however its ids look, so it
     # short-circuits both unanswered tests rather than being repeated in each.
-    from_sub_branch = _is_sub_branch_answer(answer_event, call_event)
+    route = decide_resume_action(call_event, answer_event, is_resumable=True)
+    from_sub_branch = route is ResumeRoute.REPLAY_CALLS
     answers = answer_event.get_function_responses()
     # `ids & answered` alone decides these: a set that is a subset of the
     # answered ids necessarily intersects it, so testing `issubset` as well
@@ -345,9 +379,27 @@ def _find_sub_branch_replay_event(
   if not call_event:
     return None
   _, _, _, answer_event = _locate_answer(events, call_event)
-  if _is_sub_branch_answer(answer_event, call_event):
+  route = decide_resume_action(call_event, answer_event, is_resumable=False)
+  if route is ResumeRoute.REPLAY_CALLS:
     return call_event
   return None
+
+
+def _is_sub_branch_user_response(
+    event: Event, current_branch: str | None
+) -> bool:
+  """Returns whether `event` is a user FunctionResponse on a sub-branch."""
+  if (
+      event.author != 'user'
+      or not event.branch
+      or not event.get_function_responses()
+  ):
+    return False
+  if current_branch is None:
+    return True
+  return event.branch != current_branch and event.branch.startswith(
+      f'{current_branch}.'
+  )
 
 
 def decide_step_resume(
@@ -375,19 +427,32 @@ def decide_step_resume(
     CONTINUE for a fresh step, PAUSE when the branch still owes an answer,
     or REPLAY_CALLS naming the event whose calls were never executed.
   """
+  if not invocation_context.is_resumable:
+    current_branch = invocation_context.branch
+    session_events = invocation_context.session.events
+    if not session_events or not _is_sub_branch_user_response(
+        session_events[-1], current_branch
+    ):
+      return ResumeDecision(ResumeAction.CONTINUE)
+    events = invocation_context._get_events(  # pylint: disable=protected-access
+        current_invocation=True, current_branch=True
+    )
+    if (
+        len(events) > 1
+        and _is_sub_branch_user_response(events[-1], current_branch)
+        and (
+            call_event := _find_sub_branch_replay_event(
+                invocation_context, events, tools_dict
+            )
+        )
+    ):
+      return ResumeDecision(ResumeAction.REPLAY_CALLS, call_event)
+    return ResumeDecision(ResumeAction.CONTINUE)
+
   events = invocation_context._get_events(  # pylint: disable=protected-access
       current_invocation=True, current_branch=True
   )
   if not events:
-    return ResumeDecision(ResumeAction.CONTINUE)
-
-  if not invocation_context.is_resumable:
-    if len(events) > 1 and (
-        call_event := _find_sub_branch_replay_event(
-            invocation_context, events, tools_dict
-        )
-    ):
-      return ResumeDecision(ResumeAction.REPLAY_CALLS, call_event)
     return ResumeDecision(ResumeAction.CONTINUE)
 
   # For a multi-event branch, decide whether to pause (unanswered tool calls
