@@ -527,7 +527,10 @@ def _mark_task_failed(
   response converted to none.
 
   The text the remote agent sent with the failure is its account of why, so it
-  becomes the error message rather than being read as an ordinary answer.
+  becomes the error message rather than being read as an ordinary answer. Only
+  the failed status's own message counts: a non-streamed task with none falls
+  back to its history, whose last agent message is earlier progress, not why
+  the task failed.
   """
   if event is None:
     event = Event(
@@ -543,9 +546,7 @@ def _mark_task_failed(
         for part in (message.parts if message else [])
         if _compat.is_text_part(part) and _compat.part_text(part)
     )
-    event.error_message = (
-        text or _text_from_content(event.content) or "Remote A2A task failed"
-    )
+    event.error_message = text or "Remote A2A task failed"
   return event
 
 
