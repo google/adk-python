@@ -167,12 +167,14 @@ def _mock_leaf_run(agent, content_text=None):
   return _Ctx()
 
 
-def _new_workflow_runner(wf, test_name):
+def _new_workflow_runner(wf, test_name, *, check_invariants: bool = True):
   """Creates an InMemoryRunner for the new Workflow (root_agent path)."""
   from . import testing_utils
 
   app = App(name=test_name, root_agent=wf)
-  return testing_utils.InMemoryRunner(app=app)
+  return testing_utils.InMemoryRunner(
+      app=app, check_invariants=check_invariants
+  )
 
 
 async def _make_context(test_name: str, agent: LlmAgent) -> Context:
@@ -772,7 +774,11 @@ async def test_task_mode_does_not_set_branch(
   from . import testing_utils
 
   wf = Workflow(name='wf', edges=[('START', wrapper)])
-  runner = _new_workflow_runner(wf, request.function.__name__)
+  # invariants: off because fake_run emits a bare finish_task FunctionCall
+  # without executing FinishTaskTool.
+  runner = _new_workflow_runner(
+      wf, request.function.__name__, check_invariants=False
+  )
 
   agent_clone = next(n for n in wf.graph.nodes if n.name == wrapper.name)
   original = agent_clone.run_async
