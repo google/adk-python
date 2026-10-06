@@ -150,6 +150,10 @@ class NodeRunner:
         logger.debug("node %s cancelled via signal.", ctx.node_path)
         raise
       except Exception as e:
+        # Before the DynamicNodeFailError return: a tool that runs a failing
+        # child node raises it out of this node's own tool batch.
+        await self._enqueue_kept_function_responses(ctx)
+
         if isinstance(e, DynamicNodeFailError):
           # TODO: consider to retry upon dynamic node failures later. This may
           # require thorough design to consider a workflow dynamic node and a
@@ -184,6 +188,30 @@ class NodeRunner:
           self._node.name,
       )
       attempt_count += 1
+
+  async def _enqueue_kept_function_responses(self, ctx: Context) -> None:
+    """Enqueues the results kept from a parallel tool batch that failed.
+
+    The node has stopped, so nothing in it can act on them. They go out before
+    the error event, and before a retry builds its next request. Once the
+    invocation is aborted, abort sealing decides how its calls are answered.
+    """
+    ic = ctx._invocation_context
+    if ic.is_aborted:
+      return
+    kept = ic._abort_state.pop_unpersisted_function_responses()  # pylint: disable=protected-access
+    if not kept:
+      return
+    # ctx.event_author is the author of the node's last yielded event, which
+    # in a ParallelAgent node can be another branch. Keep each result's own
+    # author, as BaseAgent._run_impl does for the events it yields.
+    event_author = ctx.event_author
+    try:
+      for event in kept:
+        ctx.event_author = event.author
+        await self._enqueue_event(event, ctx)
+    finally:
+      ctx.event_author = event_author
 
   async def _attempt_retry(self, e: Exception, attempt_count: int) -> bool:
     """Checks if node should retry and sleeps if so."""

@@ -16,6 +16,7 @@ import asyncio
 from contextlib import aclosing
 import importlib
 import logging
+import operator
 from pathlib import Path
 import sys
 import textwrap
@@ -36,6 +37,7 @@ from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_ERROR_RESUL
 from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_SUCCESS_RESULT
 from google.adk.agents.llm.task._finish_task_tool import FINISH_TASK_TOOL_NAME
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import App
@@ -57,6 +59,8 @@ from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.base_toolset import BaseToolset
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
 from google.adk.workflow import BaseNode
+from google.adk.workflow import node
+from google.adk.workflow import RetryConfig
 from google.adk.workflow import START
 from google.adk.workflow._workflow import Workflow
 from google.genai import types
@@ -64,6 +68,7 @@ from opentelemetry import trace
 import pytest
 
 from tests.unittests import testing_utils
+from tests.unittests._invariants import InvariantPlugin
 
 TEST_APP_ID = "test_app"
 TEST_USER_ID = "test_user"
@@ -6251,6 +6256,283 @@ async def test_multi_invocation_function_response_starts_new_invocation_when_not
   assert [e.author for e in events] == ["sub_agent"]
   assert events[0].invocation_id not in ("inv_1", "inv_2")
   assert events[0].branch == "root_agent.sub_agent"
+
+
+def _gated_tools(gate_on=("fast_tool",), before_raise=None):
+  """Returns fast_tool, failing_tool and an after_tool_callback.
+
+  failing_tool raises once every call named in `gate_on` has finished.
+  """
+  finished = []
+  gate = asyncio.Event()
+
+  async def fast_tool() -> dict[str, str]:
+    return {"record_id": "r1"}
+
+  async def failing_tool() -> dict[str, str]:
+    await gate.wait()
+    # The callback runs at the end of a call; one more step lets it finish.
+    await asyncio.sleep(0)
+    if before_raise:
+      before_raise()
+    raise RuntimeError("downstream 500") from KeyError("upstream")
+
+  def after_tool(tool, args, tool_context, tool_response):
+    if tool.name in gate_on:
+      finished.append(tool.name)
+      if len(finished) == len(gate_on):
+        gate.set()
+
+  return fast_tool, failing_tool, after_tool
+
+
+def _parallel_calls_agent(tools, after_tool, name="tool_agent", **kwargs):
+  """An agent whose model calls every tool in parallel, then answers."""
+  return LlmAgent(
+      name=name,
+      model=testing_utils.MockModel.create(
+          responses=[
+              [
+                  types.Part.from_function_call(name=tool.__name__, args={})
+                  for tool in tools
+              ],
+              "Recovered",
+          ]
+      ),
+      tools=tools,
+      after_tool_callback=after_tool,
+      **kwargs,
+  )
+
+
+def _run_async(runner: Runner, **kwargs):
+  return runner.run_async(
+      user_id=TEST_USER_ID,
+      session_id="s",
+      new_message=types.Content(role="user", parts=[types.Part(text="Run")]),
+      **kwargs,
+  )
+
+
+def _function_responses(contents) -> list[Any]:
+  return [
+      p.function_response.response
+      for c in contents
+      if c
+      for p in c.parts or []
+      if p.function_response
+  ]
+
+
+async def _persisted_events(runner: Runner) -> list[Event]:
+  session = await runner.session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id="s"
+  )
+  return session.events
+
+
+async def _persisted_responses(runner: Runner) -> list[Any]:
+  return _function_responses(e.content for e in await _persisted_events(runner))
+
+
+async def _kept_authors(runner: Runner, tool_name: str) -> list[str]:
+  """Returns the kept results' authors, checking each is filed like its call."""
+  events = await _persisted_events(runner)
+  where = operator.attrgetter(
+      "author", "branch", "isolation_scope", "node_info.path"
+  )
+  calls = {
+      fc.id: where(e)
+      for e in events
+      for fc in e.get_function_calls()
+      if fc.name == tool_name
+  }
+  kept = {
+      fr.id: where(e)
+      for e in events
+      for fr in e.get_function_responses()
+      if fr.name == tool_name
+  }
+  assert kept == calls
+  return sorted(author for author, *_ in kept.values())
+
+
+@pytest.mark.asyncio
+async def test_run_async_tool_error_keeps_result_of_completed_parallel_call():
+  """A parallel call that raises keeps a finished sibling's real result.
+
+  The error, its cause and the run callbacks are unchanged, and the next
+  request shows the model that the finished call succeeded.
+  """
+  fast_tool, failing_tool, after_tool = _gated_tools()
+  agent = _parallel_calls_agent([fast_tool, failing_tool], after_tool)
+  recorder = BasePlugin(name="recorder")
+  recorder.on_run_error_callback = AsyncMock(return_value=None)
+  recorder.after_run_callback = AsyncMock(return_value=None)
+  runner = _abort_runner(agent, plugins=[InvariantPlugin(), recorder])
+
+  with pytest.raises(RuntimeError, match="downstream 500") as exc_info:
+    await _run_turn(runner, "s", "Run")
+
+  assert await _persisted_responses(runner) == [{"record_id": "r1"}]
+  assert isinstance(exc_info.value.__cause__, KeyError)
+  recorder.on_run_error_callback.assert_awaited_once_with(
+      invocation_context=mock.ANY, error=exc_info.value
+  )
+  recorder.after_run_callback.assert_not_awaited()
+
+  await _run_turn(runner, "s", "Next question")
+  assert _function_responses(agent.model.requests[-1].contents) == [
+      {"record_id": "r1"}
+  ]
+
+
+@pytest.mark.asyncio
+async def test_run_async_tool_error_as_abort_lands_leaves_calls_to_abort_sealing():
+  """A batch that fails in the step an abort lands is left to abort sealing."""
+  abort_signal = asyncio.Event()
+  fast_tool, failing_tool, after_tool = _gated_tools(
+      before_raise=abort_signal.set
+  )
+  runner = _abort_runner(
+      _parallel_calls_agent([fast_tool, failing_tool], after_tool)
+  )
+
+  # An aborted run ends without re-raising the node's error.
+  async for _ in _run_async(runner, abort_signal=abort_signal):
+    pass
+
+  aborted = {"error": "Invocation was aborted by client."}
+  assert await _persisted_responses(runner) == [aborted, aborted]
+
+
+@pytest.mark.asyncio
+async def test_run_async_tool_error_retried_agent_sees_kept_result():
+  """A node retried after the error sees the finished call's result."""
+  fast_tool, failing_tool, after_tool = _gated_tools()
+  agent = _parallel_calls_agent(
+      [fast_tool, failing_tool],
+      after_tool,
+      retry_config=RetryConfig(max_attempts=2, initial_delay=0, jitter=0),
+  )
+  # No InvariantPlugin: the failing call stays unanswered in a completed turn,
+  # as both calls do on main.
+  runner = _abort_runner(agent)
+
+  await _run_turn(runner, "s", "Run")
+
+  assert _function_responses(agent.model.requests[1].contents) == [
+      {"record_id": "r1"}
+  ]
+
+
+@pytest.mark.asyncio
+async def test_run_async_tool_error_in_parallel_agent_node_keeps_each_author():
+  """Each branch's kept result keeps its author, not the node's last one."""
+  fast_tool, failing_tool, after_tool = _gated_tools(
+      gate_on=("fast_tool", "fast_tool")
+  )
+  parallel = ParallelAgent(
+      name="parallel",
+      sub_agents=[
+          _parallel_calls_agent([fast_tool, failing_tool], after_tool, name)
+          for name in ("a", "b")
+      ],
+  )
+  runner = _abort_runner(Workflow(name="wf", edges=[(START, parallel)]))
+
+  with pytest.raises(RuntimeError, match="downstream 500"):
+    await _run_turn(runner, "s", "Run")
+
+  assert await _kept_authors(runner, "fast_tool") == ["a", "b"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caught_by_parent", [False, True])
+async def test_run_async_tool_error_from_failing_child_node_keeps_result(
+    caught_by_parent: bool,
+):
+  """A tool whose child node fails keeps its sibling's result in the agent.
+
+  The child's failure leaves the agent's node as a DynamicNodeFailError. A
+  parent node that catches it and fails later must not take the result over.
+  """
+  fast_tool, failing_tool, after_tool = _gated_tools()
+
+  async def child_tool(tool_context) -> dict[str, str]:
+    return await tool_context.run_node(failing_tool)
+
+  agent = _parallel_calls_agent([fast_tool, child_tool], after_tool)
+
+  async def parent(ctx: Context):
+    try:
+      await ctx.run_node(agent, node_input="Run")
+    except Exception:  # pylint: disable=broad-exception-caught
+      pass  # The parent carries on after the agent fails, then fails itself.
+    raise ValueError("parent failed")
+
+  parent_wf = Workflow(
+      name="wf",
+      edges=[(START, node(parent, name="parent", rerun_on_resume=True))],
+  )
+  runner = _abort_runner(parent_wf if caught_by_parent else agent)
+
+  with pytest.raises(
+      Exception, match="parent failed" if caught_by_parent else "downstream 500"
+  ):
+    await _run_turn(runner, "s", "Run")
+
+  assert await _kept_authors(runner, "fast_tool") == ["tool_agent"]
+
+
+@pytest.mark.asyncio
+async def test_run_async_tool_error_with_transfer_sibling_still_raises():
+  """A finished transfer next to a failing call is neither run nor kept."""
+  _, failing_tool, after_tool = _gated_tools(gate_on=("transfer_to_agent",))
+  sub_agent = LlmAgent(
+      name="sub_agent", model=testing_utils.MockModel.create(responses=[])
+  )
+  root_agent = LlmAgent(
+      name="root_agent",
+      model=testing_utils.MockModel.create(
+          responses=[[
+              types.Part.from_function_call(
+                  name="transfer_to_agent", args={"agent_name": "sub_agent"}
+              ),
+              types.Part.from_function_call(name="failing_tool", args={}),
+          ]]
+      ),
+      tools=[failing_tool],
+      sub_agents=[sub_agent],
+      after_tool_callback=after_tool,
+  )
+  runner = _abort_runner(root_agent)
+
+  with pytest.raises(RuntimeError, match="downstream 500"):
+    await _run_turn(runner, "s", "Run")
+
+  assert not sub_agent.model.requests
+  assert not await _persisted_responses(runner)
+
+
+@pytest.mark.asyncio
+async def test_run_async_tool_error_caller_closing_at_kept_result_returns():
+  """A caller that stops reading at the streamed kept result is not held up."""
+  fast_tool, failing_tool, after_tool = _gated_tools()
+  runner = _abort_runner(
+      _parallel_calls_agent([fast_tool, failing_tool], after_tool)
+  )
+
+  async def _read_until_kept_result() -> None:
+    async with aclosing(_run_async(runner)) as agen:
+      async for event in agen:
+        if event.get_function_responses():
+          break
+
+  # Bounded, so that a close that never returns fails instead of hanging.
+  await asyncio.wait_for(_read_until_kept_result(), timeout=5)
+
+  assert await _persisted_responses(runner) == [{"record_id": "r1"}]
 
 
 if __name__ == "__main__":
