@@ -1261,6 +1261,97 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(result_contents[0].parts[0].text, 'Summary safe prefix')
     self.assertEqual(result_contents[1].parts[0].text, 'e3')
 
+  async def test_contents_handles_parallel_timestamp_ordering_after_compaction(
+      self,
+  ):
+    """Compaction preserves pairs across out-of-order parallel timestamps."""
+    app = App(
+        name='test',
+        root_agent=Mock(spec=BaseAgent),
+        events_compaction_config=EventsCompactionConfig(
+            summarizer=self.mock_compactor,
+            compaction_interval=999,
+            overlap_size=0,
+            token_threshold=50,
+            event_retention_size=2,
+        ),
+    )
+    analyzer_branch = 'root.parallel.analyzer'
+    reproducer_branch = 'root.parallel.reproducer'
+
+    def _branch_event(event, branch, author):
+      event.branch = branch
+      event.author = author
+      return event
+
+    events = [
+        self._create_event(1.0, 'inv-user', 'task'),
+        # The reproducer starts later but completes and appends first.
+        _branch_event(
+            self._create_function_call_event(3.0, 'inv-reproducer', 'b1'),
+            reproducer_branch,
+            'reproducer',
+        ),
+        _branch_event(
+            self._create_function_response_event(4.0, 'inv-reproducer', 'b1'),
+            reproducer_branch,
+            'reproducer',
+        ),
+        # The analyzer started earlier, so its call has an earlier timestamp,
+        # but its event is appended after the reproducer's completed pair.
+        _branch_event(
+            self._create_function_call_event(2.0, 'inv-analyzer', 'a1'),
+            analyzer_branch,
+            'analyzer',
+        ),
+        _branch_event(
+            self._create_function_response_event(
+                5.0, 'inv-analyzer', 'a1', prompt_token_count=100
+            ),
+            analyzer_branch,
+            'analyzer',
+        ),
+    ]
+    session = Session(app_name='test', user_id='u1', id='s1', events=events)
+    self.mock_compactor.maybe_summarize_events.side_effect = (
+        lambda *, events: self._create_compacted_event(
+            events[0].timestamp,
+            events[-1].timestamp,
+            'summary',
+            appended_ts=6.0,
+        )
+    )
+
+    await self._run_sliding_window(app, session, self.mock_session_service)
+
+    appended_event = self.mock_session_service.append_event.call_args[1][
+        'event'
+    ]
+    self.assertEqual(appended_event.actions.compaction.start_timestamp, 1.0)
+    self.assertEqual(appended_event.actions.compaction.end_timestamp, 4.0)
+
+    contents = _contents._get_contents(
+        analyzer_branch,
+        events + [appended_event],
+        'analyzer',
+        preserve_function_call_ids=True,
+    )
+    parts = [part for content in contents for part in content.parts]
+
+    call_indices = [
+        index
+        for index, part in enumerate(parts)
+        if part.function_call and part.function_call.id == 'a1'
+    ]
+    response_indices = [
+        index
+        for index, part in enumerate(parts)
+        if part.function_response and part.function_response.id == 'a1'
+    ]
+    self.assertEqual(len(call_indices), 1)
+    self.assertEqual(len(response_indices), 1)
+    self.assertLess(call_indices[0], response_indices[0])
+
   async def test_token_threshold_excludes_pending_function_call_events(self):
     """Token-threshold compaction stays contiguous before pending calls."""
     app = App(

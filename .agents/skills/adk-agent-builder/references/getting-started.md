@@ -91,7 +91,7 @@ def get_weather(city: str) -> dict:
 
 
 root_agent = Agent(
-    model='gemini-2.5-flash',
+    model='gemini-3.5-flash',
     name='root_agent',
     description='An assistant that reports the weather.',
     instruction=(
@@ -104,7 +104,7 @@ root_agent = Agent(
 
 | Field | Purpose |
 |---|---|
-| `model` | Model id, e.g. `'gemini-2.5-flash'`, `'gemini-2.5-pro'` |
+| `model` | Model id, e.g. `'gemini-3.5-flash'`, `'gemini-3.1-pro-preview'` |
 | `instruction` | System prompt; `{var}` placeholders resolve from session state |
 | `tools` | Python callables; name, docstring, and type hints become the tool schema |
 | `description` | How a parent agent decides to route to this one |
@@ -176,7 +176,7 @@ from google.adk.agents import LlmAgent, SequentialAgent
 
 writer = LlmAgent(
     name='CodeWriterAgent',
-    model='gemini-2.5-flash',
+    model='gemini-3.5-flash',
     instruction=(
         'Write Python code that fulfills the user request. Output only the'
         ' code block.'
@@ -187,7 +187,7 @@ writer = LlmAgent(
 
 reviewer = LlmAgent(
     name='CodeReviewerAgent',
-    model='gemini-2.5-flash',
+    model='gemini-3.5-flash',
     instruction=(
         'Review this code and reply with a bulleted list of issues, or "No'
         ' major issues found." if it is clean:\n\n{generated_code}'
@@ -198,7 +198,7 @@ reviewer = LlmAgent(
 
 refactorer = LlmAgent(
     name='CodeRefactorerAgent',
-    model='gemini-2.5-flash',
+    model='gemini-3.5-flash',
     instruction=(
         'Improve this code:\n\n{generated_code}\n\nAddressing these'
         ' comments:\n\n{review_comments}\n\nOutput only the final code'
@@ -298,7 +298,7 @@ def extract_city(node_input: str) -> str:
 
 weather_agent = LlmAgent(
     name='weather_reporter',
-    model='gemini-2.5-flash',
+    model='gemini-3.5-flash',
     instruction='Use get_weather, then give a natural-language report.',
     tools=[get_weather],
 )

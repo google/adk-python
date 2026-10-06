@@ -285,6 +285,18 @@ def test_knowledge_agent_requires_datastore_env(monkeypatch):
     _load_root_agent(SAMPLES_DIR / "adk_team" / "adk_knowledge_agent")
 
 
+@pytest.mark.parametrize(
+    "sample", ["adk_stale_agent", "adk_issue_monitoring_agent"]
+)
+def test_issue_maintenance_agents_retry_model_errors(sample: str, monkeypatch):
+  """A transient model error must not fail the issue maintenance job."""
+  for key, value in _DUMMY_ENV.items():
+    monkeypatch.setenv(key, value)
+  root_agent = _load_root_agent(SAMPLES_DIR / "adk_team" / sample)
+  retry_options = root_agent.canonical_model.retry_options
+  assert retry_options is not None and retry_options.attempts > 1
+
+
 @contextlib.contextmanager
 def _sample_module(sample_dir: Path, module_name: str) -> Iterator[Any]:
   """Imports one module of a sample package and evicts it afterwards."""
