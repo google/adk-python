@@ -698,3 +698,478 @@ def test_final_model_text_without_an_author_accepts_any_author():
   event = _event(author='some_other_agent', parts=[_TEXT_PART])
 
   assert _event_converter.final_model_text(event) == 'answer'
+
+
+def test_completed_model_text_with_thinking_includes_thought_part_first():
+  """A completed model text response with thinking emits thought then text."""
+  step = sdk_types.Step(
+      step_index=1,
+      type=sdk_types.StepType.TEXT_RESPONSE,
+      source=sdk_types.StepSource.MODEL,
+      status=sdk_types.StepStatus.DONE,
+      thinking='final synthesis reasoning',
+      content='final answer',
+      is_complete_response=True,
+  )
+
+  events = _convert(step)
+
+  assert len(events) == 1
+  parts = events[0].content.parts
+  assert len(parts) == 2
+  assert parts[0].thought
+  assert parts[0].text == 'final synthesis reasoning'
+  assert not parts[1].thought
+  assert parts[1].text == 'final answer'
+
+
+def test_active_tool_call_without_thinking_emits_immediately():
+  """An ACTIVE tool call without thinking emits immediately without delay."""
+  pending_calls: list[Event] = []
+  seen_thoughts: set[str] = set()
+  state = dict(
+      ctx=_make_ctx(),
+      author='agy',
+      seen_tool_calls=set(),
+      seen_tool_results=set(),
+      tool_results=_tool_result_capture.ToolResultBuffer(),
+      pending_function_calls=pending_calls,
+      seen_thought_steps=seen_thoughts,
+  )
+
+  events = _event_converter.convert_step_to_events(
+      _client_tool_active_step(), **state
+  )
+  assert len(events) == 1
+  assert not pending_calls
+  assert (
+      events[0].content.parts[0].function_call.name == 'naming_reviewer'
+      and events[0].content.parts[0].function_call.id == _CLIENT_CALL_ID
+  )
+
+
+def test_a_tool_step_with_json_dict_content_unwraps_the_dict():
+  """A tool step with JSON object content unwraps into the response dict."""
+  turn = _Turn(tool_results=None)
+
+  turn.step(_builtin_tool_step(sdk_types.StepStatus.ACTIVE))
+  done = turn.step(
+      _builtin_tool_step(
+          sdk_types.StepStatus.DONE,
+          content='{"result": "ok", "web_citations": [{"id": "c1"}]}',
+      )
+  )
+
+  assert _responses(done) == [(
+      'view_file',
+      _BUILTIN_CALL_ID,
+      {'result': 'ok', 'web_citations': [{'id': 'c1'}]},
+  )]
+
+
+def test_subagent_step_populates_hierarchy_custom_metadata():
+  """A subagent step populates custom_metadata with depth and parent_id."""
+  step = sdk_types.Step(
+      trajectory_id='traj-sub-1',
+      parent_trajectory_id='traj-root',
+      depth=1,
+      step_index=3,
+      type=sdk_types.StepType.TEXT_RESPONSE,
+      source=sdk_types.StepSource.MODEL,
+      status=sdk_types.StepStatus.DONE,
+      content='Subagent analysis complete.',
+      is_complete_response=True,
+  )
+
+  events = _event_converter.convert_step_to_events(
+      step,
+      ctx=_make_ctx(),
+      author='reverse_engineering_agent',
+      seen_tool_calls=set(),
+      seen_tool_results=set(),
+  )
+
+  assert len(events) == 1
+  assert events[0].author == 'reverse_engineering_agent'
+  assert events[0].custom_metadata == {
+      'trajectory_id': 'traj-sub-1',
+      'parent_trajectory_id': 'traj-root',
+      'depth': 1,
+      'step_index': 3,
+  }
+
+
+def test_active_thinking_cached_in_latest_thoughts_attaches_on_done_flush():
+  """An ACTIVE thinking step cached in latest_thoughts attaches on flush."""
+  pending_calls: list[Event] = []
+  seen_thoughts: set[str] = set()
+  latest_thoughts: dict[str, tuple[str, genai_types.Part]] = {}
+  tool_results = _tool_result_capture.ToolResultBuffer()
+  state = dict(
+      ctx=_make_ctx(),
+      author='agy',
+      seen_tool_calls=set(),
+      seen_tool_results=set(),
+      tool_results=tool_results,
+      pending_function_calls=pending_calls,
+      seen_thought_steps=seen_thoughts,
+      latest_thoughts=latest_thoughts,
+      streaming=True,
+  )
+
+  active_think = sdk_types.Step(
+      trajectory_id='traj-main',
+      step_index=1,
+      type=sdk_types.StepType.THINKING,
+      source=sdk_types.StepSource.MODEL,
+      status=sdk_types.StepStatus.ACTIVE,
+      thinking='Planning threat search.',
+      thinking_delta='Planning threat search.',
+  )
+  active_call = sdk_types.Step(
+      trajectory_id='traj-main',
+      step_index=1,
+      type=sdk_types.StepType.TOOL_CALL,
+      source=sdk_types.StepSource.MODEL,
+      status=sdk_types.StepStatus.ACTIVE,
+      tool_calls=[
+          sdk_types.ToolCall(
+              name='naming_reviewer',
+              args={'request': 'check'},
+              id=_CLIENT_CALL_ID,
+          )
+      ],
+  )
+  done_tool = sdk_types.Step(
+      trajectory_id='traj-main',
+      step_index=2,
+      type=sdk_types.StepType.TOOL_CALL,
+      source=sdk_types.StepSource.MODEL,
+      status=sdk_types.StepStatus.DONE,
+      tool_calls=[],
+  )
+
+  partials = _event_converter.convert_step_to_events(active_think, **state)
+  assert len(partials) == 1 and partials[0].partial
+  assert not _event_converter.convert_step_to_events(active_call, **state)
+  tool_results.record(_tool_result(_CLIENT_CALL_ID, value='"{\\"hits\\": 3}"'))
+  flushed = _event_converter.convert_step_to_events(done_tool, **state)
+  assert len(flushed) == 2
+  call_parts = flushed[0].content.parts
+  assert len(call_parts) == 2
+  assert (
+      call_parts[0].thought and call_parts[0].text == 'Planning threat search.'
+  )
+  assert call_parts[1].function_call.id == _CLIENT_CALL_ID
+  assert flushed[0].custom_metadata == {
+      'trajectory_id': 'traj-main',
+      'step_index': 2,
+      'depth': 0,
+  }
+  assert flushed[1].get_function_responses()[0].response == {'hits': 3}
+
+
+def test_active_tool_call_without_thinking_emits_immediately_on_active():
+  """An ACTIVE tool call without any thinking is emitted immediately on active."""
+  ctx = _make_ctx()
+  pending_function_calls = []
+  seen_tool_calls = set()
+  seen_tool_results = set()
+  state = {
+      'ctx': ctx,
+      'author': 'agy',
+      'seen_tool_calls': seen_tool_calls,
+      'seen_tool_results': seen_tool_results,
+      'streaming': True,
+      'pending_function_calls': pending_function_calls,
+  }
+  active_call = sdk_types.Step(
+      trajectory_id='traj-main',
+      step_index=1,
+      type=sdk_types.StepType.TOOL_CALL,
+      source=sdk_types.StepSource.MODEL,
+      status=sdk_types.StepStatus.ACTIVE,
+      tool_calls=[
+          sdk_types.ToolCall(
+              name='naming_reviewer',
+              args={'request': 'check'},
+              id=_CLIENT_CALL_ID,
+          )
+      ],
+  )
+  events = _event_converter.convert_step_to_events(active_call, **state)
+  assert len(events) == 1
+  assert events[0].content.parts[0].function_call.id == _CLIENT_CALL_ID
+  assert _CLIENT_CALL_ID in seen_tool_calls
+  assert not pending_function_calls
+
+
+def test_active_tool_call_with_thinking_buffers_until_done():
+  """An ACTIVE tool call with thinking buffers until the DONE step arrives."""
+  ctx = _make_ctx()
+  pending_function_calls = []
+  seen_tool_calls = set()
+  seen_tool_results = set()
+  state = {
+      'ctx': ctx,
+      'author': 'agy',
+      'seen_tool_calls': seen_tool_calls,
+      'seen_tool_results': seen_tool_results,
+      'streaming': True,
+      'pending_function_calls': pending_function_calls,
+  }
+  active_call_with_thinking = sdk_types.Step(
+      trajectory_id='traj-main',
+      step_index=1,
+      type=sdk_types.StepType.TOOL_CALL,
+      source=sdk_types.StepSource.MODEL,
+      status=sdk_types.StepStatus.ACTIVE,
+      thinking='Still reasoning about tool arguments...',
+      tool_calls=[
+          sdk_types.ToolCall(
+              name='naming_reviewer',
+              args={'request': 'check'},
+              id=_CLIENT_CALL_ID,
+          )
+      ],
+  )
+  done_call = sdk_types.Step(
+      trajectory_id='traj-main',
+      step_index=1,
+      type=sdk_types.StepType.TOOL_CALL,
+      source=sdk_types.StepSource.MODEL,
+      status=sdk_types.StepStatus.DONE,
+      tool_calls=[
+          sdk_types.ToolCall(
+              name='naming_reviewer',
+              args={'request': 'check'},
+              id=_CLIENT_CALL_ID,
+          )
+      ],
+  )
+  # Active call with thinking is buffered:
+  assert not _event_converter.convert_step_to_events(
+      active_call_with_thinking, **state
+  )
+  assert _CLIENT_CALL_ID not in seen_tool_calls
+  # Done step flushes the buffered call and records seen_tool_calls:
+  flushed = _event_converter.convert_step_to_events(done_call, **state)
+  assert len(flushed) == 1
+  assert _CLIENT_CALL_ID in seen_tool_calls
+
+
+def test_active_tool_call_multiple_updates_does_not_duplicate_buffered_calls():
+  """Multiple ACTIVE updates with thinking do not re-buffer duplicate calls."""
+  ctx = _make_ctx()
+  pending_function_calls = []
+  seen_tool_calls = set()
+  seen_tool_results = set()
+  state = {
+      'ctx': ctx,
+      'author': 'agy',
+      'seen_tool_calls': seen_tool_calls,
+      'seen_tool_results': seen_tool_results,
+      'streaming': True,
+      'pending_function_calls': pending_function_calls,
+  }
+  for i in range(3):
+    step = sdk_types.Step(
+        trajectory_id='traj-main',
+        step_index=1,
+        type=sdk_types.StepType.TOOL_CALL,
+        source=sdk_types.StepSource.MODEL,
+        status=sdk_types.StepStatus.ACTIVE,
+        thinking=f'Reasoning update {i}...',
+        tool_calls=[
+            sdk_types.ToolCall(
+                name='naming_reviewer',
+                args={'request': 'check'},
+                id=_CLIENT_CALL_ID,
+            )
+        ],
+    )
+    events = _event_converter.convert_step_to_events(step, **state)
+    assert not events
+    # Must only be buffered once across all updates:
+    assert len(pending_function_calls) == 1
+
+  done_call = sdk_types.Step(
+      trajectory_id='traj-main',
+      step_index=1,
+      type=sdk_types.StepType.TOOL_CALL,
+      source=sdk_types.StepSource.MODEL,
+      status=sdk_types.StepStatus.DONE,
+      tool_calls=[
+          sdk_types.ToolCall(
+              name='naming_reviewer',
+              args={'request': 'check'},
+              id=_CLIENT_CALL_ID,
+          )
+      ],
+  )
+  flushed = _event_converter.convert_step_to_events(done_call, **state)
+  # Emits the FC exactly once upon DONE:
+  assert len(flushed) == 1
+  assert flushed[0].content.parts[0].function_call.id == _CLIENT_CALL_ID
+  assert _CLIENT_CALL_ID in seen_tool_calls
+
+  standalone_done_thought = sdk_types.Step(
+      trajectory_id='traj-main',
+      step_index=3,
+      type=sdk_types.StepType.THINKING,
+      source=sdk_types.StepSource.MODEL,
+      status=sdk_types.StepStatus.DONE,
+      thinking='Standalone DONE thought.',
+  )
+  standalone_events = _event_converter.convert_step_to_events(
+      standalone_done_thought, **state
+  )
+  assert len(standalone_events) == 1
+  assert standalone_events[0].content.parts[0].thought
+  assert (
+      standalone_events[0].content.parts[0].text == 'Standalone DONE thought.'
+  )
+
+
+def test_active_step_with_partial_thinking_and_tool_call_waits_for_done():
+  """An ACTIVE step with partial thinking and tool_calls buffers until DONE."""
+  pending_calls: list[Event] = []
+  seen_thoughts: dict[str, str] = {}
+  latest_thoughts: dict[str, tuple[str, genai_types.Part]] = {}
+  state = dict(
+      ctx=_make_ctx(),
+      author='agy',
+      seen_tool_calls=set(),
+      seen_tool_results=set(),
+      pending_function_calls=pending_calls,
+      seen_thought_steps=seen_thoughts,
+      latest_thoughts=latest_thoughts,
+  )
+
+  active_step = sdk_types.Step(
+      trajectory_id='traj-main',
+      step_index=1,
+      type=sdk_types.StepType.TOOL_CALL,
+      source=sdk_types.StepSource.MODEL,
+      status=sdk_types.StepStatus.ACTIVE,
+      thinking='First partial bullet.',
+      tool_calls=[
+          sdk_types.ToolCall(
+              name='view_file',
+              args={'file_path': '/foo'},
+              id='traj-main:1',
+          )
+      ],
+  )
+  done_step = sdk_types.Step(
+      trajectory_id='traj-main',
+      step_index=1,
+      type=sdk_types.StepType.TOOL_CALL,
+      source=sdk_types.StepSource.MODEL,
+      status=sdk_types.StepStatus.DONE,
+      thinking='First partial bullet.\nSecond final bullet.',
+      content='file contents',
+      tool_calls=[
+          sdk_types.ToolCall(
+              name='view_file',
+              args={'file_path': '/foo'},
+              id='traj-main:1',
+          )
+      ],
+  )
+
+  assert not _event_converter.convert_step_to_events(active_step, **state)
+  assert len(pending_calls) == 1
+
+  events = _event_converter.convert_step_to_events(done_step, **state)
+  assert len(events) == 2
+  call_parts = events[0].content.parts
+  assert len(call_parts) == 2
+  assert call_parts[0].thought
+  assert call_parts[0].text == 'First partial bullet.\nSecond final bullet.'
+  assert call_parts[1].function_call.id == 'traj-main:1'
+  assert _responses(events) == [
+      ('view_file', 'traj-main:1', {'result': 'file contents'})
+  ]
+
+
+def test_remaining_thinking_suffix_appends_after_early_tool_response():
+  """When a tool responds while thinking is ACTIVE, the DONE suffix appends."""
+  pending_calls: list[Event] = []
+  seen_thoughts: set[str] = set()
+  latest_thoughts: dict[str, tuple[str, genai_types.Part]] = {}
+  tool_results = _tool_result_capture.ToolResultBuffer()
+  state = dict(
+      ctx=_make_ctx(),
+      author='agy',
+      seen_tool_calls=set(),
+      seen_tool_results=set(),
+      tool_results=tool_results,
+      pending_function_calls=pending_calls,
+      seen_thought_steps=seen_thoughts,
+      latest_thoughts=latest_thoughts,
+  )
+
+  active_think = sdk_types.Step(
+      trajectory_id='traj-main',
+      step_index=1,
+      type=sdk_types.StepType.THINKING,
+      source=sdk_types.StepSource.MODEL,
+      status=sdk_types.StepStatus.ACTIVE,
+      thinking='Initial thought before tool finishes.',
+  )
+  active_call = sdk_types.Step(
+      trajectory_id='traj-main',
+      step_index=1,
+      type=sdk_types.StepType.TOOL_CALL,
+      source=sdk_types.StepSource.MODEL,
+      status=sdk_types.StepStatus.ACTIVE,
+      tool_calls=[
+          sdk_types.ToolCall(
+              name='naming_reviewer',
+              args={'request': 'check'},
+              id=_CLIENT_CALL_ID,
+          )
+      ],
+  )
+  done_tool = sdk_types.Step(
+      trajectory_id='traj-main',
+      step_index=2,
+      type=sdk_types.StepType.TOOL_CALL,
+      source=sdk_types.StepSource.MODEL,
+      status=sdk_types.StepStatus.DONE,
+      tool_calls=[],
+  )
+  done_think = sdk_types.Step(
+      trajectory_id='traj-main',
+      step_index=1,
+      type=sdk_types.StepType.THINKING,
+      source=sdk_types.StepSource.MODEL,
+      status=sdk_types.StepStatus.DONE,
+      thinking=(
+          'Initial thought before tool finishes.\n'
+          'Remaining thought summary after tool finished.'
+      ),
+  )
+
+  assert not _event_converter.convert_step_to_events(active_think, **state)
+  assert not _event_converter.convert_step_to_events(active_call, **state)
+  tool_results.record(_tool_result(_CLIENT_CALL_ID, value='{"result": "ok"}'))
+
+  flushed = _event_converter.convert_step_to_events(done_tool, **state)
+  assert len(flushed) == 2
+  assert flushed[0].content.parts[0].thought
+  assert (
+      flushed[0].content.parts[0].text
+      == 'Initial thought before tool finishes.'
+  )
+  assert flushed[0].content.parts[1].function_call.id == _CLIENT_CALL_ID
+
+  appended = _event_converter.convert_step_to_events(done_think, **state)
+  assert len(appended) == 1
+  assert appended[0].content.parts[0].thought
+  assert (
+      appended[0].content.parts[0].text
+      == '\nRemaining thought summary after tool finished.'
+  )
+  assert not _event_converter.convert_step_to_events(done_think, **state)

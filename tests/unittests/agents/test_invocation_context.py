@@ -14,6 +14,7 @@
 
 import asyncio
 import time
+from unittest.mock import MagicMock
 from unittest.mock import Mock
 
 from google.adk.agents.base_agent import BaseAgent
@@ -896,6 +897,89 @@ class TestInvocationContextWithAppResumablity:
     assert 'sub_agent_2' not in invocation_context.end_of_agents
     assert 'sub_sub_agent_1' not in invocation_context.agent_states
     assert 'sub_sub_agent_1' not in invocation_context.end_of_agents
+
+  def test_set_and_load_agent_state_keyed_by_node_path(self):
+    """Parallel workflow branches sharing an agent name isolate state by node_path."""
+
+    class _StepState(BaseAgentState):
+      step: int = 0
+
+    helper = BaseAgent(name='helper')
+    base_ctx = self._create_test_invocation_context(
+        ResumabilityConfig(is_resumable=True)
+    )
+    branch1_ctx = base_ctx.model_copy(
+        update={'agent': helper, 'node_path': 'wf@1/helper@1'}
+    )
+    branch2_ctx = base_ctx.model_copy(
+        update={'agent': helper, 'node_path': 'wf@1/helper@2'}
+    )
+
+    branch1_ctx.set_agent_state('helper', agent_state=_StepState(step=1))
+    branch2_ctx.set_agent_state('helper', end_of_agent=True)
+
+    assert base_ctx.agent_states == {'wf@1/helper@1': {'step': 1}}
+    assert base_ctx.end_of_agents == {
+        'wf@1/helper@1': False,
+        'wf@1/helper@2': True,
+    }
+    loaded_branch1 = helper._load_agent_state(branch1_ctx, _StepState)
+    assert loaded_branch1 is not None
+    assert loaded_branch1.step == 1
+    assert helper._load_agent_state(branch2_ctx, _StepState) is None
+
+    ev1 = helper._create_agent_state_event(branch1_ctx)
+    ev2 = helper._create_agent_state_event(branch2_ctx)
+    assert ev1.actions.agent_state == {'step': 1}
+    assert not ev1.actions.end_of_agent
+    assert ev2.actions.agent_state is None
+    assert ev2.actions.end_of_agent is True
+
+    # A stale True under self.name must not override an explicit False under
+    # node_path.
+    base_ctx.end_of_agents['helper'] = True
+    ev1_with_stale_name = helper._create_agent_state_event(branch1_ctx)
+    assert not ev1_with_stale_name.actions.end_of_agent
+
+    # When node_path has ended, stale state under self.name must not be loaded
+    # or emitted in the state event.
+    base_ctx.agent_states['helper'] = {'step': 999}
+    assert helper._load_agent_state(branch2_ctx, _StepState) is None
+    ev2_with_stale_name = helper._create_agent_state_event(branch2_ctx)
+    assert ev2_with_stale_name.actions.agent_state is None
+    assert ev2_with_stale_name.actions.end_of_agent is True
+
+  def test_load_agent_state_mock_context_compatibility(self):
+    """Loading agent state from unconfigured or mock context returns None safely."""
+
+    class _StepState(BaseAgentState):
+      step: int = 0
+
+    helper = BaseAgent(name='helper')
+
+    # MagicMock context without agent_states explicitly set
+    magic_ctx = MagicMock()
+    assert helper._load_agent_state(magic_ctx, _StepState) is None
+
+    # Mock context with empty agent_states and mock end_of_agents (not a container)
+    plain_ctx = Mock()
+    plain_ctx.agent_states = {}
+    plain_ctx.end_of_agents = Mock()
+    plain_ctx.invocation_id = 'test_inv'
+    plain_ctx.branch = 'main'
+    assert helper._load_agent_state(plain_ctx, _StepState) is None
+    ev = helper._create_agent_state_event(plain_ctx)
+    assert ev.actions.agent_state is None
+
+    # Mock(spec=InvocationContext) where Pydantic model field node_path is unset
+    spec_ctx = Mock(spec=InvocationContext)
+    spec_ctx.agent_states = {}
+    spec_ctx.end_of_agents = {'helper': True}
+    spec_ctx.invocation_id = 'test_inv'
+    spec_ctx.branch = 'main'
+    assert helper._load_agent_state(spec_ctx, _StepState) is None
+    spec_ev = helper._create_agent_state_event(spec_ctx)
+    assert spec_ev.actions.end_of_agent is True
 
 
 class TestIncrementLlmCallCount:

@@ -437,6 +437,23 @@ def _accepts_kwargs(func: Callable[..., Any], kwargs: dict[str, Any]) -> bool:
   return True
 
 
+def _with_abort_signal_kwarg(
+    runner: Runner,
+    kwargs: dict[str, Any],
+    abort_signal: asyncio.Event,
+) -> dict[str, Any]:
+  """Adds abort_signal to kwargs when runner.run_async accepts it."""
+  try:
+    params = inspect.signature(runner.run_async).parameters
+    if "abort_signal" in params or any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+    ):
+      kwargs["abort_signal"] = abort_signal
+  except (ValueError, TypeError):
+    kwargs["abort_signal"] = abort_signal
+  return kwargs
+
+
 _current_session_options: contextvars.ContextVar[Optional[dict[str, Any]]] = (
     contextvars.ContextVar("current_session_options", default=None)
 )
@@ -2018,18 +2035,23 @@ class ApiServer:
             ),
         )
 
+      abort_signal = asyncio.Event()
+
       async def worker():
+        run_async_kwargs = _with_abort_signal_kwarg(
+            runner,
+            {
+                "user_id": req.user_id,
+                "session_id": req.session_id,
+                "new_message": req.new_message,
+                "state_delta": req.state_delta,
+                "invocation_id": req.invocation_id,
+                "run_config": run_config,
+            },
+            abort_signal,
+        )
         try:
-          async with Aclosing(
-              runner.run_async(
-                  user_id=req.user_id,
-                  session_id=req.session_id,
-                  new_message=req.new_message,
-                  state_delta=req.state_delta,
-                  invocation_id=req.invocation_id,
-                  run_config=run_config,
-              )
-          ) as agen:
+          async with Aclosing(runner.run_async(**run_async_kwargs)) as agen:
             return [public_event(event) async for event in agen]
         except SessionNotFoundError as e:
           raise HTTPException(status_code=404, detail=str(e)) from e
@@ -2045,6 +2067,7 @@ class ApiServer:
                   "Client disconnected. Aborting agent run for session %s.",
                   req.session_id,
               )
+              abort_signal.set()
               worker_task.cancel()
               break
         except asyncio.CancelledError:
@@ -2135,23 +2158,18 @@ class ApiServer:
 
         async def _produce_events() -> None:
           nonlocal is_closing, original_exc
-          run_async_kwargs: dict[str, Any] = {
-              "user_id": req.user_id,
-              "session_id": req.session_id,
-              "new_message": req.new_message,
-              "state_delta": req.state_delta,
-              "run_config": run_config,
-              "invocation_id": req.invocation_id,
-          }
-          try:
-            params = inspect.signature(runner.run_async).parameters
-            if "abort_signal" in params or any(
-                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
-            ):
-              run_async_kwargs["abort_signal"] = abort_signal
-          except (ValueError, TypeError):
-            run_async_kwargs["abort_signal"] = abort_signal
-
+          run_async_kwargs = _with_abort_signal_kwarg(
+              runner,
+              {
+                  "user_id": req.user_id,
+                  "session_id": req.session_id,
+                  "new_message": req.new_message,
+                  "state_delta": req.state_delta,
+                  "run_config": run_config,
+                  "invocation_id": req.invocation_id,
+              },
+              abort_signal,
+          )
           try:
             async with Aclosing(runner.run_async(**run_async_kwargs)) as agen:
               try:

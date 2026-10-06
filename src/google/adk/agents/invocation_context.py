@@ -43,6 +43,7 @@ from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
 from ..tools.base_tool import BaseTool
 from ..workflow._base_node import BaseNode
+from .base_agent import _agent_state_key
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
 from .context_cache_config import ContextCacheConfig
@@ -440,15 +441,16 @@ class InvocationContext(BaseModel):
         True.
       end_of_agent: Whether the agent has finished running.
     """
+    key = _agent_state_key(self, agent_name)
     if end_of_agent:
-      self.end_of_agents[agent_name] = True
-      self.agent_states.pop(agent_name, None)
+      self.end_of_agents[key] = True
+      self.agent_states.pop(key, None)
     elif agent_state is not None:
-      self.agent_states[agent_name] = agent_state.model_dump(mode="json")
-      self.end_of_agents[agent_name] = False
+      self.agent_states[key] = agent_state.model_dump(mode="json")
+      self.end_of_agents[key] = False
     else:
-      self.end_of_agents.pop(agent_name, None)
-      self.agent_states.pop(agent_name, None)
+      self.end_of_agents.pop(key, None)
+      self.agent_states.pop(key, None)
 
   def reset_sub_agent_states(
       self,

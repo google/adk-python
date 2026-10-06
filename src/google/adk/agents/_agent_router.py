@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 from ..events._abort_events import _is_abort_event
 from ..events._branch_path import _BranchPath
+from ..events._interrupts import index_open_interrupts
 from ..events._node_path_builder import _NodePathBuilder
 from ..events._rewind_events import _apply_rewinds
 from ..events.event import Event
@@ -49,13 +50,23 @@ def _resolve_resumed_agent(
 ) -> Optional[BaseAgent]:
   """Resolves the agent in `root_agent`'s hierarchy that owns `call_event`.
 
-  When `call_event` was emitted by a node running inside a tool sub-branch
-  (such as `RequestInputNode` or a generator `FunctionTool` wrapped as a
-  `FunctionNode`), `call_event.author` names that inner node rather than an
-  agent in `root_agent`'s tree. In that case, walk the sub-branch's run IDs back
-  to the ancestor `FunctionCall` event that opened the tool branch and resolve
-  its author.
+  Consults `index_open_interrupts(events[:-1])` first when the trailing
+  `FunctionResponse` answers an open interrupt (including one emitted inside a
+  tool sub-branch whose `ancestor_authors` identify the calling agent), falling
+  back to `call_event.author` and sub-branch run IDs for regular tool calls.
   """
+  open_interrupts = index_open_interrupts(events[:-1])
+  function_responses = events[-1].get_function_responses()
+  if (
+      function_responses
+      and function_responses[0].id
+      and (interrupt := open_interrupts.get(function_responses[0].id))
+      is not None
+  ):
+    for candidate_author in interrupt.candidate_authors:
+      if (resumed_agent := root_agent.find_agent(candidate_author)) is not None:
+        return resumed_agent
+
   if (
       call_event.author
       and (resumed_agent := root_agent.find_agent(call_event.author))

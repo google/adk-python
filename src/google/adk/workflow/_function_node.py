@@ -14,13 +14,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import collections.abc
 from collections.abc import AsyncGenerator
 from collections.abc import Callable
 from collections.abc import Mapping
+import contextvars
 import inspect
 import json
 import logging
+import threading
 import typing
 from typing import Any
 from typing import Literal
@@ -36,6 +39,7 @@ from typing_extensions import override
 from ..auth.auth_tool import AuthConfig
 from ..events.event import Event
 from ..events.request_input import RequestInput
+from ..platform.thread import create_thread
 from ..utils._callable_utils import CallableSpec
 from ..utils._schema_utils import annotation_accepts_content
 from ..utils._schema_utils import annotation_expects_str
@@ -55,12 +59,137 @@ logger = logging.getLogger("google_adk." + __name__)
 async def _sync_to_async_gen(
     sync_gen: collections.abc.Generator[Any, None, None],
 ) -> AsyncGenerator[Any, None]:
-  """Wraps a synchronous generator as an async generator."""
-  for item in sync_gen:
-    yield item
+  """Wraps a synchronous generator as an async generator.
+
+  When a sync callable runner (the tool thread pool) is bound, every
+  ``next()`` and the final ``close()`` run on one dedicated thread, so
+  thread-local state survives across yields. Each step occupies a pool worker
+  until it finishes, so ``max_workers`` still bounds how many generator steps
+  execute at once; between yields the dedicated thread is parked and holds no
+  pool worker, so suspended generators cannot starve the pool.
+  """
+  runner = _SYNC_CALLABLE_RUNNER.get()
+  if runner is None:
+    try:
+      for item in sync_gen:
+        yield item
+    finally:
+      sync_gen.close()
+    return
+
+  sentinel = object()
+  gen_context = contextvars.copy_context()
+  # Like any sync callable on the pool, the generator body runs with no runner
+  # bound, so a nested sync call it makes runs inline on its thread instead of
+  # waiting for the pool worker that this step is holding.
+  gen_context.run(_SYNC_CALLABLE_RUNNER.set, None)
+  # Guards gen_thread, closed and finished, which the event loop, the pool
+  # worker running a step and the generator thread all read.
+  lock = threading.Lock()
+  want_next = threading.Event()
+  step_done = threading.Event()
+  closed = False
+  finished = False
+  close_error: BaseException | None = None
+  step_result: tuple[str, Any] = ("done", None)
+  gen_thread: Thread | None = None
+
+  def _drive_sync_gen() -> None:
+    nonlocal step_result, finished, close_error
+    try:
+      while True:
+        want_next.wait()
+        want_next.clear()
+        with lock:
+          if closed:
+            break
+        try:
+          item = next(sync_gen, sentinel)
+        except BaseException as exc:  # pylint: disable=broad-exception-caught
+          step_result = ("error", exc)
+          break
+        if item is sentinel:
+          step_result = ("done", None)
+          break
+        step_result = ("item", item)
+        step_done.set()
+    finally:
+      try:
+        sync_gen.close()
+      except BaseException as exc:  # pylint: disable=broad-exception-caught
+        close_error = exc
+      finally:
+        with lock:
+          finished = True
+        step_done.set()
+
+  def _step_in_pool() -> tuple[str, Any]:
+    # Runs on a pool worker and blocks it until the generator thread finishes
+    # this step, which is what keeps generator execution within max_workers.
+    nonlocal gen_thread
+    with lock:
+      if closed or finished:
+        return ("done", None)
+      if gen_thread is None:
+        gen_thread = create_thread(gen_context.run, _drive_sync_gen)
+        gen_thread.name = (
+            f"adk_sync_generator_for_{threading.current_thread().name}"
+        )
+        gen_thread.daemon = True
+        gen_thread.start()
+      # Cleared under the lock, before the generator thread can mark itself
+      # finished, so its final step_done.set() is never lost.
+      step_done.clear()
+      want_next.set()
+    step_done.wait()
+    with lock:
+      is_finished = finished
+      is_closed = closed
+    if is_finished:
+      gen_thread.join()
+    return ("done", None) if is_closed else step_result
+
+  waiting_for_step = False
+  step_task: asyncio.Future[tuple[str, Any]] | None = None
+  try:
+    while True:
+      step_task = asyncio.ensure_future(runner(_step_in_pool, {}))
+      waiting_for_step = True
+      kind, payload = await step_task
+      waiting_for_step = False
+      if kind == "done":
+        break
+      if kind == "error":
+        raise payload
+      yield payload
+  finally:
+    # Once closed is set, no step starts the generator thread, so whichever
+    # side observes gen_thread is None owns closing the generator.
+    with lock:
+      closed = True
+    want_next.set()
+    if waiting_for_step and step_task is not None:
+      # A step may still be inside next(); the generator thread closes the
+      # generator once next() returns, without blocking this cancellation.
+      step_task.cancel()
+      try:
+        await step_task
+      except asyncio.CancelledError:
+        pass
+    with lock:
+      thread = gen_thread
+    if thread is None:
+      sync_gen.close()
+    elif not waiting_for_step:
+      if thread.is_alive():
+        await asyncio.shield(runner(thread.join, {}))
+      if close_error is not None:
+        raise close_error
 
 
 if TYPE_CHECKING:
+  from threading import Thread
+
   from ..agents.context import Context
 
 # Output types that are framework control-flow items, not data schemas.
