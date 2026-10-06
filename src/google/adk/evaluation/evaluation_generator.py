@@ -1028,7 +1028,10 @@ class EvaluationGenerator:
               final_response = event.content
               final_event = event
 
-          should_add_event = event.grounding_metadata is not None
+          should_add_event = (
+              event.grounding_metadata is not None
+              or event.usage_metadata is not None
+          )
           for p in event.content.parts:
             if (
                 p.function_call
@@ -1065,10 +1068,9 @@ class EvaluationGenerator:
                 model_version=e.model_version,
             )
         )
+      event_pairs = list(zip(events_to_add, invocation_events))
       merged_events = []
-      for index, (event, invocation_event) in enumerate(
-          zip(events_to_add, invocation_events)
-      ):
+      for index, (event, invocation_event) in enumerate(event_pairs):
         if (
             not (event.content and event.content.parts)
             and event.grounding_metadata is None
@@ -1082,11 +1084,11 @@ class EvaluationGenerator:
           model_event = next(
               (
                   candidate
-                  for candidate in (
-                      invocation_events[:index][::-1]
-                      + invocation_events[index + 1 :]
+                  for candidate_source, candidate in (
+                      event_pairs[:index][::-1] + event_pairs[index + 1 :]
                   )
-                  if candidate.model_version is not None
+                  if candidate_source.live_session_id == event.live_session_id
+                  and candidate.model_version is not None
                   and candidate.author == event.author
                   and candidate.usage_metadata is None
                   and (

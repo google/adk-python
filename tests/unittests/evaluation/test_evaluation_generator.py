@@ -2441,3 +2441,101 @@ def test_standalone_usage_does_not_merge_into_different_model(different_field):
       .overall_score
       == 2
   )
+
+
+@pytest.mark.parametrize(
+    "part",
+    [
+        types.Part(
+            executable_code=types.ExecutableCode(
+                language="PYTHON", code="print(1)"
+            )
+        ),
+        types.Part(
+            code_execution_result=types.CodeExecutionResult(
+                outcome="OUTCOME_OK", output="1"
+            )
+        ),
+        types.Part(thought_signature=b"signature"),
+    ],
+)
+def test_usage_preserved_on_non_text_model_content(part):
+  event = Event(
+      author="agent",
+      invocation_id="inv1",
+      model_version="gemini-test",
+      content=types.Content(parts=[part]),
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=10,
+          candidates_token_count=5,
+          total_token_count=15,
+      ),
+  )
+  original_event = event.model_copy(deep=True)
+
+  invocations = EvaluationGenerator.convert_events_to_eval_invocations([event])
+
+  assert len(invocations[0].intermediate_data.invocation_events) == 1
+  assert (
+      _TokenUsageV1Evaluator().evaluate_invocations(invocations).overall_score
+      == 15
+  )
+  assert (
+      _InferenceCallCountV1Evaluator()
+      .evaluate_invocations(invocations)
+      .overall_score
+      == 1
+  )
+  assert event == original_event
+
+
+def test_standalone_usage_does_not_merge_across_live_connections():
+  events = [
+      Event(
+          author="agent",
+          invocation_id="inv1",
+          live_session_id="first",
+          model_version="gemini-test",
+          content=types.Content(parts=[types.Part(text="response")]),
+      ),
+      Event(
+          author="agent",
+          invocation_id="inv1",
+          live_session_id="first",
+          turn_complete=True,
+      ),
+      Event(
+          author="agent",
+          invocation_id="inv1",
+          live_session_id="second",
+          model_version="gemini-test",
+          usage_metadata=types.GenerateContentResponseUsageMetadata(
+              prompt_token_count=15, total_token_count=15
+          ),
+      ),
+      Event(
+          author="agent",
+          invocation_id="inv1",
+          live_session_id="second",
+          turn_complete=True,
+      ),
+  ]
+  original_events = [event.model_copy(deep=True) for event in events]
+
+  invocations = EvaluationGenerator.convert_events_to_eval_invocations(events)
+
+  invocation_events = invocations[0].intermediate_data.invocation_events
+  assert len(invocation_events) == 2
+  assert invocation_events[0].usage_metadata is None
+  assert invocation_events[1].usage_metadata.total_token_count == 15
+  assert (
+      _TokenUsageV1Evaluator().evaluate_invocations(invocations).overall_score
+      == 15
+  )
+  assert (
+      _InferenceCallCountV1Evaluator()
+      .evaluate_invocations(invocations)
+      .overall_score
+      == 2
+  )
+  assert events == original_events
