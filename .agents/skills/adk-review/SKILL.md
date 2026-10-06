@@ -87,6 +87,10 @@ Confirm the changed files pass `pre-commit run --files {paths}`.
   multi-container startup races (process-local `asyncio.Lock` does not prevent
   cross-container TOCTOU races on `checkfirst=True`) by wrapping creation in a
   `SAVEPOINT` (`connection.begin_nested()`) and tolerating concurrent creation.
+- **Scope**: a new public name, parameter or flag the fix did not need; a flag
+  that keeps the buggy behavior as the default; a fix in a shared layer when
+  one caller needed it; an existing test assertion edited to match the new
+  behavior.
 
 ### 5. Documentation impact
 
@@ -112,6 +116,13 @@ Confirm the changed files pass `pre-commit run --files {paths}`.
 - Tests follow the rules in the `adk-style` testing reference: one behavior per
   test, behavior-named tests, no assertions on private attributes, minimal
   fixtures, arrange/act/assert structure.
+
+## Ground each finding
+
+Before reporting a finding, resolve the symbol through base classes (`Event`
+extends `LlmResponse`). For a correctness finding, name the input that makes it
+fail; for any other finding, quote the rule or convention it breaks. A finding
+that is neither is a guess; leave it out.
 
 ## Report format
 

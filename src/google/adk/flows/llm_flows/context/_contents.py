@@ -30,6 +30,7 @@ from ....models.base_llm import BaseLlm
 from ....models.llm_request import LlmRequest
 from .._base_llm_processor import BaseLlmRequestProcessor
 from ..core._utils import as_llm_agent
+from ..tools._functions import _collect_function_call_ids
 from ..tools._functions import AF_FUNCTION_CALL_ID_PREFIX
 from ..tools._functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from ..tools._functions import REQUEST_EUC_FUNCTION_CALL_NAME
@@ -126,6 +127,7 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           agent.name,
           preserve_function_call_ids=preserve_function_call_ids,
           isolation_scope=invocation_context.isolation_scope,
+          node_path=invocation_context.node_path,
           is_single_turn=is_single_turn,
           user_content=invocation_context.user_content,
           include_thoughts_from_other_agents=include_thoughts_from_other_agents,
@@ -139,6 +141,7 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           agent.name,
           preserve_function_call_ids=preserve_function_call_ids,
           isolation_scope=invocation_context.isolation_scope,
+          node_path=invocation_context.node_path,
           is_single_turn=is_single_turn,
           user_content=invocation_context.user_content,
           include_thoughts_from_other_agents=False,
@@ -312,6 +315,7 @@ def _should_include_event_in_context(
     event: Event,
     isolation_scope: str | None = None,
     *,
+    node_path: str | None = None,
     include_thoughts: bool = False,
 ) -> bool:
   """Determines if an event should be included in the LLM context.
@@ -330,12 +334,22 @@ def _should_include_event_in_context(
     current_branch: The current branch of the agent.
     event: The event to filter.
     isolation_scope: The agent's isolation_scope. None means unscoped.
+    node_path: The current workflow node path, if executing as a node.
 
   Returns:
     True if the event should be included in the context, False otherwise.
   """
   ev_iso = getattr(event, 'isolation_scope', None)
   if ev_iso != isolation_scope:
+    return False
+  ev_node_info = getattr(event, 'node_info', None)
+  ev_node_path = getattr(ev_node_info, 'path', None) if ev_node_info else None
+  if (
+      event.author == 'user'
+      and not event.get_function_responses()
+      and ev_node_path
+      and ev_node_path != (node_path or '')
+  ):
     return False
   return not (
       _contains_empty_content(event, include_thoughts=include_thoughts)
@@ -399,6 +413,7 @@ def _get_contents(
     *,
     preserve_function_call_ids: bool = False,
     isolation_scope: str | None = None,
+    node_path: str | None = None,
     is_single_turn: bool = False,
     user_content: types.Content | None = None,
     include_thoughts_from_other_agents: bool = False,
@@ -414,6 +429,7 @@ def _get_contents(
     preserve_function_call_ids: Whether to preserve function call ids.
     isolation_scope: scope tag — when set, restricts events
       to those with matching ``event.isolation_scope`` (or unscoped).
+    node_path: The current workflow node path, if executing as a node.
     user_content: Fallback first user turn for task agents whose
       originating delegation FC is not in session (workflow-node
       task case).
@@ -430,6 +446,7 @@ def _get_contents(
   # never sent to the LLM. This is the same rewind logic the context compactor
   # applies, keeping the two consistent (see google.adk.events._rewind_events).
   rewind_filtered_events = _apply_rewinds(events)
+  tool_call_ids = _collect_function_call_ids(rewind_filtered_events)
 
   # Parse the events, leaving the contents and the function calls and
   # responses from the current agent.
@@ -440,10 +457,14 @@ def _get_contents(
           current_branch,
           e,
           isolation_scope=isolation_scope,
+          node_path=node_path,
           include_thoughts=(
               include_thoughts_from_other_agents
               and _is_other_agent_reply(agent_name, e)
           ),
+      )
+      and not _is_tool_sub_branch_event(
+          current_branch, e, agent_name, tool_call_ids
       )
   ]
 
@@ -586,6 +607,7 @@ def _get_current_turn_contents(
     preserve_function_call_ids: bool = False,
     is_single_turn: bool = False,
     isolation_scope: str | None = None,
+    node_path: str | None = None,
     user_content: types.Content | None = None,
     include_thoughts_from_other_agents: bool = False,
 ) -> list[types.Content]:
@@ -617,6 +639,7 @@ def _get_current_turn_contents(
   # on while a long-running tool is pending, so an ordinary user turn can sit
   # between the two, and anchoring there would leave the result orphaned.
   unmatched_response_ids: set[str] = set()
+  tool_call_ids = _collect_function_call_ids(events)
   for i in range(len(events) - 1, -1, -1):
     event = events[i]
     unmatched_response_ids -= {
@@ -637,6 +660,7 @@ def _get_current_turn_contents(
             current_branch,
             event,
             isolation_scope=isolation_scope,
+            node_path=node_path,
             include_thoughts=(
                 include_thoughts_from_other_agents
                 and _is_other_agent_reply(agent_name, event)
@@ -645,6 +669,9 @@ def _get_current_turn_contents(
         and (event.author == 'user' or _is_other_agent_reply(agent_name, event))
         and not _is_direct_transfer(event)
         and not is_submitted_result
+        and not _is_tool_sub_branch_event(
+            current_branch, event, agent_name, tool_call_ids
+        )
     ):
       return _get_contents(
           current_branch,
@@ -652,6 +679,7 @@ def _get_current_turn_contents(
           agent_name,
           preserve_function_call_ids=preserve_function_call_ids,
           isolation_scope=isolation_scope,
+          node_path=node_path,
           is_single_turn=is_single_turn,
           user_content=user_content,
           include_thoughts_from_other_agents=include_thoughts_from_other_agents,
@@ -674,6 +702,43 @@ def _is_event_belongs_to_branch(
   inv_path = _BranchPath.from_string(invocation_branch)
   evt_path = _BranchPath.from_string(event.branch)
   return inv_path == evt_path or inv_path.is_descendant_of(evt_path)
+
+
+def _is_tool_sub_branch_event(
+    current_branch: str | None,
+    event: Event,
+    agent_name: str,
+    tool_call_ids: set[str],
+) -> bool:
+  """Whether ``event`` is a tool's message published below the agent's branch.
+
+  A tool that runs a node through ``tool_context.run_node`` on its own branch
+  (generator FunctionTool, NodeTool, single-turn AgentTool) publishes its
+  intermediate events on the sub-branch ``<tool>@<function_call_id>``. Those
+  are user-facing progress, not model context: the model only gets the tool's
+  FunctionResponse.
+
+  Only events strictly below ``current_branch`` qualify. An agent that itself
+  runs on a tool branch (e.g. an LlmAgent inside a NodeTool-wrapped Workflow
+  inherits ``<tool>@<function_call_id>``) must keep seeing its own history.
+
+  Every segment below ``current_branch`` is checked, not only the leaf: a
+  Workflow run by a NodeTool that fans out publishes on
+  ``<tool>@<function_call_id>.<node>@<run_id>``.
+  """
+  if not event.branch:
+    return False
+  event_path = _BranchPath.from_string(event.branch)
+  base_path = _BranchPath.from_string(current_branch)
+  if not event_path.is_descendant_of(base_path):
+    return False
+  segments = event_path.segments
+  return any(
+      _BranchPath.is_tool_branch(
+          str(_BranchPath(segments[:depth])), agent_name, tool_call_ids
+      )
+      for depth in range(len(base_path.segments) + 1, len(segments) + 1)
+  )
 
 
 def _is_function_call_event(event: Event, function_name: str) -> bool:
@@ -748,7 +813,7 @@ def _is_live_model_media_event_with_inline_data(event: Event) -> bool:
     parts=[
       Part(
         file_data=FileData(
-          file_uri='artifact://live_bidi_streaming_multi_agent/user/cccf0b8b-4a30-449a-890e-e8b8deb661a1/_adk_live/adk_live_audio_storage_input_audio_1756092402277.pcm#1',
+          file_uri='artifact://multi_agent/user/cccf0b8b-4a30-449a-890e-e8b8deb661a1/_adk_live/adk_live_audio_storage_input_audio_1756092402277.pcm#1',
           mime_type='audio/pcm'
         )
       ),

@@ -93,6 +93,68 @@ class TestIsSyncTool:
     tool = BaseTool(name='test', description='test tool')
     assert _is_sync_tool(tool) is False
 
+  def test_sync_function_node_tool_is_sync(self):
+    """Test that a NodeTool wrapping a sync FunctionNode is detected as sync."""
+    from google.adk.tools._node_tool import NodeTool
+    from google.adk.workflow._function_node import FunctionNode
+
+    def sync_fn(x: int) -> int:
+      return x + 1
+
+    tool = NodeTool(node=FunctionNode(func=sync_fn, name='sync_fn'))
+    assert _is_sync_tool(tool) is True
+
+  def test_sync_generator_function_node_tool_is_sync(self):
+    """Test that a NodeTool wrapping a sync generator FunctionNode is detected as sync."""
+    from google.adk.tools._node_tool import NodeTool
+    from google.adk.workflow._function_node import FunctionNode
+
+    def sync_gen_fn(x: int):
+      yield x + 1
+
+    tool = NodeTool(node=FunctionNode(func=sync_gen_fn, name='sync_gen_fn'))
+    assert _is_sync_tool(tool) is True
+
+  def test_async_function_node_tool_is_not_sync(self):
+    """Test that a NodeTool wrapping an async FunctionNode is detected as not sync."""
+    from google.adk.tools._node_tool import NodeTool
+    from google.adk.workflow._function_node import FunctionNode
+
+    async def async_fn(x: int) -> int:
+      return x + 1
+
+    tool = NodeTool(node=FunctionNode(func=async_fn, name='async_fn'))
+    assert _is_sync_tool(tool) is False
+
+  def test_async_generator_function_node_tool_is_not_sync(self):
+    """Test that a NodeTool wrapping an async generator FunctionNode is detected as not sync."""
+    from google.adk.tools._node_tool import NodeTool
+    from google.adk.workflow._function_node import FunctionNode
+
+    async def async_gen_fn(x: int):
+      yield x + 1
+
+    tool = NodeTool(node=FunctionNode(func=async_gen_fn, name='async_gen_fn'))
+    assert _is_sync_tool(tool) is False
+
+  def test_workflow_node_tool_is_sync(self):
+    """Test that a NodeTool wrapping a Workflow is detected as sync so its sync nodes use the pool."""
+    from google.adk.tools._node_tool import NodeTool
+    from google.adk.workflow import START
+    from google.adk.workflow._workflow import Workflow
+
+    class _WfInput(BaseModel):
+      query: str
+
+    def step_fn() -> str:
+      return 'done'
+
+    wf = Workflow(
+        name='wf_tool', input_schema=_WfInput, edges=[(START, step_fn)]
+    )
+    tool = NodeTool(node=wf)
+    assert _is_sync_tool(tool) is True
+
 
 class TestGetToolThreadPool:
   """Tests for the _get_tool_thread_pool function."""
@@ -1010,3 +1072,216 @@ class TestToolThreadPoolConfig:
     """Test that negative max_workers is rejected."""
     with pytest.raises(ValueError):
       ToolThreadPoolConfig(max_workers=-1)
+
+
+class TestNodeToolThreadPoolExecution:
+  """Tests for NodeTool execution with the thread pool."""
+
+  @pytest.mark.asyncio
+  async def test_sync_node_tool_runs_callable_on_thread_pool(self):
+    """A NodeTool wrapping a synchronous FunctionNode runs the callable on adk_tool_executor."""
+    from unittest import mock
+
+    from google.adk.tools._node_tool import NodeTool
+    from google.adk.workflow._function_node import FunctionNode
+
+    worker_thread_name = None
+
+    def sync_node_fn(x: int) -> dict[str, int]:
+      nonlocal worker_thread_name
+      worker_thread_name = threading.current_thread().name
+      return {'doubled': x * 2}
+
+    node_tool = NodeTool(node=FunctionNode(func=sync_node_fn, name='double_it'))
+    model = testing_utils.MockModel.create(responses=[])
+    agent = Agent(name='test_agent', model=model, tools=[node_tool])
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content=''
+    )
+    invocation_context._enqueue_event = mock.AsyncMock()
+    tool_context = ToolContext(
+        invocation_context=invocation_context,
+        function_call_id='call_node_1',
+    )
+
+    result = await _call_tool_in_thread_pool(node_tool, {'x': 21}, tool_context)
+
+    assert result == {'doubled': 42}
+    assert worker_thread_name is not None
+    assert worker_thread_name.startswith('adk_tool_executor')
+
+  @pytest.mark.asyncio
+  async def test_async_node_tool_runs_on_caller_loop_without_pool(self):
+    """A NodeTool wrapping an async node runs on the caller loop with no sync callable runner bound."""
+    from google.adk.events.event import Event
+    from google.adk.tools._node_tool import NodeTool
+    from google.adk.utils._sync_runner import _SYNC_CALLABLE_RUNNER
+    from google.adk.workflow._function_node import FunctionNode
+
+    caller_loop = asyncio.get_running_loop()
+    enqueued_loops: list[asyncio.AbstractEventLoop] = []
+    runners_seen: list[object] = []
+
+    async def async_node_fn(x: int):
+      runners_seen.append(_SYNC_CALLABLE_RUNNER.get())
+      yield Event(message='progress')
+      yield {'doubled': x * 2}
+
+    node_tool = NodeTool(
+        node=FunctionNode(func=async_node_fn, name='double_async')
+    )
+    model = testing_utils.MockModel.create(responses=[])
+    agent = Agent(name='test_agent', model=model, tools=[node_tool])
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content=''
+    )
+
+    async def record_enqueue(event: Event) -> None:
+      del event
+      enqueued_loops.append(asyncio.get_running_loop())
+
+    object.__setattr__(invocation_context, '_enqueue_event', record_enqueue)
+    tool_context = ToolContext(
+        invocation_context=invocation_context,
+        function_call_id='call_async_node_1',
+    )
+
+    result = await _call_tool_in_thread_pool(node_tool, {'x': 4}, tool_context)
+
+    assert result == {'doubled': 8}
+    assert runners_seen == [None]
+    assert enqueued_loops
+    assert all(loop is caller_loop for loop in enqueued_loops)
+
+  @pytest.mark.asyncio
+  async def test_sync_node_tool_runs_on_thread_pool_via_prepared_call_async(
+      self,
+  ):
+    """_execute_single_prepared_call_async runs a sync FunctionNode NodeTool on adk_tool_executor."""
+    from google.adk.tools._node_tool import NodeTool
+    from google.adk.workflow._function_node import FunctionNode
+    from google.genai import types
+
+    worker_thread_name = None
+
+    def sync_node_fn(x: int) -> dict[str, int]:
+      nonlocal worker_thread_name
+      worker_thread_name = threading.current_thread().name
+      return {'doubled': x * 2}
+
+    node_tool = NodeTool(node=FunctionNode(func=sync_node_fn, name='double_it'))
+    mock_model = testing_utils.MockModel.create(
+        responses=[
+            types.Part.from_function_call(name='double_it', args={'x': 21}),
+            'done',
+        ]
+    )
+    agent = Agent(name='test_agent', model=mock_model, tools=[node_tool])
+    runner = testing_utils.TestInMemoryRunner(agent)
+
+    events = await runner.run_async_with_new_session(
+        'test', RunConfig(tool_thread_pool_config=ToolThreadPoolConfig())
+    )
+
+    assert worker_thread_name is not None
+    assert worker_thread_name.startswith('adk_tool_executor')
+    fn_responses = [
+        part.function_response
+        for event in events
+        if event.content and event.content.parts
+        for part in event.content.parts
+        if part.function_response is not None
+    ]
+    assert len(fn_responses) == 1
+    assert fn_responses[0].response == {'doubled': 42}
+
+  @pytest.mark.asyncio
+  async def test_async_node_tool_runs_on_caller_loop_via_prepared_call_async(
+      self,
+  ):
+    """_execute_single_prepared_call_async leaves an async FunctionNode NodeTool on the caller loop with no runner bound."""
+    from google.adk.events.event import Event
+    from google.adk.tools._node_tool import NodeTool
+    from google.adk.utils._sync_runner import _SYNC_CALLABLE_RUNNER
+    from google.adk.workflow._function_node import FunctionNode
+    from google.genai import types
+
+    caller_loop = asyncio.get_running_loop()
+    seen_loops: list[asyncio.AbstractEventLoop] = []
+    runners_seen: list[object] = []
+
+    async def async_node_fn(x: int):
+      seen_loops.append(asyncio.get_running_loop())
+      runners_seen.append(_SYNC_CALLABLE_RUNNER.get())
+      yield Event(message='progress')
+      yield {'doubled': x * 2}
+
+    node_tool = NodeTool(
+        node=FunctionNode(func=async_node_fn, name='double_async')
+    )
+    mock_model = testing_utils.MockModel.create(
+        responses=[
+            types.Part.from_function_call(name='double_async', args={'x': 4}),
+            'done',
+        ]
+    )
+    agent = Agent(name='test_agent', model=mock_model, tools=[node_tool])
+    runner = testing_utils.TestInMemoryRunner(agent)
+
+    events = await runner.run_async_with_new_session(
+        'test', RunConfig(tool_thread_pool_config=ToolThreadPoolConfig())
+    )
+
+    assert seen_loops == [caller_loop]
+    assert runners_seen == [None]
+    fn_responses = [
+        part.function_response
+        for event in events
+        if event.content and event.content.parts
+        for part in event.content.parts
+        if part.function_response is not None
+    ]
+    assert len(fn_responses) == 1
+    assert fn_responses[0].response == {'doubled': 8}
+
+  @pytest.mark.asyncio
+  async def test_workflow_node_tool_runs_sync_nodes_on_thread_pool(self):
+    """A NodeTool wrapping a Workflow binds the runner so its sync nodes run on adk_tool_executor."""
+    from unittest import mock
+
+    from google.adk.tools._node_tool import NodeTool
+    from google.adk.workflow import START
+    from google.adk.workflow._workflow import Workflow
+
+    class _WfInput(BaseModel):
+      x: int
+
+    worker_thread_name = None
+
+    def sync_step(node_input: _WfInput) -> dict[str, int]:
+      nonlocal worker_thread_name
+      worker_thread_name = threading.current_thread().name
+      return {'tripled': node_input.x * 3}
+
+    wf = Workflow(
+        name='triple_wf',
+        input_schema=_WfInput,
+        edges=[(START, sync_step)],
+    )
+    node_tool = NodeTool(node=wf)
+    model = testing_utils.MockModel.create(responses=[])
+    agent = Agent(name='test_agent', model=model, tools=[node_tool])
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content=''
+    )
+    invocation_context._enqueue_event = mock.AsyncMock()
+    tool_context = ToolContext(
+        invocation_context=invocation_context,
+        function_call_id='call_wf_1',
+    )
+
+    result = await _call_tool_in_thread_pool(node_tool, {'x': 7}, tool_context)
+
+    assert result == {'tripled': 21}
+    assert worker_thread_name is not None
+    assert worker_thread_name.startswith('adk_tool_executor')

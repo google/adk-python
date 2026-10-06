@@ -48,7 +48,41 @@ _GCS_DISPLAY_NAME_METADATA_KEY = "adkDisplayName"
 _GCS_IS_TEXT_METADATA_KEY = "adkIsText"
 _GCS_FILE_URI_METADATA_KEY = "adkFileUri"
 _GCS_FILE_MIME_TYPE_METADATA_KEY = "adkFileMimeType"
+_LEGACY_GCS_FILE_URI_METADATA_KEY = "file_uri"
+# Blob metadata keys reserved for this service's own bookkeeping. They are
+# dropped from custom_metadata on save and hidden from it on read.
+_INTERNAL_METADATA_KEYS = frozenset({
+    _GCS_DISPLAY_NAME_METADATA_KEY,
+    _GCS_IS_TEXT_METADATA_KEY,
+    _GCS_FILE_URI_METADATA_KEY,
+    _GCS_FILE_MIME_TYPE_METADATA_KEY,
+    _LEGACY_GCS_FILE_URI_METADATA_KEY,
+})
 _MAX_SAVE_VERSION_ATTEMPTS = 10
+
+
+def _user_metadata(
+    blob_metadata: dict[str, Any] | None,
+) -> dict[str, Any]:
+  """Returns only the metadata the caller supplied on save."""
+  if not blob_metadata:
+    return {}
+  return {
+      key: value
+      for key, value in blob_metadata.items()
+      if key not in _INTERNAL_METADATA_KEYS
+  }
+
+
+def _get_file_uri(
+    blob_metadata: dict[str, Any] | None,
+) -> str | None:
+  """Returns the file URI recorded on the blob, checking legacy keys too."""
+  if not blob_metadata:
+    return None
+  return blob_metadata.get(_GCS_FILE_URI_METADATA_KEY) or blob_metadata.get(
+      _LEGACY_GCS_FILE_URI_METADATA_KEY
+  )
 
 
 def _parse_version(blob_name: str, prefix: str) -> Optional[int]:
@@ -263,7 +297,9 @@ class GcsArtifactService(BaseArtifactService):
       artifact_util._validate_session_id_for_flat_storage(session_id)
 
     artifact = ensure_part(artifact)
-    blob_metadata = {k: str(v) for k, v in (custom_metadata or {}).items()}
+    blob_metadata = {
+        k: str(v) for k, v in _user_metadata(custom_metadata).items()
+    }
     if artifact.inline_data and artifact.inline_data.display_name:
       blob_metadata[_GCS_DISPLAY_NAME_METADATA_KEY] = (
           artifact.inline_data.display_name
@@ -377,11 +413,7 @@ class GcsArtifactService(BaseArtifactService):
       return None
 
     # If the artifact was saved as a file_data URI reference, restore or resolve it.
-    file_uri = None
-    if blob.metadata:
-      file_uri = blob.metadata.get(
-          _GCS_FILE_URI_METADATA_KEY
-      ) or blob.metadata.get("file_uri")
+    file_uri = _get_file_uri(blob.metadata)
 
     if file_uri:
       if file_uri.startswith("artifact://"):
@@ -559,7 +591,7 @@ class GcsArtifactService(BaseArtifactService):
         canonical_uri=canonical_uri,
         create_time=blob.time_created.timestamp(),
         mime_type=blob.content_type,
-        custom_metadata=blob.metadata if blob.metadata else {},
+        custom_metadata=_user_metadata(blob.metadata),
     )
 
   def _list_artifact_versions_sync(
@@ -586,7 +618,7 @@ class GcsArtifactService(BaseArtifactService):
           canonical_uri=canonical_uri,
           create_time=blob.time_created.timestamp(),
           mime_type=blob.content_type,
-          custom_metadata=blob.metadata if blob.metadata else {},
+          custom_metadata=_user_metadata(blob.metadata),
       )
       artifact_versions.append(av)
 
@@ -658,11 +690,7 @@ class GcsArtifactService(BaseArtifactService):
     if not blob:
       return None
 
-    file_uri = None
-    if blob.metadata:
-      file_uri = blob.metadata.get(
-          _GCS_FILE_URI_METADATA_KEY
-      ) or blob.metadata.get("file_uri")
+    file_uri = _get_file_uri(blob.metadata)
 
     if file_uri:
       if file_uri.startswith("artifact://"):
@@ -756,11 +784,7 @@ class GcsArtifactService(BaseArtifactService):
     if not blob:
       return None
 
-    file_uri = None
-    if blob.metadata:
-      file_uri = blob.metadata.get(
-          _GCS_FILE_URI_METADATA_KEY
-      ) or blob.metadata.get("file_uri")
+    file_uri = _get_file_uri(blob.metadata)
 
     if file_uri:
       if file_uri.startswith("artifact://"):

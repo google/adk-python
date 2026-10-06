@@ -30,16 +30,33 @@ vertexai_types = vertexai.types
 class TestScenarioGenerator:
   """Unit tests for ScenarioGenerator."""
 
-  def test_constructor_with_api_key(self, mocker):
+  def test_constructor_with_api_key_only_raises_error(self, mocker):
     mocker.patch.dict(
         os.environ, {"GOOGLE_API_KEY": "test_api_key"}, clear=True
+    )
+    mocker.patch("google.adk.dependencies.vertexai.vertexai.Client")
+
+    with pytest.raises(ValueError, match="Missing project id and location."):
+      ScenarioGenerator()
+
+  def test_constructor_prefers_project_over_api_key(self, mocker):
+    mocker.patch.dict(
+        os.environ,
+        {
+            "GOOGLE_API_KEY": "test_api_key",
+            "GOOGLE_CLOUD_PROJECT": "test_project",
+            "GOOGLE_CLOUD_LOCATION": "test_location",
+        },
+        clear=True,
     )
     mock_client_cls = mocker.patch(
         "google.adk.dependencies.vertexai.vertexai.Client"
     )
     ScenarioGenerator()
 
-    mock_client_cls.assert_called_once_with(api_key="test_api_key")
+    mock_client_cls.assert_called_once_with(
+        project="test_project", location="test_location"
+    )
 
   def test_constructor_with_project_and_location(self, mocker):
     """Test constructor with project and location in env."""
@@ -82,19 +99,18 @@ class TestScenarioGenerator:
     mocker.patch.dict(os.environ, {}, clear=True)
     mocker.patch("google.adk.dependencies.vertexai.vertexai.Client")
 
-    with pytest.raises(
-        ValueError,
-        match=(
-            "Either API Key or Google cloud Project id and location should be"
-            " specified."
-        ),
-    ):
+    with pytest.raises(ValueError, match="Missing project id and location."):
       ScenarioGenerator()
 
   def test_generate_scenarios(self, mocker):
     """Test scenario generation with mocked components."""
     mocker.patch.dict(
-        os.environ, {"GOOGLE_API_KEY": "test_api_key"}, clear=True
+        os.environ,
+        {
+            "GOOGLE_CLOUD_PROJECT": "test_project",
+            "GOOGLE_CLOUD_LOCATION": "test_location",
+        },
+        clear=True,
     )
     mock_client_cls = mocker.patch(
         "google.adk.dependencies.vertexai.vertexai.Client"

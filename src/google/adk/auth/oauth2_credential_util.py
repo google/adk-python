@@ -151,9 +151,28 @@ def create_oauth2_session(
       not auth_credential
       or not auth_credential.oauth2
       or not auth_credential.oauth2.client_id
-      or not auth_credential.oauth2.client_secret
   ):
     return None, None
+
+  # Public clients have no client_secret and use the "none" auth method.
+  token_endpoint_auth_method: str | None = (
+      auth_credential.oauth2.token_endpoint_auth_method
+  )
+  if not auth_credential.oauth2.client_secret:
+    if token_endpoint_auth_method == "private_key_jwt":
+      return None, None
+    if (
+        token_endpoint_auth_method
+        in ("client_secret_basic", "client_secret_post", "client_secret_jwt")
+        or token_endpoint_auth_method is None
+    ):
+      if not auth_credential.oauth2.code_challenge_method:
+        logger.warning(
+            "OAuth2 client_secret is not set for client_id %s; treating client"
+            " as public (token_endpoint_auth_method='none').",
+            auth_credential.oauth2.client_id,
+        )
+      token_endpoint_auth_method = "none"
 
   # Scope is intentionally omitted: token exchange and refresh don't require
   # it per RFC 6749, and some providers reject it on these requests.
@@ -162,7 +181,7 @@ def create_oauth2_session(
       auth_credential.oauth2.client_secret,
       redirect_uri=auth_credential.oauth2.redirect_uri,
       state=auth_credential.oauth2.state,
-      token_endpoint_auth_method=auth_credential.oauth2.token_endpoint_auth_method,
+      token_endpoint_auth_method=token_endpoint_auth_method,
       code_challenge_method=auth_credential.oauth2.code_challenge_method,
       default_timeout=_TOKEN_REQUEST_TIMEOUT_SECONDS,
   )

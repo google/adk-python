@@ -19,6 +19,8 @@ import logging
 from typing import AsyncGenerator
 
 from google.genai import types
+from opentelemetry.trace import Status
+from opentelemetry.trace import StatusCode
 
 from ..events._rewind_events import _apply_rewinds
 from ..events.event import Event
@@ -59,9 +61,21 @@ async def _summarize_events_with_trace(
 
   with tracer.start_as_current_span(f'compact_events {trigger}') as span:
     span.set_attributes(attributes)
-    compaction_event = await config.summarizer.maybe_summarize_events(
-        events=events_to_compact
-    )
+    try:
+      compaction_event = await config.summarizer.maybe_summarize_events(
+          events=events_to_compact
+      )
+    except Exception as e:  # pylint: disable=broad-exception-caught
+      # The full history is still usable, so a failure must not end the turn.
+      # Nothing unwinds past the span, so without an explicit status it would
+      # be recorded as a successful compaction.
+      span.record_exception(e)
+      span.set_status(Status(StatusCode.ERROR, type(e).__name__))
+      logger.warning(
+          'Event compaction failed; continuing with the uncompacted history.',
+          exc_info=True,
+      )
+      return None
     span.set_attributes(_build_compaction_result_attributes(compaction_event))
     return compaction_event
 
@@ -484,8 +498,6 @@ async def _run_compaction_for_sliding_window(
     app: App,
     session: Session,
     session_service: BaseSessionService,
-    *,
-    skip_token_compaction: bool = False,
 ) -> AsyncGenerator[Event, None]:
   """Runs sliding-window compaction over the session's events.
 
@@ -511,7 +523,6 @@ async def _run_compaction_for_sliding_window(
     session: The session containing events to compact.
     session_service: The session service, used by the token-threshold path,
       which appends its own event directly.
-    skip_token_compaction: Whether to skip token-threshold compaction.
 
   Yields:
     The sliding-window compaction event, if one is produced. The caller (the
@@ -531,7 +542,7 @@ async def _run_compaction_for_sliding_window(
     return
 
   # Prefer token-threshold compaction if configured and triggered.
-  if not skip_token_compaction and _has_token_threshold_config(config):
+  if _has_token_threshold_config(config):
     token_compacted = await _run_compaction_for_token_threshold(
         app, session, session_service
     )

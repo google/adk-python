@@ -35,6 +35,7 @@ from fastapi import Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from fastapi.responses import StreamingResponse
+from google.genai import types
 from opentelemetry import context
 from opentelemetry import trace
 from opentelemetry.sdk.trace import export
@@ -49,6 +50,7 @@ from ..runners import Runner
 from ..telemetry._agent_engine import get_propagated_context
 from ..telemetry._agent_engine import maybe_install_request_metrics_middleware
 from ..telemetry._agent_engine import TopSpanProcessor
+from .api_server import _is_loopback_address
 from .api_server import ApiServer
 from .cli_deploy import _AGENT_ENGINE_CLASS_METHODS
 from .service_registry import load_services_module
@@ -127,6 +129,8 @@ def get_fast_api_app(
     default_llm_model: str | None = None,
     gemini_enterprise_app_name: str | None = None,
     express_mode: bool = False,
+    avatar_config: types.AvatarConfig | None = None,
+    max_llm_calls: int | None = None,
 ) -> FastAPI:
   """Constructs and returns a FastAPI application for serving ADK agents.
 
@@ -164,7 +168,9 @@ def get_fast_api_app(
       returned app; pass ``bind_host`` to guard it.
     bind_host: The address the caller will bind the returned app to. A loopback
       value turns on DNS-rebinding protection, which rejects requests addressed
-      to any other host. Leave it None to serve the app yourself without that.
+      to any other host. A non-loopback value logs a startup warning that the
+      app has no authentication. Leave it None to serve the app yourself
+      without either.
     port: Port number for the server (defaults to 8000).
     url_prefix: Optional prefix for all URL routes.
     trace_to_cloud: Whether to export traces to Google Cloud Trace.
@@ -193,10 +199,23 @@ def get_fast_api_app(
     gemini_enterprise_app_name: The Gemini Enterprise app name to use for the
       agent.
     express_mode: Whether to enable express mode.
+    avatar_config: Avatar configuration to apply to live agent runs that
+      request VIDEO output.
+    max_llm_calls: Maximum number of LLM calls allowed for each agent run.
+      When None, ``RunConfig`` resolves its normal default.
 
   Returns:
     The configured FastAPI application instance.
   """
+
+  if bind_host is not None and not _is_loopback_address(bind_host):
+    logger.warning(
+        "ADK server is binding to a non-loopback address (%s) and has no"
+        " authentication: any client that can reach it can read, modify, and"
+        " delete any user's sessions and artifacts. Do not expose it to"
+        " untrusted networks without an authenticating proxy.",
+        bind_host,
+    )
 
   # Enable the YAML key denylist for config loads if the web UI is enabled.
   if web:
@@ -241,7 +260,14 @@ def get_fast_api_app(
     if is_single_agent and isinstance(agent_loader, this_module.AgentLoader):
       if single_agent_name is not None:
         agent_loader._set_single_agent_mode(single_agent_name, agents_dir)
-  agent_loader._allow_special_agents = web
+  # The built-in agents include the agent builder assistant, which writes
+  # arbitrary files -- Python included -- that the server then imports. The
+  # dev server has no authentication, so they are only safe where nobody else
+  # can reach it: a loopback bind, which the DNS-rebinding and Origin guards
+  # also cover. An unknown bind (None) is treated as exposed.
+  agent_loader._allow_special_agents = (
+      web and bind_host is not None and _is_loopback_address(bind_host)
+  )
 
   # Load services.py from agents_dir for custom service registration.
   load_services_module(agents_dir)
@@ -318,6 +344,8 @@ def get_fast_api_app(
       trigger_oidc_service_accounts=trigger_oidc_service_accounts,
       trigger_auth_verifier=trigger_auth_verifier,
       default_llm_model=default_llm_model,
+      avatar_config=avatar_config,
+      max_llm_calls=max_llm_calls,
   )
 
   # In single agent mode, use that agent as the default app.

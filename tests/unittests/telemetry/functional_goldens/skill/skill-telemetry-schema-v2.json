@@ -107,10 +107,10 @@
               "gen_ai.tool.call.id": "PRESENT",
               "gcp.vertex.agent.event_id": "PRESENT",
               "gcp.vertex.agent.tool_response": "{}",
-              "adk.experimental.skill.name": "local-skill",
-              "adk.experimental.skill.description": "A sample skill.",
-              "adk.experimental.skill.source.uri": "file://local-skill",
-              "adk.experimental.skill.additional_tools": [
+              "gen_ai.skill.name": "local-skill",
+              "gen_ai.skill.description": "A sample skill.",
+              "gen_ai.skill.source.uri": "file://local-skill",
+              "adk.skill.additional_tools": [
                 "foo",
                 "bar"
               ]
@@ -360,7 +360,7 @@
       {
         "attributes": {
           "gen_ai.agent.name": "some_root_agent",
-          "adk.experimental.skill.name": "local-skill"
+          "gen_ai.skill.name": "local-skill"
         },
         "value": 1
       }

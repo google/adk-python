@@ -18,6 +18,7 @@ import pytest
 
 pytest.register_assert_rewrite('google.adk.cli.agent_test_runner')
 
+from google.adk.utils import _gcp_metadata
 from pytest import fixture
 from pytest import FixtureRequest
 from pytest import hookimpl
@@ -106,3 +107,27 @@ def _is_explicitly_marked(mark_name: str, metafunc: Metafunc) -> bool:
       if mark.name == 'parametrize' and mark.args[0] == mark_name:
         return True
   return False
+
+
+@pytest.fixture(autouse=True)
+def mock_gcp_metadata_off(request):
+  """Ensures GCP metadata defaults are not applied during most tests."""
+  if 'test_gcp_metadata' in request.module.__name__:
+    yield
+    return
+
+  from google.auth import _cloud_sdk
+
+  orig_get_project_id = _gcp_metadata.get_project_id_from_metadata
+  orig_cached_project_id = _gcp_metadata._cached_project_id
+  orig_get_adc_path = _cloud_sdk.get_application_default_credentials_path
+
+  _gcp_metadata.get_project_id_from_metadata = lambda: None
+  _gcp_metadata._cached_project_id = None
+  _cloud_sdk.get_application_default_credentials_path = lambda: ''
+  try:
+    yield
+  finally:
+    _gcp_metadata.get_project_id_from_metadata = orig_get_project_id
+    _gcp_metadata._cached_project_id = orig_cached_project_id
+    _cloud_sdk.get_application_default_credentials_path = orig_get_adc_path

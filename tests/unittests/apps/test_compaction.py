@@ -39,20 +39,26 @@ from google.genai.types import Part
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import StatusCode
 from pydantic import ValidationError
 import pytest
 
 
 class _StubSummarizer(BaseEventsSummarizer):
 
-  def __init__(self, compacted_event: Event | None):
+  def __init__(
+      self, compacted_event: Event | None, error: Exception | None = None
+  ):
     self._compacted_event = compacted_event
+    self._error = error
     self.called_with_events = None
 
   async def maybe_summarize_events(
       self, *, events: list[Event]
   ) -> Event | None:
     self.called_with_events = events
+    if self._error is not None:
+      raise self._error
     return self._compacted_event
 
 
@@ -602,6 +608,33 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
 
     self.assertEqual(token_count, 100)
 
+  async def test_summarizer_failure_does_not_end_the_invocation(self):
+    app = App(
+        name='test',
+        root_agent=Mock(spec=BaseAgent),
+        events_compaction_config=EventsCompactionConfig(
+            summarizer=self.mock_compactor,
+            compaction_interval=1,
+            overlap_size=0,
+        ),
+    )
+    session = Session(
+        app_name='test',
+        user_id='u1',
+        id='s1',
+        events=[
+            self._create_event(1.0, 'inv1', 'e1'),
+            self._create_event(2.0, 'inv2', 'e2'),
+        ],
+    )
+    self.mock_compactor.maybe_summarize_events.side_effect = RuntimeError(
+        'summarizer model is unavailable'
+    )
+
+    await self._run_sliding_window(app, session, self.mock_session_service)
+
+    self.mock_session_service.append_event.assert_not_called()
+
   async def test_run_compaction_for_token_threshold_keeps_retention_events(
       self,
   ):
@@ -742,38 +775,6 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
     self.mock_session_service.append_event.assert_called_once_with(
         session=session, event=mock_compacted_event
     )
-
-  async def test_run_compaction_skip_token_compaction(self):
-    app = App(
-        name='test',
-        root_agent=Mock(spec=BaseAgent),
-        events_compaction_config=EventsCompactionConfig(
-            summarizer=self.mock_compactor,
-            compaction_interval=999,
-            overlap_size=0,
-            token_threshold=50,
-            event_retention_size=1,
-        ),
-    )
-    session = Session(
-        app_name='test',
-        user_id='u1',
-        id='s1',
-        events=[
-            self._create_event(1.0, 'inv1', 'e1'),
-            self._create_event(2.0, 'inv2', 'e2', prompt_token_count=100),
-        ],
-    )
-
-    await self._run_sliding_window(
-        app,
-        session,
-        self.mock_session_service,
-        skip_token_compaction=True,
-    )
-
-    self.mock_compactor.maybe_summarize_events.assert_not_called()
-    self.mock_session_service.append_event.assert_not_called()
 
   async def test_run_compaction_for_token_threshold_seeds_previous_compaction(
       self,
@@ -2173,6 +2174,51 @@ async def test_run_compaction_for_sliding_window_adds_summary_trace(
       summary_span.attributes['gen_ai.compaction.result_event_id']
       == 'compacted-event-id'
   )
+
+
+@pytest.mark.asyncio
+async def test_summarizer_failure_marks_the_compaction_span_as_error(
+    span_exporter: InMemorySpanExporter,
+):
+  summarizer = _StubSummarizer(
+      None, error=RuntimeError('summarizer model is unavailable')
+  )
+  app = App(
+      name='test',
+      root_agent=Mock(spec=BaseAgent),
+      events_compaction_config=EventsCompactionConfig(
+          summarizer=summarizer,
+          compaction_interval=2,
+          overlap_size=1,
+      ),
+  )
+  session = Session(
+      app_name='test',
+      user_id='u1',
+      id='session-id',
+      events=[
+          _create_trace_test_event(
+              timestamp=1.0, invocation_id='inv1', text='e1'
+          ),
+          _create_trace_test_event(
+              timestamp=2.0, invocation_id='inv2', text='e2'
+          ),
+      ],
+  )
+  session_service = AsyncMock(spec=BaseSessionService)
+
+  async for _ in _run_compaction_for_sliding_window(
+      app, session, session_service
+  ):
+    pass
+
+  summary_span = next(
+      span
+      for span in span_exporter.get_finished_spans()
+      if span.name == 'compact_events sliding_window'
+  )
+  assert summary_span.status.status_code == StatusCode.ERROR
+  assert summary_span.status.description == 'RuntimeError'
 
 
 def test_count_chars_in_content():

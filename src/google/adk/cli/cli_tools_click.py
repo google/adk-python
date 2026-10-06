@@ -49,6 +49,7 @@ from .utils import logs
 
 if TYPE_CHECKING:
   from fastapi import FastAPI
+  from google.genai import types
 
   from ..agents.llm_agent import LlmAgent
 
@@ -83,6 +84,37 @@ def _parse_streaming_mode(
   if mode is None:
     raise click.BadParameter(f"unknown streaming mode {value!r}", param=param)
   return mode
+
+
+def _parse_avatar_config(
+    _ctx: click.Context,
+    param: click.Parameter,
+    value: str | None,
+) -> types.AvatarConfig | None:
+  """Parses an inline JSON object or JSON file into an avatar config."""
+  if value is None:
+    return None
+
+  if value.lstrip().startswith("{"):
+    config_json = value
+  else:
+    try:
+      config_json = Path(value).read_text(encoding="utf-8")
+    except OSError as exc:
+      raise click.BadParameter(
+          f"could not read avatar configuration file {value!r}: {exc}",
+          param=param,
+      ) from exc
+
+  from google.genai import types
+
+  try:
+    return types.AvatarConfig.model_validate_json(config_json)
+  except ValueError as exc:
+    raise click.BadParameter(
+        f"avatar configuration must be a valid AvatarConfig JSON object: {exc}",
+        param=param,
+    ) from exc
 
 
 def _logging_options():
@@ -1737,10 +1769,10 @@ def cli_add_eval_case(
   eval_sets_manager = get_eval_sets_manager(eval_storage_uri, agents_dir)
 
   try:
-    with open(session_input_file, "r") as f:
+    with open(session_input_file, "r", encoding="utf-8") as f:
       session_input = SessionInput.model_validate_json(f.read())
 
-    with open(scenarios_file, "r") as f:
+    with open(scenarios_file, "r", encoding="utf-8") as f:
       conversation_scenarios = ConversationScenarios.model_validate_json(
           f.read()
       )
@@ -1851,7 +1883,7 @@ def cli_generate_eval_cases(
     else:
       click.echo(f"Eval set '{eval_set_id}' already exists.")
 
-    with open(user_simulation_config_file, "r") as f:
+    with open(user_simulation_config_file, "r", encoding="utf-8") as f:
       config = ConversationGenerationConfig.model_validate_json(f.read())
 
     generator = ScenarioGenerator()
@@ -2048,6 +2080,28 @@ def fast_api_common_options():
         ),
         default=None,
     )
+    @click.option(
+        "--avatar_config",
+        type=str,
+        callback=_parse_avatar_config,
+        help=(
+            "Optional. AvatarConfig as an inline JSON object or a path to a"
+            " JSON file. Applied only to /run_live sessions whose client"
+            " requests video output (modalities=VIDEO); other live sessions"
+            " ignore it. If unset, video sessions use the pre-built 'Kai'"
+            " avatar."
+        ),
+        default=None,
+    )
+    @click.option(
+        "--max_llm_calls",
+        type=int,
+        help=(
+            "Optional. Maximum number of LLM calls allowed for each agent"
+            " run. Values less than or equal to zero disable the limit."
+        ),
+        default=None,
+    )
     # Parsed into list[str] by the wrapper below (server commands need a list).
     @click.option(
         "--trigger_sources",
@@ -2167,6 +2221,8 @@ def cli_web(
     trigger_sources: list[str] | None = None,
     trigger_oidc_audience: str | None = None,
     trigger_oidc_service_accounts: list[str] | None = None,
+    avatar_config: types.AvatarConfig | None = None,
+    max_llm_calls: int | None = None,
 ):
   """Starts a FastAPI server with Web UI for agents.
 
@@ -2239,6 +2295,8 @@ def cli_web(
       trigger_oidc_audience=trigger_oidc_audience,
       trigger_oidc_service_accounts=trigger_oidc_service_accounts,
       default_llm_model=default_llm_model,
+      avatar_config=avatar_config,
+      max_llm_calls=max_llm_calls,
   )
   config = uvicorn.Config(
       app,
@@ -2322,6 +2380,8 @@ def cli_api_server(
     express_mode: bool = False,
     trigger_oidc_audience: str | None = None,
     trigger_oidc_service_accounts: list[str] | None = None,
+    avatar_config: types.AvatarConfig | None = None,
+    max_llm_calls: int | None = None,
 ):
   """Starts a FastAPI server for agents.
 
@@ -2384,6 +2444,8 @@ def cli_api_server(
           trigger_oidc_service_accounts=trigger_oidc_service_accounts,
           gemini_enterprise_app_name=gemini_enterprise_app_name,
           express_mode=express_mode,
+          avatar_config=avatar_config,
+          max_llm_calls=max_llm_calls,
           lifespan=_lifespan,
       ),
       host=host,
@@ -2546,6 +2608,8 @@ def cli_deploy_cloud_run(
         extra_gcloud_args=tuple(gcloud_args),
         with_cloud_run_sandbox=with_cloud_run_sandbox,
     )
+  except (click.ClickException, click.Abort):
+    raise
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
     ctx.exit(1)
@@ -2603,6 +2667,8 @@ def cli_deploy_docker(
         provider_args=provider_args,
         env=env,
     )
+  except (click.ClickException, click.Abort):
+    raise
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
     ctx.exit(1)
@@ -2667,6 +2733,7 @@ def cli_migrate_session(
     click.secho("Migration check and upgrade process finished.", fg="green")
   except Exception as e:
     click.secho(f"Migration failed: {e}", fg="red", err=True)
+    click.get_current_context().exit(1)
 
 
 @deploy.command("agent_engine")
@@ -2985,6 +3052,8 @@ def cli_deploy_agent_engine(
         extra_packages=list(extra_packages),
         worker_pool=worker_pool,
     )
+  except (click.ClickException, click.Abort):
+    raise
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
     click.get_current_context().exit(1)
@@ -3197,6 +3266,8 @@ def cli_deploy_gke(
         trigger_oidc_audience=trigger_oidc_audience,
         trigger_oidc_service_accounts=trigger_oidc_service_accounts,
     )
+  except (click.ClickException, click.Abort):
+    raise
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
     click.get_current_context().exit(1)

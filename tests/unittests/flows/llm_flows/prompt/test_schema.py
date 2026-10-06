@@ -20,6 +20,8 @@ from google.adk.agents.run_config import RunConfig
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
+from google.adk.flows.llm_flows.prompt._schema import _MAX_TOOL_ROUNDS
+from google.adk.flows.llm_flows.prompt._schema import _OutputSchemaRequestProcessor
 from google.adk.flows.llm_flows.prompt._schema import get_structured_model_response
 from google.adk.flows.llm_flows.single_flow import SingleFlow
 from google.adk.models.llm_request import LlmRequest
@@ -595,3 +597,301 @@ async def test_flow_yields_only_function_response_for_normal_tools():
   assert first_event.get_function_responses()[0].response == {
       'result': 'Searched for: test query'
   }
+
+
+def _make_function_response_event(
+    tool_name: str = 'dummy_tool',
+    *,
+    author: str = 'test_agent',
+    invocation_id: str = 'test-id',
+    branch: str | None = None,
+    skip_summarization: bool | None = None,
+) -> Event:
+  """Helper to create a function response event for round counting."""
+  return Event(
+      invocation_id=invocation_id,
+      author=author,
+      branch=branch,
+      actions=EventActions(skip_summarization=skip_summarization),
+      content=types.Content(
+          role='user',
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      name=tool_name, response={'result': 'ok'}
+                  )
+              )
+          ],
+      ),
+  )
+
+
+@pytest.mark.asyncio
+async def test_type_aware_instruction_basemodel():
+  """Test that BaseModel schema gets a field-specific instruction."""
+  agent = LlmAgent(
+      name='test_agent',
+      model=testing_utils.ModelWithCapabilities(output_schema_and_tools=False),
+      output_schema=PersonSchema,
+      tools=[FunctionTool(func=dummy_tool)],
+  )
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest()
+  processor = _OutputSchemaRequestProcessor()
+
+  async for _ in processor.run_async(invocation_context, llm_request):
+    pass
+
+  assert (
+      'After completing any needed tool calls, you must provide your final'
+      ' response'
+      in llm_request.config.system_instruction
+  )
+  assert 'IMPORTANT' not in llm_request.config.system_instruction
+
+
+@pytest.mark.asyncio
+async def test_type_aware_instruction_primitive():
+  """Test that primitive schema (str) gets a stronger instruction."""
+  agent = LlmAgent(
+      name='test_agent',
+      model=testing_utils.ModelWithCapabilities(output_schema_and_tools=False),
+      output_schema=str,
+      tools=[FunctionTool(func=dummy_tool)],
+  )
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest()
+  processor = _OutputSchemaRequestProcessor()
+
+  async for _ in processor.run_async(invocation_context, llm_request):
+    pass
+
+  assert 'IMPORTANT' in llm_request.config.system_instruction
+  assert 'MUST call' in llm_request.config.system_instruction
+
+
+@pytest.mark.asyncio
+async def test_hard_cutoff_at_max_rounds():
+  """Test that invocation is terminated at _MAX_TOOL_ROUNDS and emits an error event."""
+  agent = LlmAgent(
+      name='test_agent',
+      model=testing_utils.ModelWithCapabilities(output_schema_and_tools=False),
+      output_schema=PersonSchema,
+      tools=[FunctionTool(func=dummy_tool)],
+  )
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest()
+  processor = _OutputSchemaRequestProcessor()
+
+  invocation_context.session.events.extend(
+      _make_function_response_event() for _ in range(_MAX_TOOL_ROUNDS)
+  )
+
+  events = [
+      e async for e in processor.run_async(invocation_context, llm_request)
+  ]
+
+  assert invocation_context.end_invocation is True
+  assert 'set_model_response' not in llm_request.tools_dict
+  assert len(events) == 1
+  assert events[0].error_code == 'MAX_TOOL_ROUNDS_EXCEEDED'
+  assert (
+      events[0].error_message is not None
+      and f'{_MAX_TOOL_ROUNDS} rounds' in events[0].error_message
+  )
+  assert events[0].author == 'test_agent'
+  assert events[0].invocation_id == 'test-id'
+
+
+@pytest.mark.asyncio
+async def test_force_tool_choice_at_penultimate_round():
+  """Test that tool_choice is forced on round N-1, including skip_summarization rounds."""
+  agent = LlmAgent(
+      name='test_agent',
+      model=testing_utils.ModelWithCapabilities(output_schema_and_tools=False),
+      output_schema=PersonSchema,
+      tools=[FunctionTool(func=dummy_tool)],
+  )
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest()
+  processor = _OutputSchemaRequestProcessor()
+
+  invocation_context.session.events.extend(
+      _make_function_response_event(skip_summarization=(i == 0))
+      for i in range(_MAX_TOOL_ROUNDS - 1)
+  )
+
+  async for _ in processor.run_async(invocation_context, llm_request):
+    pass
+
+  assert 'set_model_response' in llm_request.tools_dict
+
+  tool_config = llm_request.config.tool_config
+  assert tool_config is not None
+  fc_config = tool_config.function_calling_config
+  assert fc_config.mode == types.FunctionCallingConfigMode.ANY
+  assert fc_config.allowed_function_names == ['set_model_response']
+
+
+@pytest.mark.asyncio
+async def test_no_force_tool_choice_on_normal_rounds():
+  """Test that tool_choice is NOT forced on normal rounds."""
+  agent = LlmAgent(
+      name='test_agent',
+      model=testing_utils.ModelWithCapabilities(output_schema_and_tools=False),
+      output_schema=PersonSchema,
+      tools=[FunctionTool(func=dummy_tool)],
+  )
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest()
+  processor = _OutputSchemaRequestProcessor()
+
+  invocation_context.session.events.extend(
+      _make_function_response_event() for _ in range(3)
+  )
+
+  async for _ in processor.run_async(invocation_context, llm_request):
+    pass
+
+  assert 'set_model_response' in llm_request.tools_dict
+  assert llm_request.config.tool_config is None
+
+
+@pytest.mark.asyncio
+async def test_tool_rounds_filtered_by_author_and_reset_across_turns():
+  """Test that sibling agent tool rounds and prior completed turns are not counted."""
+  agent = LlmAgent(
+      name='test_agent',
+      model=testing_utils.ModelWithCapabilities(output_schema_and_tools=False),
+      output_schema=PersonSchema,
+      tools=[FunctionTool(func=dummy_tool)],
+  )
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest()
+  processor = _OutputSchemaRequestProcessor()
+
+  # Prior turn of test_agent (e.g. earlier LoopAgent iteration) that completed.
+  invocation_context.session.events.extend(
+      _make_function_response_event(author='test_agent')
+      for _ in range(_MAX_TOOL_ROUNDS - 1)
+  )
+  invocation_context.session.events.append(
+      Event(
+          invocation_id='test-id',
+          author='test_agent',
+          content=types.Content(
+              role='model',
+              parts=[
+                  types.Part(text='{"name": "Alice", "age": 30, "city": "NY"}')
+              ],
+          ),
+      )
+  )
+  # Sibling agent on the same branch (e.g. under SequentialAgent or LoopAgent).
+  invocation_context.session.events.extend(
+      _make_function_response_event(author='other_agent')
+      for _ in range(_MAX_TOOL_ROUNDS)
+  )
+  # One tool round for test_agent in the current turn.
+  invocation_context.session.events.append(
+      _make_function_response_event(author='test_agent')
+  )
+
+  events = [
+      e async for e in processor.run_async(invocation_context, llm_request)
+  ]
+
+  assert events == []
+  assert invocation_context.end_invocation is False
+  assert 'set_model_response' in llm_request.tools_dict
+  assert llm_request.config.tool_config is None
+
+
+@pytest.mark.asyncio
+async def test_max_tool_rounds_env_var(monkeypatch: pytest.MonkeyPatch):
+  """Test that ADK_MAX_TOOL_ROUNDS overrides the default threshold."""
+  monkeypatch.setenv('ADK_MAX_TOOL_ROUNDS', '3')
+  agent = LlmAgent(
+      name='test_agent',
+      model=testing_utils.ModelWithCapabilities(output_schema_and_tools=False),
+      output_schema=PersonSchema,
+      tools=[FunctionTool(func=dummy_tool)],
+  )
+  invocation_context = await _create_invocation_context(agent)
+  processor = _OutputSchemaRequestProcessor()
+
+  # Round 2 (N-1): forces tool_choice.
+  invocation_context.session.events.extend(
+      _make_function_response_event() for _ in range(2)
+  )
+  llm_request = LlmRequest()
+  events = [
+      e async for e in processor.run_async(invocation_context, llm_request)
+  ]
+  assert events == []
+  assert invocation_context.end_invocation is False
+  assert (
+      llm_request.config.tool_config.function_calling_config.allowed_function_names
+      == ['set_model_response']
+  )
+
+  # Round 3 (N): terminates and yields error event.
+  invocation_context.session.events.append(_make_function_response_event())
+  llm_request_cutoff = LlmRequest()
+  events = [
+      e
+      async for e in processor.run_async(invocation_context, llm_request_cutoff)
+  ]
+  assert invocation_context.end_invocation is True
+  assert len(events) == 1
+  assert events[0].error_code == 'MAX_TOOL_ROUNDS_EXCEEDED'
+
+
+@pytest.mark.asyncio
+async def test_set_model_response_skips_transfer_to_agent():
+  """Test that set_model_response clears transfer_to_agent so no transfer happens."""
+  parallel_calls = [
+      types.Part(
+          function_call=types.FunctionCall(
+              name='set_model_response',
+              args={
+                  'name': 'Test User',
+                  'age': 30,
+                  'city': 'Test City',
+              },
+          )
+      ),
+      types.Part(
+          function_call=types.FunctionCall(
+              name='transfer_to_agent',
+              args={'agent_name': 'sub_agent'},
+          )
+      ),
+  ]
+  agent_model = testing_utils.MockModel.create(responses=[parallel_calls])
+  sub_agent_model = testing_utils.MockModel.create(
+      responses=['sub_agent response']
+  )
+  sub_agent = LlmAgent(
+      name='sub_agent',
+      model=sub_agent_model,
+  )
+  agent = LlmAgent(
+      name='test_agent',
+      model=agent_model,
+      output_schema=PersonSchema,
+      tools=[FunctionTool(func=dummy_tool)],
+      sub_agents=[sub_agent],
+  )
+
+  runner = testing_utils.TestInMemoryRunner(agent)
+  events = await runner.run_async_with_new_session('hi')
+
+  function_response_events = [e for e in events if e.get_function_responses()]
+  assert len(function_response_events) == 1
+  assert function_response_events[0].actions.transfer_to_agent is None
+  assert events[-1].author == 'test_agent'
+  assert events[-1].content.role == 'model'
+  assert '"Test User"' in events[-1].content.parts[0].text
+  assert not any(e.author == 'sub_agent' for e in events)
+  assert not sub_agent_model.requests

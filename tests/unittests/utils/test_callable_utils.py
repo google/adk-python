@@ -307,3 +307,27 @@ def test_callable_spec_forward_ref_recovery():
     assert spec.type_hints == {"item": DeferredModel, "return": int}
   finally:
     globals().pop("DeferredModel", None)
+
+
+def test_callable_spec_is_generator_detects_sync_async_and_wrapped_generators():
+  """CallableSpec.is_generator inspects the invoked callable rather than following __wrapped__."""
+
+  def sync_gen(x: int = 1):
+    yield x
+
+  async def async_gen():
+    yield 1
+
+  @functools.wraps(sync_gen)
+  def list_wrapper(*args, **kwargs):
+    return list(sync_gen(*args, **kwargs))
+
+  def regular_fn():
+    return 1
+
+  assert CallableSpec(sync_gen).is_generator is True
+  assert CallableSpec(async_gen).is_generator is True
+  assert CallableSpec(functools.partial(sync_gen, 2)).is_generator is True
+  assert CallableSpec(list_wrapper).is_generator is False
+  assert CallableSpec(regular_fn).is_generator is False
+  assert CallableSpec(None).is_generator is False

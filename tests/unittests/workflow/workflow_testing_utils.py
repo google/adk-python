@@ -40,14 +40,17 @@ from pydantic import ConfigDict
 from pydantic import Field
 from typing_extensions import override
 
+from .._invariants import InvariantPlugin
 from .testing_utils import END_OF_AGENT
 from .testing_utils import simplify_content
 
 
-async def run_workflow(wf, message='start'):
+async def run_workflow(wf, message='start', *, check_invariants: bool = True):
   """Run a Workflow through Runner, return collected events."""
   ss = InMemorySessionService()
   runner = Runner(app_name=wf.name, node=wf, session_service=ss)
+  if check_invariants:
+    runner.plugin_manager.plugins.insert(0, InvariantPlugin())
   session = await ss.create_session(app_name=wf.name, user_id='u')
   msg = types.Content(parts=[types.Part(text=message)], role='user')
   events = []

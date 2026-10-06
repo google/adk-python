@@ -439,7 +439,7 @@ class DynamicNodeScheduler:
     result = check_interception(
         node=curr_node,
         recovered=run.recovered_state,
-        current_run=None if run.is_static else run,
+        current_run=run,
     )
 
     if not result.should_run:
@@ -731,6 +731,8 @@ async def run_node_internal(
   )
 
   transfer_to_agent = child_ctx.actions.transfer_to_agent if child_ctx else None
+  if child_ctx and child_ctx.actions.skip_summarization:
+    ctx.actions.skip_summarization = True
 
   if not return_ctx:
     if child_ctx.error:

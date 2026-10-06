@@ -182,6 +182,15 @@ class CallableSpec:
     return self._signature
 
   @property
+  def is_generator(self) -> bool:
+    """Returns True if the callable is a sync or async generator function."""
+    if self.unwrapped_func is None:
+      return False
+    return inspect.isgeneratorfunction(
+        self.unwrapped_func
+    ) or inspect.isasyncgenfunction(self.unwrapped_func)
+
+  @property
   def type_hints(self) -> dict[str, Any]:
     """Returns resolved type hints, retrying if earlier attempts had unresolved forward refs."""
     if self.func is None:

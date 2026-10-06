@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Optional
 
 from google.adk.agents.llm_agent import LlmAgent
@@ -48,6 +49,7 @@ from google.adk.evaluation.evaluator import PerInvocationResult
 from google.adk.evaluation.local_eval_service import _add_rubrics_to_invocation
 from google.adk.evaluation.local_eval_service import _copy_eval_case_rubrics_to_actual_invocations
 from google.adk.evaluation.local_eval_service import _copy_invocation_rubrics_to_actual_invocations
+from google.adk.evaluation.local_eval_service import _get_session_id
 from google.adk.evaluation.local_eval_service import LocalEvalService
 from google.adk.evaluation.metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
 from google.adk.evaluation.simulation.user_simulator import NextUserMessage
@@ -1469,3 +1471,19 @@ async def test_evaluate_rejects_non_positive_parallelism(
   with pytest.raises(ValueError, match="`parallelism` must be at least 1"):
     async for _ in eval_service.evaluate(evaluate_request):
       pass
+
+
+# Vertex AI Agent Engine Sessions only accept custom session IDs that match
+# `[a-z0-9-]`, with a letter or digit as the first and last character.
+_AGENT_ENGINE_SESSION_ID_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]*[a-z0-9]")
+
+
+def test_eval_session_id_matches_agent_engine_constraints():
+  """Generated eval session IDs match Vertex AI Agent Engine constraints."""
+  session_id = _get_session_id()
+  assert _AGENT_ENGINE_SESSION_ID_PATTERN.fullmatch(session_id), (
+      f"Generated eval session id {session_id!r} must match"
+      f" {_AGENT_ENGINE_SESSION_ID_PATTERN.pattern}."
+  )
+  assert len(session_id) <= 63
+  assert session_id.startswith("adk-eval-session-")

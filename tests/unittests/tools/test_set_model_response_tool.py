@@ -70,6 +70,8 @@ def test_tool_initialization_simple_schema():
 
   assert tool.output_schema == PersonSchema
   assert tool.name == 'set_model_response'
+  assert tool.name == SetModelResponseTool.NAME
+  assert tool.func.__name__ == SetModelResponseTool.NAME
   assert 'Set your final response' in tool.description
   assert tool.func is not None
 

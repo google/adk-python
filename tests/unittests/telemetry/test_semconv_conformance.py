@@ -120,16 +120,16 @@ _SHARED_FACTS: frozenset[str] = frozenset({
     "gen_ai.tool.type",
     "gen_ai.workflow.name",
     "gen_ai.workflow.nested",
-    "adk.experimental.skill.name",
-    "adk.experimental.skill.script.path",
+    "gen_ai.skill.name",
+    "gen_ai.skill.resource.name",
 })
 
 # The attributes that have reduced cardinality in the metrics, and so their
 # values may differ from the span. If so, they will have one of the values
 # on the list.
 _REDUCED_CARDINALITY: dict[str, list[AttributeValue]] = {
-    "adk.experimental.skill.name": ["<hallucinated>"],
-    "adk.experimental.skill.script.path": ["<hallucinated>"],
+    "gen_ai.skill.name": ["<hallucinated>"],
+    "gen_ai.skill.resource.name": ["<hallucinated>"],
 }
 
 # The facts the metrics record and the spans still do not.
