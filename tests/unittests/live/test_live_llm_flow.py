@@ -129,12 +129,21 @@ async def test_postprocess_live_flow_yields_voice_activity():
   assert events[0].voice_activity == vad
 
 
-async def test_postprocess_live_flow_yields_input_and_output_transcriptions():
+@pytest.mark.parametrize(
+    'transcription_field', ['input_transcription', 'output_transcription']
+)
+async def test_postprocess_live_flow_yields_input_and_output_transcriptions(
+    transcription_field,
+):
   """Input and output transcription updates yield events with partial flags preserved."""
   flow = _TestBaseLlmFlow()
   context = _create_test_context(live_request_queue=LiveRequestQueue())
-  input_transcription = types.Transcription(text='hello', finished=False)
-  response = LlmResponse(input_transcription=input_transcription, partial=True)
+  transcription = types.Transcription(text='hello', finished=False)
+  response = LlmResponse(
+      **{transcription_field: transcription},
+      partial=True,
+      live_session_id='live',
+  )
   event = Event(
       id='ev-1',
       invocation_id=context.invocation_id,
@@ -149,7 +158,8 @@ async def test_postprocess_live_flow_yields_input_and_output_transcriptions():
   ]
 
   assert len(events) == 1
-  assert events[0].input_transcription == input_transcription
+  assert getattr(events[0], transcription_field) == transcription
+  assert events[0].live_session_id == 'live'
   assert events[0].partial is True
 
 

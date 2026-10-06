@@ -437,12 +437,14 @@ async def postprocess_live_flow(
 
   # Handle transcription events ONCE per llm_response, outside the event loop
   if llm_response.input_transcription:
+    model_response_event.live_session_id = llm_response.live_session_id
     model_response_event.input_transcription = llm_response.input_transcription
     model_response_event.partial = llm_response.partial
     yield model_response_event
     return
 
   if llm_response.output_transcription:
+    model_response_event.live_session_id = llm_response.live_session_id
     model_response_event.output_transcription = (
         llm_response.output_transcription
     )
