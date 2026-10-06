@@ -39,6 +39,7 @@ from ..events.request_input import RequestInput
 from ..utils._callable_utils import CallableSpec
 from ..utils._schema_utils import annotation_accepts_content
 from ..utils._schema_utils import annotation_expects_str
+from ..utils._sync_runner import _SYNC_CALLABLE_RUNNER
 from ..utils.context_utils import Aclosing
 from ._base_node import BaseNode
 from ._errors import WorkflowConfigurationError
@@ -602,7 +603,11 @@ class FunctionNode(BaseNode):
       if inspect.iscoroutinefunction(unwrapped_func):
         result = await self._func(**kwargs)
       else:  # Sync function
-        result = self._func(**kwargs)
+        runner = _SYNC_CALLABLE_RUNNER.get()
+        if runner is not None:
+          result = await runner(self._func, kwargs)
+        else:
+          result = self._func(**kwargs)
 
       event = self._to_event(ctx, result)
       if event is not None:

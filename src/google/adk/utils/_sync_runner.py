@@ -15,10 +15,10 @@
 """Binds the executor that runs synchronous user callables.
 
 The tool caller binds a runner for the duration of a tool call when the tool
-thread pool is enabled. FunctionTool reads the binding and hands its
-synchronous callables to the runner instead of calling them inline. The
-binding is a context variable, so it follows the call into nested tasks without
-being threaded through as a parameter.
+thread pool is enabled. FunctionTool and FunctionNode read the binding and hand
+their synchronous callables to the runner instead of calling them inline. The
+binding is a context variable, so it follows the call into nested tasks and
+nodes without being threaded through as a parameter.
 """
 
 from __future__ import annotations

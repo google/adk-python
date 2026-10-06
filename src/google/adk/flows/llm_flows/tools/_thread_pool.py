@@ -101,7 +101,18 @@ def _get_tool_thread_pool(max_workers: int = 4) -> ThreadPoolExecutor:
 
 
 def _is_sync_tool(tool: BaseTool) -> bool:
-  """Checks if a tool's underlying function is synchronous."""
+  """Checks if a tool has synchronous callables that should run on the pool."""
+  from ....tools._node_tool import NodeTool
+  from ....workflow._function_node import FunctionNode
+
+  if isinstance(tool, NodeTool):
+    if isinstance(tool.node, FunctionNode):
+      unwrapped = tool.node._unwrapped_func
+      return not (
+          inspect.iscoroutinefunction(unwrapped)
+          or inspect.isasyncgenfunction(unwrapped)
+      )
+    return True
   if not hasattr(tool, 'func'):
     return False
   func = getattr(tool, 'func')
@@ -152,9 +163,13 @@ async def _call_tool_in_thread_pool(
   """Runs a tool in a thread pool to avoid blocking the event loop.
 
   The complete ``BaseTool.run_async`` contract is preserved. For synchronous
-  ``FunctionTool`` callables, tool-owned validation, authentication, and
-  confirmation stay on the caller loop while only synchronous callables enter
-  the pool. Other tools run their complete async contract in a worker loop.
+  ``FunctionTool`` callables and ``NodeTool``s (such as synchronous
+  ``FunctionNode``s and ``Workflow``s), tool-owned validation, authentication,
+  and confirmation stay on the caller loop while only synchronous callables
+  enter the pool. A ``NodeTool`` wrapping an async ``FunctionNode`` runs on the
+  caller loop as it does without the pool, because its events must be enqueued
+  from that loop. Other tools run their complete async contract in a worker
+  loop.
 
   Note: Due to Python's GIL, this does NOT help with pure Python CPU-bound code.
   Thread pool only helps when the GIL is released (blocking I/O, C extensions).
@@ -168,12 +183,16 @@ async def _call_tool_in_thread_pool(
   Returns:
     The result of running the tool.
   """
+  from ....tools._node_tool import NodeTool
+
   loop = asyncio.get_running_loop()
   executor = _get_tool_thread_pool(max_workers)
 
-  if _is_sync_tool(tool) and isinstance(tool, FunctionTool):
+  if _is_sync_tool(tool) and isinstance(tool, (FunctionTool, NodeTool)):
     with _use_executor_for_sync_callables(executor):
       return await tool.run_async(args=args, tool_context=tool_context)
+  if isinstance(tool, NodeTool):
+    return await tool.run_async(args=args, tool_context=tool_context)
 
   ctx = contextvars.copy_context()
 
