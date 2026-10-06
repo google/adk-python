@@ -2045,9 +2045,7 @@ async def test_function_node_preserves_required_nullable_input(
     return 'null' if node_input.value is None else node_input.value
 
   edges = (
-      [(START, consume)]
-      if input_from_message
-      else [(START, produce, consume)]
+      [(START, consume)] if input_from_message else [(START, produce, consume)]
   )
   workflow = Workflow(name='nullable_input', edges=edges)
 
@@ -2076,7 +2074,9 @@ async def test_function_node_preserves_nullable_input_with_default(
   def consume(node_input: NullableInput):
     return 'null' if node_input.value is None else node_input.value
 
-  workflow = Workflow(name='nullable_default', edges=[(START, produce, consume)])
+  workflow = Workflow(
+      name='nullable_default', edges=[(START, produce, consume)]
+  )
 
   events, _, _ = await run_workflow(workflow)
 
@@ -2121,7 +2121,9 @@ async def test_function_node_rejects_missing_required_nullable_input():
   def consume(node_input: NullableInput):
     return 'unexpected'
 
-  workflow = Workflow(name='nullable_missing', edges=[(START, produce, consume)])
+  workflow = Workflow(
+      name='nullable_missing', edges=[(START, produce, consume)]
+  )
 
   with pytest.raises(ValueError, match='Field required'):
     await run_workflow(workflow)

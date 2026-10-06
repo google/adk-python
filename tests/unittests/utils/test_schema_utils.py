@@ -564,8 +564,8 @@ class TestPreprocessArgs:
     assert result is not raw_args
 
 
-@pytest.mark.parametrize('container', ['model', 'list', 'dict'])
-@pytest.mark.parametrize('exclude_none', [False, True])
+@pytest.mark.parametrize("container", ["model", "list", "dict"])
+@pytest.mark.parametrize("exclude_none", [False, True])
 def test_validate_node_data_nullable_fields(container, exclude_none):
   """Input conversion can retain None without changing output omission."""
 
@@ -573,16 +573,16 @@ def test_validate_node_data_nullable_fields(container, exclude_none):
     value: str | None
 
   schema = NullableModel
-  data = {'value': None}
-  expected = {} if exclude_none else {'value': None}
-  if container == 'list':
+  data = {"value": None}
+  expected = {} if exclude_none else {"value": None}
+  if container == "list":
     schema = list[NullableModel]
     data = [data]
     expected = [expected]
-  elif container == 'dict':
+  elif container == "dict":
     schema = dict[str, NullableModel]
-    data = {'item': data}
-    expected = {'item': expected}
+    data = {"item": data}
+    expected = {"item": expected}
 
   assert validate_node_data(schema, data, exclude_none=exclude_none) == expected
 
@@ -593,4 +593,4 @@ def test_validate_node_data_omits_none_by_default():
   class NullableModel(BaseModel):
     value: str | None
 
-  assert validate_node_data(NullableModel, {'value': None}) == {}
+  assert validate_node_data(NullableModel, {"value": None}) == {}
