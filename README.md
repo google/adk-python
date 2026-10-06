@@ -74,18 +74,18 @@ You can install the latest stable version of ADK using `pip`:
 pip install google-adk
 ```
 
-**Requirements:** Python 3.10+.
+**Requirements:** Python 3.11+.
 
 For transitive dependency protection, we recommend to install with our companion
-constraints files (for python 3.10 to 3.14).
+constraints files (for python 3.11 to 3.14).
 
 Choose the constraints file matching your Python version:
 
 ```bash
-# For example, for Python 3.10
-curl -o constraints-3.10.txt https://raw.githubusercontent.com/google/adk-python/main/constraints-3.10.txt
-pip install google-adk -c constraints-3.10.txt
-rm constraints-3.10.txt
+# For example, for Python 3.11
+curl -o constraints-3.11.txt https://raw.githubusercontent.com/google/adk-python/main/constraints-3.11.txt
+pip install google-adk -c constraints-3.11.txt
+rm constraints-3.11.txt
 ```
 
 To install optional integrations, you can use the following command:

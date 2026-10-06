@@ -13,6 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 import importlib
 import json
@@ -705,6 +706,64 @@ def _get_ignore_patterns_func(
   return shutil.ignore_patterns(*patterns)
 
 
+def _stage_extra_packages(
+    requested_extra_packages: Sequence[tuple[str, str]],
+    build_context: str,
+    *,
+    reserved_names: Sequence[str],
+) -> list[str]:
+  """Copies extra packages into the container build context.
+
+  Args:
+    requested_extra_packages: (path, base_dir) pairs. A relative path is
+      resolved against its base_dir; an absolute path is taken as is.
+    build_context: The folder the container image is built from.
+    reserved_names: Names the deployment generates in the build context after
+      this point, and which an entry must therefore not take.
+
+  Returns:
+    The names of the staged entries, relative to the build context.
+
+  Raises:
+    click.ClickException: If a path does not exist, or its name collides with
+      something else in the build context.
+  """
+  staged_extra_packages: list[str] = []
+  for pkg, base_dir in requested_extra_packages:
+    pkg_src = pkg if os.path.isabs(pkg) else os.path.join(base_dir, pkg)
+    pkg_src = os.path.abspath(pkg_src)
+    if not os.path.exists(pkg_src):
+      raise click.ClickException(f'extra_packages path not found: {pkg}')
+    base = os.path.basename(os.path.normpath(pkg_src))
+    dst = os.path.join(build_context, base)
+    if os.path.exists(dst) or base in reserved_names:
+      raise click.ClickException(
+          f'extra_packages entry has a conflicting name: {base}'
+      )
+    if os.path.isdir(pkg_src):
+      shutil.copytree(pkg_src, dst, dirs_exist_ok=True)
+    else:
+      shutil.copy2(pkg_src, dst)
+    staged_extra_packages.append(base)
+  return staged_extra_packages
+
+
+def _get_extra_packages_copy(
+    staged_extra_packages: Sequence[str], build_context: str
+) -> str:
+  """Returns the Dockerfile lines that copy staged extra packages."""
+  if not staged_extra_packages:
+    return ''
+  copy_lines = [
+      f'COPY --chown=myuser:myuser "{base}/" "/app/{base}/"'
+      if os.path.isdir(os.path.join(build_context, base))
+      else f'COPY --chown=myuser:myuser "{base}" "/app/{base}"'
+      for base in staged_extra_packages
+  ]
+  copy_lines.append('ENV PYTHONPATH="/app:$PYTHONPATH"')
+  return '\n'.join(copy_lines)
+
+
 def run(
     *,
     agent_folder: str,
@@ -734,6 +793,7 @@ def run(
     env: tuple[str, ...] = (),
     extra_gcloud_args: tuple[str, ...] | None = None,
     with_cloud_run_sandbox: bool = False,
+    extra_packages: list[str] | None = None,
 ) -> None:
   """Deploys an agent to Google Cloud Run.
 
@@ -772,6 +832,9 @@ def run(
     use_local_storage: Whether to use local .adk storage in the container.
     with_cloud_run_sandbox: Whether to enable the Cloud Run sandbox for code
       execution.
+    extra_packages: Additional local file or directory paths to stage alongside
+      the agent and make importable in the image. A relative path is resolved
+      against the current working directory.
   """
   app_name = _validate_app_name(
       app_name or os.path.basename(os.path.normpath(agent_folder))
@@ -798,6 +861,12 @@ def run(
         app_name, requirements_txt_path, '# No requirements.txt found.'
     )
     click.echo('Copying agent source code completed.')
+
+    staged_extra_packages = _stage_extra_packages(
+        [(pkg, os.getcwd()) for pkg in extra_packages or []],
+        temp_folder,
+        reserved_names=('Dockerfile',),
+    )
 
     # create Dockerfile
     click.echo('Creating Dockerfile...')
@@ -842,7 +911,9 @@ def run(
         trigger_oidc_service_accounts_option=trigger_oidc_service_accounts_option,
         gemini_enterprise_option='',
         express_mode_option='',
-        extra_packages_copy='',
+        extra_packages_copy=_get_extra_packages_copy(
+            staged_extra_packages, temp_folder
+        ),
         extra_env_vars='',
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
@@ -1175,24 +1246,11 @@ def to_agent_engine(
     requested_extra_packages = [
         (pkg, original_cwd) for pkg in extra_packages or []
     ] + [(pkg, agent_folder_abs) for pkg in config_extra_packages]
-    staged_extra_packages = []
-    for pkg, base_dir in requested_extra_packages:
-      pkg_src = pkg if os.path.isabs(pkg) else os.path.join(base_dir, pkg)
-      pkg_src = os.path.abspath(pkg_src)
-      if not os.path.exists(pkg_src):
-        raise click.ClickException(f'extra_packages path not found: {pkg}')
-      base = os.path.basename(os.path.normpath(pkg_src))
-      dst = os.path.join(temp_folder_path, base)
-      # The Dockerfile is written after this loop, so it is not on disk yet.
-      if os.path.exists(dst) or base == 'Dockerfile':
-        raise click.ClickException(
-            f'extra_packages entry has a conflicting name: {base}'
-        )
-      if os.path.isdir(pkg_src):
-        shutil.copytree(pkg_src, dst, dirs_exist_ok=True)
-      else:
-        shutil.copy2(pkg_src, dst)
-      staged_extra_packages.append(base)
+    staged_extra_packages = _stage_extra_packages(
+        requested_extra_packages,
+        temp_folder_path,
+        reserved_names=('Dockerfile',),
+    )
 
     requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
     if requirements_file:
@@ -1364,16 +1422,6 @@ def to_agent_engine(
           if trigger_oidc_service_accounts
           else ''
       )
-      extra_packages_copy = ''
-      if staged_extra_packages:
-        copy_lines = [
-            f'COPY --chown=myuser:myuser "{base}/" "/app/{base}/"'
-            if os.path.isdir(os.path.join(temp_folder_path, base))
-            else f'COPY --chown=myuser:myuser "{base}" "/app/{base}"'
-            for base in staged_extra_packages
-        ]
-        copy_lines.append('ENV PYTHONPATH="/app:$PYTHONPATH"')
-        extra_packages_copy = '\n'.join(copy_lines)
       agent_engine_uri = f'agentengine://{resource_name}'
       supports_gemini_enterprise_flag = parse(adk_version) >= parse(
           _GEMINI_ENTERPRISE_FLAG_MIN_VERSION
@@ -1422,7 +1470,9 @@ def to_agent_engine(
           express_mode_option=(
               '--express_mode' if api_key and not project else ''
           ),
-          extra_packages_copy=extra_packages_copy,
+          extra_packages_copy=_get_extra_packages_copy(
+              staged_extra_packages, temp_folder_path
+          ),
           extra_env_vars=extra_env_vars,
       )
       with open('Dockerfile', 'w', encoding='utf-8') as f:
@@ -1501,6 +1551,7 @@ def to_gke(
     service_type: Literal[
         'ClusterIP', 'NodePort', 'LoadBalancer'
     ] = 'ClusterIP',
+    extra_packages: Optional[list[str]] = None,
 ) -> None:
   """Deploys an agent to Google Kubernetes Engine(GKE).
 
@@ -1529,6 +1580,9 @@ def to_gke(
     memory_service_uri: The URI of the memory service.
     use_local_storage: Whether to use local .adk storage in the container.
     service_type: The Kubernetes Service type (default: ClusterIP).
+    extra_packages: Additional local file or directory paths to stage alongside
+      the agent and make importable in the image. A relative path is resolved
+      against the current working directory.
   """
   click.secho(
       '\n🚀 Starting ADK Agent Deployment to GKE...', fg='cyan', bold=True
@@ -1564,6 +1618,11 @@ def to_gke(
     requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
     install_agent_deps = _render_install_agent_deps(
         app_name, requirements_txt_path, ''
+    )
+    staged_extra_packages = _stage_extra_packages(
+        [(pkg, os.getcwd()) for pkg in extra_packages or []],
+        temp_folder,
+        reserved_names=('Dockerfile', 'deployment.yaml'),
     )
     click.secho('✅ Environment prepared.', fg='green')
 
@@ -1610,7 +1669,9 @@ def to_gke(
         trigger_oidc_service_accounts_option=trigger_oidc_service_accounts_option,
         gemini_enterprise_option='',
         express_mode_option='',
-        extra_packages_copy='',
+        extra_packages_copy=_get_extra_packages_copy(
+            staged_extra_packages, temp_folder
+        ),
         extra_env_vars='',
     )
     dockerfile_path = os.path.join(temp_folder, 'Dockerfile')
