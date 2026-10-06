@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import types
 from typing import AsyncGenerator
 from typing import AsyncIterator
 from typing import Callable
@@ -289,6 +290,8 @@ def _fake_active_agent(
   conversation.send = AsyncMock()
   conversation.receive_steps = receive_steps
   conversation.history = list(history)
+  # Explicit because a MagicMock would auto-create a truthy mock for usage.
+  conversation.last_turn_usage = None
   active_agent = MagicMock()
   active_agent.conversation = conversation
   # Explicit because a MagicMock would auto-create a truthy non-string here.
@@ -1448,3 +1451,336 @@ async def test_node_input_none_is_a_no_op():
   active_agent.conversation.send.assert_awaited_once_with(
       'the original message'
   )
+
+
+@pytest.mark.asyncio
+async def test_sdk_subagent_steps_preserve_author_and_hierarchy():
+  """SDK subagent steps preserve author and hierarchy even when depth=0."""
+
+  async def _receive_steps() -> AsyncIterator[sdk_types.Step]:
+    yield sdk_types.Step(
+        trajectory_id='traj-root',
+        depth=0,
+        step_index=1,
+        type=sdk_types.StepType.TOOL_CALL,
+        source=sdk_types.StepSource.MODEL,
+        status=sdk_types.StepStatus.DONE,
+        thinking='Delegating to reverse_engineering_agent.',
+        tool_calls=[
+            sdk_types.ToolCall(
+                name='invoke_subagent',
+                args={'Subagents': [{'TypeName': 'reverse_engineering_agent'}]},
+                id='call_sub_1',
+            )
+        ],
+    )
+    yield sdk_types.Step(
+        trajectory_id='traj-sub-1',
+        parent_trajectory_id='',
+        depth=0,
+        step_index=1,
+        type=sdk_types.StepType.TEXT_RESPONSE,
+        source=sdk_types.StepSource.MODEL,
+        status=sdk_types.StepStatus.DONE,
+        thinking='Analyzing binary strings.',
+        content='Found C2 beacon in binary.',
+        is_complete_response=True,
+    )
+
+  active_agent = _fake_active_agent(_receive_steps)
+  agent = AntigravityAgent(
+      name='threat_intelligence_orchestrator',
+      config=_make_config(),
+      mode='single_turn',
+  )
+
+  with patch.object(_antigravity_agent, 'Agent', return_value=active_agent):
+    events = [event async for event in agent._run_async_impl(_mock_run_ctx())]
+
+  subagent_events = [
+      event for event in events if event.author == 'reverse_engineering_agent'
+  ]
+  assert len(subagent_events) == 1
+  assert subagent_events[0].custom_metadata == {
+      'trajectory_id': 'traj-sub-1',
+      'parent_trajectory_id': 'traj-root',
+      'depth': 1,
+      'step_index': 1,
+  }
+
+  # Verify _resolve_step_context by tool match, cache, single subagent,
+  # and fallback.
+  sub_tool = sdk_types.SubagentConfig(
+      name='re_sub',
+      description='RE',
+      tools=['disassemble_elf'],
+  )
+  agent_with_sub = AntigravityAgent(
+      name='root_agent',
+      config=_make_config(subagents=[sub_tool]),
+      mode='single_turn',
+  )
+  subagent_authors: dict[str, str] = {}
+  pending_invocations: list[str] = []
+  author_by_tool, _, _ = agent_with_sub._resolve_step_context(
+      sdk_types.Step(
+          trajectory_id='traj-tool',
+          parent_trajectory_id='traj-root',
+          step_index=1,
+          type=sdk_types.StepType.TOOL_CALL,
+          source=sdk_types.StepSource.MODEL,
+          status=sdk_types.StepStatus.DONE,
+          tool_calls=[
+              sdk_types.ToolCall(name='disassemble_elf', args={}, id='c1')
+          ],
+      ),
+      main_trajectory_id='traj-root',
+      subagent_authors=subagent_authors,
+      pending_invocations=pending_invocations,
+  )
+  assert author_by_tool == 're_sub'
+  author_cached, _, _ = agent_with_sub._resolve_step_context(
+      sdk_types.Step(
+          trajectory_id='traj-tool',
+          step_index=2,
+          type=sdk_types.StepType.TEXT_RESPONSE,
+          source=sdk_types.StepSource.MODEL,
+          status=sdk_types.StepStatus.DONE,
+          content='done',
+      ),
+      main_trajectory_id='traj-root',
+      subagent_authors=subagent_authors,
+      pending_invocations=pending_invocations,
+  )
+  assert author_cached == 're_sub'
+  author_single, _, _ = agent_with_sub._resolve_step_context(
+      sdk_types.Step(
+          trajectory_id='traj-single',
+          depth=1,
+          step_index=1,
+          type=sdk_types.StepType.TEXT_RESPONSE,
+          source=sdk_types.StepSource.MODEL,
+          status=sdk_types.StepStatus.DONE,
+          content='single',
+      ),
+      main_trajectory_id='traj-root',
+      subagent_authors=subagent_authors,
+      pending_invocations=pending_invocations,
+  )
+  assert author_single == 're_sub'
+  author_fallback, _, _ = agent._resolve_step_context(
+      sdk_types.Step(
+          trajectory_id='traj-fallback',
+          depth=1,
+          step_index=1,
+          type=sdk_types.StepType.TEXT_RESPONSE,
+          source=sdk_types.StepSource.MODEL,
+          status=sdk_types.StepStatus.DONE,
+          content='fallback',
+      ),
+      main_trajectory_id='traj-root',
+      subagent_authors=subagent_authors,
+      pending_invocations=[],
+  )
+  assert author_fallback == 'threat_intelligence_orchestrator_subagent'
+  assert 'traj-fallback' not in subagent_authors
+
+  ctx_with_prior = _mock_run_ctx()
+  ctx_with_prior.session.events = [
+      Event(
+          author='re_sub',
+          custom_metadata={
+              'trajectory_id': 'traj-sub-turn1',
+              'parent_trajectory_id': 'traj-root',
+              'depth': 1,
+          },
+      ),
+      Event(
+          author='root_agent',
+          custom_metadata={'trajectory_id': 'traj-root', 'depth': 0},
+      ),
+  ]
+  assert agent_with_sub._extract_session_subagent_authors(ctx_with_prior) == {
+      'traj-sub-turn1': 're_sub'
+  }
+
+
+@pytest.mark.asyncio
+async def test_subagent_client_tool_preserves_and_appends_thinking():
+  """Subagent client tools with empty trajectory_id pair with subagent thought."""
+
+  def _disassemble_elf(path: str) -> str:
+    return path
+
+  sub_cfg = sdk_types.SubagentConfig(
+      name='re_sub',
+      description='RE subagent',
+      tools=[_disassemble_elf],
+  )
+
+  def _build(config: AgentConfig) -> MagicMock:
+    hooks = list(config.hooks)
+
+    async def _receive_steps() -> AsyncIterator[sdk_types.Step]:
+      yield sdk_types.Step(
+          trajectory_id='',
+          step_index=0,
+          type=sdk_types.StepType.THINKING,
+          source=sdk_types.StepSource.MODEL,
+          status=sdk_types.StepStatus.ACTIVE,
+          thinking='Root initial thought.',
+      )
+      yield sdk_types.Step(
+          trajectory_id='traj-root',
+          step_index=0,
+          type=sdk_types.StepType.TOOL_CALL,
+          source=sdk_types.StepSource.MODEL,
+          status=sdk_types.StepStatus.DONE,
+          tool_calls=[
+              sdk_types.ToolCall(
+                  name='invoke_subagent',
+                  args={'Subagents': [{'TypeName': 're_sub'}]},
+                  id='call_sub_1',
+              )
+          ],
+      )
+      yield sdk_types.Step(
+          trajectory_id='traj-sub-1',
+          depth=1,
+          step_index=1,
+          type=sdk_types.StepType.THINKING,
+          source=sdk_types.StepSource.MODEL,
+          status=sdk_types.StepStatus.ACTIVE,
+          thinking='Inspecting ELF headers.',
+      )
+      yield sdk_types.Step(
+          id='call_elf_1',
+          trajectory_id='',
+          step_index=1,
+          type=sdk_types.StepType.TOOL_CALL,
+          source=sdk_types.StepSource.MODEL,
+          status=sdk_types.StepStatus.ACTIVE,
+          tool_calls=[
+              sdk_types.ToolCall(
+                  name='_disassemble_elf',
+                  args={'path': '/bin/sample'},
+                  id='call_elf_1',
+              )
+          ],
+      )
+      for hook in hooks:
+        if isinstance(hook, sdk_hooks.PostToolCallHook):
+          await hook.run(
+              None,
+              sdk_types.ToolResult(
+                  name='_disassemble_elf',
+                  id='call_elf_1',
+                  result='{"result": "entry 0x401000"}',
+              ),
+          )
+      yield sdk_types.Step(
+          trajectory_id='',
+          step_index=1,
+          type=sdk_types.StepType.TOOL_CALL,
+          source=sdk_types.StepSource.MODEL,
+          status=sdk_types.StepStatus.DONE,
+          tool_calls=[],
+      )
+      yield sdk_types.Step(
+          trajectory_id='traj-sub-1',
+          depth=1,
+          step_index=1,
+          type=sdk_types.StepType.THINKING,
+          source=sdk_types.StepSource.MODEL,
+          status=sdk_types.StepStatus.DONE,
+          thinking='Inspecting ELF headers.\nConfirmed packed section.',
+      )
+      yield sdk_types.Step(
+          trajectory_id='traj-sub-1',
+          depth=1,
+          step_index=2,
+          type=sdk_types.StepType.TOOL_CALL,
+          source=sdk_types.StepSource.MODEL,
+          status=sdk_types.StepStatus.ACTIVE,
+          thinking='Unflushed active call thought.',
+          tool_calls=[
+              sdk_types.ToolCall(
+                  name='_disassemble_elf',
+                  args={'path': '/bin/sample2'},
+                  id='call_elf_2',
+              )
+          ],
+      )
+
+    return _fake_active_agent(_receive_steps)
+
+  agent = AntigravityAgent(
+      name='root_agent',
+      config=_make_config(subagents=[sub_cfg]),
+      mode='single_turn',
+  )
+
+  with patch.object(_antigravity_agent, 'Agent', _build):
+    events = [event async for event in agent._run_async_impl(_mock_run_ctx())]
+
+  root_call = next(
+      event
+      for event in events
+      if event.author == 'root_agent' and event.get_function_calls()
+  )
+  assert root_call.content.parts[0].thought
+  assert root_call.content.parts[0].text == 'Root initial thought.'
+
+  sub_events = [event for event in events if event.author == 're_sub']
+  assert len(sub_events) == 3
+  assert sub_events[0].content.parts[0].thought
+  assert sub_events[0].content.parts[0].text == 'Inspecting ELF headers.'
+  assert sub_events[0].content.parts[1].function_call.id == 'call_elf_1'
+  assert sub_events[1].content.parts[0].thought
+  assert sub_events[1].content.parts[0].text == '\nConfirmed packed section.'
+  assert sub_events[2].content.parts[0].thought
+  assert sub_events[2].content.parts[0].text == 'Unflushed active call thought.'
+  assert sub_events[2].content.parts[1].function_call.id == 'call_elf_2'
+
+
+@pytest.mark.asyncio
+async def test_last_turn_usage_populates_usage_metadata_on_trailing_event():
+  active_agent = _fake_active_agent(_steps_once)
+  active_agent.conversation.last_turn_usage = types.SimpleNamespace(
+      prompt_token_count=100,
+      candidates_token_count=50,
+      thoughts_token_count=20,
+      total_token_count=170,
+  )
+
+  agent = AntigravityAgent(
+      name='agy', config=_make_config(), mode='single_turn'
+  )
+
+  with patch.object(_antigravity_agent, 'Agent', lambda config: active_agent):
+    events = [event async for event in agent._run_async_impl(_mock_run_ctx())]
+
+  assert len(events) == 2
+  assert events[0].content.parts[0].text == 'done'
+  terminal_event = events[-1]
+  assert terminal_event.usage_metadata is not None
+  assert terminal_event.usage_metadata.prompt_token_count == 100
+  assert terminal_event.usage_metadata.candidates_token_count == 50
+  assert terminal_event.usage_metadata.thoughts_token_count == 20
+  assert terminal_event.usage_metadata.total_token_count == 170
+
+
+@pytest.mark.asyncio
+async def test_absent_last_turn_usage_leaves_usage_metadata_none():
+  active_agent = _fake_active_agent(_steps_once)
+  active_agent.conversation.last_turn_usage = None
+
+  agent = AntigravityAgent(
+      name='agy', config=_make_config(), mode='single_turn'
+  )
+
+  with patch.object(_antigravity_agent, 'Agent', lambda config: active_agent):
+    events = [event async for event in agent._run_async_impl(_mock_run_ctx())]
+
+  assert len(events) == 1
+  assert events[-1].usage_metadata is None
