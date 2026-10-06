@@ -22,8 +22,9 @@ ADK conventions enforced for newly-added Python files:
    See .agents/skills/adk-style/references/visibility.md.
 2. Unit guide requirement: Newly-added Python files under src/google/adk/ must
    have a corresponding unit guide in docs/guides/ (unless exempt or tagged with
-   NO_UNIT_GUIDE / SKIP_UNIT_GUIDE in the commit message or environment).
-   See .agents/skills/adk-unit-guide/SKILL.md.
+   NO_UNIT_GUIDE / SKIP_UNIT_GUIDE in the commit message or environment). A
+   module that no package __init__.py imports from or names is internal and
+   needs no guide. See .agents/skills/adk-unit-guide/SKILL.md.
 
 Either rule can be switched off on its own, with --no-prefix-check and
 --no-unit-guide. The two are gated by separate CI jobs for that reason: the
@@ -52,7 +53,9 @@ gate a change passes --baseline-dir or --added-files-from and never sees it.
 from __future__ import annotations
 
 import argparse
+import ast
 import fnmatch
+import importlib.util
 import os
 import re
 import shutil
@@ -463,6 +466,109 @@ def is_exempt_from_unit_guide(rel_path: str, filename: str) -> bool:
   return False
 
 
+# A module name as a lazy-import table writes it: '.mod', '..pkg.mod' or 'mod'.
+_MODULE_NAME_STRING = re.compile(r'^\.*[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$')
+
+_ABSOLUTE_PACKAGE = 'google.adk'
+
+
+def _resolve_module(package: list[str], name: str) -> list[str] | None:
+  """Resolves a module name to path components relative to the package root.
+
+  Args:
+    package: The importing package's components, empty for the package root.
+    name: The module name as written, leading dots included.
+
+  Returns:
+    The components, empty for the package root itself, or None when the name
+    lies outside the package.
+  """
+  try:
+    absolute = importlib.util.resolve_name(
+        name, '.'.join([_ABSOLUTE_PACKAGE, *package])
+    )
+  except ImportError:
+    return None
+  if absolute == _ABSOLUTE_PACKAGE:
+    return []
+  if not absolute.startswith(_ABSOLUTE_PACKAGE + '.'):
+    return None
+  return absolute[len(_ABSOLUTE_PACKAGE) + 1 :].split('.')
+
+
+def _modules_named_in_init(tree: ast.AST, package: list[str]) -> set[str]:
+  """Returns the package-relative modules one __init__.py imports or names."""
+  targets: list[list[str] | None] = []
+  for node in ast.walk(tree):
+    if isinstance(node, ast.ImportFrom):
+      target = _resolve_module(package, '.' * node.level + (node.module or ''))
+      if target is None:
+        continue
+      targets.append(target)
+      # `from . import _mod` imports the module itself.
+      targets.extend(target + [alias.name] for alias in node.names)
+    elif isinstance(node, ast.Import):
+      targets.extend(
+          _resolve_module(package, alias.name) for alias in node.names
+      )
+    elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+      name = node.value
+      if not _MODULE_NAME_STRING.match(name):
+        continue
+      if not name.startswith(('.', _ABSOLUTE_PACKAGE + '.')):
+        # A bare name in a lazy-import table is joined onto the package's name.
+        name = '.' + name
+      targets.append(_resolve_module(package, name))
+  return {'/'.join(target) for target in targets if target}
+
+
+def _raise_walk_error(error: OSError) -> None:
+  raise error
+
+
+def _reexported_modules(repo_root: str) -> set[str] | None:
+  """Returns the modules that some package __init__.py imports from or names.
+
+  An import counts wherever it sits, including under `if TYPE_CHECKING:` and
+  inside a lazy `__getattr__`, and so does a string naming a module, which is
+  how a lazy-import table refers to one.
+
+  Args:
+    repo_root: The root directory of the repository.
+
+  Returns:
+    Package-relative module paths without their extension, e.g.
+    `agents/_llm_agent`. None when the package or some __init__.py cannot be
+    read: what it exports is then unknown, so no module can be shown to be
+    internal.
+  """
+  package_root = os.path.join(repo_root, _PACKAGE_RELPATH)
+  named: set[str] = set()
+  try:
+    for dirpath, dirnames, filenames in os.walk(
+        package_root, onerror=_raise_walk_error, followlinks=True
+    ):
+      rel_dir = os.path.relpath(dirpath, package_root).replace(os.sep, '/')
+      package = [] if rel_dir == '.' else rel_dir.split('/')
+      if package and not _keep_relative_path(f'{rel_dir}/__init__.py'):
+        dirnames[:] = []
+        continue
+      if '__init__.py' not in filenames:
+        continue
+      init_path = os.path.join(dirpath, '__init__.py')
+      with open(init_path, 'r', encoding='utf-8') as f:
+        tree = ast.parse(f.read(), filename=init_path)
+      named |= _modules_named_in_init(tree, package)
+  except (OSError, SyntaxError, ValueError) as e:
+    print(
+        f'Warning: the package __init__.py files cannot all be read ({e}),'
+        ' so every new module is held to the unit guide rule.',
+        file=sys.stderr,
+    )
+    return None
+  return named
+
+
 def has_no_unit_guide_tag(commit_msg: str) -> bool:
   """Checks if NO_UNIT_GUIDE / SKIP_UNIT_GUIDE is present in env or commit message.
 
@@ -675,6 +781,11 @@ def check_files(
   skip_guide = skip_unit_guide or (
       not ignore_waiver and has_no_unit_guide_tag(commit_msg)
   )
+  reexported = (
+      _reexported_modules(repo_root)
+      if files_to_check and not skip_guide
+      else None
+  )
 
   for display_path, rel_to_adk, filename in files_to_check:
     # 1. Private '_' prefix check
@@ -682,7 +793,11 @@ def check_files(
       prefix_violations.append(display_path)
 
     # 2. Unit guide check
-    if not skip_guide and not is_exempt_from_unit_guide(rel_to_adk, filename):
+    if (
+        not skip_guide
+        and not is_exempt_from_unit_guide(rel_to_adk, filename)
+        and (reexported is None or rel_to_adk[:-3] in reexported)
+    ):
       rel_dir = os.path.dirname(rel_to_adk)
       name_no_ext = filename[:-3]  # strip .py
       # One underscore, not all of them: '__thing.py' is the private form of

@@ -14,22 +14,10 @@
 
 """Lets a fast executor model consult a stronger advisor model mid-task."""
 
-from ._context import ContextMode
 from ._context import ModelConsultContextConfig
-from ._model_consult_tool import DEFAULT_ADVISOR_MODEL
-from ._model_consult_tool import DEFAULT_TOOL_NAME
 from ._model_consult_tool import ModelConsultTool
-from ._prompts import ADVISOR_SYSTEM_INSTRUCTION
-from ._prompts import EXECUTOR_INSTRUCTION
-from ._prompts import TOOL_DESCRIPTION
 
 __all__ = [
-    'ADVISOR_SYSTEM_INSTRUCTION',
-    'ContextMode',
-    'DEFAULT_ADVISOR_MODEL',
-    'DEFAULT_TOOL_NAME',
-    'EXECUTOR_INSTRUCTION',
     'ModelConsultContextConfig',
     'ModelConsultTool',
-    'TOOL_DESCRIPTION',
 ]

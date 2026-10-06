@@ -21,11 +21,11 @@ import sys
 import time
 from typing import AsyncIterator
 from typing import Iterator
+from typing import Literal
 from typing import TYPE_CHECKING
 
 from opentelemetry import trace
 import opentelemetry.context as context_api
-from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
 from typing_extensions import assert_never
 
 from . import _adk_attributes
@@ -41,8 +41,6 @@ from .context import TelemetryConfig
 
 # pylint: disable=g-import-not-at-top
 if TYPE_CHECKING:
-  from opentelemetry.util.types import AttributeValue
-
   from ..agents.base_agent import BaseAgent
   from ..agents.invocation_context import InvocationContext
   from ..agents.run_config import RunConfig
@@ -244,6 +242,33 @@ SkillTelemetry = (
     | SkillScriptExecutionTelemetry
 )
 
+ToolResponseSource = Literal[
+    "before_tool_callback", "on_tool_error_callback", "after_tool_callback"
+]
+ModelResponseSource = Literal[
+    "before_model_callback", "on_model_error_callback"
+]
+
+
+def record_response_source(
+    span: trace.Span,
+    source: ModelResponseSource | ToolResponseSource,
+    invocation_context: InvocationContext,
+) -> None:
+  """Names the callback that produced the response recorded on ``span``."""
+  _set_response_source(
+      tracing._telemetry_config_from_invocation_context(invocation_context),
+      span,
+      source,
+  )
+
+
+@experimental_telemetry(gate=[])
+def _set_response_source(
+    span: trace.Span, source: ModelResponseSource | ToolResponseSource
+) -> None:
+  span.set_attribute(_adk_attributes.ADK_EXPERIMENTAL_RESPONSE_SOURCE, source)
+
 
 @dataclasses.dataclass
 class ToolScope:
@@ -257,6 +282,8 @@ class ToolScope:
   function_response_event: event_lib.Event | None = None
   error_type: str | None = None
   skill_telemetry: SkillTelemetry | None = None
+  response_source: ToolResponseSource | None = None
+  """The callback that produced the recorded response, if one did."""
 
 
 @dataclasses.dataclass
@@ -616,6 +643,10 @@ async def record_tool_execution(
             invocation_context=invocation_context,
             error_type=tel_ctx.error_type,
         )
+        if response_event is not None and tel_ctx.response_source is not None:
+          record_response_source(
+              span, tel_ctx.response_source, invocation_context
+          )
         if tel_ctx.skill_telemetry is not None:
           _dispatch_skill_telemetry(
               span,
@@ -722,7 +753,7 @@ def _dispatch_skill_telemetry(
   match skill_telemetry:
     case SkillLoadTelemetry():
       _accumulate_skill_load(workflow_scope)
-      _trace_skill_load(telemetry_config, span, skill_telemetry)
+      tracing._trace_skill_load(span, skill_telemetry)
       if invocation_context.agent is None:
         return
       _metrics.record_skill_load(
@@ -732,9 +763,9 @@ def _dispatch_skill_telemetry(
           error_type,
       )
     case SkillResourceLoadTelemetry():
-      _trace_skill_resource_load(telemetry_config, span, skill_telemetry)
+      tracing._trace_skill_resource_load(span, skill_telemetry)
     case SkillScriptExecutionTelemetry():
-      _trace_skill_script_execution(telemetry_config, span, skill_telemetry)
+      tracing._trace_skill_script_execution(span, skill_telemetry)
       if invocation_context.agent is None:
         return
       _metrics.record_skill_script_execution(
@@ -746,86 +777,3 @@ def _dispatch_skill_telemetry(
       )
     case _:
       assert_never(skill_telemetry)
-
-
-@experimental_telemetry(gate="skills")
-def _trace_skill_load(
-    span: trace.Span,
-    skill_telemetry: SkillLoadTelemetry,
-) -> None:
-  """Stamps the skill load attributes onto the ``execute_tool`` span."""
-  attributes: dict[str, AttributeValue] = {}
-  attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_NAME] = (
-      skill_telemetry.skill_name.maybe_hallucinated_value
-  )
-  skill = skill_telemetry.skill
-
-  if skill is not None:
-    attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_DESCRIPTION] = (
-        skill.description
-    )
-
-    if (uri := skill._uri) is not None:
-      attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_SOURCE_URI] = uri
-
-    if (additional_tools := skill_telemetry.additional_tools) is not None:
-      attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_ADDITIONAL_TOOLS] = (
-          additional_tools
-      )
-
-  span.set_attributes(attributes)
-
-
-@experimental_telemetry(gate="skills")
-def _trace_skill_resource_load(
-    span: trace.Span,
-    skill_telemetry: SkillResourceLoadTelemetry,
-) -> None:
-  """Stamps the skill resource loading information in the ``execute_tool load_skill_resource`` span."""
-  attributes: dict[str, AttributeValue] = {}
-  attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_NAME] = (
-      skill_telemetry.skill_name.maybe_hallucinated_value
-  )
-  if (skill := skill_telemetry.skill) is not None and (
-      uri := skill._uri
-  ) is not None:
-    attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_SOURCE_URI] = uri
-
-  attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_RESOURCE_PATH] = (
-      skill_telemetry.resource_path.maybe_hallucinated_value
-  )
-
-  span.set_attributes(attributes)
-
-
-@experimental_telemetry(gate="skills")
-def _trace_skill_script_execution(
-    span: trace.Span,
-    skill_telemetry: SkillScriptExecutionTelemetry,
-) -> None:
-  """Stamps the skill script execution information in the ``execute_tool run_skill_script`` span."""
-  attributes: dict[str, AttributeValue] = {}
-  attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_NAME] = (
-      skill_telemetry.skill_name.maybe_hallucinated_value
-  )
-  attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_SCRIPT_PATH] = (
-      skill_telemetry.script_path.maybe_hallucinated_value
-  )
-
-  if (script_exit_code := skill_telemetry.script_exit_code) is not None:
-    attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_SCRIPT_EXIT_CODE] = (
-        script_exit_code
-    )
-
-    if script_exit_code != 0:
-      span.set_status(
-          trace.Status(trace.StatusCode.ERROR, "SKILL_SCRIPT_EXECUTION_ERROR")
-      )
-      span.set_attribute(ERROR_TYPE, "SKILL_SCRIPT_EXECUTION_ERROR")
-
-  if (skill := skill_telemetry.skill) is not None and (
-      uri := skill._uri
-  ) is not None:
-    attributes[_adk_attributes.ADK_EXPERIMENTAL_SKILL_SOURCE_URI] = uri
-
-  span.set_attributes(attributes)

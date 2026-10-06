@@ -130,6 +130,13 @@ def build_node(
         else:
           agent.mode = 'single_turn'
 
+      if (
+          isinstance(agent, LlmAgent)
+          and agent.mode == 'single_turn'
+          and 'include_contents' not in node_like.model_fields_set
+      ):
+        agent.include_contents = 'none'
+
       if agent.mode in ('task', 'chat'):
         agent.wait_for_output = True
 

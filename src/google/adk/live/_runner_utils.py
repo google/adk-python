@@ -50,19 +50,20 @@ def new_invocation_context_for_live(
     run_config: Optional[RunConfig] = None,
 ) -> InvocationContext:
   """Creates a new invocation context for live multi-agent."""
-  run_config = run_config or RunConfig()
+  run_config = run_config.model_copy() if run_config else RunConfig()
 
   # For live multi-agents system, we need model's text transcription as
   # context for the transferred agent.
   if hasattr(runner.agent, "sub_agents") and runner.agent.sub_agents:
     if (
-        run_config.response_modalities
-        and types.Modality.AUDIO in run_config.response_modalities
+        run_config.input_audio_transcription is None
+        or run_config.output_audio_transcription is None
     ):
-      if not run_config.output_audio_transcription:
-        run_config.output_audio_transcription = types.AudioTranscriptionConfig()
-    if not run_config.input_audio_transcription:
-      run_config.input_audio_transcription = types.AudioTranscriptionConfig()
+      logger.warning(
+          "Audio transcription is disabled while sub_agents are configured;"
+          " agent transfer may not work properly without transcription"
+          " context."
+      )
   return runner._new_invocation_context(  # pylint: disable=protected-access
       session,
       live_request_queue=live_request_queue,
@@ -85,7 +86,8 @@ async def run_node_live(
   from ..workflow._workflow import _LoopState
   from ..workflow._workflow import Workflow
 
-  ic = runner._new_invocation_context_for_live(  # pylint: disable=protected-access
+  ic = new_invocation_context_for_live(
+      runner,
       session,
       live_request_queue=live_request_queue,
       run_config=run_config or RunConfig(),
@@ -167,10 +169,6 @@ async def run_live(
     run_config.response_modalities = [types.Modality.AUDIO]
 
   caller_ctx = context.get_current()
-  if session is None and (user_id is None or session_id is None):
-    raise ValueError(
-        "Either session or user_id and session_id must be provided."
-    )
   if live_request_queue is None:
     raise ValueError("live_request_queue is required for run_live.")
   if session is not None:
@@ -180,10 +178,10 @@ async def run_live(
         DeprecationWarning,
         stacklevel=3,
     )
-  if session is None:
+  else:
     if user_id is None or session_id is None:
       raise ValueError(
-          "user_id and session_id are required when session is not provided."
+          "Either session or user_id and session_id must be provided."
       )
     session = await runner._get_or_create_session(  # pylint: disable=protected-access
         user_id=user_id,
@@ -208,7 +206,8 @@ async def run_live(
         yield event
     return
   root_agent = runner._require_root_agent()  # pylint: disable=protected-access
-  invocation_context = runner._new_invocation_context_for_live(  # pylint: disable=protected-access
+  invocation_context = new_invocation_context_for_live(
+      runner,
       session,
       live_request_queue=live_request_queue,
       run_config=run_config,
@@ -298,7 +297,14 @@ async def _merge_live_event_streams(
       ) as agen:
         async for event in agen:
           await merged.put(event)
-    finally:
+    except asyncio.CancelledError:
+      # Only the merge's own teardown cancels this pump, and by then nothing
+      # reads `merged`: a blocking put of the sentinel would never return.
+      raise
+    except BaseException:
+      await merged.put(done_sentinel)
+      raise
+    else:
       await merged.put(done_sentinel)
 
   agent_task = asyncio.create_task(_pump_agent_events())

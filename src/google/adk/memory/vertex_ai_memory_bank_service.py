@@ -27,6 +27,7 @@ from google.auth.credentials import Credentials
 from google.genai import types
 from typing_extensions import override
 
+from ..utils._event_loop_cache import per_loop_value
 from ..utils.vertex_ai_utils import get_express_mode_api_key
 from .base_memory_service import BaseMemoryService
 from .base_memory_service import SearchMemoryResponse
@@ -630,13 +631,25 @@ class VertexAiMemoryBankService(BaseMemoryService):
     return profiles
 
   def _get_api_client(self) -> vertexai.AsyncClient:
-    """Instantiates an API client for the given project and location.
+    """Returns the API client for the running event loop.
 
-    It needs to be instantiated inside each request so that the event loop
-    management can be properly propagated.
+    The client is built once per event loop and reused. An async client belongs
+    to the loop that opened it, so it cannot be shared across loops, and
+    building one per call leaks the resources each new client allocates.
+
     Returns:
       An async API client for the given project and location or express mode api
       key.
+    """
+    return per_loop_value(self, '_api_client_per_loop', self._build_api_client)
+
+  def _build_api_client(self) -> vertexai.AsyncClient:
+    """Instantiates an API client for the given project and location.
+
+    Subclasses that need custom credentials or an endpoint should override this
+    method to get per-loop caching; override ``_get_api_client()`` only when the
+    client must vary per call (e.g. per-tenant), in which case callers never
+    close the returned client.
     """
     import vertexai
 

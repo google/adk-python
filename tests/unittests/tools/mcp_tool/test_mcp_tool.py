@@ -46,6 +46,7 @@ from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnecti
 from google.adk.tools.mcp_tool.mcp_tool import MCPTool
 from google.adk.tools.mcp_tool.mcp_tool import ProgressCallbackFactory
 from google.adk.tools.mcp_tool.mcp_tool import ProgressFnT
+from google.adk.tools.set_model_response_tool import SetModelResponseTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai.types import FunctionDeclaration
 from google.genai.types import GroundingMetadata
@@ -734,6 +735,7 @@ class TestMCPTool:
           "adk_request_confirmation",
           "adk_request_input",
           "transfer_to_agent",
+          SetModelResponseTool.NAME,
       ],
   )
   def test_init_reserved_name(self, reserved_name):

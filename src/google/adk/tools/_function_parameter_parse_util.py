@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from enum import Enum
 import inspect
+import json
 import logging
 import types as typing_types
 from typing import _GenericAlias  # type: ignore[attr-defined]
@@ -154,13 +155,32 @@ def _raise_for_unsupported_param(
 def _raise_for_invalid_enum_value(param: inspect.Parameter) -> None:
   """Raises an error if the default value is not a valid enum value."""
   if inspect.isclass(param.annotation) and issubclass(param.annotation, Enum):
-    if param.default is not inspect.Parameter.empty and param.default not in [
-        e.value for e in param.annotation
-    ]:
-      raise ValueError(
-          f'Default value {param.default} is not a valid enum value for'
-          f' {param.annotation}.'
+    if param.default is not inspect.Parameter.empty:
+      default_value = (
+          param.default.value
+          if isinstance(param.default, Enum)
+          else param.default
       )
+      if default_value not in [e.value for e in param.annotation]:
+        raise ValueError(
+            f'Default value {param.default} is not a valid enum value for'
+            f' {param.annotation}.'
+        )
+
+
+def _render_enum_value(value: object, annotation: object) -> str:
+  """Renders an enum value to string for legacy schema declarations."""
+  if isinstance(value, str):
+    return value
+  try:
+    return json.dumps(value)
+  except TypeError as e:
+    # Raising ValueError triggers the fallback to pydantic schema generation in
+    # _automatic_function_calling_util.build_function_declaration.
+    raise ValueError(
+        f'Enum value {value!r} of {annotation} is not serializable for'
+        ' automatic function calling.'
+    ) from e
 
 
 def _generate_json_schema_for_parameter(
@@ -304,17 +324,24 @@ def _parse_schema_from_parameter(
     _raise_if_schema_unsupported(variant, schema)
     return schema
   if isinstance(param.annotation, type) and issubclass(param.annotation, Enum):
+    # `schema.type` is always STRING here, so every enum value must be a
+    # string too. Use `json.dumps` rather than `str` for parity with
+    # `_gemini_schema_util._sanitize_schema_type` (e.g. `bool` values serialize
+    # as 'true'/'false' rather than 'True'/'False').
     schema.type = types.Type.STRING
-    schema.enum = [e.value for e in param.annotation]
+    values = [e.value for e in param.annotation]
+
+    schema.enum = [_render_enum_value(v, param.annotation) for v in values]
     if param.default is not inspect.Parameter.empty:
       default_value = (
           param.default.value
           if isinstance(param.default, Enum)
           else param.default
       )
-      if default_value not in schema.enum:
+      if default_value not in values:
         raise ValueError(default_value_error_msg)
-      schema.default = default_value
+      # Emit the member's own value, so `default` is always one of `enum`.
+      schema.default = schema.enum[values.index(default_value)]
     _raise_if_schema_unsupported(variant, schema)
     return schema
   if (

@@ -24,6 +24,7 @@ original call -- so it lives here rather than inline in the flow.
 
 from __future__ import annotations
 
+from collections import Counter
 import dataclasses
 import enum
 from typing import Any
@@ -216,8 +217,9 @@ def _unexecuted_calls_event(
 ) -> Event | None:
   """`call_event` cut down to the calls that never ran, or None if all did.
 
-  A call ran when a response in `later_events` carries its id, or its name
-  with no id. None is also returned once the agent has written any event with
+  A call ran when a response in `later_events` carries its id. Responses with
+  no id each match one remaining same-name call, in call order. None is also
+  returned once the agent has written any event with
   content after `call_event`: tool responses and auth or confirmation requests
   are only written after the whole batch ran, so a call still missing its
   response then ran and lost it, or is pending.
@@ -229,22 +231,81 @@ def _unexecuted_calls_event(
     return None
   responses = [fr for ev in later_events for fr in ev.get_function_responses()]
   answered_ids = {fr.id for fr in responses if fr.id is not None}
-  answered_names = {fr.name for fr in responses if fr.id is None}
-  unexecuted_ids = {
-      fc.id
-      for fc in call_event.get_function_calls()
-      if fc.id not in answered_ids and fc.name not in answered_names
-  }
-  if not unexecuted_ids or call_event.content is None:
+  answered_names = Counter(fr.name for fr in responses if fr.id is None)
+  if call_event.content is None:
     return None
-  parts = [
-      part
-      for part in call_event.content.parts or []
-      if part.function_call is None or part.function_call.id in unexecuted_ids
-  ]
+  parts = []
+  has_unexecuted_call = False
+  for part in call_event.content.parts or []:
+    if (call := part.function_call) is None:
+      parts.append(part)
+    elif call.id in answered_ids:
+      # Explicit IDs take precedence without consuming a name-only response.
+      continue
+    elif answered_names[call.name]:
+      answered_names[call.name] -= 1
+    else:
+      parts.append(part)
+      has_unexecuted_call = True
+  if not has_unexecuted_call:
+    return None
   return call_event.model_copy(
       update={'content': call_event.content.model_copy(update={'parts': parts})}
   )
+
+
+class ResumeRoute(enum.Enum):
+  """How the router or flow should handle a function call and its answer."""
+
+  ROUTE_TO_AUTHOR = 'route_to_author'
+  """Router: run the agent that authored the call."""
+
+  REPLAY_CALLS = 'replay_calls'
+  """Flow: re-dispatch the call event."""
+
+  CONTINUE = 'continue'
+  """Flow: fresh LLM step; router: normal scan."""
+
+
+def decide_resume_action(
+    call_event: Event,
+    answer_event: Event | None,
+    *,
+    is_resumable: bool,
+) -> ResumeRoute:
+  """Decides how to handle a function call and its answer event.
+
+  This is the single place `decide_resume`, `_find_sub_branch_replay_event`,
+  and `find_agent_to_run` ask what to do given a function call and its answer.
+  """
+  if answer_event is None:
+    return ResumeRoute.CONTINUE
+  if _is_sub_branch_answer(answer_event, call_event):
+    return ResumeRoute.REPLAY_CALLS
+  if answer_event.author == 'user' or is_resumable:
+    return ResumeRoute.ROUTE_TO_AUTHOR
+  return ResumeRoute.CONTINUE
+
+
+def _locate_answer(
+    events: list[Event],
+    call_event: Event,
+) -> tuple[int, set[str | None], set[str], Event]:
+  """Locates `call_event` in `events` and the event that answers it."""
+  call_idx = next(i for i, ev in enumerate(events) if ev is call_event)
+  calls = call_event.get_function_calls()
+  call_names = {fc.name for fc in calls}
+  lro_ids = {
+      lro for ev in events[call_idx:] for lro in ev.long_running_tool_ids or []
+  }
+  answer_event = _find_answer_event(
+      events,
+      call_event,
+      call_idx,
+      {fc.id for fc in calls} | lro_ids,
+      call_names,
+  )
+  return call_idx, call_names, lro_ids, answer_event
 
 
 def decide_resume(
@@ -277,18 +338,10 @@ def decide_resume(
       events, tools_dict, require_agent_name(invocation_context)
   )
   if call_event:
-    call_idx = next(i for i, ev in enumerate(events) if ev is call_event)
-    calls = call_event.get_function_calls()
-    call_names = {fc.name for fc in calls}
-    lro_ids = {
-        lro
-        for ev in events[call_idx:]
-        for lro in ev.long_running_tool_ids or []
-    }
-    call_ids = {fc.id for fc in calls} | lro_ids
-    answer_event = _find_answer_event(
-        events, call_event, call_idx, call_ids, call_names
+    call_idx, call_names, lro_ids, answer_event = _locate_answer(
+        events, call_event
     )
+    call_ids = {fc.id for fc in call_event.get_function_calls()} | lro_ids
     answered_ids = {
         fr.id
         for ev in events[call_idx + 1 :]
@@ -297,7 +350,8 @@ def decide_resume(
     }
     # An answer on a sub-branch resolves the call however its ids look, so it
     # short-circuits both unanswered tests rather than being repeated in each.
-    from_sub_branch = _is_sub_branch_answer(answer_event, call_event)
+    route = decide_resume_action(call_event, answer_event, is_resumable=True)
+    from_sub_branch = route is ResumeRoute.REPLAY_CALLS
     answers = answer_event.get_function_responses()
     # `ids & answered` alone decides these: a set that is a subset of the
     # answered ids necessarily intersects it, so testing `issubset` as well
@@ -318,6 +372,41 @@ def decide_resume(
       return ResumeDecision(ResumeAction.REPLAY_CALLS, unexecuted)
 
   return ResumeDecision(ResumeAction.PAUSE if pause else ResumeAction.CONTINUE)
+
+
+def _find_sub_branch_replay_event(
+    invocation_context: InvocationContext,
+    events: list[Event],
+    tools_dict: dict[str, Any],
+) -> Event | None:
+  """Returns the call event to replay if a sub-branch interrupt was answered."""
+  call_event = _find_target_call_event(
+      events, tools_dict, require_agent_name(invocation_context)
+  )
+  if not call_event:
+    return None
+  _, _, _, answer_event = _locate_answer(events, call_event)
+  route = decide_resume_action(call_event, answer_event, is_resumable=False)
+  if route is ResumeRoute.REPLAY_CALLS:
+    return call_event
+  return None
+
+
+def _is_sub_branch_user_response(
+    event: Event, current_branch: str | None
+) -> bool:
+  """Returns whether `event` is a user FunctionResponse on a sub-branch."""
+  if (
+      event.author != 'user'
+      or not event.branch
+      or not event.get_function_responses()
+  ):
+    return False
+  if current_branch is None:
+    return True
+  return event.branch != current_branch and event.branch.startswith(
+      f'{current_branch}.'
+  )
 
 
 def decide_step_resume(
@@ -346,6 +435,25 @@ def decide_step_resume(
     or REPLAY_CALLS naming the event whose calls were never executed.
   """
   if not invocation_context.is_resumable:
+    current_branch = invocation_context.branch
+    session_events = invocation_context.session.events
+    if not session_events or not _is_sub_branch_user_response(
+        session_events[-1], current_branch
+    ):
+      return ResumeDecision(ResumeAction.CONTINUE)
+    events = invocation_context._get_events(  # pylint: disable=protected-access
+        current_invocation=True, current_branch=True
+    )
+    if (
+        len(events) > 1
+        and _is_sub_branch_user_response(events[-1], current_branch)
+        and (
+            call_event := _find_sub_branch_replay_event(
+                invocation_context, events, tools_dict
+            )
+        )
+    ):
+      return ResumeDecision(ResumeAction.REPLAY_CALLS, call_event)
     return ResumeDecision(ResumeAction.CONTINUE)
 
   events = invocation_context._get_events(  # pylint: disable=protected-access

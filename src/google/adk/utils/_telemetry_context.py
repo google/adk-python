@@ -19,6 +19,8 @@ from __future__ import annotations
 import contextvars
 from typing import Optional
 
+from .. import version
+
 # Internal context variable for Visual Builder usage tracking.
 # True if the current execution is within a Visual Builder context.
 _is_visual_builder: contextvars.ContextVar[bool] = contextvars.ContextVar(
@@ -26,18 +28,23 @@ _is_visual_builder: contextvars.ContextVar[bool] = contextvars.ContextVar(
 )
 
 # Internal context variable for caller-surface telemetry attribution.
-# Read at BigQueryAgentAnalyticsPlugin construction time, or (on the default
-# per-instance shared loop, if unset at construction) when the loop state is
-# first built and pinned for that (plugin, loop) pair thereafter. When set
+# Read at BigQueryAgentAnalyticsPlugin construction time (or on the default
+# per-instance shared loop, if unset at construction, when the loop state is
+# first built and pinned for that (plugin, loop) pair thereafter), and by
+# ``integrations.bigquery.client.get_bigquery_client`` and
+# ``get_dataplex_catalog_client`` (via ``_get_telemetry_surface()`` /
+# ``_surface_user_agent()``) at client construction time. When set
 # (e.g. "my-surface"), the plugin stamps
 # ``google-adk-bq-logger-{surface}/{version}`` into the BigQuery Write API
-# ``trace_id`` (taking precedence over ``_is_visual_builder``) and
-# ``google-adk-{surface}/{version}`` into the gRPC user agent.
+# ``trace_id`` (taking precedence over ``_is_visual_builder``) and both the
+# plugin and the BigQuery/Dataplex client factories stamp
+# ``google-adk-{surface}/{version}`` into the client/gRPC user agent.
 # Callers are responsible for passing a clean token matching
 # ``[a-z0-9]([a-z0-9-]*[a-z0-9])?`` (no spaces/colons; avoid ``"bq-logger"``,
 # ``"java"``, and ``"visual-builder"``, which already occupy the namespace).
 # The value must also stay constant for the lifetime of any plugin instance
-# constructed while it is set: the plugin captures it at ``__init__``, and
+# constructed while it is set (and across lazy tool client creation during
+# agent execution): the plugin captures it at ``__init__``, and
 # on a shared loop, if ``__init__`` captured nothing, ``_build_loop_state``
 # pins whatever is visible when the loop state is first built. Flipping the
 # value mid-flight does not re-attribute an already-built writer.
@@ -55,3 +62,9 @@ def _get_telemetry_surface() -> Optional[str]:
   return _telemetry_surface.get() or (
       "visual-builder" if _is_visual_builder.get() else None
   )
+
+
+def _surface_user_agent() -> Optional[str]:
+  """Returns the versioned caller-surface User-Agent token, if any."""
+  surface = _get_telemetry_surface()
+  return f"google-adk-{surface}/{version.__version__}" if surface else None

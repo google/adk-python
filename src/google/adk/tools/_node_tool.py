@@ -157,23 +157,60 @@ class NodeTool(BaseTool):
           )
       }
 
-    fc_id = tool_context.function_call_id
-    base_branch = tool_context.branch
-    segment = f'{self.name}@{fc_id}' if fc_id else self.name
-    tool_branch = f'{base_branch}.{segment}' if base_branch else segment
-
-    try:
-      res = await tool_context.run_node(
-          self.node,
-          node_input=node_input,
-          override_branch=tool_branch,
-          use_sub_branch=False,
-          raise_on_wait=True,
-      )
-    except DynamicNodeFailError as e:
-      # Surface the node's own error, as a FunctionTool would, so the tool
-      # pipeline runs on_tool_error callbacks with the real cause.
-      raise e.error from e
+    res = await _run_node_in_tool_context(
+        self.node,
+        tool_name=self.name,
+        node_input=node_input,
+        tool_context=tool_context,
+    )
     if res is None:
       return {'result': None}
     return res
+
+
+async def _run_node_in_tool_context(
+    node: BaseNode,
+    *,
+    tool_name: str,
+    node_input: Any,
+    tool_context: ToolContext,
+    key_run_by_function_call: bool = False,
+) -> Any:
+  """Executes a BaseNode within a ToolContext on an isolated tool branch.
+
+  Args:
+    node: The node to execute.
+    tool_name: The tool name, used as the branch segment.
+    node_input: The input passed to the node.
+    tool_context: The calling tool's context.
+    key_run_by_function_call: Whether to use the function call id as the
+      child's run_id, so repeated calls of the same tool get distinct node
+      paths and do not share resume state. Otherwise the scheduler assigns the
+      run_id.
+  """
+  fc_id = tool_context.function_call_id
+  base_branch = tool_context.branch
+  segment = f'{tool_name}@{fc_id}' if fc_id else tool_name
+  tool_branch = f'{base_branch}.{segment}' if base_branch else segment
+  run_id = None
+  if key_run_by_function_call and (
+      tool_context._workflow_scheduler is None
+      or (fc_id and not fc_id.isdigit())
+  ):
+    # Under a workflow scheduler, numeric ids are reserved for auto-generated
+    # run_ids, so a numeric fc_id falls back to auto-generation.
+    run_id = fc_id
+
+  try:
+    return await tool_context.run_node(
+        node,
+        node_input=node_input,
+        run_id=run_id,
+        override_branch=tool_branch,
+        use_sub_branch=False,
+        raise_on_wait=True,
+    )
+  except DynamicNodeFailError as e:
+    # Surface the node's own error, as a FunctionTool would, so the tool
+    # pipeline runs on_tool_error callbacks with the real cause.
+    raise e.error from e

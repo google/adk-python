@@ -204,13 +204,15 @@ class SqliteSessionService(BaseSessionService):
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
   ) -> Session:
-    if session_id:
-      session_id = session_id.strip()
-    if not session_id:
-      session_id = platform_uuid.new_uuid()
     now = platform_time.get_time()
 
     async with self._get_db_connection() as db:
+      if session_id:
+        session_id = await self._resolve_session_id(
+            db, app_name, user_id, session_id
+        )
+      if not session_id:
+        session_id = platform_uuid.new_uuid()
       # Check if session_id already exists
       async with db.execute(
           "SELECT 1 FROM sessions WHERE app_name=? AND user_id=? AND id=?",
@@ -284,6 +286,9 @@ class SqliteSessionService(BaseSessionService):
       config: Optional[GetSessionConfig] = None,
   ) -> Optional[Session]:
     async with self._get_db_connection() as db:
+      session_id = await self._resolve_session_id(
+          db, app_name, user_id, session_id
+      )
       async with db.execute(
           "SELECT state, update_time FROM sessions WHERE app_name=? AND"
           " user_id=? AND id=?",
@@ -308,10 +313,8 @@ class SqliteSessionService(BaseSessionService):
         query_parts.append("AND timestamp >= ?")
         params.append(config.after_timestamp)
 
-      # Break timestamp ties on id so tied events come back in the same order
-      # on every read; otherwise a replayed conversation shuffles and
-      # `num_recent_events` truncates at an arbitrary point in the tie.
-      query_parts.append("ORDER BY timestamp DESC, id DESC")
+      # Break timestamp ties on rowid so tied events reload in append order.
+      query_parts.append("ORDER BY timestamp DESC, rowid DESC")
 
       if config and config.num_recent_events is not None:
         query_parts.append("LIMIT ?")
@@ -407,6 +410,9 @@ class SqliteSessionService(BaseSessionService):
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
     async with self._get_db_connection() as db:
+      session_id = await self._resolve_session_id(
+          db, app_name, user_id, session_id
+      )
       await db.execute(
           "DELETE FROM sessions WHERE app_name=? AND user_id=? AND id=?",
           (app_name, user_id, session_id),
@@ -557,6 +563,25 @@ class SqliteSessionService(BaseSessionService):
         "SELECT state FROM user_states WHERE app_name=? AND user_id=?",
         (app_name, user_id),
     )
+
+  async def _resolve_session_id(
+      self,
+      db: aiosqlite.Connection,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+  ) -> str:
+    """Returns session_id if a row is stored under it, else its stripped form."""
+    if not session_id or session_id == session_id.strip():
+      return session_id
+    # Databases migrated from DatabaseSessionService keep padded ids verbatim.
+    async with db.execute(
+        "SELECT 1 FROM sessions WHERE app_name=? AND user_id=? AND id=?",
+        (app_name, user_id, session_id),
+    ) as cursor:
+      if await cursor.fetchone():
+        return session_id
+    return session_id.strip()
 
   async def _upsert_app_state(
       self,

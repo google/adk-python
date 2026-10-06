@@ -306,6 +306,29 @@ def test_extras_that_reach_aiohttp_indirectly_declare_it(
   assert 'aiohttp' in names, f'The {extra!r} extra needs aiohttp: {reason}.'
 
 
+@pytest.mark.parametrize('extra', ['db', 'all', 'test'])
+def test_sqlalchemy_extras_request_the_asyncio_extra(
+    pyproject: dict, extra: str
+) -> None:
+  """DatabaseSessionService needs greenlet, which SQLAlchemy 2.1 made optional.
+
+  SQLAlchemy 2.0 installed greenlet on common platforms by default. From 2.1 it
+  comes only with ``sqlalchemy[asyncio]``, and without it
+  ``sqlalchemy.ext.asyncio`` fails to import.
+  """
+  wanted = canonicalize_name('sqlalchemy')
+  requirements = [
+      Requirement(entry)
+      for entry in pyproject['project']['optional-dependencies'][extra]
+  ]
+  sqlalchemy = [r for r in requirements if canonicalize_name(r.name) == wanted]
+  assert sqlalchemy, f'The {extra!r} extra must declare sqlalchemy.'
+  assert all('asyncio' in r.extras for r in sqlalchemy), (
+      f'The {extra!r} extra must require sqlalchemy[asyncio]; plain sqlalchemy'
+      ' 2.1+ installs without greenlet, so DatabaseSessionService cannot start.'
+  )
+
+
 def test_main_deps_require_lazy_mcp_google_genai_release(
     pyproject: dict,
 ) -> None:

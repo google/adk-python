@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import json
+import logging
+from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -23,10 +25,15 @@ from a2a.types import AgentSkill
 from a2a.types import SecurityScheme
 from google.adk.a2a import _compat
 from google.adk.a2a.utils.agent_card_builder import _build_agent_description
+from google.adk.a2a.utils.agent_card_builder import _build_code_executor_skill
+from google.adk.a2a.utils.agent_card_builder import _build_llm_agent_skills
 from google.adk.a2a.utils.agent_card_builder import _build_loop_description
 from google.adk.a2a.utils.agent_card_builder import _build_orchestration_skill
 from google.adk.a2a.utils.agent_card_builder import _build_parallel_description
+from google.adk.a2a.utils.agent_card_builder import _build_planner_skill
 from google.adk.a2a.utils.agent_card_builder import _build_sequential_description
+from google.adk.a2a.utils.agent_card_builder import _build_sub_agent_skills
+from google.adk.a2a.utils.agent_card_builder import _build_tool_skills
 from google.adk.a2a.utils.agent_card_builder import _convert_example_tool_examples
 from google.adk.a2a.utils.agent_card_builder import _extract_inputs_from_examples
 from google.adk.a2a.utils.agent_card_builder import _get_agent_skill_name
@@ -34,14 +41,18 @@ from google.adk.a2a.utils.agent_card_builder import _get_agent_type
 from google.adk.a2a.utils.agent_card_builder import _get_default_description
 from google.adk.a2a.utils.agent_card_builder import _get_input_modes
 from google.adk.a2a.utils.agent_card_builder import _get_output_modes
+from google.adk.a2a.utils.agent_card_builder import _get_tool_security
 from google.adk.a2a.utils.agent_card_builder import _get_workflow_description
+from google.adk.a2a.utils.agent_card_builder import _validate_skill_security_references
 from google.adk.a2a.utils.agent_card_builder import AgentCardBuilder
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.sequential_agent import SequentialAgent
+from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.example_tool import ExampleTool
+from google.adk.tools.function_tool import FunctionTool
 from google.adk.workflow import FunctionNode
 from google.adk.workflow import START
 from google.adk.workflow import Workflow
@@ -1269,3 +1280,413 @@ class TestExampleExtractionFunctions:
 
     # Assert
     assert len(result) == 0
+
+
+class TestSkillSecuritySupport:
+  """Test suite for A2A SecurityScheme and skill-level security support."""
+
+  async def test_build_end_to_end_with_default_and_tool_skill_security(self):
+    """Test that default and per-tool skill security survive AgentCardBuilder.build()."""
+
+    def read_item(item_id: str) -> str:
+      """Read an item."""
+      return item_id
+
+    def delete_item(item_id: str) -> str:
+      """Delete an item."""
+      return item_id
+
+    read_tool = FunctionTool(read_item)
+    delete_tool = FunctionTool(delete_item)
+    delete_tool.custom_metadata = {"security": [{"oauth2": ["items.delete"]}]}
+    agent = LlmAgent(
+        name="inventory_agent",
+        description="Manages inventory items.",
+        model="gemini-2.0-flash",
+        tools=[read_tool, delete_tool],
+    )
+    default_security = [{"oauth2": ["items.read"]}]
+    builder = AgentCardBuilder(
+        agent=agent,
+        security_schemes={
+            "oauth2": _compat.make_api_key_scheme(name="X-Api-Key")
+        },
+        default_skill_security=default_security,
+    )
+
+    card = await builder.build()
+
+    assert isinstance(card, AgentCard)
+    security_by_id = {
+        skill.id: _compat.get_skill_security(skill) for skill in card.skills
+    }
+    assert security_by_id == {
+        "inventory_agent": default_security,
+        "inventory_agent-read_item": default_security,
+        "inventory_agent-delete_item": [{"oauth2": ["items.delete"]}],
+    }
+
+  @patch("google.adk.a2a.utils.agent_card_builder._build_primary_skills")
+  @patch("google.adk.a2a.utils.agent_card_builder._build_sub_agent_skills")
+  async def test_build_passes_default_skill_security(
+      self, mock_build_sub_skills, mock_build_primary_skills
+  ):
+    """Test that build passes default_skill_security to skill builders."""
+    # Arrange
+    mock_agent = Mock(spec=BaseAgent)
+    mock_agent.name = "test_agent"
+    mock_agent.description = "Test agent"
+    default_security = [{"oauth2": ["agent.read"]}]
+
+    mock_build_primary_skills.return_value = []
+    mock_build_sub_skills.return_value = []
+
+    builder = AgentCardBuilder(
+        agent=mock_agent,
+        default_skill_security=default_security,
+    )
+
+    # Act
+    await builder.build()
+
+    # Assert
+    mock_build_primary_skills.assert_called_once_with(
+        mock_agent, default_security
+    )
+    mock_build_sub_skills.assert_called_once_with(mock_agent, default_security)
+
+  @pytest.mark.parametrize(
+      "invalid_security",
+      [
+          {"oauth2": ["agent.read"]},
+          ["oauth2"],
+          [{"oauth2": "agent.read"}],
+          [{"oauth2": [123]}],
+      ],
+  )
+  def test_init_rejects_invalid_default_skill_security(self, invalid_security):
+    """Test that AgentCardBuilder rejects invalid default_skill_security shapes."""
+    mock_agent = Mock(spec=BaseAgent)
+    mock_agent.name = "test_agent"
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"default_skill_security must be a list\[dict\[str, list\[str\]\]\]"
+        ),
+    ):
+      AgentCardBuilder(
+          agent=mock_agent,
+          default_skill_security=invalid_security,
+      )
+
+  async def test_build_llm_agent_skills_with_security(self):
+    """Test that LLM agent skills include security when default is set."""
+    # Arrange
+    mock_agent = Mock(spec=LlmAgent)
+    mock_agent.name = "test_llm_agent"
+    mock_agent.description = "A test LLM agent"
+    mock_agent.instruction = None
+    mock_agent.global_instruction = None
+    mock_agent.tools = None
+    mock_agent.planner = None
+    mock_agent.code_executor = None
+    mock_agent.sub_agents = []
+    default_security = [{"bearer": []}]
+
+    # Act
+    skills = await _build_llm_agent_skills(mock_agent, default_security)
+
+    # Assert
+    assert len(skills) == 1
+    assert _compat.get_skill_security(skills[0]) == default_security
+
+  async def test_build_tool_skills_with_default_security(self):
+    """Test that tool skills get default security when no tool-level override."""
+    # Arrange
+    mock_tool = Mock(spec=BaseTool)
+    mock_tool.name = "my_tool"
+    mock_tool.description = "A test tool"
+    mock_tool.custom_metadata = None
+
+    mock_agent = Mock(spec=LlmAgent)
+    mock_agent.name = "test_agent"
+    mock_agent.canonical_tools = AsyncMock(return_value=[mock_tool])
+
+    default_security = [{"apiKey": []}]
+
+    # Act
+    skills = await _build_tool_skills(mock_agent, default_security)
+
+    # Assert
+    assert len(skills) == 1
+    assert _compat.get_skill_security(skills[0]) == default_security
+
+  async def test_build_tool_skills_with_tool_level_security_override(self):
+    """Test that tool-level custom_metadata security overrides default."""
+    # Arrange
+    tool_security = [{"oauth2": ["calendar.read", "calendar.write"]}]
+    mock_tool = Mock(spec=BaseTool)
+    mock_tool.name = "calendar_tool"
+    mock_tool.description = "Calendar tool"
+    mock_tool.custom_metadata = {"security": tool_security}
+
+    mock_agent = Mock(spec=LlmAgent)
+    mock_agent.name = "test_agent"
+    mock_agent.canonical_tools = AsyncMock(return_value=[mock_tool])
+
+    default_security = [{"apiKey": []}]
+
+    # Act
+    skills = await _build_tool_skills(mock_agent, default_security)
+
+    # Assert
+    assert len(skills) == 1
+    assert (
+        _compat.get_skill_security(skills[0]) == tool_security
+    )  # Tool-level overrides default
+
+  async def test_build_tool_skills_without_security(self):
+    """Test that tool skills have no security when no default is set."""
+    # Arrange
+    mock_tool = Mock(spec=BaseTool)
+    mock_tool.name = "my_tool"
+    mock_tool.description = "A test tool"
+    mock_tool.custom_metadata = None
+
+    mock_agent = Mock(spec=LlmAgent)
+    mock_agent.name = "test_agent"
+    mock_agent.canonical_tools = AsyncMock(return_value=[mock_tool])
+
+    # Act
+    skills = await _build_tool_skills(mock_agent)
+
+    # Assert
+    assert len(skills) == 1
+    assert _compat.get_skill_security(skills[0]) is None
+
+  def test_get_tool_security_from_custom_metadata(self):
+    """Test _get_tool_security extracts security from custom_metadata."""
+    # Arrange
+    tool_security = [{"oauth2": ["read"]}]
+    mock_tool = Mock(spec=BaseTool)
+    mock_tool.custom_metadata = {"security": tool_security}
+
+    # Act
+    result = _get_tool_security(mock_tool, [{"apiKey": []}])
+
+    # Assert
+    assert result == tool_security
+
+  def test_get_tool_security_falls_back_to_default(self):
+    """Test _get_tool_security falls back to default when no custom_metadata."""
+    # Arrange
+    default_security = [{"apiKey": []}]
+    mock_tool = Mock(spec=BaseTool)
+    mock_tool.custom_metadata = None
+
+    # Act
+    result = _get_tool_security(mock_tool, default_security)
+
+    # Assert
+    assert result == default_security
+
+  def test_get_tool_security_no_security_key_in_metadata(self):
+    """Test _get_tool_security falls back when custom_metadata has no security key."""
+    # Arrange
+    default_security = [{"bearer": []}]
+    mock_tool = Mock(spec=BaseTool)
+    mock_tool.custom_metadata = {"other_key": "value"}
+
+    # Act
+    result = _get_tool_security(mock_tool, default_security)
+
+    # Assert
+    assert result == default_security
+
+  def test_get_tool_security_ignores_invalid_security_metadata(self, caplog):
+    """Test _get_tool_security ignores unrelated security custom_metadata."""
+    default_security = [{"bearer": []}]
+    mock_tool = Mock(spec=BaseTool)
+    mock_tool.name = "classified_tool"
+    mock_tool.custom_metadata = {"security": {"classification": "internal"}}
+
+    with caplog.at_level(logging.WARNING, logger="google_adk"):
+      result = _get_tool_security(mock_tool, default_security)
+
+    assert result == default_security
+    assert "classified_tool" in caplog.text
+
+  def test_get_tool_security_none_default(self):
+    """Test _get_tool_security returns None when no security anywhere."""
+    # Arrange
+    mock_tool = Mock(spec=BaseTool)
+    mock_tool.custom_metadata = None
+
+    # Act
+    result = _get_tool_security(mock_tool)
+
+    # Assert
+    assert result is None
+
+  def test_validate_skill_security_references_valid(self, caplog):
+    """Test validation passes for valid security references."""
+    # Arrange
+    skills = [
+        _compat.build_agent_skill(
+            id="s1",
+            name="skill1",
+            description="test",
+            tags=["test"],
+            security=[{"oauth2": ["read"]}],
+        ),
+    ]
+    schemes = {"oauth2": Mock(spec=SecurityScheme)}
+
+    # Act & Assert (should not raise or log warnings)
+    with caplog.at_level(logging.WARNING, logger="google_adk"):
+      _validate_skill_security_references(skills, schemes)
+
+    assert not caplog.records
+
+  def test_validate_skill_security_references_warns_on_mismatch(self, caplog):
+    """Test validation warns when skill references undeclared scheme."""
+    # Arrange
+    skills = [
+        _compat.build_agent_skill(
+            id="s1",
+            name="skill1",
+            description="test",
+            tags=["test"],
+            security=[{"nonexistent_scheme": ["read"]}],
+        ),
+    ]
+    schemes = {"oauth2": Mock(spec=SecurityScheme)}
+
+    # Act
+    with caplog.at_level(logging.WARNING, logger="google_adk"):
+      _validate_skill_security_references(skills, schemes)
+
+    # Assert
+    assert "nonexistent_scheme" in caplog.text
+    assert "not declared" in caplog.text
+
+  def test_validate_skill_security_references_skips_no_security(self, caplog):
+    """Test validation skips skills without security."""
+    # Arrange
+    skills = [
+        _compat.build_agent_skill(
+            id="s1",
+            name="skill1",
+            description="test",
+            tags=["test"],
+            security=None,
+        ),
+    ]
+    schemes = {"oauth2": Mock(spec=SecurityScheme)}
+
+    # Act & Assert (should not raise or log warnings)
+    with caplog.at_level(logging.WARNING, logger="google_adk"):
+      _validate_skill_security_references(skills, schemes)
+
+    assert not caplog.records
+
+  async def test_sub_agent_skills_preserve_security(self):
+    """Test that sub-agent skill aggregation preserves security."""
+    # Arrange
+    default_security = [{"oauth2": ["read"]}]
+
+    mock_sub_agent = Mock(spec=LlmAgent)
+    mock_sub_agent.name = "sub_agent"
+    mock_sub_agent.description = "Sub agent"
+    mock_sub_agent.instruction = None
+    mock_sub_agent.global_instruction = None
+    mock_sub_agent.tools = None
+    mock_sub_agent.planner = None
+    mock_sub_agent.code_executor = None
+    mock_sub_agent.sub_agents = []
+
+    mock_parent = Mock(spec=BaseAgent)
+    mock_parent.sub_agents = [mock_sub_agent]
+
+    # Act
+    skills = await _build_sub_agent_skills(mock_parent, default_security)
+
+    # Assert
+    assert len(skills) == 1
+    assert _compat.get_skill_security(skills[0]) == default_security
+
+  def test_build_planner_skill_with_security(self):
+    """Test planner skill includes security."""
+    # Arrange
+    mock_agent = Mock(spec=LlmAgent)
+    mock_agent.name = "test_agent"
+    default_security = [{"bearer": []}]
+
+    # Act
+    skill = _build_planner_skill(mock_agent, default_security)
+
+    # Assert
+    assert _compat.get_skill_security(skill) == default_security
+
+  def test_build_code_executor_skill_with_security(self):
+    """Test code executor skill includes security."""
+    # Arrange
+    mock_agent = Mock(spec=LlmAgent)
+    mock_agent.name = "test_agent"
+    default_security = [{"oauth2": ["execute"]}]
+
+    # Act
+    skill = _build_code_executor_skill(mock_agent, default_security)
+
+    # Assert
+    assert _compat.get_skill_security(skill) == default_security
+
+  def test_build_orchestration_skill_with_security(self):
+    """Test orchestration skill includes security."""
+    # Arrange
+    mock_sub = Mock(spec=BaseAgent)
+    mock_sub.name = "sub"
+    mock_sub.description = "Sub agent"
+
+    mock_agent = Mock(spec=BaseAgent)
+    mock_agent.name = "parent"
+    mock_agent.sub_agents = [mock_sub]
+
+    default_security = [{"apiKey": []}]
+
+    # Act
+    skill = _build_orchestration_skill(
+        mock_agent, "sequential_workflow", default_security
+    )
+
+    # Assert
+    assert skill is not None
+    assert _compat.get_skill_security(skill) == default_security
+
+  @patch(
+      "google.adk.a2a.utils.agent_card_builder._validate_skill_security_references"
+  )
+  @patch("google.adk.a2a.utils.agent_card_builder._build_primary_skills")
+  @patch("google.adk.a2a.utils.agent_card_builder._build_sub_agent_skills")
+  async def test_build_runs_validation_even_without_default_security(
+      self, mock_build_sub_skills, mock_build_primary_skills, mock_validate
+  ):
+    """Test that validation runs even if default_skill_security is None."""
+    # Arrange
+    mock_agent = Mock(spec=BaseAgent)
+    mock_agent.name = "test_agent"
+    mock_agent.description = "Test agent"
+    mock_build_primary_skills.return_value = []
+    mock_build_sub_skills.return_value = []
+
+    builder = AgentCardBuilder(
+        agent=mock_agent,
+        default_skill_security=None,
+    )
+
+    # Act
+    await builder.build()
+
+    # Assert
+    mock_validate.assert_called_once_with([], {})

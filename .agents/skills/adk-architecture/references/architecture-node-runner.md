@@ -84,6 +84,12 @@ Orchestrator
 - `NodeInterruptedError` from a dynamic child is swallowed here: the child's
   interrupt IDs are already on `ctx`, so the caller just reads
   `ctx.interrupt_ids`.
+- When `abort_signal` is triggered (`ic.is_aborted` is `True`), active node
+  tasks are cancelled without retrying. In `_node_runner_utils`, the outer
+  workflow runner loop catches the cancellation, calls
+  `runner._synthesize_abort_events_if_needed(ic)` to emit `INVOCATION_ABORTED`
+  events (and seal any dangling `FunctionCall`s), and finishes the generator
+  cleanly so `after_run` callbacks still run.
 
 ## Output delegation (`use_as_output`)
 

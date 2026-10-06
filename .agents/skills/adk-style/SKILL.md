@@ -25,15 +25,15 @@ surfacing in review. Read the one reference for the topic you are touching.
 | Task | Reference |
 | --- | --- |
 | Adding a `.py` file; deciding public vs private; `__init__.py` and `__all__` | [visibility.md](references/visibility.md) |
-| Writing `import` lines; relative vs absolute; circular imports; `TYPE_CHECKING` | [imports.md](references/imports.md) |
-| Annotating args and returns; `Optional` vs `\| None`; keyword-only args; `isinstance`; asserts; mypy | [typing.md](references/typing.md) |
+| Writing `import` lines; relative vs absolute; circular imports; `TYPE_CHECKING`; lazy imports | [imports.md](references/imports.md) |
+| Annotating args and returns; `Optional` vs `\| None`; keyword-only args; `isinstance`; asserts; mypy; `# type: ignore` and `cast` | [typing.md](references/typing.md) |
 | Defining a Pydantic model, validator, private attribute, or on-wire payload | [pydantic.md](references/pydantic.md) |
 | Indentation, line length, quotes; running the formatter; what each hook checks | [formatting.md](references/formatting.md) |
 | Writing a docstring or an explanatory comment | [documentation.md](references/documentation.md) |
 | Emitting a log record; naming the module logger; picking a level | [logging.md](references/logging.md) |
 | Anything that performs I/O — network, disk, database | [async.md](references/async.md) |
 | Where a new file goes; license header; where its test goes and what to call it | [file-organization.md](references/file-organization.md) |
-| Writing or restructuring a unit test | [testing.md](references/testing.md) |
+| Writing or restructuring a unit test; the `testing_utils` fakes | [testing.md](references/testing.md) |
 
 ## A check failed — where to look
 
@@ -43,3 +43,4 @@ surfacing in review. Read the one reference for the topic you are touching.
 | `compliance-checks` | [logging.md](references/logging.md) (logger name), [typing.md](references/typing.md) (`from __future__ import annotations`), [imports.md](references/imports.md) (`cli/` import direction) |
 | `pyink`, `isort`, `ruff`, `addlicense`, `codespell` | [formatting.md](references/formatting.md) |
 | Mypy Check CI job | [typing.md](references/typing.md) |
+| `tests/unittests/test_import_loading.py` | [imports.md](references/imports.md) |
