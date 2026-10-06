@@ -109,7 +109,8 @@ class BaseNode(BaseModel, abc.ABC):
   input_schema: SchemaType | None = None
   """Schema to validate and coerce node input data.
 
-  Validated with ``TypeAdapter``. A raw ``dict`` JSON schema or a genai
+  Validated with ``TypeAdapter``; a validated ``BaseModel`` is dumped to a
+  dict with ``None`` fields preserved. A raw ``dict`` JSON schema or a genai
   ``Schema`` is accepted but never enforced.
 
   ``None`` means no input validation (the default). ``FunctionNode`` fills
@@ -145,7 +146,11 @@ class BaseNode(BaseModel, abc.ABC):
 
   def _validate_input_data(self, data: Any) -> Any:
     """Validates data against input_schema if set."""
-    return validate_node_data(self.input_schema, data, preserve_content=False)
+    # Input may be validated again before binding function parameters. Dropping
+    # None makes a required nullable field missing, or substitutes its default.
+    return validate_node_data(
+        self.input_schema, data, preserve_content=False, exclude_none=False
+    )
 
   def _validate_output_data(self, data: Any) -> Any:
     """Validates data against output_schema if set."""
