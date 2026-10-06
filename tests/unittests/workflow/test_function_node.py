@@ -2027,3 +2027,101 @@ async def test_function_node_wraps_decorator_dispatches_on_wrapper(
       and e.output is not None
   ]
   assert outputs == [[10, 11]]
+
+
+@pytest.mark.parametrize('input_from_message', [False, True])
+async def test_function_node_preserves_required_nullable_input(
+    input_from_message,
+):
+  """A valid required nullable field reaches the function as None."""
+
+  class NullableInput(BaseModel):
+    value: str | None
+
+  def produce():
+    return {'value': None}
+
+  def consume(node_input: NullableInput):
+    return 'null' if node_input.value is None else node_input.value
+
+  edges = (
+      [(START, consume)]
+      if input_from_message
+      else [(START, produce, consume)]
+  )
+  workflow = Workflow(name='nullable_input', edges=edges)
+
+  events, _, _ = await run_workflow(workflow, message='{"value": null}')
+
+  assert [event.output for event in events if event.node_name == 'consume'] == [
+      'null'
+  ]
+
+
+@pytest.mark.parametrize(
+    ('payload', 'expected'),
+    [({'value': None}, 'null'), ({}, 'fallback'), ({'value': 'set'}, 'set')],
+)
+async def test_function_node_preserves_nullable_input_with_default(
+    payload, expected
+):
+  """An explicit None is distinct from an omitted field with a default."""
+
+  class NullableInput(BaseModel):
+    value: str | None = 'fallback'
+
+  def produce():
+    return payload
+
+  def consume(node_input: NullableInput):
+    return 'null' if node_input.value is None else node_input.value
+
+  workflow = Workflow(name='nullable_default', edges=[(START, produce, consume)])
+
+  events, _, _ = await run_workflow(workflow)
+
+  assert [event.output for event in events if event.node_name == 'consume'] == [
+      expected
+  ]
+
+
+async def test_function_node_preserves_nested_nullable_input():
+  """Nullable fields in nested input models survive repeated validation."""
+
+  class Item(BaseModel):
+    value: str | None
+
+  class NullableInput(BaseModel):
+    items: list[Item]
+
+  def produce():
+    return {'items': [{'value': None}, {'value': 'set'}]}
+
+  def consume(node_input: NullableInput):
+    return [item.value for item in node_input.items]
+
+  workflow = Workflow(name='nullable_nested', edges=[(START, produce, consume)])
+
+  events, _, _ = await run_workflow(workflow)
+
+  assert [event.output for event in events if event.node_name == 'consume'] == [
+      [None, 'set']
+  ]
+
+
+async def test_function_node_rejects_missing_required_nullable_input():
+  """A nullable field with no default is still required."""
+
+  class NullableInput(BaseModel):
+    value: str | None
+
+  def produce():
+    return {}
+
+  def consume(node_input: NullableInput):
+    return 'unexpected'
+
+  workflow = Workflow(name='nullable_missing', edges=[(START, produce, consume)])
+
+  with pytest.raises(ValueError, match='Field required'):
+    await run_workflow(workflow)
