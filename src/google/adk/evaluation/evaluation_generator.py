@@ -1070,6 +1070,7 @@ class EvaluationGenerator:
         )
       event_pairs = list(zip(events_to_add, invocation_events))
       merged_events = []
+      merged_event_sources: list[Event] = []
       for index, (event, invocation_event) in enumerate(event_pairs):
         if (
             not (event.content and event.content.parts)
@@ -1102,6 +1103,7 @@ class EvaluationGenerator:
             model_event.usage_metadata = event.usage_metadata
             continue
         merged_events.append(invocation_event)
+        merged_event_sources.append(event)
       invocations.append(
           Invocation(
               invocation_id=invocation_id,
@@ -1111,12 +1113,92 @@ class EvaluationGenerator:
                   invocation_events=merged_events
               ),
               creation_timestamp=invocation_timestamp,
+              inference_call_count=EvaluationGenerator._count_streamed_inference_calls(
+                  events, merged_event_sources
+              ),
               duration=(durations_per_invocation or {}).get(invocation_id),
               app_details=app_details,
           )
       )
 
     return invocations
+
+  @staticmethod
+  def _count_streamed_inference_calls(
+      events: list[Event], merged_event_sources: list[Event]
+  ) -> Optional[int]:
+    """Counts requests before stream completion markers are projected out."""
+    stream_keys = {
+        (event.author, event.live_session_id)
+        for event in events
+        if event.live_session_id is not None
+        or event.turn_complete is not None
+        or event.partial
+    }
+    if not stream_keys:
+      # Old eval files and ordinary unary responses retain event-based counting.
+      return None
+
+    # Standalone usage merged into a model event must not start another call.
+    # Keep the raw sequence for boundaries, including markers absent from evals.
+    model_event_ids = {id(event) for event in merged_event_sources}
+    count = 0
+    active_sessions: set[tuple[str, Optional[str]]] = set()
+    for event in events:
+      if event.author.lower() == _USER_AUTHOR:
+        # Live input transcriptions can interleave with the model response.
+        # Their session ID survives normalization into user text content.
+        if event.input_transcription is None and event.live_session_id is None:
+          active_sessions.clear()
+        continue
+
+      has_model_data = (
+          event.model_version is not None or event.usage_metadata is not None
+      )
+      # Completion/interrupt metadata does not start a new request. Text flushes
+      # carry model_version so sessions that omit partial chunks still count.
+      has_payload = (
+          bool(event.content and event.content.parts)
+          or event.usage_metadata is not None
+          or (
+              event.grounding_metadata is not None
+              and not event.turn_complete
+              and not event.interrupted
+          )
+      )
+      key = (event.author, event.live_session_id)
+      if id(event) in model_event_ids and has_model_data and has_payload:
+        if key not in stream_keys:
+          # Unary responses still count individually in mixed invocations,
+          # including usage-only responses with no content.
+          count += 1
+        elif key not in active_sessions:
+          count += 1
+          active_sessions.add(key)
+
+      if event.get_function_responses() and event.live_session_id is None:
+        # Legacy tool responses omit connection identity. Preserve their
+        # author-level boundary without closing other authors' requests.
+        active_sessions = {
+            active_key
+            for active_key in active_sessions
+            if active_key[0] != event.author
+        }
+      elif (
+          event.turn_complete
+          or event.interrupted
+          or event.get_function_responses()
+          or (
+              event.live_session_id is None
+              and event.turn_complete is None
+              and not event.partial
+          )
+      ):
+        # SSE has a final response, possibly only usage/error metadata. Live
+        # can flush text before tools, so it needs a real connection boundary.
+        active_sessions.discard(key)
+
+    return count
 
   @staticmethod
   def _get_app_details_by_invocation_id(
