@@ -220,7 +220,10 @@ of the ADK.
 
 ## Vibe Coding
 
-If you want to develop an agent via vibe coding the [llms.txt](./llms.txt) and the [llms-full.txt](./llms-full.txt) can be used as context to an LLM. While the former one is a summarized one and the latter one has the full information in case your LLM has a big enough context window.
+To give an LLM current ADK documentation as context, use the generated
+[llms.txt](https://adk.dev/llms.txt) index or
+[llms-full.txt](https://adk.dev/llms-full.txt) for the full documentation.
+The copies in this repository are relocation notices that link to these files.
 
 ## Community Events
 
