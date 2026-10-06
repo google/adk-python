@@ -543,6 +543,7 @@ class VertexAiSessionService(BaseSessionService):
       await _do_append(config)
 
     if not event.partial:
+      session.last_update_time = event.timestamp
       self._commit_event_to_session(session, event)
     return event
 

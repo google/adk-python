@@ -1198,6 +1198,70 @@ async def test_append_event():
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_updates_session_last_update_time() -> None:
+  """Appending an event updates session.last_update_time to event.timestamp."""
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.create_session(
+      app_name='123', user_id='user', session_id='test_update_time_session'
+  )
+  original_update_time = session.last_update_time
+
+  event_timestamp = original_update_time + 10.0
+  event = Event(
+      invocation_id='invocation',
+      author='user',
+      timestamp=event_timestamp,
+  )
+  await session_service.append_event(session=session, event=event)
+
+  assert session.last_update_time == pytest.approx(event_timestamp, abs=1e-6)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_partial_does_not_update_session_last_update_time():
+  """Partial events do not update session.last_update_time or persist."""
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.create_session(
+      app_name='123', user_id='user', session_id='test_partial_session'
+  )
+  original_update_time = session.last_update_time
+
+  event = Event(
+      invocation_id='invocation',
+      author='user',
+      timestamp=original_update_time + 10.0,
+      partial=True,
+  )
+  await session_service.append_event(session=session, event=event)
+
+  assert session.last_update_time == original_update_time
+  assert len(session.events) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_multiple_events_advances_last_update_time() -> None:
+  """Multiple sequential appends advance session.last_update_time each time."""
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.create_session(
+      app_name='123', user_id='user', session_id='test_multi_update_session'
+  )
+  original_update_time = session.last_update_time
+
+  t1 = original_update_time + 10.0
+  event1 = Event(invocation_id='inv1', author='user', timestamp=t1)
+  await session_service.append_event(session=session, event=event1)
+  assert session.last_update_time == pytest.approx(t1, abs=1e-6)
+
+  t2 = original_update_time + 20.0
+  event2 = Event(invocation_id='inv2', author='model', timestamp=t2)
+  await session_service.append_event(session=session, event=event2)
+  assert session.last_update_time == pytest.approx(t2, abs=1e-6)
+
+
+@pytest.mark.asyncio
 async def test_append_event_does_not_mutate_session_on_remote_failure() -> None:
   """A failed remote append must not mutate the session.
 
