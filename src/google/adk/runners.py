@@ -1618,7 +1618,9 @@ class Runner:
       await _notify_run_error(plugin_manager, invocation_context, e)
       raise
     except asyncio.CancelledError as e:
-      if e.args and e.args[0] == _CALLER_CLOSED_EARLY_MSG:
+      if (
+          e.args and e.args[0] == _CALLER_CLOSED_EARLY_MSG
+      ) or invocation_context.is_aborted:
         closing_early = True
       else:
         run_error = e

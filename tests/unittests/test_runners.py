@@ -5517,6 +5517,60 @@ async def test_run_async_aborted_then_closed_seal_failure_is_logged(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "make_agent", [_legacy_tool_agent, _llm_tool_agent], ids=["legacy", "llm"]
+)
+async def test_run_async_aborted_and_cancelled_executes_after_run_plugin(
+    make_agent,
+):
+  """Cancelling an aborted run seals dangling calls and runs after_run."""
+  after_run_calls = []
+
+  class _AfterRunPlugin(BasePlugin):
+
+    async def after_run_callback(self, *, invocation_context):
+      after_run_calls.append(invocation_context.invocation_id)
+
+  runner = _abort_runner(
+      make_agent(),
+      plugins=[_AfterRunPlugin(name="after_run")],
+  )
+  abort_signal = asyncio.Event()
+  tool_started = asyncio.Event()
+
+  async def _consume():
+    async with aclosing(
+        runner.run_async(
+            user_id=TEST_USER_ID,
+            session_id="s",
+            new_message=types.Content(
+                role="user", parts=[types.Part(text="Run")]
+            ),
+            abort_signal=abort_signal,
+        )
+    ) as agen:
+      async for event in agen:
+        if _has_fc(event):
+          tool_started.set()
+
+  task = asyncio.create_task(_consume())
+  await tool_started.wait()
+  abort_signal.set()
+  task.cancel()
+  with pytest.raises(asyncio.CancelledError):
+    await task
+
+  session = await runner.session_service.get_session(
+      app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id="s"
+  )
+  sealed = _abort_events(session.events)
+  assert [fr.name for e in sealed for fr in e.get_function_responses()] == [
+      "_slow_tool"
+  ]
+  assert len(after_run_calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_run_async_aborted_task_sub_agent_does_not_capture_next_turn():
   """Aborting inside a task sub-agent seals both scopes; the next turn reaches the coordinator."""
   worker = LlmAgent(

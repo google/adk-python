@@ -330,7 +330,9 @@ async def run_node_async(
           await _notify_run_error(ic.plugin_manager, ic, e)
           raise
         except asyncio.CancelledError as e:
-          if e.args and e.args[0] == _CALLER_CLOSED_EARLY_MSG:
+          if (
+              e.args and e.args[0] == _CALLER_CLOSED_EARLY_MSG
+          ) or ic.is_aborted:
             closing_early = True
           else:
             run_error = e
@@ -341,8 +343,9 @@ async def run_node_async(
           run_error = e
           raise
       finally:
-        # Success path (also caller early-stop via GeneratorExit or
-        # _CALLER_CLOSED_EARLY_MSG): run after_run and compaction.
+        # Success path (also caller early-stop via GeneratorExit,
+        # _CALLER_CLOSED_EARLY_MSG, or abort_signal): run after_run and
+        # compaction.
         # _cleanup_root_task has already run in the inner finally above when a
         # root task was created. A failure in this success cleanup (e.g. an
         # after_run plugin raising, which PluginManager surfaces as a

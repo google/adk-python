@@ -167,6 +167,12 @@ class TestPauseLeftCallsUnanswered:
     events = [lro, _response_event('ask', 'c1'), _text_event('done')]
     assert not _pause_left_calls_unanswered(self._ctx({lro.id}), events)
 
+  def test_partially_answered_pause_still_holds(self):
+    pause_ev = _parallel_call_event([('ask', 'c1'), ('fetch', 'c2')])
+    pause_ev.long_running_tool_ids = {'c1', 'c2'}
+    events = [pause_ev, _response_event('ask', 'c1'), _text_event('tail')]
+    assert _pause_left_calls_unanswered(self._ctx({pause_ev.id}), events)
+
   def test_no_pause_events_is_false(self):
     events = [_text_event('a'), _text_event('b')]
     assert not _pause_left_calls_unanswered(self._ctx(set()), events)
@@ -279,9 +285,16 @@ class TestIsSubBranchResponse:
 class TestDecideResume:
   """The three outcomes the flow acts on."""
 
-  def _ctx(self, pausing: set[str] | None = None, *, agent_name: str = 'agent'):
+  def _ctx(
+      self,
+      pausing: set[str] | None = None,
+      *,
+      resumable: bool = True,
+      agent_name: str = 'agent',
+  ):
     pausing = pausing or set()
     ctx = mock.Mock()
+    ctx.is_resumable = resumable
     ctx.agent.name = agent_name
     ctx.should_pause_invocation.side_effect = lambda ev: ev.id in pausing
     return ctx
@@ -504,6 +517,19 @@ class TestDecideResume:
     decision = decide_resume(self._ctx(), events, {'ask': object()})
     assert decision.action is ResumeAction.CONTINUE
 
+  def test_partially_answered_parallel_lro_does_not_replay_pending_sibling(
+      self,
+  ):
+    call = _parallel_call_event([('ask', 'c1'), ('fetch', 'c2')])
+    call.long_running_tool_ids = {'c1', 'c2'}
+    events = [call, _response_event('ask', 'c1')]
+    decision = decide_resume(
+        self._ctx(resumable=False),
+        events,
+        {'ask': object(), 'fetch': object()},
+    )
+    assert decision.action is ResumeAction.CONTINUE
+
 
 class TestNeedsCallReplay:
 
@@ -538,7 +564,9 @@ class TestDecideStepResume:
     ctx = self._ctx([_call_event('ask', 'c1')], resumable=False)
     decision = decide_step_resume(ctx, {'ask': object()})
     assert decision.action is ResumeAction.CONTINUE
-    ctx._get_events.assert_not_called()
+    ctx._get_events.assert_called_once_with(
+        current_invocation=True, current_branch=True
+    )
 
   def test_a_non_resumable_invocation_replays_sub_branch_answer(self):
     call = _call_event('workflow_tool', 'c1')
@@ -551,6 +579,36 @@ class TestDecideStepResume:
     decision = decide_step_resume(ctx, {'workflow_tool': object()})
     assert decision.action is ResumeAction.REPLAY_CALLS
     assert decision.replay_event() is call
+
+  def test_a_non_resumable_invocation_does_not_pause_on_unanswered_lro_in_multi_event_branch(
+      self,
+  ):
+    call = _call_event('ask', 'c1', lro=True)
+    ctx = self._ctx([call, _text_event('tail')], resumable=False)
+    decision = decide_step_resume(ctx, {'ask': object()})
+    assert decision.action is ResumeAction.CONTINUE
+
+  def test_a_non_resumable_invocation_does_not_replay_pending_parallel_lro(
+      self,
+  ):
+    call = _parallel_call_event([('ask', 'c1'), ('fetch', 'c2')])
+    call.long_running_tool_ids = {'c1', 'c2'}
+    events = [call, _response_event('ask', 'c1')]
+    ctx = self._ctx(events, resumable=False)
+    decision = decide_step_resume(ctx, {'ask': object(), 'fetch': object()})
+    assert decision.action is ResumeAction.CONTINUE
+
+  def test_a_non_resumable_invocation_replays_unexecuted_sibling_calls(self):
+    events = [
+        _parallel_call_event([('ask', 'c1'), ('fetch', 'c2')]),
+        _response_event('ask', 'c1'),
+    ]
+    ctx = self._ctx(events, resumable=False)
+    decision = decide_step_resume(ctx, {'ask': object(), 'fetch': object()})
+    assert decision.action is ResumeAction.REPLAY_CALLS
+    assert [fc.name for fc in decision.replay_event().get_function_calls()] == [
+        'fetch'
+    ]
 
   def test_no_events_continues(self):
     decision = decide_step_resume(self._ctx([]), {'ask': object()})
