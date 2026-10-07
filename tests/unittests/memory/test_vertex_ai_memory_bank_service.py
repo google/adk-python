@@ -15,11 +15,13 @@
 import asyncio
 import datetime
 import logging
+from types import SimpleNamespace
 from typing import Any
 from typing import Iterable
 from typing import Optional
 from unittest import mock
 
+from agentplatform import types as agentplatform_types
 from google.adk.events.event import Event
 from google.adk.memory import vertex_ai_memory_bank_service as memory_service_module
 from google.adk.memory.memory_entry import MemoryEntry
@@ -28,24 +30,21 @@ from google.adk.sessions.session import Session
 from google.auth.credentials import Credentials
 from google.genai import types
 import pytest
-from vertexai import types as vertex_types
 
 MOCK_APP_NAME = 'test-app'
 MOCK_USER_ID = 'test-user'
 
 
 def _supports_generate_memories_metadata() -> bool:
-  return (
-      'metadata' in vertex_types.GenerateAgentEngineMemoriesConfig.model_fields
-  )
+  return 'metadata' in agentplatform_types.GenerateMemoriesConfig.model_fields
 
 
 def _supports_create_memory_metadata() -> bool:
-  return 'metadata' in vertex_types.AgentEngineMemoryConfig.model_fields
+  return 'metadata' in agentplatform_types.MemoryConfig.model_fields
 
 
 def _supports_create_memory_revision_labels() -> bool:
-  return 'revision_labels' in vertex_types.AgentEngineMemoryConfig.model_fields
+  return 'revision_labels' in agentplatform_types.MemoryConfig.model_fields
 
 
 class _AsyncListIterator:
@@ -275,16 +274,14 @@ def test_build_create_memory_config_custom_metadata_memory_id_wins():
 
 
 @pytest.fixture
-def mock_vertexai_client():
-  with mock.patch('vertexai.Client') as mock_client_constructor:
+def mock_agentplatform_client():
+  with mock.patch('agentplatform.Client') as mock_client_constructor:
     mock_async_client = mock.MagicMock()
-    mock_async_client.agent_engines.memories.generate = mock.AsyncMock()
-    mock_async_client.agent_engines.memories.create = mock.AsyncMock()
-    mock_async_client.agent_engines.memories.retrieve = mock.AsyncMock()
-    mock_async_client.agent_engines.memories.retrieve_profiles = (
-        mock.AsyncMock()
-    )
-    mock_async_client.agent_engines.memories.ingest_events = mock.AsyncMock()
+    mock_async_client.memory_banks.memories.generate = mock.AsyncMock()
+    mock_async_client.memory_banks.memories.create = mock.AsyncMock()
+    mock_async_client.memory_banks.memories.retrieve = mock.AsyncMock()
+    mock_async_client.memory_banks.memories.retrieve_profiles = mock.AsyncMock()
+    mock_async_client.memory_banks.ingest_events = mock.AsyncMock()
 
     mock_client = mock.MagicMock()
     mock_client.aio = mock_async_client
@@ -322,7 +319,7 @@ def test_get_api_client_passes_credentials_through():
       credentials=mock_credentials
   )
 
-  with mock.patch('vertexai.Client') as mock_client_constructor:
+  with mock.patch('agentplatform.Client') as mock_client_constructor:
     memory_service._get_api_client()
 
   mock_client_constructor.assert_called_once_with(
@@ -335,7 +332,7 @@ def test_get_api_client_passes_credentials_through():
 def test_get_api_client_defaults_credentials_to_none():
   memory_service = mock_vertex_ai_memory_bank_service()
 
-  with mock.patch('vertexai.Client') as mock_client_constructor:
+  with mock.patch('agentplatform.Client') as mock_client_constructor:
     memory_service._get_api_client()
 
   mock_client_constructor.assert_called_once_with(
@@ -362,7 +359,7 @@ def test_get_api_client_reuses_one_client_within_an_event_loop():
     )
 
   with mock.patch(
-      'vertexai.Client',
+      'agentplatform.Client',
       side_effect=lambda **_: mock.MagicMock(aio=mock.AsyncMock()),
   ) as mock_client_constructor:
     asyncio.run(add_events_twice())
@@ -375,7 +372,7 @@ def test_get_api_client_builds_a_separate_client_per_event_loop():
   memory_service = mock_vertex_ai_memory_bank_service()
 
   with mock.patch(
-      'vertexai.Client',
+      'agentplatform.Client',
       side_effect=lambda **_: mock.MagicMock(aio=mock.AsyncMock()),
   ) as mock_client_constructor:
     asyncio.run(
@@ -397,17 +394,17 @@ def test_get_api_client_builds_a_separate_client_per_event_loop():
 
 
 @pytest.mark.asyncio
-async def test_add_session_to_memory(mock_vertexai_client):
+async def test_add_session_to_memory(mock_agentplatform_client):
   memory_service = mock_vertex_ai_memory_bank_service()
   await memory_service.add_session_to_memory(MOCK_SESSION)
 
   # Allow the fire-and-forget task to complete.
   await asyncio.sleep(0)
 
-  mock_vertexai_client.agent_engines.memories.generate.assert_not_called()
-  mock_vertexai_client.agent_engines.memories.ingest_events.assert_awaited_once()
+  mock_agentplatform_client.memory_banks.memories.generate.assert_not_called()
+  mock_agentplatform_client.memory_banks.ingest_events.assert_awaited_once()
   call_kwargs = (
-      mock_vertexai_client.agent_engines.memories.ingest_events.call_args.kwargs
+      mock_agentplatform_client.memory_banks.ingest_events.call_args.kwargs
   )
   assert call_kwargs['name'] == 'reasoningEngines/123'
   assert call_kwargs['scope'] == {
@@ -427,7 +424,7 @@ async def test_add_session_to_memory(mock_vertexai_client):
 
 @pytest.mark.asyncio
 async def test_add_events_to_memory_with_explicit_events_and_metadata(
-    mock_vertexai_client,
+    mock_agentplatform_client,
 ):
   memory_service = mock_vertex_ai_memory_bank_service()
   await memory_service.add_events_to_memory(
@@ -448,9 +445,9 @@ async def test_add_events_to_memory_with_explicit_events_and_metadata(
   if _supports_generate_memories_metadata():
     expected_config['metadata'] = {'source': {'string_value': 'agent'}}
 
-  mock_vertexai_client.agent_engines.memories.generate.assert_called_once()
+  mock_agentplatform_client.memory_banks.memories.generate.assert_called_once()
   call_kwargs = (
-      mock_vertexai_client.agent_engines.memories.generate.call_args.kwargs
+      mock_agentplatform_client.memory_banks.memories.generate.call_args.kwargs
   )
   assert call_kwargs['name'] == 'reasoningEngines/123'
   assert call_kwargs['scope'] == {
@@ -461,12 +458,12 @@ async def test_add_events_to_memory_with_explicit_events_and_metadata(
   source = call_kwargs['direct_contents_source']
   assert len(source.events) == 1
   assert source.events[0].content.parts[0].text == 'test_content'
-  vertex_types.GenerateAgentEngineMemoriesConfig(**call_kwargs['config'])
+  agentplatform_types.GenerateMemoriesConfig(**call_kwargs['config'])
 
 
 @pytest.mark.asyncio
 async def test_add_events_to_memory_without_session_id(
-    mock_vertexai_client,
+    mock_agentplatform_client,
 ):
   memory_service = mock_vertex_ai_memory_bank_service()
   await memory_service.add_events_to_memory(
@@ -476,9 +473,9 @@ async def test_add_events_to_memory_without_session_id(
       custom_metadata={'revision_ttl': '3600s'},
   )
 
-  mock_vertexai_client.agent_engines.memories.generate.assert_called_once()
+  mock_agentplatform_client.memory_banks.memories.generate.assert_called_once()
   call_kwargs = (
-      mock_vertexai_client.agent_engines.memories.generate.call_args.kwargs
+      mock_agentplatform_client.memory_banks.memories.generate.call_args.kwargs
   )
   assert call_kwargs['name'] == 'reasoningEngines/123'
   assert call_kwargs['scope'] == {
@@ -492,13 +489,13 @@ async def test_add_events_to_memory_without_session_id(
   source = call_kwargs['direct_contents_source']
   assert len(source.events) == 1
   assert source.events[0].content.parts[0].text == 'test_content'
-  vertex_types.GenerateAgentEngineMemoriesConfig(**call_kwargs['config'])
-  mock_vertexai_client.agent_engines.memories.create.assert_not_called()
+  agentplatform_types.GenerateMemoriesConfig(**call_kwargs['config'])
+  mock_agentplatform_client.memory_banks.memories.create.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_add_events_to_memory_merges_metadata_field_and_unknown_keys(
-    mock_vertexai_client,
+    mock_agentplatform_client,
 ):
   memory_service = mock_vertex_ai_memory_bank_service()
   await memory_service.add_events_to_memory(
@@ -519,9 +516,9 @@ async def test_add_events_to_memory_merges_metadata_field_and_unknown_keys(
         'source': {'string_value': 'agent'},
     }
 
-  mock_vertexai_client.agent_engines.memories.generate.assert_called_once()
+  mock_agentplatform_client.memory_banks.memories.generate.assert_called_once()
   call_kwargs = (
-      mock_vertexai_client.agent_engines.memories.generate.call_args.kwargs
+      mock_agentplatform_client.memory_banks.memories.generate.call_args.kwargs
   )
   assert call_kwargs['name'] == 'reasoningEngines/123'
   assert call_kwargs['scope'] == {
@@ -532,12 +529,12 @@ async def test_add_events_to_memory_merges_metadata_field_and_unknown_keys(
   source = call_kwargs['direct_contents_source']
   assert len(source.events) == 1
   assert source.events[0].content.parts[0].text == 'test_content'
-  vertex_types.GenerateAgentEngineMemoriesConfig(**call_kwargs['config'])
+  agentplatform_types.GenerateMemoriesConfig(**call_kwargs['config'])
 
 
 @pytest.mark.asyncio
 async def test_add_events_to_memory_none_wait_for_completion_keeps_default(
-    mock_vertexai_client,
+    mock_agentplatform_client,
 ):
   memory_service = mock_vertex_ai_memory_bank_service()
   await memory_service.add_events_to_memory(
@@ -550,9 +547,9 @@ async def test_add_events_to_memory_none_wait_for_completion_keeps_default(
       },
   )
 
-  mock_vertexai_client.agent_engines.memories.generate.assert_called_once()
+  mock_agentplatform_client.memory_banks.memories.generate.assert_called_once()
   call_kwargs = (
-      mock_vertexai_client.agent_engines.memories.generate.call_args.kwargs
+      mock_agentplatform_client.memory_banks.memories.generate.call_args.kwargs
   )
   assert call_kwargs['name'] == 'reasoningEngines/123'
   assert call_kwargs['scope'] == {
@@ -563,12 +560,12 @@ async def test_add_events_to_memory_none_wait_for_completion_keeps_default(
   source = call_kwargs['direct_contents_source']
   assert len(source.events) == 1
   assert source.events[0].content.parts[0].text == 'test_content'
-  vertex_types.GenerateAgentEngineMemoriesConfig(**call_kwargs['config'])
+  agentplatform_types.GenerateMemoriesConfig(**call_kwargs['config'])
 
 
 @pytest.mark.asyncio
 async def test_add_events_to_memory_ttl_used_when_revision_ttl_is_none(
-    mock_vertexai_client,
+    mock_agentplatform_client,
 ):
   memory_service = mock_vertex_ai_memory_bank_service()
   await memory_service.add_events_to_memory(
@@ -582,9 +579,9 @@ async def test_add_events_to_memory_ttl_used_when_revision_ttl_is_none(
       },
   )
 
-  mock_vertexai_client.agent_engines.memories.generate.assert_called_once()
+  mock_agentplatform_client.memory_banks.memories.generate.assert_called_once()
   call_kwargs = (
-      mock_vertexai_client.agent_engines.memories.generate.call_args.kwargs
+      mock_agentplatform_client.memory_banks.memories.generate.call_args.kwargs
   )
   assert call_kwargs['name'] == 'reasoningEngines/123'
   assert call_kwargs['scope'] == {
@@ -598,12 +595,12 @@ async def test_add_events_to_memory_ttl_used_when_revision_ttl_is_none(
   source = call_kwargs['direct_contents_source']
   assert len(source.events) == 1
   assert source.events[0].content.parts[0].text == 'test_content'
-  vertex_types.GenerateAgentEngineMemoriesConfig(**call_kwargs['config'])
+  agentplatform_types.GenerateMemoriesConfig(**call_kwargs['config'])
 
 
 @pytest.mark.asyncio
 async def test_add_events_to_memory_with_filtered_events_skips_rpc(
-    mock_vertexai_client,
+    mock_agentplatform_client,
 ):
   memory_service = mock_vertex_ai_memory_bank_service()
   await memory_service.add_events_to_memory(
@@ -614,13 +611,13 @@ async def test_add_events_to_memory_with_filtered_events_skips_rpc(
       custom_metadata={'revision_ttl': '3600s'},
   )
 
-  mock_vertexai_client.agent_engines.memories.generate.assert_not_called()
-  mock_vertexai_client.agent_engines.memories.create.assert_not_called()
+  mock_agentplatform_client.memory_banks.memories.generate.assert_not_called()
+  mock_agentplatform_client.memory_banks.memories.create.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_add_events_to_memory_via_ingest(
-    mock_vertexai_client,
+    mock_agentplatform_client,
 ):
   memory_service = mock_vertex_ai_memory_bank_service()
   await memory_service.add_events_to_memory(
@@ -639,9 +636,9 @@ async def test_add_events_to_memory_via_ingest(
   # Allow the fire-and-forget task to complete.
   await asyncio.sleep(0)
 
-  mock_vertexai_client.agent_engines.memories.ingest_events.assert_awaited_once()
+  mock_agentplatform_client.memory_banks.ingest_events.assert_awaited_once()
   call_kwargs = (
-      mock_vertexai_client.agent_engines.memories.ingest_events.call_args.kwargs
+      mock_agentplatform_client.memory_banks.ingest_events.call_args.kwargs
   )
   assert call_kwargs['name'] == 'reasoningEngines/123'
   assert call_kwargs['scope'] == {
@@ -664,7 +661,7 @@ async def test_add_events_to_memory_via_ingest(
 
 @pytest.mark.asyncio
 async def test_add_events_to_memory_via_ingest_no_events(
-    mock_vertexai_client,
+    mock_agentplatform_client,
 ):
   """No-events requests are valid for trigger config updates."""
   memory_service = mock_vertex_ai_memory_bank_service()
@@ -682,7 +679,7 @@ async def test_add_events_to_memory_via_ingest_no_events(
   # Allow the fire-and-forget task to complete.
   await asyncio.sleep(0)
 
-  mock_vertexai_client.agent_engines.memories.ingest_events.assert_awaited_once_with(
+  mock_agentplatform_client.memory_banks.ingest_events.assert_awaited_once_with(
       name='reasoningEngines/123',
       scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
       generation_trigger_config={
@@ -693,7 +690,7 @@ async def test_add_events_to_memory_via_ingest_no_events(
 
 @pytest.mark.asyncio
 async def test_add_memory_calls_create(
-    mock_vertexai_client,
+    mock_agentplatform_client,
 ):
   memory_service = mock_vertex_ai_memory_bank_service()
   await memory_service.add_memory(
@@ -721,8 +718,8 @@ async def test_add_memory_calls_create(
   if _supports_create_memory_metadata():
     expected_config['metadata'] = {'source': {'string_value': 'agent'}}
 
-  mock_vertexai_client.agent_engines.memories.generate.assert_not_called()
-  mock_vertexai_client.agent_engines.memories.create.assert_has_awaits([
+  mock_agentplatform_client.memory_banks.memories.generate.assert_not_called()
+  mock_agentplatform_client.memory_banks.memories.create.assert_has_awaits([
       mock.call(
           name='reasoningEngines/123',
           fact='fact one',
@@ -736,19 +733,19 @@ async def test_add_memory_calls_create(
           config=expected_config,
       ),
   ])
-  assert mock_vertexai_client.agent_engines.memories.create.await_count == 2
+  assert mock_agentplatform_client.memory_banks.memories.create.await_count == 2
 
   create_config = (
-      mock_vertexai_client.agent_engines.memories.create.call_args.kwargs[
+      mock_agentplatform_client.memory_banks.memories.create.call_args.kwargs[
           'config'
       ]
   )
-  vertex_types.AgentEngineMemoryConfig(**create_config)
+  agentplatform_types.MemoryConfig(**create_config)
 
 
 @pytest.mark.asyncio
 async def test_add_memory_enable_consolidation_calls_generate_direct_source(
-    mock_vertexai_client,
+    mock_agentplatform_client,
 ):
   memory_service = mock_vertex_ai_memory_bank_service()
   await memory_service.add_memory(
@@ -772,7 +769,7 @@ async def test_add_memory_enable_consolidation_calls_generate_direct_source(
   if _supports_generate_memories_metadata():
     expected_config['metadata'] = {'source': {'string_value': 'agent'}}
 
-  mock_vertexai_client.agent_engines.memories.generate.assert_called_once_with(
+  mock_agentplatform_client.memory_banks.memories.generate.assert_called_once_with(
       name='reasoningEngines/123',
       direct_memories_source={
           'direct_memories': [
@@ -783,19 +780,19 @@ async def test_add_memory_enable_consolidation_calls_generate_direct_source(
       scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
       config=expected_config,
   )
-  mock_vertexai_client.agent_engines.memories.create.assert_not_called()
+  mock_agentplatform_client.memory_banks.memories.create.assert_not_called()
 
   generate_config = (
-      mock_vertexai_client.agent_engines.memories.generate.call_args.kwargs[
+      mock_agentplatform_client.memory_banks.memories.generate.call_args.kwargs[
           'config'
       ]
   )
-  vertex_types.GenerateAgentEngineMemoriesConfig(**generate_config)
+  agentplatform_types.GenerateMemoriesConfig(**generate_config)
 
 
 @pytest.mark.asyncio
 async def test_add_memory_enable_consolidation_batches_generate_calls(
-    mock_vertexai_client,
+    mock_agentplatform_client,
 ):
   memory_service = mock_vertex_ai_memory_bank_service()
   await memory_service.add_memory(
@@ -826,7 +823,7 @@ async def test_add_memory_enable_consolidation_batches_generate_calls(
       },
   )
 
-  mock_vertexai_client.agent_engines.memories.generate.assert_has_awaits([
+  mock_agentplatform_client.memory_banks.memories.generate.assert_has_awaits([
       mock.call(
           name='reasoningEngines/123',
           direct_memories_source={
@@ -852,13 +849,15 @@ async def test_add_memory_enable_consolidation_batches_generate_calls(
           config={'wait_for_completion': False},
       ),
   ])
-  assert mock_vertexai_client.agent_engines.memories.generate.await_count == 2
-  mock_vertexai_client.agent_engines.memories.create.assert_not_called()
+  assert (
+      mock_agentplatform_client.memory_banks.memories.generate.await_count == 2
+  )
+  mock_agentplatform_client.memory_banks.memories.create.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_add_memory_invalid_enable_consolidation_type_raises(
-    mock_vertexai_client,
+    mock_agentplatform_client,
 ):
   memory_service = mock_vertex_ai_memory_bank_service()
   with pytest.raises(
@@ -875,13 +874,13 @@ async def test_add_memory_invalid_enable_consolidation_type_raises(
         ],
         custom_metadata={'enable_consolidation': 'yes'},
     )
-  mock_vertexai_client.agent_engines.memories.generate.assert_not_called()
-  mock_vertexai_client.agent_engines.memories.create.assert_not_called()
+  mock_agentplatform_client.memory_banks.memories.generate.assert_not_called()
+  mock_agentplatform_client.memory_banks.memories.create.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_add_memory_calls_create_with_memory_entry_metadata(
-    mock_vertexai_client,
+    mock_agentplatform_client,
 ):
   memory_service = mock_vertex_ai_memory_bank_service()
   await memory_service.add_memory(
@@ -912,24 +911,24 @@ async def test_add_memory_calls_create_with_memory_entry_metadata(
         'timestamp': '2026-02-13T14:46:21Z',
     }
 
-  mock_vertexai_client.agent_engines.memories.generate.assert_not_called()
-  mock_vertexai_client.agent_engines.memories.create.assert_awaited_once_with(
+  mock_agentplatform_client.memory_banks.memories.generate.assert_not_called()
+  mock_agentplatform_client.memory_banks.memories.create.assert_awaited_once_with(
       name='reasoningEngines/123',
       fact='fact one',
       scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
       config=expected_config,
   )
   create_config = (
-      mock_vertexai_client.agent_engines.memories.create.call_args.kwargs[
+      mock_agentplatform_client.memory_banks.memories.create.call_args.kwargs[
           'config'
       ]
   )
-  vertex_types.AgentEngineMemoryConfig(**create_config)
+  agentplatform_types.MemoryConfig(**create_config)
 
 
 @pytest.mark.asyncio
 async def test_add_events_to_memory_allowed_topics_routes_to_generate(
-    mock_vertexai_client,
+    mock_agentplatform_client,
 ):
   memory_service = mock_vertex_ai_memory_bank_service()
   with mock.patch.object(
@@ -944,16 +943,18 @@ async def test_add_events_to_memory_allowed_topics_routes_to_generate(
         custom_metadata={'allowed_topics': ['USER_PREFERENCES']},
     )
 
-  mock_vertexai_client.agent_engines.memories.ingest_events.assert_not_called()
-  mock_vertexai_client.agent_engines.memories.generate.assert_called_once()
+  mock_agentplatform_client.memory_banks.ingest_events.assert_not_called()
+  mock_agentplatform_client.memory_banks.memories.generate.assert_called_once()
   call_kwargs = (
-      mock_vertexai_client.agent_engines.memories.generate.call_args.kwargs
+      mock_agentplatform_client.memory_banks.memories.generate.call_args.kwargs
   )
   assert call_kwargs['config']['allowed_topics'] == ['USER_PREFERENCES']
 
 
 @pytest.mark.asyncio
-async def test_add_memory_forwards_entry_id_as_memory_id(mock_vertexai_client):
+async def test_add_memory_forwards_entry_id_as_memory_id(
+    mock_agentplatform_client,
+):
   memory_service = mock_vertex_ai_memory_bank_service()
   with mock.patch.object(
       memory_service_module,
@@ -972,7 +973,7 @@ async def test_add_memory_forwards_entry_id_as_memory_id(mock_vertexai_client):
     )
 
   create_config = (
-      mock_vertexai_client.agent_engines.memories.create.call_args.kwargs[
+      mock_agentplatform_client.memory_banks.memories.create.call_args.kwargs[
           'config'
       ]
   )
@@ -981,7 +982,7 @@ async def test_add_memory_forwards_entry_id_as_memory_id(mock_vertexai_client):
 
 @pytest.mark.asyncio
 async def test_add_memory_custom_metadata_memory_id_overrides_entry_id(
-    mock_vertexai_client,
+    mock_agentplatform_client,
 ):
   memory_service = mock_vertex_ai_memory_bank_service()
   with mock.patch.object(
@@ -1002,7 +1003,7 @@ async def test_add_memory_custom_metadata_memory_id_overrides_entry_id(
     )
 
   create_config = (
-      mock_vertexai_client.agent_engines.memories.create.call_args.kwargs[
+      mock_agentplatform_client.memory_banks.memories.create.call_args.kwargs[
           'config'
       ]
   )
@@ -1011,7 +1012,7 @@ async def test_add_memory_custom_metadata_memory_id_overrides_entry_id(
 
 @pytest.mark.asyncio
 async def test_add_memory_calls_create_with_multimodal_content(
-    mock_vertexai_client,
+    mock_agentplatform_client,
 ):
   memory_service = mock_vertex_ai_memory_bank_service()
   with pytest.raises(
@@ -1041,13 +1042,13 @@ async def test_add_memory_calls_create_with_multimodal_content(
         ],
     )
 
-  mock_vertexai_client.agent_engines.memories.generate.assert_not_called()
-  mock_vertexai_client.agent_engines.memories.create.assert_not_called()
+  mock_agentplatform_client.memory_banks.memories.generate.assert_not_called()
+  mock_agentplatform_client.memory_banks.memories.create.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_add_memory_with_missing_text_raises(
-    mock_vertexai_client,
+    mock_agentplatform_client,
 ):
   memory_service = mock_vertex_ai_memory_bank_service()
   with pytest.raises(
@@ -1070,13 +1071,13 @@ async def test_add_memory_with_missing_text_raises(
         ],
     )
 
-  mock_vertexai_client.agent_engines.memories.generate.assert_not_called()
-  mock_vertexai_client.agent_engines.memories.create.assert_not_called()
+  mock_agentplatform_client.memory_banks.memories.generate.assert_not_called()
+  mock_agentplatform_client.memory_banks.memories.create.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_add_memory_with_whitespace_only_text_raises(
-    mock_vertexai_client,
+    mock_agentplatform_client,
 ):
   memory_service = mock_vertex_ai_memory_bank_service()
   with pytest.raises(
@@ -1091,13 +1092,13 @@ async def test_add_memory_with_whitespace_only_text_raises(
         ],
     )
 
-  mock_vertexai_client.agent_engines.memories.generate.assert_not_called()
-  mock_vertexai_client.agent_engines.memories.create.assert_not_called()
+  mock_agentplatform_client.memory_banks.memories.generate.assert_not_called()
+  mock_agentplatform_client.memory_banks.memories.create.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_add_memory_with_whitespace_and_non_text_parts_raises(
-    mock_vertexai_client,
+    mock_agentplatform_client,
 ):
   memory_service = mock_vertex_ai_memory_bank_service()
   with pytest.raises(
@@ -1127,13 +1128,13 @@ async def test_add_memory_with_whitespace_and_non_text_parts_raises(
         ],
     )
 
-  mock_vertexai_client.agent_engines.memories.generate.assert_not_called()
-  mock_vertexai_client.agent_engines.memories.create.assert_not_called()
+  mock_agentplatform_client.memory_banks.memories.generate.assert_not_called()
+  mock_agentplatform_client.memory_banks.memories.create.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_add_memory_missing_memories_raises(
-    mock_vertexai_client,
+    mock_agentplatform_client,
 ):
   memory_service = mock_vertex_ai_memory_bank_service()
   with pytest.raises(
@@ -1144,13 +1145,13 @@ async def test_add_memory_missing_memories_raises(
         user_id=MOCK_SESSION.user_id,
         memories=[],
     )
-  mock_vertexai_client.agent_engines.memories.generate.assert_not_called()
-  mock_vertexai_client.agent_engines.memories.create.assert_not_called()
+  mock_agentplatform_client.memory_banks.memories.generate.assert_not_called()
+  mock_agentplatform_client.memory_banks.memories.create.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_add_memory_with_invalid_memory_type_raises(
-    mock_vertexai_client,
+    mock_agentplatform_client,
 ):
   memory_service = mock_vertex_ai_memory_bank_service()
   with pytest.raises(
@@ -1162,13 +1163,13 @@ async def test_add_memory_with_invalid_memory_type_raises(
         user_id=MOCK_SESSION.user_id,
         memories=[123],
     )
-  mock_vertexai_client.agent_engines.memories.generate.assert_not_called()
-  mock_vertexai_client.agent_engines.memories.create.assert_not_called()
+  mock_agentplatform_client.memory_banks.memories.generate.assert_not_called()
+  mock_agentplatform_client.memory_banks.memories.create.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_add_memory_with_content_type_raises(
-    mock_vertexai_client,
+    mock_agentplatform_client,
 ):
   memory_service = mock_vertex_ai_memory_bank_service()
   with pytest.raises(
@@ -1181,34 +1182,118 @@ async def test_add_memory_with_content_type_raises(
         memories=[types.Content(parts=[types.Part(text='fact one')])],
     )
 
-  mock_vertexai_client.agent_engines.memories.generate.assert_not_called()
-  mock_vertexai_client.agent_engines.memories.create.assert_not_called()
+  mock_agentplatform_client.memory_banks.memories.generate.assert_not_called()
+  mock_agentplatform_client.memory_banks.memories.create.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_add_empty_session_to_memory(mock_vertexai_client):
+async def test_add_empty_session_to_memory(mock_agentplatform_client):
   memory_service = mock_vertex_ai_memory_bank_service()
   await memory_service.add_session_to_memory(MOCK_SESSION_WITH_EMPTY_EVENTS)
 
   # Allow the fire-and-forget task to complete.
   await asyncio.sleep(0)
 
-  mock_vertexai_client.agent_engines.memories.generate.assert_not_called()
-  mock_vertexai_client.agent_engines.memories.ingest_events.assert_awaited_once_with(
+  mock_agentplatform_client.memory_banks.memories.generate.assert_not_called()
+  mock_agentplatform_client.memory_banks.ingest_events.assert_awaited_once_with(
       name='reasoningEngines/123',
       scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
   )
 
 
+class _LegacyShapedMemoryClient:
+  """Shaped like a 2.x `vertexai` client: Memory Bank exists only under
+  `agent_engines.memories`, `ingest_events` included, and there is no
+  top-level `memory_banks` attribute."""
+
+  def __init__(self) -> None:
+    self.memories = SimpleNamespace(
+        generate=mock.AsyncMock(),
+        create=mock.AsyncMock(),
+        retrieve=mock.AsyncMock(),
+        retrieve_profiles=mock.AsyncMock(),
+        ingest_events=mock.AsyncMock(),
+    )
+    self.agent_engines = SimpleNamespace(memories=self.memories)
+
+
 @pytest.mark.asyncio
-async def test_search_memory(mock_vertexai_client):
+async def test_falls_back_to_agent_engines_for_a_vertexai_shaped_client():
+  """A subclass returning a `vertexai` client keeps working.
+
+  Several subclasses override `_get_api_client` to return
+  `vertexai.Client(...).aio`, which in 2.x only has `agent_engines.memories`.
+  Memory operations have to reach that path rather than raise AttributeError
+  on `.memory_banks`.
+  """
+  legacy_client = _LegacyShapedMemoryClient()
+  assert getattr(legacy_client, 'memory_banks', None) is None
+  retrieved_memory = mock.MagicMock()
+  retrieved_memory.memory.fact = 'legacy_content'
+  retrieved_memory.memory.update_time = datetime.datetime(2024, 12, 12)
+  legacy_client.memories.retrieve.return_value = _AsyncListIterator(
+      [retrieved_memory]
+  )
+  legacy_client.memories.retrieve_profiles.return_value = (
+      agentplatform_types.RetrieveProfilesResponse(profiles=None)
+  )
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  with mock.patch.object(
+      memory_service, '_get_api_client', return_value=legacy_client
+  ):
+    searched = await memory_service.search_memory(
+        app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='query'
+    )
+    profiles = await memory_service.retrieve_profiles(
+        app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID
+    )
+    await memory_service.add_session_to_memory(MOCK_SESSION)
+
+  assert searched.memories[0].content.parts[0].text == 'legacy_content'
+  assert profiles == []
+  legacy_client.memories.retrieve.assert_awaited_once()
+  legacy_client.memories.retrieve_profiles.assert_awaited_once()
+  # add_session_to_memory defaults to ingest_events, which the service fires
+  # as a background task: the call is made immediately, the await later.
+  legacy_client.memories.ingest_events.assert_called_once()
+
+
+def test_ingest_events_and_memories_resolve_for_both_client_shapes():
+  """Both accessors pick the v2 path when present and the legacy one otherwise.
+
+  `ingest_events` is the one call whose location differs between the paths: it
+  sits on `memory_banks` itself, but under `memories` on the legacy client.
+  """
+  # pylint: disable=protected-access
+  from google.adk.memory import vertex_ai_memory_bank_service as module
+
+  legacy_client = _LegacyShapedMemoryClient()
+  assert module._memories_api(legacy_client) is legacy_client.memories
+  assert (
+      module._ingest_events_api(legacy_client)
+      is legacy_client.memories.ingest_events
+  )
+
+  v2_client = SimpleNamespace(
+      memory_banks=SimpleNamespace(memories=object(), ingest_events=object())
+  )
+  assert module._memories_api(v2_client) is v2_client.memory_banks.memories
+  assert (
+      module._ingest_events_api(v2_client)
+      is v2_client.memory_banks.ingest_events
+  )
+
+
+@pytest.mark.asyncio
+async def test_search_memory(mock_agentplatform_client):
   retrieved_memory = mock.MagicMock()
   retrieved_memory.memory.fact = 'test_content'
   retrieved_memory.memory.update_time = datetime.datetime(
       2024, 12, 12, 12, 12, 12, 123456
   )
 
-  mock_vertexai_client.agent_engines.memories.retrieve.return_value = (
+  mock_agentplatform_client.memory_banks.memories.retrieve.return_value = (
       _AsyncListIterator([retrieved_memory])
   )
   memory_service = mock_vertex_ai_memory_bank_service()
@@ -1217,7 +1302,7 @@ async def test_search_memory(mock_vertexai_client):
       app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='query'
   )
 
-  mock_vertexai_client.agent_engines.memories.retrieve.assert_awaited_once_with(
+  mock_agentplatform_client.memory_banks.memories.retrieve.assert_awaited_once_with(
       name='reasoningEngines/123',
       scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
       similarity_search_params={'search_query': 'query'},
@@ -1229,17 +1314,19 @@ async def test_search_memory(mock_vertexai_client):
 
 
 @pytest.mark.asyncio
-async def test_search_memory_returns_custom_metadata(mock_vertexai_client):
+async def test_search_memory_returns_custom_metadata(mock_agentplatform_client):
   """`search_memory` must round-trip `custom_metadata`."""
   timestamp = datetime.datetime(2024, 12, 12, 12, 12, 12, 123456)
   retrieved_memory = mock.MagicMock()
   retrieved_memory.memory.fact = 'test_content'
   retrieved_memory.memory.update_time = timestamp
   retrieved_memory.memory.metadata = {
-      'a_bool': vertex_types.MemoryMetadataValue(bool_value=True),
-      'a_double': vertex_types.MemoryMetadataValue(double_value=1.5),
-      'a_string': vertex_types.MemoryMetadataValue(string_value='record-123'),
-      'a_timestamp': vertex_types.MemoryMetadataValue(
+      'a_bool': agentplatform_types.MemoryMetadataValue(bool_value=True),
+      'a_double': agentplatform_types.MemoryMetadataValue(double_value=1.5),
+      'a_string': agentplatform_types.MemoryMetadataValue(
+          string_value='record-123'
+      ),
+      'a_timestamp': agentplatform_types.MemoryMetadataValue(
           timestamp_value=timestamp
       ),
       'a_mapping': {'string_value': 'mapping-val'},
@@ -1251,7 +1338,7 @@ async def test_search_memory_returns_custom_metadata(mock_vertexai_client):
       },
   }
 
-  mock_vertexai_client.agent_engines.memories.retrieve.return_value = (
+  mock_agentplatform_client.memory_banks.memories.retrieve.return_value = (
       _AsyncListIterator([retrieved_memory])
   )
   memory_service = mock_vertex_ai_memory_bank_service()
@@ -1273,7 +1360,7 @@ async def test_search_memory_returns_custom_metadata(mock_vertexai_client):
 
 @pytest.mark.asyncio
 async def test_search_memory_when_memory_has_no_metadata_attr(
-    mock_vertexai_client,
+    mock_agentplatform_client,
 ):
   """A memory object missing the metadata attribute returns an empty dict."""
   retrieved_memory = mock.MagicMock()
@@ -1281,7 +1368,7 @@ async def test_search_memory_when_memory_has_no_metadata_attr(
   retrieved_memory.memory.update_time = None
   del retrieved_memory.memory.metadata
 
-  mock_vertexai_client.agent_engines.memories.retrieve.return_value = (
+  mock_agentplatform_client.memory_banks.memories.retrieve.return_value = (
       _AsyncListIterator([retrieved_memory])
   )
   memory_service = mock_vertex_ai_memory_bank_service()
@@ -1296,8 +1383,8 @@ async def test_search_memory_when_memory_has_no_metadata_attr(
 
 
 @pytest.mark.asyncio
-async def test_search_memory_empty_results(mock_vertexai_client):
-  mock_vertexai_client.agent_engines.memories.retrieve.return_value = (
+async def test_search_memory_empty_results(mock_agentplatform_client):
+  mock_agentplatform_client.memory_banks.memories.retrieve.return_value = (
       _AsyncListIterator([])
   )
   memory_service = mock_vertex_ai_memory_bank_service()
@@ -1306,7 +1393,7 @@ async def test_search_memory_empty_results(mock_vertexai_client):
       app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='query'
   )
 
-  mock_vertexai_client.agent_engines.memories.retrieve.assert_awaited_once_with(
+  mock_agentplatform_client.memory_banks.memories.retrieve.assert_awaited_once_with(
       name='reasoningEngines/123',
       scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
       similarity_search_params={'search_query': 'query'},
@@ -1316,17 +1403,17 @@ async def test_search_memory_empty_results(mock_vertexai_client):
 
 
 @pytest.mark.asyncio
-async def test_retrieve_profiles(mock_vertexai_client, caplog):
+async def test_retrieve_profiles(mock_agentplatform_client, caplog):
   """Returns the structured profiles for the scope as a list."""
-  retrieve_profiles_response = vertex_types.RetrieveProfilesResponse(
+  retrieve_profiles_response = agentplatform_types.RetrieveProfilesResponse(
       profiles={
-          'user-profile': vertex_types.MemoryProfile(
+          'user-profile': agentplatform_types.MemoryProfile(
               schema_id='user-profile',
               profile={'name': 'Kim'},
           )
       }
   )
-  mock_vertexai_client.agent_engines.memories.retrieve_profiles.return_value = (
+  mock_agentplatform_client.memory_banks.memories.retrieve_profiles.return_value = (
       retrieve_profiles_response
   )
   memory_service = mock_vertex_ai_memory_bank_service()
@@ -1337,13 +1424,13 @@ async def test_retrieve_profiles(mock_vertexai_client, caplog):
         user_id=MOCK_USER_ID,
     )
 
-  mock_vertexai_client.agent_engines.memories.retrieve_profiles.assert_awaited_once_with(
+  mock_agentplatform_client.memory_banks.memories.retrieve_profiles.assert_awaited_once_with(
       name='reasoningEngines/123',
       scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
   )
   assert 'Retrieved 1 memory profiles.' in caplog.text
   assert result == [
-      vertex_types.MemoryProfile(
+      agentplatform_types.MemoryProfile(
           schema_id='user-profile',
           profile={'name': 'Kim'},
       )
@@ -1351,12 +1438,14 @@ async def test_retrieve_profiles(mock_vertexai_client, caplog):
 
 
 @pytest.mark.asyncio
-async def test_retrieve_profiles_empty_results(mock_vertexai_client, caplog):
+async def test_retrieve_profiles_empty_results(
+    mock_agentplatform_client, caplog
+):
   """Returns an empty list when the scope has no profiles."""
-  retrieve_profiles_response = vertex_types.RetrieveProfilesResponse(
+  retrieve_profiles_response = agentplatform_types.RetrieveProfilesResponse(
       profiles=None
   )
-  mock_vertexai_client.agent_engines.memories.retrieve_profiles.return_value = (
+  mock_agentplatform_client.memory_banks.memories.retrieve_profiles.return_value = (
       retrieve_profiles_response
   )
   memory_service = mock_vertex_ai_memory_bank_service()
@@ -1367,7 +1456,7 @@ async def test_retrieve_profiles_empty_results(mock_vertexai_client, caplog):
         user_id=MOCK_USER_ID,
     )
 
-  mock_vertexai_client.agent_engines.memories.retrieve_profiles.assert_awaited_once_with(
+  mock_agentplatform_client.memory_banks.memories.retrieve_profiles.assert_awaited_once_with(
       name='reasoningEngines/123',
       scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
   )
@@ -1377,19 +1466,19 @@ async def test_retrieve_profiles_empty_results(mock_vertexai_client, caplog):
 
 async def test_search_memory_uses_async_client_path():
   sync_client = mock.MagicMock()
-  sync_client.agent_engines.memories.retrieve.side_effect = AssertionError(
+  sync_client.memory_banks.memories.retrieve.side_effect = AssertionError(
       'sync retrieve should not be called'
   )
 
   async_client = mock.MagicMock()
-  async_client.agent_engines.memories.retrieve = mock.AsyncMock(
+  async_client.memory_banks.memories.retrieve = mock.AsyncMock(
       return_value=_AsyncListIterator([])
   )
 
-  with mock.patch('vertexai.Client') as mock_client_constructor:
+  with mock.patch('agentplatform.Client') as mock_client_constructor:
     mock_client_constructor.return_value = mock.MagicMock(
         aio=async_client,
-        agent_engines=sync_client.agent_engines,
+        memory_banks=sync_client.memory_banks,
     )
     memory_service = mock_vertex_ai_memory_bank_service()
     await memory_service.search_memory(
@@ -1398,16 +1487,18 @@ async def test_search_memory_uses_async_client_path():
         query='query',
     )
 
-  async_client.agent_engines.memories.retrieve.assert_awaited_once_with(
+  async_client.memory_banks.memories.retrieve.assert_awaited_once_with(
       name='reasoningEngines/123',
       scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
       similarity_search_params={'search_query': 'query'},
   )
-  sync_client.agent_engines.memories.retrieve.assert_not_called()
+  sync_client.memory_banks.memories.retrieve.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_search_memory_skips_entry_with_none_memory(mock_vertexai_client):
+async def test_search_memory_skips_entry_with_none_memory(
+    mock_agentplatform_client,
+):
   bad_entry = mock.MagicMock()
   bad_entry.memory = None
 
@@ -1415,7 +1506,7 @@ async def test_search_memory_skips_entry_with_none_memory(mock_vertexai_client):
   good_entry.memory.fact = 'good fact'
   good_entry.memory.update_time = datetime.datetime(2024, 1, 1)
 
-  mock_vertexai_client.agent_engines.memories.retrieve.return_value = (
+  mock_agentplatform_client.memory_banks.memories.retrieve.return_value = (
       _AsyncListIterator([bad_entry, good_entry])
   )
   memory_service = mock_vertex_ai_memory_bank_service()
@@ -1429,13 +1520,15 @@ async def test_search_memory_skips_entry_with_none_memory(mock_vertexai_client):
 
 
 @pytest.mark.asyncio
-async def test_search_memory_skips_entry_with_empty_fact(mock_vertexai_client):
+async def test_search_memory_skips_entry_with_empty_fact(
+    mock_agentplatform_client,
+):
   for empty_fact in [None, '']:
     bad_entry = mock.MagicMock()
     bad_entry.memory.fact = empty_fact
     bad_entry.memory.update_time = datetime.datetime(2024, 1, 1)
 
-    mock_vertexai_client.agent_engines.memories.retrieve.return_value = (
+    mock_agentplatform_client.memory_banks.memories.retrieve.return_value = (
         _AsyncListIterator([bad_entry])
     )
     memory_service = mock_vertex_ai_memory_bank_service()
@@ -1448,12 +1541,14 @@ async def test_search_memory_skips_entry_with_empty_fact(mock_vertexai_client):
 
 
 @pytest.mark.asyncio
-async def test_search_memory_handles_missing_update_time(mock_vertexai_client):
+async def test_search_memory_handles_missing_update_time(
+    mock_agentplatform_client,
+):
   entry = mock.MagicMock()
   entry.memory.fact = 'some fact'
   entry.memory.update_time = None
 
-  mock_vertexai_client.agent_engines.memories.retrieve.return_value = (
+  mock_agentplatform_client.memory_banks.memories.retrieve.return_value = (
       _AsyncListIterator([entry])
   )
   memory_service = mock_vertex_ai_memory_bank_service()
@@ -1468,14 +1563,14 @@ async def test_search_memory_handles_missing_update_time(mock_vertexai_client):
 
 
 @pytest.mark.asyncio
-async def test_search_memory_skips_malformed_entry(mock_vertexai_client):
+async def test_search_memory_skips_malformed_entry(mock_agentplatform_client):
   malformed = mock.MagicMock(spec=[])  # no attributes → AttributeError
 
   good_entry = mock.MagicMock()
   good_entry.memory.fact = 'good fact'
   good_entry.memory.update_time = datetime.datetime(2024, 1, 1)
 
-  mock_vertexai_client.agent_engines.memories.retrieve.return_value = (
+  mock_agentplatform_client.memory_banks.memories.retrieve.return_value = (
       _AsyncListIterator([malformed, good_entry])
   )
   memory_service = mock_vertex_ai_memory_bank_service()
@@ -1490,7 +1585,7 @@ async def test_search_memory_skips_malformed_entry(mock_vertexai_client):
 
 @pytest.mark.asyncio
 async def test_search_memory_returns_partial_results_on_iterator_error(
-    mock_vertexai_client,
+    mock_agentplatform_client,
 ):
   good_entry = mock.MagicMock()
   good_entry.memory.fact = 'good fact'
@@ -1500,7 +1595,7 @@ async def test_search_memory_returns_partial_results_on_iterator_error(
     yield good_entry
     raise RuntimeError('API stream error')
 
-  mock_vertexai_client.agent_engines.memories.retrieve.return_value = (
+  mock_agentplatform_client.memory_banks.memories.retrieve.return_value = (
       failing_async_iterator()
   )
   memory_service = mock_vertex_ai_memory_bank_service()

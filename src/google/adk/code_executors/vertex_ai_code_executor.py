@@ -33,6 +33,9 @@ from .code_execution_utils import File
 logger = logging.getLogger('google_adk.' + __name__)
 
 if TYPE_CHECKING:
+  # Extensions are not part of the agentplatform (v2) surface; Extension only
+  # exists on the legacy vertexai surface, which google-cloud-aiplatform 2.x
+  # still ships. Do not "migrate" this import to agentplatform.
   from vertexai.preview.extensions import Extension
 
 _EXTENSION_LOCK = threading.Lock()

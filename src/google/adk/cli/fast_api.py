@@ -514,19 +514,33 @@ def get_fast_api_app(
     from google.adk.agents import Agent
     import google.auth
     from pydantic import ValidationError as _ValidationError
-    from vertexai import agent_engines
+
+    from ..dependencies._agentplatform_frameworks import frameworks
 
     # The tmp agent will be replaced by the adk server's runner and services.
     # It is specified here because it is a required argument to AdkApp.
-    adk_app = agent_engines.AdkApp(agent=Agent(name="tmp"))
+    adk_app = frameworks.AdkApp(agent=Agent(name="tmp"))
     if express_mode:
       api_key = os.environ.get("GOOGLE_API_KEY", None)
       if not api_key:
         raise ValueError(
             "No GOOGLE_API_KEY found in environment variables for express mode."
         )
-      adk_app._tmpl_attrs["project"] = None
-      adk_app._tmpl_attrs["location"] = None
+      # TODO: b/570766726 - Drop these pops once AdkApp.set_up() lets callers
+      # select express mode without consulting os.environ.
+      # Agent Platform v2 dropped the global initializer: AdkApp.set_up()
+      # reads the project from the environment rather than from _tmpl_attrs,
+      # and selects express mode only when it finds none. Clearing it is
+      # therefore the only way to express what _tmpl_attrs["project"] = None
+      # used to say. Scoping the removal to the AdkApp call is not an option:
+      # set_up() runs lazily inside a request, so a per-request save/restore
+      # would race between concurrent requests on a process-wide mapping.
+      # GOOGLE_CLOUD_LOCATION is left to set_up(), which pops it itself on the
+      # express path. Popping it here too would make no difference to what the
+      # rest of the process sees, and set_up() reads it as a fallback for the
+      # region before it gets there.
+      os.environ.pop("GOOGLE_CLOUD_PROJECT", None)
+      os.environ.pop("GOOGLE_CLOUD_AGENT_ENGINE_LOCATION", None)
       adk_app._tmpl_attrs["express_mode_api_key"] = api_key
     else:
       _, project_id = google.auth.default()
@@ -539,8 +553,17 @@ def get_fast_api_app(
             "No GOOGLE_CLOUD_PROJECT or GOOGLE_CLOUD_LOCATION found in"
             " environment variables."
         )
-      adk_app._tmpl_attrs["project"] = project_id
-      adk_app._tmpl_attrs["location"] = location
+      # The ADC-resolved project has to win over a stale one, the way
+      # _tmpl_attrs["project"] did before v2 removed the global initializer.
+      # `location` may have come from GOOGLE_CLOUD_AGENT_ENGINE_LOCATION, which
+      # set_up() prefers, so it is published under that name only. Writing it
+      # to GOOGLE_CLOUD_LOCATION here would overwrite whatever region the rest
+      # of the process had already agreed on. set_up() still copies it into
+      # GOOGLE_CLOUD_LOCATION when that variable is unset, which is the case
+      # this cannot and should not prevent; what it avoids is clobbering a
+      # value that was already there.
+      os.environ["GOOGLE_CLOUD_PROJECT"] = project_id
+      os.environ["GOOGLE_CLOUD_AGENT_ENGINE_LOCATION"] = location
       adk_app._tmpl_attrs["express_mode_api_key"] = None
     adk_app._tmpl_attrs["runner"] = None
     adk_app._tmpl_attrs["app_name"] = gemini_enterprise_app_name

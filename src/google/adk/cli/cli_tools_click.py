@@ -3034,7 +3034,9 @@ def cli_deploy_agent_engine(
       --worker_pool=projects/[project]/locations/[region]/workerPools/[pool]
       my_agent
   """
-  logging.getLogger("vertexai_genai.agentengines").setLevel(logging.INFO)
+  # The deploy path logs progress on both `agentplatform_genai.runtimes` and
+  # `agentplatform_genai.agentengines`; raise the parent so neither is lost.
+  logging.getLogger("agentplatform_genai").setLevel(logging.INFO)
   try:
     if validate_agent_import and skip_agent_import_validation_alias:
       raise click.UsageError(
