@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import asyncio
+import os
+import re
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -88,6 +90,15 @@ def _final_events(call_args_list):
   if _compat.IS_A2A_V1:
     return events[-1:]
   return [e for e in events if getattr(e, "final", False)]
+
+
+def _part_text(part) -> str:
+  """Reads the text out of a Part on both A2A v1 (flat) and 0.3.x (union)."""
+  direct = getattr(part, 'text', None)
+  if direct:
+    return direct
+  root = getattr(part, 'root', None)
+  return getattr(root, 'text', '') or ''
 
 
 class TestA2aAgentExecutor:
@@ -288,6 +299,49 @@ class TestA2aAgentExecutor:
       context.add_activated_extension.assert_called_once_with(
           _NEW_A2A_ADK_INTEGRATION_EXTENSION
       )
+
+  @pytest.mark.asyncio
+  async def test_failure_event_does_not_leak_exception_text(self):
+    """The remote peer must not receive the throwable's message."""
+    secret = (
+        'Runner error: /home/victim/.config/adk/credentials.json (No such file)'
+    )
+    self.executor._handle_request = AsyncMock(side_effect=RuntimeError(secret))
+
+    await self.executor.execute(self.mock_context, self.mock_event_queue)
+
+    events = [c.args[0] for c in self.mock_event_queue.enqueue_event.call_args_list]
+    statuses = [
+        e.status
+        for e in events
+        if getattr(e, 'status', None) is not None
+    ]
+    assert statuses, 'a failed status event should reach the peer'
+    parts = statuses[-1].message.parts
+    text = ''.join(_part_text(p) for p in parts)
+
+    assert re.fullmatch(
+        r'Agent execution failed\. \(error_id: [0-9a-f]{12}\)', text
+    ), text
+    assert secret not in text
+    assert '/home/victim' not in text
+
+  @pytest.mark.asyncio
+  async def test_failure_event_leaks_when_debug_errors_enabled(self):
+    """ADK_DEBUG_ERRORS restores exception text, for local debugging only."""
+    secret = 'boom at /home/victim/secret'
+    self.executor._handle_request = AsyncMock(side_effect=RuntimeError(secret))
+
+    with patch.dict(os.environ, {'ADK_DEBUG_ERRORS': '1'}):
+      await self.executor.execute(self.mock_context, self.mock_event_queue)
+
+    events = [c.args[0] for c in self.mock_event_queue.enqueue_event.call_args_list]
+    statuses = [
+        e.status for e in events if getattr(e, 'status', None) is not None
+    ]
+    parts = statuses[-1].message.parts
+    text = ''.join(_part_text(p) for p in parts)
+    assert secret in text
 
   @pytest.mark.asyncio
   async def test_execute_no_message_error(self):
