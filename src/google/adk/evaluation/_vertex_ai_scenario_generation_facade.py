@@ -21,6 +21,7 @@ import os
 
 from . import conversation_scenarios
 from ..agents import base_agent
+from ..dependencies._agentplatform import agentplatform
 from ..dependencies.vertexai import vertexai
 
 types = vertexai.types
@@ -62,7 +63,9 @@ class ScenarioGenerator:
           "Missing " + " and ".join(missing) + "." + _ERROR_MESSAGE_SUFFIX
       )
 
-    self._client = vertexai.Client(project=project_id, location=location)
+    # agentplatform rather than vertexai: 2.x deprecates vertexai.Client with
+    # a FutureWarning, and agentplatform's evals surface is a superset.
+    self._client = agentplatform.Client(project=project_id, location=location)
 
   def generate_scenarios(
       self,

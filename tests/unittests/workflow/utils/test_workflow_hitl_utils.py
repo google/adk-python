@@ -346,6 +346,24 @@ class TestProcessAuthResume:
     assert "temp:unrelated-cred" not in state
     assert has_auth_credential(auth_config, state) is True
 
+  @pytest.mark.asyncio
+  async def test_malformed_response_raises_workflow_data_error(self):
+    """A malformed auth resume payload raises WorkflowDataError."""
+    from google.adk.workflow._errors import WorkflowDataError
+
+    auth_config = _oauth_auth_config()
+    state = _empty_state()
+
+    with pytest.raises(WorkflowDataError):
+      await process_auth_resume(
+          "not-a-valid-oauth-credential",
+          auth_config,
+          state,
+          "auth-id-1",
+      )
+
+    assert has_auth_credential(auth_config, state) is False
+
 
 def _oauth_auth_config(token_url: str = "https://provider.example.com/token"):
   """An OAuth2 AuthConfig, the resume shape that runs a token exchange."""

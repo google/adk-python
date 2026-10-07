@@ -34,7 +34,7 @@ class TestScenarioGenerator:
     mocker.patch.dict(
         os.environ, {"GOOGLE_API_KEY": "test_api_key"}, clear=True
     )
-    mocker.patch("google.adk.dependencies.vertexai.vertexai.Client")
+    mocker.patch("google.adk.dependencies._agentplatform.agentplatform.Client")
 
     with pytest.raises(ValueError, match="Missing project id and location."):
       ScenarioGenerator()
@@ -50,7 +50,7 @@ class TestScenarioGenerator:
         clear=True,
     )
     mock_client_cls = mocker.patch(
-        "google.adk.dependencies.vertexai.vertexai.Client"
+        "google.adk.dependencies._agentplatform.agentplatform.Client"
     )
     ScenarioGenerator()
 
@@ -69,7 +69,7 @@ class TestScenarioGenerator:
         clear=True,
     )
     mock_client_cls = mocker.patch(
-        "google.adk.dependencies.vertexai.vertexai.Client"
+        "google.adk.dependencies._agentplatform.agentplatform.Client"
     )
     ScenarioGenerator()
 
@@ -81,7 +81,7 @@ class TestScenarioGenerator:
     mocker.patch.dict(
         os.environ, {"GOOGLE_CLOUD_PROJECT": "test_project"}, clear=True
     )
-    mocker.patch("google.adk.dependencies.vertexai.vertexai.Client")
+    mocker.patch("google.adk.dependencies._agentplatform.agentplatform.Client")
 
     with pytest.raises(ValueError, match="Missing location."):
       ScenarioGenerator()
@@ -90,14 +90,14 @@ class TestScenarioGenerator:
     mocker.patch.dict(
         os.environ, {"GOOGLE_CLOUD_LOCATION": "test_location"}, clear=True
     )
-    mocker.patch("google.adk.dependencies.vertexai.vertexai.Client")
+    mocker.patch("google.adk.dependencies._agentplatform.agentplatform.Client")
 
     with pytest.raises(ValueError, match="Missing project id."):
       ScenarioGenerator()
 
   def test_constructor_with_no_env_vars_raises_error(self, mocker):
     mocker.patch.dict(os.environ, {}, clear=True)
-    mocker.patch("google.adk.dependencies.vertexai.vertexai.Client")
+    mocker.patch("google.adk.dependencies._agentplatform.agentplatform.Client")
 
     with pytest.raises(ValueError, match="Missing project id and location."):
       ScenarioGenerator()
@@ -113,7 +113,7 @@ class TestScenarioGenerator:
         clear=True,
     )
     mock_client_cls = mocker.patch(
-        "google.adk.dependencies.vertexai.vertexai.Client"
+        "google.adk.dependencies._agentplatform.agentplatform.Client"
     )
     mock_client = mock_client_cls.return_value
 

@@ -204,7 +204,11 @@ def telemetry_user_agent_headers() -> dict[str, str] | None:
   """Returns the Vertex Agent Engine User-Agent header, if telemetry is on."""
   if not os.getenv("GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY"):
     return None
-  from google.cloud.aiplatform import version as aip_version
+  # Read the version off agentplatform rather than google.cloud.aiplatform:
+  # the standalone google-cloud-agentplatform package that [gcp] installs does
+  # not ship the latter, so probing it would raise instead of reporting a
+  # version. Both packages report the same release.
+  from ..dependencies._agentplatform import agentplatform
 
   otlp_http_version: ModuleType | None
   try:
@@ -214,7 +218,7 @@ def telemetry_user_agent_headers() -> dict[str, str] | None:
   except (ImportError, AttributeError):
     otlp_http_version = None
 
-  user_agent = f"Vertex-Agent-Engine/{aip_version.__version__}"
+  user_agent = f"Vertex-Agent-Engine/{agentplatform.__version__}"
   if otlp_http_version:
     user_agent += f" OTel-OTLP-Exporter-Python/{otlp_http_version.__version__}"
   return {"User-Agent": user_agent}
