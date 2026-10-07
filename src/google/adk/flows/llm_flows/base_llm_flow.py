@@ -21,6 +21,7 @@ from typing import AsyncGenerator
 from typing import cast
 from typing import Optional
 from typing import TYPE_CHECKING
+import warnings
 
 from google.adk.platform import time as platform_time
 from google.genai import types
@@ -31,11 +32,11 @@ from ...agents.base_agent import BaseAgent
 from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...live import _live_llm_flow
-from ...live._audio_cache_manager import AudioCacheManager
 from ...live._flow_utils import DEFAULT_ENABLE_CACHE_STATISTICS as DEFAULT_ENABLE_CACHE_STATISTICS
 from ...live._flow_utils import DEFAULT_MAX_RECONNECT_ATTEMPTS as DEFAULT_MAX_RECONNECT_ATTEMPTS
 from ...live._flow_utils import DEFAULT_TASK_COMPLETION_DELAY as DEFAULT_TASK_COMPLETION_DELAY
 from ...live._flow_utils import DEFAULT_TRANSFER_AGENT_DELAY as DEFAULT_TRANSFER_AGENT_DELAY
+from ...live._realtime_cache_manager import RealtimeCacheManager as _RealtimeCacheManager
 from ...models.base_llm_connection import BaseLlmConnection
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
@@ -90,6 +91,10 @@ _ADK_AGENT_NAME_LABEL_KEY = ADK_AGENT_NAME_LABEL_KEY
 _NO_CONTENT_ERROR_CODE = NO_CONTENT_ERROR_CODE
 _NO_CONTENT_ERROR_MESSAGE = NO_CONTENT_ERROR_MESSAGE
 
+_AUDIO_CACHE_MANAGER_DEPRECATION_MESSAGE = (
+    'audio_cache_manager is deprecated; use realtime_cache_manager instead.'
+)
+
 
 class BaseLlmFlow(ABC):
   """A basic flow that calls the LLM in a loop until a final response is generated.
@@ -126,7 +131,26 @@ class BaseLlmFlow(ABC):
     self.response_processors: list[BaseLlmResponseProcessor] = []
 
     # Initialize configuration and managers
-    self.audio_cache_manager = AudioCacheManager()
+    self.realtime_cache_manager = _RealtimeCacheManager()
+
+  @property
+  def audio_cache_manager(self) -> _RealtimeCacheManager:
+    """Deprecated alias of `realtime_cache_manager`."""
+    warnings.warn(
+        _AUDIO_CACHE_MANAGER_DEPRECATION_MESSAGE,
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return self.realtime_cache_manager
+
+  @audio_cache_manager.setter
+  def audio_cache_manager(self, value: _RealtimeCacheManager) -> None:
+    warnings.warn(
+        _AUDIO_CACHE_MANAGER_DEPRECATION_MESSAGE,
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    self.realtime_cache_manager = value
 
   def _request_processor_lists(
       self,

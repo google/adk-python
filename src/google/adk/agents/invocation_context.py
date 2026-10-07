@@ -34,7 +34,7 @@ from ..events._branch_path import _BranchPath
 from ..events._internal_metadata import without_internal_metadata
 from ..events.event import Event
 from ..live._active_streaming_tool import ActiveStreamingTool
-from ..live._audio_cache_manager import RealtimeCacheEntry as RealtimeCacheEntry
+from ..live._realtime_cache_manager import RealtimeCacheEntry as RealtimeCacheEntry
 from ..live._transcription_entry import TranscriptionEntry
 from ..live.live_request_queue import LiveRequestQueue
 from ..memory.base_memory_service import BaseMemoryService
