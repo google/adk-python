@@ -21,6 +21,7 @@ import inspect
 import os
 from pathlib import Path
 import sqlite3
+import threading
 import time
 from typing import Any
 from unittest import mock
@@ -365,6 +366,87 @@ async def test_sqlite_session_service_accepts_absolute_sqlite_urls(tmp_path):
   service = SqliteSessionService(abs_url)
   await service.create_session(app_name='app', user_id='user')
   assert abs_db_path.exists()
+
+
+@pytest.mark.parametrize(
+    'db_path', [':memory:', '', 'sqlite:///', 'sqlite:///:memory:']
+)
+async def test_sqlite_session_service_memory_db_path_keeps_sessions_and_events(
+    db_path: str,
+) -> None:
+  """SqliteSessionService retains in-memory and empty-path databases across operations."""
+  threads_before = set(threading.enumerate())
+  session_service = SqliteSessionService(db_path=db_path)
+  try:
+    session = await session_service.create_session(
+        app_name='app', user_id='user', session_id='session', state={'count': 0}
+    )
+    event = Event(
+        author='agent',
+        invocation_id='invocation',
+        actions=EventActions(state_delta={'count': 1}),
+    )
+    await session_service.append_event(session, event)
+
+    stored_session = await session_service.get_session(
+        app_name='app', user_id='user', session_id=session.id
+    )
+
+    new_threads = set(threading.enumerate()) - threads_before
+    assert new_threads
+    assert all(thread.daemon for thread in new_threads)
+    assert stored_session is not None
+    assert stored_session.state == {'count': 1}
+    assert [stored_event.id for stored_event in stored_session.events] == [
+        event.id
+    ]
+
+    await session_service.close()
+    assert (
+        await session_service.get_session(
+            app_name='app', user_id='user', session_id=session.id
+        )
+        is None
+    )
+  finally:
+    await session_service.close()
+
+
+async def test_sqlite_session_service_memory_rolls_back_failed_operation() -> (
+    None
+):
+  """Failed operations on a shared in-memory connection roll back partial state writes."""
+  session_service = SqliteSessionService(db_path=':memory:')
+  try:
+    session = await session_service.create_session(
+        app_name='app',
+        user_id='user',
+        session_id='session',
+        state={'app:a': 1, 'user:u': 1, 's': 1},
+    )
+    event = Event(id='event-1', author='agent', invocation_id='inv-1')
+    await session_service.append_event(session, event)
+
+    duplicate_event = Event(
+        id='event-1',
+        author='agent',
+        invocation_id='inv-2',
+        actions=EventActions(state_delta={'app:a': 99, 'user:u': 99, 's': 99}),
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+      await session_service.append_event(session, duplicate_event)
+
+    await session_service.create_session(
+        app_name='app', user_id='user', session_id='other'
+    )
+    stored_session = await session_service.get_session(
+        app_name='app', user_id='user', session_id='session'
+    )
+
+    assert stored_session is not None
+    assert stored_session.state == {'app:a': 1, 'user:u': 1, 's': 1}
+  finally:
+    await session_service.close()
 
 
 @pytest.mark.asyncio

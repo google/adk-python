@@ -202,6 +202,18 @@ class TestBuildNode:
     built_standalone = build_node(standalone)
     assert built_standalone.mode == "single_turn"
 
+    # Standalone agent with default_llm_mode='chat' should default to chat
+    built_chat = build_node(standalone, default_llm_mode="chat")
+    assert built_chat.mode == "chat"
+    assert standalone.mode is None
+
+    # Agent with sub_agents can have default_llm_mode='chat'
+    coord_child = LlmAgent(name="coord_child", description="test")
+    coordinator = LlmAgent(name="coord", sub_agents=[coord_child])
+    built_coord = build_node(coordinator, default_llm_mode="chat")
+    assert built_coord.mode == "chat"
+    assert coordinator.mode is None
+
   def test_build_node_remote_a2a_agent_non_task(self):
     """build_node does not wrap RemoteA2aAgent in task wrapper if mode is not task."""
 

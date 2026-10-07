@@ -31,10 +31,12 @@ from unittest import mock
 import warnings
 
 from google.adk.agents import base_agent
+from google.adk.agents import llm_agent
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import event as event_lib
 from google.adk.events import event_actions as event_actions_lib
+from google.adk.models import google_llm
 from google.adk.models import llm_request as llm_request_lib
 from google.adk.models import llm_response as llm_response_lib
 from google.adk.platform import thread as platform_thread
@@ -1514,6 +1516,266 @@ class TestBigQueryAgentAnalyticsPlugin:
     )
     _assert_common_fields(log_entry, "AGENT_STARTING")
     assert log_entry["content"] == "Test Instruction"
+
+  @pytest.mark.asyncio
+  async def test_before_agent_callback_logs_agent_config_attributes(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """AGENT_STARTING records the agent description, model, and sub-agents."""
+    agent = llm_agent.LlmAgent(
+        name="root_agent",
+        model="gemini-2.5-flash",
+        description="Routes requests to specialists.",
+        instruction="Delegate to the right specialist.",
+        sub_agents=[
+            llm_agent.LlmAgent(name="sub_a"),
+            llm_agent.LlmAgent(name="sub_b"),
+        ],
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+
+    await bq_plugin_inst.before_agent_callback(
+        agent=agent, callback_context=callback_context
+    )
+    await bq_plugin_inst.flush()
+
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    _assert_common_fields(log_entry, "AGENT_STARTING")
+    assert log_entry["content"] == "Delegate to the right specialist."
+    attributes = json.loads(log_entry["attributes"])
+    assert attributes["agent_description"] == "Routes requests to specialists."
+    assert attributes["model"] == "gemini-2.5-flash"
+    assert attributes["sub_agents"] == ["sub_a", "sub_b"]
+
+  @pytest.mark.asyncio
+  async def test_before_agent_callback_resolves_model_name_from_base_llm(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """A BaseLlm model is logged by its model name."""
+    agent = llm_agent.LlmAgent(
+        name="root_agent", model=google_llm.Gemini(model="gemini-2.5-pro")
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+
+    await bq_plugin_inst.before_agent_callback(
+        agent=agent, callback_context=callback_context
+    )
+    await bq_plugin_inst.flush()
+
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    attributes = json.loads(log_entry["attributes"])
+    assert attributes["model"] == "gemini-2.5-pro"
+
+  @pytest.mark.asyncio
+  async def test_before_agent_callback_inherits_model_from_parent_agent(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """An LLM sub-agent inherits its ancestor's model; non-LLM agents do not."""
+    sub_agent = llm_agent.LlmAgent(name="sub_a")
+    workflow_sub = base_agent.BaseAgent(name="workflow_sub")
+    _ = llm_agent.LlmAgent(
+        name="root_agent",
+        model="gemini-2.5-flash",
+        sub_agents=[sub_agent, workflow_sub],
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+
+    await bq_plugin_inst.before_agent_callback(
+        agent=sub_agent, callback_context=callback_context
+    )
+    await bq_plugin_inst.flush()
+
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    attributes = json.loads(log_entry["attributes"])
+    assert attributes["model"] == "gemini-2.5-flash"
+
+    mock_write_client.append_rows.reset_mock()
+    await bq_plugin_inst.before_agent_callback(
+        agent=workflow_sub, callback_context=callback_context
+    )
+    await bq_plugin_inst.flush()
+
+    workflow_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    workflow_attributes = json.loads(workflow_entry["attributes"])
+    assert "model" not in workflow_attributes
+
+  @pytest.mark.asyncio
+  async def test_before_agent_callback_captures_static_instruction(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """static_instruction is normalized and logged in attributes only."""
+    agent_static_only = llm_agent.LlmAgent(
+        name="root_agent",
+        static_instruction=types.Content(
+            role="user",
+            parts=[types.Part(text="Cached system prompt.")],
+        ),
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+
+    await bq_plugin_inst.before_agent_callback(
+        agent=agent_static_only, callback_context=callback_context
+    )
+    await bq_plugin_inst.flush()
+
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    assert log_entry["content"] is None
+    attributes = json.loads(log_entry["attributes"])
+    assert attributes["static_instruction"] == "Cached system prompt."
+
+    mock_write_client.append_rows.reset_mock()
+    agent_list_static = llm_agent.LlmAgent(
+        name="root_agent",
+        static_instruction=["You are a router.", "Be brief."],
+    )
+    await bq_plugin_inst.before_agent_callback(
+        agent=agent_list_static, callback_context=callback_context
+    )
+    await bq_plugin_inst.flush()
+
+    log_entry_list = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    assert log_entry_list["content"] is None
+    attributes_list = json.loads(log_entry_list["attributes"])
+    assert (
+        attributes_list["static_instruction"] == "You are a router.\nBe brief."
+    )
+
+    mock_write_client.append_rows.reset_mock()
+    agent_both = llm_agent.LlmAgent(
+        name="root_agent",
+        static_instruction="Cached base instruction.",
+        instruction="Dynamic user-turn instruction.",
+    )
+    await bq_plugin_inst.before_agent_callback(
+        agent=agent_both, callback_context=callback_context
+    )
+    await bq_plugin_inst.flush()
+
+    log_entry_both = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    assert log_entry_both["content"] == "Dynamic user-turn instruction."
+    attributes_both = json.loads(log_entry_both["attributes"])
+    assert attributes_both["static_instruction"] == "Cached base instruction."
+
+  @pytest.mark.asyncio
+  async def test_before_agent_callback_skips_callable_instruction(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """An InstructionProvider is logged as None with instruction_source."""
+    agent = llm_agent.LlmAgent(
+        name="root_agent", instruction=lambda ctx: "dynamic instruction"
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+
+    await bq_plugin_inst.before_agent_callback(
+        agent=agent, callback_context=callback_context
+    )
+    await bq_plugin_inst.flush()
+
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    _assert_common_fields(log_entry, "AGENT_STARTING")
+    assert log_entry["content"] is None
+    attributes = json.loads(log_entry["attributes"])
+    assert attributes["instruction_source"] == "provider"
+
+  @pytest.mark.asyncio
+  async def test_before_agent_callback_omits_empty_agent_config(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """Unset description, model, and sub-agents add no attributes."""
+    agent = llm_agent.LlmAgent(name="root_agent")
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+
+    await bq_plugin_inst.before_agent_callback(
+        agent=agent, callback_context=callback_context
+    )
+    await bq_plugin_inst.flush()
+
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    assert log_entry["content"] is None
+    attributes = json.loads(log_entry["attributes"])
+    assert "agent_description" not in attributes
+    assert "instruction_source" not in attributes
+    assert "static_instruction" not in attributes
+    assert "model" not in attributes
+    assert "sub_agents" not in attributes
+
+  @pytest.mark.asyncio
+  async def test_before_agent_callback_ignores_non_string_agent_config(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      mock_agent,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """Non-string agent fields, such as mocks, never reach attributes."""
+    unnamed_sub_agent = mock.create_autospec(
+        base_agent.BaseAgent, instance=True, spec_set=True
+    )
+    type(mock_agent).description = mock.PropertyMock(
+        return_value=mock.MagicMock()
+    )
+    type(mock_agent).model = mock.PropertyMock(return_value=mock.MagicMock())
+    type(mock_agent).sub_agents = mock.PropertyMock(
+        return_value=[unnamed_sub_agent]
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+
+    await bq_plugin_inst.before_agent_callback(
+        agent=mock_agent, callback_context=callback_context
+    )
+    await bq_plugin_inst.flush()
+
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    assert log_entry["content"] == "Test Instruction"
+    attributes = json.loads(log_entry["attributes"])
+    assert "agent_description" not in attributes
+    assert "model" not in attributes
+    assert "sub_agents" not in attributes
 
   @pytest.mark.asyncio
   async def test_after_agent_callback_logs_correctly(
@@ -8825,6 +9087,25 @@ class TestAnalyticsViews:
         "JSON_VALUE(attributes, '$.finish_reason') AS finish_reason" in columns
     )
 
+  def test_agent_starting_view_exposes_agent_config_columns(self):
+    """AGENT_STARTING views read string or object content and agent config."""
+    columns = bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS["AGENT_STARTING"]
+
+    assert columns == [
+        (
+            "COALESCE(JSON_VALUE(content, '$.text_summary'),"
+            " IF(REGEXP_CONTAINS(JSON_VALUE(content, '$'),"
+            " r'^(?:<(?:function|bound method) |<.+ at"
+            " 0x[0-9a-fA-F]+>|functools\\.partial\\()'), NULL,"
+            " JSON_VALUE(content, '$'))) AS agent_instruction"
+        ),
+        "JSON_VALUE(attributes, '$.instruction_source') AS instruction_source",
+        "JSON_VALUE(attributes, '$.static_instruction') AS static_instruction",
+        "JSON_VALUE(attributes, '$.agent_description') AS agent_description",
+        "JSON_VALUE(attributes, '$.model') AS model",
+        "JSON_QUERY(attributes, '$.sub_agents') AS sub_agents",
+    ]
+
   @pytest.mark.parametrize("event_type", ["NODE_OUTPUT", "NODE_ERROR"])
   def test_node_views_expose_workflow_identity(self, event_type):
     """Workflow-node views expose stable node identity columns."""
@@ -13383,6 +13664,38 @@ def test_project_view_columns_noop_without_denylist():
   )
   exprs = ["JSON_VALUE(attributes, '$.model') AS model"]
   assert plugin._project_view_columns(exprs) == exprs
+
+
+@pytest.mark.parametrize(
+    ("denied_column", "expected_aliases"),
+    [
+        ("attributes", ["agent_instruction"]),
+        (
+            "content",
+            [
+                "instruction_source",
+                "static_instruction",
+                "agent_description",
+                "model",
+                "sub_agents",
+            ],
+        ),
+    ],
+)
+def test_project_view_columns_agent_starting_respects_denylist(
+    denied_column, expected_aliases
+):
+  plugin = _make_offline_plugin(
+      bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+          payload_column_denylist=[denied_column]
+      )
+  )
+
+  kept = plugin._project_view_columns(
+      bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS["AGENT_STARTING"]
+  )
+
+  assert [expr.rsplit(" AS ", 1)[1] for expr in kept] == expected_aliases
 
 
 # --- otel correlation ---

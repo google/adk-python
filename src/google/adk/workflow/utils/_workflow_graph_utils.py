@@ -48,6 +48,7 @@ def build_node(
     timeout: float | None = None,
     auth_config: Any = None,
     parameter_binding: Literal['state', 'node_input'] = 'state',
+    default_llm_mode: Literal['chat', 'single_turn'] = 'single_turn',
 ) -> BaseNode:
   """Converts a NodeLike to a BaseNode, wrapping async funcs in FunctionNode.
 
@@ -64,6 +65,8 @@ def build_node(
       binds parameters from ``ctx.state``. ``'node_input'`` binds parameters
       from ``node_input`` dict and infers ``input_schema`` / ``output_schema``
       from the function signature (used when the node acts as an agent's tool).
+    default_llm_mode: Default mode applied to the cloned LlmAgent when its
+      ``mode`` is ``None`` and ``parent_agent`` is ``None``.
 
   Returns:
     A BaseNode instance.
@@ -124,11 +127,11 @@ def build_node(
       if isinstance(agent, LlmAgent) and agent.mode is None:
         # Sub-agents dynamically attached to a parent agent default to 'chat'
         # mode to enable agent transfer.
-        # Standalone agents in a workflow graph default to 'single_turn'.
+        # Standalone agents in a workflow graph default to `default_llm_mode`.
         if agent.parent_agent is not None:
           agent.mode = 'chat'
         else:
-          agent.mode = 'single_turn'
+          agent.mode = default_llm_mode
 
       if (
           isinstance(agent, LlmAgent)

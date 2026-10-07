@@ -116,7 +116,11 @@ def test_vertex_ai_memory_bank_service_fails_on_creation():
       )
     raise
 
-  with mock.patch.dict("sys.modules", {"vertexai": None}):
+  with mock.patch.dict("sys.modules", {"agentplatform": None}):
+    # The service reaches Agent Platform through the dependency shim, so the
+    # shim has to be evicted too: left cached, it hands back the module it
+    # imported before the patch and the guard never runs.
+    sys.modules.pop("google.adk.dependencies._agentplatform", None)
     sys.modules.pop("google.adk.memory.vertex_ai_memory_bank_service", None)
     from google.adk.memory import VertexAiMemoryBankService
 
@@ -180,7 +184,10 @@ def test_vertex_ai_session_service_fails_on_creation():
       )
     raise
 
-  with mock.patch.dict("sys.modules", {"vertexai": None}):
+  with mock.patch.dict("sys.modules", {"agentplatform": None}):
+    # See the memory-bank case above: the dependency shim has to be evicted
+    # alongside the service, or its cached module satisfies the import.
+    sys.modules.pop("google.adk.dependencies._agentplatform", None)
     sys.modules.pop("google.adk.sessions.vertex_ai_session_service", None)
     from google.adk.sessions import VertexAiSessionService
 
@@ -256,6 +263,31 @@ def test_vertexai_dependency_shim_raises_clear_importerror():
   with mock.patch.dict("sys.modules", {"google.cloud.aiplatform": None}):
     spec = importlib.util.spec_from_file_location(
         "_test_google_adk_dependencies_vertexai", module_path
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+
+    with pytest.raises(ImportError) as exc_info:
+      spec.loader.exec_module(module)
+
+    message = str(exc_info.value)
+    assert "//third_party/py/google/cloud/aiplatform" in message
+
+
+def test_agentplatform_dependency_shim_raises_clear_importerror():
+  """Verify that the Agent Platform dependency shim points at the dependency.
+
+  A top-level `agentplatform` is not importable in every build -- some expose
+  it only as `google.cloud.aiplatform.agentplatform` -- so call sites route
+  through this shim rather than importing the top-level name.
+  """
+  module_path = _REPO_ROOT / "dependencies_internal/_agentplatform.py"
+  if not module_path.is_file():
+    pytest.skip("Agent Platform dependency shim is not present in this build.")
+  with mock.patch.dict("sys.modules", {"google.cloud.aiplatform": None}):
+    spec = importlib.util.spec_from_file_location(
+        "_test_google_adk_dependencies_agentplatform", module_path
     )
     assert spec is not None
     assert spec.loader is not None

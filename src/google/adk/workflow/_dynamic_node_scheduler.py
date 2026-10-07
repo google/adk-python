@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from dataclasses import field
 import logging
 from typing import Any
+from typing import Literal
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
@@ -680,7 +681,13 @@ async def run_node_internal(
         ' response.'
     )
 
-  built_node = build_node(node)
+  is_root_agent_run = (
+      ctx.parent_ctx is None and ctx.node is None and not ctx.node_path
+  )
+  default_llm_mode: Literal['chat', 'single_turn'] = (
+      'chat' if is_root_agent_run else 'single_turn'
+  )
+  built_node = build_node(node, default_llm_mode=default_llm_mode)
 
   if isinstance(node, BaseAgent) and isinstance(built_node, BaseAgent):
     built_node.parent_agent = node.parent_agent

@@ -158,7 +158,6 @@ async def _process_function_live_helper(
     function_call: types.FunctionCall,
     function_args: dict[str, Any],
     invocation_context: InvocationContext,
-    active_tools_lock: asyncio.Lock,
 ) -> object:
   """Handles dispatching of live tool calls (stop_streaming, generator tools, thread pool)."""
   function_response: object = None
@@ -171,15 +170,13 @@ async def _process_function_live_helper(
     function_name = function_args['function_name']
     if not isinstance(function_name, str):
       raise ValueError('stop_streaming requires a string function_name.')
-    # Thread-safe access to active_streaming_tools
-    async with active_tools_lock:
-      active_tasks = invocation_context.active_streaming_tools
-      active_task = (
-          active_tasks[function_name].task
-          if active_tasks and function_name in active_tasks
-          else None
-      )
-      task = active_task if active_task and not active_task.done() else None
+    active_tasks = invocation_context.active_streaming_tools
+    active_task = (
+        active_tasks[function_name].task
+        if active_tasks and function_name in active_tasks
+        else None
+    )
+    task = active_task if active_task and not active_task.done() else None
 
     if task:
       task.cancel()
@@ -201,16 +198,13 @@ async def _process_function_live_helper(
             'status': f'The task is not cancelled yet for {function_name}.'
         }
       if not function_response:
-        # Clean up the reference under lock
-        async with active_tools_lock:
-          if (
-              invocation_context.active_streaming_tools
-              and function_name in invocation_context.active_streaming_tools
-          ):
-            invocation_context.active_streaming_tools[function_name].task = None
-            invocation_context.active_streaming_tools[function_name].stream = (
-                None
-            )
+        # Clean up the reference
+        if (
+            invocation_context.active_streaming_tools
+            and function_name in invocation_context.active_streaming_tools
+        ):
+          invocation_context.active_streaming_tools[function_name].task = None
+          invocation_context.active_streaming_tools[function_name].stream = None
 
         function_response = {
             'status': f'Successfully stopped streaming function {function_name}'
@@ -296,31 +290,29 @@ async def _process_function_live_helper(
         run_tool_and_update_queue(streaming_tool, function_args, tool_context)
     )
 
-    async with active_tools_lock:
-      if invocation_context.active_streaming_tools is None:
-        invocation_context.active_streaming_tools = {}
-      if tool.name in invocation_context.active_streaming_tools:
-        invocation_context.active_streaming_tools[tool.name].task = task
-      else:
-        # Register the streaming tool lazily when the model calls it.
-        invocation_context.active_streaming_tools[tool.name] = (
-            ActiveStreamingTool(task=task)
-        )
-        logger.debug('Lazily registered streaming tool: %s', tool.name)
+    if invocation_context.active_streaming_tools is None:
+      invocation_context.active_streaming_tools = {}
+    if tool.name in invocation_context.active_streaming_tools:
+      invocation_context.active_streaming_tools[tool.name].task = task
+    else:
+      # Register the streaming tool lazily when the model calls it.
+      invocation_context.active_streaming_tools[tool.name] = (
+          ActiveStreamingTool(task=task)
+      )
+      logger.debug('Lazily registered streaming tool: %s', tool.name)
 
-      # For input-streaming tools (those with `input_stream:
-      # LiveRequestQueue`), create a dedicated LiveRequestQueue so
-      # _send_to_model starts duplicating data to it. This also
-      # handles re-invocation after stop_streaming reset .stream
-      # to None.
-      sig = inspect.signature(streaming_tool.func)
-      if (
-          'input_stream' in sig.parameters
-          and _is_live_request_queue_annotation(sig.parameters['input_stream'])
-      ):
-        invocation_context.active_streaming_tools[tool.name].stream = (
-            LiveRequestQueue()
-        )
+    # For input-streaming tools (those with `input_stream:
+    # LiveRequestQueue`), create a dedicated LiveRequestQueue so
+    # _send_to_model starts duplicating data to it. This also
+    # handles re-invocation after stop_streaming reset .stream
+    # to None.
+    sig = inspect.signature(streaming_tool.func)
+    if 'input_stream' in sig.parameters and _is_live_request_queue_annotation(
+        sig.parameters['input_stream']
+    ):
+      invocation_context.active_streaming_tools[tool.name].stream = (
+          LiveRequestQueue()
+      )
 
     # Immediately return a pending response.
     # This is required by current live model.
@@ -354,7 +346,6 @@ async def _execute_single_prepared_call_live(
     invocation_context: InvocationContext,
     prepared_call: _PreparedFunctionCall,
     agent: LlmAgent,
-    active_tools_lock: asyncio.Lock,
 ) -> Optional[Event]:
   """Runs one prepared function call in live mode.
 
@@ -372,7 +363,6 @@ async def _execute_single_prepared_call_live(
           prepared_call.function_call,
           prepared_call.function_args,
           invocation_context,
-          active_tools_lock,
       ),
   )
 
@@ -399,7 +389,6 @@ async def _launch_non_blocking_call_live(
     tool: BaseTool,
     tools_dict: dict[str, BaseTool],
     agent: LlmAgent,
-    active_tools_lock: asyncio.Lock,
     live_session_id: str | None = None,
 ) -> None:
   """Runs a non-blocking live tool's prepare and execute in the background."""
@@ -411,7 +400,7 @@ async def _launch_non_blocking_call_live(
           invocation_context, function_call, tools_dict, agent
       )
       function_response_event = await _execute_single_prepared_call_live(
-          invocation_context, prepared_call, agent, active_tools_lock
+          invocation_context, prepared_call, agent
       )
       if function_response_event:
         if live_session_id is not None:
@@ -433,18 +422,16 @@ async def _launch_non_blocking_call_live(
     except Exception:
       logger.exception('Error running non-blocking tool %s', tool.name)
     finally:
-      async with active_tools_lock:
-        if (
-            invocation_context.active_non_blocking_tool_tasks
-            and task_key in invocation_context.active_non_blocking_tool_tasks
-        ):
-          del invocation_context.active_non_blocking_tool_tasks[task_key]
+      if (
+          invocation_context.active_non_blocking_tool_tasks
+          and task_key in invocation_context.active_non_blocking_tool_tasks
+      ):
+        del invocation_context.active_non_blocking_tool_tasks[task_key]
 
   task = asyncio.create_task(_background_task())
-  async with active_tools_lock:
-    if invocation_context.active_non_blocking_tool_tasks is None:
-      invocation_context.active_non_blocking_tool_tasks = {}
-    invocation_context.active_non_blocking_tool_tasks[task_key] = task
+  if invocation_context.active_non_blocking_tool_tasks is None:
+    invocation_context.active_non_blocking_tool_tasks = {}
+  invocation_context.active_non_blocking_tool_tasks[task_key] = task
 
 
 async def _execute_prepared_function_calls_live(
@@ -452,14 +439,10 @@ async def _execute_prepared_function_calls_live(
     function_call_event: Event,
     prepared_calls: list[_PreparedFunctionCall],
     agent: LlmAgent,
-    active_tools_lock: Optional[asyncio.Lock] = None,
 ) -> Event | None:
   """Runs the prepared live calls in parallel and merges their events."""
   if not prepared_calls:
     return None
-
-  if active_tools_lock is None:
-    active_tools_lock = asyncio.Lock()
 
   return await _execute_prepared_function_calls(
       invocation_context,
@@ -468,7 +451,6 @@ async def _execute_prepared_function_calls_live(
           invocation_context,
           prepared_call,
           agent,
-          active_tools_lock,
       ),
       live_session_id=function_call_event.live_session_id,
   )
@@ -481,7 +463,6 @@ async def handle_function_calls_live(
 ) -> Event | None:
   """Calls the functions and returns the function response event."""
   agent = _as_llm_agent(invocation_context)
-  active_tools_lock = asyncio.Lock()
 
   blocking_calls: list[types.FunctionCall] = []
   for function_call in function_call_event.get_function_calls():
@@ -494,7 +475,6 @@ async def handle_function_calls_live(
           tool=tool,
           tools_dict=tools_dict,
           agent=agent,
-          active_tools_lock=active_tools_lock,
           live_session_id=function_call_event.live_session_id,
       )
     else:
@@ -517,5 +497,4 @@ async def handle_function_calls_live(
       function_call_event,
       prepared_calls,
       agent,
-      active_tools_lock,
   )

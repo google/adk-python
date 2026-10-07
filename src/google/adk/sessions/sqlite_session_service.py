@@ -13,6 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from collections.abc import Iterable
 from contextlib import asynccontextmanager
@@ -183,6 +184,8 @@ class SqliteSessionService(BaseSessionService):
         db_path
     )
     self._schema_ready = False
+    self._schema_lock = asyncio.Lock()
+    self._memory_conn: aiosqlite.Connection | None = None
 
     if self._is_migration_needed():
       raise RuntimeError(
@@ -524,18 +527,51 @@ class SqliteSessionService(BaseSessionService):
     # Also update the in-memory session
     return self._commit_event_to_session(session, event)
 
+  async def close(self) -> None:
+    """Closes any persistent resources."""
+    async with self._schema_lock:
+      if self._memory_conn is not None:
+        await self._memory_conn.close()
+        self._memory_conn = None
+        self._schema_ready = False
+
   @asynccontextmanager
   async def _get_db_connection(self) -> AsyncIterator[aiosqlite.Connection]:
     """Connects to the db and performs initial setup."""
-    async with aiosqlite.connect(
-        self._db_connect_path, uri=self._db_connect_uri
-    ) as db:
-      db.row_factory = aiosqlite.Row
-      await db.execute(PRAGMA_FOREIGN_KEYS)
-      if not self._schema_ready:
-        await db.executescript(CREATE_SCHEMA_SQL)
-        self._schema_ready = True
-      yield db
+    if self._db_path in ("", ":memory:"):
+      async with self._schema_lock:
+        if self._memory_conn is None:
+          conn = aiosqlite.connect(
+              self._db_connect_path, uri=self._db_connect_uri
+          )
+          setattr(getattr(conn, "_thread", conn), "daemon", True)
+          await conn
+          try:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute(PRAGMA_FOREIGN_KEYS)
+            await conn.executescript(CREATE_SCHEMA_SQL)
+          except BaseException:
+            await conn.close()
+            raise
+          self._memory_conn = conn
+          self._schema_ready = True
+        try:
+          yield self._memory_conn
+        except BaseException:
+          await self._memory_conn.rollback()
+          raise
+    else:
+      async with aiosqlite.connect(
+          self._db_connect_path, uri=self._db_connect_uri
+      ) as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute(PRAGMA_FOREIGN_KEYS)
+        if not self._schema_ready:
+          async with self._schema_lock:
+            if not self._schema_ready:
+              await db.executescript(CREATE_SCHEMA_SQL)
+              self._schema_ready = True
+        yield db
 
   async def _get_state(
       self,
