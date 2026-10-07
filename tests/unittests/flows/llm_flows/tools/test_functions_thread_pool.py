@@ -1074,8 +1074,8 @@ class TestToolThreadPoolConfig:
       ToolThreadPoolConfig(max_workers=-1)
 
 
-class TestNodeToolThreadPoolExecution:
-  """Tests for NodeTool execution with the thread pool."""
+class TestNodeAndGeneratorThreadPoolExecution:
+  """Tests for synchronous FunctionNode (NodeTool) and generator tools with the thread pool."""
 
   @pytest.mark.asyncio
   async def test_sync_node_tool_runs_callable_on_thread_pool(self):
@@ -1109,6 +1109,44 @@ class TestNodeToolThreadPoolExecution:
     assert result == {'doubled': 42}
     assert worker_thread_name is not None
     assert worker_thread_name.startswith('adk_tool_executor')
+
+  @pytest.mark.asyncio
+  async def test_sync_generator_node_tool_runs_iterations_on_thread_pool(self):
+    """A sync generator FunctionNode runs every step on one generator thread started from adk_tool_executor."""
+    from unittest import mock
+
+    from google.adk.events.event import Event
+    from google.adk.tools._node_tool import NodeTool
+    from google.adk.workflow._function_node import FunctionNode
+
+    worker_threads: list[str] = []
+
+    def sync_gen_fn(x: int):
+      worker_threads.append(threading.current_thread().name)
+      yield Event(message='progress 1')
+      worker_threads.append(threading.current_thread().name)
+      yield {'final': x + 10}
+
+    node_tool = NodeTool(node=FunctionNode(func=sync_gen_fn, name='gen_it'))
+    model = testing_utils.MockModel.create(responses=[])
+    agent = Agent(name='test_agent', model=model, tools=[node_tool])
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content=''
+    )
+    invocation_context._enqueue_event = mock.AsyncMock()
+    tool_context = ToolContext(
+        invocation_context=invocation_context,
+        function_call_id='call_gen_1',
+    )
+
+    result = await _call_tool_in_thread_pool(node_tool, {'x': 5}, tool_context)
+
+    assert result == {'final': 15}
+    assert len(worker_threads) == 2
+    assert len(set(worker_threads)) == 1
+    assert worker_threads[0].startswith(
+        'adk_sync_generator_for_adk_tool_executor'
+    )
 
   @pytest.mark.asyncio
   async def test_async_node_tool_runs_on_caller_loop_without_pool(self):
@@ -1194,6 +1232,53 @@ class TestNodeToolThreadPoolExecution:
     ]
     assert len(fn_responses) == 1
     assert fn_responses[0].response == {'doubled': 42}
+
+  @pytest.mark.asyncio
+  async def test_sync_generator_node_tool_runs_on_thread_pool_via_prepared_call_async(
+      self,
+  ):
+    """_execute_single_prepared_call_async runs a sync generator FunctionNode NodeTool on its dedicated generator thread."""
+    from google.adk.events.event import Event
+    from google.adk.tools._node_tool import NodeTool
+    from google.adk.workflow._function_node import FunctionNode
+    from google.genai import types
+
+    worker_threads: list[str] = []
+
+    def sync_gen_fn(x: int):
+      worker_threads.append(threading.current_thread().name)
+      yield Event(message='progress 1')
+      worker_threads.append(threading.current_thread().name)
+      yield {'final': x + 10}
+
+    node_tool = NodeTool(node=FunctionNode(func=sync_gen_fn, name='gen_it'))
+    mock_model = testing_utils.MockModel.create(
+        responses=[
+            types.Part.from_function_call(name='gen_it', args={'x': 5}),
+            'done',
+        ]
+    )
+    agent = Agent(name='test_agent', model=mock_model, tools=[node_tool])
+    runner = testing_utils.TestInMemoryRunner(agent)
+
+    events = await runner.run_async_with_new_session(
+        'test', RunConfig(tool_thread_pool_config=ToolThreadPoolConfig())
+    )
+
+    assert len(worker_threads) == 2
+    assert len(set(worker_threads)) == 1
+    assert worker_threads[0].startswith(
+        'adk_sync_generator_for_adk_tool_executor'
+    )
+    fn_responses = [
+        part.function_response
+        for event in events
+        if event.content and event.content.parts
+        for part in event.content.parts
+        if part.function_response is not None
+    ]
+    assert len(fn_responses) == 1
+    assert fn_responses[0].response == {'final': 15}
 
   @pytest.mark.asyncio
   async def test_async_node_tool_runs_on_caller_loop_via_prepared_call_async(

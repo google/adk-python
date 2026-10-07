@@ -135,9 +135,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       artifact_util._validate_session_id_for_flat_storage(session_id)
     artifact = ensure_part(artifact).model_copy(deep=True)
     path = self._artifact_path(app_name, user_id, filename, session_id)
-    if path not in self.artifacts:
-      self.artifacts[path] = []
-    version = len(self.artifacts[path])
+    version = len(self.artifacts.get(path, []))
     if self._file_has_user_namespace(filename):
       canonical_uri = f"memory://apps/{app_name}/users/{user_id}/artifacts/{filename}/versions/{version}"
     else:
@@ -176,7 +174,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     else:
       raise InputValidationError("Not supported artifact type.")
 
-    self.artifacts[path].append(
+    self.artifacts.setdefault(path, []).append(
         _ArtifactEntry(data=artifact, artifact_version=artifact_version)
     )
     return version

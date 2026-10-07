@@ -2207,3 +2207,54 @@ async def test_synthesized_task_fr_preserved_across_node_paths(
   assert len(frs) == 1
   assert frs[0].name == 'specialist'
   assert frs[0].response == {'result': '42'}
+
+
+@pytest.mark.asyncio
+async def test_shared_llm_agent_mode_not_mutated_in_place(
+    request: pytest.FixtureRequest,
+):
+  """Running an LlmAgent(mode=None) via Runner or Workflow does not mutate mode in place."""
+  from . import testing_utils
+
+  model = testing_utils.MockModel.create(
+      responses=['root reply', 'node reply', 'direct reply']
+  )
+  shared_agent = LlmAgent(
+      name='shared_agent',
+      model=model,
+      instruction='Helper.',
+  )
+  assert shared_agent.mode is None
+
+  root_runner = testing_utils.InMemoryRunner(shared_agent)
+  root_events = await root_runner.run_async('hello root')
+  assert any(e.content for e in root_events)
+  assert shared_agent.mode is None
+
+  captured: list[str] = []
+
+  def capture(node_input: str) -> str:
+    captured.append(node_input)
+    return node_input
+
+  wf = Workflow(
+      name='shared_wf',
+      edges=[(START, shared_agent, capture)],
+  )
+  wf_runner = _new_workflow_runner(wf, request.function.__name__)
+  await wf_runner.run_async(testing_utils.get_user_content('hello node'))
+  assert captured == ['node reply']
+  assert shared_agent.mode is None
+
+  from google.adk.agents.run_config import RunConfig
+
+  ctx = await _make_context(request.function.__name__, shared_agent)
+  ctx._invocation_context.run_config = RunConfig()
+  direct_events = [
+      ev
+      async for ev in agent_wrapper.run_llm_agent_as_node(
+          shared_agent, ctx=ctx, node_input='hello direct'
+      )
+  ]
+  assert any(ev.output == 'direct reply' for ev in direct_events)
+  assert shared_agent.mode is None

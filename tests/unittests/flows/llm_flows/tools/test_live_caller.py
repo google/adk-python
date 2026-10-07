@@ -183,7 +183,6 @@ async def test_launch_non_blocking_call_live(
         tool=tool,
         tools_dict={'my_tool': tool},
         agent=mock.MagicMock(),
-        active_tools_lock=asyncio.Lock(),
         live_session_id='live_session_123',
     )
 

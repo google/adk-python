@@ -43,7 +43,7 @@ class BaseLlm(BaseModel):
   """The pydantic model config."""
 
   model: str
-  """The name of the LLM, e.g. gemini-2.5-flash or gemini-2.5-pro."""
+  """The name of the LLM, e.g. gemini-3.5-flash or gemini-3.1-pro-preview."""
 
   @property
   def capabilities(self) -> LlmCapabilities:

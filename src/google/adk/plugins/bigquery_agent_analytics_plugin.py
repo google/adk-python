@@ -4733,7 +4733,22 @@ _EVENT_VIEW_DEFS: dict[str, list[str]] = {
         "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
     ],
     "AGENT_STARTING": [
-        "JSON_VALUE(content, '$.text_summary') AS agent_instruction",
+        # Most string instructions are stored as a JSON string scalar, so fall
+        # back to the document root when there is no text_summary key, while
+        # filtering out historical callable reprs ("<function ...",
+        # "<bound method ...", "<... at 0x...>", "functools.partial(...)").
+        (
+            "COALESCE(JSON_VALUE(content, '$.text_summary'),"
+            " IF(REGEXP_CONTAINS(JSON_VALUE(content, '$'),"
+            " r'^(?:<(?:function|bound method) |<.+ at"
+            " 0x[0-9a-fA-F]+>|functools\\.partial\\()'), NULL,"
+            " JSON_VALUE(content, '$'))) AS agent_instruction"
+        ),
+        "JSON_VALUE(attributes, '$.instruction_source') AS instruction_source",
+        "JSON_VALUE(attributes, '$.static_instruction') AS static_instruction",
+        "JSON_VALUE(attributes, '$.agent_description') AS agent_description",
+        "JSON_VALUE(attributes, '$.model') AS model",
+        "JSON_QUERY(attributes, '$.sub_agents') AS sub_agents",
     ],
     "AGENT_COMPLETED": [
         "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
@@ -8212,10 +8227,87 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     """
     TraceManager.init_trace(callback_context)
     TraceManager.push_span(callback_context, "agent")
+    # A callable InstructionProvider is resolved per invocation; log None
+    # rather than its function repr and record instruction_source="provider".
+    raw_instruction = getattr(agent, "instruction", None)
+    instruction_text = (
+        raw_instruction
+        if isinstance(raw_instruction, str) and raw_instruction
+        else None
+    )
+    extra_attributes: dict[str, Any] = {}
+    if callable(raw_instruction):
+      extra_attributes["instruction_source"] = "provider"
+
+    raw_static = getattr(agent, "static_instruction", None)
+    static_instruction_text: Optional[str] = None
+    if isinstance(raw_static, str):
+      static_instruction_text = raw_static or None
+    elif raw_static is not None and not callable(raw_static):
+      from google.genai import _transformers
+
+      try:
+        normalized_static = _transformers.t_content(
+            cast(types.ContentOrDict, raw_static)
+        )
+      except Exception:
+        normalized_static = None
+      if normalized_static is not None:
+        parts = getattr(normalized_static, "parts", None) or []
+        part_texts = [
+            p.text
+            for p in parts
+            if isinstance(getattr(p, "text", None), str) and p.text
+        ]
+        if part_texts:
+          static_instruction_text = "\n".join(part_texts)
+    if static_instruction_text:
+      extra_attributes["static_instruction"] = static_instruction_text
+
+    raw_description = getattr(agent, "description", None)
+    if isinstance(raw_description, str) and raw_description:
+      extra_attributes["agent_description"] = raw_description
+
+    # ``model`` is either a model name or a BaseLlm carrying one; if unset
+    # on a sub-agent that defines ``model``, walk ``parent_agent`` to resolve
+    # the inherited model.
+    model_name: Optional[str] = None
+    curr_agent: Any = agent if hasattr(agent, "model") else None
+    seen_agents: set[int] = set()
+    for _ in range(16):
+      if curr_agent is None or id(curr_agent) in seen_agents:
+        break
+      seen_agents.add(id(curr_agent))
+      raw_model = getattr(curr_agent, "model", None)
+      if isinstance(raw_model, str) and raw_model:
+        model_name = raw_model
+        break
+      if raw_model is not None:
+        nested_model = getattr(raw_model, "model", None)
+        if isinstance(nested_model, str) and nested_model:
+          model_name = nested_model
+          break
+      curr_agent = getattr(curr_agent, "parent_agent", None)
+
+    raw_sub_agents = getattr(agent, "sub_agents", None)
+    if isinstance(raw_sub_agents, (list, tuple)):
+      sub_agent_names = [
+          sub_name
+          for sub in raw_sub_agents
+          if isinstance((sub_name := getattr(sub, "name", None)), str)
+          and sub_name
+      ]
+      if sub_agent_names:
+        extra_attributes["sub_agents"] = sub_agent_names
+
     await self._log_event(
         "AGENT_STARTING",
         callback_context,
-        raw_content=getattr(agent, "instruction", ""),
+        raw_content=instruction_text,
+        event_data=EventData(
+            model=model_name,
+            extra_attributes=extra_attributes,
+        ),
     )
 
   @_safe_callback

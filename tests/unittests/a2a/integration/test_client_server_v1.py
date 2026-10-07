@@ -37,7 +37,6 @@ pytestmark = pytest.mark.skipif(
 
 from .client import create_a2a_client
 from .client import create_client
-from .server import agent_card
 from .server import create_server_app_v1
 
 
