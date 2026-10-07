@@ -15,7 +15,9 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import Any
+import weakref
 
 from google.adk.platform import uuid as platform_uuid
 from google.genai import types
@@ -50,6 +52,15 @@ from .context_cache_config import ContextCacheConfig
 from .run_config import RunConfig
 
 _EventQueueItem = tuple[object, asyncio.Event | None]
+
+_confirmation_claim_lock = threading.Lock()
+_claimed_tool_confirmations: dict[
+    int,
+    tuple[
+        weakref.ReferenceType[BaseSessionService],
+        set[tuple[str, str, str, str | None, str]],
+    ],
+] = {}
 
 
 class LlmCallsLimitExceededError(Exception):
@@ -208,6 +219,115 @@ class InvocationContext(BaseModel):
   Format: "agent_1/agent_2/agent_3" where agent_1 is the outermost workflow.
   None for non-workflow agents.
   """
+
+  async def _consume_tool_confirmation(self, function_call_id: str) -> bool:
+    """Atomically claim a tool call across invocations in this process."""
+    service_key = id(self.session_service)
+    with _confirmation_claim_lock:
+      service_claims = _claimed_tool_confirmations.get(service_key)
+      if (
+          service_claims is None
+          or service_claims[0]() is not self.session_service
+      ):
+        service_ref: weakref.ReferenceType[BaseSessionService]
+
+        def remove_service_claims(
+            reference: weakref.ReferenceType[BaseSessionService],
+            key: int = service_key,
+        ) -> None:
+          with _confirmation_claim_lock:
+            current = _claimed_tool_confirmations.get(key)
+            if current is not None and current[0] is reference:
+              del _claimed_tool_confirmations[key]
+
+        service_ref = weakref.ref(self.session_service, remove_service_claims)
+        service_claims = (service_ref, set())
+        _claimed_tool_confirmations[service_key] = service_claims
+      claims = service_claims[1]
+      claim_key = (
+          self.session.app_name,
+          self.session.user_id,
+          self.session.id,
+          self.branch,
+          function_call_id,
+      )
+      if claim_key in claims:
+        return False
+      claims.add(claim_key)
+
+    try:
+      # Check after acquiring the in-flight claim. A concurrent resume may
+      # have loaded stale history before the first execution was persisted and
+      # released its claim.
+      latest_session = await self.session_service.get_session(
+          app_name=self.session.app_name,
+          user_id=self.session.user_id,
+          session_id=self.session.id,
+      )
+    except BaseException:
+      self._release_tool_confirmation_claim_ids(
+          {function_call_id}, branch=self.branch
+      )
+      raise
+
+    response_count = (
+        sum(
+            response.id == function_call_id
+            for event in latest_session.events
+            if event.branch == self.branch
+            for response in event.get_function_responses()
+        )
+        if latest_session is not None
+        else 0
+    )
+    if latest_session is None or response_count > 1:
+      self._release_tool_confirmation_claim_ids(
+          {function_call_id}, branch=self.branch
+      )
+      return False
+
+    return True
+
+  def _release_tool_confirmation_claims(self, event: Event) -> None:
+    """Release claims after their tool responses have been persisted."""
+    function_call_ids = {
+        response.id
+        for response in event.get_function_responses()
+        if response.id
+    }
+    if not function_call_ids:
+      return
+
+    self._release_tool_confirmation_claim_ids(
+        function_call_ids, branch=event.branch
+    )
+
+  def _release_tool_confirmation_claim_ids(
+      self, function_call_ids: set[str], *, branch: str | None
+  ) -> None:
+    """Release in-flight claims for persisted tool-call response IDs."""
+    service_key = id(self.session_service)
+    with _confirmation_claim_lock:
+      service_claims = _claimed_tool_confirmations.get(service_key)
+      if (
+          service_claims is None
+          or service_claims[0]() is not self.session_service
+      ):
+        return
+
+      claims = service_claims[1]
+      claims.difference_update(
+          (
+              self.session.app_name,
+              self.session.user_id,
+              self.session.id,
+              branch,
+              function_call_id,
+          )
+          for function_call_id in function_call_ids
+      )
+      if not claims:
+        del _claimed_tool_confirmations[service_key]
 
   agent_states: dict[str, dict[str, Any]] = Field(default_factory=dict)
   """The state of the agent for this invocation."""

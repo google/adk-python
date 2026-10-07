@@ -14,6 +14,7 @@
 
 """Tests for HITL flows with different agent structures."""
 
+import asyncio
 import copy
 from unittest import mock
 
@@ -25,11 +26,16 @@ from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.agents.sequential_agent import SequentialAgentState
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.events.event import Event
 from google.adk.events.ui_widget import UiWidget
 from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from google.adk.models.llm_response import LlmResponse
+from google.adk.runners import Runner
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 from google.adk.utils.context_utils import Aclosing
+from google.genai import types
 from google.genai.types import FunctionCall
 from google.genai.types import FunctionResponse
 from google.genai.types import GenerateContentResponse
@@ -225,6 +231,228 @@ class TestHITLConfirmationFlowWithSingleAgent(BaseHITLTest):
         testing_utils.simplify_events(copy.deepcopy(events))
         == expected_parts_final
     )
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize("concurrent", [False, True])
+  async def test_repeated_confirmation_is_executed_once(
+      self,
+      runner: testing_utils.InMemoryRunner,
+      agent: LlmAgent,
+      concurrent: bool,
+  ):
+    """The public Runner must consume one confirmation across invocations."""
+    executions = 0
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def counted_tool(tool_context):
+      nonlocal executions
+      executions += 1
+      started.set()
+      if concurrent:
+        await release.wait()
+      return {"executions": executions}
+
+    agent.tools[0].func = counted_tool
+    # Duplicate submissions still traverse the runner's normal model loop
+    # before the confirmation claim filters the tool call.
+    agent.model.responses.extend(
+        [_create_llm_response_from_text("done") for _ in range(2)]
+    )
+    initial_events = await runner.run_async(testing_utils.UserContent("test"))
+    confirmation_id = initial_events[1].content.parts[0].function_call.id
+    original_function_call_id = (
+        initial_events[0].content.parts[0].function_call.id
+    )
+    confirmation = testing_utils.UserContent(
+        Part(
+            function_response=FunctionResponse(
+                id=confirmation_id,
+                name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                response={"confirmed": True},
+            )
+        )
+    )
+
+    if concurrent:
+      first = asyncio.create_task(runner.run_async(confirmation))
+      await started.wait()
+      second = asyncio.create_task(runner.run_async(confirmation))
+      await asyncio.sleep(0)
+      release.set()
+      results = await asyncio.gather(first, second)
+      resumed_events = [event for result in results for event in result]
+    else:
+      first_events = await runner.run_async(confirmation)
+      duplicate_events = await runner.run_async(confirmation)
+      resumed_events = first_events + duplicate_events
+
+    assert executions == 1
+    assert (
+        sum(
+            response.id == original_function_call_id
+            for event in resumed_events
+            for response in event.get_function_responses()
+        )
+        == 1
+    )
+    assert not any(
+        call.name == REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+        for event in resumed_events
+        for call in event.get_function_calls()
+    )
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      ("second_namespace", "second_call_id"),
+      [
+          (("test_app", "test_user", "session_b"), "shared_call"),
+          (("test_app", "other_user", "session_a"), "shared_call"),
+          (("other_app", "test_user", "session_a"), "shared_call"),
+          (("test_app", "other_user", "session_a"), "other_call"),
+      ],
+      ids=[
+          "different-session",
+          "different-user",
+          "different-app",
+          "different-user-and-call",
+      ],
+  )
+  async def test_independent_session_confirmations_do_not_collide(
+      self,
+      second_namespace: tuple[str, str, str],
+      second_call_id: str,
+  ):
+    """A claim in one session must not consume another session's approval."""
+    service = InMemorySessionService()
+    namespaces = [
+        ("test_app", "test_user", "session_a"),
+        second_namespace,
+    ]
+    call_ids = ["shared_call", second_call_id]
+    for app_name, user_id, session_id in namespaces:
+      await service.create_session(
+          app_name=app_name, user_id=user_id, session_id=session_id
+      )
+
+    executions = [0, 0]
+    first_tool_started = asyncio.Event()
+    release_first_tool = asyncio.Event()
+    runners = []
+    approvals = []
+
+    def make_runner(index: int) -> Runner:
+      async def local_counter(tool_context: ToolContext) -> dict[str, int]:
+        del tool_context  # This tool deliberately does not inspect the verdict.
+        executions[index] += 1
+        if index == 0:
+          first_tool_started.set()
+          await release_first_tool.wait()
+        return {"executions": executions[index]}
+
+      tool = FunctionTool(func=local_counter, require_confirmation=True)
+      tool_call_response = LlmResponse(
+          content=types.Content(
+              role="model",
+              parts=[
+                  Part(
+                      function_call=FunctionCall(
+                          name=tool.name, id=call_ids[index], args={}
+                      )
+                  )
+              ],
+          )
+      )
+      model = testing_utils.MockModel(
+          responses=[
+              tool_call_response,
+              _create_llm_response_from_text("done"),
+          ]
+      )
+      app_name = namespaces[index][0]
+      agent = LlmAgent(name="root_agent", model=model, tools=[tool])
+      return Runner(app_name=app_name, agent=agent, session_service=service)
+
+    async def invoke(index: int, message: types.Content) -> list[Event]:
+      app_name, user_id, session_id = namespaces[index]
+      return [
+          event
+          async for event in runners[index].run_async(
+              user_id=user_id, session_id=session_id, new_message=message
+          )
+      ]
+
+    pending_tasks = []
+    try:
+      for index in range(2):
+        runners.append(make_runner(index))
+        initial_events = await invoke(
+            index, testing_utils.UserContent("request")
+        )
+        confirmation_ids = [
+            call.id
+            for event in initial_events
+            for call in event.get_function_calls()
+            if call.name == REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+        ]
+        assert len(confirmation_ids) == 1
+        approvals.append(
+            testing_utils.UserContent(
+                Part(
+                    function_response=FunctionResponse(
+                        name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                        id=confirmation_ids[0],
+                        response={"confirmed": True},
+                    )
+                )
+            )
+        )
+
+      first_approval = asyncio.create_task(invoke(0, approvals[0]))
+      pending_tasks.append(first_approval)
+      await asyncio.wait_for(first_tool_started.wait(), timeout=5)
+      second_approval_events = await asyncio.wait_for(
+          invoke(1, approvals[1]), timeout=5
+      )
+      assert executions == [1, 1]
+
+      release_first_tool.set()
+      first_approval_events = await asyncio.wait_for(first_approval, timeout=5)
+      assert executions == [1, 1]
+
+      for index, events in enumerate(
+          [first_approval_events, second_approval_events]
+      ):
+        assert (
+            sum(
+                response.id == call_ids[index]
+                for event in events
+                for response in event.get_function_responses()
+            )
+            == 1
+        )
+        assert not any(
+            call.name == REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+            for event in events
+            for call in event.get_function_calls()
+        )
+
+      # A replay after the result is persisted is a no-op, not another prompt.
+      replay_events = await invoke(1, approvals[1])
+      assert executions == [1, 1]
+      assert not any(
+          call.name == REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+          for event in replay_events
+          for call in event.get_function_calls()
+      )
+    finally:
+      release_first_tool.set()
+      for task in pending_tasks:
+        if not task.done():
+          task.cancel()
+      await asyncio.gather(*pending_tasks, return_exceptions=True)
+      for runner in runners:
+        await runner.close()
 
 
 class TestHITLConfirmationFlowWithCustomPayloadSchema(BaseHITLTest):
